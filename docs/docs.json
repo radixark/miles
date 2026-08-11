@@ -267,19 +267,6 @@
     ]
    },
    {
-    "tab": "Platforms",
-    "groups": [
-     {
-      "group": "Platforms",
-      "root": "platforms/index",
-      "pages": [
-       "platforms/nvidia",
-       "platforms/amd"
-      ]
-     }
-    ]
-   },
-   {
     "tab": "Resources",
     "groups": [
      {
@@ -308,6 +295,21 @@
   {
    "source": "/models/deepseek/deepseek",
    "destination": "/models/deepseek/deepseek-v3-2",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/index",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/nvidia",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/amd",
+   "destination": "/getting-started/installation",
    "permanent": true
   }
  ],

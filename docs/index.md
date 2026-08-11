@@ -59,7 +59,7 @@ needed to run RL at trillion-parameter scale.
   rewriting your training loop.
 - **Wide recipe support.** RL (GRPO, PPO), SFT, and on-policy distillation.
 - **Verified on multiple hardware generations.** GB300, GB200, B300, B200, H200,
-  H100, and AMD MI355X / MI300X — see [Platforms](/platforms/index).
+  H100, A100, and AMD MI355X / MI300X.
 - **Comprehensive CI.** Unit suites run on every pull request, and tag-triggered
   end-to-end GPU training tests cover the supported model families on both NVIDIA
   and AMD runners.
@@ -89,10 +89,11 @@ parallelism settings.
 
 ## Supported hardware
 
-- **NVIDIA**: GB300, GB200, B200, B100, H200, H100, A100.
+- **NVIDIA**: GB300, GB200, B300, B200, H200, H100, A100.
 - **AMD**: MI300X, MI325, MI350, MI355X (via ROCm).
 
-See [Platforms](/platforms/index).
+See [Installation](/getting-started/installation#hardware-requirements) for per-GPU status
+and the container images for each.
 
 ## Latest updates
 
