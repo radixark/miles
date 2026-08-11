@@ -38,7 +38,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     payload, halt_status = compute_request_payload(
         args, input_ids=input_ids, sampling_params=sampling_params, multimodal_inputs=sample.multimodal_inputs
     )
-    stamp_start_weight_version(args, sample, payload)
+    stamp_start_weight_version(input.state, sample, payload)
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)

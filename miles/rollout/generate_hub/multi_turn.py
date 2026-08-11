@@ -53,7 +53,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         # ----------------------- Call inference endpoint -------------------------
 
         payload, halt_status = compute_request_payload(args, sample.tokens, input.sampling_params)
-        stamp_start_weight_version(args, sample, payload)
+        stamp_start_weight_version(input.state, sample, payload)
         if payload is None:
             sample.status = halt_status
             break

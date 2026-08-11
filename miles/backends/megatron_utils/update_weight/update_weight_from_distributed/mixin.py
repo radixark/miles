@@ -315,7 +315,7 @@ class DistBucketedWeightUpdateMixin:
             # re-prefills it. Same threshold the buffer applies at consume time.
             max_staleness = getattr(self.args, "max_weight_staleness", None)
             sweep_below = None if max_staleness is None else self.weight_version - max_staleness
-            ray.get(
+            replies = ray.get(
                 [
                     engine.pause_generation.remote(
                         mode=mode, abort_below_start_weight_version=sweep_below
@@ -323,6 +323,11 @@ class DistBucketedWeightUpdateMixin:
                     for engine in self.rollout_engines
                 ]
             )
+            if sweep_below is not None:
+                logger.info(
+                    f"pause sweep: mode={mode} abort_below={sweep_below} "
+                    f"engines={len(replies)} version={self.weight_version}"
+                )
             if mode != "in_place":
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 

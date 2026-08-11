@@ -247,7 +247,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     elif lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
 
-    stamp_start_weight_version(args, sample, payload)
+    stamp_start_weight_version(GenerateState(args), sample, payload)
 
     if args.use_rollout_routing_replay:
         payload["return_routed_experts"] = True
