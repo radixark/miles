@@ -23,6 +23,7 @@ from miles.utils.arguments import (
 )
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
+from miles.utils.object_store_config import compute_mooncake_init_kwargs
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]

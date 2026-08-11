@@ -21,6 +21,7 @@ from miles.utils.workers.cell_operations.ray import RayCellOperations
 from .conftest import (
     MockHandler,
     MockInferenceController,
+    MockStopCellController,
     MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
