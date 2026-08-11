@@ -16,7 +16,7 @@ needed to run RL at trillion-parameter scale.
 - **Fully async RL.** Rollout and training workers are decoupled, with configurable
   on- and off-policy schedules, an optimized pipeline with fewer bubbles, and
   customizable async rollout and eval modes. See
-  [Fully Async Rollout](/user-guide/fully-async).
+  [Fully Async RL](/user-guide/fully-async).
 - **Fast agentic rollout.** High-throughput generation on
   [SGLang](https://github.com/sgl-project/sglang), optimized for multi-turn
   agentic workloads.

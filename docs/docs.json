@@ -166,13 +166,13 @@
       "pages": [
        "user-guide/concepts",
        "user-guide/argument-groups",
+       "user-guide/fully-async",
        "user-guide/usage",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
        "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
-       "user-guide/fully-async",
        "user-guide/agentic-chat-template",
        "user-guide/cli-reference"
       ]
