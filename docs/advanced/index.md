@@ -9,10 +9,10 @@ tolerance, speculative decoding, and LoRA training and serving.
 
 <CardGroup cols={2}>
 
-  <Card title="Low Precision RL" icon="bolt" href="/advanced/fp8-low-precision">
+  <Card title="MXFP8 and NVFP4 RL" icon="bolt" href="/advanced/fp8-low-precision">
 
-    The unified FP8 path: matched quantization between training and inference,
-    BF16 backward and master weights.
+    Blackwell-native low-precision recipes with matched checkpoint, training,
+    rollout, and live weight-update quantization.
 
   </Card>
 

@@ -1,126 +1,94 @@
 ---
-title: Low Precision RL
-description: Unified low-precision pipelines for RL — block-wise FP8, MXFP8, and NVFP4 across rollout and training.
+title: MXFP8 and NVFP4 RL
+description: Blackwell-native low-precision RL across checkpoint conversion, training, rollout, and live weight updates.
 ---
-A common failure mode in MoE RL is precision drift between training and
-inference. Pipelines that train in BF16 and serve in FP8 accumulate per-layer
-numerical disagreement, which compounds into divergent log-probabilities and
-gradients pointing in unintended directions.
 
-Miles supports a unified low-precision path where rollout and training share
-the same quantization logic on the forward pass. Backward passes and master
-weights stay in BF16. The same path is wired up for three formats today —
-**block-wise FP8**, **MXFP8**, and (experimental) **NVFP4** — plus the
-lower-friction "BF16 train + FP8 inference" mode that's useful when standing
-up a new model architecture.
+Low-precision RL has a stricter consistency requirement than standalone
+training or serving. Checkpoint conversion, the trainer forward pass, rollout,
+and live weight updates must use the same quantization contract; otherwise the
+policy that generates samples differs from the policy being optimized.
 
-## Choose a precision
+Miles provides two Blackwell-native recipes:
 
-| Format | Block layout | Hardware | Models tested | Maturity |
+* **MXFP8** across rollout, forward propagation, weight-gradient GEMMs, and
+  data-gradient GEMMs.
+* **NVFP4** for routed MoE expert weights and activations, with BF16 used for
+  the rest of the model and for backward GEMMs.
+
+Both recipes support tensor-level BF16 exceptions and matching checkpoint
+conversion and live-export paths. See the [public roadmap](https://github.com/radixark/miles/issues/615)
+for current integration status.
+
+## Choose a recipe
+
+| Recipe | Quantization | Scope in the reference recipe | Hardware | Starting point |
 |---|---|---|---|---|
-| **BF16** | — | All NVIDIA + AMD MI300X / MI325 / MI350 / MI355X | All | Baseline |
-| **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V3 / R1 | Generally available |
-| **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
-| **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales, MoE experts only | Blackwell, following the TransformerEngine NVFP4 reference | — | Experimental |
+| **BF16** | BF16 | Entire model | All supported GPUs | Model bring-up and numerical baseline |
+| **Block-wise FP8** | E4M3 with 128x128 weight blocks | Trainer and rollout | Hopper and Blackwell | Existing FP8 checkpoints and Hopper systems |
+| **MXFP8** | E4M3 values with one E8M0 scale per 32-value block | Major trainer and rollout GEMMs, except configured BF16 tensors | B200, B300, GB200, GB300 | Blackwell-native 8-bit RL |
+| **NVFP4** | E2M1 values with E4M3 block scales and an outer FP32 scale | Routed MoE experts; other layers remain BF16 | B200, B300, GB200, GB300 | Blackwell-native 4-bit MoE RL |
 
-## Rollout × training compatibility
+Start with BF16 when bringing up a new model. Move to MXFP8 when broad
+low-precision GEMM coverage is the goal. Use NVFP4 when MoE expert memory and
+rollout bandwidth dominate and the model can tolerate the more aggressive
+format.
 
-Each row is a rollout (inference) precision; each column is the trainer's
-forward precision. ✅ = supported; ✗ = not supported.
+## The shared precision contract
 
-| Rollout \ Train | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
-|---|---|---|---|---|
-| **BF16**           | ✅ baseline | ✗ | ✗ | ✗ |
-| **FP8 block-wise** | ✅ | ✅ Hopper + Blackwell | ✗ | ✗ |
-| **MXFP8**          | ✅ | ✗ | ✅ Blackwell | ✗ |
-| **NVFP4**          | ✗ | ✗ | ✗ | 🚧 coming soon |
+The low-precision setting is not only a trainer flag. Keep these four stages
+aligned:
 
-Two rules enforced in the reference script
-(`scripts/run_qwen3_30b_a3b.py`):
+1. **Checkpoint conversion** creates the quantized Hugging Face checkpoint and
+   records which tensors remain in BF16.
+2. **Training** applies the matching Transformer Engine recipe to the same
+   tensors during the forward pass.
+3. **Rollout** loads the converted checkpoint in SGLang and uses a compatible
+   kernel and scaling layout.
+4. **Live weight export** re-quantizes updated Megatron weights with the same
+   layout and BF16 exceptions before synchronization.
 
-* `--rollout-mxfp8` and `--rollout-fp8` are mutually exclusive.
-* `--train-mxfp8` requires `--rollout-mxfp8` (no MXFP8-train + FP8-rollout
-  combo).
+The backward pass and optimizer master weights can remain in higher precision.
+This does not violate the rollout/trainer policy contract because sampling only
+depends on the forward path.
 
-## Unified training recipe
+## Block-wise FP8
 
-| Stage | Typical pipeline | Miles unified low-precision |
-|---|---|---|
-| Rollout (forward) | FP8 / MXFP8 GEMM | FP8 / MXFP8 GEMM |
-| Trainer (forward) | BF16 GEMM | FP8 / MXFP8 GEMM with matching quant config |
-| Trainer (backward) | BF16 grads | BF16 backward (master weights in BF16) |
-| Optimizer | BF16 master | BF16 master |
+The existing Hopper-compatible recipe uses E4M3 values with 128x128 weight
+blocks and FP32 scales. It remains useful for models that already publish
+DeepSeek-style FP8 checkpoints and for H100 or H200 systems. The maintained
+examples are:
 
-The forward pass in training matches rollout. The backward pass and master
-weights remain BF16, which keeps the gradient signal stable. Weights are
-re-quantized on each weight-update sync to sglang.
+* [`run-qwen3-4b-fp8.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-4b-fp8.sh)
+  for a single-node dense model.
+* [`run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh)
+  for a two-node MoE model.
 
-## Modes
+The rest of this page focuses on the Blackwell-native MXFP8 and NVFP4 paths.
 
-### 1. BF16 train + FP8 inference
+## MXFP8
 
-The lowest-friction path. SGLang loads FP8 weights while the trainer keeps a
-BF16 `torch_dist` checkpoint. There is precision drift between the two paths;
-on MoE workloads, pair this with R3 (and optionally TIS).
+MXFP8 uses one-dimensional microscaling blocks: 32 consecutive E4M3 values
+share one E8M0 scale. Transformer Engine independently quantizes row-wise and
+column-wise views when low-precision backward GEMMs need both orientations.
+
+### Run the reference recipe
+
+The Qwen3-30B-A3B launcher is the most direct starting point. Use the same
+precision switches for preparation and execution:
 
 ```bash
-hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/Qwen3-30B-A3B-FP8
+python scripts/run_qwen3_30b_a3b.py prepare \
+  --hardware B200 \
+  --rollout-mxfp8 \
+  --train-mxfp8
 
-CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-30B-A3B-FP8        # FP8 weights for SGLang
-   --ref-load      /root/Qwen3-30B-A3B_torch_dist  # BF16 torch_dist for trainer
-)
+python scripts/run_qwen3_30b_a3b.py execute \
+  --hardware B200 \
+  --rollout-mxfp8 \
+  --train-mxfp8
 ```
 
-### 2. Unified block-wise FP8 (DeepSeek-style)
-
-Rollout and training share the same block-wise FP8 quantization. This is the
-recipe to use on Hopper, and the recipe DeepSeek-V3 / DeepSeek-R1 ship in.
-Block layout is 128×128 with FP32 scales.
-
-```bash
---transformer-impl transformer_engine
---bf16
---fp8-format e4m3
---fp8-recipe blockwise
-
-# Optional, for MoE numerical stability
---use-tis
-```
-
-| Flag | Effect |
-|---|---|
-| `--transformer-impl transformer_engine` | Routes Megatron's forward through TransformerEngine so FP8 GEMM is engaged. |
-| `--fp8-format e4m3` | Forward FP8 format used by TransformerEngine. |
-| `--fp8-recipe blockwise` | 128×128 block-wise quantization; sglang must serve weights in the matching layout. |
-| `--use-tis` | Truncated Importance Sampling for residual precision drift. |
-
-Set `NVTE_FP8_BLOCK_SCALING_FP32_SCALES=1` in the Ray runtime env to use FP32
-scales (`miles/ray/actor_group.py` already sets this in the actor env).
-
-For models that already ship 128×128 block-wise FP8 weights (DeepSeek-V3,
-DeepSeek-R1, `Qwen/Qwen3-30B-A3B-FP8`), point `--hf-checkpoint` at the
-block-wise FP8 directory and let SGLang autodetect. Otherwise convert with
-`tools/convert_hf_to_fp8.py`.
-
-For MoE workloads, also consider `--use-rollout-routing-replay` (R3). The
-canonical recipe leaves it commented out by default but the flag is available.
-
-Reference recipes:
-
-* [`examples/infra_features/low_precision/run-qwen3-4b-fp8.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-4b-fp8.sh) — single-node Qwen3-4B.
-* [`examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh`](https://github.com/radixark/miles/blob/main/examples/infra_features/low_precision/run-qwen3-30b-a3b-fp8-two-nodes.sh) — two-node Qwen3-30B-A3B.
-
-### 3. Unified MXFP8 (Blackwell)
-
-MXFP8 uses a finer block layout (1×32) with UE8M0 (power-of-two) scales packed
-as `uint8`. Weights are stored as `float8_e4m3fn`. This is the format wired
-into the Blackwell path of the Qwen3-30B-A3B reference script.
-
-**Hardware**: Blackwell only — B200, B300, GB200, GB300. The reference script
-asserts the GPU class on enable (`scripts/run_qwen3_30b_a3b.py`).
-
-**Train flags** — same Megatron knobs as FP8, with `mxfp8` recipe:
+The launcher configures Transformer Engine with:
 
 ```bash
 --transformer-impl transformer_engine
@@ -129,72 +97,201 @@ asserts the GPU class on enable (`scripts/run_qwen3_30b_a3b.py`).
 --fp8-recipe mxfp8
 ```
 
-**Rollout flags** — sglang side:
+It also selects the SGLang backend and parallel layout used by the reference
+recipe. Treat those settings as a tested combination before changing
+parallelism or kernels independently.
 
-```bash
---sglang-fp8-gemm-backend triton
---sglang-moe-runner-backend cutlass
-# DeepEP / DeepGEMM are not yet supported with MXFP8 in sglang;
-# do not set --sglang-moe-a2a-backend deepep here.
-```
-
-**Conversion**. There is no HF-shipped MXFP8 checkpoint for Qwen3 today, so
-convert from BF16 first:
+To convert a checkpoint outside the launcher:
 
 ```bash
 python tools/convert_hf_to_mxfp8.py \
-   --model-dir /root/models/Qwen3-30B-A3B \
-   --save-dir  /root/models/Qwen3-30B-A3B-MXFP8
+  --model-dir /root/models/Qwen3-30B-A3B \
+  --save-dir /root/models/Qwen3-30B-A3B-MXFP8
 ```
 
-The tool quantizes every 2D `*.weight` tensor whose last dim is divisible by
-32, except `layernorm`, `embed`, `router`, `mlp.gate.`, `norm`, `lm_head`,
-`eh_proj`, `weights_proj` (`tools/convert_hf_to_mxfp8.py`). The HF
-config is rewritten with:
+The converter writes a Hugging Face quantization config with 1x32 weight
+blocks and E8M0 scales. It skips tensors that are not suitable for the format,
+including norms, embeddings, routers, and configured high-precision layers.
 
-```json
-{
-  "quant_method": "mxfp8",
-  "fmt": "e4m3",
-  "weight_block_size": [1, 32],
-  "scale_fmt": "ue8m0",
-  "activation_scheme": "dynamic"
-}
+### MXFP8 backward modes
+
+The default Transformer Engine MXFP8 path uses low-precision backward GEMMs.
+Miles also supports two override modes:
+
+* `NVTE_BACKWARD_OVERRIDE=high_precision` uses the original BF16 operands.
+* `NVTE_BACKWARD_OVERRIDE=dequantized` uses BF16 dequantizations of the exact
+  low-precision forward operands.
+
+![MXFP8 with high-precision backward](/assets/images/low-precision/mxfp8-high-precision-backward.png)
+
+![MXFP8 with dequantized backward](/assets/images/low-precision/mxfp8-dequantized-backward.png)
+
+*High-precision and dequantized MXFP8 backward modes. Source: the
+[LMSYS post](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
+
+Use an override only after establishing the default recipe baseline. The modes
+trade low-precision backward throughput for different numerical and memory
+behavior.
+
+## NVFP4
+
+NVFP4 stores E2M1 values in 16-value blocks. Each block has an E4M3 scale, and
+an outer FP32 scale covers a larger scope. In the Miles RL recipe:
+
+* routed MoE experts use NVFP4;
+* dense layers, attention, routers, norms, and other unmatched tensors stay in
+  BF16;
+* activations use one outer FP32 scale per token rather than one shared scale
+  for an entire tensor; and
+* gate and up projections are quantized together so their fused rollout GEMM
+  uses one consistent outer scale.
+
+![NVFP4 two-level scaling](/assets/images/low-precision/nvfp4-two-level-scaling.png)
+
+*NVFP4 two-level scaling. Source: the [LMSYS post](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
+
+### Run the reference recipe
+
+Use the paired rollout and trainer switches for preparation and execution:
+
+```bash
+python scripts/run_qwen3_30b_a3b.py prepare \
+  --hardware B200 \
+  --rollout-nvfp4 \
+  --train-nvfp4
+
+python scripts/run_qwen3_30b_a3b.py execute \
+  --hardware B200 \
+  --rollout-nvfp4 \
+  --train-nvfp4
 ```
 
-**Caveats**:
+The launcher selects per-token activation scaling, disables the incompatible
+2D quantization, RHT, and stochastic-rounding paths, and uses
+high-precision backward by default. It also keeps the NVFP4 trainer and rollout
+on separate GPU sets.
 
-* No DeepEP / DeepGEMM yet — MoE all-to-all uses the cutlass MoE runner, which
-  does not currently support EP. Plan EP/PP accordingly.
-* `--train-mxfp8` requires `--rollout-mxfp8` (the script enforces this).
+For manual integrations, mirror the launcher's base environment on every
+component that participates in conversion, training, or rollout:
 
-**Reference recipe**: [`scripts/run_qwen3_30b_a3b.py`](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_30b_a3b.py)
-with `--rollout-mxfp8 --train-mxfp8 --hardware B200`. There is no dedicated
-shell script under `examples/infra_features/low_precision/` yet.
+```bash
+NVTE_NVFP4_DISABLE_2D_QUANTIZATION=1
+NVTE_NVFP4_DISABLE_RHT=1
+NVTE_NVFP4_DISABLE_STOCHASTIC_ROUNDING=1
+NVTE_NVFP4_ROW_SCALED_ACTIVATION=1
+NVTE_BACKWARD_OVERRIDE=high_precision
+NVTE_USE_FAST_MATH=0
+SGLANG_FLASHINFER_NVFP4_PER_TOKEN_ACTIVATION=1
+TRTLLM_DISABLE_FP4_QUANT_FAST_MATH=1
+FLASHINFER_DISABLE_FP4_QUANT_FAST_MATH=1
+```
 
-### 4. NVFP4 (experimental)
+The training-side precision config applies NVFP4 only to routed expert FC1 and
+FC2 tensors and falls back to BF16 for everything else. The current definition
+lives in [`scripts/run_qwen3_30b_a3b.py`](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_30b_a3b.py).
 
-NVFP4 is FP4 E2M1 with 1D block scaling (group size 16) and a two-level scale
-(per-block FP8 + per-tensor FP32), following the TransformerEngine NVFP4
-reference. Today only **MoE expert GEMMs** are quantized; dense layers stay in
-their original precision.
+To convert a checkpoint outside the launcher:
 
-The full unified NVFP4 recipe is in development.
+```bash
+python tools/convert_hf_to_nvfp4.py \
+  --model-dir /root/models/Qwen3-30B-A3B \
+  --save-dir /root/models/Qwen3-30B-A3B-NVFP4
+```
 
-## Hardware support
+Run conversion with the same `NVTE_*` recipe variables that training uses.
+The rollout process must receive the matching `FLASHINFER_*` variables.
 
-| GPU | BF16 | FP8 block-wise | MXFP8 | NVFP4 |
-|---|---|---|---|---|
-| NVIDIA H100 / H200 | ✅ | ✅ | ✗ | ✗ |
-| NVIDIA B200 / B300 / GB200 / GB300 | ✅ | ✅ | ✅ | 🚧 in development |
-| NVIDIA A100 | ✅ | ✗ | ✗ | ✗ |
-| AMD MI300X / MI325 / MI350 / MI355X | ✅ | ✗ | ✗ | ✗ |
+### NVFP4 backward modes
 
-## When BF16 is enough
+Miles currently uses BF16 backward GEMMs for the NVFP4 RL path:
 
-* Dense models below ~30 B.
-* A100 hardware (no FP8 GEMM).
-* AMD hardware today.
-* Bring-up of a new model architecture, where clean BF16 numerics simplify
-  debugging.
+* **High-precision backward** (`NVTE_BACKWARD_OVERRIDE=high_precision`) uses
+  the original BF16 forward inputs as backward operands. This is the Qwen3
+  launcher default.
+* **Dequantized backward** (`NVTE_BACKWARD_OVERRIDE=dequantized`) uses BF16
+  dequantizations of the NVFP4 forward operands. This more closely follows the
+  exact forward path but adds dequantization work.
 
+![NVFP4 with high-precision backward](/assets/images/low-precision/nvfp4-high-precision-backward.png)
+
+![NVFP4 with dequantized backward](/assets/images/low-precision/nvfp4-dequantized-backward.png)
+
+*High-precision and dequantized NVFP4 backward modes. Source: the
+[LMSYS post](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl).*
+
+To try dequantized backward with the reference launcher:
+
+```bash
+export NVTE_BACKWARD_OVERRIDE=dequantized
+```
+
+Set the variable in the environment used to launch the job; the launcher
+forwards `NVTE_*` variables to the training actors.
+
+### Advanced: four-over-six
+
+Four-over-six (4/6) is an optional NVFP4 scaling technique. For each block, it
+chooses whether mapping the largest FP4 magnitude to 4 or 6 produces lower
+quantization error. Miles can apply it to weights and activations, but the
+trainer, checkpoint converter, and rollout kernels must make the same choice
+bit for bit.
+
+Treat 4/6 as an advanced recipe. First validate the base NVFP4 path, then enable
+the paired Transformer Engine and FlashInfer settings together:
+
+```bash
+export NVTE_NVFP4_4OVER6=all
+export FLASHINFER_NVFP4_4OVER6=1
+export NVTE_NVFP4_4OVER6_E4M3_USE_256=all
+export FLASHINFER_NVFP4_4OVER6_E4M3_USE_256=1
+export NVTE_NVFP4_4OVER6_ERR_MODE=MSE
+export FLASHINFER_NVFP4_4OVER6_ERR_MODE=MSE
+export NVTE_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
+export FLASHINFER_NVFP4_4OVER6_ERR_USE_FAST_MATH=0
+```
+
+Keep the base recipe's exact-quantization settings enabled as well. Apply this
+environment to checkpoint conversion, training, and rollout, and verify that
+the installed Transformer Engine and FlashInfer versions implement the same
+4/6 contract. The [humans& NVFP4 RL post](https://humansand.ai/blog/nvfp4-rl)
+explains the motivation, numerical trade-offs, and combined recipe.
+
+## Fine-grained BF16 exceptions
+
+Low-precision coverage should be consistent rather than maximal. Miles can
+keep selected tensors in BF16 across conversion, training, rollout, and live
+weight export.
+
+The main controls are:
+
+| Control | Purpose |
+|---|---|
+| `--num-layers-at-start-in-bf16` | Keep an initial layer range in BF16. |
+| `--num-layers-at-end-in-bf16` | Keep a final layer range in BF16. |
+| `--first-last-layers-bf16` | Apply the corresponding Megatron training rule. |
+| `--extra-high-precision-layers-hf` | Exclude matching Hugging Face tensor names during conversion and rollout export. |
+| `--extra-high-precision-layers-megatron` | Exclude matching Megatron tensor names during training and live export. |
+| `--te-precision-config-file` | Select Transformer Engine recipes by Megatron tensor name. |
+
+Use equivalent Hugging Face and Megatron name matchers. A tensor left in BF16
+on only one side reintroduces train-rollout mismatch. Common exceptions include
+the final transformer layers, shared experts, and MLA projections whose
+contraction axis does not match a one-dimensional scaling layout.
+
+## Limitations
+
+* MXFP8 and NVFP4 require NVIDIA Blackwell GPUs in the reference launcher.
+* The MXFP8 SGLang reference path uses the CUTLASS MoE runner and does not
+  enable expert parallelism, DeepEP, or DeepGEMM.
+* The NVFP4 reference path quantizes routed experts rather than every linear
+  layer and uses BF16 KV cache.
+* Low-precision parameter gather is not part of these reference recipes;
+  training retains higher-precision master weights.
+* Kernel, parallelism, and environment changes can alter the quantization
+  contract. Change one dimension at a time and compare against a BF16 baseline.
+
+## Further reading
+
+* [Blackwell MXFP8 and NVFP4 RL roadmap](https://github.com/radixark/miles/issues/615)
+* [Towards Blackwell-Native 8-bit and 4-bit RL](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)
+* [NVFP4 RL recipe and four-over-six analysis](https://humansand.ai/blog/nvfp4-rl)
