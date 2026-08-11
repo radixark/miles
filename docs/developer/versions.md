@@ -1,6 +1,6 @@
 ---
 title: Versions and Images
-description: How the miles, SGLang and Megatron-LM trees fit together, what the Docker images pin, and the principle for bumping any of them.
+description: How the Miles, SGLang, and Megatron-LM trees fit together, what the Docker images pin, and the principle for bumping any of them.
 ---
 A Miles run is three Python source trees on one `PYTHONPATH`. Understanding which tree owns
 a given behavior, and which file pins its version, is most of what you need to debug a
@@ -10,7 +10,7 @@ version problem or land a bump.
 
 | Tree | Comes from | Installed as | Lives at |
 |---|---|---|---|
-| miles | this repository | `pip install -e . --no-deps` | `/root/miles` |
+| Miles | this repository | `pip install -e . --no-deps` | `/root/miles` |
 | SGLang | the `sglang-miles` branch of [`sgl-project/sglang`](https://github.com/sgl-project/sglang), on top of the `lmsysorg/sglang:<tag>` base image | `pip install -e "python[all]" --no-deps` | `/sgl-workspace/sglang` |
 | Megatron-LM | the `miles-main` branch of [`radixark/Megatron-LM`](https://github.com/radixark/Megatron-LM) | `pip install -e .` | `/root/Megatron-LM` |
 
@@ -44,7 +44,7 @@ The default build-args are the version surface:
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
 | `MEGATRON_REPO` / `MEGATRON_BRANCH` | `radixark/Megatron-LM` / `miles-main` | The Megatron-LM checkout |
-| `MILES_COMMIT` | `main` | The miles checkout baked into the image |
+| `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
 | `ENABLE_CUDA_13` | `1` | CUDA 13 plus the Mooncake structured-object-store wheel; `0` selects the CUDA 12.9 path |
 | `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-x86_64` / `cu130-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
@@ -106,7 +106,7 @@ from `radixark/miles:<tag>` and then:
    with `CUDNN_STATUS_BAD_PARAM`.
 2. Resets both dependency checkouts and fetches the selected refs, defaulting to
    `sglang-miles` and `miles-main`.
-3. Sets `PYTHONPATH` to the miles workspace plus both source roots.
+3. Sets `PYTHONPATH` to the Miles workspace plus both source roots.
 
 It never reinstalls the three source trees, because they are editable installs. So:
 
@@ -115,7 +115,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | `requirements.txt` | No. The next CI run installs it. |
 | A Dockerfile layer: a pinned wheel, an inline commit, a TE patch, the base image | Yes |
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
-| miles code | No |
+| Miles code | No |
 
 The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` and
 exposes no ref inputs, so the only way to move them there is a new ROCm image.
@@ -153,9 +153,9 @@ directives.
 
 **Expect `dev` to move on its own, within a bound.** The scheduled build (00:00 and 12:00
 UTC) polls the SGLang and Megatron-LM branch heads plus a fingerprint of the wheels release,
-and rebuilds when any of them moved. It deliberately does not poll miles, which would
+and rebuilds when any of them moved. It deliberately does not poll Miles, which would
 rebuild constantly, and instead forces a build once the last one is 24 hours old. So `dev`
-follows its dependencies immediately and trails miles `main` by at most a day. When you need
+follows its dependencies immediately and trails Miles `main` by at most a day. When you need
 that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
 
 **Bump the ROCm images by hand.** They have no automatic path, so a ROCm bump is a

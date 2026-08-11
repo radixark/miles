@@ -61,10 +61,11 @@ miles/
 └── utils/                # arguments.py, async / IO / distributed helpers, audit_utils/
 ```
 
-The `miles_plugins/` tree sits beside it and is only ever reached by name from a flag:
-`models/` for Megatron specs and HF module wrappers, `mbridge/` for per-architecture weight
-bridges, `megatron_bridge/` for `megatron.bridge` shims, `optimizers/` for optimizer
-plugins.
+The `miles_plugins/` tree sits beside it. Nothing in `miles/` imports it directly: a plugin
+is loaded only when a run names its import path in a flag (`--spec`, or one of the
+`--custom-*-path` flags). `models/` holds Megatron specs and HF module wrappers, `mbridge/`
+per-architecture weight bridges, `megatron_bridge/` the `megatron.bridge` shims, and
+`optimizers/` optimizer plugins.
 
 `train.py`, `train_async.py` and `train_multi_lora_async.py` are the entry points. They are
 thin; most logic lives in the modules above.

@@ -1,6 +1,6 @@
 ---
 title: Debugging
-description: Isolating rollout from training, the debug and CI assertion flags, aligning precision, and reading logs.
+description: Useful tips for debugging.
 ---
 When a Miles run misbehaves, the first question is always: **rollout or training?** The
 flags on this page exist to answer it by cutting the loop into pieces you can run one at a
@@ -10,7 +10,7 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 
 | Flag | What it does |
 |---|---|
-| `--debug-rollout-only` | Run generation only. Megatron is never initialized. |
+| `--debug-rollout-only` | Run generation only. The training backend (Megatron or FSDP) is never initialized. |
 | `--debug-train-only` | Run training only. No SGLang engines are started. |
 | `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. |
 | `--load-debug-rollout-data <path>` | Train from those recordings instead of generating. Implies `--debug-train-only`, since it does not start engines. |
