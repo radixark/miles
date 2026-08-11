@@ -464,6 +464,10 @@ class MegatronTrainRayActor(TrainRayActor):
             previous_loss_type = self.args.loss_type
             self.args.loss_type = loss_types[loss_fn]
             try:
+                # compute_log_prob leaves replay hooks in their forward state.
+                # Match train_actor's required transition before invoking the
+                # Megatron backward schedule for an external Tinker batch.
+                self._set_replay_stage("replay_backward")
                 outcome, metrics = train(
                     request_id,
                     self.model,
