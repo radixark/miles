@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import TypeVar
+
+from pydantic import BaseModel
 
 from miles.utils.external_utils.command_utils.common import run_process
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 class Helm:
@@ -23,6 +28,54 @@ class Kubectl:
     @staticmethod
     def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
         return Kubectl._run(list(arguments))
+
+    @staticmethod
+    def get_json(
+        kind: str,
+        *,
+        return_type: type[_ModelT],
+        name: str | None = None,
+        namespace: str,
+        selector: str | None = None,
+        field_selector: str | None = None,
+    ) -> _ModelT | None:
+        command = ["get", kind]
+        if name is not None:
+            command.append(name)
+        command += ["--namespace", namespace, "--output", "json", "--ignore-not-found"]
+        if selector is not None:
+            command += ["--selector", selector]
+        if field_selector is not None:
+            command += ["--field-selector", field_selector]
+        result = Kubectl._run(command)
+        if result.returncode != 0:
+            raise RuntimeError(f"kubectl get {kind} failed with code {result.returncode}: {result.stderr.strip()}")
+        if not result.stdout.strip():
+            return None
+        return return_type.model_validate_json(result.stdout)
+
+    @staticmethod
+    def logs_command(
+        *,
+        namespace: str,
+        target: str,
+        container: str | None = None,
+        follow: bool = False,
+        previous: bool = False,
+        tail: int | None = None,
+        since_time: str | None = None,
+    ) -> list[str]:
+        command = ["kubectl", "logs", target, "--namespace", namespace, "--timestamps"]
+        command += ["-c", container] if container is not None else ["--all-containers"]
+        if follow:
+            command.append("--follow")
+        if previous:
+            command.append("--previous")
+        if tail is not None:
+            command += ["--tail", str(tail)]
+        if since_time is not None:
+            command += ["--since-time", since_time]
+        return command
 
     @staticmethod
     def _run(
