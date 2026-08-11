@@ -1,0 +1,39 @@
+infra:
+  image:
+    repository: radixark/miles
+    tag: dev
+    pullPolicy: Always
+    pullSecrets: []
+  sharedStorage:
+    type: hostPath
+    hostPath: /cluster-storage
+    pvcClaimName: ""
+    mountPath: /cluster-storage
+  paths:
+    runsSubPath: miles_data
+    repos:
+      miles: ""
+      megatron: ""
+      sglang: ""
+  nodeLocalStorage:
+    hostPath: ""
+    mountPath: /scratch
+  scheduling:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  env: {}
+
+run:
+  id: unset
+  stateFile: /cluster-storage/miles_data/miles-runs/unset/state/orchestrator.state
+  objectNames:
+    orchestrator: miles-run-orchestrator
+  orchestrator:
+    command: []
+    resources:
+      requests:
+        cpu: "2"
+        memory: 8Gi
+      limits: {}
+  env: {}

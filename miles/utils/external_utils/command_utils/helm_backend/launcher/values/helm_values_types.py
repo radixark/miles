@@ -16,8 +16,11 @@ _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
 _ENV_KEYS = {"propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHONPATH"}}}
 
 _OBJECT_NAME_MAX = 63
+_POOL_NAME_MAX = 40
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
+
+_Resources = dict[str, Any]
 
 _ObjectName = Annotated[str, Field(min_length=1, max_length=_OBJECT_NAME_MAX, pattern=_DNS_LABEL)]
 _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_TRAVERSAL)]
@@ -31,6 +34,23 @@ class ValuesModel(FrozenStrictBaseModel):
 
     def as_values(self) -> dict[str, Any]:
         return self.model_dump(by_alias=True, exclude_none=True)
+
+
+class ObjectNames(ValuesModel):
+    orchestrator: _ObjectName
+
+
+class OrchestratorSection(ValuesModel):
+    command: list[str] | None = None
+    resources: _Resources | None = None
+
+
+class RunValues(ValuesModel):
+    id: Annotated[str, Field(max_length=_POOL_NAME_MAX, pattern=_DNS_LABEL)]
+    state_file: Annotated[str, Field(min_length=1, pattern="^/")]
+    object_names: ObjectNames
+    orchestrator: OrchestratorSection | None = None
+    env: _EnvVars | None = None
 
 
 class Image(ValuesModel):
@@ -77,6 +97,11 @@ class Paths(ValuesModel):
     repos: Repos | None = None
 
 
+class NodeLocalStorage(ValuesModel):
+    host_path: _OptionalAbsolutePath | None = None
+    mount_path: _AbsolutePath | None = None
+
+
 class Scheduling(ValuesModel):
     node_selector: dict[str, str] | None = None
     tolerations: list[dict[str, Any]] | None = None
@@ -87,6 +112,7 @@ class InfraValues(ValuesModel):
     image: Image
     shared_storage: SharedStorage
     paths: Paths | None = None
+    node_local_storage: NodeLocalStorage | None = None
     scheduling: Scheduling | None = None
     env: _EnvVars | None = None
 
@@ -107,6 +133,11 @@ class Uninstaller(ValuesModel):
 class WorkbenchResources(ValuesModel):
     requests: dict[str, str | float] | None = None
     limits: dict[str, str | float] | None = None
+
+
+class MilesRunChartValues(ValuesModel):
+    infra: InfraValues | None = None
+    run: RunValues | None = None
 
 
 class MilesWorkbenchChartValues(ValuesModel):
