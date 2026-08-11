@@ -162,7 +162,10 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    runs-on: ["h200", "2gpu"]
+    # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
+    # nodes are CI machines carrying a second runner instance dedicated to builds, so
+    # image builds stop competing for GPU-suite runner slots.
+    runs-on: ["docker-build"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
