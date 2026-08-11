@@ -16,10 +16,13 @@ CLUSTER_VALUES = dict(
     infra=dict(
         image=dict(repository="registry.local/miles", tag="v1"),
         sharedStorage=dict(type="pvc", pvcClaimName="shared", mountPath="/cluster-storage"),
+        paths=dict(runsSubPath="teamdata", repos=dict(miles="myuser/miles")),
         scheduling=dict(nodeSelector={"pool": "cpu"}),
         env={"HF_ENDPOINT": "https://mirror"},
     )
 )
+
+MILES_CODE_MOUNT = {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"}
 
 
 def shared_infra_schema() -> dict[str, Any]:
@@ -43,7 +46,7 @@ class TestSharedInfraContract:
 
     def test_the_infra_subtree_is_exactly_the_cluster_shaped_sections(self):
         """A section with no helper behind it would be accepted by the schema and never reach a pod."""
-        assert set(shared_infra_schema()["properties"]) == {"image", "sharedStorage", "scheduling", "env"}
+        assert set(shared_infra_schema()["properties"]) == {"image", "sharedStorage", "paths", "scheduling", "env"}
 
     def test_every_chart_inlines_the_shared_infra_schema_verbatim(self):
         """Helm cannot $ref across files, so every chart carries its own copy of the same contract."""
@@ -82,3 +85,4 @@ class TestSharedInfraContract:
 
         assert container(objects)["image"] == "registry.local/miles:v1"
         assert pod_spec(objects)["nodeSelector"] == {"pool": "cpu"}
+        assert MILES_CODE_MOUNT in container(objects)["volumeMounts"]
