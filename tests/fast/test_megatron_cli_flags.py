@@ -88,6 +88,10 @@ def test_kimi_yarn_flags_propagate_to_megatron(monkeypatch, model_type, beta_fas
     else:
         args.params_dtype = torch.float32
 
+    # Fused MoE permutation requires Transformer Engine, which is not installed
+    # on CPU CI and is unrelated to the YaRN configuration under test.
+    args.moe_permute_fusion = False
+
     config = core_transformer_config_from_args(args)
 
     assert isinstance(config, MLATransformerConfig)
