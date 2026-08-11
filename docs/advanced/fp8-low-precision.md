@@ -20,7 +20,7 @@ up a new model architecture.
 | **BF16** | — | All NVIDIA + AMD MI300X / MI325 / MI350 / MI355X | All | Baseline |
 | **FP8 block-wise** (DeepSeek-style) | 128×128, FP32 scales | Hopper (H100 / H200), Blackwell (B200+) | Qwen3-4B, Qwen3-30B-A3B, DeepSeek-V3 / R1 | Generally available |
 | **MXFP8** | 1×32, UE8M0 scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B, DeepSeek-V3.2 | Beta |
-| **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales, routed MoE experts | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
+| **NVFP4** (E2M1) | 1×16, two-level (FP8 + FP32) scales | Blackwell only (B200, B300, GB200, GB300) | Qwen3-30B-A3B | Beta |
 
 ## Rollout × training compatibility
 
@@ -144,8 +144,16 @@ The training path uses:
 --fp8-recipe mxfp8
 ```
 
-The reference SGLang configuration uses the Triton FP8 GEMM backend and the
-CUTLASS MoE runner. Convert a checkpoint outside the launcher with:
+SGLang selects the MoE and dense linear GEMM backends independently. Common
+MXFP8 choices are:
+
+| Workload | Miles flag | Backends |
+|---|---|---|
+| MoE | `--sglang-moe-runner-backend` | `flashinfer_trtllm_routed`, `flashinfer_trtllm`, `cutlass` |
+| Dense linear GEMM | `--sglang-fp8-gemm-backend` | `flashinfer_trtllm`, `flashinfer_cutlass`, `triton` |
+
+Choose the pair that matches the model, parallel layout, and installed SGLang
+stack. Convert a checkpoint outside the launcher with:
 
 ```bash
 python tools/convert_hf_to_mxfp8.py \
@@ -156,18 +164,14 @@ python tools/convert_hf_to_mxfp8.py \
 The converter records a 1x32 weight block and UE8M0 scale layout. It excludes
 norms, embeddings, routers, and configured high-precision tensors.
 
-Current MXFP8 limitations:
-
-* The Qwen3 SGLang reference path does not enable expert parallelism, DeepEP,
-  or DeepGEMM.
-* Low-precision parameter gather is not enabled in the reference recipe, so a
-  higher-precision master weight copy remains present during training.
+Low-precision parameter gather is not enabled in the reference recipe, so a
+higher-precision master weight copy remains present during training.
 
 ### 4. NVFP4 (Blackwell)
 
 NVFP4 stores E2M1 values in 16-value blocks with an E4M3 scale for each block
-and an outer FP32 scale. The Miles RL recipe applies NVFP4 to routed MoE expert
-weights and activations while other layers remain in BF16.
+and an outer FP32 scale. The Miles reference recipe combines NVFP4 and BF16
+through tensor-level precision configuration.
 
 Activation scaling is computed per token. Gate and up projections are
 quantized together so the fused rollout GEMM uses the same outer weight scale.
@@ -191,9 +195,9 @@ python scripts/run_qwen3_30b_a3b.py execute \
 ```
 
 The launcher selects per-token activation scaling, disables the incompatible
-2D quantization, RHT, and stochastic-rounding paths, and applies NVFP4 only to
-routed expert FC1 and FC2 tensors. It uses BF16 for unmatched tensors and a
-BF16 KV cache for rollout.
+2D quantization, RHT, and stochastic-rounding paths, and loads the matching
+tensor-level precision configuration. Unmatched tensors stay in BF16, and
+rollout uses a BF16 KV cache.
 
 The NVFP4 recipe supports two BF16 backward choices:
 
