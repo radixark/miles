@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
+from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 
 
 class KubernetesCommandBackend(BaseCommandBackend):
@@ -22,3 +23,12 @@ class KubernetesCommandBackend(BaseCommandBackend):
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         raise NotImplementedError("A later milestone runs a command as a job in the cluster")
+
+    def api_server_host(self) -> str:
+        assert self.config.run_id and self.config.namespace, (
+            "The api server of a kubernetes run answers on the orchestrator's pod, which is named after the "
+            "release; set ExecuteTrainConfig.run_id and .namespace before asking where that pod is"
+        )
+        return RunNames.orchestrator_host(
+            release=RunNames.release(run_id=self.config.run_id), namespace=self.config.namespace
+        )
