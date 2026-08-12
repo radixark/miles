@@ -314,11 +314,6 @@ def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
 def train(args: ScriptArgs):
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
-    # The conversion and the node-local copy fan out over ray, so they need a live
-    # cluster: execute_train's hook runs them once its head is up (or, under
-    # MILES_SCRIPT_EXTERNAL_RAY, on the cluster it left alone). Running them before
-    # execute_train instead fails on a clean host, and any cluster started by hand to
-    # get past that is torn down by execute_train's own `ray stop`.
     _execute_train(args, before_ray_job_submit=partial(_prepare_ray_dependent, args))
 
 

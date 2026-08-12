@@ -164,9 +164,7 @@ def call_entrypoint(module: ModuleType, name: str, overrides: dict[str, object],
             else:
                 entrypoint(**overrides)
     finally:
-        # a launcher legitimately exports its own knobs (MODEL_ARGS_NUM_LAYERS,
-        # CUDA_VISIBLE_DEVICES, ...); leaking them would make later recordings
-        # depend on which launcher ran first
+        # a leaked knob would make later recordings depend on which launcher ran first
         os.environ.clear()
         os.environ.update(saved_env)
 
