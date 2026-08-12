@@ -39,7 +39,7 @@ Paths are Typer flags: `--model-dir` (default `/root/models`), `--data-dir` (def
 ```bash
 hf download zai-org/GLM-4.5 --local-dir /root/models/GLM-4.5-355B-A32B
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/rl_data
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ### 3.3 HF → Megatron `torch_dist` conversion

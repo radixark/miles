@@ -129,7 +129,7 @@ def execute(args: ScriptArgs):
 
     eval_args = (
         "--eval-interval 20 "
-        f"--eval-prompt-data aime {args.data_dir}/rl_data/aime-2024.jsonl "
+        f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
         "--n-samples-per-eval-prompt 8 "
         "--eval-max-response-len 32768 "
         "--eval-top-p 1 "

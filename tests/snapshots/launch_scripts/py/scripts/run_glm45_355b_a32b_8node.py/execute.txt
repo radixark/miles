@@ -110,7 +110,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --use-dynamic-batch-size
   --max-tokens-per-gpu 16384 
   --eval-interval 20
-  --eval-prompt-data aime /root/datasets/rl_data/aime-2024.jsonl
+  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
   --n-samples-per-eval-prompt 8
   --eval-max-response-len 32768
   --eval-top-p 1 

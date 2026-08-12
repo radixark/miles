@@ -45,7 +45,6 @@ class _Recipe:
     torch_dist_name: str
     max_response_len: int
     n_samples_per_eval_prompt: int
-    eval_data: str
     use_tis: bool
     megatron_deepep: bool
 
@@ -57,7 +56,6 @@ _RECIPES: dict[str, _Recipe] = {
         torch_dist_name="Kimi-K2",
         max_response_len=32768,
         n_samples_per_eval_prompt=8,
-        eval_data="rl_data/aime-2024.jsonl",
         use_tis=False,
         megatron_deepep=True,
     ),
@@ -67,7 +65,6 @@ _RECIPES: dict[str, _Recipe] = {
         torch_dist_name="Kimi-K2-Thinking",
         max_response_len=16384,
         n_samples_per_eval_prompt=16,
-        eval_data="aime-2024.jsonl",
         use_tis=True,
         megatron_deepep=False,
     ),
@@ -127,7 +124,7 @@ def execute(args: ScriptArgs):
     if args.enable_eval:
         eval_args = (
             "--eval-interval 20 "
-            f"--eval-prompt-data aime {args.data_dir}/{recipe.eval_data} "
+            f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
             f"--n-samples-per-eval-prompt {recipe.n_samples_per_eval_prompt} "
             f"--eval-max-response-len {recipe.max_response_len} "
             "--eval-top-p 1 "

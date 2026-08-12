@@ -38,8 +38,7 @@ hf download moonshotai/Kimi-K2-Instruct --local-dir /root/models/Kimi-K2-Instruc
 hf download moonshotai/Kimi-K2-Thinking --local-dir /root/models/Kimi-K2-Thinking-fp8
 
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
-# Instruct reads aime from <data-dir>/rl_data/, Thinking straight from <data-dir>/
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/rl_data
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ### 3.3 HF → Megatron `torch_dist` conversion
@@ -155,7 +154,7 @@ CPU Adam is enabled in both:
 
 ### 5.5 Notable quirks
 
-- Instruct loads the BF16 HF release and reads eval data from `<data-dir>/rl_data/`; Thinking loads the FP8 release (`Kimi-K2-Thinking-fp8`) and reads eval data straight from `<data-dir>/`. Their `torch_dist` reference directories differ too — `Kimi-K2_torch_dist` vs `Kimi-K2-Thinking_torch_dist`.
+- Instruct loads the BF16 HF release, Thinking the FP8 one (`Kimi-K2-Thinking-fp8`). Their `torch_dist` reference directories differ too — `Kimi-K2_torch_dist` vs `Kimi-K2-Thinking_torch_dist`.
 - Neither variant passes `--global-batch-size`; the batch is driven by `--rollout-batch-size` and `--num-steps-per-rollout`.
 
 ## 6. Pairs Well With
