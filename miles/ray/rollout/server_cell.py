@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -35,6 +36,7 @@ from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 30
+INITIALIZING_TIMEOUT_SECONDS = 1800.0
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
@@ -84,7 +86,9 @@ class ServerCell:
     def cell_status(self) -> CellStatus:
         match self._state:
             case StateUninitialized() | StateInitializing():
-                return compute_pending_rollout_cell_status(workers_hash=self.meta.workers_hash)
+                return compute_pending_rollout_cell_status(
+                    past_startup_deadline=self.is_initializing_past_deadline, workers_hash=self.meta.workers_hash
+                )
 
             case StatePendingWeights() | StateServing():
                 return CellStatus(
@@ -128,6 +132,10 @@ class ServerCell:
         return isinstance(self._state, StateServing)
 
     @property
+    def is_initializing_past_deadline(self) -> bool:
+        return self.is_initializing and time.monotonic() - self._state.start_time >= INITIALIZING_TIMEOUT_SECONDS
+
+    @property
     def addr_info(self) -> CellAddrInfo:
         assert isinstance(self._state, (StateInitializing, StatePendingWeights, StateServing))
         return self._state.addr_info
@@ -148,7 +156,9 @@ class ServerCell:
 
         addr_info = await self._compute_addr_info()
         await activate_launch_gate(gate_url=addr_info.gate_url)
-        self._change_state("init", StateUninitialized, StateInitializing(addr_info=addr_info))
+        self._change_state(
+            "init", StateUninitialized, StateInitializing(addr_info=addr_info, start_time=time.monotonic())
+        )
 
     async def tick(self) -> None:
         if isinstance(self._state, StateInitializing):
@@ -295,9 +305,16 @@ def create_rollout_cell_health_checker(
     return SimpleHealthChecker(name=name, check_fn=_check, get_activeness=get_activeness, config=config)
 
 
-def compute_pending_rollout_cell_status(*, workers_hash: str) -> CellStatus:
+def compute_pending_rollout_cell_status(*, workers_hash: str, past_startup_deadline: bool = False) -> CellStatus:
     return CellStatus(
         phase="Pending",
-        conditions=[CellCondition.allocated(TriState.TRUE)],
+        conditions=[
+            CellCondition.allocated(TriState.TRUE),
+            *(
+                [CellCondition.healthy(TriState.FALSE, reason="StartupDeadlineExceeded")]
+                if past_startup_deadline
+                else []
+            ),
+        ],
         workers_hash=workers_hash,
     )

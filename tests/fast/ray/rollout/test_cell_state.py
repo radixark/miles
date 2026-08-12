@@ -20,7 +20,7 @@ _ADDR_INFO = CellAddrInfo(
 
 _STATE_FACTORIES = [
     ("StateUninitialized", StateUninitialized, {}),
-    ("StateInitializing", StateInitializing, {"addr_info": _ADDR_INFO}),
+    ("StateInitializing", StateInitializing, {"addr_info": _ADDR_INFO, "start_time": 1000.0}),
     ("StatePendingWeights", StatePendingWeights, {"addr_info": _ADDR_INFO}),
     ("StateServing", StateServing, {"addr_info": _ADDR_INFO}),
     ("StateDisposed", StateDisposed, {}),
