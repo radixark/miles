@@ -190,7 +190,7 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --rollout-num-gpus-per-engine 1
 ```
 
-## Complete example
+## Example
 
 [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker)
 wires a multi-turn SWE agent, TITO session server, model-family registration,
