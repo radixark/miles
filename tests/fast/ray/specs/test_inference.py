@@ -11,6 +11,7 @@ from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout import external_engine_provider as external_engine_provider_module
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     INFERENCE_CONTROLLER_POOL_ID,
@@ -1198,6 +1199,27 @@ class TestSpecInferenceController:
 
         assert capability.requested_pool_ids == [[]]
 
+    def test_the_static_discovery_path_never_asks_the_backend(self, tmp_path, monkeypatch):
+        """External engines belong to no backend, so the capability must never be asked for them."""
+        args = self._args(
+            tmp_path,
+            rollout_external=True,
+            rollout_external_engine_addrs=["host1:8000"],
+            custom_inference_engine_provider_path=(
+                "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+            ),
+        )
+        capability = FakeBackendCapability(cells_provider=None, static_provider=object())
+        monkeypatch.setattr(
+            external_engine_provider_module, "StaticInferenceEngineWorkerProvider", _RecordingStaticProvider
+        )
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert isinstance(kwargs["engine_provider"], _RecordingStaticProvider)
+        assert kwargs["engine_provider"].args is args
+        assert capability.requested_pool_ids == []
+
     def test_the_provider_factory_path_is_loaded_unconditionally(self, tmp_path):
         """Provider selection lives in arg validation, so the spec must run whatever path args carry."""
         args = self._args(
@@ -1211,6 +1233,11 @@ class TestSpecInferenceController:
         kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
 
         assert kwargs["engine_provider"] == ("custom-provider", args, capability)
+
+
+class _RecordingStaticProvider:
+    def __init__(self, *, args) -> None:
+        self.args = args
 
 
 def _fake_engine_provider_factory(args, *, capability):
