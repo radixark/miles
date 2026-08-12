@@ -98,6 +98,13 @@ class TestDiscovery:
 
         assert discovered == {case.rel for case in _CASES}
 
+    def test_every_case_has_a_golden_and_vice_versa(self):
+        """A dropped case leaves an orphan golden, and a new case would otherwise never be recorded."""
+        expected = {f"{case.rel}/{case.name}.txt" for case in _CASES}
+        recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
+
+        assert expected == recorded
+
     def test_the_uncovered_entrypoint_is_named_and_still_uncoverable(self):
         """cmd_prepare rewrites a checkout under a hardcoded /root/models, which no fixture can redirect."""
         module = import_launch_script(REPO_ROOT / _P2P)

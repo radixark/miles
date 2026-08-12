@@ -57,7 +57,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -72,8 +72,8 @@ _MODEL_REGISTRY = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: Literal["Inkling", "Inkling-4layer", "Inkling-Small", "Inkling-Small-4layer"] = "Inkling"
 
     train_mode: Literal["full", "lora"] = "full"
@@ -202,6 +202,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     topology = (
         f"{args.actor_num_nodes} train + {args.rollout_num_nodes} rollout nodes (fully-async)"
         if args.fully_async
@@ -399,7 +400,7 @@ def _train(args: ScriptArgs):
         f"{inkling_args} "
         f"{sglang_args} "
         f"{misc_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{args.extra_args} "
     )
 
@@ -415,7 +416,7 @@ def _train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training; each trainer pod first copies torch_dist to node-local NVMe when the two differ."""
     _train(args)
@@ -424,7 +425,7 @@ def train(args: ScriptArgs):
 def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
     if args.torch_dist_local == args.torch_dist:
         return {}
-    return {"trainer": U.rsync_cmd(args.torch_dist, args.torch_dist_local)}
+    return {"trainer": command_utils.rsync_cmd(args.torch_dist, args.torch_dist_local)}
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from typing import get_args
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     create_run_id,
+    run_shell_command,
     MOONCAKE_MASTER_LOG_PATH,
     MOONCAKE_MASTER_METRICS_PORT,
     MOONCAKE_MASTER_PORT,
@@ -22,7 +23,6 @@ from miles.utils.external_utils.command_utils.common import (
     detect_hardware,
     repo_base_dir,
 )
-from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.logging_utils import configure_logger_raw
@@ -120,11 +120,99 @@ class BaseCommandBackend(ABC):
             )
         )
 
+    def convert_checkpoint(
+        self,
+        model_name,
+        megatron_model_type,
+        num_gpus_per_node: int,
+        multinode: bool = False,
+        num_nodes: int | None = None,
+        extra_args: str = "",
+        dir_dst: str = "/root",
+        hf_checkpoint: str | None = None,
+        megatron_path: str = "/root/Megatron-LM",
+    ):
+        hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
+
+        # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
+        path_dst = f"{dir_dst}/{model_name}_torch_dist"
+        tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
+        if tracker.exists() and tracker.read_text().strip() == "release":
+            logger.info(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
+            return
+
+        multinode_args = ""
+        if multinode:
+            multinode_args = (
+                "--master-addr {{master_addr}} "
+                "--master-port 23456 "
+                "--nnodes={{nnodes}} "
+                "--node-rank {{node_rank}} "
+            )
+
+        if multinode:
+            fn = partial(self.exec_command_multi_node, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node)
+        else:
+            fn = partial(self.exec_command_gpu, num_gpus_per_node=num_gpus_per_node)
+        pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
+        fn(
+            f"PYTHONPATH={pythonpath} "
+            f"torchrun "
+            f"--nproc-per-node {num_gpus_per_node} "
+            f"{multinode_args}"
+            f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
+            f"{shell_safe_model_args(megatron_model_type)} "
+            f"--hf-checkpoint {hf_checkpoint} "
+            f"--save {path_dst} "
+            f"{extra_args}"
+        )
+
+    def ssh_start_ray_workers(
+        self,
+        master_addr: str,
+        num_gpus_per_node: int,
+        hostfile: str = "/root/mpi_rack_hostfile",
+        head_host: str | None = None,
+    ):
+        """Join every host in an MPI-style hostfile to the ray cluster over ssh, in parallel.
+
+        Ray itself cannot bring up the workers: the head is already running locally and the
+        workers have no agent yet. Pass this as `execute_train(before_ray_job_submit=...)` so
+        the cluster is complete before the job is submitted.
+        """
+        head_host = head_host or master_addr
+        self.exec_command_cpu(
+            f"for worker_ip in $(awk '{{print $1}}' {hostfile}); do "
+            f'if [ "$worker_ip" = {shlex.quote(head_host)} ]; then continue; fi; '
+            'echo "Starting Ray worker on $worker_ip"; '
+            'ssh root@"$worker_ip" '
+            '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
+            f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
+            '--node-ip-address $worker_ip --disable-usage-stats" & '
+            "done; wait"
+        )
+
+    def hf_download_dataset(self, full_name: str, data_dir: str = "/root/datasets"):
+        _, partial_name = full_name.split("/")
+        self.exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
+
+    def fp8_cast_bf16(self, path_src, path_dst):
+        sentinel = Path(path_dst) / "model.safetensors.index.json"
+        if sentinel.exists():
+            logger.info(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
+            return
+
+        self.exec_command_gpu(
+            f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
+            f"--input-fp8-hf-path {path_src} "
+            f"--output-bf16-hf-path {path_dst} "
+        )
+
     @abstractmethod
     def _execute_train_inner(self, request: ExecuteTrainRequest) -> None: ...
 
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
-        return exec_command_cpu(cmd, capture_output=capture_output)
+        return run_shell_command(cmd, capture_output=capture_output)
 
     @abstractmethod
     def exec_command_gpu(
@@ -148,129 +236,6 @@ def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainC
     }
 
 
-def execute_train(
-    train_args: str,
-    num_gpus_per_node: int,
-    megatron_model_type: str | None,
-    train_script: str = "train.py",
-    before_ray_job_submit=None,
-    extra_env_vars=None,
-    config: ExecuteTrainConfig | None = None,
-    megatron_path: str = "/root/Megatron-LM",
-    prepare_cmd: dict[str, str] | None = None,
-):
-    from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
-
-    RayCommandBackend(config if config is not None else ExecuteTrainConfig()).execute_train(
-        train_args=train_args,
-        num_gpus_per_node=num_gpus_per_node,
-        megatron_model_type=megatron_model_type,
-        train_script=train_script,
-        before_ray_job_submit=before_ray_job_submit,
-        extra_env_vars=extra_env_vars,
-        megatron_path=megatron_path,
-        prepare_cmd=prepare_cmd,
-    )
-
-
-def convert_checkpoint(
-    model_name,
-    megatron_model_type,
-    num_gpus_per_node: int,
-    multinode: bool = False,
-    num_nodes: int | None = None,
-    extra_args: str = "",
-    dir_dst: str = "/root",
-    hf_checkpoint: str | None = None,
-    megatron_path: str = "/root/Megatron-LM",
-):
-    hf_checkpoint = hf_checkpoint or f"/root/models/{model_name}"
-
-    # TODO shall we make it in host-mapped folder and thus can cache it to speedup CI
-    path_dst = f"{dir_dst}/{model_name}_torch_dist"
-    tracker = Path(path_dst) / "latest_checkpointed_iteration.txt"
-    if tracker.exists() and tracker.read_text().strip() == "release":
-        logger.info(f"convert_checkpoint skip {path_dst} since tracker is 'release'")
-        return
-
-    multinode_args = ""
-    if multinode:
-        multinode_args = (
-            "--master-addr {{master_addr}} " "--master-port 23456 " "--nnodes={{nnodes}} " "--node-rank {{node_rank}} "
-        )
-
-    if multinode:
-        fn = partial(exec_command_multi_node, num_nodes=num_nodes)
-    else:
-        fn = exec_command_gpu
-    pythonpath = shlex.quote(_pythonpath_with_sources(megatron_path))
-    fn(
-        f"PYTHONPATH={pythonpath} "
-        f"torchrun "
-        f"--nproc-per-node {num_gpus_per_node} "
-        f"{multinode_args}"
-        f"{repo_base_dir}/tools/convert_hf_to_torch_dist.py "
-        f"{shell_safe_model_args(megatron_model_type)} "
-        f"--hf-checkpoint {hf_checkpoint} "
-        f"--save {path_dst} "
-        f"{extra_args}"
-    )
-
-
-def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
-    exec_command_multi_node(
-        f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}", num_nodes=num_nodes
-    )
-
-
-def ssh_start_ray_workers(
-    master_addr: str,
-    num_gpus_per_node: int,
-    hostfile: str = "/root/mpi_rack_hostfile",
-    head_host: str | None = None,
-):
-    """Join every host in an MPI-style hostfile to the ray cluster over ssh, in parallel.
-
-    Ray itself cannot bring up the workers: the head is already running locally and the
-    workers have no agent yet. Pass this as `execute_train(before_ray_job_submit=...)` so
-    the cluster is complete before the job is submitted.
-    """
-    head_host = head_host or master_addr
-    exec_command_cpu(
-        f"for worker_ip in $(awk '{{print $1}}' {hostfile}); do "
-        f'if [ "$worker_ip" = {shlex.quote(head_host)} ]; then continue; fi; '
-        'echo "Starting Ray worker on $worker_ip"; '
-        'ssh root@"$worker_ip" '
-        '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
-        f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
-        '--node-ip-address $worker_ip --disable-usage-stats" & '
-        "done; wait"
-    )
-
-
-def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
-    _, partial_name = full_name.split("/")
-    exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
-
-
-def fp8_cast_bf16(path_src, path_dst):
-    sentinel = Path(path_dst) / "model.safetensors.index.json"
-    if sentinel.exists():
-        logger.info(f"fp8_cast_bf16 skip {path_dst} since {sentinel} exists")
-        return
-
-    exec_command_gpu(
-        f"python {repo_base_dir}/tools/fp8_cast_bf16.py "
-        f"--input-fp8-hf-path {path_src} "
-        f"--output-bf16-hf-path {path_dst} "
-    )
-
-
-def check_has_nvlink():
-    output = exec_command_gpu("nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True)
-    return int(output) > 0
-
-
 def start_mooncake_master(
     rpc_port: int = MOONCAKE_MASTER_PORT,
     metrics_port: int = MOONCAKE_MASTER_METRICS_PORT,
@@ -284,7 +249,7 @@ def start_mooncake_master(
 
     log_path = Path(log_path)
     quoted_log_path = shlex.quote(str(log_path))
-    exec_command_cpu(
+    run_shell_command(
         "pkill -x mooncake_master >/dev/null 2>&1 || true; "
         f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
         f"> {quoted_log_path} 2>&1 &)"
@@ -292,7 +257,7 @@ def start_mooncake_master(
     try:
         wait_for_server_ready(host, rpc_port, timeout=timeout)
     except RuntimeError as exc:
-        exec_command_cpu("pkill -x mooncake_master >/dev/null 2>&1 || true")
+        run_shell_command("pkill -x mooncake_master >/dev/null 2>&1 || true")
         try:
             log_lines = log_path.read_text(errors="replace").splitlines()
             log_tail = "\n".join(log_lines[-100:]) or "<empty>"

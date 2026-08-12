@@ -25,6 +25,10 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
     return os.pathsep.join(dict.fromkeys(entries))
 
 
+def rsync_cmd(path_src: str, path_dst: str) -> str:
+    return f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}"
+
+
 def _parse_extra_env_vars(text: str):
     try:
         return json.loads(text)
@@ -185,6 +189,28 @@ def detect_hardware() -> str:
                 detected = None
     assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"
     return detected
+
+
+def run_shell_command(cmd: str, capture_output: bool = False) -> str | None:
+    logger.info(f"EXEC: {cmd}")
+
+    try:
+        result = subprocess.run(
+            ["bash", "-c", cmd],
+            shell=False,
+            check=True,
+            capture_output=capture_output,
+            **(dict(text=True) if capture_output else {}),
+        )
+    except subprocess.CalledProcessError as e:
+        if capture_output:
+            logger.error(f"{e.stdout=} {e.stderr=}")
+        raise
+
+    if capture_output:
+        logger.info(f"Captured stdout={result.stdout} stderr={result.stderr}")
+        return result.stdout
+    return None
 
 
 def run_process(

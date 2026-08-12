@@ -33,7 +33,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -50,9 +50,9 @@ _MEGATRON_MODEL_TYPE = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
@@ -130,6 +130,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
+    U = args.create_backend()
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -158,6 +159,7 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
@@ -169,13 +171,14 @@ def _prepare_download(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_download(args: ScriptArgs):
     """Download HF checkpoint + dataset from HuggingFace. Run on one node (shared NFS)."""
     _prepare_download(args)
 
 
 def _prepare_single(args: ScriptArgs):
+    U = args.create_backend()
     _download_dataset(args)
 
     src = _hf_checkpoint_path(args)
@@ -186,13 +189,14 @@ def _prepare_single(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
+    U = args.create_backend()
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
@@ -230,7 +234,7 @@ def _prepare_spmd(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _prepare_spmd(args)
 
@@ -240,10 +244,10 @@ def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
         return {}
 
     copies = [
-        U.rsync_cmd(
+        command_utils.rsync_cmd(
             f"{args.model_dir}/{args.torch_dist_name}", f"{args.model_local_dir}/{args.torch_dist_name}"
         ),
-        U.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+        command_utils.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
     ]
     return {"trainer": " && ".join(copies)}
 
@@ -289,6 +293,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     print(f"[precision] fp8_training={args.fp8_training}")
     print(
         f"running on {args.num_nodes} nodes "
@@ -495,7 +500,7 @@ def _train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -514,14 +519,14 @@ def _train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training. Assumes data/model/torch_dist are already prepared on {model_local_dir}."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 

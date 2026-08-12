@@ -39,7 +39,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -78,9 +78,9 @@ matchers:
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
@@ -136,8 +136,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if not self.model_org:
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
         if self.model_local_dir is None:
@@ -193,6 +193,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
+    U = args.create_backend()
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -221,6 +222,7 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
@@ -232,7 +234,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_download(args: ScriptArgs):
     """Download HF checkpoint + dataset from HuggingFace. Run on one node (shared NFS)."""
     _prepare_download(args)
@@ -240,6 +242,7 @@ def prepare_download(args: ScriptArgs):
 
 def _prepare_fp8(args: ScriptArgs):
     """MXFP4 experts -> blockwise FP8 (lossless cast). Only for official MXFP4 releases."""
+    U = args.create_backend()
     if args.model_name not in _MXFP4_MODEL_NAMES:
         print(f"[prepare_fp8] {args.model_name} has no MXFP4 source; nothing to do.")
         return
@@ -251,13 +254,14 @@ def _prepare_fp8(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_fp8(args: ScriptArgs):
     """MXFP4 -> FP8 cast (needs prepare-download done first). One node."""
     _prepare_fp8(args)
 
 
 def _prepare_single(args: ScriptArgs):
+    U = args.create_backend()
     _download_dataset(args)
 
     if args.model_name in _MXFP4_MODEL_NAMES:
@@ -271,7 +275,7 @@ def _prepare_single(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
@@ -283,6 +287,7 @@ def _prepare_mxfp8(args: ScriptArgs):
     head/wo_a/ffn.gate/compressor/norms/embed and the DSA indexer weights_proj
     are all kept BF16 by SKIP_WEIGHT_SUBSTRINGS in tools/convert_hf_to_mxfp8.py.
     """
+    U = args.create_backend()
     if not args.rollout_mxfp8:
         return
     assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "rollout_mxfp8 requires Blackwell"
@@ -294,13 +299,14 @@ def _prepare_mxfp8(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_mxfp8(args: ScriptArgs):
     """BF16 -> MXFP8 conversion (needs prepare-single done first). One node."""
     _prepare_mxfp8(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
+    U = args.create_backend()
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
@@ -351,7 +357,7 @@ def _prepare_spmd(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _prepare_spmd(args)
 
@@ -361,10 +367,10 @@ def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
         return {}
 
     copies = [
-        U.rsync_cmd(
+        command_utils.rsync_cmd(
             f"{args.model_dir}/{args.torch_dist_name}", f"{args.model_local_dir}/{args.torch_dist_name}"
         ),
-        U.rsync_cmd(
+        command_utils.rsync_cmd(
             f"{args.model_dir}/{args.rollout_name}", f"{args.model_local_dir}/{args.rollout_name}"
         ),
     ]
@@ -437,6 +443,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     if args.train_mxfp8 or args.rollout_mxfp8:
         assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
     if not args.rollout_fp8 or args.hf_checkpoint is None or args.model_name in _MXFP4_MODEL_NAMES:
@@ -671,14 +678,14 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
 
     if (args.train_fp8 or args.train_mxfp8) and "--te-precision-config-file" not in args.extra_args:
-        misc_args += f"--te-precision-config-file " f"{U.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
+        misc_args += f"--te-precision-config-file " f"{command_utils.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
 
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -697,14 +704,14 @@ def _train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training. Assumes data/model/torch_dist are already prepared on {model_local_dir}."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 
