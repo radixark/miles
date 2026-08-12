@@ -77,6 +77,42 @@ def test_every_layer_moe_matches():
     )
 
 
+def test_mixtral_style_experts_sized_by_plain_intermediate_size():
+    assert_same(
+        hf_config(num_local_experts=8, num_experts_per_tok=2),
+        megatron_args(
+            num_experts=8,
+            moe_ffn_hidden_size=8192,
+            moe_router_topk=2,
+            moe_layer_freq=[1] * 8,
+        ),
+    )
+
+
+def test_gpt_oss_style_experts_sized_by_plain_intermediate_size():
+    assert_same(
+        hf_config(num_local_experts=32, num_experts_per_tok=4, intermediate_size=2880),
+        megatron_args(
+            num_experts=32,
+            ffn_hidden_size=2880,
+            moe_ffn_hidden_size=2880,
+            moe_router_topk=4,
+            moe_layer_freq=[1] * 8,
+        ),
+    )
+
+
+def test_expert_width_is_not_borrowed_when_the_config_declares_one():
+    adapted = flops_args_from_hf_config(
+        hf_config(num_local_experts=8, num_experts_per_tok=2, moe_intermediate_size=1024)
+    )
+    assert adapted.moe_ffn_hidden_size == 1024
+
+
+def test_dense_config_keeps_no_expert_width():
+    assert flops_args_from_hf_config(hf_config()).moe_ffn_hidden_size is None
+
+
 def test_deepseek_style_dense_prefix_matches():
     assert_same(
         hf_config(

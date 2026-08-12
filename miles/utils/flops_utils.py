@@ -167,6 +167,10 @@ def flops_args_from_hf_config(config):
     if shared_ffn is None and getattr(config, "n_shared_experts", None):
         shared_ffn = config.n_shared_experts * config.moe_intermediate_size
 
+    moe_ffn = getattr(config, "moe_intermediate_size", None)
+    if num_experts is not None and moe_ffn is None:
+        moe_ffn = config.intermediate_size
+
     return SimpleNamespace(
         hidden_size=hidden_size,
         num_attention_heads=num_attention_heads,
@@ -176,7 +180,7 @@ def flops_args_from_hf_config(config):
         ffn_hidden_size=config.intermediate_size,
         kv_channels=_first(config, "head_dim", default=hidden_size // num_attention_heads),
         num_experts=num_experts,
-        moe_ffn_hidden_size=getattr(config, "moe_intermediate_size", None),
+        moe_ffn_hidden_size=moe_ffn,
         moe_router_topk=_first(config, "num_experts_per_tok", "moe_topk", default=1),
         moe_shared_expert_intermediate_size=shared_ffn,
         moe_layer_freq=_moe_layer_pattern(config, num_layers, num_experts),
