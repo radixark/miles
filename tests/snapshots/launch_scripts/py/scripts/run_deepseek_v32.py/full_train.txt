@@ -21,6 +21,17 @@ python <REPO_ROOT>/tools/fp8_cast_bf16.py
   --output-bf16-hf-path /root/models/DeepSeek-V3.2-bf16/ 
 
 ### 5
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 6
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 7
 [multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --nproc-per-node 8
   --master-addr {{master_addr}}
@@ -78,17 +89,6 @@ python <REPO_ROOT>/tools/fp8_cast_bf16.py
   --pipeline-model-parallel-size 6
   --decoder-last-pipeline-num-layers 13
   --expert-tensor-parallel-size 1 
-
-### 6
-pkill -9 sglang; sleep 3; ray stop
-  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
-
-### 7
-export PYTHONUNBUFFERED=1 && ray start
-  --head
-  --node-ip-address 127.0.0.1
-  --num-gpus 8
-  --disable-usage-stats
 
 ### 8
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
