@@ -12,12 +12,12 @@ from miles.utils.audit_utils.event_logger.models import (
     WitnessAllocateIdEvent,
     WitnessSnapshotParamEvent,
 )
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
 _event_adapter = TypeAdapter(Event)
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_FIXED_SOURCE = MainProcessIdentity()
+_FIXED_SOURCE = SimpleProcessIdentity(component="main")
 _TRAIN_SOURCE = TrainProcessIdentity(component="actor", cell_index=0, rank_within_cell=0)
 
 

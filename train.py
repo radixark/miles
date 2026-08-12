@@ -13,7 +13,7 @@ from miles.ray.placement_group import (
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    configure_logger(args, source=MainProcessIdentity())
+    configure_logger(args, source=SimpleProcessIdentity(component="main"))
     maybe_start_periodic_pyspy_dump()
     init_tracking(args)
     _worker_manager = launch_worker_manager(args)

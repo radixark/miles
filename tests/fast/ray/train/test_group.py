@@ -12,7 +12,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
@@ -417,7 +417,7 @@ class TestRefreshCellsHealing:
 class TestRefreshCellsReconfigureEvent:
     @pytest.fixture
     def _event_log_dir(self, tmp_path: Path):
-        set_event_logger(EventLogger(log_dir=tmp_path, source=MainProcessIdentity()))
+        set_event_logger(EventLogger(log_dir=tmp_path, source=SimpleProcessIdentity(component="main")))
         try:
             yield tmp_path
         finally:
