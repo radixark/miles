@@ -1,7 +1,0 @@
-### 0
-[multi_node num_nodes=1] mkdir -p /root/models/DeepSeek-V4-Flash-FP8-4layer_torch_dist && rsync -a
-  --info=progress2 /root/models/DeepSeek-V4-Flash-FP8-4layer_torch_dist/ /root/models/DeepSeek-V4-Flash-FP8-4layer_torch_dist
-
-### 1
-[multi_node num_nodes=1] mkdir -p /root/models/DeepSeek-V4-Flash-FP8-4layer && rsync -a
-  --info=progress2 /root/models/DeepSeek-V4-Flash-FP8-4layer/ /root/models/DeepSeek-V4-Flash-FP8-4layer
