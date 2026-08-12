@@ -6,7 +6,7 @@ A Miles launch script is plain bash — a sequence of `XXX_ARGS=( ... )` arrays 
 to `train.py` or `train_async.py`. This page walks through each group and then covers
 the execution modes you turn on beyond the default recipe.
 
-`scripts/run-glm4-9B.sh` is the reference script; other recipes follow the same shape.
+`scripts/run-qwen3-4B.sh` is the reference script; other recipes follow the same shape.
 
 ## The eight argument groups
 
@@ -34,7 +34,7 @@ a HuggingFace checkpoint. Miles therefore loads a matching python file from
 
 ```bash
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" glm4-9B)" || exit 1
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 ```
 
@@ -47,7 +47,7 @@ padding, or normalization epsilon. Diff the `config.json` against the file in
 `scripts/models/` before you run, and override anything that drifts:
 
 ```bash
-MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" glm4-9B)" || exit 1
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" qwen3-4B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 MODEL_ARGS+=(--rotary-base 10000)
 ```
@@ -60,10 +60,10 @@ The three roles — actor, frozen reference, HuggingFace directory — are defin
 
 ```bash
 CKPT_ARGS=(
-   --hf-checkpoint /root/GLM-Z1-9B-0414          # tokenizer, config, SGLang init
-   --ref-load      /root/GLM-Z1-9B-0414_torch_dist   # frozen ref (KL anchor)
-   --load          /root/GLM-Z1-9B-0414_miles/   # actor resume point
-   --save          /root/GLM-Z1-9B-0414_miles/   # where checkpoints are written
+   --hf-checkpoint /root/Qwen3-4B                # tokenizer, config, SGLang init
+   --ref-load      /root/Qwen3-4B_torch_dist     # frozen ref (KL anchor)
+   --load          /root/Qwen3-4B_miles/         # actor resume point
+   --save          /root/Qwen3-4B_miles/         # where checkpoints are written
    --save-interval 20                            # rollouts between writes
 )
 ```

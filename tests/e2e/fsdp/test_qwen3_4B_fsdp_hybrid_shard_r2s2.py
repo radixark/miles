@@ -13,7 +13,6 @@ register_rocm_ci(
     est_time=600,
     suite="stage-c-4-gpu-mi300x",
     labels=["fsdp", "amd"],
-    disabled="Disable due to failure",
 )
 
 NUM_GPUS = 4

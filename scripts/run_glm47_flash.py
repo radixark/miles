@@ -72,7 +72,7 @@ def execute(args: ScriptArgs):
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += (
-            # "--eval-interval 20 "
+            "--eval-interval 20 "
             f"--eval-prompt-data aime24 {args.data_dir}/aime-2024/aime-2024.jsonl "
             "--n-samples-per-eval-prompt 16 "
             "--eval-max-response-len 16384 "

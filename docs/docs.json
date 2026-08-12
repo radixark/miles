@@ -75,7 +75,8 @@
           ],
           "expanded": false
          },
-         "models/deepseek/deepseek-v3-2"
+         "models/deepseek/deepseek-v3-2",
+         "models/deepseek/deepseek"
         ],
         "expanded": false
        },
@@ -127,8 +128,7 @@
          "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
-         "models/glm/glm4-5",
-         "models/glm/glm4"
+         "models/glm/glm4-5"
         ],
         "expanded": false
        },
@@ -138,8 +138,7 @@
         "pages": [
          "models/kimi/kimi-k3",
          "models/kimi/kimi-k2.5",
-         "models/kimi/kimi-k2",
-         "models/kimi/moonlight"
+         "models/kimi/kimi-k2"
         ],
         "expanded": false
        },
@@ -168,7 +167,6 @@
         ],
         "expanded": false
        },
-       "models/mimo/mimo",
        "models/gpt-oss/gpt-oss"
       ]
      }
@@ -324,11 +322,6 @@
   {
    "source": "/developer/experimental-features",
    "destination": "/user-guide/training-backend#fsdp"
-  },
-  {
-   "source": "/models/deepseek/deepseek",
-   "destination": "/models/deepseek/deepseek-v3-2",
-   "permanent": true
   },
   {
    "source": "/platforms/index",
