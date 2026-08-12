@@ -8,26 +8,28 @@ Your harness only ever sends and receives **OpenAI chat messages**, never tokens
 
 ## Prerequisites
 
-Your rollout loop must keep two invariants, or TITO is rejected at runtime:
+History handling depends on the selected session-server version:
 
-- **Append-only messages.** Each turn = previous messages + new ones on the tail; past turns are never edited. The only exception is retrying the latest turn — a single-step rollback to the last assistant checkpoint, or to an empty session when the retried turn is the first one. Diverging earlier, or rolling back more than one turn, is rejected. Whether a replayed message counts as "the same" as the stored one is decided by `--session-message-matcher` (default `strict`); see [Choose replay matching](#choose-replay-matching).
-- **Appended roles follow the chat template.** After the first assistant message, the selected model's chat template determines which roles may be appended; users do not configure this separately.
+- **v1 is linear.** Each turn must extend the previous messages at the tail. Retrying the latest turn may roll back one assistant checkpoint, including to an empty session when retrying the first turn; diverging earlier or discarding more than one generated checkpoint is rejected.
+- **v2 is an append-only tree.** A request attaches to the deepest checkpoint whose complete message path is a prefix of the request. Any unmatched suffix creates a new branch; existing branches are never deleted. A path whose last generation ended with `finish_reason=length` is closed and cannot be extended.
+- **Appended roles follow the chat template.** After an existing checkpoint, the selected model's fixed template determines which roles may be appended; users do not configure this separately.
 
 ## Pick your `--tito-model`
 
-No auto-detection — pick the family matching your model. For every family, Miles resolves one `FIXED_TEMPLATE` registration from `--tito-model` alone. The registration owns the bundled Jinja template (or HuggingFace-native template) and fixed kwargs. A non-default family rejects `--chat-template-path` overrides and conflicting fixed kwargs; use `--tito-model default` for a custom renderer.
+No auto-detection — pick the family matching your model. Each named family resolves one maintainer-verified `FIXED_TEMPLATE` registration from `--tito-model` alone. The registration owns the bundled Jinja template (or HuggingFace-native template) and fixed kwargs. A named family rejects `--chat-template-path` overrides and conflicting fixed kwargs; use `--tito-model default` for a custom or checkpoint-native renderer, but treat that path as best-effort until you run the checks below.
 
 | Your model | `--tito-model` |
 |---|---|
 | Qwen3 | `qwen3` |
 | Qwen3.5 | `qwen35` |
-| Qwen3-Next | `qwennext` |
+| Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
 | GLM-4.7 / GLM-5 | `glm47` |
 | NVIDIA Nemotron 3 Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
 | DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
-| anything else | `default` |
+| Inkling / Inkling-Small | `inkling` |
+| Unregistered model or custom template (best-effort) | `default` |
 
 More models and verification history live in [issue #712](https://github.com/radixark/miles/issues/712).
 
@@ -41,33 +43,13 @@ ROLLOUT_ARGS+=(
 )
 ```
 
-## Choose replay matching
-
-Some agent harnesses do not replay model messages verbatim: they may reserialize tool-call arguments, replace empty `arguments` with `"{}"`, or omit `reasoning_content` on the next request. Under the default matcher those replays count as divergence — v1 rolls back (or rejects), v2 branches a new lineage.
-
-`--session-message-matcher` is process-wide and defaults to `strict`. It accepts a built-in selector or a trusted dotted import path.
-
-| Selector | Behavior |
-|---|---|
-| `strict` | Preserves the existing comparison of `role`, `content`, `reasoning_content`, and `tool_calls`, including empty-value and tool-call `index` normalization. |
-| `loose_tool_call` | Accepts everything `strict` accepts, plus equivalent JSON-object representations of `tool_calls[].function.arguments`. Call IDs, types, function names, order, unknown fields, and `reasoning_content` still have to match. |
-| `role_content_only` | Compares only normalized `role` and `content`. **High risk:** different tool-call or reasoning histories can collapse into one session lineage. |
-| dotted import path | Loads a trusted synchronous custom matcher; see [Customization](/user-guide/customization#session-message-matcher). |
-
-The matcher only decides whether the message a client replays and the message stored at the same position in the session count as the same one.
-
-- On a mismatch, the existing paths apply: v1 rolls back (or rejects), v2 branches.
-- On a match, the stored messages and token snapshot stay authoritative inside the reusable prefix; only the suffix beyond it is tokenized anew from the client input.
-
-Miles does not reconcile tool-call IDs across that boundary: deployments choosing `role_content_only` must themselves keep a stored call ID `A` followed by a replayed tool result referencing `B` protocol-compatible.
-
 ## Example
 
 A full multi-turn agentic setup on the session-server TITO path lives in [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker): its launchers wire `--use-session-server` + `--tito-model glm47` against a real SWE agent.
 
 ## Add a new model
 
-Models in the table are verified by Miles maintainers. To support a new model, register its `TITOTokenizer` and `FIXED_TEMPLATE` in [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py), then run both checks below; either failure blocks support.
+Named model families in the table are verified by Miles maintainers. To support a new model, register its `TITOTokenizer` and `FIXED_TEMPLATE` in [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py), then run both checks below; either failure blocks support.
 
 ```bash
 # CPU / fast — rendered token sequence is append-only

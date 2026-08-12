@@ -11,6 +11,7 @@ and the default it replaces.
 | Stage | Flag | Replaces |
 |---|---|---|
 | **Rollout** | `--rollout-function-path` | The whole rollout loop |
+| | `--custom-agent-function-path` | The agent-environment loop inside a TITO session |
 | | `--custom-generate-function-path` | A single sample's generation |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
@@ -54,6 +55,23 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 `enable_experimental_rollout_refactor()` is on.
 
 **Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
+
+### `--custom-agent-function-path`
+
+Use this innermost hook for an agent or environment loop that speaks OpenAI chat through Miles' TITO session server. Select the wrapper with `--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate`; this dynamically registers `--custom-agent-function-path` and `--max-seq-len`.
+
+```python
+async def run_agent(
+    base_url: str,
+    prompt,
+    request_kwargs: dict,
+    metadata: dict,
+    **kwargs,
+) -> dict | None:
+    ...
+```
+
+`base_url` already includes `/sessions/<id>`. Return a dictionary to merge environment rewards, reports, or metrics into each output sample's metadata, or `None` when there is no extra metadata. See [Rollout Endpoints](/user-guide/rollout-endpoints#the-openai-chat-endpoint) for the full wiring and message/token ownership contract.
 
 ### `--custom-generate-function-path`
 

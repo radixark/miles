@@ -2,16 +2,13 @@
 title: Rollout Endpoints
 description: How Miles talks to SGLang. The /generate endpoint and the OpenAI-format /v1/chat/completions endpoint.
 ---
-Miles supports two ways for a custom rollout function to talk to SGLang. The
-`/generate` endpoint is the most direct interface; you control tokenization. The
-OpenAI-format `/v1/chat/completions` endpoint is router-session aware and fits
-agent loops with multi-turn dialogue.
+Miles supports two ways for a custom rollout function to talk to SGLang. The `/generate` endpoint is the most direct interface and leaves tokenization to your code. The OpenAI-format `/v1/chat/completions` endpoint runs through Miles' session server: an agent exchanges `messages`, while Miles owns TITO tokenization and trajectory assembly across turns.
 
 | | `/generate` | OpenAI `/v1/chat/completions` |
 |---|---|---|
 | Input | Text or tokens | `messages` list |
-| Tokenization | Your code | SGLang |
-| Session state | Stateless | Router sessions (base_url includes `/sessions/<id>`) |
+| Tokenization | Your code | Miles' TITO session server |
+| Session state | Stateless | Session server (`base_url` includes `/sessions/<id>`) |
 | Best for | Tool use with custom token handling, benchmarking | Agentic loops, multi-turn dialogue |
 | Reference generator | `generate_hub/single_turn.py`, `generate_hub/multi_turn.py` | `generate_hub/agentic_tool_call.py` |
 
@@ -109,9 +106,16 @@ to `base_url/v1/chat/completions` and pass the `messages` list as the prompt.
 from miles.utils.http_utils import post
 
 
-async def run_agent(base_url: str, prompt, request_kwargs: dict | None = None) -> None:
+async def run_agent(
+    base_url: str,
+    prompt,
+    request_kwargs: dict | None = None,
+    metadata: dict | None = None,
+    **kwargs,
+) -> dict | None:
     payload = {"model": "default", "messages": prompt, **(request_kwargs or {})}
     await post(f"{base_url}/v1/chat/completions", payload)
+    return None
 ```
 
 <Tip>
@@ -122,6 +126,8 @@ async def run_agent(base_url: str, prompt, request_kwargs: dict | None = None) -
   `agentic_tool_call.build_chat_request_kwargs`.
 - `max_new_tokens` from Miles's rollout params is mapped to OpenAI's `max_tokens`
   before the request is sent.
+- `metadata` contains the input sample's metadata plus session identifiers and, when configured, `max_seq_len`; pass through the fields your external environment needs.
+- The session server replaces any client `input_ids` and forces the response metadata required for TITO. The agent does not manage token IDs or response-logprob flags.
 - For structured parsing, use SGLang's `ChatCompletionRequest`-compatible
   format, a superset of OpenAI plus SGLang extras.
 
@@ -137,19 +143,13 @@ Standard OpenAI format:
   "messages": [
     {"role": "system", "content": "You are a concise assistant."},
     {"role": "user",   "content": "Answer with one word: 2+2?"}
-  ],
-  "logprobs": true,
-  "return_prompt_token_ids": true
+  ]
 }
 ```
 
 <Warning>
 
-**Leave `logprob_start_len` alone.** `logprobs=True` and `return_prompt_token_ids=True` are set by default; they
-enable TITO. Do **not** set `logprob_start_len=0`. That forces SGLang to compute
-logprobs for every prompt token, destroys the prefix cache, and hurts
-performance. `return_prompt_token_ids=True` returns prompt token ids at zero
-cost with full caching.
+**Leave TITO fields to the session server.** Do not send `input_ids` or set `logprob_start_len=0`. Miles constructs the exact prompt IDs, forces `logprobs=True` and `return_meta_info=True`, and records the output token IDs and logprobs. Setting `logprob_start_len=0` makes SGLang score the whole prompt, destroys the prefix-cache benefit, and hurts performance.
 
 </Warning>
 
@@ -157,27 +157,32 @@ cost with full caching.
 
 Generator entry point:
 
-- `miles/rollout/generate_hub/agentic_tool_call.py`: OpenAI-format agent loop via
-  router sessions.
+- `miles/rollout/generate_hub/agentic_tool_call.py`: OpenAI-format agent loop via the TITO session server.
 
 Example:
 
 - [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker):
   multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
-Wire-up (as used by the swe-agent example):
+Minimal wiring for a Qwen3 agent function:
 
 ```bash
+export MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1
+
 CUSTOM_ARGS=(
    --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
-   --custom-agent-function-path    swe_agent_function.run
+   --custom-agent-function-path    my_agent.run
+   --use-session-server
+   --hf-checkpoint                 Qwen/Qwen3-4B
+   --tito-model                    qwen3
 )
 ```
 
+Add the reasoning and tool-call parser flags required by your model and agent. For a production launcher with those settings, reward wiring, and environment integration, use the SWE-agent example above.
+
 <Warning>
 
-**Don't apply chat template.** For OpenAI format, do **not** pass `--apply-chat-template`. The prompt must
-remain a `messages` list. SGLang handles templating server-side.
+**Don't apply the chat template to prompt data.** For the OpenAI path, do **not** pass `--apply-chat-template`: `Sample.prompt` must remain a `messages` list. The Miles session server renders the first turn and incrementally appends later turns with the selected `--tito-model` implementation.
 
 </Warning>
 
@@ -222,7 +227,7 @@ for a reference implementation that flushes the Harbor agent server.
 [`agentic_tool_call.generate`](https://github.com/radixark/miles/blob/main/miles/rollout/generate_hub/agentic_tool_call.py)
 is a thin wrapper around the custom agent. It:
 
-1. Creates a session on MilesRouter and builds a session-scoped `base_url`.
+1. Creates a session on one Miles session-server instance and builds a session-scoped `base_url`.
 2. Calls the custom agent (from `--custom-agent-function-path`) to send one or more
    chat requests.
 3. Collects server-assembled `Sample` objects via `OpenAIEndpointTracer.collect_samples`
@@ -233,30 +238,27 @@ For broader customization beyond the OpenAI wrapper, see the `/generate` path ab
 
 ### TITO (token-in / token-out)
 
-TITO needs two things from every SGLang response:
+The agent sends the full OpenAI `messages` history on every turn, but Miles does not re-tokenize the full history. On the first turn, the session server renders the selected `--tito-model` template into `input_ids`. After a successful completion, it checkpoints those exact prompt IDs plus the output token IDs returned in SGLang's `meta_info.output_token_logprobs`.
 
-1. **Prompt token ids**: extracted from `response.choices[0].prompt_token_ids`.
-   Returned when the request sets `return_prompt_token_ids=True`.
-2. **Output token ids and logprobs**: from `response.choices[0].logprobs.content[*]`
-   (`token_id`, `logprob`). Returned when `logprobs=True`.
+On each later turn, the session server reuses a stored checkpoint, tokenizes only the appended suffix, joins it to the checkpoint, and sends the resulting `input_ids` to SGLang. History selection depends on the version:
 
-By default, `build_chat_request_kwargs` sets both flags. The session middleware
-forwards raw `messages` to SGLang, which tokenizes the prompt and returns the
-response. `_compute_sample_from_openai_record` in
-[`merge.py`](https://github.com/radixark/miles/blob/main/miles/rollout/session/samples/merge.py)
-extracts prompt and output ids from the response and concatenates them into
-`sample.tokens`. You don't need to provide `input_ids` yourself.
+- **v1:** requires an append-only extension, except for a one-assistant-step retry rollback.
+- **v2:** attaches the request to its deepest complete matching checkpoint and creates a branch from any unmatched suffix; it never deletes an existing branch.
 
-Multi-turn samples can be saved within a single session, but tokens are **not**
-inherited across turns. Each request is tokenized independently.
+Both versions enforce the appended-role surface registered by `--tito-model`. The session server forces `logprobs=True` and `return_meta_info=True`, so the agent does not request prompt IDs or manage tokens itself.
+
+During collection, [`merge.py`](https://github.com/radixark/miles/blob/main/miles/rollout/session/samples/merge.py) aligns each turn's output tokens and logprobs against the accumulated TITO sequence, trims model-specific boundary tokens, and assembles the training sample. The [Agentic Rollout (TITO)](/user-guide/agentic-chat-template) guide lists the verified model families and template checks.
 
 ### Common pitfalls
 
 | Pitfall | Fix |
 |---|---|
-| Missing logprobs / prompt token ids | Ensure `logprobs=True` and `return_prompt_token_ids=True`. |
+| Backend response lacks `meta_info.output_token_logprobs` | Use the supported SGLang build; the session server already forces `logprobs=True` and `return_meta_info=True`. |
 | Prefix cache hit rate drops to 0 | Remove `logprob_start_len=0`. |
-| Tokenization drift across turns | Expected. Tokens aren't inherited. |
+| v1 rejects changed history | Keep messages append-only; only a one-assistant-step retry rollback is supported. Use v2 when one session must preserve multiple lineages. |
+| v2 creates an unexpected branch | Replay every message in the intended parent path exactly; v2 attaches at the deepest complete match. |
+| Appended-role validation error | Pick the matching `--tito-model` and use only roles supported by that family's fixed template. |
+| Agent sends its own `input_ids` | Remove them; the session server owns prompt tokenization. |
 | Custom agent hitting the wrong URL | `base_url` already has `/sessions/<id>`. Don't append it. |
 
 ---

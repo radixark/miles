@@ -41,6 +41,7 @@ In short:
 --custom-agent-function-path nemogym_agent_function.run
 --custom-rm-path nemogym_generate.reward_func
 --use-session-server
+--tito-model qwen3
 ```
 
 The recipe is validated end-to-end: golden and API-policy scans on a real

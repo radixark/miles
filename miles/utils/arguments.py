@@ -2507,7 +2507,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 const=True,
                 default=False,
                 help="Start a standalone session server for TITO/session support. "
-                "Requires --hf-checkpoint and --chat-template-path to also be set. "
+                "Requires --hf-checkpoint. A named --tito-model resolves its registered template; "
+                "--tito-model=default uses the checkpoint-native or explicit --chat-template-path template. "
                 "Bare flag (or 'v1') selects the append-only linear v1 server; "
                 "'--use-session-server v2' selects the tree-serving v2 "
                 "(multi-lineage trajectories, always-branch).",
