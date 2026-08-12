@@ -208,6 +208,17 @@ class TestComputeCellSnapshot:
 
         assert snapshot == _CellSnapshot(name="actor-0", status=NOT_APPLICABLE)
 
+    def test_a_pending_cell_that_blew_its_startup_deadline_is_healed(self):
+        """A rollout cell stuck booting reports Pending plus Healthy=False; without healing it is
+        stranded until the next hour-long readiness timeout."""
+        cell = _make_cell_object(
+            healthy=[CellCondition.healthy(TriState.FALSE, reason="StartupDeadlineExceeded")], phase="Pending"
+        )
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=UNHEALTHY)
+
     def test_any_false_among_multiple_conditions_wins(self):
         """If any Healthy condition is FALSE, the cell is unhealthy regardless of
         other TRUE/UNKNOWN conditions — fail-loud over fail-quiet."""

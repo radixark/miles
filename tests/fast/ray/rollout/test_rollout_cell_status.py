@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,12 @@ from miles.ray.rollout.cell_state import (
     StateUninitialized,
 )
 from miles.ray.rollout.inference_controller import InferenceController
-from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_pending_rollout_cell_status
+from miles.ray.rollout.server_cell import (
+    INITIALIZING_TIMEOUT_SECONDS,
+    ServerCell,
+    ServerCellMetadata,
+    compute_pending_rollout_cell_status,
+)
 from miles.utils.ft_utils.api_server.models import CellStatus, TriState
 
 _ADDR_INFO = CellAddrInfo(server_url="http://10.0.0.1:30000", bootstrap_port=None, gate_url="http://10.0.0.1:13000")
@@ -56,10 +62,26 @@ class TestServerCellStatus:
 
     def test_a_booting_cell_is_pending_without_a_health_verdict(self):
         """Its port is not listening yet, so no probe result exists to report."""
-        status = _make_cell(StateInitializing(addr_info=_ADDR_INFO)).cell_status()
+        status = _make_cell(StateInitializing(addr_info=_ADDR_INFO, start_time=time.monotonic())).cell_status()
 
         assert status.phase == "Pending"
         assert _conditions(status) == [("Allocated", TriState.TRUE)]
+
+    def test_a_cell_stuck_booting_past_its_deadline_reports_unhealthy(self):
+        """Without a Healthy verdict the mini ft controller reads NotApplicable and never heals it."""
+        started_long_ago = time.monotonic() - INITIALIZING_TIMEOUT_SECONDS - 1.0
+        cell = _make_cell(StateInitializing(addr_info=_ADDR_INFO, start_time=started_long_ago))
+
+        status = cell.cell_status()
+
+        assert status.phase == "Pending"
+        assert _conditions(status) == [("Allocated", TriState.TRUE), ("Healthy", TriState.FALSE)]
+
+    def test_a_gated_cell_is_never_judged_by_the_startup_deadline(self):
+        """An uninitialized cell has not been asked to boot yet, so no startup clock is running."""
+        cell = _make_cell(StateUninitialized())
+
+        assert _conditions(cell.cell_status()) == [("Allocated", TriState.TRUE)]
 
     def test_a_cell_holding_stale_weights_is_already_running(self):
         """It answers requests with stale weights, so a crash there is a real failure."""
