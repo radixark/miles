@@ -45,7 +45,7 @@ def model_script(monkeypatch, tmp_path):
     path = tmp_path / "fake-model.4layer.py"
     path.write_text(_SCRIPT_BODY)
     (tmp_path / "fake-wrapper.py").write_text(_WRAPPER_BODY)
-    monkeypatch.setattr("miles.utils.external_utils.model_args_utils.MODEL_SCRIPT_DIR", tmp_path)
+    monkeypatch.setattr("miles.utils.external_utils.model_args_utils._MODEL_SCRIPT_DIR", tmp_path)
     monkeypatch.delenv("MODEL_ARGS_NUM_LAYERS", raising=False)
     return path
 
