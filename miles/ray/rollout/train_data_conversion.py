@@ -169,8 +169,9 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
     return [totals[rid] for rid in rollout_ids]
 
 
-def _reward_group_rows(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
+def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
     """Return the flattened row indices for each prompt reward group."""
+    # Multi-LoRA records explicit prompt boundaries before flattening.
     if prompt_group_sizes is not None:
         assert sum(prompt_group_sizes) == len(
             samples
@@ -186,10 +187,10 @@ def _reward_group_rows(args: Any, samples: list[Sample], prompt_group_sizes: lis
 
     group_indices = [sample.group_index for sample in samples]
     if all(group_index is not None for group_index in group_indices):
-        rows_by_group: dict[int, list[int]] = {}
-        for row_index, group_index in enumerate(group_indices):
-            rows_by_group.setdefault(int(group_index), []).append(row_index)
-        return list(rows_by_group.values())
+        segments_by_group_index: dict[int, list[int]] = {}
+        for segment_index, group_index in enumerate(group_indices):
+            segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
+        return list(segments_by_group_index.values())
 
     expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
     if len(samples) == expected_samples:
@@ -215,37 +216,39 @@ def _normalize_rewards_by_rollout(
         return []
 
     normalized_rewards = torch.empty(len(raw_rewards), dtype=torch.float)
-    for group_rows in _reward_group_rows(args, samples, prompt_group_sizes):
-        rows_by_rollout: dict[int | tuple[str, int], list[int]] = {}
-        for row_index in group_rows:
-            sample = samples[row_index]
+    for prompt_segments in _reward_group_segments(args, samples, prompt_group_sizes):
+        segments_by_rollout_key: dict[int | tuple[str, int], list[int]] = {}
+        for segment_index in prompt_segments:
+            sample = samples[segment_index]
             if sample.rollout_id is not None:
                 rollout_key = sample.rollout_id
             elif sample.index is not None:
                 rollout_key = sample.index
             else:
-                rollout_key = ("row", row_index)
-            rows_by_rollout.setdefault(rollout_key, []).append(row_index)
+                rollout_key = ("row", segment_index)
+            segments_by_rollout_key.setdefault(rollout_key, []).append(segment_index)
 
-        rollout_row_groups = list(rows_by_rollout.values())
+        rollout_segment_groups = list(segments_by_rollout_key.values())
         # Assume the first sample with the most trainable tokens best represents
         # the rollout when sibling rewards differ.
-        mainstream_rows = [
-            max(rollout_rows, key=lambda row_index: _trainable_token_count(samples[row_index]))
-            for rollout_rows in rollout_row_groups
+        mainstream_segments = [
+            max(rollout_segments, key=lambda segment_index: _trainable_token_count(samples[segment_index]))
+            for rollout_segments in rollout_segment_groups
         ]
-        rollout_rewards = torch.tensor([raw_rewards[row_index] for row_index in mainstream_rows], dtype=torch.float)
+        rollout_rewards = torch.tensor(
+            [raw_rewards[segment_index] for segment_index in mainstream_segments], dtype=torch.float
+        )
         normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
         if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
             rollout_std = rollout_rewards.std()
             if rollout_std > 0:
                 normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
 
-        for rollout_rows, normalized_reward in zip(
-            rollout_row_groups, normalized_rollout_rewards.tolist(), strict=True
+        for rollout_segments, normalized_reward in zip(
+            rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
         ):
-            for row_index in rollout_rows:
-                normalized_rewards[row_index] = normalized_reward
+            for segment_index in rollout_segments:
+                normalized_rewards[segment_index] = normalized_reward
 
     return normalized_rewards.tolist()
 
