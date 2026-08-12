@@ -111,3 +111,16 @@ Miles builds on the work of [slime](https://github.com/THUDM/slime),
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM),
 [mbridge](https://github.com/ISEEKYAN/mbridge) and
 [torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
+
+## Citation
+
+If Miles is useful in your research or your product, please cite it:
+
+```bibtex
+@misc{miles2026,
+  title        = {Miles: Enterprise-Grade Reinforcement Learning for Large-Scale Model Post-Training},
+  author       = {Miles Team},
+  year         = {2026},
+  howpublished = {\url{https://github.com/radixark/miles}}
+}
+```
