@@ -5,7 +5,7 @@ import platform
 import socket
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from miles.utils.audit_utils.event_logger.models import (
     EnvReport,
@@ -25,6 +25,13 @@ class EnvReportSnapshot:
     facts: EnvReportProcessFacts
     # TODO: remove the PYTHONPATH workaround and still make Megatron detected
     probe_env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _PipInfo:
+    probed: bool
+    editable_packages: list[EnvReportEditablePackageInfo] = field(default_factory=list)
+    full_pip_list: list[dict[str, str]] = field(default_factory=list)
 
 
 _KEY_PACKAGE_NAMES = (
@@ -54,18 +61,32 @@ def collect_env_report_snapshot(args: Any) -> EnvReportSnapshot:
 
 
 def collect_env_report(*, snapshot: EnvReportSnapshot) -> EnvReport:
-    editable_packages, full_pip_list = _collect_pip_info(snapshot.probe_env)
+    pip_info = _collect_pip_info(snapshot.probe_env)
 
     git_repos = [
-        info for pkg in editable_packages if (info := collect_git_info(package_name=pkg.name, location=pkg.location))
+        info
+        for pkg in pip_info.editable_packages
+        if (info := collect_git_info(package_name=pkg.name, location=pkg.location))
     ]
 
     return EnvReport(
         process=snapshot.facts,
-        key_versions=_collect_key_versions(full_pip_list),
-        editable_packages=editable_packages,
+        key_versions=_collect_key_versions(pip_info.full_pip_list),
+        editable_packages=pip_info.editable_packages,
         git_repos=git_repos,
-        full_pip_list=full_pip_list,
+        full_pip_list=pip_info.full_pip_list,
+        packages_probed=pip_info.probed,
+    )
+
+
+def collect_unprobed_env_report(*, snapshot: EnvReportSnapshot) -> EnvReport:
+    return EnvReport(
+        process=snapshot.facts,
+        key_versions=_collect_key_versions([]),
+        editable_packages=[],
+        git_repos=[],
+        full_pip_list=[],
+        packages_probed=False,
     )
 
 
@@ -105,11 +126,8 @@ def _json_snapshot(values: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
 
-def _collect_pip_info(env: dict[str, str]) -> tuple[list[EnvReportEditablePackageInfo], list[dict[str, str]]]:
-    """Collect all pip info in a single `pip inspect` call.
-
-    Returns (editable_packages, full_pip_list).
-    """
+def _collect_pip_info(env: dict[str, str]) -> _PipInfo:
+    """Collect all pip info in a single `pip inspect` call."""
     try:
         result = subprocess.run(
             ["pip", "inspect"],
@@ -120,7 +138,7 @@ def _collect_pip_info(env: dict[str, str]) -> tuple[list[EnvReportEditablePackag
         )
         if result.returncode != 0:
             logger.warning("pip inspect failed: %s", result.stderr)
-            return [], []
+            return _PipInfo(probed=False)
 
         data = json.loads(result.stdout)
         installed: list[dict[str, Any]] = data.get("installed", [])
@@ -136,10 +154,10 @@ def _collect_pip_info(env: dict[str, str]) -> tuple[list[EnvReportEditablePackag
             if _is_editable(pkg)
         ]
 
-        return editable_packages, full_pip_list
+        return _PipInfo(editable_packages=editable_packages, full_pip_list=full_pip_list, probed=True)
     except Exception:
         logger.warning("Failed to collect pip info", exc_info=True)
-        return [], []
+        return _PipInfo(probed=False)
 
 
 def _parse_pip_entry(pkg: dict[str, Any]) -> dict[str, str]:
