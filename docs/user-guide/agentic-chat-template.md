@@ -16,7 +16,10 @@ History handling depends on the selected session-server version:
 
 ## Pick your `--tito-model`
 
-No auto-detection — pick the family matching your model. Each named family resolves one maintainer-verified `FIXED_TEMPLATE` registration from `--tito-model` alone. The registration owns the bundled Jinja template (or HuggingFace-native template) and fixed kwargs. A named family rejects `--chat-template-path` overrides and conflicting fixed kwargs; use `--tito-model default` for a custom or checkpoint-native renderer, but treat that path as best-effort until you run the checks below.
+No auto-detection — pick the family matching your model. Each named family resolves one maintainer-verified `FIXED_TEMPLATE` registration from `--tito-model` alone. 
+- The registration owns the bundled Jinja template (or HuggingFace-native template) and fixed chat template kwargs. A named family rejects `--chat-template-path` overrides and conflicting fixed kwargs.
+- It will also set reasoning parser / tool call parser to sglang automatically.
+- Use `--tito-model default` for a custom or checkpoint-native renderer, but treat that path as best-effort until you run the checks below.
 
 | Your model | `--tito-model` |
 |---|---|
