@@ -384,6 +384,10 @@ class TestRocmWorkflowScopeSeam:
         assert "checkout_ref:" in reusable
         assert "ref: ${{ inputs.checkout_ref }}" in reusable
         assert "persist-credentials: false" in reusable
+        # Checking out a fork's merge ref from pull_request_target is refused by
+        # actions/checkout unless this opt-in is set; without it every fork PR
+        # fails at checkout before a single test runs.
+        assert "allow-unsafe-pr-checkout: true" in reusable
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------

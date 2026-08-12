@@ -73,6 +73,13 @@ jobs:
         with:
           ref: ${{ inputs.checkout_ref }}
           persist-credentials: false
+          # Callers run on pull_request_target and pass refs/pull/<n>/merge, so
+          # checkout refuses fork code by default ("pwn request"). Running the
+          # PR's code on the MI300X host is this stage's purpose; the controls
+          # that guardrail asks for are already here -- pr-test-rocm.yml admits a
+          # fork only after a maintainer adds a run-ci-* label, and fork jobs get
+          # no secrets. Without this, every fork PR fails before any test runs.
+          allow-unsafe-pr-checkout: true
 
       - name: Cleanup Ray processes
         shell: bash

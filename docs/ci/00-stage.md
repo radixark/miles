@@ -69,6 +69,8 @@ Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)`
 
 For fork PRs, a base-branch authorization step admits the privileged MI300X stage only when the event carries a canonical `run-ci-*` label. The reusable workflow then checks out `refs/pull/<number>/merge` explicitly, so it tests the PR merge result without trusting workflow or gate code from the fork. Fork jobs receive no `WANDB_API_KEY`; same-repository PRs, schedules, and manual dispatches do not need the label gate.
 
+Checking out fork code from a `pull_request_target` job is the "pwn request" shape, so `actions/checkout` refuses it unless the step sets `allow-unsafe-pr-checkout: true`. This stage sets it deliberately: running the PR's code on the MI300X host is the entire purpose of the stage, and the two controls the guardrail asks for are already in place — a maintainer's `run-ci-*` label gates fork access, and fork jobs get no secrets. Without the flag every fork PR fails at checkout before any test runs.
+
 An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather than an `IS_HIP` branch in the original test.
 
 Both runner containers can see all eight host GPUs through `/dev/dri`. Each runner restricts itself to four GPUs with `HIP_VISIBLE_DEVICES`, which `_run-ci-rocm.yml` forwards into the container.
