@@ -13,24 +13,24 @@ much better the actual outcome was than the critic's prediction. The trade-off: 
 second model (more memory, more code paths), but its baseline is per-token rather than
 per-group, and it does not need a large `--n-samples-per-prompt` to be well-behaved.
 
-In miles the critic **shares the actor's train GPUs**, so PPO needs no extra GPUs over the GRPO
-equivalent. It pays for that in memory, which is why `--offload-train` is turned on for you.
+In miles the critic is **colocated on the actor's train GPUs**, so PPO needs no extra GPUs over
+the GRPO equivalent. It pays for that in memory, which is why `--offload-train` is turned on for
+you — see [Constraints](#constraints-worth-knowing-before-you-debug).
 
 ## Files
 
-* `run-qwen3-4b-ppo.sh`: single-node launch script for Qwen3-4B.
-
-## Prerequisite
-
-Set up the model, dataset and environment following the Qwen3-4B example. This script expects
-`/root/Qwen3-4B`, `/root/Qwen3-4B_torch_dist` and `/root/dapo-math-17k/dapo-math-17k.jsonl`.
+* `run_qwen3_4b_ppo.py`: single-node launch script for Qwen3-4B.
 
 ## Quick Start
 
 ```bash
 cd miles
-bash examples/ppo/run-qwen3-4b-ppo.sh
+python examples/ppo/run_qwen3_4b_ppo.py
 ```
+
+The script's `prepare` step downloads Qwen3-4B and the DAPO-Math-17k dataset and converts the
+checkpoint to Megatron `torch_dist` format, so there is nothing to set up by hand. Conversion is
+skipped on reruns.
 
 ## Turning PPO on
 
@@ -52,12 +52,20 @@ advantage computation to GAE.
 | `--critic-save` | `--save` + `_critic` | Sibling directory, so the two models do not clobber each other's iteration tracker. |
 | `--critic-lr-warmup-iters` | `0` | Linear warmup for the critic only. |
 | `--num-critic-only-steps` | `0` | Value-function warmup: the actor stays frozen for this many initial rollout steps while the critic learns. A critic that starts from noise otherwise injects noisy advantages into the very first actor updates. |
-| `--critic-num-nodes`, `--critic-num-gpus-per-node` | inherited from the actor | Set automatically; the critic shares the actor's placement. |
+| `--critic-num-nodes`, `--critic-num-gpus-per-node` | inherited from the actor | Set automatically — see the colocation constraint below. |
 
 ## Constraints worth knowing before you debug
 
 These are enforced at argument validation, so you get an error rather than a silent wrong result:
 
+* **The critic is colocated with the actor, and inherits its parallelism.** The critic is placed
+  on exactly the same GPUs as the actor — `--critic-num-nodes` and `--critic-num-gpus-per-node`
+  are overwritten with the actor's values — and it currently reuses the actor's TP/PP/CP as well,
+  so there is no way to give the critic its own parallelism. Two consequences: **`--offload-train`
+  is forced on**, because both models resident on the same devices at once is usually too much
+  (`--no-offload-train` is accepted but warns, and is meant for offload debugging only); and when
+  you scale, you only ever change the actor's placement — the actor world size is
+  `--actor-num-nodes` × `--actor-num-gpus-per-node`, and `TP × PP × CP` must divide it.
 * **Megatron only.** PPO raises with any other train backend, and is unsupported with
   `--megatron-to-hf-mode bridge`.
 * **`--kl-coef` must be 0.** Reward-level KL is rejected because the critic trains *before* the
@@ -65,27 +73,20 @@ These are enforced at argument validation, so you get an error rather than a sil
   applied to the actor's rewards. Use loss-level `--use-kl-loss` / `--kl-loss-coef` instead.
 * **Not compatible with `MILES_EXPERIMENTAL_FT_TRAINER=1`.** The v2 fault-tolerant train group
   cannot route critic values yet.
-* **`--offload-train` is forced on.** Actor and critic share the train GPUs, so both resident at
-  once is usually too much. `--no-offload-train` is accepted but warns, and is meant for offload
-  debugging only.
 
 ## Which numbers here are verified
 
 The parallelism (`TP=1`, `PP=2`, `CP=2` over 4 GPUs), the GPU count, and the PPO flag set follow
 `tests/e2e/megatron/test_qwen3_4B_ppo.py`, which runs in CI.
 
-Two values are deliberately **not** the CI ones, because the CI test is a 3-step smoke test rather
-than a training recipe:
+Three values are deliberately **not** the CI ones, because the CI test is a 3-step smoke test
+rather than a training recipe:
 
 * `--eps-clip 0.2` here vs. `4e-4` in CI. `4e-4` pins the actor almost in place, which is useful
   for a fast deterministic test and wrong for actual training. `0.2` is the standard PPO value.
 * `--num-rollout 300` here vs. `3` in CI.
+* `--rollout-num-gpus-per-engine 1` here vs. `2` in CI. Qwen3-4B fits comfortably on one GPU, so
+  one engine per GPU avoids paying tensor-parallel communication for no capacity gain.
 
 Treat the rest — learning rates, `--kl-loss-coef`, `--entropy-coef` — as starting points to tune,
 not as tuned values.
-
-## Scaling up
-
-The actor world size is `--actor-num-nodes` × `--actor-num-gpus-per-node`, and `TP × PP × CP` must
-divide it. The critic inherits the same shape automatically, so when you change the actor's
-placement you do not need to touch any critic placement flag.
