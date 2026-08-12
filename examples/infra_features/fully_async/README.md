@@ -5,17 +5,14 @@ This example shows a simple way to make rollout generation **fully asynchronous*
 The implementation lives in the core library at `miles/rollout/fully_async_rollout.py` (`FullyAsyncRolloutFn`, a class-based rollout function that owns a persistent background worker). It requires `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`.
 
 ## Files
-* `run-qwen3-4b-fully_async.sh`: example launch script with Qwen3‑4B.
 * `run_qwen3_5_4b_fully_async_eval.py`: Qwen3.5‑4B with async checkpoint eval — `--eval-backend fleet` (dedicated eval fleet) or `--eval-backend external` (fn-launched sglang server).
+* `run_qwen3_30b_a3b_fully_async.py`: the same pattern on a 30B MoE — `tp=8`, `ep=8`, one 8-GPU rollout engine.
 * `external_eval_fn.py`: reference `CheckpointEvalFn` — launches/attaches an external sglang server and evals snapshots on it.
 
-## Prerequisite
-First set up model & environment following the Qwen3-4B example.
-
 ## Quick Start
+Each launcher downloads its own checkpoint and converts it, then submits the job:
 ```bash
-cd miles
-bash examples/fully_async/run-qwen3-4b-fully_async.sh
+python examples/infra_features/fully_async/run_qwen3_5_4b_fully_async_eval.py
 ```
 You should see log lines like:
 ```

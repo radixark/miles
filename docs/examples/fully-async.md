@@ -32,16 +32,17 @@ instead of the sum.
 
 ```text
 miles/rollout/fully_async_rollout.py # FullyAsyncRolloutFn (worker + drain)
-examples/fully_async/
-├── run-qwen3-4b-fully_async.sh     # launch script (Qwen3-4B)
-└── run_qwen3_30b_a3b_fully_async.py # MoE variant
+examples/infra_features/fully_async/
+├── run_qwen3_5_4b_fully_async_eval.py # Qwen3.5-4B, both checkpoint-eval backends
+├── run_qwen3_30b_a3b_fully_async.py   # MoE variant
+└── external_eval_fn.py                # reference CheckpointEvalFn
 ```
 
 ## Quick start
 
 ```bash
 cd /root/miles
-bash examples/fully_async/run-qwen3-4b-fully_async.sh
+python examples/infra_features/fully_async/run_qwen3_5_4b_fully_async_eval.py
 ```
 
 You should see:
