@@ -21,19 +21,77 @@ from .parallel import get_parallel_state
 
 logger = logging.getLogger(__name__)
 
+_MULTI_TURN_REDUCTION_BY_KEY = {
+    "raw_response_length/response_length_max": "max",
+    "raw_response_length/response_length_min": "min",
+    "wo_obs_response_length/response_length_max": "max",
+    "wo_obs_response_length/response_length_min": "min",
+    "multi_turn_metric/round_number_max": "max",
+    "multi_turn_metric/round_number_min": "min",
+}
+
+
+def reduce_gathered_log_dict(
+    gathered: list[dict],
+    dp_size: int,
+    reduction_by_key: dict[str, str] | None = None,
+) -> dict[str, float]:
+    """Reduce already-gathered per-rank metrics without adding another collective.
+
+    ``(sum, count)`` tuples reduce as ``Σsum / Σcount``. Scalars reduce by the
+    reduction named in ``reduction_by_key`` ("mean", "min" or "max");
+    unspecified keys reduce by mean. Metric names do not implicitly determine
+    their reduction semantics. Rank-local extrema must be reduced as extrema:
+    averaging per-rank maxima under-reports the global maximum (and
+    over-reports the global minimum).
+    """
+    if not gathered:
+        return {}
+
+    expected_keys = gathered[0].keys()
+    if reduction_by_key is not None:
+        for rank, rank_metrics in enumerate(gathered[1:], start=1):
+            if rank_metrics.keys() != expected_keys:
+                raise ValueError(
+                    f"Metric keys differ across ranks: rank 0={list(expected_keys)}, "
+                    f"rank {rank}={list(rank_metrics.keys())}."
+                )
+    reduction_by_key = reduction_by_key or {}
+
+    reduced: dict[str, float] = {}
+    for key in expected_keys:
+        values = [d[key] for d in gathered]
+        first = values[0]
+        reduction = reduction_by_key.get(key, "mean")
+        if reduction not in ("mean", "min", "max"):
+            raise ValueError(f"Unsupported metric reduction {reduction!r} for {key!r}.")
+        if isinstance(first, tuple) and len(first) == 2:
+            total_sum = sum(v[0] for v in values)
+            total_count = sum(v[1] for v in values)
+            reduced[key] = total_sum / total_count if total_count else 0.0
+        elif reduction == "mean":
+            reduced[key] = sum(values) / dp_size
+        elif reduction == "min":
+            reduced[key] = min(values)
+        else:
+            reduced[key] = max(values)
+    return reduced
+
 
 def gather_log_data(
     metric_name: str,
     args: Namespace,
     rollout_id: int,
-    log_dict: dict[str, float],
+    log_dict: dict[str, "float | tuple[float, float]"],
+    reduction_by_key: dict[str, str] | None = None,
 ) -> dict[str, float] | None:
     """
-    Gather per-rank metrics, reduce by mean on the DP source rank, and log.
+    Gather per-rank metrics, reduce on the DP source rank, and log.
 
-    Expects `log_dict` to contain plain scalars. The DP source rank prints and
-    optionally logs to WandB/TensorBoard with a step derived from `rollout_id` and
-    batch sizes. Returns the reduced dict on the DP source rank; returns None on others.
+    ``(sum, count)`` tuple values reduce as ``Σsum / Σcount``; scalar keys
+    reduce by mean unless `reduction_by_key` explicitly selects "min" or
+    "max" for them. Returns the reduced dict on the DP source rank; returns
+    None on others.
     """
 
     parallel_state = get_parallel_state()
@@ -60,9 +118,8 @@ def gather_log_data(
         return None
 
     if pg.rank == 0:
-        reduced_log_dict = {
-            f"{metric_name}/{key}": sum([d[key] for d in gathered_log_dict]) / pg.size for key in log_dict
-        }
+        reduced = reduce_gathered_log_dict(gathered_log_dict, pg.size, reduction_by_key)
+        reduced_log_dict = {f"{metric_name}/{key}": value for key, value in reduced.items()}
         logger.info(f"{metric_name} {rollout_id}: {reduced_log_dict}")
 
         # Calculate step once to avoid duplication
@@ -123,6 +180,10 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
         loss_masks = rollout_data["loss_masks"]
         total_lengths = rollout_data["total_lengths"]
         max_seq_lens = rollout_data.get("max_seq_lens", None)
+        # per-rollout-mean count share: num_rollouts / dp (None = legacy local count)
+        rollout_count_share = None
+        if (num_rollouts := rollout_data.get("num_rollouts")) is not None:
+            rollout_count_share = sum(num_rollouts) / parallel_state.intra_dp.size
 
         for key, val in rollout_data.items():
             if key in [
@@ -130,6 +191,8 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "multimodal_train_inputs",
                 "loss_masks",
                 "sample_indices",
+                "rollout_ids",
+                "rollout_mask_sums",
                 "rollout_routed_experts",
                 "rollout_indexer_topk",
                 "max_seq_lens",
@@ -137,6 +200,9 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "witness_ids",
                 "weight_versions",
                 "metadata",
+                "num_microbatches",
+                "micro_batch_indices",
+                "num_rollouts",
                 "n_adapters",
                 "adapter_slots",
                 "step_slots",
@@ -145,16 +211,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "prompt_group_sizes",
             ]:
                 continue
-            # Upload per sample mean for each rollout value
-            # There are the following assumptions:
-            # - Each dp rank has the same number of samples
             if isinstance(val, (list, tuple)):
                 if isinstance(val[0], torch.Tensor):
+                    count = len(val)
                     # NOTE: Here we have to do the clone().detach(), otherwise the tensor will be
                     # modified in place and will cause problem for the next rollout.
-                    val = torch.cat(val).clone().detach()
-                    if val.device != loss_masks[0].device:
-                        val = val.to(loss_masks[0].device)
+                    tensor = torch.cat(val).clone().detach()
+                    if tensor.device != loss_masks[0].device:
+                        tensor = tensor.to(loss_masks[0].device)
                     if key in [
                         "log_probs",
                         "ref_log_probs",
@@ -172,10 +236,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                             loss_masks,
                             qkv_format=args.qkv_format,
                             max_seq_lens=max_seq_lens,
+                            denominators=rollout_data.get("rollout_mask_sums", None),
                         )
-                        val = cp_size * sum_of_sample_mean(val) / len(loss_masks)
+                        per_rank_sum = cp_size * sum_of_sample_mean(tensor)
+                        if rollout_count_share is not None:
+                            count = rollout_count_share
                     else:
-                        val = val.mean() * cp_size
+                        per_rank_sum = tensor.mean() * cp_size * count
+                    log_dict[key] = (per_rank_sum.item(), count)
                 else:
                     # Flatten nested lists (e.g. list of lists from async rollout)
                     flat = val
@@ -184,12 +252,11 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                     # Skip non-numeric values (e.g. strings from async rollout metadata)
                     if flat and not isinstance(flat[0], (int, float)):
                         continue
-                    val = sum(flat) / len(flat)
+                    log_dict[key] = (sum(flat), len(flat))
             elif isinstance(val, torch.Tensor):
-                val = val.float().mean()
+                log_dict[key] = (val.float().mean().item(), 1)
             else:
                 raise ValueError(f"Unsupported type: {type(val)} for key: {key}")
-            log_dict[key] = val.item() if isinstance(val, torch.Tensor) else val
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
@@ -282,8 +349,9 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
             for p, val in correct_response_length_percentile.items():
                 rollout_data[f"correct_length/{p}"] = [val] * num_correct_responses
             if len(correct_entropy) > 0:
+                # per-sample mean over the correct subset, not per-rollout
                 sum_of_sample_mean = get_sum_of_sample_mean(
-                    correct_total_lengths, correct_response_lengths, correct_loss_masks
+                    correct_total_lengths, correct_response_lengths, correct_loss_masks, denominators=None
                 )
                 correct_entropy = sum_of_sample_mean(torch.cat(correct_entropy, dim=0))
                 rollout_data["correct_entropy"] = [correct_entropy.item()] * num_correct_responses
@@ -328,7 +396,13 @@ def log_multi_turn_data(rollout_id: int, args: Namespace, rollout_data: RolloutB
                 log_dict["multi_turn_metric/round_number_mean"] = np.mean(round_number_array)
                 log_dict["multi_turn_metric/round_number_max"] = np.max(round_number_array)
                 log_dict["multi_turn_metric/round_number_min"] = np.min(round_number_array)
-        gather_log_data("multi_turn", args, rollout_id, log_dict)
+        gather_log_data(
+            "multi_turn",
+            args,
+            rollout_id,
+            log_dict,
+            reduction_by_key=_MULTI_TURN_REDUCTION_BY_KEY,
+        )
 
 
 def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None = None) -> None:
@@ -366,6 +440,7 @@ def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
 
 def aggregate_train_losses(
     losses_reduced: list[dict[str, list[str] | torch.Tensor]],
+    num_rollouts: int | None = None,
 ) -> dict[str, float]:
     """Aggregate loss metrics across micro-batches.
 
@@ -375,7 +450,11 @@ def aggregate_train_losses(
     Args:
         losses_reduced: List of log_dict from each micro-batch.
             Each log_dict has format: {"keys": list[str], "values": torch.Tensor}
-        parallel_state: Parallel state containing dp_group and cp_size.
+        num_rollouts: report per-rollout means — divide every metric by this
+            step's rollout count (no CP factor; CP-chunked numerators reconstruct
+            exactly once under the DP*CP all-reduce). None keeps the legacy
+            reduction: divide by the all-reduced ``values[0]`` count, cancelled
+            by ``cp_size``.
 
     Returns:
         Dictionary mapping metric names to averaged values.
@@ -400,10 +479,15 @@ def aggregate_train_losses(
 
     loss_reduced = {}
     values = values.tolist()
-    num_samples_or_tokens = values[0]
+    if num_rollouts is not None:
+        num_samples_or_tokens = num_rollouts
+        cp_factor = 1
+    else:
+        num_samples_or_tokens = values[0]
+        cp_factor = parallel_state.cp.size
 
     for key, value in zip(keys, values[1:], strict=False):
-        loss_reduced[key] = value * parallel_state.cp.size / num_samples_or_tokens
+        loss_reduced[key] = value * cp_factor / num_samples_or_tokens
 
     return loss_reduced
 

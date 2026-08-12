@@ -1,6 +1,6 @@
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 import miles.utils.external_utils.command_utils as U
 
@@ -8,6 +8,12 @@ register_cuda_ci(
     est_time=600,
     suite="stage-c-4-gpu-h200",
     labels=["fsdp"],
+)
+register_rocm_ci(
+    est_time=600,
+    suite="stage-c-4-gpu-mi300x",
+    labels=["fsdp", "amd"],
+    disabled="Disable due to failure",
 )
 
 NUM_GPUS = 4
@@ -17,8 +23,8 @@ MODEL_NAME = "Qwen3-4B"
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 

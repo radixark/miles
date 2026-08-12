@@ -7,6 +7,7 @@ from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
     _compute_zero_std_metrics,
+    log_rollout_data,
 )
 
 
@@ -58,40 +59,101 @@ class TestTitoMismatchMetrics:
         args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
         samples = make_samples_grouped(1, 4)
         out = _compute_metrics_from_samples(args, samples)
-        assert "tito_session_mismatch_rate" not in out
+        assert not any(key.startswith("tito_session_mismatch_rate") for key in out)
 
-    def test_clean_tito_metadata_yields_zero_rates_per_mismatch_type(self):
-        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
+    @pytest.mark.parametrize(
+        ("configured_version", "metric_version"),
+        [(True, "v1"), ("v1", "v1"), ("v2", "v2")],
+    )
+    def test_clean_tito_metadata_yields_zero_rates_per_mismatch_type(self, configured_version, metric_version):
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=False,
+            log_passrate=False,
+            use_session_server=configured_version,
+        )
         samples = make_samples_grouped(1, 4)
         for s in samples:
             s.metadata = {"tito_session_mismatch": []}
         out = _compute_metrics_from_samples(args, samples)
-        assert out["tito_session_mismatch_rate"] == 0.0
-        for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
-            assert out[f"tito_session_mismatch_rate/{mtype}"] == 0.0
+        metric_prefix = f"tito_session_mismatch_rate/{metric_version}"
+        tito_keys = {
+            metric_prefix,
+            f"{metric_prefix}/special_token_count",
+            f"{metric_prefix}/special_token_type",
+            f"{metric_prefix}/non_assistant_text",
+            f"{metric_prefix}/assistant_text",
+        }
+        assert {key for key in out if key.startswith("tito_session_mismatch_rate")} == tito_keys
+        assert all(out[key] == 0.0 for key in tito_keys)
 
     def test_strict_mismatch_raises_under_ci_test(self):
         """Under ci_test=True, a non-zero rate on the strict mismatch types
         (special_token_count / special_token_type / non_assistant_text) must
         hard-fail — these signal a TITO algorithm or chat-template bug."""
-        args = make_args(advantage_estimator="ppo", ci_test=True, log_passrate=False)
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            log_passrate=False,
+            use_session_server="v1",
+        )
         samples = make_samples_grouped(1, 4)
         samples[0].metadata = {"tito_session_mismatch": [{"type": "special_token_count"}]}
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
-        with pytest.raises(AssertionError, match="special_token_count"):
+        with pytest.raises(
+            AssertionError,
+            match=r"tito_session_mismatch_rate/v1/special_token_count=0\.2500",
+        ):
             _compute_metrics_from_samples(args, samples)
 
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
         pretokenized prefix) — even under ci_test, must not raise."""
-        args = make_args(advantage_estimator="ppo", ci_test=True, log_passrate=False)
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            log_passrate=False,
+            use_session_server="v2",
+        )
         samples = make_samples_grouped(1, 4)
         samples[0].metadata = {"tito_session_mismatch": [{"type": "assistant_text"}]}
         for s in samples[1:]:
             s.metadata = {"tito_session_mismatch": []}
         out = _compute_metrics_from_samples(args, samples)
-        assert out["tito_session_mismatch_rate/assistant_text"] > 0
+        assert out["tito_session_mismatch_rate/v2/assistant_text"] == 0.25
+        assert "tito_session_mismatch_rate/assistant_text" not in out
+
+    def test_tito_metadata_requires_session_server_version(self):
+        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False)
+        samples = make_samples_grouped(1, 4)
+        for sample in samples:
+            sample.metadata = {"tito_session_mismatch": []}
+
+        with pytest.raises(AssertionError, match="session server v1 or v2"):
+            _compute_metrics_from_samples(args, samples)
+
+    def test_rollout_log_fans_out_versioned_tito_keys(self, monkeypatch):
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=False,
+            log_passrate=False,
+            use_session_server="v2",
+        )
+        samples = make_samples_grouped(1, 4)
+        samples[0].metadata = {"tito_session_mismatch": [{"type": "assistant_text"}]}
+        for sample in samples[1:]:
+            sample.metadata = {"tito_session_mismatch": []}
+        logged = {}
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, metrics, **_kwargs: logged.update(metrics),
+        )
+
+        log_rollout_data(0, args, samples, None, 1.0)
+
+        assert logged["rollout/tito_session_mismatch_rate/v2/assistant_text"] == 0.25
+        assert "rollout/tito_session_mismatch_rate/assistant_text" not in logged
 
 
 class TestComputePassrateFromSamples:

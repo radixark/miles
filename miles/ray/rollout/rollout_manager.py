@@ -50,6 +50,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def get_rollout_offload_tags(args) -> list[str]:
+    tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+    if "kv_cache" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+    if "weight" in args.offload_rollout_level:
+        tags.append(GPU_MEMORY_TYPE_WEIGHTS)
+    return tags
+
+
 @ray.remote
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
@@ -60,6 +69,8 @@ class RolloutManager:
 
         self.pg = pg
         self.args = args
+        # set by the training actor after each weight update
+        self.weight_version: int | None = None
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
@@ -156,7 +167,7 @@ class RolloutManager:
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
-            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
@@ -238,7 +249,9 @@ class RolloutManager:
         else:
             if self.use_experimental_refactor:
                 data = await asyncio.to_thread(
-                    call_rollout_function, self.generate_rollout, RolloutFnTrainInput(rollout_id=rollout_id)
+                    call_rollout_function,
+                    self.generate_rollout,
+                    RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
                 )
             else:
                 data = await asyncio.to_thread(
@@ -282,10 +295,29 @@ class RolloutManager:
             await srv.onload(tags)
 
     async def onload_weights(self):
+        if self.args.reload_rollout_weights_from_disk:
+            # No host mirror to restore from; re-read the base from disk.
+            for srv in self.servers.values():
+                await srv.onload_weights_from_disk()
+            return
         await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+
+    # Split offload counterparts for --colocate-memory-peak-device gpu: pure GPU
+    # memory can go before the trainer wakes, the weights (whose release builds
+    # the host mirror) only after the trainer's own backup is gone.
+    async def offload_kv(self):
+        tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
+        if "kv_cache" in self.args.offload_rollout_level:
+            tags.append(GPU_MEMORY_TYPE_KV_CACHE)
+        await self.offload(tags=tags)
+
+    async def offload_weights(self):
+        if "weight" not in self.args.offload_rollout_level:
+            return
+        await self.offload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
     # -------------------------- engine management -----------------------------
 
@@ -371,6 +403,14 @@ class RolloutManager:
         return await srv.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
+
+    def set_weight_version(self, weight_version: int):
+        # warning instead of assert when use indep_dp ft
+        if self.weight_version is not None and weight_version < self.weight_version:
+            message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
+            assert self.args.indep_dp, message
+            logger.warning(message)
+        self.weight_version = weight_version
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config

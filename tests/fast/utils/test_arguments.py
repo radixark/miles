@@ -11,6 +11,8 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _resolve_rollout_functions,
+    _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
     resolve_rollout_function_paths,
@@ -155,6 +157,29 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
 
 
+def test_fully_async_rejects_abort_pause_mode(monkeypatch):
+    """Generation is always in flight, so aborting on every weight update would kill it."""
+    monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+    args = SimpleNamespace(
+        fully_async=True,
+        multi_lora=False,
+        rollout_function_path=None,
+        eval_function_path=None,
+        colocate=False,
+        partial_rollout=False,
+        pause_generation_mode="abort",
+        recompute_logprobs_via_prefill=False,
+        rollout_all_samples_process_path=None,
+        eval_num_gpus=0,
+    )
+
+    with pytest.raises(AssertionError, match="pause-generation-mode abort"):
+        _resolve_rollout_functions(args)
+
+    args.pause_generation_mode = "retract"
+    _resolve_rollout_functions(args)
+
+
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
@@ -250,6 +275,68 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         match="'--save' is required when custom_megatron_post_save_hook_path is set.",
     ):
         miles_validate_args(args)
+
+
+def test_dynamic_global_batch_size_requires_dynamic_batch_size():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--use-dynamic-global-batch-size", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
+        miles_validate_args(args)
+
+
+class TestCriticSaveDerivation:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_derives_sibling_dir_from_save(self):
+        args = self._validate(["--advantage-estimator", "ppo", "--save", "/ckpts/run1"])
+        assert args.critic_save == "/ckpts/run1_critic"
+
+    def test_trailing_slash_is_stripped(self):
+        args = self._validate(["--advantage-estimator", "ppo", "--save", "/ckpts/run1/"])
+        assert args.critic_save == "/ckpts/run1_critic"
+
+    def test_explicit_critic_save_is_respected(self):
+        args = self._validate(
+            ["--advantage-estimator", "ppo", "--save", "/ckpts/run1", "--critic-save", "/elsewhere/critic"]
+        )
+        assert args.critic_save == "/elsewhere/critic"
+
+    def test_stays_none_without_save(self):
+        args = self._validate(["--advantage-estimator", "ppo"])
+        assert args.critic_save is None
+
+
+class TestSessionServerV2Validation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    @pytest.mark.parametrize(
+        ("extra", "flag"),
+        [
+            (["--group-rm"], "--group-rm"),
+            (["--partial-rollout"], "--partial-rollout"),
+            (
+                ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
+                "--recompute-logprobs-via-prefill",
+            ),
+        ],
+    )
+    def test_rejects_unsupported_list_consumers(self, extra, flag):
+        args = self._parse(["--use-session-server", "v2", *extra])
+
+        with pytest.raises(ValueError) as exc_info:
+            miles_validate_args(args)
+
+        assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
 
 
 class TestTitoFixedTemplateConfiguration:
@@ -633,3 +720,103 @@ class TestValidateAsyncOffPolicyCorrection:
 
     def test_non_ppo_estimators_are_unaffected(self):
         validate_async_off_policy_correction(_make_async_ppo_args(use_critic=False))
+
+
+class TestValidateRematerializeParamFromMasterWeight:
+    def _make_args(self, **overrides) -> SimpleNamespace:
+        args = SimpleNamespace(
+            rematerialize_param_from_master_weight=True,
+            train_backend="megatron",
+            lora_rank=0,
+            lora_adapter_path=None,
+            debug_disable_optimizer=False,
+            indep_dp=False,
+            colocate=True,
+            offload_train=True,
+            offload_train_target="cpu",
+            use_distributed_optimizer=True,
+            keep_old_actor=False,
+            kl_coef=0,
+            use_kl_loss=False,
+            opd_teacher_load=None,
+            use_precision_aware_optimizer=False,
+            optimizer_cpu_offload=False,
+            overlap_param_gather=False,
+            compute_advantages_and_returns=True,
+            num_critic_only_steps=0,
+            debug_train_only=False,
+            ci_test=False,
+            check_rematerialize_param_from_master_weight=False,
+            disable_param_buffers_cpu_backup=False,
+        )
+        for key, value in overrides.items():
+            setattr(args, key, value)
+        return args
+
+    def test_valid_config_forces_no_param_buffer_cpu_backup(self):
+        args = self._make_args()
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.disable_param_buffers_cpu_backup is True
+
+    def test_accepts_precision_aware_with_cpu_offload(self):
+        args = self._make_args(use_precision_aware_optimizer=True, optimizer_cpu_offload=True)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.disable_param_buffers_cpu_backup is True
+
+    def test_ci_test_auto_enables_the_check(self):
+        args = self._make_args(ci_test=True)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.check_rematerialize_param_from_master_weight is True
+
+    def test_check_stays_off_outside_ci(self):
+        args = self._make_args()
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.check_rematerialize_param_from_master_weight is False
+
+    def test_accepts_ref_and_teacher_tags(self):
+        for overrides in ({"use_kl_loss": True}, {"kl_coef": 0.1}, {"opd_teacher_load": "/path/to/teacher"}):
+            _validate_rematerialize_param_from_master_weight(self._make_args(**overrides))
+
+    def test_debug_train_only_silently_disables(self):
+        args = self._make_args(debug_train_only=True, colocate=False)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.rematerialize_param_from_master_weight is False
+        assert args.disable_param_buffers_cpu_backup is False
+
+    def test_noop_when_disabled(self):
+        args = self._make_args(rematerialize_param_from_master_weight=False, colocate=False)
+        _validate_rematerialize_param_from_master_weight(args)
+        assert args.disable_param_buffers_cpu_backup is False
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"lora_rank": 8},
+            {"lora_adapter_path": "/path/to/adapter"},
+            {"debug_disable_optimizer": True},
+            {"indep_dp": True},
+            {"colocate": False},
+            {"offload_train": False},
+            {"offload_train_target": "disk"},
+            {"use_distributed_optimizer": False},
+            {"keep_old_actor": True},
+            {"use_precision_aware_optimizer": True},
+            {"overlap_param_gather": True},
+            {"compute_advantages_and_returns": False},
+            {"num_critic_only_steps": 2},
+        ],
+    )
+    def test_rejects_unsupported_config(self, overrides):
+        with pytest.raises(AssertionError):
+            _validate_rematerialize_param_from_master_weight(self._make_args(**overrides))
+
+    def test_backend_is_checked_before_megatron_only_args(self):
+        # An fsdp Namespace has none of the megatron args the later asserts read.
+        args = SimpleNamespace(
+            rematerialize_param_from_master_weight=True,
+            train_backend="fsdp",
+            debug_train_only=False,
+        )
+        with pytest.raises(AssertionError, match="Megatron"):
+            _validate_rematerialize_param_from_master_weight(args)

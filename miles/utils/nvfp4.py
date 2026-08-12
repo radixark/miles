@@ -62,6 +62,41 @@ def _pad_rows_for_te_quantizer(weight: torch.Tensor) -> torch.Tensor:
     return torch.cat((weight, padding), dim=0)
 
 
+E4M3_MIN_SUBNORMAL = 2.0**-9
+# Midpoints between adjacent E2M1 magnitudes, for nearest-value encoding.
+_E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
+
+
+def _reencode_zero_scale_blocks(
+    weight: torch.Tensor,
+    qweight: torch.Tensor,
+    block_scale: torch.Tensor,
+    global_decode_scale: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """TE's NVFP4 kernel flushes a block to zero when its E4M3 scale
+    underflows; ModelOpt clamps the block scale at the smallest E4M3
+    subnormal instead. Re-encode flushed blocks on the clamped grid so tiny
+    weights survive (and ModelOpt checkpoints round-trip byte-for-byte)."""
+    zero_blocks = block_scale.float() == 0
+    if not zero_blocks.any():
+        return qweight, block_scale
+
+    norm = weight.float() / (E4M3_MIN_SUBNORMAL * global_decode_scale.float())
+    midpoints = torch.tensor(_E2M1_MIDPOINTS, device=weight.device, dtype=torch.float32)
+    mag_idx = torch.bucketize(norm.abs().contiguous(), midpoints).clamp(max=7)
+    nibble = (mag_idx + torch.signbit(norm) * 8).to(torch.uint8)
+    packed = nibble[..., 0::2] | (nibble[..., 1::2] << 4)
+
+    byte_mask = zero_blocks.repeat_interleave(NVFP4_GROUP_SIZE // 2, dim=-1)
+    qweight = torch.where(byte_mask, packed, qweight)
+    block_scale = torch.where(
+        zero_blocks,
+        torch.tensor(E4M3_MIN_SUBNORMAL, device=block_scale.device),
+        block_scale.float(),
+    ).to(torch.float8_e4m3fn)
+    return qweight, block_scale
+
+
 def nvfp4_quantize_1d(
     weight: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -90,7 +125,11 @@ def nvfp4_quantize_1d(
     qweight = quantized._rowwise_data[:num_rows, : num_cols // 2].contiguous()
     block_scale = quantized._rowwise_scale_inv[:num_rows, : num_cols // NVFP4_GROUP_SIZE].contiguous()
     amax = quantized._amax_rowwise.reshape(-1)[0]
-    return qweight, block_scale.view(torch.float8_e4m3fn), nvfp4_global_decode_scale_te(amax, nvfp4_e4m3_max)
+    global_decode_scale = nvfp4_global_decode_scale_te(amax, nvfp4_e4m3_max)
+    qweight, block_scale = _reencode_zero_scale_blocks(
+        weight, qweight, block_scale.view(torch.float8_e4m3fn), global_decode_scale
+    )
+    return qweight, block_scale, global_decode_scale
 
 
 def nvfp4_quantize_1d_pair(

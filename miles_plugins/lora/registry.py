@@ -102,6 +102,11 @@ def _build_model_specs() -> dict[str, LoRAArchSpec]:
         "qwen3_5_moe": hybrid,
         "qwen3_6": hybrid,
         "qwen3_6_moe": hybrid,
+        # Text-only variants share the hybrid structure (qwen3.8 is qwen3_5_moe_text).
+        "qwen3_5_text": hybrid,
+        "qwen3_5_moe_text": hybrid,
+        "qwen3_6_text": hybrid,
+        "qwen3_6_moe_text": hybrid,
         "qwen3_next": hybrid,
         "deepseek_v3": mla,
         "deepseek_v32": mla,
@@ -297,14 +302,14 @@ def preflight_native_lora(
         try:
             from miles.utils.external_utils.command_utils import repo_base_dir
 
-            candidate = os.path.join(repo_base_dir, "scripts", "models", f"{megatron_model_type}.sh")
+            candidate = os.path.join(repo_base_dir, "scripts", "models", f"{megatron_model_type}.py")
             model_args_script = candidate if os.path.exists(candidate) else None
         except Exception:
             model_args_script = None
         if strict:
             assert model_args_script is not None, (
-                f"[lora-preflight] scripts/models/{megatron_model_type}.sh not found; raw-mode conversion "
-                "and training source MODEL_ARGS from that file."
+                f"[lora-preflight] scripts/models/{megatron_model_type}.py not found; raw-mode conversion "
+                "and training source model args from that file."
             )
 
     report = PreflightReport(

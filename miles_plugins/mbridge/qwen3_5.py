@@ -21,6 +21,9 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     ``_mtp_experts_fused()`` autodetects from the safetensor index.
     """
 
+    # HF prefix in front of ".layers.{i}" / ".embed_tokens" / ".norm".
+    _HF_MODEL_PREFIX = "model.language_model"
+
     _DIRECT_MAPPING = {
         "embedding.word_embeddings.weight": "model.language_model.embed_tokens.weight",
         "decoder.final_layernorm.weight": "model.language_model.norm.weight",
@@ -211,7 +214,7 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         index = getattr(io, "index", None) if io is not None else None
         if not index:
             return True
-        fused = any("model.language_model.layers." in k and k.endswith("mlp.experts.gate_up_proj") for k in index)
+        fused = any(f"{self._HF_MODEL_PREFIX}.layers." in k and k.endswith("mlp.experts.gate_up_proj") for k in index)
         self._experts_fused_cached = fused
         return fused
 
@@ -320,10 +323,10 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
             else:
                 raise NotImplementedError(f"Unsupported transformer component in MTP: {name}")
 
-            # MTP weights use model.language_model prefix in regular layers,
+            # MTP weights use the model prefix in regular layers,
             # but mtp.layers.{idx} directly for MTP layers
             convert_names = [
-                cn.replace(f"model.language_model.layers.{mtp_layer_idx}", f"mtp.layers.{mtp_layer_idx}")
+                cn.replace(f"{self._HF_MODEL_PREFIX}.layers.{mtp_layer_idx}", f"mtp.layers.{mtp_layer_idx}")
                 for cn in convert_names
             ]
             return convert_names
@@ -376,8 +379,13 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
         if "mlp.experts.linear_fc" in mcore_weights_name and len(hf_weights) == 1:
             w = hf_weights[0]
             if w.dim() == 3:
-                # Extract expert_id from name like "...linear_fc1.weight42"
+                # The name here is the EP-LOCAL mcore param name, so its trailing
+                # index needs the EP offset before slicing the fused 3-D tensor —
+                # without it every rank takes experts [0, num_local). The unfused
+                # path is unaffected: the global id is in the HF tensor name.
                 expert_id = int(mcore_weights_name.split("weight")[-1])
+                if self.mpu.ep_size > 1:
+                    expert_id += (self.config.num_moe_experts // self.mpu.ep_size) * self.mpu.ep_rank
                 expert_w = w[expert_id]  # (out_features, in_features)
                 return expert_w.contiguous()
 
@@ -428,3 +436,28 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
                 base_kwargs["ffn_hidden_size"] = text_config.shared_expert_intermediate_size
 
         return self._build_base_config(**base_kwargs)
+
+
+def _to_text_layout(mapping: dict) -> dict:
+    """Rewrite a VLM-layout mapping (model.language_model.*) to the flat
+    text-only layout (model.*)."""
+
+    def _rewrite(value):
+        if isinstance(value, list):
+            return [v.replace("model.language_model.", "model.") for v in value]
+        return value.replace("model.language_model.", "model.")
+
+    return {key: _rewrite(value) for key, value in mapping.items()}
+
+
+@register_model(["qwen3_5_moe_text", "qwen3_5_text", "qwen3_6_moe_text", "qwen3_6_text"])
+class Qwen3_5TextBridge(Qwen3_5Bridge):
+    """Text-only checkpoints (e.g. ``qwen3_5_moe_text``): flat config with no
+    ``text_config`` nesting, weights under ``model.layers.*``. Everything else
+    matches Qwen3_5Bridge."""
+
+    _HF_MODEL_PREFIX = "model"
+    _DIRECT_MAPPING = _to_text_layout(Qwen3_5Bridge._DIRECT_MAPPING)
+    _ATTENTION_MAPPING = _to_text_layout(Qwen3_5Bridge._ATTENTION_MAPPING)
+    _MLP_MAPPING = _to_text_layout(Qwen3_5Bridge._MLP_MAPPING)
+    _MLP_EXPERTS_MAPPING_UNFUSED = _to_text_layout(Qwen3_5Bridge._MLP_EXPERTS_MAPPING_UNFUSED)

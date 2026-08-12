@@ -48,7 +48,10 @@ def _convert_to_hf_core(args, model_name, name, param):
     elif "qwen3next" in model_name:
         converted_named_tensors = convert_qwen3_next_to_hf(args, name, param)
     elif "qwen3_5" in model_name or "qwen3_6" in model_name:
-        converted_named_tensors = convert_qwen3_5_to_hf(args, name, param)
+        # Text-only configs store weights under model.layers, the VLM layout
+        # nests them under model.language_model.
+        model_prefix = "model" if "text" in model_name else "model.language_model"
+        converted_named_tensors = convert_qwen3_5_to_hf(args, name, param, model_prefix=model_prefix)
     elif "qwen2" in model_name or "qwen3" in model_name:
         converted_named_tensors = convert_qwen2_to_hf(args, name, param)
     elif "deepseekv4" in model_name:

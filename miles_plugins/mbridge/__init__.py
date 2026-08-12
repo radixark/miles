@@ -7,7 +7,7 @@ from .inkling import InklingBridge
 from .joyai_llm_flash import JoyAILLMFlashBridge
 from .kimi_k25 import KimiK25Bridge
 from .mimo import MimoBridge
-from .qwen3_5 import Qwen3_5Bridge
+from .qwen3_5 import Qwen3_5Bridge, Qwen3_5TextBridge
 from .qwen3_next import Qwen3NextBridge
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "GLM4MoELiteBridge",
     "Qwen3NextBridge",
     "Qwen3_5Bridge",
+    "Qwen3_5TextBridge",
     "MimoBridge",
     "DeepseekV32Bridge",
     "DeepseekV4Bridge",

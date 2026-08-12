@@ -1,7 +1,7 @@
-diff --git a/miles/backends/experimental/fsdp_utils/update_weight_utils.py b/miles/backends/experimental/fsdp_utils/update_weight_utils.py
+diff --git a/miles/backends/fsdp_utils/update_weight_utils.py b/miles/backends/fsdp_utils/update_weight_utils.py
 index 98000e7d3..94fb71da5 100644
---- a/miles/backends/experimental/fsdp_utils/update_weight_utils.py
-+++ b/miles/backends/experimental/fsdp_utils/update_weight_utils.py
+--- a/miles/backends/fsdp_utils/update_weight_utils.py
++++ b/miles/backends/fsdp_utils/update_weight_utils.py
 @@ -234,12 +234,12 @@ class UpdateWeightFromDistributed(UpdateWeight):
                      i * self.args.rollout_num_gpus_per_engine + 1,
                      world_size,
@@ -340,7 +340,7 @@ diff --git a/miles/utils/external_utils/command_utils.py b/miles/utils/external_
 index d016e01ac..08b4d6eff 100644
 --- a/miles/utils/external_utils/command_utils.py
 +++ b/miles/utils/external_utils/command_utils.py
-@@ -193,6 +193,112 @@ def execute_train(
+@@ -193,6 +193,107 @@ def execute_train(
          )
  
  
@@ -364,7 +364,7 @@ index d016e01ac..08b4d6eff 100644
 +    train_backend_fsdp = "--train-backend fsdp" in train_args
 +    assert train_backend_fsdp == (megatron_model_type is None)
 +
-+    exec_command(
++    exec_command_cpu(
 +        "pkill -9 sglang; "
 +        "sleep 3; "
 +        f"{'' if external_ray else 'ray stop --force; '}"
@@ -381,9 +381,9 @@ index d016e01ac..08b4d6eff 100644
 +    )
 +
 +    if not external_ray:
-+        exec_command(
++        exec_command_cpu(
 +            # will prevent ray from buffering stdout/stderr
-+            f"export PYTHONBUFFERED=16 && "
++            f"export PYTHONUNBUFFERED=1 && "
 +            f"ray start --head --node-ip-address {master_addr} --disable-usage-stats "
 +        )
 +
@@ -434,18 +434,13 @@ index d016e01ac..08b4d6eff 100644
 +    )
 +
 +    if get_bool_env_var("SLIME_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-+        cmd_megatron_model_source = (
-+            f'source "{repo_base_dir}/scripts/models/{megatron_model_type}.sh" && '
-+            if megatron_model_type is not None
-+            else ""
-+        )
-+        exec_command(
-+            f"export no_proxy=127.0.0.1 && export PYTHONBUFFERED=16 && "
-+            f"{cmd_megatron_model_source}"
++        model_args = shell_safe_model_args(megatron_model_type)
++        exec_command_cpu(
++            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
 +            f'ray job submit --address="http://127.0.0.1:8265" '
 +            f"--runtime-env-json='{runtime_env_json}' "
 +            f"-- python3 {train_script} "
-+            f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
++            f"{model_args} "
 +            f"{train_args}"
 +        )
 +

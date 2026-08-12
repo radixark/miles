@@ -7,9 +7,9 @@ from argparse import Namespace
 from collections import deque
 from dataclasses import replace
 
-import httpx
 import pytest
 
+import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
@@ -74,6 +74,10 @@ def make_args(**overrides) -> Namespace:
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
         async_max_concurrent_samples=None,
+        async_data_buffer_capacity_factor=1000.0,
+        async_unused_samples_handler="drop",
+        custom_async_data_buffer_path=None,
+        rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
@@ -85,7 +89,7 @@ def make_args(**overrides) -> Namespace:
 
 
 def make_fn(monkeypatch, args, data_source, generate=None):
-    async def default_generate(state, group, sampling_params, evaluation=False):
+    async def default_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await asyncio.sleep(0)
         return group
 
@@ -104,8 +108,8 @@ async def test_drain_collects_batch_sorted_with_metrics(monkeypatch):
     indices = [group[0].index for group in output.samples]
     assert indices == sorted(indices)
     assert all(len(group) == N_SAMPLES_PER_PROMPT for group in output.samples)
-    assert output.metrics["rollout/fully_async/aborted_groups_recycled"] == 0
-    assert output.metrics["rollout/fully_async/stale_groups_recycled"] == 0
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 0
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 0
 
     # The worker persists across calls; a second drain works on the same instance.
     output2 = await fn(RolloutFnTrainInput(rollout_id=1))
@@ -116,7 +120,7 @@ async def test_eval_without_fleet_pauses_producer(monkeypatch):
     """Shared-engine eval: producer submissions pause during eval and resume after."""
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -189,7 +193,8 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
 async def test_aborted_group_recycled(monkeypatch):
     aborted = make_group(1, status=Sample.Status.ABORTED)
     data_source = FakeDataSource(scripted=[aborted])
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+    args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
@@ -197,7 +202,7 @@ async def test_aborted_group_recycled(monkeypatch):
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
-    assert output.metrics["rollout/fully_async/aborted_groups_recycled"] == 1
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
 
 
 async def test_stale_group_recycled(monkeypatch):
@@ -217,23 +222,29 @@ async def test_stale_group_recycled(monkeypatch):
 
     data_source.get_samples = get_samples_with_fresh_versions
 
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=2), data_source)
+    args = make_args(rollout_batch_size=1, max_weight_staleness=2, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source)
 
-    class FakeWeightVersion:
-        async def get(self, args):
-            return 10
-
-    fn._weight_version = FakeWeightVersion()
-
-    output = await fn(RolloutFnTrainInput(rollout_id=0))
+    output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
 
     assert data_source.recycled == [stale]
-    assert output.metrics["rollout/fully_async/stale_groups_recycled"] == 1
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
     assert output.metrics["rollout/fully_async/max_staleness"] == 5
 
 
+async def test_stale_group_dropped_by_default(monkeypatch):
+    stale = make_group(1, weight_versions=["5"])
+    data_source = FakeDataSource(scripted=[stale])
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=2), data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0, weight_version=10))
+
+    assert data_source.recycled == []
+    assert output.metrics["rollout/fully_async/stale_groups_filtered"] == 1
+
+
 async def test_worker_error_propagates(monkeypatch):
-    async def failing_generate(state, group, sampling_params, evaluation=False):
+    async def failing_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         raise RuntimeError("generation exploded")
 
     fn = make_fn(monkeypatch, make_args(), FakeDataSource(), generate=failing_generate)
@@ -245,7 +256,7 @@ async def test_worker_error_propagates(monkeypatch):
 async def test_worker_bounds_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -264,7 +275,7 @@ async def test_worker_bounds_in_flight_groups(monkeypatch):
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
-    async def blocking_generate(state, group, sampling_params, evaluation=False):
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         await release.wait()
         return group
 
@@ -289,9 +300,9 @@ async def test_worker_failure_beats_queued_groups(monkeypatch):
     async def boom():
         raise RuntimeError("generation exploded")
 
-    fn._output = asyncio.Queue(maxsize=fully_async.OUTPUT_QUEUE_MAX_GROUPS)
+    fn._output = make_buffer()[0]
     group = make_group(1)
-    await fn._output.put((group, group))
+    await fn._output.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
     fn._worker = asyncio.create_task(boom())
     await asyncio.sleep(0)
 
@@ -306,7 +317,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     data_source = FakeDataSource(scripted=[prompt_group])
     submitted = []
 
-    async def multi_sample_generate(state, group, sampling_params, evaluation=False):
+    async def multi_sample_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
         assert all(isinstance(sample, Sample) for sample in group), "resubmitted a nested group"
         submitted.append(group)
         if len(submitted) > 1:
@@ -317,7 +328,8 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
             expanded.append([aborted, replace(sample)])
         return expanded
 
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source, generate=multi_sample_generate)
+    args = make_args(rollout_batch_size=1, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, data_source, generate=multi_sample_generate)
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert data_source.recycled == [prompt_group]
@@ -326,22 +338,26 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
     assert len(output.samples) == 1
 
 
+def reject_group_1(args, group, **kwargs):
+    keep = group[0].group_index != 1
+    return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
+
+
 async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
     rejected = make_group(1)
     data_source = FakeDataSource(scripted=[rejected])
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
-
-    def reject_group_1(args, group, **kwargs):
-        keep = group[0].group_index != 1
-        return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
-
-    fn._dynamic_filter = reject_group_1
+    args = make_args(
+        rollout_batch_size=1,
+        dynamic_sampling_filter_path=f"{__name__}.reject_group_1",
+        async_unused_samples_handler="retry",
+    )
+    fn = make_fn(monkeypatch, args, data_source)
 
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert len(output.samples) == 1
     assert output.samples[0][0].group_index != 1
-    # Unlike a recycle, a filtered group is not returned to the data source for re-sampling.
+    # Dropped even with handler="retry": filter rejections bypass the unused handler.
     assert data_source.recycled == []
     assert output.metrics["rollout/dynamic_filter/drop_rejected"] == 1
 
@@ -361,24 +377,163 @@ async def test_sample_filter_marks_samples_without_shrinking_the_batch(monkeypat
     assert [sample.remove_sample for sample in output.samples[0]] == [True, False]
 
 
-async def test_weight_version_throttles_failed_queries(monkeypatch):
-    """A drain queries once per group, so an unreachable router must not cost one timeout each."""
-    calls = []
+async def test_staleness_filter_off_before_the_first_weight_update(monkeypatch):
+    """weight_version is None until the trainer pushes weights; staleness is unknown, not zero."""
+    stale = make_group(1, weight_versions=["5"])
+    data_source = FakeDataSource(scripted=[stale])
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=1, max_weight_staleness=0), data_source)
 
-    async def unreachable_router(url):
-        calls.append(url)
-        raise httpx.ConnectError("router down")
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
 
-    monkeypatch.setattr(fully_async, "get", unreachable_router)
-    args = make_args()
+    assert data_source.recycled == []
+    assert output.samples[0][0].group_index == 1
+    assert "rollout/fully_async/max_staleness" not in output.metrics
 
-    throttled = fully_async._CachedWeightVersion(ttl=60.0)
-    assert await throttled.get(args) is None
-    assert await throttled.get(args) is None
-    assert len(calls) == 1
 
-    calls.clear()
-    expired = fully_async._CachedWeightVersion(ttl=0.0)
-    assert await expired.get(args) is None
-    assert await expired.get(args) is None
-    assert len(calls) == 2
+# ── DataBuffer: staleness-bounded buffering ─────────────────────────
+
+
+def make_buffer(max_groups=None, max_staleness=None):
+    unused = []
+    args = make_args(
+        rollout_batch_size=1,  # capacity is factor * batch size; batch size 1 makes it count groups
+        async_data_buffer_capacity_factor=max_groups or 1000.0,
+        max_weight_staleness=max_staleness,
+    )
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+    )
+    return buffer, unused
+
+
+async def put_group(buffer, group):
+    """These tests reuse one group as both the prompt group and the finished group."""
+    await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+
+
+async def test_buffer_blocks_producer_when_full():
+    buffer, _ = make_buffer(max_groups=2)
+    await put_group(buffer, make_group(1))
+    await put_group(buffer, make_group(2))
+
+    blocked = asyncio.create_task(put_group(buffer, make_group(3)))
+    await asyncio.sleep(0.01)
+    assert not blocked.done()
+    assert buffer.get_metrics()["rollout/fully_async/queue_size"] == 2
+
+    assert (await buffer.get()).group[0].group_index == 1
+    await blocked
+    assert (await buffer.get()).group[0].group_index == 2
+    assert (await buffer.get()).group[0].group_index == 3
+
+
+async def test_buffer_get_ignores_unknown_context_keys():
+    """get(**context) lets the driver add keys without breaking existing buffers."""
+    buffer, _ = make_buffer()
+    await put_group(buffer, make_group(1))
+
+    assert (await buffer.get(current_version=1, some_future_key=2)).group[0].group_index == 1
+
+
+async def test_buffer_get_skips_groups_stale_at_consumption_time():
+    """Both groups were fresh when buffered; only the version passed to get() decides."""
+    buffer, unused = make_buffer(max_staleness=2)
+    stale = make_group(1, weight_versions=["5"])
+    await put_group(buffer, stale)
+    await put_group(buffer, make_group(2, weight_versions=["9"]))
+
+    assert (await buffer.get(current_version=10)).group[0].group_index == 2
+    assert unused == [stale]
+    assert buffer.get_metrics()["rollout/fully_async/stale_groups_filtered"] == 1
+
+
+async def test_buffer_staleness_metrics():
+    buffer, _ = make_buffer(max_groups=8)
+    await put_group(buffer, make_group(1, weight_versions=["4"]))
+    assert "rollout/fully_async/buffer_avg_staleness" not in buffer.get_metrics()  # engine version never seen
+
+    await put_group(buffer, make_group(2, weight_versions=["6"]))
+    await put_group(buffer, make_group(3, weight_versions=["8"]))
+    await buffer.get(current_version=10)  # pops group 1 and tracks the engine version clock
+    metrics = buffer.get_metrics()
+    assert metrics["rollout/fully_async/avg_staleness"] == 6.0  # consumed group 1: 10 - 4
+    assert metrics["rollout/fully_async/buffer_avg_staleness"] == 3.0  # buffered groups 2, 3: (4 + 2) / 2
+    assert metrics["rollout/fully_async/buffer_max_staleness"] == 4
+
+
+class RecordingBuffer(data_buffer.DefaultDataBuffer):
+    constructed_with = None
+
+    def __init__(self, input):
+        super().__init__(input)
+        RecordingBuffer.constructed_with = input
+
+
+async def test_custom_data_buffer_path_replaces_default(monkeypatch):
+    path = f"{__name__}.RecordingBuffer"
+    args = make_args(custom_async_data_buffer_path=path, async_unused_samples_handler="retry")
+    fn = make_fn(monkeypatch, args, FakeDataSource())
+
+    output = await fn(RolloutFnTrainInput(rollout_id=0))
+
+    assert type(fn._output) is RecordingBuffer
+    assert RecordingBuffer.constructed_with.unused_handler_fn == fn._recycle
+    assert len(output.samples) == 2
+
+
+async def test_worker_defaults_to_sample_granularity(monkeypatch):
+    """Unset --rollout-submission-granularity: this driver backfills on sample completion."""
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1)
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    # Report every sample of the still-pending group as finished.
+    for _ in range(N_SAMPLES_PER_PROMPT):
+        callbacks[0]()
+    await asyncio.sleep(0.01)
+
+    # A replacement group went out even though the first group has not returned.
+    assert data_source.num_get_calls == 2
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1
+
+
+async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
+    callbacks = []
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        callbacks.append(sample_done_callback)
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    args = make_args(rollout_batch_size=1, rollout_submission_granularity="group")
+    fn = make_fn(monkeypatch, args, data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+    # no callback wired at group level
+    assert callbacks == [None]
+
+    await asyncio.sleep(0.01)
+    assert data_source.num_get_calls == 1
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 1

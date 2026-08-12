@@ -82,3 +82,13 @@ def test_server_cmd_defaults_to_the_staged_task():
     # on it, not the env's built-in headless-terminal default.
     cmd = recipe.server_cmd(default_task_id="fix-git")
     assert "TB2_DEFAULT_TASK_ID=fix-git " in cmd
+
+
+def test_task_env_resources_floors(tmp_path: Path):
+    """The floors are recipe policy, proven once here; the per-provider tests
+    pin only each materialization's unit/kwarg mapping."""
+    (tmp_path / "task.toml").write_text("[environment]\ncpus = 0\nmemory_mb = 128\nstorage_mb = 1024\n")
+    assert recipe.task_env_resources(tmp_path) == (1, 2048, 10240)
+
+    (tmp_path / "task.toml").write_text("[environment]\ncpus = 4\nmemory_mb = 8192\nstorage_mb = 20480\n")
+    assert recipe.task_env_resources(tmp_path) == (4, 8192, 20480)

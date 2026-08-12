@@ -15,6 +15,7 @@ from miles.backends.megatron_utils.lora_utils import (
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
+    lora_rollout_base_retained,
     pp_assemble_full_adapter,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -208,7 +209,12 @@ class UpdateWeightFromTensor:
         )
         skip_base_sync = (
             self.is_lora
-            and (self.use_distribute or lora_base_cpu_backup_enabled(self.args) or colocate_base_persistent)
+            and (
+                self.use_distribute
+                or lora_base_cpu_backup_enabled(self.args)
+                or colocate_base_persistent
+                or lora_rollout_base_retained(self.args)
+            )
             and not getattr(self.args, "check_weight_update_equal", False)
         )
 
@@ -242,9 +248,9 @@ class UpdateWeightFromTensor:
                 del long_lived_tensors, mm_tower_tensors
 
         if self.is_lora:
-            # SGLang's load_lora_adapter_from_tensors expects the full adapter in
-            # one call; drain the bridge's chunker so --update-weight-buffer-size
-            # only bounds the base path.
+            # Drain the iterator (PP assembly needs the full adapter), then
+            # re-chunk by --update-weight-buffer-size and stream the chunks so
+            # the IPC transfer peak stays bounded for large adapters.
             accumulated_named_tensors: list = []
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="lora"
@@ -261,13 +267,24 @@ class UpdateWeightFromTensor:
             if self.args.megatron_to_hf_mode != "bridge":
                 accumulated_named_tensors = pp_assemble_full_adapter(accumulated_named_tensors)
 
-            refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
-            results = ray.get(refs)
-            _check_weight_sync_results(results, is_lora=True)
-            del long_lived_tensors
+            chunks = _chunk_named_tensors_by_size(accumulated_named_tensors, self.args.update_weight_buffer_size)
+            for chunk_idx, chunk in enumerate(chunks):
+                refs, long_lived_tensors = self._send_lora_params(
+                    chunk,
+                    is_first_chunk=chunk_idx == 0,
+                    is_last_chunk=chunk_idx == len(chunks) - 1,
+                )
+                results = ray.get(refs)
+                _check_weight_sync_results(results, is_lora=True)
+                del long_lived_tensors
             del accumulated_named_tensors
-            torch.cuda.ipc_collect()
+            # No torch.cuda.ipc_collect(): collecting while the colocated engine
+            # still caches the handles double-unlinks the backing shm files.
             torch.cuda.empty_cache()
+
+            if rank == 0:
+                logger.info("LoRA weight version %s sent in %d chunks", self.weight_version, len(chunks))
+            del chunks
 
             if not self._lora_base_synced:
                 self._lora_base_synced = True
@@ -347,7 +364,13 @@ class UpdateWeightFromTensor:
                 refs = (refs or []) + refs_distributed
         return refs or [], long_lived_tensors
 
-    def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def _send_lora_params(
+        self,
+        hf_named_tensors,
+        *,
+        is_first_chunk: bool = True,
+        is_last_chunk: bool = True,
+    ) -> tuple[list[ObjectRef], Any]:
         if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
             raise RuntimeError(
                 "LoRA weight sync failed: chunk contains no LoRA weights "
@@ -365,11 +388,34 @@ class UpdateWeightFromTensor:
             lora_config=self._lora_config,
             lora_name=LORA_ADAPTER_NAME,
             lora_loaded=self._lora_loaded,
+            lora_is_first_chunk=is_first_chunk,
+            lora_is_last_chunk=is_last_chunk,
             check_equal=getattr(self.args, "check_lora_weight_equal", False),
             repack_lora_for_ipc=getattr(self.args, "offload_train", False),
         )
-        self._lora_loaded = True
+        if is_last_chunk:
+            self._lora_loaded = True
         return refs or [], long_lived_tensors
+
+
+def _chunk_named_tensors_by_size(
+    named_tensors: list[tuple[str, torch.Tensor]], chunk_size: int
+) -> list[list[tuple[str, torch.Tensor]]]:
+    """Pack named tensors into chunks <= chunk_size bytes (a single oversized
+    tensor still forms its own chunk)."""
+    chunks: list[list[tuple[str, torch.Tensor]]] = []
+    bucket: list[tuple[str, torch.Tensor]] = []
+    bucket_bytes = 0
+    for name, tensor in named_tensors:
+        nbytes = tensor.numel() * tensor.element_size()
+        if bucket and bucket_bytes + nbytes > chunk_size:
+            chunks.append(bucket)
+            bucket, bucket_bytes = [], 0
+        bucket.append((name, tensor))
+        bucket_bytes += nbytes
+    if bucket:
+        chunks.append(bucket)
+    return chunks
 
 
 def _repack_onto_fresh_storage(
@@ -418,6 +464,8 @@ def _send_to_colocated_engine(
     lora_config: dict | None = None,
     lora_name: str | None = None,
     lora_loaded: bool = False,
+    lora_is_first_chunk: bool = True,
+    lora_is_last_chunk: bool = True,
     check_equal: bool = False,
     selector: str = "all",
     repack_lora_for_ipc: bool = False,
@@ -467,10 +515,9 @@ def _send_to_colocated_engine(
     refs = []
     if is_gather_src:
         if is_lora:
-            try:
+            # Unload the previous adapter only before the first chunk.
+            if lora_is_first_chunk and lora_loaded:
                 ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
-            except Exception as _unload_err:
-                logger.debug("lora unload before load skipped: %s", _unload_err)
 
             expected_checksums = None
             if check_equal:
@@ -489,6 +536,8 @@ def _send_to_colocated_engine(
                         per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
                     ],
                     expected_checksums=expected_checksums,
+                    is_first_chunk=lora_is_first_chunk,
+                    is_last_chunk=lora_is_last_chunk,
                 )
             )
 

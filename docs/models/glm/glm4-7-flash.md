@@ -35,7 +35,8 @@ The bash launcher hardcodes `BASE_DIR=/root/shared`. The Python launcher downloa
 
 ```bash
 cd /root/miles
-source scripts/models/glm4.7-flash.sh
+MODEL_ARGS_LINE="$(python3 scripts/model_args.py glm4.7-flash)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \

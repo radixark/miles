@@ -55,12 +55,12 @@ class CaseConfig:
 
 
 def prepare(case: CaseConfig, *, need_fp8: bool, need_int4: bool, all_bridge: bool) -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B --local-dir /root/models/Qwen3-30B-A3B")
     if need_fp8:
-        U.exec_command("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
+        U.exec_command_cpu("hf download Qwen/Qwen3-30B-A3B-FP8 --local-dir /root/models/Qwen3-30B-A3B-FP8")
     if need_int4:
-        U.exec_command(
+        U.exec_command_gpu(
             f"python tools/convert_hf_to_int4_direct.py "
             f"--model-dir /root/models/{MODEL_NAME} "
             f"--save-dir /root/models/{MODEL_NAME}-INT4"
@@ -198,6 +198,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     )
     if case.colocate:
         misc_args += "--colocate "
+        misc_args += "--rematerialize-param-from-master-weight "
     else:
         misc_args += f"--rollout-num-gpus {case.rollout_num_gpus} "
 

@@ -36,23 +36,23 @@ Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
                      logged in plaintext. Point it at a file every node can
                      read: a dotfile, K8s Secret mount, or shared-FS path.
   OPENENV_DAYTONA_CREATE_CONCURRENCY  max in-flight sandbox creates (default 4).
-  OPENENV_DAYTONA_READY_TIMEOUT_S     server-ready wait per sandbox (default 300).
-  TB2_COMMAND_TIMEOUT_S        per-exec timeout inside the sandbox (default 900).
+  OPENENV_DAYTONA_CREATE_MAX_RETRIES  how many throttled creates to retry (default 8).
+
+Everything describing ONE sandbox — the ready deadline, and the auto-stop /
+auto-delete backstop — is documented and read in ``tb2_sandbox_daytona``, and
+the per-exec timeout inside it (TB2_COMMAND_TIMEOUT_S) in
+``tb2_sandbox_recipe``, next to the code each one steers.
 """
 
-import asyncio
 import logging
-import os
-import random
-import threading
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-import openenv_agent_function as oaf
+import openenv_sandbox_common as common
 import tb2_sandbox_daytona
 
 logger = logging.getLogger(__name__)
+
 
 # Each episode materializes the per-task image declaratively from the Image
 # definition, read off the local TB2 checkout (OPENENV_TB2_TASKS_DIR); repeat
@@ -65,19 +65,9 @@ logger = logging.getLogger(__name__)
 # older install outright, and the shared agent loop's harness-marker guard
 # backstops it per episode.
 #
-# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests).
-# A rollout fans out many episodes at once; cap in-flight creates process-wide
-# and retry throttled ones with jittered exponential backoff.
-_CREATE_CONCURRENCY = int(os.getenv("OPENENV_DAYTONA_CREATE_CONCURRENCY", "4"))
-_CREATE_MAX_RETRIES = int(os.getenv("OPENENV_DAYTONA_CREATE_MAX_RETRIES", "8"))
-_CREATE_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_BASE_S", "2.0"))
-_CREATE_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_CAP_S", "30.0"))
-_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
-_COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
-
-_create_sem: asyncio.Semaphore | None = None
-
-
+# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests);
+# the shared backend caps in-flight creates process-wide and retries throttled ones
+# with jittered exponential backoff (knobs: OPENENV_DAYTONA_CREATE_*).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Daytona rate-limited it.
 
@@ -95,147 +85,24 @@ def _is_throttle_error(exc: BaseException) -> bool:
             return True
     except ImportError:  # pragma: no cover - only without the daytona SDK
         pass
-    s = str(exc).lower()
-    return "throttler" in s or "too many requests" in s or "429" in s
+    return common.throttle_text(exc, "throttler")
 
 
-def _get_create_sem() -> asyncio.Semaphore:
-    global _create_sem
-    if _create_sem is None:
-        _create_sem = asyncio.Semaphore(_CREATE_CONCURRENCY)
-    return _create_sem
-
-
-def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
+def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     daytona = tb2_sandbox_daytona.make_daytona()
-    sandbox, url = tb2_sandbox_daytona.create_task_sandbox(
-        daytona,
-        Path(tasks_dir) / task_id,
-        command_timeout_s=_COMMAND_TIMEOUT_S,
-        ready_timeout_s=_READY_TIMEOUT_S,
-    )
+    sandbox, url = tb2_sandbox_daytona.create_task_sandbox(daytona, Path(tasks_dir) / task_id)
     return (lambda: daytona.delete(sandbox)), url
 
 
-async def _create_once(task_id: str, tasks_dir: str) -> tuple[Any, str]:
-    """One sandbox-create attempt, safe against cancellation mid-create.
+BACKEND = common.SandboxBackend(
+    provider="Daytona",
+    start_sandbox=_start_sandbox,
+    is_throttle=_is_throttle_error,
+    logger=logger,
+    **common.backend_knobs("DAYTONA"),
+)
 
-    asyncio.to_thread is not cancellable: when the episode's wall-clock cap
-    cancels this coroutine mid-create, the worker thread keeps running and its
-    (close_fn, url) result would be discarded — leaking a sandbox that would
-    otherwise run (and bill) until the recipe's TTL backstop reclaims it.
-    Record the result thread-side and, on cancellation, hand it to a reaper
-    that deletes the orphan promptly once the create finishes.
-    """
-    result: list[tuple[Any, str]] = []
-    done = threading.Event()
-
-    def _start() -> tuple[Any, str]:
-        try:
-            result.append(_start_declarative(task_id, tasks_dir))
-        finally:
-            done.set()
-        return result[0]
-
-    try:
-        return await asyncio.to_thread(_start)
-    except asyncio.CancelledError:
-
-        def _reap() -> None:
-            done.wait()
-            for close_fn, _url in result:
-                try:
-                    close_fn()
-                    logger.info(f"Deleted sandbox orphaned by cancelled episode: {task_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete orphaned sandbox for {task_id}: {e}")
-
-        threading.Thread(target=_reap, name=f"tb2-sandbox-reap-{task_id}", daemon=True).start()
-        raise
-
-
-async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
-    """Create one sandbox for *task_id* with the env server running.
-
-    Returns (close_fn, base_url); close_fn deletes the sandbox. Creation is
-    throttled process-wide and retried on Daytona rate limits.
-    """
-    tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
-
-    attempt = 0
-    while True:
-        try:
-            # Hold the semaphore only for the create attempt; release it during
-            # backoff so other episodes keep the pipeline full.
-            async with _get_create_sem():
-                return await _create_once(task_id, tasks_dir)
-        except Exception as e:
-            if not _is_throttle_error(e) or attempt >= _CREATE_MAX_RETRIES:
-                raise
-            attempt += 1
-            delay = min(
-                _CREATE_BACKOFF_CAP_S,
-                _CREATE_BACKOFF_BASE_S * (2 ** (attempt - 1)),
-            ) * (0.5 + random.random())
-            logger.warning(
-                f"Daytona create throttled for {task_id} "
-                f"(attempt {attempt}/{_CREATE_MAX_RETRIES}); retrying in {delay:.1f}s"
-            )
-            await asyncio.sleep(delay)
-
-
-@asynccontextmanager
-async def _episode_env(env_cls: Any, metadata: dict[str, Any]):
-    """Yield a connected env client on a fresh sandbox; delete it after."""
-    task_id = metadata.get("task_id") or metadata.get("task_name")
-    if not task_id:
-        raise ValueError("the sandbox is built for one task: metadata['task_id'] is required")
-    close_fn, url = await _start_task_sandbox(str(task_id))
-    try:
-        async with env_cls(base_url=url, message_timeout_s=oaf._MESSAGE_TIMEOUT_S) as env:
-            yield env
-    finally:
-        try:
-            await asyncio.to_thread(close_fn)
-        except Exception as e:
-            logger.warning(f"Failed to delete sandbox for {task_id}: {e}")
-
-
-async def _sandbox_run_body(env_cls: Any, metadata: dict[str, Any], body: Any) -> Any:
-    """Run *body* on a fresh sandbox for the episode's task."""
-    async with _episode_env(env_cls, metadata) as env:
-        return await body(env)
-
-
-async def run_episode(
-    policy: Any,
-    model_name: str,
-    messages: list[dict[str, str]],
-    request_kwargs: dict[str, Any],
-    metadata: dict[str, Any],
-) -> tuple[float | None, dict[str, Any]]:
-    """One episode in its own Daytona sandbox, with the caller's own
-    policy. Direct-drive entry, same contract as openenv_agent_function's.
-
-    No post-episode hygiene: the sandbox is deleted when the episode ends.
-    """
-    return await oaf._multi_turn(
-        oaf._load_tbench2(),
-        policy,
-        model_name,
-        messages,
-        request_kwargs,
-        metadata,
-        run_body=_sandbox_run_body,
-    )
-
-
-async def run(
-    base_url: str,
-    prompt: Any,
-    request_kwargs: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-    **kwargs,
-) -> dict[str, Any] | None:
-    """Run one OpenEnv tbench2 episode in its own Daytona sandbox."""
-    return await oaf._run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)
+# Module-level entry points: `--custom-agent-function-path` resolves a module
+# attribute, and the sibling tools reach run_episode the same way.
+run_episode = BACKEND.run_episode
+run = BACKEND.run

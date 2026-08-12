@@ -1,0 +1,14 @@
+### 0
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 1
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 2
+python <REPO_ROOT>/tools/fp8_cast_bf16.py
+  --input-fp8-hf-path /root/models/DeepSeek-V4-Flash-FP8
+  --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-bf16/ 

@@ -67,7 +67,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
-    server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
@@ -241,6 +240,8 @@ class SGLangEngine(RayActor):
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
+        # ServerArgs is read-only once resolved, so strip the IPv6 brackets first.
+        server_args_dict = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
@@ -374,12 +375,15 @@ class SGLangEngine(RayActor):
         added_tokens_config: dict | None = None,
         upsert: bool = False,
         expected_checksums: dict | None = None,
+        is_first_chunk: bool = True,
+        is_last_chunk: bool = True,
     ):
         """Load a LoRA adapter from either transport (exactly one of the two).
 
         ``serialized_named_tensors[tp_rank]`` is bytes for that TP rank; ``serialized_tensors``
         is the whole adapter. With ``upsert``, the already-loaded ``lora_name`` is overwritten
-        in place (no unload/register).
+        in place (no unload/register). Chunked transport: the server accumulates
+        chunks and finalizes on ``is_last_chunk``.
         """
         if (serialized_tensors is None) == (serialized_named_tensors is None):
             raise ValueError("pass exactly one of serialized_tensors / serialized_named_tensors")
@@ -387,6 +391,8 @@ class SGLangEngine(RayActor):
             "lora_name": lora_name,
             "config_dict": config_dict,
             "pinned": pinned,
+            "is_first_chunk": is_first_chunk,
+            "is_last_chunk": is_last_chunk,
         }
         if serialized_tensors is not None:
             payload["serialized_tensors"] = serialized_tensors

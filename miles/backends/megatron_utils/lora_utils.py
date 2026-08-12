@@ -122,6 +122,16 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
+def lora_rollout_base_retained(args: Namespace) -> bool:
+    """True when the engines keep or reload the frozen base themselves, so the
+    trainer never has to re-ship it."""
+    return (
+        getattr(args, "reload_rollout_weights_from_disk", False)
+        or not getattr(args, "offload_rollout", False)
+        or "weight" not in args.offload_rollout_level
+    )
+
+
 def uses_builtin_native_lora_provider(args: Namespace) -> bool:
     """Whether this run uses the built-in native provider contract."""
     if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":

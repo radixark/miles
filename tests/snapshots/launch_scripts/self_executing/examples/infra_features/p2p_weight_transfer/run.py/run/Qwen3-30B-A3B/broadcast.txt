@@ -1,0 +1,105 @@
+### 0
+pkill -9 sglang || true
+
+### 1
+sleep 3
+
+### 2
+ray stop
+  --force || true
+
+### 3
+pkill -9 ray || true
+
+### 4
+pgrep -x 'python|python3' | grep -v -w 1000 | grep -v -w 1001 | xargs -r kill -9 || true
+
+### 5
+sleep 3
+
+### 6
+pkill -9 ray || true
+
+### 7
+pgrep -x 'python|python3' | grep -v -w 1000 | grep -v -w 1001 | xargs -r kill -9 || true
+
+### 8
+pkill -9 redis || true
+
+### 9
+RAY_memory_monitor_refresh_ms=0 ray start
+  --head
+  --node-ip-address 10.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+  --dashboard-host=0.0.0.0
+  --dashboard-port=8265
+
+### 10
+python3 -c "import ray; ray.init(address='auto', ignore_reinit_error=True); print(int(ray.cluster_resources().get('GPU', 0))); ray.shutdown()"
+
+### 11
+MODEL_ARGS_LINE="$(MODEL_ARGS_ROTARY_BASE=1000000 python3 "<REPO_ROOT>/miles/utils/external_utils/model_args_utils.py" qwen3-30B-A3B)" || exit 1; read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}" && ray job submit
+  --address='http://127.0.0.1:8265'
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "RAY_DEBUG": "1", "PYTHONPATH": "/root/Megatron-LM/", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "1", "MILES_LOG_DIR": "<SANDBOX>", "MC_TRANSFER_TIMEOUT": "300", "MODEL_ARGS_ROTARY_BASE": "1000000"}}'
+  -- python3 "<REPO_ROOT>/train.py" ${MODEL_ARGS[@]}
+  --hf-checkpoint /root/models/Qwen3-30B-A3B
+  --ref-load /root/multinode/Qwen3-30B-A3B_torch_dist
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type deepscaler
+  --num-rollout 13
+  --rollout-batch-size 4
+  --n-samples-per-prompt 4
+  --rollout-max-response-len 100
+  --rollout-temperature 0.8
+  --global-batch-size 16
+  --balance-data
+  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
+  --n-samples-per-eval-prompt 16
+  --eval-max-response-len 16384
+  --eval-top-p 0.7
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 2048
+  --advantage-estimator gspo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 4e-4
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer
+  --rollout-num-gpus-per-engine 8
+  --rollout-num-gpus 16
+  --sglang-mem-fraction-static 0.8
+  --sglang-ep-size 8
+  --sglang-cuda-graph-bs 1 2 4 8 16
+  --sglang-enable-dp-attention
+  --sglang-enable-dp-lm-head '--sglang-load-format dummy'
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --actor-num-nodes 2
+  --actor-num-gpus-per-node 8
+  --update-weight-buffer-size 1073741824
+  --update-weight-transfer-mode broadcast

@@ -49,8 +49,11 @@ def make_router_env(
         hf_checkpoint=hf_checkpoint,
         chat_template_path=chat_template_path,
         tito_model=tito_model,
+        use_session_server="v2",
         use_rollout_routing_replay=False,
         sglang_speculative_algorithm=None,
+        session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
+        session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
     )
     session_server = SessionServer(args, backend_url=backend.url)
 

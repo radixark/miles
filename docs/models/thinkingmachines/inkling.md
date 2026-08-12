@@ -72,11 +72,12 @@ Pass `--hf-checkpoint <path>` to the launcher when the weights are already on a 
 
 ### 4.2 HF → Megatron `torch_dist` conversion
 
-Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling.sh`:
+Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling.py`:
 
 ```bash
 cd /root/miles
-source scripts/models/inkling.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py inkling)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CONVERT_KEEP_PP1=1 PYTHONPATH=/root/Megatron-LM torchrun \
    --nproc-per-node 4 --nnodes 4 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \

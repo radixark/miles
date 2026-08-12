@@ -11,7 +11,7 @@ when you need the full default and type for an individual flag.
 
 | Group | Owns | Typical source |
 |---|---|---|
-| [`MODEL_ARGS`](#model-args) | Architecture constants and plugin specs | `scripts/models/<family>.sh` |
+| [`MODEL_ARGS`](#model-args) | Architecture constants and plugin specs | `scripts/models/<family>.py` |
 | [`CKPT_ARGS`](#ckpt-args) | Actor, reference, HF tokenizer/config, save paths | Launch script |
 | [`ROLLOUT_ARGS`](#rollout-args) | Prompt data, sampling, reward, train/eval batch flow | Launch script |
 | [`EVAL_ARGS`](#eval-args) | Evaluation datasets and eval-only sampling overrides | Launch script |
@@ -24,7 +24,7 @@ when you need the full default and type for an individual flag.
 ## MODEL_ARGS - architecture constants
 
 `MODEL_ARGS` tells Megatron what model it is instantiating. Megatron cannot infer all
-architecture details from a HuggingFace checkpoint, so each recipe sources a matching
+architecture details from a HuggingFace checkpoint, so each recipe loads a matching
 file from `scripts/models/`.
 
 Common entries:

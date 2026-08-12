@@ -2,9 +2,8 @@ import asyncio
 import logging
 import os
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
-
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.rollout.rollout_manager import get_rollout_offload_tags
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -28,6 +27,12 @@ async def train(args):
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
+    if args.colocate_memory_peak_device == "gpu":
+        assert (
+            args.offload_train and args.offload_rollout
+        ), "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
+        assert not args.use_critic, "--colocate-memory-peak-device gpu is not wired for the critic path"
+
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
@@ -45,7 +50,9 @@ async def train(args):
 
     maybe_start_mini_ft_controller(args)
 
-    if args.offload_rollout:
+    # gpu mode kept the weights resident at init, and resuming a never-released
+    # TMS region is fatal.
+    if args.offload_rollout and args.colocate_memory_peak_device != "gpu":
         await rollout_manager.onload_weights.remote()
 
     # always update weight first so that sglang has the loaded weights from training.
@@ -99,12 +106,16 @@ async def train(args):
         rollout_data_pack = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
-            offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
-            if "kv_cache" in args.offload_rollout_level:
-                offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-            if "weight" in args.offload_rollout_level:
-                offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
-            await rollout_manager.offload.remote(tags=offload_tags)
+            if args.colocate_memory_peak_device == "gpu":
+                # Drop pure-GPU memory, wake the trainer while the engine
+                # weights are still resident, and release them last so their
+                # host mirror replaces the trainer's just-freed backup instead
+                # of stacking on top of it.
+                await rollout_manager.offload_kv.remote()
+                await actor_model.onload()
+                await rollout_manager.offload_weights.remote()
+            else:
+                await rollout_manager.offload.remote(tags=get_rollout_offload_tags(args))
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_pack)
@@ -126,9 +137,18 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        await offload_train()
-        if args.offload_rollout:
+        if args.colocate_memory_peak_device == "gpu" and args.offload_rollout:
+            # Mirror-first: the engine weights free their host mirror, then the
+            # trainer sleeps into the space it vacated. clear_memory first —
+            # the resume needs every byte the wake-time layout had, and the
+            # train-phase allocator cache otherwise holds it.
+            await actor_model.clear_memory()
             await rollout_manager.onload_weights.remote()
+            await offload_train()
+        else:
+            await offload_train()
+            if args.offload_rollout:
+                await rollout_manager.onload_weights.remote()
         await actor_model.update_weights(rollout_id=rollout_id)
         if args.offload_rollout:
             await rollout_manager.onload_kv.remote()

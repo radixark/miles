@@ -3,7 +3,7 @@ import re
 import torch
 
 
-def _convert_mtp_layer(args, name, param, layer_idx):
+def _convert_mtp_layer(args, name, param, layer_idx, model_prefix):
     """Convert MTP layer parameters from Megatron to HuggingFace format."""
     if "enorm.weight" in name:
         return [("mtp.pre_fc_norm_embedding.weight", param)]
@@ -16,13 +16,13 @@ def _convert_mtp_layer(args, name, param, layer_idx):
 
     if "transformer_layer" in name:
         proxy_name = name.replace(f"mtp.layers.{layer_idx}.transformer_layer", f"decoder.layers.{layer_idx}")
-        mapped_params = convert_qwen3_5_to_hf(args, proxy_name, param)
+        mapped_params = convert_qwen3_5_to_hf(args, proxy_name, param, model_prefix=model_prefix)
 
         final_params = []
         for hf_name, tensor in mapped_params:
             target_prefix = f"mtp.layers.{layer_idx}"
-            if f"model.language_model.layers.{layer_idx}" in hf_name:
-                new_hf_name = hf_name.replace(f"model.language_model.layers.{layer_idx}", target_prefix)
+            if f"{model_prefix}.layers.{layer_idx}" in hf_name:
+                new_hf_name = hf_name.replace(f"{model_prefix}.layers.{layer_idx}", target_prefix)
                 final_params.append((new_hf_name, tensor))
             else:
                 final_params.append((hf_name, tensor))
@@ -31,10 +31,11 @@ def _convert_mtp_layer(args, name, param, layer_idx):
     return None
 
 
-def convert_qwen3_5_to_hf(args, name, param):
+def convert_qwen3_5_to_hf(args, name, param, model_prefix="model.language_model"):
     """Convert Qwen3.5 model parameters from Megatron to HuggingFace format.
 
-    Qwen3.5 uses model.language_model.layers prefix and has separate
+    ``model_prefix`` selects the layout: ``model.language_model`` for VLM
+    checkpoints, ``model`` for text-only ones. Qwen3.5 has separate
     in_proj_qkv, in_proj_z, in_proj_b, in_proj_a for linear attention.
     """
     # Handle MTP layers
@@ -46,16 +47,16 @@ def convert_qwen3_5_to_hf(args, name, param):
         except (ValueError, IndexError) as e:
             raise ValueError(f"Invalid MTP layer name format: {name}") from e
 
-        result = _convert_mtp_layer(args, name, param, layer_idx)
+        result = _convert_mtp_layer(args, name, param, layer_idx, model_prefix)
         if result is not None:
             return result
 
     if name == "module.module.embedding.word_embeddings.weight":
-        return [("model.language_model.embed_tokens.weight", param)]
+        return [(f"{model_prefix}.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":
         return [("lm_head.weight", param)]
     if name == "module.module.decoder.final_layernorm.weight":
-        return [("model.language_model.norm.weight", param)]
+        return [(f"{model_prefix}.norm.weight", param)]
 
     try:
         head_dim = args.kv_channels if args.kv_channels is not None else args.hidden_size // args.num_attention_heads
@@ -67,7 +68,7 @@ def convert_qwen3_5_to_hf(args, name, param):
     match = re.match(decoder_layers_pattern, name)
     if match:
         layer_idx, rest = match.groups()
-        prefix = f"model.language_model.layers.{layer_idx}"
+        prefix = f"{model_prefix}.layers.{layer_idx}"
 
         # experts (grouped gemm - fused format)
         if rest == "mlp.experts.linear_fc1":

@@ -36,12 +36,16 @@ tampers with container binaries could still fake a pass.
 """
 
 import base64
+import concurrent.futures
+import getpass
 import gzip
 import io
+import os
 import re
 import shlex
 import subprocess
 import tarfile
+import threading
 import time
 from pathlib import Path
 
@@ -72,6 +76,12 @@ _ENV_SRC_ITEMS = (
     "server",
 )
 
+# Per-exec timeout inside the sandbox. Named after the variable the env server
+# itself reads (it is tbench2_env's contract, not ours), and owned here because
+# this is where the server's command line is built — every backend gets the same
+# value without three copies of this getenv.
+COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
+
 # The command to start the env server inside a task sandbox (a provider may
 # not run the image CMD — Daytona doesn't). /opt/envserver and /opt/tb2-tasks
 # are baked by server_layer_commands.
@@ -87,7 +97,7 @@ SERVER_CMD = (
 )
 
 
-def server_cmd(command_timeout_s: int = 900, default_task_id: str = "") -> str:
+def server_cmd(command_timeout_s: int = COMMAND_TIMEOUT_S, default_task_id: str = "") -> str:
     # A per-task sandbox stages exactly one task, so make it the default:
     # a reset() with no task_id resolves to the staged task rather than the
     # env's built-in headless-terminal default (which isn't present here).
@@ -102,6 +112,131 @@ def read_task_config(task_dir: Path) -> dict:
     if not toml_path.is_file():
         raise FileNotFoundError(f"{task_dir}: no task.toml")
     return tomllib.loads(toml_path.read_text())
+
+
+def task_env_resources(task_dir: Path) -> tuple[int, int, int]:
+    """``(cpus, memory_mb, storage_mb)`` from ``task.toml [environment]``, floored.
+
+    The floors (1 CPU / 2048 MB memory / 10240 MB disk) are recipe policy —
+    the env server needs room to run alongside the task — applied once here so
+    the providers cannot drift apart on them. Each materialization maps these
+    onto its own units and drops what its provider does not take (Modal sizes
+    disk itself; E2B sizes everything at template-build time).
+    """
+    env_cfg = read_task_config(task_dir).get("environment", {})
+    return (
+        max(1, int(env_cfg.get("cpus", 1))),
+        max(2048, int(env_cfg.get("memory_mb", 2048))),
+        max(10240, int(env_cfg.get("storage_mb", 10240))),
+    )
+
+
+def sandbox_labels(task_dir: Path) -> dict[str, str]:
+    """Ownership labels/metadata for a per-task sandbox: what it runs, and who
+    launched it. Provider-agnostic (Daytona labels, E2B metadata, Modal tags —
+    same keys).
+
+    Sandbox APIs record no creator, so in a shared org/deployment these are
+    the only attribution. ``openenv-tbench2-task`` keys sweep/cleanup tooling
+    to exactly the sandboxes this recipe created (shared orgs run other
+    workloads). ``openenv-launcher`` is OPENENV_LAUNCHER when set — do set it
+    on shared hosts, where the unix user is a generic account — else the local
+    unix user. ``openenv-run-id`` (OPENENV_RUN_ID, optional) additionally
+    groups one run's sandboxes for targeted sweeps.
+    """
+    try:
+        user = getpass.getuser()
+    except Exception:  # no passwd entry / login env on minimal hosts
+        user = "unknown"
+    labels = {
+        "openenv-tbench2-task": task_dir.name,
+        "openenv-launcher": os.environ.get("OPENENV_LAUNCHER") or user,
+    }
+    run_id = os.environ.get("OPENENV_RUN_ID")
+    if run_id:
+        labels["openenv-run-id"] = run_id
+    return labels
+
+
+def resolve_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
+    """A provider API key: *env_var*, else the key file.
+
+    The file indirection (*file_env_var*, default *default_path*) exists so
+    launchers can hand rollout workers a PATH instead of the secret itself:
+    anything a launcher forwards rides ray's runtime_env, which is echoed into
+    driver logs and persisted in job metadata in plaintext. Env vars the
+    worker already has (platform-injected, single-host inheritance) never pass
+    through ray, so *env_var* is checked first.
+    """
+    key = os.environ.get(env_var, "").strip()
+    if key:
+        return key
+    key_file = Path(os.environ.get(file_env_var, "").strip() or default_path).expanduser()
+    try:
+        key = key_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        key = ""
+    if not key:
+        raise RuntimeError(f"no API key: {env_var} is unset and {key_file} is missing or empty")
+    return key
+
+
+def start_keepalive(beat, thread_name: str, *, interval_s: float, max_consecutive_failures: int) -> None:
+    """Run *beat* every *interval_s* for as long as THIS process lives.
+
+    A daemon thread has exactly the right lifetime for a sandbox keepalive: it
+    dies with the process, which is what turns the provider's idle/TTL timer
+    into a dead-man's switch for orphans. The thread exits once beats fail
+    *max_consecutive_failures* times in a row (the normal case: the episode
+    ended and the caller deleted the sandbox).
+    """
+
+    def _run() -> None:
+        failures = 0
+        while failures < max_consecutive_failures:
+            time.sleep(interval_s)
+            try:
+                beat()
+                failures = 0
+            except Exception:
+                failures += 1
+
+    threading.Thread(target=_run, name=thread_name, daemon=True).start()
+
+
+def run_with_deadline(fn, timeout_s: float):
+    """Run *fn* on a scoped worker thread; raise TimeoutError past *timeout_s*.
+
+    For provider calls that block across many requests with no deadline of
+    their own (an E2B template build, a Modal build+create). Deliberately not
+    a ``with ThreadPoolExecutor`` block: its ``__exit__`` joins the worker,
+    which would wait out the very call the deadline exists to abandon. On
+    timeout the provider-side work keeps cooking (and may finish) — reclaiming
+    whatever it produces is the caller's provider-specific business — but this
+    caller stops holding its locks and semaphore slots.
+    """
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(fn).result(timeout=timeout_s)
+    finally:
+        pool.shutdown(wait=False)
+
+
+def add_task_selection_args(ap) -> None:
+    """The bake CLIs' shared task selection: --tasks-dir + (--tasks | --all)."""
+    ap.add_argument("--tasks-dir", required=True, help="local terminal-bench-2 checkout")
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--tasks", help="comma-separated task_ids")
+    group.add_argument("--all", action="store_true", help="every dir with a task.toml")
+
+
+def selected_task_ids(args) -> tuple[Path, list[str]]:
+    tasks_dir = Path(args.tasks_dir).expanduser().resolve()
+    if args.all:
+        task_ids = sorted(p.name for p in tasks_dir.iterdir() if (p / "task.toml").is_file())
+    else:
+        task_ids = [t.strip() for t in args.tasks.split(",") if t.strip()]
+    return tasks_dir, task_ids
 
 
 def _tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -185,6 +320,8 @@ def _env_src_dir() -> Path:
     directory IS the project directory; a wheel/sdist install ships no
     pyproject.toml, so fail fast here instead of deep inside the image build.
     """
+    # In-function, deliberately: only a build that embeds the env source needs
+    # the package, and the offline tests import this module without it installed.
     import tbench2_env
 
     src = Path(tbench2_env.__file__).resolve().parent
@@ -255,6 +392,9 @@ def server_layer_commands(task_dir: Path) -> list[str]:
 
 
 def wait_server_ready(base_url: str, timeout_s: float = 300.0) -> None:
+    # In-function, deliberately: requests is not a hard dependency of this
+    # module -- the offline tests import it with requests absent -- and only a
+    # caller that actually waits on a live server needs it.
     import requests
 
     deadline = time.time() + timeout_s
