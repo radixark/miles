@@ -1,0 +1,276 @@
+### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download Pinaster/DeepSeek-V4-Flash-FP8-4layer
+  --local-dir /root/models/DeepSeek-V4-Flash-FP8-4layer
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 4
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 5
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 6
+python <REPO_ROOT>/tools/fp8_cast_bf16.py
+  --input-fp8-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer
+  --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16/ 
+
+### 7
+PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 4 <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --disable-bias-linear
+  --num-layers 4
+  --hidden-size 4096
+  --ffn-hidden-size 2048
+  --num-attention-heads 64
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 129280
+  --hidden-dropout 0.0
+  --attention-dropout 0.0
+  --multi-latent-attention
+  --q-lora-rank 1024
+  --kv-lora-rank 512
+  --qk-head-dim 512
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 512
+  --qk-layernorm
+  --rotary-scaling-factor 16
+  --rotary-base 10000
+  --original-max-position-embeddings 65536
+  --beta-fast 32
+  --beta-slow 1
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 256
+  --moe-layer-freq '[1,1,1,1]'
+  --moe-ffn-hidden-size 2048
+  --moe-router-topk 6
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-pre-softmax
+  --moe-router-score-function sqrtsoftplus
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-grouped-gemm
+  --moe-router-topk-scaling-factor 1.5
+  --experimental-attention-variant dsv4
+  --dsv4-hc-mult 4
+  --dsv4-hc-sinkhorn-iters 20
+  --dsv4-compress-ratios 0 0 4 128
+  --dsv4-compress-rope-theta 160000
+  --dsv4-o-groups 8
+  --dsv4-o-lora-rank 1024
+  --dsv4-n-hash-layers 3
+  --dsv4-window-size 128
+  --dsa-indexer-n-heads 64
+  --dsa-indexer-head-dim 128
+  --dsa-indexer-topk 512
+  --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
+  --activation-func-clamp-value 10
+  --no-bias-swiglu-fusion
+  --no-activation-func-clamp-shared-expert
+  --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16
+  --save /root/models/DeepSeek-V4-Flash-FP8-4layer_torch_dist
+  --expert-tensor-parallel-size 1
+  --context-parallel-size 1
+  --tensor-model-parallel-size 1
+  --pipeline-model-parallel-size 1
+  --expert-model-parallel-size 1 
+
+### 8
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 9
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 10
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 11
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1", "SGLANG_DSV4_FP4_EXPERTS": "0", "SGLANG_HEALTH_CHECK_TIMEOUT": "120", "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1", "SGLANG_OPT_FP8_WO_A_GEMM": "0", "NCCL_ALGO": "Ring", "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0", "CUBLAS_WORKSPACE_CONFIG": ":4096:8", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --num-layers 4
+  --hidden-size 4096
+  --ffn-hidden-size 2048
+  --num-attention-heads 64
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 129280
+  --hidden-dropout 0.0
+  --attention-dropout 0.0
+  --multi-latent-attention
+  --q-lora-rank 1024
+  --kv-lora-rank 512
+  --qk-head-dim 512
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 512
+  --qk-layernorm
+  --rotary-scaling-factor 16
+  --rotary-base 10000
+  --original-max-position-embeddings 65536
+  --beta-fast 32
+  --beta-slow 1
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 256
+  --moe-layer-freq '[1,1,1,1]'
+  --moe-ffn-hidden-size 2048
+  --moe-router-topk 6
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-pre-softmax
+  --moe-router-score-function sqrtsoftplus
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-grouped-gemm
+  --moe-router-topk-scaling-factor 1.5
+  --experimental-attention-variant dsv4
+  --dsv4-hc-mult 4
+  --dsv4-hc-sinkhorn-iters 20
+  --dsv4-compress-ratios 0 0 4 128
+  --dsv4-compress-rope-theta 160000
+  --dsv4-o-groups 8
+  --dsv4-o-lora-rank 1024
+  --dsv4-n-hash-layers 3
+  --dsv4-window-size 128
+  --dsa-indexer-n-heads 64
+  --dsa-indexer-head-dim 128
+  --dsa-indexer-topk 512
+  --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
+  --activation-func-clamp-value 10
+  --no-bias-swiglu-fusion
+  --no-activation-func-clamp-shared-expert
+  --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8-4layer
+  --ref-load /root/models/DeepSeek-V4-Flash-FP8-4layer_torch_dist
+  --load /root/models/260101-000000-000/checkpoints
+  --save /root/models/260101-000000-000/checkpoints
+  --save-interval 20
+  --save-retain-interval 20 
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type math
+  --num-rollout 3000
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-temperature 0.8
+  --num-steps-per-rollout 1
+  --balance-data
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --rollout-max-response-len 4096
+  --apply-chat-template-kwargs '{"thinking_mode":"thinking"}' 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --use-precision-aware-optimizer
+  --overlap-cpu-optimizer-d2h-h2d 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_deepseek_v4
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 8
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --micro-batch-size 1
+  --max-tokens-per-gpu 2048 
+  --eval-interval 20
+  --eval-top-p 0.7
+  --eval-prompt-data aime /root/datasets/aime-2024/aime-2024.jsonl
+  --n-samples-per-eval-prompt 8
+  --eval-max-response-len 4096 
+  --rollout-num-gpus-per-engine 4
+  --sglang-fp8-gemm-backend auto
+  --sglang-moe-runner-backend auto
+  --sglang-tp-size 4
+  --sglang-dp-size 1
+  --sglang-ep-size 4
+  --router-health-success-threshold 1
+  --router-health-check-interval-secs 15
+  --router-health-failure-threshold 40 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --attention-softmax-in-fp32
+  --update-weight-buffer-size 1073741824
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --train-memory-margin-bytes 3221225472
+  --sglang-mem-fraction-static 0.7
+  --accumulate-allreduce-grads-in-fp32
+  --model-name deepseekv4
+  --qkv-format bshd
+  --moe-router-freeze-gate
+  --freeze-e-score-correction-bias
+  --rollout-health-check-interval 300
+  --rollout-health-check-timeout 300
+  --colocate
+  --use-fault-tolerance
+  --use-rollout-routing-replay
+  --deterministic-mode
+  --transformer-impl transformer_engine
+  --bf16
+  --fp8-format e4m3
+  --fp8-recipe blockwise
+  --te-precision-config-file base64:<frozen-pseudo-file-1>   
+
+### pseudo file 1
+configs:
+  bf16:
+    transformer_engine_config_type: "TEQuantizationParams"
+    training_recipe: {}
+matchers:
+  dsa_indexer_weights_proj_bf16:
+    type: "glob"
+    enabled: true
+    pattern: "*.self_attention.indexer.linear_weights_proj"
+    config: "bf16"

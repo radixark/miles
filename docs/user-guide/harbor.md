@@ -19,7 +19,7 @@ hook.
 ## Try it
 
 The maintained recipe lives in
-[`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent),
+[`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker),
 with synchronous and fully-async launchers. Follow the
-[recipe README](https://github.com/radixark/miles/blob/main/examples/swe-agent/README.md)
+[recipe README](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/README.md)
 for the architecture, Harbor server setup, task format, and launch scripts.

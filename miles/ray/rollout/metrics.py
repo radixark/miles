@@ -59,6 +59,16 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
     return log_dict
 
 
+def log_eval_skip(rollout_id, args, reason: str):
+    """Log a skipped eval point at ``rollout_id`` so curve gaps are attributable."""
+    log_dict = {
+        f"eval/skipped_{reason}": 1,
+        "eval/step": compute_rollout_step(args, rollout_id),
+    }
+    logger.warning(f"eval {rollout_id} skipped: {reason}")
+    tracking.log(args, log_dict, step_key="eval/step")
+
+
 def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
@@ -103,16 +113,19 @@ def _compute_metrics_from_samples(args, samples):
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
     if tito_vals:
-        log_dict["tito_session_mismatch_rate"] = np.mean([len(v) > 0 for v in tito_vals]).item()
+        session_server_version = "v1" if args.use_session_server is True else args.use_session_server
+        assert session_server_version in ("v1", "v2"), "TITO metrics require session server v1 or v2"
+        metric_prefix = f"tito_session_mismatch_rate/{session_server_version}"
+        log_dict[metric_prefix] = np.mean([len(v) > 0 for v in tito_vals]).item()
         for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
-            log_dict[f"tito_session_mismatch_rate/{mtype}"] = np.mean(
+            log_dict[f"{metric_prefix}/{mtype}"] = np.mean(
                 [any(m.get("type") == mtype for m in v) for v in tito_vals]
             ).item()
         if args.ci_test:
             for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
-                rate = log_dict.get(f"tito_session_mismatch_rate/{strict_type}", 0)
+                rate = log_dict.get(f"{metric_prefix}/{strict_type}", 0)
                 assert rate == 0, (
-                    f"tito_session_mismatch_rate/{strict_type}={rate:.4f} must be 0 — "
+                    f"{metric_prefix}/{strict_type}={rate:.4f} must be 0 — "
                     "this indicates a bug in the TITO algorithm or chat template. "
                     "Please check your tito model and chat template."
                 )

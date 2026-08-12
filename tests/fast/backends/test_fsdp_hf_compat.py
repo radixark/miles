@@ -16,11 +16,8 @@ import sys
 import pytest
 import torch
 
-from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import (
-    _hf_unfuse_experts_expand,
-    get_param_transform,
-)
-from miles.backends.experimental.fsdp_utils.update_weight_utils import _iter_sync_named_params
+from miles.backends.fsdp_utils.adaptations.weight_bridge import _hf_unfuse_experts_expand, get_param_transform
+from miles.backends.fsdp_utils.update_weight_utils import _iter_sync_named_params
 
 
 @pytest.fixture(scope="module")
@@ -145,7 +142,7 @@ def test_iter_passthrough_for_non_expert():
 def test_nemotron_h_post_load_fixup_gating():
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import _FIXUPS
+    from miles.backends.fsdp_utils.adaptations.post_load_fixups import _FIXUPS
 
     by_name = {f.name: f for f in _FIXUPS}
     fixup = by_name["nemotron_h_clobber_reload"]
@@ -161,12 +158,12 @@ import sys
 import tempfile
 from types import SimpleNamespace
 
-from miles.backends.experimental.fsdp_utils.adaptations.post_load_fixups import (
+from miles.backends.fsdp_utils.adaptations.post_load_fixups import (
     _FIXUPS,
     apply_post_load_fixups,
 )
 
-module_name = "miles.backends.experimental.fsdp_utils.models.nemotron_h"
+module_name = "miles.backends.fsdp_utils.models.nemotron_h"
 assert [fixup.name for fixup in _FIXUPS].count("nemotron_h_clobber_reload") == 1
 assert module_name not in sys.modules
 apply_post_load_fixups(object(), SimpleNamespace(model_type="mamba2"), ".")
@@ -182,7 +179,7 @@ assert module_name in sys.modules
 def test_reload_nemotron_h_clobbered_weights_behavior(tmp_path, caplog):
     from safetensors.torch import save_file
 
-    from miles.backends.experimental.fsdp_utils.models.nemotron_h import reload_nemotron_h_clobbered_weights
+    from miles.backends.fsdp_utils.models.nemotron_h import reload_nemotron_h_clobbered_weights
 
     class Mixer(torch.nn.Module):
         def __init__(self):
@@ -218,13 +215,13 @@ def test_reload_nemotron_h_clobbered_weights_behavior(tmp_path, caplog):
 
     with caplog.at_level(
         logging.INFO,
-        logger="miles.backends.experimental.fsdp_utils.models.nemotron_h",
+        logger="miles.backends.fsdp_utils.models.nemotron_h",
     ):
         assert reload_nemotron_h_clobbered_weights(model, tmp_path, tol=1e-4) == 1
     torch.testing.assert_close(model.backbone[0].mixer.dt_bias, torch.ones(1))
     torch.testing.assert_close(model.backbone[0].mixer.in_proj.weight, torch.tensor([[3.0]]))
     assert any(
-        record.name == "miles.backends.experimental.fsdp_utils.models.nemotron_h"
+        record.name == "miles.backends.fsdp_utils.models.nemotron_h"
         and "restored 1 NemotronH mixer parameter(s)" in record.getMessage()
         for record in caplog.records
     )
@@ -235,10 +232,7 @@ def test_weight_bridge_registry():
     # a registered transform gets its params rewritten; unregistered types stream verbatim.
     import torch
 
-    from miles.backends.experimental.fsdp_utils.adaptations.weight_bridge import (
-        get_param_transform,
-        register_param_transform,
-    )
+    from miles.backends.fsdp_utils.adaptations.weight_bridge import get_param_transform, register_param_transform
 
     # qwen3_moe is registered (batched experts -> per-expert); a 3D experts param matches.
     g = torch.zeros(2, 6, 4)
@@ -261,7 +255,7 @@ def test_model_patch_registry_gating():
     # Verify the config-check predicates gate correctly. Packed-sequence layout patches (GDN, ...) moved
     # out of this registry into the unified packing registry (test_packing_registry below);
     # apply_class_patches now dispatches them via apply_packing.
-    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
+    from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     by_name = {h.name: h for h in _MODEL_PATCH_HOOKS}
     # the expected generic hooks are registered in order (GDN packing is not a ModelPatchHook)
@@ -290,7 +284,7 @@ def test_model_patch_registry_gating():
 def test_model_type_verified_accepts_recorded_models(model_type, caplog):
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import check_model_type_verified
+    from miles.backends.fsdp_utils.adaptations.class_patches import check_model_type_verified
 
     check_model_type_verified(SimpleNamespace(model_type=model_type), SimpleNamespace(rank=0))
 
@@ -298,7 +292,7 @@ def test_model_type_verified_accepts_recorded_models(model_type, caplog):
 
 
 def test_verified_model_types_match_recorded_validation():
-    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import VERIFIED_MODEL_TYPES
+    from miles.backends.fsdp_utils.adaptations.class_patches import VERIFIED_MODEL_TYPES
 
     assert VERIFIED_MODEL_TYPES == frozenset({"glm4_moe_lite", "nemotron_h", "qwen3", "qwen3_moe", "qwen3_vl"})
 
@@ -306,7 +300,7 @@ def test_verified_model_types_match_recorded_validation():
 def test_model_type_verified_warns_once_on_rank_zero(caplog):
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
+    from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
     hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=0))
@@ -318,7 +312,7 @@ def test_model_type_verified_warns_once_on_rank_zero(caplog):
 def test_model_type_verified_is_silent_on_nonzero_rank(caplog):
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
+    from miles.backends.fsdp_utils.adaptations.class_patches import _MODEL_PATCH_HOOKS
 
     hook = next(h for h in _MODEL_PATCH_HOOKS if h.name == "model_type_verified")
     hook.apply(SimpleNamespace(model_type="qwen3_5_moe"), SimpleNamespace(rank=1))
@@ -328,7 +322,7 @@ def test_model_type_verified_is_silent_on_nonzero_rank(caplog):
 
 def test_packed_seq_context_boundaries():
     # The shared boundary derivation (formerly duplicated verbatim in nemotron_h.py + qwen3_5_moe.py).
-    from miles.backends.experimental.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
+    from miles.backends.fsdp_utils.adaptations.packing.boundaries import packed_seq_context
 
     # single document / non-packed / wrong shape -> None (packing is a no-op)
     assert packed_seq_context(None) is None
@@ -352,7 +346,7 @@ def test_nemotron_attention_reuses_precomputed_max_seqlen(monkeypatch):
     import sys
     from types import ModuleType, SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.models import nemotron_h
+    from miles.backends.fsdp_utils.models import nemotron_h
 
     flash_calls = {}
     flash_attn = ModuleType("flash_attn")
@@ -415,7 +409,7 @@ def test_nemotron_pattern_to_list_repair():
 
     from transformers.models.nemotron_h.configuration_nemotron_h import NemotronHConfig
 
-    from miles.backends.experimental.fsdp_utils.adaptations.specs.nemotron_h import _repair_pattern_to_list
+    from miles.backends.fsdp_utils.adaptations.specs.nemotron_h import _repair_pattern_to_list
 
     hf_config = SimpleNamespace(model_type="nemotron_h")
     original = NemotronHConfig.__dict__["_pattern_to_list"]
@@ -442,7 +436,7 @@ def test_packing_registry():
     # NemotronH is post-load-lifetime, and archs that pack natively / don't pack match nothing.
     from types import SimpleNamespace
 
-    from miles.backends.experimental.fsdp_utils.adaptations.packing import get_packing_patches
+    from miles.backends.fsdp_utils.adaptations.packing import get_packing_patches
 
     gdn = SimpleNamespace(model_type="qwen3_5_moe", layer_types=["linear_attention", "full_attention"])
     nemo = SimpleNamespace(model_type="nemotron_h")

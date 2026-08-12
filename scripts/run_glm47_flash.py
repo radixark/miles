@@ -14,7 +14,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.7-Flash"
     megatron_model_type: str = "glm4.7-flash"
     num_gpus_per_node: int = 8
-    hardware: Literal["H200"] = "H200"
+    hardware: Literal["H200", "B200"] = "H200"
+    rollout_num_gpus_per_engine: int | None = None  # None => derive from hardware
+    sglang_attention_backend: str | None = None
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -23,8 +25,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
         f"hf download {args.model_org}/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}"
     )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -71,7 +73,7 @@ def execute(args: ScriptArgs):
     eval_args = ""
     if (args.mode != "debug_minimal") and args.enable_eval:
         eval_args += (
-            # "--eval-interval 20 "
+            "--eval-interval 20 "
             f"--eval-prompt-data aime24 {args.data_dir}/aime-2024/aime-2024.jsonl "
             "--n-samples-per-eval-prompt 16 "
             "--eval-max-response-len 16384 "
@@ -115,9 +117,15 @@ def execute(args: ScriptArgs):
         "--use-precision-aware-optimizer "
     )
 
-    # tp=4 because GLM-4.7-Flash has 20 attention heads (tp must divide num_heads)
+    # GLM-4.7-Flash has 20 attention heads, so rollout TP must divide 20.
+    rollout_num_gpus_per_engine = (
+        args.rollout_num_gpus_per_engine
+        if args.rollout_num_gpus_per_engine is not None
+        else (2 if args.hardware == "B200" else 1)
+    )
+
     sglang_args = (
-        "--rollout-num-gpus-per-engine 4 "
+        f"--rollout-num-gpus-per-engine {rollout_num_gpus_per_engine} "
         "--sglang-mem-fraction-static 0.7 "
         # EAGLE speculative decoding (MTP)
         "--sglang-speculative-algorithm EAGLE "
@@ -127,6 +135,12 @@ def execute(args: ScriptArgs):
         # rollout routing replay
         "--use-rollout-routing-replay "
     )
+
+    if args.sglang_attention_backend not in (None, "default"):
+        sglang_args += f"--sglang-attention-backend {args.sglang_attention_backend} "
+
+    if args.hardware == "B200" and args.sglang_attention_backend in (None, "default", "flashinfer"):
+        sglang_args += "--sglang-flashinfer-mla-disable-ragged "
 
     misc_args = (
         "--attention-dropout 0.0 "

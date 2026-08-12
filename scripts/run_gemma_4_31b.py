@@ -5,7 +5,7 @@ Dense (non-MoE) counterpart of run_gemma_4_26b_a4b.py: TP4/DP2, no expert
 parallelism. Trained via the HF<->Megatron bridge (`--megatron-to-hf-mode
 bridge`); the dense config is driven directly through Gemma4VLBridge, so there
 is no LLM-view rewrite or offline conversion — `prepare` only downloads.
-MODEL_ARGS come from scripts/models/gemma-4-31b-it.sh.
+MODEL_ARGS come from scripts/models/gemma-4-31b-it.py.
 
 Requires the radixark/Megatron-Bridge gemma4-dense branch.
 
@@ -45,8 +45,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     if args.enable_eval:
         U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)

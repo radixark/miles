@@ -17,7 +17,7 @@ Inkling needs 16 nodes of 4× GB300 and the `radixark/miles:inkling` image:
 
 ```bash
 cd /root/miles
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling --train-mode full --task dapo_math \
    --num-nodes 16 --num-gpus-per-node 4
 ```

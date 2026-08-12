@@ -30,6 +30,9 @@ class RolloutFnBaseInput:
 # subclassing for different data in the future
 @dataclass(frozen=True)
 class RolloutFnTrainInput(RolloutFnBaseInput):
+    # engine weight version, None before the first weight update
+    weight_version: int | None = None
+
     @property
     def evaluation(self):
         return False
@@ -37,6 +40,10 @@ class RolloutFnTrainInput(RolloutFnBaseInput):
 
 @dataclass(frozen=True)
 class RolloutFnEvalInput(RolloutFnBaseInput):
+    generate_state: GenerateState | None = None
+    weight_version: str | None = None
+    hf_dir: str | None = None
+
     @property
     def evaluation(self):
         return True

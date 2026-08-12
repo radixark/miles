@@ -9,7 +9,7 @@ miles has no VLM/vision implementation on the training side, so Qwen3.5's `visua
 weights are never synced and must be excluded from the weight-equality check; each case
 passes `check_weight_update_skip_list=("visual",)`.
 
-Topology follows scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py (cp2/ep8 on 8 GPUs).
+Topology follows scripts/run_qwen3_5_35b_a3b_mtp.py (cp2/ep8 on 8 GPUs).
 Spec (EAGLE) and spec-v2 (mamba scheduler) are on for the whole suite; R3 is per-case.
 """
 
@@ -50,8 +50,8 @@ class CaseConfig:
 
 
 def prepare(case: CaseConfig) -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
     U.hf_download_dataset("zhuzilin/aime-2024")
     U.convert_checkpoint(
@@ -139,7 +139,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         "--sglang-speculative-eagle-topk 1 "
         "--sglang-speculative-num-draft-tokens 3 "
         # spec v2: required to pair speculative decoding with radix cache on Qwen3.5MoE
-        # (see scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py); also needs SGLANG_ENABLE_SPEC_V2=1.
+        # (see scripts/run_qwen3_5_35b_a3b_mtp.py); also needs SGLANG_ENABLE_SPEC_V2=1.
         "--sglang-mamba-scheduler-strategy extra_buffer "
     )
     if case.use_r3:
@@ -166,6 +166,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"--actor-num-gpus-per-node {case.num_gpus_per_node} "
         "--colocate "
         "--moe-token-dispatcher-type flex "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (

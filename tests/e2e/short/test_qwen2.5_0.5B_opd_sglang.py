@@ -21,8 +21,8 @@ TEACHER_PORT = 13141
 
 
 def prepare():
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
@@ -206,7 +206,7 @@ def execute():
         if teacher_process:
             teacher_process.kill()
             teacher_process.wait()
-        U.exec_command("pkill -9 sglang; true")
+        U.exec_command_cpu("pkill -9 sglang; true")
 
 
 if __name__ == "__main__":

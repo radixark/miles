@@ -42,6 +42,7 @@ CI_SUITES = {
     ],
     HWBackend.ROCM: [
         "stage-c-8-gpu-mi350",
+        "stage-c-4-gpu-mi300x",
         "stage-c-4-gpu-mi350",
         "stage-c-2-gpu-mi350",
     ],
