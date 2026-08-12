@@ -9,11 +9,11 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
 
+| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Models**](https://miles.radixark.com/docs/models) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) |
+
 </div>
 
 --------------------------------------------------------------------------------
-
-| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Models**](https://miles.radixark.com/docs/models) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) |
 
 ## News
 
@@ -104,8 +104,7 @@ the largest models all live on Megatron-LM. See
 
 Miles builds on the work of [slime](https://github.com/THUDM/slime),
 [SGLang](https://github.com/sgl-project/sglang),
-[Megatron-LM](https://github.com/NVIDIA/Megatron-LM),
-[mbridge](https://github.com/ISEEKYAN/mbridge) and
+[Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and
 [torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
 
 ## Citation
