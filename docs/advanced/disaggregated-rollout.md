@@ -210,6 +210,11 @@ One open-source package implementing the rollout-service side is
 publication and version-constrained requests to an independently managed
 rollout fleet. The miles contract remains package-agnostic.
 
+Stitch pins the miles revision it integrates against;
+[Miles fork](https://github.com/modal-projects/stitch/blob/main/cookbook/miles_disagg/MILES_FORK.md)
+records the trainer-side commits that pin depends on, how the same ownership
+split lands in code, and how to move the pin forward.
+
 ### Policy-version requirements
 
 An external rollout request needs more than an inference payload. It must be
