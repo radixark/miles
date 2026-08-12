@@ -45,15 +45,25 @@ dynamic sampling and eval.
 
 ### Multi-node fan-out
 
-The launcher starts the Ray head on the invoking node only. Join every other node to the cluster
-first:
+The `torch_dist` conversion and the node-local rsync fan out across every node of the Ray
+cluster, so a multi-node run needs the whole cluster joined **before** the launcher starts, and
+the launcher must be told not to replace it. Bring up the head, join the workers, then run with
+`MILES_SCRIPT_EXTERNAL_RAY=1`:
 
 ```bash
+# on node 0
+ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
+
+# on every other node
 ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 \
           --node-ip-address ${WORKER_IP} --disable-usage-stats
+
+# back on node 0
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek.py train \
+   --num-nodes 16 --num-gpus-per-node 8
 ```
 
-With an MPI-style hostfile (each line `ip slot=8`), fan out from node 0:
+With an MPI-style hostfile (each line `ip slot=8`), fan the workers out from node 0:
 
 ```bash
 for WORKER_IP in $(awk '{print $1}' $BASE_DIR/mpi_hostfile); do
@@ -67,6 +77,10 @@ for WORKER_IP in $(awk '{print $1}' $BASE_DIR/mpi_hostfile); do
 done
 wait
 ```
+
+Without `MILES_SCRIPT_EXTERNAL_RAY=1` the launcher runs `ray stop --force` and starts its own
+single-node head, which is what the single-node invocation above relies on — the conversion then
+runs on that one node.
 
 ## 4. Checkpoint conversion
 
