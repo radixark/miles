@@ -60,6 +60,7 @@ class MilesRouter:
         """Setup all the HTTP routes except catch-all proxy"""
         # sglang-router api
         self.app.post("/add_worker")(self.add_worker)
+        self.app.post("/remove_worker")(self.remove_worker)
         self.app.get("/list_workers")(self.list_workers)
         # Catch-all route for proxying to SGLang - must be registered LAST
         self.app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])(self.proxy)
@@ -94,6 +95,8 @@ class MilesRouter:
                 results = await asyncio.gather(*(self._check_worker_health(url) for url in urls))
 
                 for url, is_healthy in results:
+                    if url not in self.worker_request_counts:
+                        continue
                     if not is_healthy:
                         failures = self.worker_failure_counts.get(url, 0) + 1
                         self.worker_failure_counts[url] = failures
@@ -179,15 +182,7 @@ class MilesRouter:
         - POST /add_worker?url=http://127.0.0.1:10090
         - POST /add_worker  with body {"url": "http://127.0.0.1:10090"}
         """
-        # 1) Prefer query param
-        worker_url = request.query_params.get("url") or request.query_params.get("worker_url")
-
-        # 2) Fallback to JSON body
-        if not worker_url:
-            body = await request.body()
-            payload = json.loads(body) if body else {}
-            worker_url = payload.get("url") or payload.get("worker_url")
-
+        worker_url = await self._parse_worker_url(request)
         if not worker_url:
             return JSONResponse(
                 status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
@@ -197,10 +192,34 @@ class MilesRouter:
         if worker_url not in self.worker_request_counts:
             self.worker_request_counts[worker_url] = 0
             self.worker_failure_counts[worker_url] = 0
+            self.dead_workers.discard(worker_url)
             if self.verbose:
                 print(f"[miles-router] Added new worker: {worker_url}")
 
         return {"status": "success", "worker_urls": self.worker_request_counts}
+
+    async def remove_worker(self, request: Request):
+        """Remove a worker from the router, using the same URL conventions as add_worker."""
+        worker_url = await self._parse_worker_url(request)
+        if worker_url is None:
+            return JSONResponse(
+                status_code=400, content={"error": "worker_url is required (use query ?url=... or JSON body)"}
+            )
+
+        self.worker_request_counts.pop(worker_url, None)
+        self.worker_failure_counts.pop(worker_url, None)
+        self.dead_workers.discard(worker_url)
+        logger.info(f"[miles-router] Removed worker: {worker_url}")
+
+        return {"status": "success", "worker_urls": self.worker_request_counts}
+
+    async def _parse_worker_url(self, request: Request) -> str | None:
+        if worker_url := request.query_params.get("url") or request.query_params.get("worker_url"):
+            return worker_url
+
+        body = await request.body()
+        payload = json.loads(body) if body else {}
+        return payload.get("url") or payload.get("worker_url")
 
     async def list_workers(self, request: Request):
         """List all registered workers"""
@@ -223,11 +242,12 @@ class MilesRouter:
         self.worker_request_counts[url] += 1
         return url
 
-    def _finish_url(self, url):
+    def _finish_url(self, url: str) -> None:
         """Mark the request to the given URL as finished"""
-        assert url in self.worker_request_counts, f"URL {url} not recognized"
-        self.worker_request_counts[url] -= 1
-        assert self.worker_request_counts[url] >= 0, f"URL {url} count went negative"
+        if (count := self.worker_request_counts.get(url)) is None or count == 0:
+            logger.info(f"[miles-router] Request to {url} finished after the worker was deregistered; ignoring")
+            return
+        self.worker_request_counts[url] = count - 1
 
 
 if __name__ == "__main__":

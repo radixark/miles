@@ -1,9 +1,11 @@
 import asyncio
 from collections.abc import Callable
+from urllib.parse import urlencode
 
 import httpx
 import pytest
 import requests
+from fastapi import Request
 
 from miles.router import router as router_module
 from miles.router.config import MilesRouterConfig
@@ -35,6 +37,17 @@ def create_mock_worker(start_port: int = 30000) -> MockSGLangServer:
         port=port,
         latency=0.0,
     )
+
+
+def make_add_worker_request(worker_url: str) -> Request:
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/add_worker",
+        "query_string": urlencode({"url": worker_url}).encode(),
+        "headers": [],
+    }
+    return Request(scope)
 
 
 class RouterEnv:
@@ -148,6 +161,65 @@ class TestWorkerManagement:
         r.raise_for_status()
         assert set(r.json()["urls"]) == set(worker_urls)
 
+    def test_remove_worker_via_query_param(self, router_env: RouterEnv):
+        """A disposed cell must be able to deregister, or its dead url is routed to forever."""
+        worker_url = "http://127.0.0.1:30011"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        r = requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0)
+        r.raise_for_status()
+
+        assert r.json()["status"] == "success"
+        assert worker_url not in router_env.router.worker_request_counts
+
+    def test_remove_worker_via_body(self, router_env: RouterEnv):
+        """Removal accepts the same body form as add_worker so callers need no special case."""
+        worker_url = "http://127.0.0.1:30012"
+        requests.post(f"{router_env.url}/add_worker", json={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        requests.post(f"{router_env.url}/remove_worker", json={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        assert worker_url not in router_env.router.worker_request_counts
+
+    def test_remove_worker_clears_the_failure_and_dead_bookkeeping(self, router_env: RouterEnv):
+        """Leaving a removed url quarantined would keep it in the containers this fix drains."""
+        worker_url = "http://127.0.0.1:30013"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        router_env.router.worker_failure_counts[worker_url] = 3
+        router_env.router.dead_workers.add(worker_url)
+
+        requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        assert worker_url not in router_env.router.worker_failure_counts
+        assert worker_url not in router_env.router.dead_workers
+
+    def test_remove_worker_is_idempotent(self, router_env: RouterEnv):
+        """Teardown can race a health-check eviction, and a second removal must not error."""
+        worker_url = "http://127.0.0.1:30014"
+
+        r = requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0)
+
+        assert r.status_code == 200
+
+    def test_remove_worker_missing_url(self, router_env: RouterEnv):
+        """Without a url there is nothing to remove, and silently succeeding would hide the caller bug."""
+        r = requests.post(f"{router_env.url}/remove_worker", json={}, timeout=5.0)
+
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    def test_a_removed_worker_disappears_from_list_workers(self, router_env: RouterEnv):
+        """list_workers is what the rollout side aborts against, so dead urls must leave it."""
+        kept, removed = "http://127.0.0.1:30015", "http://127.0.0.1:30016"
+        for url in (kept, removed):
+            requests.post(f"{router_env.url}/add_worker", params={"url": url}, timeout=5.0).raise_for_status()
+
+        requests.post(f"{router_env.url}/remove_worker", params={"url": removed}, timeout=5.0).raise_for_status()
+
+        r = requests.get(f"{router_env.url}/list_workers", timeout=5.0)
+        r.raise_for_status()
+        assert r.json()["urls"] == [kept]
+
 
 class TestLoadBalancing:
     def test_use_url_selects_min_load(self, router_factory):
@@ -176,6 +248,41 @@ class TestLoadBalancing:
             router._use_url()
 
 
+class TestFinishingARequestAfterDeregistration:
+    def test_a_finished_request_decrements_its_workers_count(self, router_factory):
+        """The ordinary path still hands the slot back to a registered worker."""
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 2}
+
+        router._finish_url("http://w1:8000")
+
+        assert router.worker_request_counts == {"http://w1:8000": 1}
+
+    def test_a_request_that_outlives_its_workers_registration_finishes_quietly(self, router_factory):
+        """Deregistering a worker mid-request must not turn the already proxied response into a 500."""
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 0, "http://w2:8000": 0}
+        worker_url = router._use_url()
+        router.worker_request_counts.pop(worker_url)
+
+        router._finish_url(worker_url)
+
+        assert worker_url not in router.worker_request_counts
+
+    def test_a_stale_finish_does_not_charge_a_replacement_that_took_the_same_url(self, router_factory):
+        """A request from the previous registration must not drive the re-registered worker's count negative."""
+        router = router_factory()
+        router.worker_request_counts = {"http://w1:8000": 0}
+        worker_url = router._use_url()
+        router.worker_request_counts.pop(worker_url)
+        router.worker_request_counts[worker_url] = 0
+
+        router._finish_url(worker_url)
+
+        assert router.worker_request_counts[worker_url] == 0
+        assert router._use_url() == worker_url
+
+
 class FakeSleepClock:
     def __init__(self, *, stop_after: int, on_sleep: Callable[[], None] | None = None):
         self.sleeps: list[float] = []
@@ -198,6 +305,22 @@ class ScriptedWorkerHealth:
     async def check(self, url: str) -> tuple[str, bool]:
         self.checked_urls.append(url)
         return url, self._results.pop(0)
+
+
+class DeregisteringWorkerHealth:
+    def __init__(self, router: MilesRouter, *, results: dict[str, bool], deregister: set[str]):
+        self.checked_urls: list[str] = []
+        self._router = router
+        self._results = results
+        self._deregister = deregister
+
+    async def check(self, url: str) -> tuple[str, bool]:
+        self.checked_urls.append(url)
+        if url in self._deregister:
+            self._router.worker_request_counts.pop(url, None)
+            self._router.worker_failure_counts.pop(url, None)
+            self._router.dead_workers.discard(url)
+        return url, self._results[url]
 
 
 # TODO: extract main body inside `_health_check_loop`, then can test that function
@@ -246,6 +369,135 @@ class TestHealthCheck:
 
         assert dead_worker_snapshots == [set(), set(), set(), set(), set(), set(), set(), set(), {worker_url}]
         assert router.worker_failure_counts[worker_url] == 4
+
+
+class TestStaleHealthResults:
+    def test_a_probe_result_for_a_worker_removed_meanwhile_is_dropped(
+        self, router_factory, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A failure observed on a deregistered url would quarantine the replacement that later takes it."""
+        worker_url = "http://w1:8000"
+        router = router_factory(health_check_interval=0.01, health_check_failure_threshold=1)
+        router.worker_request_counts = {worker_url: 0}
+        router.worker_failure_counts = {worker_url: 0}
+
+        async def _check_and_remove(url: str) -> tuple[str, bool]:
+            router.worker_request_counts.pop(url, None)
+            router.worker_failure_counts.pop(url, None)
+            return url, False
+
+        router._check_worker_health = _check_and_remove
+        clock = FakeSleepClock(stop_after=2)
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+
+        assert router.dead_workers == set()
+        assert worker_url not in router.worker_failure_counts
+
+    def test_a_probe_result_for_the_current_registration_still_counts(
+        self, router_factory, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Dropping every result would leave a genuinely dead worker in the routing pool forever."""
+        worker_url = "http://w1:8000"
+        router = router_factory(health_check_interval=0.01, health_check_failure_threshold=1)
+        router.worker_request_counts = {worker_url: 0}
+        router._check_worker_health = ScriptedWorkerHealth([False]).check
+        clock = FakeSleepClock(stop_after=2)
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+
+        assert router.dead_workers == {worker_url}
+
+    def test_readding_a_quarantined_url_puts_it_back_in_the_pool(self, router_env: RouterEnv):
+        """A stale probe can quarantine a url after its removal, and the replacement engine must not inherit that."""
+        worker_url = "http://127.0.0.1:30017"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        router_env.router.dead_workers.add(worker_url)
+
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        assert worker_url not in router_env.router.dead_workers
+
+    def test_a_healthy_probe_result_for_a_removed_worker_does_not_revive_its_bookkeeping(
+        self, router_factory: Callable[..., MilesRouter], monkeypatch: pytest.MonkeyPatch
+    ):
+        """A success observed on a deregistered url must not put the url back into the failure bookkeeping either."""
+        worker_url = "http://w1:8000"
+        router = router_factory(health_check_interval=0.01, health_check_failure_threshold=1)
+        router.worker_request_counts = {worker_url: 0}
+        router.worker_failure_counts = {worker_url: 0}
+        router._check_worker_health = DeregisteringWorkerHealth(
+            router, results={worker_url: True}, deregister={worker_url}
+        ).check
+        clock = FakeSleepClock(stop_after=2)
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+
+        assert router.worker_request_counts == {}
+        assert router.worker_failure_counts == {}
+
+    def test_a_stale_result_does_not_abandon_the_rest_of_the_round(
+        self, router_factory: Callable[..., MilesRouter], monkeypatch: pytest.MonkeyPatch
+    ):
+        """One deregistered url must only skip its own result, while the other workers of the same round are still judged."""
+        removed_url, kept_url = "http://w1:8000", "http://w2:8000"
+        router = router_factory(health_check_interval=0.01, health_check_failure_threshold=1)
+        router.worker_request_counts = {removed_url: 0, kept_url: 0}
+        router.worker_failure_counts = {removed_url: 0, kept_url: 0}
+        router._check_worker_health = DeregisteringWorkerHealth(
+            router, results={removed_url: False, kept_url: False}, deregister={removed_url}
+        ).check
+        clock = FakeSleepClock(stop_after=2)
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+
+        assert router.dead_workers == {kept_url}
+        assert removed_url not in router.worker_failure_counts
+
+    def test_a_url_freed_during_a_probe_is_routable_again_once_its_replacement_registers(
+        self, router_factory: Callable[..., MilesRouter], monkeypatch: pytest.MonkeyPatch
+    ):
+        """A dispose racing a probe must not stop the engine that later takes the same address from receiving traffic."""
+        worker_url = "http://w1:8000"
+        router = router_factory(health_check_interval=0.01, health_check_failure_threshold=1)
+        router.worker_request_counts = {worker_url: 0}
+        router.worker_failure_counts = {worker_url: 0}
+        router._check_worker_health = DeregisteringWorkerHealth(
+            router, results={worker_url: False}, deregister={worker_url}
+        ).check
+        clock = FakeSleepClock(stop_after=2)
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+        asyncio.run(router.add_worker(make_add_worker_request(worker_url)))
+
+        assert router._use_url() == worker_url
+
+    def test_a_duplicate_registration_does_not_lift_a_live_workers_quarantine(
+        self, router_factory: Callable[..., MilesRouter]
+    ):
+        """Only a fresh registration clears quarantine, because reconnecting a still-registered dead worker needs a weight resync."""
+        worker_url = "http://w1:8000"
+        router = router_factory(health_check_failure_threshold=3)
+        router.worker_request_counts = {worker_url: 2}
+        router.worker_failure_counts = {worker_url: 3}
+        router.dead_workers = {worker_url}
+
+        asyncio.run(router.add_worker(make_add_worker_request(worker_url)))
+
+        assert router.dead_workers == {worker_url}
+        assert router.worker_failure_counts[worker_url] == 3
+        assert router.worker_request_counts[worker_url] == 2
 
 
 class TestProxyIntegration:
