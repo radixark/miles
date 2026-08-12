@@ -2,6 +2,8 @@
 batch size, per-adapter batch loss scales, step stamping, and per-group reward
 normalization with heterogeneous group sizes."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from tests.ci.ci_register import register_cpu_ci
@@ -10,9 +12,12 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 
 from tests.fast.ray.rollout.conftest import make_args, make_sample
 
+import miles.rollout.multi_lora.data_source as data_source_module
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
-from miles.utils.types import AdapterRef
+from miles.rollout.data_source import RolloutDataSource
+from miles.rollout.multi_lora.data_source import MultiLoRAAsyncDataSource
+from miles.utils.types import AdapterRef, Sample
 
 
 def multi_lora_args(**overrides):
@@ -104,3 +109,55 @@ def test_rewards_normalize_within_heterogeneous_groups():
     assert rewards[4:8] == pytest.approx([0.0] * 4)
     # Singleton-free std normalization applied to group 1 (n=4, mixed).
     assert max(abs(r) for r in rewards[0:4]) > 0.5
+
+
+def test_actual_child_local_ids_do_not_share_rollout_mask_sums(monkeypatch):
+    source_args = SimpleNamespace(rollout_global_dataset=False, n_samples_per_prompt=2)
+    data_source = MultiLoRAAsyncDataSource(source_args)
+    data_source.sources = {
+        "A": RolloutDataSource(source_args),
+        "B": RolloutDataSource(source_args),
+    }
+    data_source.source_queue.extend(["A", "B"])
+
+    def adapter(slot: int):
+        return SimpleNamespace(
+            slot=slot,
+            config=SimpleNamespace(rm_type=None, custom_rm_path=None, metadata={}),
+        )
+
+    snapshot = {
+        "active": {"A": adapter(slot=0), "B": adapter(slot=1)},
+        "retiring": {},
+    }
+    monkeypatch.setattr(data_source_module, "fetch_snapshot", lambda: snapshot)
+    groups = [data_source.get_samples()[0], data_source.get_samples()[0]]
+    samples = [sample for group in groups for sample in group]
+
+    for sample, response_length, reward in zip(
+        samples,
+        [2, 4, 3, 5],
+        [0.0, 2.0, 10.0, 14.0],
+        strict=True,
+    ):
+        sample.tokens = list(range(response_length))
+        sample.response_length = response_length
+        sample.reward = reward
+        sample.status = Sample.Status.COMPLETED
+
+    args = multi_lora_args()
+    data, metadata = postprocess_rollout_data(args, groups, train_parallel_config={"dp_size": 2})
+    train_data = convert_samples_to_train_data(
+        args,
+        data,
+        metadata=metadata,
+        custom_convert_samples_to_train_data_func=None,
+        custom_reward_post_process_func=None,
+    )
+
+    assert train_data["sample_indices"] == [0, 1, 0, 1]
+    assert train_data["rollout_mask_sums"] == [2, 4, 3, 5]
+    assert train_data["adapter_slots"] == [0, 0, 1, 1]
+    assert train_data["prompt_group_sizes"] == [2, 2]
+    assert sum(train_data["rewards"][:2]) == pytest.approx(0.0)
+    assert sum(train_data["rewards"][2:]) == pytest.approx(0.0)

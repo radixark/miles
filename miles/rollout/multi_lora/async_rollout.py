@@ -146,7 +146,43 @@ async def process_group(
             s.metadata["slot_version"] = submission_version
             s.metadata["registration_id"] = submission_registration
 
+    identity_fields = ("group_index", "rollout_id", "adapter")
+    root_identity_snapshots = []
+    for position, sample in enumerate(group):
+        identity = tuple(getattr(sample, field) for field in identity_fields)
+        missing = [field for field, value in zip(identity_fields, identity, strict=True) if value is None]
+        if missing:
+            raise ValueError(f"Multi-LoRA input root at position {position} is missing identity fields {missing}")
+        root_identity_snapshots.append(identity)
+
+    # Snapshot before awaiting custom generation because it may mutate input roots in place.
     result = await generate_fn(args, group, sampling_params)
+
+    if not isinstance(result, list) or len(result) != len(root_identity_snapshots):
+        result_size = len(result) if isinstance(result, list) else type(result).__name__
+        raise ValueError(
+            "Multi-LoRA generate_fn must return one output per input root; "
+            f"got {result_size} outputs for {len(root_identity_snapshots)} roots"
+        )
+
+    for root_position, (item, identity) in enumerate(zip(result, root_identity_snapshots, strict=True)):
+        leaves = item if isinstance(item, list) else [item]
+        if not leaves:
+            raise ValueError(f"Multi-LoRA generate_fn returned no leaves for input root at position {root_position}")
+        for leaf_position, leaf in enumerate(leaves):
+            if not isinstance(leaf, Sample):
+                raise TypeError(
+                    "Multi-LoRA generate_fn outputs must be Sample instances; "
+                    f"root {root_position} leaf {leaf_position} is {type(leaf).__name__}"
+                )
+            for field, expected in zip(identity_fields, identity, strict=True):
+                actual = getattr(leaf, field)
+                if actual is not None and actual != expected:
+                    raise ValueError(
+                        f"Multi-LoRA generate_fn changed {field} for root {root_position} leaf {leaf_position}: "
+                        f"expected {expected!r}, got {actual!r}"
+                    )
+                setattr(leaf, field, expected)
 
     if submission_version is not None:
         for s in iter_group_samples(result):

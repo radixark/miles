@@ -33,6 +33,8 @@ class MultiLoRAAsyncDataSource(DataSource):
         self.args = args
         self.sources: dict[str, RolloutDataSource] = {}
         self.source_queue: deque = deque()
+        self._next_group_index = 0
+        self._next_rollout_id = 0
 
     def reconcile(self, adapters: dict[str, AdapterRun]) -> None:
         for name in list(self.sources):
@@ -100,11 +102,16 @@ class MultiLoRAAsyncDataSource(DataSource):
             if not groups:
                 continue
 
+            group_index = self._next_group_index
+            self._next_group_index += 1
             adapter = adapters[name]
             config = adapter.config
             ref = AdapterRef(name=name, slot=adapter.slot)
             reward_spec = RewardSpec(rm_type=config.rm_type, custom_rm_path=config.custom_rm_path)
             for sample in groups[0]:
+                sample.group_index = group_index
+                sample.rollout_id = self._next_rollout_id
+                self._next_rollout_id += 1
                 sample.adapter = ref
                 sample.reward_spec = reward_spec
                 sample.metadata = {**config.metadata, **sample.metadata}

@@ -1,4 +1,3 @@
-import itertools
 import logging
 
 from miles.utils.multi_lora import is_multi_lora_enabled
@@ -10,7 +9,7 @@ logger = logging.getLogger(__name__)
 def postprocess_rollout_data(args, data, train_parallel_config):
     metadata = {}
 
-    validate_compact_rollout_ids(data)
+    flattened_data, is_compact = _flatten_and_validate_rollout_data(data)
 
     # Multi-LoRA: record group boundaries (heterogeneous per-adapter group sizes)
     # and lift the collection loop's batch-level step decision out of sample metadata,
@@ -21,15 +20,9 @@ def postprocess_rollout_data(args, data, train_parallel_config):
         metadata["step_slots"] = list(head.metadata.pop("step_slots", []))
         metadata["step_adapter_names"] = list(head.metadata.pop("step_adapter_names", []))
 
-    # flatten the data if it is a list of lists
-    while isinstance(data[0], list):
-        data = list(itertools.chain.from_iterable(data))
+    data = flattened_data
 
-    # Compact rollouts must not be trimmed by sample count; the schedule drops
-    # whole trailing rollouts instead.
-    is_compact = any(s.rollout_id is not None for s in data)
-
-    if not args.disable_rollout_trim_samples and not is_compact:
+    if not args.disable_rollout_trim_samples:
         global_batch_size = args.global_batch_size
         if args.use_dynamic_global_batch_size:
             logger.info(f"Collected {len(data)} samples from rollout to train with dynamic global batch size")
@@ -39,14 +32,15 @@ def postprocess_rollout_data(args, data, train_parallel_config):
             metadata["dynamic_global_batch_size"] = dynamic_global_batch_size
             global_batch_size = dynamic_global_batch_size
 
-        if len(data) % global_batch_size != 0:
-            trim_len = (len(data) // global_batch_size) * global_batch_size
-            if trim_len == 0:
-                raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
-            origin_data_length = len(data)
-            data = data[:trim_len]
-            logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
-        logger.info(f"Final collected {len(data)} samples from rollout to train")
+        if not is_compact:
+            if len(data) % global_batch_size != 0:
+                trim_len = (len(data) // global_batch_size) * global_batch_size
+                if trim_len == 0:
+                    raise ValueError(f"Not enough samples {len(data)} for global_batch_size {global_batch_size}")
+                origin_data_length = len(data)
+                data = data[:trim_len]
+                logger.info(f"trim number of samples from {origin_data_length} to {trim_len}")
+            logger.info(f"Final collected {len(data)} samples from rollout to train")
 
     return data, metadata
 
@@ -54,11 +48,16 @@ def postprocess_rollout_data(args, data, train_parallel_config):
 def validate_compact_rollout_ids(node, depth=0):
     """Require compact leaves (``list[Sample]`` at depth >= 2, >1 sibling) to
     share a non-None ``rollout_id``; default rollout shapes skip validation."""
+    _flatten_and_validate_rollout_data(node, depth)
+
+
+def _flatten_and_validate_rollout_data(node, depth=0) -> tuple[list[Sample], bool]:
     if isinstance(node, Sample):
-        return
+        return [node], False
     assert isinstance(node, list), f"unexpected rollout output node type: {type(node).__name__}"
-    if node and isinstance(node[0], Sample):
-        if depth >= 2 and len(node) > 1:
+    if node and all(isinstance(item, Sample) for item in node):
+        is_compact = depth >= 2 and len(node) > 1
+        if is_compact:
             rids = [s.rollout_id for s in node]
             missing = [i for i, r in enumerate(rids) if r is None]
             assert not missing, (
@@ -67,9 +66,15 @@ def validate_compact_rollout_ids(node, depth=0):
                 "reducer can aggregate them as one rollout instead of N."
             )
             assert len(set(rids)) == 1, f"Sibling samples from one compact rollout must share rollout_id; got {rids}."
-        return
+        return list(node), is_compact
+
+    flattened = []
+    is_compact = False
     for item in node:
-        validate_compact_rollout_ids(item, depth + 1)
+        item_samples, item_is_compact = _flatten_and_validate_rollout_data(item, depth + 1)
+        flattened.extend(item_samples)
+        is_compact = is_compact or item_is_compact
+    return flattened, is_compact
 
 
 def _first_sample(group):

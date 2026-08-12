@@ -8,6 +8,8 @@ from miles.ray.rollout.rollout_data_conversion import (
     postprocess_rollout_data,
     validate_compact_rollout_ids,
 )
+from miles.ray.rollout.train_data_conversion import convert_samples_to_train_data
+from miles.utils.types import AdapterRef
 
 
 class TestComputeDynamicGlobalBatchSize:
@@ -76,6 +78,49 @@ class TestPostprocessRolloutData:
         nested = [[make_sample(index=0), make_sample(index=1)], [make_sample(index=2)]]
         out, _meta = postprocess_rollout_data(args, nested, train_parallel_config={"dp_size": 1})
         assert len(out) == 3
+
+    def test_explicit_rollout_ids_do_not_mark_default_nested_shape_compact(self):
+        args = make_args(global_batch_size=2, disable_rollout_trim_samples=False, use_dynamic_global_batch_size=False)
+        nested = [
+            [
+                make_sample(index=0, rollout_id=10),
+                make_sample(index=1, rollout_id=11),
+            ],
+            [make_sample(index=2, rollout_id=12)],
+        ]
+
+        out, _meta = postprocess_rollout_data(args, nested, train_parallel_config={"dp_size": 1})
+
+        assert [sample.rollout_id for sample in out] == [10, 11]
+
+    def test_compact_shape_is_not_trimmed(self):
+        args = make_args(
+            global_batch_size=2,
+            disable_rollout_trim_samples=False,
+            use_dynamic_global_batch_size=True,
+            multi_lora=True,
+        )
+        first = make_sample(index=0, rollout_id=10)
+        second = make_sample(index=0, rollout_id=10)
+        third = make_sample(index=1, rollout_id=11)
+        for sample in (first, second, third):
+            sample.adapter = AdapterRef("A", 0)
+            sample.metadata["adapter_global_batch_size"] = 3
+        compact = [[[first, second], third]]
+
+        out, meta = postprocess_rollout_data(args, compact, train_parallel_config={"dp_size": 1})
+        train_data = convert_samples_to_train_data(
+            args,
+            out,
+            metadata=meta,
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out == [first, second, third]
+        assert meta["dynamic_global_batch_size"] == 3
+        assert train_data["dynamic_global_batch_size"] == 3
+        assert train_data["rollout_mask_sums"] == [8, 8, 4]
 
 
 class TestValidateRolloutIdAnnotated:
