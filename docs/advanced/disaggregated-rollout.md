@@ -298,19 +298,20 @@ For current disk-delta runs, miles records
 `perf/update_weights_density` and `perf/update_weights_wire_bytes` in addition
 to the normal weight-update timing.
 
-The open-source Stitch integration reports the following reference weight
-update times:
+The open-source Stitch integration reports the following reference rollout-side
+weight update timings:
 
-| Model | Update time |
-|---|---:|
-| GLM-4.7-Flash | about 30–35 s |
-| Kimi K2.6 NVFP4 | 75.3 s |
+| Model | Preparation (including delta application) | Engine pause |
+|---|---:|---:|
+| GLM-4.7-Flash | 15.8 s | 0.75 s |
+| Kimi K2.6 NVFP4 | 72.5 s | 2.82 s |
 
 The GLM-4.7-Flash result is from steady-state updates in a deployment with 4 ×
 8 H200 trainer GPUs and 48 × 1 H200 rollout replicas. The Kimi K2.6 result is
-the lowest reported verified single-update time at TP4. These are external
-reference measurements, not a general performance claim for miles, SGLang, or
-another rollout service.
+the lowest reported verified single-update result at TP4. Preparation runs
+while inference remains available; the engine pause covers activation. These
+are external reference measurements, not a general performance claim for miles,
+SGLang, or another rollout service.
 
 ## Related guides
 
