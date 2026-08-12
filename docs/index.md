@@ -95,15 +95,6 @@ parallelism settings.
 See [Installation](/getting-started/installation#hardware-requirements) for per-GPU status
 and the container images for each.
 
-## Latest updates
-
-- **[2026/02]** Complete argument reference. [CLI Reference](/user-guide/cli-reference)
-- **[2026/01]** INT4 W4A16 QAT. [INT4 Quantization-Aware Training](/advanced/int4-qat)
-- **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-Agent Co-Evolution](/examples/multi-agent)
-- **[2025/12]** Rollout Routing Replay (R3) for MoE. [Rollout Routing Replay (R3)](/advanced/miles-router)
-- **[2025/11]** Unified FP8 pipeline generally available. [Low Precision RL](/advanced/low-precision)
-- **[2025/11]** Speculative decoding with online MTP-SFT. [Speculative Decoding](/advanced/speculative-decoding)
-
 ## Start here
 
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
