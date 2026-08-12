@@ -17,7 +17,9 @@ from miles.utils.external_utils.command_utils.base_backend import (
 )
 from miles.utils.external_utils.command_utils.common import ArgvManipulator, chart_dir, repo_base_dir, train_env_vars
 from miles.utils.external_utils.command_utils.helm_backend import naming
+from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import pod_phase
@@ -59,6 +61,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
     Helm.build_dependencies(chart)
 
+    installed_manifest = Helm.get_manifest(release, namespace)
     state_file = RunFiles.new_state_file(run_directory=run_directory)
 
     plan = LaunchPlan(
@@ -75,6 +78,16 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     values_path = RunFiles.new_values_file(run_directory=run_directory)
     _write_helm_values(values_path, build_values(specs, plan).as_values())
     values_files: list[str | Path] = [*config.helm_values, values_path]
+
+    if installed_manifest is not None:
+        _assert_upgrade_only_resizes(
+            installed_manifest=installed_manifest,
+            release=release,
+            namespace=namespace,
+            chart=chart,
+            values_files=values_files,
+            skip_upgrade_check=config.skip_upgrade_check,
+        )
 
     Helm.upgrade(
         release=release,
@@ -130,6 +143,34 @@ def _generate_wandb_run_id() -> str:
     from wandb.sdk.lib.runid import generate_id
 
     return generate_id()
+
+
+def _assert_upgrade_only_resizes(
+    *,
+    installed_manifest: Manifest,
+    release: str,
+    namespace: str,
+    chart: Path,
+    values_files: list[str | Path],
+    skip_upgrade_check: bool,
+) -> None:
+    proposed_manifest = Helm.render_upgrade(
+        release=release, namespace=namespace, chart=chart, values_files=values_files
+    )
+    diff = manifest_diff.diff_manifests(before=installed_manifest, after=proposed_manifest)
+
+    if diff.is_allowed:
+        logger.info(f"Run {release} already exists; upgrading it:\n{diff.summarize_scaling()}")
+        return
+
+    message = (
+        f"Run {release} already exists and the relaunch would change more than its size:\n"
+        f"{diff.describe()}\n"
+        f"launch under a new run id, or pass --skip-upgrade-check to apply this anyway and accept the restarts"
+    )
+    if not skip_upgrade_check:
+        raise SystemExit(message)
+    logger.warning(f"upgrade check skipped: {message}")
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:

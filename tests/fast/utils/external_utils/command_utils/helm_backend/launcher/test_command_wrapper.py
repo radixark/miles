@@ -6,9 +6,9 @@ import pytest
 from miles.utils.external_utils.command_utils.common import chart_dir
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
+from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
 
 
 class TestLogCommands:
@@ -38,6 +38,10 @@ class TestLogCommands:
 
         assert "--previous" in command
         assert command[command.index("--since-time") + 1] == "2026-01-01T00:00:00Z"
+
+    def test_selects_a_release_by_the_label_helm_stamps_on_every_pod_of_it(self):
+        """An engine and a trainer share only this label, so anything narrower misses half the run."""
+        assert Kubectl.release_selector("miles-run-x") == f"{INSTANCE_LABEL}=miles-run-x"
 
 
 class TestUpgradeCommand:
@@ -87,6 +91,33 @@ class TestBuildDependencies:
         Helm.build_dependencies(chart)
 
         assert commands == [["helm", "dependency", "build", str(chart)]]
+
+
+class TestGetManifest:
+    def test_a_missing_release_is_reported_as_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Helm reports a missing release on stdout in some versions, and that is genuine absence."""
+        monkeypatch.setattr(
+            command_wrapper,
+            "run_process",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], returncode=1, stdout="Error: release: not found", stderr=""
+            ),
+        )
+
+        assert Helm.get_manifest("miles-run-a", "ci") is None
+
+    def test_a_manifest_read_failure_other_than_absence_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An authorization or network failure must remain distinguishable from a missing release."""
+        monkeypatch.setattr(
+            command_wrapper,
+            "run_process",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], returncode=1, stdout="", stderr="Kubernetes cluster unreachable: access forbidden"
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="Kubernetes cluster unreachable: access forbidden"):
+            Helm.get_manifest("miles-run-a", "ci")
 
 
 class TestRawCommands:
@@ -149,18 +180,6 @@ class TestChartDir:
     def test_finds_the_chart_inside_the_checkout(self):
         """The launcher installs the chart of the code it runs, not one from a registry."""
         assert chart_dir(repo_base_dir="/repo").as_posix() == "/repo/charts/miles-run"
-
-
-class TestReleaseName:
-    def test_a_release_is_the_chart_name_and_the_run_id(self):
-        """The launcher finds a run's release again from the run id alone, so the rule is fixed."""
-        assert RunNames.release(run_id="260101-000000-000") == "miles-run-260101-000000-000"
-
-    def test_the_same_run_id_always_names_the_same_release(self):
-        """Relaunching a run upgrades its release; a fresh name would deploy a second copy instead."""
-        run_id = "a" * 32
-
-        assert RunNames.release(run_id=run_id) == RunNames.release(run_id=run_id)
 
 
 class TestComponentName:
