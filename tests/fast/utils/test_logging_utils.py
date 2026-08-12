@@ -1,5 +1,6 @@
 """Tests for configure_strict_async_warnings."""
 
+import argparse
 import asyncio
 import importlib
 import inspect
@@ -7,11 +8,15 @@ import pkgutil
 import subprocess
 import sys
 import textwrap
+import types
 import warnings
+from unittest.mock import patch
 
 import pytest
 
-from miles.utils.logging_utils import configure_strict_async_warnings
+from miles.utils import logging_utils
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.logging_utils import configure_logger, configure_strict_async_warnings
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 SPECS_PACKAGE = "miles.ray.specs"
@@ -50,11 +55,93 @@ def _configures_logger(klass: type) -> bool:
     return any("configure_logger(" in source for source in sources)
 
 
+class TestConfigureLogger:
+    @pytest.fixture(autouse=True)
+    def _forget_reporter(self):
+        logging_utils._ENV_REPORTER = None
+        yield
+        logging_utils._ENV_REPORTER = None
+
+    def _configure(self, **overrides) -> None:
+        configure_logger(
+            argparse.Namespace(save_debug_event_data=None),
+            source=SimpleProcessIdentity(component="main"),
+            **overrides,
+        )
+
+    def test_reports_the_environment_of_this_process(self) -> None:
+        """Configuring a process's logger is what makes it record the environment it runs in."""
+        with patch("miles.utils.logging_utils.start_env_reporting") as start:
+            self._configure()
+
+        assert start.call_count == 1
+
+    def test_a_second_call_does_not_start_a_second_reporter(self) -> None:
+        """A process that configures its logger twice would otherwise report everything twice, forever."""
+        with patch("miles.utils.logging_utils.start_env_reporting") as start:
+            self._configure()
+            self._configure()
+
+        assert start.call_count == 1
+
+    def test_a_later_call_renames_the_process(self) -> None:
+        """A worker configures its logger long after parse_args named the process `main`."""
+        with patch.object(logging_utils.logging, "basicConfig") as basic_config:
+            logging_utils.configure_logger_raw("main")
+            logging_utils.configure_logger_raw("multi_lora_controller")
+
+        assert [call.kwargs["format"].count("multi_lora_controller") for call in basic_config.call_args_list] == [
+            0,
+            1,
+        ]
+
+    def test_a_process_that_is_not_a_run_reports_nothing(self) -> None:
+        """Probing pip and git costs a process that only borrows the logging setup of a run."""
+        with patch("miles.utils.logging_utils.start_env_reporting") as start:
+            self._configure(report_env=False)
+
+        assert start.call_count == 0
+
+    def test_rebind_forwards_the_final_args_to_the_installed_reporter(self) -> None:
+        """A configured reporter must replace its launch-time arguments with the trainer's final ones."""
+        final_args = argparse.Namespace(rank=3, world_size=8)
+        reporter = types.SimpleNamespace(rebound=[])
+        reporter.rebind = reporter.rebound.append
+        logging_utils._ENV_REPORTER = reporter
+
+        logging_utils.rebind_env_reporting(final_args)
+
+        assert reporter.rebound == [final_args]
+
+    def test_rebind_without_an_installed_reporter_is_a_noop(self) -> None:
+        """Processes that disabled environment reporting must still finish initialization."""
+        logging_utils.rebind_env_reporting(argparse.Namespace(rank=0))
+
+        assert logging_utils._ENV_REPORTER is None
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _stub_gpu_image_imports():
+    """The megatron actor imports the memory saver at module scope, and that ships with the gpu
+    image rather than with miles, so the cpu lane cannot import the class to read its source."""
+    if "torch_memory_saver" in sys.modules:
+        yield
+        return
+
+    stub = types.ModuleType("torch_memory_saver")
+    stub.torch_memory_saver = object()
+    sys.modules["torch_memory_saver"] = stub
+    try:
+        yield
+    finally:
+        del sys.modules["torch_memory_saver"]
+
+
 class TestServedWorkerLogging:
     @pytest.mark.parametrize("worker_class_path", _worker_class_paths())
     def test_worker_configures_its_logger(self, worker_class_path: str) -> None:
         """Every served worker owns a process, and configure_logger is where that process names
-        itself and opens its event log."""
+        itself, opens its event log and reports its environment."""
         assert _configures_logger(
             _load_class(worker_class_path)
         ), f"{worker_class_path} runs as its own process but never calls configure_logger"

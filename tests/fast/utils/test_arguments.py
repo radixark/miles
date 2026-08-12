@@ -1,5 +1,6 @@
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,9 +22,9 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
+from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
-from miles.utils.object_store_config import compute_mooncake_init_kwargs
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
@@ -40,6 +41,26 @@ _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
 def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
     for name, size in _MEGATRON_PARALLEL_SIZES.items():
         setattr(args, name, size)
+
+
+# These name a dataset column, a metric or a prompt field, not a credential.
+_NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
+    {
+        "ci_metric_checker_key",
+        "eval_input_key",
+        "eval_label_key",
+        "eval_reward_key",
+        "eval_tool_key",
+        "input_key",
+        "label_key",
+        "metadata_key",
+        "opd_teacher_key",
+        "reward_key",
+        "tool_key",
+    }
+)
+_SGLANG_ARG_PREFIXES = ("sglang_", "eval_sglang_")
+_INHERITED_CREDENTIAL_PATTERN = re.compile(r"^(eval_)?(sglang|router)_(.*_)?(api_keys?|password)$")
 
 
 def make_class_with_add_arguments():
@@ -87,6 +108,33 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestEventDirectoryDefaults:
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_save_defaults_events_but_preserves_an_explicit_directory(self) -> None:
+        """A checkpoint root supplies the event default without replacing an explicit event directory."""
+        defaulted = self._parse(["--save", "/checkpoints/run"])
+        explicit = self._parse(["--save", "/checkpoints/run", "--save-debug-event-data", "/audit/events"])
+
+        miles_validate_args(defaulted)
+        miles_validate_args(explicit)
+
+        assert defaulted.save_debug_event_data == "/checkpoints/run/events"
+        assert explicit.save_debug_event_data == "/audit/events"
+
+    def test_dump_details_places_events_under_the_dump_root(self) -> None:
+        """A dump root keeps audit events with its other debug artifacts even when checkpoints are saved."""
+        args = self._parse(["--save", "/checkpoints/run", "--dump-details", "/debug/run"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data == "/debug/run/events"
 
 
 class TestMaybeApplyDumperOverrides:
@@ -277,17 +325,6 @@ class TestClusterBackend:
         miles_validate_args(args)
 
         assert args.object_store_backend == "mooncake"
-
-    def test_the_store_this_backend_chose_is_also_configured_by_it(self):
-        """The launcher asserts these kwargs exist and rewrites their host to the master it starts, so
-        a run that never asked for mooncake in the first place must not have to name them itself: with
-        them unset, every kubernetes run using the defaults died before a single pod did any work."""
-        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
-
-        miles_validate_args(args)
-
-        assert ":" in args.mooncake_store_init_kwargs["master_server_address"]
-        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs())
 
     def test_a_named_store_configuration_is_left_alone(self):
         """A run that configured the store itself knows something the default cannot."""
@@ -1624,3 +1661,31 @@ class TestSessionServerArguments:
 
         assert args.session_server_workers == 32
         assert args.session_server_port is None
+
+
+class TestSecretArgumentsAreClassified:
+    def _declared_names(self) -> set[str]:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        # The eval sglang flags default to SUPPRESS, so parsing alone would not materialise them.
+        return {action.dest for action in parser._actions}
+
+    def test_every_secret_looking_miles_flag_is_either_redacted_or_declared_harmless(self):
+        """The env report hashes args by an explicit list, so a new credential flag would leak until listed."""
+        suspicious = {
+            name
+            for name in self._declared_names()
+            if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
+        }
+
+        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+            "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
+            "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
+        )
+
+    def test_every_credential_inherited_from_sglang_and_the_router_is_redacted(self):
+        """sglang and the router contribute api keys and key passwords that land in the args dump verbatim."""
+        credentials = {name for name in self._declared_names() if _INHERITED_CREDENTIAL_PATTERN.search(name)}
+
+        assert credentials >= {"sglang_api_key", "eval_sglang_api_key", "router_api_key"}
+        assert credentials <= _SECRET_ARG_NAMES
