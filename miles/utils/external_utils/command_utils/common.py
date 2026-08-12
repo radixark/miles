@@ -69,21 +69,20 @@ def create_run_id() -> str:
 
 _warned_bool_env_var_keys = set()
 
+_TRUTHY = frozenset({"1", "true", "t", "yes", "y", "on"})
+_FALSY = frozenset({"0", "false", "f", "no", "n", "off"})
+
 
 # copied from SGLang
 def get_bool_env_var(name: str, default: str = "false") -> bool:
-    value = os.getenv(name, default)
-    value = value.lower()
+    value = os.getenv(name, default).lower()
 
-    truthy_values = ("true", "1")
-    falsy_values = ("false", "0")
-
-    if (value not in truthy_values) and (value not in falsy_values):
+    if value not in _TRUTHY and value not in _FALSY:
         if value not in _warned_bool_env_var_keys:
             logger.warning(f"get_bool_env_var({name}) see non-understandable value={value} and treat as false")
         _warned_bool_env_var_keys.add(value)
 
-    return value in truthy_values
+    return value in _TRUTHY
 
 
 def get_env_enable_infinite_run():
@@ -125,14 +124,23 @@ MOONCAKE_MASTER_METRICS_PORT = 0
 MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
 
 
+OBJECT_STORE_BACKEND_FLAG = "--object-store-backend"
+MOONCAKE_BACKEND_NAME = "mooncake"
+MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
+MOONCAKE_MASTER_ADDRESS_KEY = "master_server_address"
+
+
 def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> str:
     init_kwargs = {
         "protocol": "tcp",
-        "master_server_address": f"127.0.0.1:{master_port}",
+        MOONCAKE_MASTER_ADDRESS_KEY: f"127.0.0.1:{master_port}",
         "global_segment_size": "2gb",
         "local_buffer_size": "2gb",
     }
-    return "--object-store-backend mooncake " f"--mooncake-store-init-kwargs {shlex.quote(json.dumps(init_kwargs))} "
+    return (
+        f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
+        f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "
+    )
 
 
 def _is_tcp_server_ready(host: str, port: int) -> bool:
