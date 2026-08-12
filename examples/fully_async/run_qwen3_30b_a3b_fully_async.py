@@ -31,8 +31,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -61,7 +61,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--rollout-function-path fully_async_rollout.generate_rollout_fully_async "
+        "--fully-async "
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "
@@ -150,9 +150,6 @@ def execute(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
-    import os
-
-    fully_async_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=args.num_gpus_per_node,
@@ -161,7 +158,8 @@ def execute(args: ScriptArgs):
         megatron_path=args.megatron_path,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
-            "PYTHONPATH": f"{args.megatron_path}:{fully_async_dir}",
+            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
+            "PYTHONPATH": args.megatron_path,
         },
     )
 

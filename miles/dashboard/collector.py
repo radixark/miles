@@ -257,12 +257,9 @@ class DashboardCollector:
         if missing:
             self.update_topology(TopologySnapshot(ts=time.time(), engines=base))
 
-    def set_router(self, router_addr: str, *, use_miles_router: bool) -> None:
+    def set_router(self, router_addr: str) -> None:
         """Register the sglang router and start (or re-point) the scraper."""
-        if self.config.scrape_mode == "auto":
-            mode = ScrapeMode.DIRECT if use_miles_router else ScrapeMode.ROUTER
-        else:
-            mode = ScrapeMode(self.config.scrape_mode)
+        mode = ScrapeMode.DIRECT if self.config.scrape_mode == "auto" else ScrapeMode(self.config.scrape_mode)
         # never hold the lock while stopping a scraper: its thread may be
         # blocked on the same lock inside the _append sink (deadlock)
         with self._lock:

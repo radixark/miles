@@ -331,6 +331,9 @@ def _build_server_args(
     `use_rollout_routing_replay=True` makes the server inject
     `return_routed_experts=True` upstream and exercise the R3-strip path, i.e.
     the production-shaped large-R3 scenario the overhead doc is about.
+    `pause_generation_mode` follows `--incremental-r3` so the delta-shaped
+    payloads run against a server that actually requests additional R3
+    (`routed_experts_start_len` on every upstream chat request).
     """
     return SimpleNamespace(
         hf_checkpoint=bench_args.hf_checkpoint,
@@ -339,6 +342,7 @@ def _build_server_args(
         tito_model=bench_args.tito_model,
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=False,
+        pause_generation_mode="in_place" if bench_args.incremental_r3 else "retract",
         miles_router_timeout=600.0,
         session_server_ip=ip,
         session_server_port=port,

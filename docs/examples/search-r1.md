@@ -56,7 +56,8 @@ python $WORK_DIR/scripts/data_process/qa_search_train_merge.py \
 ```bash
 hf download Qwen/Qwen2.5-3B --local-dir /root/Qwen2.5-3B
 cd /root/miles
-source scripts/models/qwen2.5-3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen2.5-3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen2.5-3B \

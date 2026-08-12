@@ -3,6 +3,8 @@
 Only fields in `SAMPLES_VALUE_SPEC` cross the wire. `encode_samples` packs them
 into safetensors; `decode_samples_and_merge_input_sample` overlays them onto a
 deepcopy of the input sample and merges server metadata.
+
+Tree-serving v2 selects `SAMPLES_VALUE_SPEC_V2` to carry `Sample.reward`.
 """
 
 import dataclasses
@@ -41,14 +43,22 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "metadata": ValueSpec("json"),
 }
 
-# The wire allowlist, derived: only table fields cross the samples wire.
+# Tree-serving v2 adds `Sample.reward` to the wire.
+SAMPLES_VALUE_SPEC_V2: dict[str, ValueSpec] = {
+    **SAMPLES_VALUE_SPEC,
+    "reward": ValueSpec("json"),
+}
+
+# The wire allowlists, derived: only table fields cross the samples wire.
 COMPUTED_FIELDS = tuple(SAMPLES_VALUE_SPEC)
+COMPUTED_FIELDS_V2 = tuple(SAMPLES_VALUE_SPEC_V2)
 
 assert all(
-    spec.codec in ("tensor", "tensor_list", "json") for spec in SAMPLES_VALUE_SPEC.values()
+    spec.codec in ("tensor", "tensor_list", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
 ), "unknown codec in SAMPLES_VALUE_SPEC"
 
-_TENSOR_FIELDS = frozenset(field for field, spec in SAMPLES_VALUE_SPEC.items() if spec.codec != "json")
+_TENSOR_FIELDS = frozenset(field for field, spec in SAMPLES_VALUE_SPEC_V2.items() if spec.codec != "json")
+assert _TENSOR_FIELDS <= set(COMPUTED_FIELDS), "every tensor field must be on the v1 wire too"
 
 _SAMPLES_META_KEY = "_samples_meta"
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
@@ -75,14 +85,26 @@ def _asarray_wire(field: str, value, dtype: np.dtype) -> np.ndarray:
     return converted
 
 
-def encode_samples(samples: list[Sample], session_metadata: dict, empty_reason: str | None = None) -> bytes:
-    """Server side: pack assembled samples into one safetensors payload."""
+def encode_samples(
+    samples: list[Sample],
+    session_metadata: dict,
+    empty_reason: str | None = None,
+    *,
+    fields: tuple[str, ...] = COMPUTED_FIELDS,
+) -> bytes:
+    """Server side: pack assembled samples into one safetensors payload.
+
+    ``fields`` selects the wire allowlist (v1 default; the v2 server passes
+    ``COMPUTED_FIELDS_V2``) — with the default, the payload is byte-identical
+    to the pre-parameterized codec.
+    """
     tensors: dict[str, np.ndarray] = {}
     sample_metas = []
     for sample_index, sample in enumerate(samples):
         sample_meta: dict = {}
         nulls: list[str] = []
-        for field, spec in SAMPLES_VALUE_SPEC.items():
+        for field in fields:
+            spec = SAMPLES_VALUE_SPEC_V2[field]
             value = getattr(sample, field)
             if spec.codec == "json":
                 if field == "status":
@@ -112,8 +134,15 @@ def encode_samples(samples: list[Sample], session_metadata: dict, empty_reason: 
     return safetensors.numpy.save(tensors)
 
 
-def decode_samples_and_merge_input_sample(payload: bytes, input_sample: Sample) -> SamplesReply:
-    """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`."""
+def decode_samples_and_merge_input_sample(
+    payload: bytes, input_sample: Sample, *, fields: tuple[str, ...] = COMPUTED_FIELDS
+) -> SamplesReply:
+    """Driver side: overlay each wire sample's computed fields onto a deepcopy of `input_sample`.
+
+    ``fields`` must match the server's encode allowlist (v1 default); extra
+    keys a newer server sent are ignored, so a v1 decode of a v2 payload
+    keeps exactly the v1 overlay semantics.
+    """
     tensors = safetensors.numpy.load(payload)  # SafetensorError propagates: invalid container
     meta_arr = tensors.pop(_SAMPLES_META_KEY)  # KeyError propagates: missing meta is malformed
     if meta_arr.ndim != 1 or meta_arr.dtype != np.uint8:
@@ -129,7 +158,8 @@ def decode_samples_and_merge_input_sample(payload: bytes, input_sample: Sample) 
         nulls = set(sample_meta["nulls"])  # KeyError propagates: missing null markers are malformed
         if nulls - _TENSOR_FIELDS:
             raise ValueError(f"null markers reference non-tensor fields: {sorted(nulls - _TENSOR_FIELDS)}")
-        for field, spec in SAMPLES_VALUE_SPEC.items():
+        for field in fields:
+            spec = SAMPLES_VALUE_SPEC_V2[field]
             if spec.codec == "json":
                 value = sample_meta[field]
                 if field == "status":
@@ -138,6 +168,11 @@ def decode_samples_and_merge_input_sample(payload: bytes, input_sample: Sample) 
                     value = list(value)
                 elif field == "prefix_cache_info":
                     value = Sample.PrefixCacheInfo.from_dict(value)
+                elif field == "reward":
+                    # Server reward is authoritative only when assigned; a null
+                    # keeps the driver input's local reward.
+                    if value is None:
+                        continue
                 elif field == "metadata":
                     if not isinstance(value, dict):
                         raise ValueError(f"metadata must be a JSON object, got {type(value).__name__}")

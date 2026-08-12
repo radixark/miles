@@ -15,7 +15,7 @@
 
 set -ex
 
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 # ---------------------------------------------------------------------------
 # Positional arguments
@@ -79,9 +79,9 @@ MODEL_NAME="GLM-4.7-Flash"
 MODEL_TYPE="glm4.7-flash"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-MILES_ROOT="/root/miles"
-source "${MILES_ROOT}/scripts/models/${MODEL_TYPE}.sh"
-
+MILES_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"
+MODEL_ARGS_LINE="$(python3 "${MILES_ROOT}/miles/utils/external_utils/model_args_utils.py" "${MODEL_TYPE}")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 # ---------------------------------------------------------------------------
 # Determine modes to run
 # ---------------------------------------------------------------------------
@@ -181,7 +181,6 @@ run_mode() {
         --sglang-mem-fraction-static 0.7
         --sglang-ep-size 4
         --sglang-cuda-graph-bs 1 2 4 8 16
-        # --use-miles-router
         --sglang-enable-dp-attention
         --sglang-enable-dp-lm-head
     )

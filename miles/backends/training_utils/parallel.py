@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import auto
+
+from torch.distributed.device_mesh import DeviceMesh
 
 try:
     from enum import StrEnum
@@ -8,7 +10,6 @@ except ImportError:
 
 
 from miles.utils.ft_utils.process_group_utils import GroupInfo, GroupsInfo
-
 
 _parallel_state: "ParallelState | None" = None
 
@@ -42,6 +43,7 @@ class ParallelState:
     ep: GroupInfo
     etp: GroupInfo
     indep_dp: GroupInfo
+    meshes: dict[str, DeviceMesh] = field(default_factory=dict)
     cp_comm_type: str | list[str] | tuple[str, ...] | None = None
     is_pp_last_stage: bool = True
     vpp_size: int | None = 1
@@ -72,3 +74,6 @@ class ParallelState:
         if isinstance(cp_comm_type, (list, tuple)):
             cp_comm_type = cp_comm_type[0] if cp_comm_type else None
         return self.cp.size > 1 and cp_comm_type == "a2a"
+
+    def get_mesh(self, name: str) -> DeviceMesh:
+        return self.meshes[name]

@@ -7,7 +7,12 @@ import logging
 import random
 from argparse import Namespace
 
-from miles.rollout.session.samples.codec import SamplesReply, decode_samples_and_merge_input_sample
+from miles.rollout.session.samples.codec import (
+    COMPUTED_FIELDS,
+    COMPUTED_FIELDS_V2,
+    SamplesReply,
+    decode_samples_and_merge_input_sample,
+)
 from miles.utils.http_utils import post, post_bytes_no_retry
 from miles.utils.types import Sample
 
@@ -17,11 +22,21 @@ _SESSION_REQUEST_TIMEOUT = 120
 
 
 class OpenAIEndpointTracer:
-    def __init__(self, router_url: str, session_id: str, session_server_instance_id: str | None = None):
+    def __init__(
+        self,
+        router_url: str,
+        session_id: str,
+        session_server_instance_id: str | None = None,
+        samples_wire_fields: tuple[str, ...] = COMPUTED_FIELDS,
+    ):
         self.router_url = router_url
         self.session_id = session_id
         self.base_url = f"{router_url}/sessions/{session_id}"
         self.session_server_instance_id = session_server_instance_id
+        # The samples-wire allowlist must match the server's encode: v1 default,
+        # extended under --use-session-server v2 (create() selects from args;
+        # direct constructions keep v1).
+        self.samples_wire_fields = samples_wire_fields
 
     @property
     def session_server_id(self) -> str:
@@ -45,19 +60,26 @@ class OpenAIEndpointTracer:
         session_server_instance_id = instance_ids.get(session_port)
         response = await post(f"{session_url}/sessions", {}, action="post")
         session_id = response["session_id"]
+        use_v2 = getattr(args, "use_session_server", None) == "v2"
         return OpenAIEndpointTracer(
             router_url=session_url,
             session_id=session_id,
             session_server_instance_id=session_server_instance_id,
+            samples_wire_fields=COMPUTED_FIELDS_V2 if use_v2 else COMPUTED_FIELDS,
         )
 
-    async def collect_samples(self, input_sample: Sample, *, max_seq_len: int | None) -> SamplesReply:
+    async def collect_samples(
+        self, input_sample: Sample, *, max_seq_len: int | None, agent_metadata: dict | None = None
+    ) -> SamplesReply:
         """Fetch server-assembled training samples for this session."""
+        body: dict = {"max_seq_len": max_seq_len}
+        if agent_metadata is not None:
+            body["metadata"] = agent_metadata
         try:
             # `asyncio.TimeoutError` propagates after cleanup is attempted for `agentic_tool_call.generate` to handle.
             payload = await post_bytes_no_retry(
                 f"{self.base_url}/samples",
-                {"max_seq_len": max_seq_len},
+                body,
                 timeout=_SESSION_REQUEST_TIMEOUT,
             )
         finally:
@@ -69,4 +91,4 @@ class OpenAIEndpointTracer:
             except Exception as e:
                 logger.warning(f"Failed to delete session {self.session_id} after collecting samples: {e}")
 
-        return decode_samples_and_merge_input_sample(payload, input_sample)
+        return decode_samples_and_merge_input_sample(payload, input_sample, fields=self.samples_wire_fields)

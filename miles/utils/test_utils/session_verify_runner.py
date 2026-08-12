@@ -65,7 +65,7 @@ SESSION_VERIFY_INVARIANT_ARGS: dict[str, Any] = {
     "rm_type": "random",
     "custom_generate_function_path": "miles.utils.test_utils.session_verify_agent.generate",
     "custom_agent_function_path": "miles.utils.test_utils.session_verify_agent.run_agent",
-    "use_session_server": True,
+    "use_session_server": "v2",
     "debug_rollout_only": True,
     "ci_test": True,
     "colocate": True,
@@ -120,7 +120,7 @@ def _ensure_model_downloaded(hf_checkpoint: str) -> str:
     short = hf_checkpoint.split("/")[-1]
     local_dir = os.path.join(LOCAL_MODELS_ROOT, short)
     os.makedirs(LOCAL_MODELS_ROOT, exist_ok=True)
-    U.exec_command(f"hf download {hf_checkpoint} --local-dir {local_dir}")
+    U.exec_command_cpu(f"hf download {hf_checkpoint} --local-dir {local_dir}")
     return local_dir
 
 
@@ -162,6 +162,10 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
     ]
     if ns.sglang_tool_call_parser:
         parts.append(f"--sglang-tool-call-parser {ns.sglang_tool_call_parser}")
+    if ns.sglang_context_length is not None:
+        parts.append(f"--sglang-context-length {ns.sglang_context_length}")
+    if ns.sglang_cuda_graph_backend_prefill is not None:
+        parts.append(f"--sglang-cuda-graph-backend-prefill {ns.sglang_cuda_graph_backend_prefill}")
     # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
     # sglang; the default is 1, which is fatal at engine init.  Only emit the
     # flag when the caller asks for ep>1 so single-expert models stay untouched.
@@ -177,7 +181,11 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
             ]
         )
     if ns.use_session_server:
-        parts.append("--use-session-server")
+        # Preserve an explicit version string ("v2"); a bare True stays the bare flag.
+        if isinstance(ns.use_session_server, str):
+            parts.append(f"--use-session-server {ns.use_session_server}")
+        else:
+            parts.append("--use-session-server")
     if ns.debug_rollout_only:
         parts.append("--debug-rollout-only")
     if ns.ci_test:

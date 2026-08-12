@@ -77,8 +77,8 @@ def run_ci(
 
 
 def _prepare_gsm8k() -> None:
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
     U.convert_checkpoint(
         model_name=_MODEL_NAME,
         megatron_model_type=_MODEL_TYPE,

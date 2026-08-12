@@ -5,6 +5,7 @@ Hierarchy
 SessionError (base)
 ├── SessionNotFoundError       → 404  session does not exist
 ├── MessageValidationError     → 400  messages structure/content invalid
+├── TruncatedGenerationError   → 409  extending a length-truncated generation (v2)
 ├── TokenizationError          → 500  TITO tokenizer / prefix mismatch
 └── UpstreamResponseError      → 502  SGLang response invalid or unexpected
 """
@@ -30,6 +31,14 @@ class MessageValidationError(SessionError):
     """
 
     status_code: int = 400
+
+
+class TruncatedGenerationError(SessionError):
+    """Raised when a request extends a generation that ended with
+    finish_reason='length'; only the v2 tree server raises it (v1 never
+    branches)."""
+
+    status_code: int = 409
 
 
 class TokenizationError(SessionError):
