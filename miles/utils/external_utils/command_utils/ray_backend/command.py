@@ -1,5 +1,4 @@
 import logging
-import re
 import shlex
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_MASTER_PORT,
     _is_tcp_server_ready,
     run_shell_command,
+    substitute_placeholders,
 )
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.misc import get_current_node_ip
@@ -24,18 +24,9 @@ def _exec_command_on_node(cmd: str, capture_output: bool) -> str | None:
     return run_shell_command(f"unset CUDA_VISIBLE_DEVICES; {cmd}", capture_output=capture_output)
 
 
-def exec_command_all_ray_nodes(cmd: str, capture_output: bool = False, num_nodes: int | None = None) -> list[str | None]:
-    """Execute a shell command on every alive Ray node in parallel.
-
-    Supported placeholders in `cmd` (replaced per-node before execution):
-        {{node_rank}}   - 0-based index of the node
-        {{nnodes}}      - total number of alive nodes (or num_nodes if specified)
-        {{master_addr}} - NodeManagerAddress of the first node
-        {{node_ip}}     - NodeManagerAddress of the current node
-
-    Args:
-        num_nodes: If set, only use the first `num_nodes` nodes instead of all alive nodes.
-    """
+def exec_command_all_ray_nodes(
+    cmd: str, capture_output: bool = False, num_nodes: int | None = None
+) -> list[str | None]:
     ray.init(address="auto")
     try:
         current_ip = get_current_node_ip()
@@ -52,19 +43,15 @@ def exec_command_all_ray_nodes(cmd: str, capture_output: bool = False, num_nodes
         master_addr = nodes[0]["NodeManagerAddress"]
         nnodes = str(len(nodes))
 
-        placeholder_pattern = re.compile(
-            "|".join(map(re.escape, ["{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}"]))
-        )
-
         refs = []
         for rank, node in enumerate(nodes):
-            substitutions = {
-                "{{node_rank}}": str(rank),
-                "{{nnodes}}": nnodes,
-                "{{master_addr}}": master_addr,
-                "{{node_ip}}": node["NodeManagerAddress"],
-            }
-            node_cmd = placeholder_pattern.sub(lambda m, s=substitutions: s[m.group(0)], cmd)
+            node_cmd = substitute_placeholders(
+                cmd,
+                node_rank=str(rank),
+                nnodes=nnodes,
+                master_addr=master_addr,
+                node_ip=node["NodeManagerAddress"],
+            )
             refs.append(
                 _exec_command_on_node.options(
                     scheduling_strategy=NodeAffinitySchedulingStrategy(
