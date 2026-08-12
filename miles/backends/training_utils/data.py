@@ -31,6 +31,25 @@ def _rollout_logprob_dtype(args: Namespace) -> torch.dtype:
     return torch.float32
 
 
+def compute_bshd_max_seq_lens(args, parallel_state, total_lengths, n_samples: int) -> list[int]:
+    """Padded per-sample max_seq_len list for bshd batching (shared by the main
+    rollout view and the in-trainer-OPD teacher view, which has its own,
+    typically longer, lengths -- extracted out of get_rollout_data's inline bshd
+    branch below so both call sites stay byte-identical by construction.
+
+    TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
+    """
+    max_seq_len = max(total_lengths)
+    # pad to reduce memory fragmentation and maybe make the computation faster
+    pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
+    max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
+    if max_compress_ratio:
+        local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
+        pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
+    max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
+    return [max_seq_len] * n_samples
+
+
 def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
@@ -53,6 +72,19 @@ def get_rollout_data(
     rollout_data["loss_masks"] = [
         torch.tensor(t, dtype=torch.int, device=torch.cuda.current_device()) for t in rollout_data["loss_masks"]
     ]
+    if "teacher_tokens" in rollout_data:
+        # Experience-augmented teacher view for in-trainer OPD (text-only).
+        rollout_data["teacher_tokens"] = [
+            torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device())
+            for t in rollout_data["teacher_tokens"]
+        ]
+    if "teacher_gather_positions" in rollout_data:
+        # turnhint OPD: student-token position map into the teacher view's
+        # response span (identity for suffix-aligned samples).
+        rollout_data["teacher_gather_positions"] = [
+            torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device())
+            for t in rollout_data["teacher_gather_positions"]
+        ]
     if "rollout_mask_sums" in rollout_data:
         rollout_data["rollout_mask_sums"] = torch.tensor(
             rollout_data["rollout_mask_sums"], dtype=torch.float32, device=torch.cuda.current_device()
@@ -76,18 +108,9 @@ def get_rollout_data(
         ]
 
     if args.qkv_format == "bshd":
-        # TODO: micro-batch wise dynamic, possibly move to @data.py:get_data_iterator
-        max_seq_len = max(rollout_data["total_lengths"])
-
-        # pad to reduce memory fragmentation and maybe make the computation faster
-        pad_size = parallel_state.tp.size * args.data_pad_size_multiplier
-        max_compress_ratio = max(args.compress_ratios) if args.compress_ratios else 0
-        if max_compress_ratio:
-            local_seqlen_multiple = max_compress_ratio * (2 if parallel_state.cp.size > 1 else 1)
-            pad_size = max(pad_size, local_seqlen_multiple * parallel_state.cp.size)
-        max_seq_len = (max_seq_len + pad_size - 1) // pad_size * pad_size
-
-        rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
+        rollout_data["max_seq_lens"] = compute_bshd_max_seq_lens(
+            args, parallel_state, rollout_data["total_lengths"], len(rollout_data["tokens"])
+        )
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
     for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):

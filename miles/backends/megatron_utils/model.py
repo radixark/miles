@@ -4,6 +4,7 @@ import dataclasses
 import gc
 import logging
 import math
+import os
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -248,6 +249,45 @@ def should_disable_forward_pre_hook(args: Namespace) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def logits_precision_forward_kwargs(args) -> dict:
+    """Forward kwargs that stop Megatron upcasting the full logits to fp32.
+
+    ``Float16Module.forward`` upcasts its output on the pipeline last stage, which
+    for an LM head means allocating a full fp32 ``[S, V_local]`` copy of bf16
+    logits -- a multi-GiB allocation, and the one that OOM'd long-sequence
+    long-sequence training runs. It is redundant work, not just expensive: every vocab-wide
+    consumer upcasts per chunk on its own, and bf16 -> fp32 is exact, so the
+    chunk-wise result is bit-identical to a chunk of the globally-upcast tensor.
+
+    Returns an EMPTY dict when off, never ``{"fp32_output": True}``: a model that
+    is not wrapped in ``Float16Module`` has no such parameter and would raise
+    TypeError.
+
+    TWO switches enable it, because both have live callers:
+    * ``--keep-logits-in-model-precision`` -- the CLI flag.
+    * ``MILES_BF16_LOGITS=1`` in ``--train-env-vars``.
+    At ``V_local = 129280/8`` this skipped fp32 copy can be several GiB on the
+    last stage.
+
+    Reconciling them HERE, rather than at the call sites, is the point: the two
+    readers must agree, or ``fp32_output`` could be passed twice (a TypeError
+    that only fires once the flag is set).
+    """
+    enabled = (getattr(args, "keep_logits_in_model_precision", False)
+               or bool(os.environ.get("MILES_BF16_LOGITS")))
+    if not enabled:
+        return {}
+    if not (getattr(args, "bf16", False) or getattr(args, "fp16", False)):
+        raise ValueError(
+            "Keeping logits in model precision (--keep-logits-in-model-precision "
+            "or MILES_BF16_LOGITS=1) requires a half-precision model (bf16 or "
+            "fp16): without one there is no Float16Module wrapper, so there is "
+            "no output upcast to skip and `fp32_output` is not a parameter of "
+            "the module being called."
+        )
+    return {"fp32_output": False}
+
+
 @torch.no_grad()
 def forward_only(
     f: Callable[..., dict[str, list[torch.Tensor]]],
@@ -257,6 +297,8 @@ def forward_only(
     num_microbatches: Sequence[int],
     rollout_id: int,
     store_prefix: str = "",
+    opd_topk: int = 0,
+    opd_gather_ids: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -271,6 +313,19 @@ def forward_only(
         num_microbatches: Number of microbatches per rollout step.
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
+        opd_topk: In-trainer OPD student pass (--opd-topk-in-trainer) -- if > 0,
+            forwarded to get_log_probs_and_entropy so it also extracts
+            per-position top-k logprobs+ids ("opd_topk_vals"/"opd_topk_ids").
+        opd_gather_ids: In-trainer OPD teacher pass -- if True, fetch
+            "opd_topk_ids" from the data iterator (per-microbatch, produced
+            by the student pass above and carried on the teacher-view
+            iterator's rollout_data) and forward it to get_log_probs_and_entropy
+            as opd_gather_ids so the teacher gathers at exactly those ids.
+            A microbatch whose iterator carries no "opd_topk_ids" (e.g. this
+            call is not actually the in-trainer-OPD teacher pass) hands back
+            None for the key -- the data iterator tolerates an absent key by
+            design, so this flag is safe to leave off for every other
+            forward_only caller in this module.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -304,7 +359,11 @@ def forward_only(
 
         assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
-        # Get the batch.
+        # Get the batch. "opd_topk_ids" is always requested -- harmless when
+        # opd_gather_ids=False or the iterator carries no such field (the data
+        # iterator returns None for an absent key, per-key, not an error), so the
+        # same get_batch call serves both the in-trainer-OPD teacher pass and every
+        # other forward_only caller.
         batch = get_batch(
             data_iterator,
             [
@@ -315,6 +374,8 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
                 "witness_ids",
+                "opd_topk_ids",
+                "teacher_gather_positions",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -340,6 +401,9 @@ def forward_only(
             loss_mask=batch["full_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            # Keep the LM head's output in model precision; the loss upcasts per
+            # chunk anyway.
+            **logits_precision_forward_kwargs(args),
         )
 
         return output_tensor, partial(
@@ -350,6 +414,15 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            opd_topk=opd_topk,
+            # Only forward opd_topk_ids when the caller opted in (opd_gather_ids=True);
+            # batch.get is None-safe either way since the data iterator tolerates an
+            # absent key.
+            opd_gather_ids=batch.get("opd_topk_ids") if opd_gather_ids else None,
+            # in-trainer-OPD teacher pass: student-token position map into the
+            # teacher view's response span -- present only on that pass's iterator;
+            # None everywhere else.
+            opd_gather_positions=batch.get("teacher_gather_positions") if opd_gather_ids else None,
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -496,6 +569,14 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                # in-trainer top-k OPD under --opd-topk-placement=loss: the
+                # student's top-k ids and the teacher's logprobs at them are
+                # constants from the pre-passes, re-read here so the training
+                # forward can recompute the student side WITH gradient.
+                # Absent keys come back as None, so requesting them
+                # unconditionally is harmless.
+                "opd_topk_ids",
+                "teacher_opd_gathered_vals",
                 "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,
@@ -541,6 +622,12 @@ def train_one_step(
 
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
+
+            # Same gate as the forward_only path -- deliberately the same helper,
+            # not a second copy of the condition: the two call sites must agree,
+            # or the ref/rollout log-probs and the training logits are computed in
+            # different dtypes.
+            forward_kwargs.update(logits_precision_forward_kwargs(args))
 
             output_tensor = model(**forward_kwargs)
 

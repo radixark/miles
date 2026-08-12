@@ -21,6 +21,13 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "opd_reverse_kl": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
+    # Experience-augmented teacher view for in-trainer top-k OPD
+    # (--opd-topk-in-trainer): privileged_prefix + response tokens.
+    "teacher_tokens": "int32",
+    # turnhint OPD: per-sample map from student response index -> position in
+    # the teacher view's own response span (identity arange when the view is
+    # suffix-aligned, so the batch representation is uniform).
+    "teacher_gather_positions": "int32",
 }
 
 ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
@@ -28,6 +35,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "partition": ValueSpec(codec="ndarray", dtype="int64"),
     "seq_witness_ids": ValueSpec(codec="ndarray", dtype="int64"),
     "response_lengths": ValueSpec(codec="ndarray", dtype="int64"),
+    "teacher_response_lengths": ValueSpec(codec="ndarray", dtype="int64"),
     "rewards": ValueSpec(codec="ndarray", dtype="float32"),
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
@@ -150,6 +158,84 @@ def convert_samples_to_train_data(
 
     if samples[0].opd_reverse_kl is not None:
         train_data["opd_reverse_kl"] = [sample.opd_reverse_kl for sample in samples]
+
+    if any(sample.teacher_tokens is not None for sample in samples):
+        # Experience-augmented teacher view for in-trainer OPD
+        # (--opd-topk-in-trainer). The whole KL alignment contract is "the last
+        # response_length positions of the teacher view are the SAME response
+        # tokens the student scored" -- pin it here, fail loud, before anything
+        # downstream can silently misalign.
+        #
+        # Gate on `any`, not `samples[0]`: a train-data conversion may produce a
+        # mixed batch (some samples with a teacher view, some without) when the
+        # reward post-process excludes part of the batch from teacher scoring
+        # without dropping them. A sample with no teacher view falls back to its
+        # own tokens: teacher == student for that sample only, i.e. zero forced
+        # KL contribution from a sample the teacher never scored.
+        for sample in samples:
+            if sample.teacher_tokens is None:
+                # copy, not alias: a later in-place mutation of tokens must not
+                # silently rewrite the teacher view
+                sample.teacher_tokens = list(sample.tokens)
+            r = sample.response_length
+            assert len(sample.teacher_tokens) >= r, (
+                f"teacher_tokens shorter than response for sample {sample.index}"
+            )
+            if sample.teacher_gather_positions is not None:
+                # turnhint view: hint turns are interleaved INSIDE the response,
+                # so alignment rests on the position map -- pin that the mapped
+                # positions recover exactly the student's response tokens, fail
+                # loud before anything downstream can silently gather at the wrong
+                # rows.
+                positions = sample.teacher_gather_positions
+                t_resp = sample.teacher_response_length
+                assert t_resp is not None and t_resp >= r, (
+                    f"teacher_response_length ({t_resp}) must cover the student "
+                    f"response ({r}) for sample {sample.index}"
+                )
+                assert len(positions) == r, (
+                    f"teacher_gather_positions maps {len(positions)} tokens but the "
+                    f"student response has {r} for sample {sample.index}"
+                )
+                # Positions must be in-range, strictly increasing, duplicate-free:
+                # a negative index would wrap and (when the tokens happen to match)
+                # pass the content check below while silently selecting the wrong
+                # row in the gather; a duplicate would double-count its KL term.
+                assert all(0 <= p < t_resp for p in positions) and list(positions) == sorted(
+                    set(positions)
+                ), (
+                    f"teacher_gather_positions out of range or not strictly increasing "
+                    f"for sample {sample.index} (t_resp={t_resp})"
+                )
+                span = sample.teacher_tokens[len(sample.teacher_tokens) - t_resp :]
+                assert [span[p] for p in positions] == list(
+                    sample.tokens[len(sample.tokens) - r:]
+                ), (
+                    f"teacher view's mapped positions != student response tokens "
+                    f"for sample {sample.index} -- the spliced teacher view corrupted "
+                    "the student token subsequence"
+                )
+            else:
+                assert list(sample.teacher_tokens[len(sample.teacher_tokens) - r:]) == list(
+                    sample.tokens[len(sample.tokens) - r:]
+                ), f"teacher_tokens response suffix != tokens response suffix for sample {sample.index}"
+        train_data["teacher_tokens"] = [sample.teacher_tokens for sample in samples]
+        if any(sample.teacher_gather_positions is not None for sample in samples):
+            # Uniform batch representation: suffix-aligned samples get the
+            # identity map so downstream row-selects need no per-sample
+            # special-casing (an identity select is a semantic no-op).
+            train_data["teacher_gather_positions"] = [
+                sample.teacher_gather_positions
+                if sample.teacher_gather_positions is not None
+                else list(range(sample.response_length))
+                for sample in samples
+            ]
+            train_data["teacher_response_lengths"] = [
+                sample.teacher_response_length
+                if sample.teacher_response_length is not None
+                else sample.response_length
+                for sample in samples
+            ]
 
     x = metadata.get("dynamic_global_batch_size")
     assert args.use_dynamic_global_batch_size == (x is not None)
@@ -316,6 +402,9 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            "teacher_tokens",
+            "teacher_gather_positions",
+            "teacher_response_lengths",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",

@@ -37,7 +37,13 @@ from miles.utils.types import RolloutBatch
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
-from ..training_utils.data import DataIterator, get_data_iterator, get_num_rollouts, get_rollout_data
+from ..training_utils.data import (
+    DataIterator,
+    compute_bshd_max_seq_lens,
+    get_data_iterator,
+    get_num_rollouts,
+    get_rollout_data,
+)
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import (
     compute_advantages_and_returns,
@@ -45,6 +51,7 @@ from ..training_utils.loss import (
     get_values,
     log_train_advantage_computation_event,
 )
+from ..training_utils.loss_hub.opd import topk_overlap, topk_reverse_kl
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
@@ -357,6 +364,141 @@ class MegatronTrainRayActor(TrainRayActor):
         for m in all_replay_managers:
             m.stage = stage
 
+    def _maybe_refresh_opd_teacher_from_actor(self) -> None:
+        """``--opd-teacher-refresh-from-actor``: re-point the OPD teacher at the
+        weights the rollout engine just received (the "fresh"/self-teacher mode).
+
+        Called at the END of ``update_weights``, the only moment where "the
+        teacher == what the next rollout will generate with" is true: the engine's
+        weights change exactly here, so pinning the teacher anywhere else would
+        make it the teacher of a different policy than the one being scored.
+        ``--opd-teacher-load`` stays required as the step-0 seed.
+
+        The default (frozen) mode leaves the teacher at that seed forever -- the
+        standard frozen-teacher setup for on-policy distillation.
+
+        Under ``--offload-train`` the train loop sleeps the actor
+        (``torch_memory_saver.pause``, GPU memory unmapped) before update_weights.
+        ``backup()`` reads the LIVE parameters, so reading unmapped GPU memory is a
+        hard segfault with no Python exception: wake for the copy and sleep again.
+        Moving the call relative to ``torch_memory_saver.disable()`` does NOT help
+        -- disable() and pause()/resume() are different mechanisms.
+        """
+        if not getattr(self.args, "opd_teacher_refresh_from_actor", False):
+            return
+        if "teacher" not in self.weights_backuper.backup_tags:
+            raise ValueError(
+                "--opd-teacher-refresh-from-actor is set but no 'teacher' weight-backup tag "
+                "exists; it requires --opd-type=megatron with --opd-teacher-load."
+            )
+        need_resume_for_backup = bool(self.args.offload_train and self._asleep)
+        tag = "default" if lora_rollout_enabled(self.args) else None
+        if need_resume_for_backup:
+            torch_memory_saver.resume(tag=tag)
+        try:
+            self.weights_backuper.backup("teacher")
+        finally:
+            # A failed backup must not leave the model resident: the train loop
+            # believes it is asleep and will not pause it again.
+            if need_resume_for_backup:
+                torch_memory_saver.pause(tag=tag)
+
+    def _teacher_view_iterator(
+        self, rollout_data: dict, extra_keys: tuple[str, ...] = ()
+    ) -> tuple[list[DataIterator] | None, list[int] | None]:
+        """Build a data iterator over the experience-augmented teacher view.
+
+        Returns (None, None) when the rollout carries no teacher_tokens -- the
+        caller falls back to the student view (teacher == student input, KL ~ 0:
+        the correct signal for samples with no experience yet).
+
+        The view RIDES THE STUDENT'S per-sample microbatch schedule (the shard's
+        ``micro_batch_indices``/``num_microbatches`` are inherited verbatim below),
+        so coverage and order are identical to the student pass by construction.
+        Note a teacher microbatch holds slightly more tokens than its student
+        counterpart (the interleaved experience tokens): the rollout-side budget
+        that produced those tokens bounds the excess, and the teacher pass runs
+        under ``no_grad``. Text-only.
+        """
+        teacher_tokens = rollout_data.get("teacher_tokens")
+        if teacher_tokens is None:
+            return None, None
+        if "teacher_gather_positions" in rollout_data and not getattr(self.args, "opd_topk_in_trainer", 0):
+            # A turnhint view (hints interleaved inside the response span) can only
+            # be consumed through the position map, which ONLY the top-k-in-trainer
+            # gather passes through; the sampled-token teacher pass would silently
+            # drop the map and produce a shape-mismatched KL much later.
+            raise ValueError(
+                "rollout carries teacher_gather_positions (interleaved-hint teacher "
+                "view) but --opd-topk-in-trainer is 0: the sampled-token teacher pass "
+                "cannot consume the position map. Re-generate the batch with a "
+                "suffix-aligned teacher view, or enable --opd-topk-in-trainer."
+            )
+        teacher_total_lengths = [len(t) for t in teacher_tokens]
+        if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+            student_total = sum(rollout_data["total_lengths"])
+            logger.info(
+                f"OPD teacher view: {len(teacher_tokens)} samples, "
+                f"teacher tokens {sum(teacher_total_lengths)} vs student {student_total} "
+                f"(+{sum(teacher_total_lengths) - student_total} experience tokens)"
+            )
+        view: dict = {
+            "tokens": teacher_tokens,
+            "total_lengths": teacher_total_lengths,
+            "response_lengths": rollout_data["response_lengths"],
+            "loss_masks": rollout_data["loss_masks"],
+        }
+        if "teacher_gather_positions" in rollout_data:
+            # turnhint OPD: the teacher view's response span is LONGER than the
+            # student's (hint turns interleaved inside it), so the view slices
+            # responses by its own lengths, carries the student-token position map
+            # for the gather row-select, and scatters the student loss mask onto
+            # its own span (hint-turn rows masked 0).
+            teacher_response_lengths = rollout_data["teacher_response_lengths"]
+            view["response_lengths"] = teacher_response_lengths
+            view["teacher_gather_positions"] = rollout_data["teacher_gather_positions"]
+            view["loss_masks"] = [
+                mask.new_zeros(int(t_len)).index_copy_(0, pos, mask)
+                for mask, pos, t_len in zip(
+                    rollout_data["loss_masks"],
+                    rollout_data["teacher_gather_positions"],
+                    teacher_response_lengths,
+                    strict=True,
+                )
+            ]
+        if "dynamic_global_batch_size" in rollout_data:
+            view["dynamic_global_batch_size"] = rollout_data["dynamic_global_batch_size"]
+        # Ride the SAME rollout-side schedule as the student pass (the fast-path that
+        # reuses the per-sample microbatch indices). Inheriting the shard's per-sample
+        # indices makes coverage and order identical by construction.
+        for key in ("micro_batch_indices", "num_microbatches"):
+            if key in rollout_data:
+                view[key] = rollout_data[key]
+        for key in extra_keys:
+            view[key] = rollout_data[key]
+        if self.args.qkv_format == "bshd":
+            view["max_seq_lens"] = compute_bshd_max_seq_lens(
+                self.args, get_parallel_state(), teacher_total_lengths, len(teacher_tokens)
+            )
+        return get_data_iterator(self.args, self.model, view)
+
+    def _opd_constancy_sentinel(self, rkls: list[torch.Tensor]) -> None:
+        """Fail loud if the per-pass mean OPD reverse-KL is bit-identical across
+        consecutive teacher passes -- the signature of a degenerate teacher
+        producing a constant KL regardless of input. Costs one mean per call.
+        """
+        if not rkls:
+            return
+        mean = torch.cat([r.reshape(-1).float() for r in rkls]).mean().item()
+        last = getattr(self, "_opd_last_rkl_mean", None)
+        self._opd_last_rkl_mean = mean
+        if last is not None and mean == last and mean != 0.0:
+            raise RuntimeError(
+                f"opd_reverse_kl mean bit-identical across consecutive teacher passes ({mean}): "
+                "the teacher forward is not conditioning on its input. Refusing to "
+                "train on a degenerate distillation signal."
+            )
+
     @with_logs
     def compute_log_prob(
         self,
@@ -364,6 +506,8 @@ class MegatronTrainRayActor(TrainRayActor):
         num_microbatches: list[int],
         rollout_id: int,
         store_prefix: str = "",
+        opd_topk: int = 0,
+        opd_gather_ids: bool = False,
     ) -> dict[str, list[torch.Tensor]]:
 
         with timer(f"{store_prefix}log_probs"):
@@ -375,6 +519,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 num_microbatches,
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
+                opd_topk=opd_topk,
+                opd_gather_ids=opd_gather_ids,
             )
 
     @with_logs
@@ -501,20 +647,36 @@ class MegatronTrainRayActor(TrainRayActor):
                             store_prefix="ref_",
                         )
                     )
-                # Forward teacher model to get teacher_log_probs for Megatron-based OPD
+                # Forward teacher model to get teacher_log_probs for Megatron-based OPD.
+                opd_topk_in_trainer = (
+                    int(getattr(self.args, "opd_topk_in_trainer", 0) or 0)
+                    if getattr(self.args, "use_opd", False)
+                    else 0
+                )
                 if "teacher" in self.weights_backuper.backup_tags:
-                    self._set_replay_stage("fallthrough")
-                    self._switch_model("teacher")
-                    rollout_data.update(
-                        self.compute_log_prob(
-                            data_iterator,
-                            num_microbatches,
-                            rollout_id=rollout_id,
-                            store_prefix="teacher_",
+                    # In-trainer top-k OPD runs the teacher AFTER the actor pass -- it
+                    # gathers at the student's top-k ids, which the actor pass produces
+                    # below. The two mechanisms are mutually exclusive per rollout: this
+                    # branch is the pre-existing same-view teacher-KL path and is skipped
+                    # whenever opd_topk_in_trainer is active. BOTH teacher passes forward
+                    # the experience-augmented view (Sample.teacher_tokens) when the
+                    # rollout provides it -- that input asymmetry is the entire
+                    # distillation signal;
+                    # without it teacher == student and the KL is ~0 by construction.
+                    if not opd_topk_in_trainer:
+                        self._set_replay_stage("fallthrough")
+                        self._switch_model("teacher")
+                        t_iter, t_num_mbs = self._teacher_view_iterator(rollout_data)
+                        rollout_data.update(
+                            self.compute_log_prob(
+                                t_iter if t_iter is not None else data_iterator,
+                                t_num_mbs if t_num_mbs is not None else num_microbatches,
+                                rollout_id=rollout_id,
+                                store_prefix="teacher_",
+                            )
                         )
-                    )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
-                if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
+                if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics or opd_topk_in_trainer:
                     for m in all_replay_managers:
                         if m.enabled:
                             if self._use_rollout_replay(m):
@@ -527,11 +689,91 @@ class MegatronTrainRayActor(TrainRayActor):
                             num_microbatches,
                             rollout_id=rollout_id,
                             store_prefix="",
+                            opd_topk=opd_topk_in_trainer,
                         )
                     )
                     for m in all_replay_managers:
                         if self._use_rollout_replay(m):
                             m.clear_all_forward()
+
+                if opd_topk_in_trainer and "teacher" in self.weights_backuper.backup_tags:
+                    # In-trainer top-k OPD: the teacher forwards the experience-
+                    # augmented view (teacher_tokens) and gathers at the student's
+                    # top-k ids (rollout_data["opd_topk_ids"], produced by the actor
+                    # pass above; travels inside each microbatch so per-sample
+                    # alignment is automatic).
+                    #
+                    # PP>1: forward_only returns its aggregate only on the pipeline's
+                    # last stage and {} everywhere else, so the pre-pass outputs
+                    # (opd_topk_ids/teacher_opd_*) exist on that rank alone. Every
+                    # rank must still WALK this whole block: the teacher forward is a
+                    # pipeline collective and _switch_model swaps weights on all ranks,
+                    # so returning early here deadlocks the pass. Only the parts that
+                    # INDEX pre-pass outputs are last-stage-only.
+                    is_pp_last = get_parallel_state().is_pp_last_stage
+                    assert not is_pp_last or "opd_topk_ids" in rollout_data, (
+                        "student top-k pass did not produce opd_topk_ids on the "
+                        "pipeline's last stage -- opd_topk wiring broken"
+                    )
+                    self._set_replay_stage("fallthrough")
+                    self._switch_model("teacher")
+                    t_iter, t_num_mbs = self._teacher_view_iterator(
+                        rollout_data, extra_keys=("opd_topk_ids",) if is_pp_last else ()
+                    )
+                    rollout_data.update(
+                        self.compute_log_prob(
+                            t_iter if t_iter is not None else data_iterator,
+                            t_num_mbs if t_num_mbs is not None else num_microbatches,
+                            rollout_id=rollout_id,
+                            store_prefix="teacher_",
+                            # opd_topk: the same pass also extracts the TEACHER's own
+                            # top-k ids, only to score the teacher/student top-k overlap
+                            # below (calculate_opd_topk supports top_k and gather_ids
+                            # simultaneously) -- the KL itself still gathers at the
+                            # STUDENT's ids.
+                            opd_topk=opd_topk_in_trainer,
+                            opd_gather_ids=True,
+                        )
+                    )
+                    self._switch_model("actor")
+                    # Everything below INDICES the pre-pass outputs, so it runs on the
+                    # last pipeline stage only. No collectives below this line -- it is
+                    # elementwise math over tensors this rank already holds.
+                    if is_pp_last:
+                        assert "teacher_opd_gathered_vals" in rollout_data, (
+                            "teacher OPD gather pass produced no teacher_opd_gathered_vals"
+                        )
+                        # Teacher/student top-k overlap -- the OPD health curve, must
+                        # RISE over training for the distillation to be teaching through
+                        # the tokens that matter. Logged via log_rollout_data as
+                        # rollout/opd_topk_overlap (loss-mask-weighted mean).
+                        teacher_topk_ids = rollout_data.pop("teacher_opd_topk_ids")
+                        rollout_data.pop("teacher_opd_topk_vals")  # unused; keep [R,K] floats out of metric cat/mean
+                        rollout_data["opd_topk_overlap"] = [
+                            topk_overlap(student_ids=s_ids, teacher_ids=t_ids)
+                            for s_ids, t_ids in zip(
+                                rollout_data["opd_topk_ids"], teacher_topk_ids, strict=True
+                            )
+                        ]
+                        # Paper semantics: per position, ids = student top-k, weights =
+                        # exp(student logprob) WITHOUT renormalization, with optional
+                        # pointwise clipping:
+                        #   rkl[r] = sum_k min(exp(s_k) * (s_k - t_k), clip)
+                        opd_clip = float(getattr(self.args, "opd_pointwise_clip", 0.0) or 0.0)
+                        rkls, clipfracs = [], []
+                        for s, t in zip(
+                            rollout_data["opd_topk_vals"],
+                            rollout_data["teacher_opd_gathered_vals"],
+                            strict=True,
+                        ):
+                            rkl, clipfrac = topk_reverse_kl(
+                                student_vals=s, teacher_vals=t, pointwise_clip=opd_clip
+                            )
+                            rkls.append(rkl)
+                            clipfracs.append(clipfrac)
+                        rollout_data["opd_reverse_kl"] = rkls
+                        rollout_data["opd_clipfrac"] = clipfracs
+                        self._opd_constancy_sentinel(rkls)
 
                 if self.args.use_critic:
                     if external_data is not None and get_parallel_state().is_pp_last_stage:
@@ -795,6 +1037,11 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.weights_backuper.backup("rollout_actor")
                 else:
                     self.weights_backuper.backup("old_actor")
+
+            # Re-point the OPD teacher at the just-updated actor when
+            # --opd-teacher-refresh-from-actor is set (see that method's
+            # docstring for the wake/sleep rationale under --offload-train).
+            self._maybe_refresh_opd_teacher_from_actor()
 
         if self.args.rematerialize_param_from_master_weight:
             torch_memory_saver.pause(tag="param_buffer")

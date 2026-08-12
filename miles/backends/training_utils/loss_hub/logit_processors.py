@@ -4,7 +4,10 @@ from collections.abc import Iterator
 import torch
 
 from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, get_logits_and_tokens_offset_with_cp
-from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
+from miles.backends.training_utils.loss_hub.math_utils import (
+    calculate_log_probs_and_entropy,
+    calculate_opd_topk,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
@@ -139,6 +142,9 @@ def get_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
+    opd_topk: int = 0,
+    opd_gather_ids: list[torch.Tensor] | None = None,
+    opd_gather_positions: list[torch.Tensor] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -157,6 +163,19 @@ def get_log_probs_and_entropy(
         entropy_requires_grad: If False, compute entropy as an observed metric
             without attaching it to the autograd graph.
         non_loss_data: Unused; kept for API compatibility.
+        opd_topk: In-trainer OPD student pass -- if > 0, also extract per-position
+            full-vocab-normalized top-k logprobs+ids into "opd_topk_vals"/"opd_topk_ids".
+        opd_gather_ids: In-trainer OPD teacher pass -- if given (one `[R, K]` long
+            tensor per sample), gather full-vocab-normalized logprobs at these ids
+            into "opd_gathered_vals".
+        opd_gather_positions: OPD teacher pass with an interleaved hint view -- if
+            given (one `[R]` long tensor per sample, R = the STUDENT's response
+            length), the teacher view's response span is LONGER than the student's
+            (hint turns interleaved inside it); row-select the response-aligned
+            logits+tokens at these positions BEFORE any logprob/top-k/gather
+            computation so every output of this function is [R]-aligned with the
+            student. An identity arange is a semantic no-op (the uniform
+            representation suffix-aligned samples ride in a mixed batch).
 
     Returns:
         Dict with key "log_probs" mapping to a list of `[R]` tensors per
@@ -164,17 +183,41 @@ def get_log_probs_and_entropy(
         a list of `[R]` tensors.
     """
     assert non_loss_data
+    if opd_topk > 0 or opd_gather_ids is not None:
+        # In-trainer OPD needs full-vocab log-softmax per position; the CP
+        # redistribution below only covers "log_probs"/"entropy".
+        assert not getattr(args, "allgather_cp", False), "in-trainer OPD top-k does not support allgather_cp"
     parallel_state = get_parallel_state()
+    if opd_gather_positions is not None:
+        # The position map indexes the FULL response span of one sample; any
+        # CP sharding of that span would make the indices meaningless.
+        assert parallel_state.cp.size == 1, (
+            "turnhint OPD (opd_gather_positions) does not support context parallelism"
+        )
     log_probs_list = []
     entropy_list = []
-    for logits_chunk, tokens_chunk in get_responses(
-        logits,
-        args=args,
-        unconcat_tokens=unconcat_tokens,
-        total_lengths=total_lengths,
-        response_lengths=response_lengths,
-        max_seq_lens=max_seq_lens,
+    opd_topk_vals_list = []
+    opd_topk_ids_list = []
+    opd_gathered_list = []
+    for sample_idx, (logits_chunk, tokens_chunk) in enumerate(
+        get_responses(
+            logits,
+            args=args,
+            unconcat_tokens=unconcat_tokens,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
     ):
+        if opd_gather_positions is not None:
+            # OPD teacher view: keep only the rows where the STUDENT's response
+            # tokens sit; the interleaved hint-turn rows exist to condition the
+            # context, never to be scored. tokens_chunk at the selected rows ==
+            # the student's response tokens (asserted at train-data conversion),
+            # so every downstream output is [R_student]-aligned.
+            positions = opd_gather_positions[sample_idx].to(device=logits_chunk.device)
+            logits_chunk = logits_chunk[positions]
+            tokens_chunk = tokens_chunk[positions]
         log_prob, entropy = calculate_log_probs_and_entropy(
             logits_chunk,
             tokens_chunk,
@@ -190,11 +233,32 @@ def get_log_probs_and_entropy(
         if with_entropy:
             entropy_list.append(entropy)
 
+        if opd_topk > 0 or opd_gather_ids is not None:
+            opd_res = calculate_opd_topk(
+                logits_chunk,
+                parallel_state.tp.group,
+                top_k=opd_topk,
+                gather_ids=opd_gather_ids[sample_idx] if opd_gather_ids is not None else None,
+                chunk_size=args.log_probs_chunk_size,
+                vocab_size=getattr(args, "vocab_size", None),
+                dist_comm=getattr(args, "opd_topk_dist_comm", False),
+            )
+            if opd_topk > 0:
+                opd_topk_vals_list.append(opd_res["topk_vals"])
+                opd_topk_ids_list.append(opd_res["topk_ids"])
+            if opd_gather_ids is not None:
+                opd_gathered_list.append(opd_res["gathered"])
+
     res = {
         "log_probs": log_probs_list,
     }
     if with_entropy:
         res["entropy"] = entropy_list
+    if opd_topk > 0:
+        res["opd_topk_vals"] = opd_topk_vals_list
+        res["opd_topk_ids"] = opd_topk_ids_list
+    if opd_gather_ids is not None:
+        res["opd_gathered_vals"] = opd_gathered_list
 
     # we need to turn the all gather kv into zigzag ring attn kv
     if args.allgather_cp:

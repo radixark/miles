@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import (
     all_gather_with_cp,
@@ -297,6 +298,55 @@ def compute_log_probs(
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+
+def _refuse_checkpoint_under_cuda_memory_history(site: str) -> None:
+    """Refuse to build a non-reentrant checkpoint while CUDA memory-history
+    recording is armed. The two are incompatible and the failure surfaces far
+    from its cause.
+
+    ``torch.cuda.memory._record_memory_history(stacks="all")`` (armed via
+    ``--record-memory-history`` whenever ``--profile-target`` contains
+    ``train_overall``, its default) installs a C-level hook that walks the
+    Python stack on every CUDA allocation. When an allocation happens inside a
+    ``checkpoint(use_reentrant=False)`` RECOMPUTE (an autograd engine thread,
+    inside ``saved_tensors_hooks``), the hook returns without setting a Python
+    exception and the interpreter reports ``SystemError: error return without
+    exception set`` at whichever line allocated -- naming the allocation, not
+    the recorder.
+
+    Raising here turns a multi-hour, hard-to-diagnose failure into a named one.
+    """
+    try:
+        armed = torch._C._cuda_isHistoryEnabled()
+    except Exception:  # noqa: BLE001 -- no query API, or CUDA not initialized
+        return
+    if armed:
+        raise RuntimeError(
+            f"{site}: CUDA memory-history recording is armed and this loss path "
+            "builds a checkpoint(use_reentrant=False) region. The recorder's "
+            "per-allocation Python-stack hook corrupts the interpreter error state "
+            "inside a checkpoint RECOMPUTE, surfacing as a spurious 'SystemError: "
+            "error return without exception set' at an unrelated line. Drop "
+            "--record-memory-history from the launch template."
+        )
+
+
+def _compute_log_probs_fp32(
+    logits: torch.Tensor,
+    tokens: torch.Tensor,
+    process_group: dist.ProcessGroup | None,
+) -> torch.Tensor:
+    """Run the mutating TP cross-entropy on a private fp32 copy of ``logits``.
+
+    Exists to be the *whole* callable handed to ``checkpoint()``. The fp32 copy
+    MUST be created here: build it outside and the checkpoint boundary saves it,
+    retaining exactly the ``[chunk, V_local]`` fp32 tensor the boundary was added
+    to avoid. Two things therefore live inside this function and nowhere else --
+    the upcast, and the guarantee that the fused kernel (which mutates its input
+    in forward) never sees the caller's logits.
+    """
+    return compute_log_probs(logits.to(torch.float32, copy=True), tokens, process_group)
 
 
 def _prepare_true_on_policy_full_logits(
@@ -970,7 +1020,28 @@ def calculate_log_probs_and_entropy(
             logits_chunks = logits.chunk(num_chunks, dim=0)
             log_probs = []
             for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
+                # Row chunking alone bounds the per-call working set but NOT what
+                # each chunk's graph retains: every chunk saves fp32 vocab-wide
+                # softmax state for backward, so after this loop the aggregate is
+                # still sum_i(C_i * V_local * 4) == S * V_local * 4 bytes at full
+                # sequence length, which is the OOM that prompted this change.
+                # Checkpointing each chunk replaces that with one chunk's worth of
+                # recomputation during backward.
+                if torch.is_grad_enabled() and logits_chunk.requires_grad:
+                    _refuse_checkpoint_under_cuda_memory_history(
+                        "calculate_log_probs_and_entropy"
+                    )
+                    log_prob = checkpoint(
+                        _compute_log_probs_fp32,
+                        logits_chunk,
+                        tokens_chunk,
+                        tp_group,
+                        use_reentrant=False,
+                    )
+                else:
+                    # ref / student / teacher scoring: no graph to shrink, so do
+                    # not pay for one. Same numbers either way.
+                    log_prob = _compute_log_probs_fp32(logits_chunk, tokens_chunk, tp_group)
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -980,7 +1051,10 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
+            # chunk_size <= 0: the caller did not ask for a bounded working set,
+            # and checkpointing one full-length chunk buys no structural win -- it
+            # would recompute [S, V_local] to save [S, V_local]. Left alone.
+            log_prob = _compute_log_probs_fp32(logits, tokens, tp_group)
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
@@ -989,6 +1063,320 @@ def calculate_log_probs_and_entropy(
             entropy = logits.new_zeros((0,))
 
     return log_prob, entropy
+
+
+def _calculate_opd_topk_dist_chunk(
+    local_logits: torch.Tensor,
+    tp_group: dist.ProcessGroup,
+    *,
+    top_k: int,
+    gather_ids: torch.Tensor | None,
+    vocab_size: int | None,
+) -> dict[str, torch.Tensor]:
+    """Exact distributed top-k/gather over TP-sharded vocab logits.
+
+    Mathematically identical to full-vocab log_softmax + topk/gather, but never
+    materializes the ``[R, V_full]`` tensor: the global normalizer is a logsumexp
+    merge of per-rank partials, top-k merges ws*k local candidates, and the
+    teacher gather routes each id to the one rank whose shard holds it
+    (all-reduce sum over a zero-masked gather). Comm per chunk drops from
+    ``[R, V_full]`` to ``[R, ws*(k+1)+k]`` -- ~485x smaller at V=248320, TP4,
+    k=128.
+    """
+    ws = dist.get_world_size(tp_group)
+    rank = dist.get_rank(tp_group)
+    R, v_local = local_logits.shape
+    x = local_logits.float()
+    shard_start = rank * v_local
+    # Mask the padded vocab tail so it can never win a top-k slot and never
+    # contributes to the normalizer (same effect as the truncation the
+    # full-gather path applies after concatenation).
+    if vocab_size is not None:
+        n_valid = min(max(vocab_size - shard_start, 0), v_local)
+        if n_valid < v_local:
+            x = x.clone()
+            x[:, n_valid:] = float("-inf")
+
+    lse_local = torch.logsumexp(x, dim=-1)  # [R]
+    lse_all = torch.empty((ws, R), dtype=lse_local.dtype, device=x.device)
+    dist.all_gather_into_tensor(lse_all, lse_local.contiguous(), group=tp_group)
+    lse = torch.logsumexp(lse_all, dim=0, keepdim=False).unsqueeze(-1)  # [R, 1]
+
+    res: dict[str, torch.Tensor] = {}
+    if top_k > 0:
+        k_local = min(top_k, v_local)
+        cand_vals_local, cand_ids_local = x.topk(k_local, dim=-1)
+        cand_ids_local = cand_ids_local + shard_start
+        cand_vals = torch.empty((ws, R, k_local), dtype=cand_vals_local.dtype, device=x.device)
+        cand_ids = torch.empty((ws, R, k_local), dtype=cand_ids_local.dtype, device=x.device)
+        dist.all_gather_into_tensor(cand_vals, cand_vals_local.contiguous(), group=tp_group)
+        dist.all_gather_into_tensor(cand_ids, cand_ids_local.contiguous(), group=tp_group)
+        cand_vals = cand_vals.permute(1, 0, 2).reshape(R, ws * k_local)
+        cand_ids = cand_ids.permute(1, 0, 2).reshape(R, ws * k_local)
+        vals, idx = cand_vals.topk(top_k, dim=-1)
+        res["topk_vals"] = vals - lse
+        res["topk_ids"] = cand_ids.gather(-1, idx)
+    if gather_ids is not None:
+        gid = gather_ids.to(device=x.device)
+        in_shard = (gid >= shard_start) & (gid < shard_start + v_local)
+        local_gid = (gid - shard_start).clamp(0, v_local - 1)
+        g = x.gather(-1, local_gid)
+        g = torch.where(in_shard, g, torch.zeros_like(g))
+        dist.all_reduce(g, group=tp_group)  # each real id lives on exactly one shard
+        res["gathered"] = g - lse
+    return res
+
+
+class _ReplicatedAllGatherRows(torch.autograd.Function):
+    """All-gather a ``[R]`` tensor into ``[ws, R]`` for a loss replicated on every TP rank.
+
+    Same contract as ``_ReplicatedLossAllGatherLastDim``: every TP rank computes
+    the SAME scalar loss, so the incoming gradient is already identical on all
+    ranks and each rank keeps only its own row -- a reduce-scatter would sum
+    identical gradients and scale the local gradient by TP size.
+    """
+
+    @staticmethod
+    def forward(ctx, input_: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+        ctx.rank = dist.get_rank(group)
+        world_size = dist.get_world_size(group)
+        out = torch.empty((world_size, *input_.shape), dtype=input_.dtype, device=input_.device)
+        dist.all_gather_into_tensor(out, input_.contiguous(), group=group)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output[ctx.rank].contiguous(), None
+
+
+class _ReplicatedAllReduceSum(torch.autograd.Function):
+    """Sum per-rank contributions into a value replicated on every TP rank.
+
+    Each rank contributes disjoint vocab-shard entries with coefficient 1 and
+    every rank then computes the same scalar loss from the reduced tensor, so
+    backward is the identity -- no second collective.
+    """
+
+    @staticmethod
+    def forward(ctx, input_: torch.Tensor, group: dist.ProcessGroup) -> torch.Tensor:
+        out = input_.contiguous().clone()
+        dist.all_reduce(out, group=group)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor):
+        return grad_output, None
+
+
+#: Rows per chunk when the caller passes no explicit chunk size. Bounds the
+#: TRANSIENT [chunk, V_local] fp32 upcast, which is the whole point -- see
+#: calculate_opd_gather_with_grad.
+_OPD_GATHER_DEFAULT_CHUNK_ROWS = 1024
+
+
+def _opd_gather_chunk(
+    logits: torch.Tensor,
+    tp_group: dist.ProcessGroup | None,
+    gather_ids: torch.Tensor,
+    vocab_size: int | None,
+    world_size: int,
+    rank: int,
+) -> torch.Tensor:
+    x = logits.float()
+    v_local = x.size(-1)
+    shard_start = rank * v_local
+
+    if vocab_size is not None:
+        n_valid = min(max(vocab_size - shard_start, 0), v_local)
+        if n_valid < v_local:
+            # A finite floor rather than -inf, so a fully-padded shard cannot
+            # put -inf into logsumexp on a graph that will be differentiated.
+            # exp(floor - lse) underflows to 0, so the tail carries no mass and
+            # no gradient.
+            tail = torch.zeros(v_local, dtype=torch.bool, device=x.device)
+            tail[n_valid:] = True
+            x = x.masked_fill(tail, torch.finfo(x.dtype).min)
+
+    lse_local = torch.logsumexp(x, dim=-1)  # [R]
+    if world_size > 1:
+        lse = torch.logsumexp(_ReplicatedAllGatherRows.apply(lse_local, tp_group), dim=0)
+    else:
+        lse = lse_local
+
+    gid = gather_ids.to(device=x.device)
+    if world_size > 1:
+        in_shard = (gid >= shard_start) & (gid < shard_start + v_local)
+        gathered = x.gather(-1, (gid - shard_start).clamp(0, v_local - 1))
+        gathered = torch.where(in_shard, gathered, torch.zeros_like(gathered))
+        gathered = _ReplicatedAllReduceSum.apply(gathered, tp_group)
+    else:
+        gathered = x.gather(-1, gid)
+
+    return gathered - lse.unsqueeze(-1)
+
+
+def calculate_opd_gather_with_grad(
+    logits: torch.Tensor,
+    tp_group: dist.ProcessGroup | None,
+    *,
+    gather_ids: torch.Tensor,
+    vocab_size: int | None = None,
+    chunk_size: int = -1,
+) -> torch.Tensor:
+    """DIFFERENTIABLE full-vocab-normalized logprobs at ``gather_ids``.
+
+    The gradient-carrying counterpart of ``calculate_opd_topk``'s teacher gather,
+    for the loss placement of the top-k OPD KL (see
+    ``opd.compute_opd_topk_distill``). ``calculate_opd_topk`` runs under
+    ``no_grad`` and materializes the full ``[R, V]`` log-softmax; doing that on
+    the loss graph would retain an ``[R, V]`` fp32 activation per micro-batch for
+    backward (tens of GB at long responses). This routine never forms ``[R, V]``:
+
+        s_k = x[:, id_k] - logsumexp(x, dim=-1)
+
+    reads the shard-local logits (already alive as the model's output) and keeps
+    only ``[R]`` and ``[R, K]`` intermediates. Under TP the normalizer is a
+    logsumexp merge of per-rank partials and the gather routes each id to the one
+    rank whose shard holds it, both through the replicated-loss autograd
+    Functions above.
+
+    The ``[chunk, V_local]`` fp32 upcast is unavoidable for a numerically sane
+    logsumexp, but it must stay TRANSIENT: autograd would otherwise retain it for
+    backward, producing an activation too large for the backward pass. So rows are
+    chunked and each chunk is gradient-checkpointed: only the ``[chunk, K]``
+    output crosses the boundary, and the upcast is rebuilt during backward.
+    Recomputation re-runs the two collectives, which is safe because every rank
+    walks the same chunks in the same order.
+
+    Args:
+        logits: ``[R, V_local]`` response-aligned local logits (temperature
+            already applied by ``get_responses``), with grad.
+        tp_group: Tensor-parallel group, or None for TP=1.
+        gather_ids: ``[R, K]`` long, the ids to score (the STUDENT's top-k ids
+            from the pre-pass).
+        vocab_size: Real tokenizer vocab size; the padded tail is floored so it
+            can neither win mass in the normalizer nor produce a NaN gradient.
+        chunk_size: Rows per chunk; <= 0 selects
+            ``_OPD_GATHER_DEFAULT_CHUNK_ROWS``. Never "no chunking" -- an
+            unbounded chunk is the bug this replaces.
+
+    Returns:
+        ``[R, K]`` float32 logprobs, differentiable w.r.t. ``logits``.
+    """
+    if gather_ids.ndim != 2 or gather_ids.size(0) != logits.size(0):
+        raise ValueError(
+            f"OPD gather ids must be a [R, K] aligned with logits [R, V_local], got "
+            f"ids={tuple(gather_ids.shape)} logits={tuple(logits.shape)}"
+        )
+    if logits.size(0) == 0:
+        return logits.new_zeros((0, gather_ids.size(-1)), dtype=torch.float32)
+
+    world_size = dist.get_world_size(tp_group) if tp_group is not None else 1
+    rank = dist.get_rank(tp_group) if tp_group is not None else 0
+    rows = chunk_size if chunk_size > 0 else _OPD_GATHER_DEFAULT_CHUNK_ROWS
+
+    # Unconditional here, unlike the main-CE site: this routine checkpoints for
+    # ANY chunk_size, so an OPD arm always carries a recompute region.
+    _refuse_checkpoint_under_cuda_memory_history("calculate_opd_gather_with_grad")
+
+    parts = []
+    for logits_chunk, ids_chunk in zip(
+        logits.split(rows, dim=0), gather_ids.split(rows, dim=0), strict=True
+    ):
+        parts.append(
+            checkpoint(
+                _opd_gather_chunk,
+                logits_chunk,
+                tp_group,
+                ids_chunk,
+                vocab_size,
+                world_size,
+                rank,
+                use_reentrant=False,
+            )
+        )
+    return torch.cat(parts, dim=0)
+
+
+def calculate_opd_topk(
+    logits: torch.Tensor,
+    tp_group: dist.ProcessGroup | None,
+    *,
+    top_k: int = 0,
+    gather_ids: torch.Tensor | None = None,
+    chunk_size: int = -1,
+    vocab_size: int | None = None,
+    dist_comm: bool = False,
+) -> dict[str, torch.Tensor]:
+    """In-trainer OPD over response-aligned local logits ``[R, V_local]``.
+
+    Full-vocab log-softmax (TP allgather, chunked along R, under no_grad -- this
+    is a pre-pass: the ids and teacher logprobs it produces are CONSTANTS for the
+    update; the differentiable graph is rebuilt later by
+    ``calculate_opd_gather_with_grad`` re-reading the student side), then
+    per response position:
+      * ``top_k > 0``        -- student pass: top-k values+ids
+        (full-vocab-normalized logprobs, same semantics as sglang's
+        ``top_logprobs_num``) -> ``{"topk_vals", "topk_ids"}``
+      * ``gather_ids`` given -- teacher pass: gather at the student's ids
+        (``[R, K]`` long tensor) -> ``{"gathered"}``
+    """
+    assert top_k > 0 or gather_ids is not None
+    num_positions = logits.size(0)
+    if num_positions == 0:
+        res: dict[str, torch.Tensor] = {}
+        if top_k > 0:
+            res["topk_vals"] = logits.new_zeros((0, top_k), dtype=torch.float32)
+            res["topk_ids"] = torch.zeros((0, top_k), dtype=torch.long, device=logits.device)
+        if gather_ids is not None:
+            res["gathered"] = logits.new_zeros((0, gather_ids.size(-1)), dtype=torch.float32)
+        return res
+
+    # A bounded floor, never one block. ``calculate_opd_gather_with_grad``
+    # already floors at the same constant, and these two do the same thing to the
+    # same ``[R, V_local]`` tensor -- letting only one of them honour a missing
+    # ``chunk_size`` means one forgotten kwarg turns a bounded transient into a
+    # full-sequence fp32 materialization. Memory knob only: chunking cannot change
+    # the values.
+    rows = chunk_size if chunk_size > 0 else _OPD_GATHER_DEFAULT_CHUNK_ROWS
+    n_chunks = (num_positions - 1) // rows + 1
+    logits_chunks = logits.chunk(n_chunks, dim=0)
+    id_chunks = gather_ids.chunk(n_chunks, dim=0) if gather_ids is not None else [None] * len(logits_chunks)
+    parts: dict[str, list[torch.Tensor]] = {"topk_vals": [], "topk_ids": [], "gathered": []}
+    use_dist = dist_comm and tp_group is not None and dist.get_world_size(tp_group) > 1
+    with torch.no_grad():
+        for logits_chunk, ids_chunk in zip(logits_chunks, id_chunks, strict=True):
+            if use_dist:
+                chunk_res = _calculate_opd_topk_dist_chunk(
+                    logits_chunk.contiguous(),
+                    tp_group,
+                    top_k=top_k,
+                    gather_ids=ids_chunk,
+                    vocab_size=vocab_size,
+                )
+                if top_k > 0:
+                    parts["topk_vals"].append(chunk_res["topk_vals"])
+                    parts["topk_ids"].append(chunk_res["topk_ids"])
+                if ids_chunk is not None:
+                    parts["gathered"].append(chunk_res["gathered"])
+                continue
+            full_logits = _gather_true_on_policy_full_logits(
+                logits_chunk.contiguous(), tp_group, vocab_size=vocab_size
+            )
+            log_probs_full = torch.log_softmax(full_logits.float(), dim=-1)
+            if top_k > 0:
+                vals, ids = log_probs_full.topk(top_k, dim=-1)
+                parts["topk_vals"].append(vals)
+                parts["topk_ids"].append(ids)
+            if ids_chunk is not None:
+                parts["gathered"].append(log_probs_full.gather(-1, ids_chunk.to(device=log_probs_full.device)))
+    res = {}
+    if top_k > 0:
+        res["topk_vals"] = torch.cat(parts["topk_vals"], dim=0)
+        res["topk_ids"] = torch.cat(parts["topk_ids"], dim=0)
+    if gather_ids is not None:
+        res["gathered"] = torch.cat(parts["gathered"], dim=0)
+    return res
 
 
 def _calculate_log_probs_and_entropy_true_on_policy(
