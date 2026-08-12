@@ -1,25 +1,26 @@
 from __future__ import annotations
 
+import socket
+import threading
 from types import SimpleNamespace
 
 import httpx
 import pytest
-
 from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
-
 from miles.utils.ft_utils.api_server import server
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
+from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.fault_injector import FailureMode
 
 from .conftest import (
     MockHandler,
     MockInferenceController,
-    MockRayTrainCell,
+    MockTrainerCell,
     MockWorkerManager,
     make_cell_summaries,
-    make_mock_group,
+    make_mock_controller,
 )
 
 
@@ -254,7 +255,7 @@ class TestStartApiServerRegistration:
         *,
         ft_components: list[str],
         cell_ids: list[str],
-        actor_cells: list[MockRayTrainCell] | None = None,
+        actor_cells: list[MockTrainerCell] | None = None,
     ) -> _CellRegistry:
         manager = MockWorkerManager(make_cell_summaries(*cell_ids))
         registries: list[_CellRegistry] = []
@@ -264,7 +265,7 @@ class TestStartApiServerRegistration:
 
         server.start_api_server(
             args=make_rollout_args(),
-            actor_model=make_mock_group(actor_cells if actor_cells is not None else []),
+            actor_model=make_mock_controller(actor_cells if actor_cells is not None else []),
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status(workers_hash="pseudo-hash-0") for cell_id in cell_ids}
             ),
@@ -305,7 +306,7 @@ class TestStartApiServerRegistration:
             monkeypatch,
             ft_components=["train"],
             cell_ids=["trainer-actor-0"],
-            actor_cells=[MockRayTrainCell(phase="Running")],
+            actor_cells=[MockTrainerCell(phase="Running")],
         )
 
         cells = await registry.list_cells()
@@ -371,6 +372,87 @@ class TestInjectFault:
         resp = await async_client.post("/api/v1/cells/actor-0/inject-fault", json={"mode": "sigkill"})
 
         assert resp.status_code == 400
+
+
+class TestStartApiServerRaw:
+    def test_a_bound_port_serves_and_can_be_reached(self) -> None:
+        """The happy path must still return once uvicorn is actually accepting connections."""
+        port = find_available_port(21000)
+
+        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=10.0)
+            assert resp.status_code == 200
+        finally:
+            running.should_exit = True
+
+    def test_a_port_already_taken_fails_the_caller(self) -> None:
+        """A second job silently losing the port would then poll the first job's cell registry."""
+        port = find_available_port(21100)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied:
+            occupied.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            occupied.bind(("0.0.0.0", port))
+            occupied.listen()
+
+            with pytest.raises(RuntimeError, match=f"port {port} failed during startup"):
+                server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+
+
+class TestStartAndWaitThread:
+    def test_it_returns_once_the_thread_reports_ready(self):
+        """The caller may only proceed after the thing it started is actually usable."""
+        ready = threading.Event()
+
+        thread = server._start_and_wait_thread(
+            target=ready.set, is_ready=ready.is_set, description="probe", timeout_seconds=5.0
+        )
+
+        assert ready.is_set()
+        assert isinstance(thread, threading.Thread)
+
+    def test_a_failure_on_the_thread_reaches_the_caller(self):
+        """A daemon thread that dies alone is invisible, which is how a lost port went unnoticed."""
+
+        def _boom() -> None:
+            raise ValueError("could not start")
+
+        with pytest.raises(RuntimeError, match="probe failed during startup") as excinfo:
+            server._start_and_wait_thread(
+                target=_boom, is_ready=lambda: False, description="probe", timeout_seconds=5.0
+            )
+
+        assert isinstance(excinfo.value.__cause__, ValueError)
+
+    def test_a_thread_that_exits_without_becoming_ready_fails_the_caller(self):
+        """Returning quietly is its own failure: nothing is serving afterwards."""
+        with pytest.raises(RuntimeError, match="probe exited during startup"):
+            server._start_and_wait_thread(
+                target=lambda: None, is_ready=lambda: False, description="probe", timeout_seconds=5.0
+            )
+
+    def test_a_thread_that_never_becomes_ready_times_out(self):
+        """A wedged startup must not block the caller forever."""
+        stop = threading.Event()
+
+        try:
+            with pytest.raises(TimeoutError, match="probe did not finish startup"):
+                server._start_and_wait_thread(
+                    target=stop.wait, is_ready=lambda: False, description="probe", timeout_seconds=0.2
+                )
+        finally:
+            stop.set()
+
+    def test_a_ready_thread_is_not_judged_by_a_later_failure(self):
+        """Readiness wins the race: a server that starts and later dies is the caller's problem, not startup's."""
+        ready = threading.Event()
+
+        def _ready_then_raise() -> None:
+            ready.set()
+            raise ValueError("died after serving")
+
+        server._start_and_wait_thread(
+            target=_ready_then_raise, is_ready=ready.is_set, description="probe", timeout_seconds=5.0
+        )
 
     @pytest.mark.asyncio
     async def test_inject_fault_uses_zero_sub_index_by_default(
