@@ -71,7 +71,7 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
 
 ### `--custom-agent-function-path`
 
-Enabled when you set `--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate` 
+Enabled when you set `--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate`. 
 Use `--custom-agent-function-path` to specify the async agent or environment loop
 that sends OpenAI-compatible chat requests through Miles' TITO session server.
 
