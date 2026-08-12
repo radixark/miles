@@ -318,3 +318,9 @@ requires a brief engine pause.
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
 - [PD Disaggregation](/advanced/pd-disaggregation)
 - [Stitch: open-source disaggregated rollout service](https://github.com/modal-projects/stitch)
+
+## Acknowledgment
+
+Thanks to [Nan Jiang](https://www.nanjiangwill.com/) and the Modal team for
+[Stitch](https://github.com/modal-projects/stitch) and for their support in
+putting this guide together.
