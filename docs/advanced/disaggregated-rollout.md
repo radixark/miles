@@ -301,7 +301,7 @@ to the normal weight-update timing.
 The open-source Stitch integration reports the following reference rollout-side
 weight update timings:
 
-| Model | Preparation (including delta application) | Engine pause |
+| Model | Preparation (incl. weight delta apply) | Engine pause |
 |---|---:|---:|
 | GLM-4.7-Flash | 15.8 s | 0.75 s |
 | Kimi K2.6 NVFP4 | 72.5 s | 2.82 s |
