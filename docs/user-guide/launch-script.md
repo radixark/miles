@@ -227,7 +227,7 @@ Launchers express this in one of two ways:
 - **One subcommand per node role.** `scripts/run_nemotron_3_super_120b_a12b.py` has
   `worker` (joins the head's cluster and blocks) and `train` (starts the head, waits
   until the cluster reports every GPU, then submits); you run one command on each node.
-- **ssh fan-out from the head.** With `--start-ray-workers`,
+- **ssh fan-out from the head.** With `--join-ray-workers`,
   `scripts/run_qwen3_sft.py` sshes every host of an MPI-style hostfile into the
   cluster (`U.ssh_start_ray_workers` as the `before_ray_job_submit` hook), so the whole
   cluster comes up from a single command on the head node.

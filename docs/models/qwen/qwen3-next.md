@@ -65,7 +65,7 @@ python scripts/run_qwen3_next_80b_a3b.py --topology single-node
 
 ### 4.2 Multi-node fan-out
 
-`--topology 4node` performs ssh fan-out internally over `/root/mpi_rack_hostfile` — set `MASTER_ADDR` on the head node and the launcher reaches out to the workers. Pass `--no-ssh-start-workers` when the ray cluster is already complete. `--topology single-node` never fans out.
+`--topology 4node` performs ssh fan-out internally over `/root/mpi_rack_hostfile` — set `MASTER_ADDR` on the head node and the launcher reaches out to the workers. Pass `--no-join-ray-workers` when the ray cluster is already complete. `--topology single-node` never fans out.
 
 ## 5. Recipe Configuration
 

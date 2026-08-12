@@ -11,7 +11,7 @@ along with it. Everything else -- dataset, GSPO constants, optimizer schedule, e
 shared.
 
 `4node` joins the remaining hosts to the local ray head over ssh, reading MASTER_ADDR and
-MLP_WORKER_0_HOST from the environment; pass --no-ssh-start-workers when the ray cluster
+MLP_WORKER_0_HOST from the environment; pass --no-join-ray-workers when the ray cluster
 is already complete.
 
 The checkpoint must already be converted to Megatron `torch_dist`; this script only
@@ -22,7 +22,7 @@ submits the training job.
 Args:
   --topology: Cluster layout, one of 4node / single-node.
   --num-gpus-per-node: Physical GPUs per node (default: 8).
-  --ssh-start-workers: Join every host of /root/mpi_rack_hostfile to the ray cluster,
+  --join-ray-workers: Join every host of /root/mpi_rack_hostfile to the ray cluster,
     multi-node topologies only (default: on).
   --model-dir / --data-dir: Checkpoint / dataset directories.
 
@@ -122,7 +122,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-Next-80B-A3B-Thinking"
     megatron_model_type: str = "qwen3-next-80B-A3B"
     num_gpus_per_node: int = 8
-    ssh_start_workers: bool = True
+    join_ray_workers: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -252,7 +252,7 @@ def execute(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
-    start_workers = args.ssh_start_workers and args.recipe.actor_num_nodes > 1
+    join_workers = args.join_ray_workers and args.recipe.actor_num_nodes > 1
     U.execute_train(
         train_args=train_args,
         config=args,
@@ -266,7 +266,7 @@ def execute(args: ScriptArgs):
                     head_host=os.environ.get("MLP_WORKER_0_HOST"),
                 )
             )
-            if start_workers
+            if join_workers
             else None
         ),
         megatron_path=args.megatron_path,

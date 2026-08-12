@@ -17,7 +17,7 @@ to Megatron `torch_dist`; this script only submits the training job.
 Args:
   --model-name: Model variant, one of Qwen3-4B-Base / Qwen3-235B-A22B.
   --num-gpus-per-node: GPUs per node (default: 8).
-  --start-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
+  --join-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
     into the ray cluster (default: on). Turn off when the cluster is already joined.
   --model-dir / --data-dir: Checkpoint / dataset directories.
 
@@ -62,7 +62,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_name: _MODEL_NAMES = "Qwen3-4B-Base"
     num_gpus_per_node: int = 8
-    start_ray_workers: bool = True
+    join_ray_workers: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -167,7 +167,7 @@ def execute(args: ScriptArgs):
                 # under the MLP scheduler worker 0 is the ray head, which is already up
                 head_host=os.environ.get("MLP_WORKER_0_HOST"),
             )
-            if args.recipe.ssh_ray_workers and args.start_ray_workers
+            if args.recipe.ssh_ray_workers and args.join_ray_workers
             else None
         ),
     )
