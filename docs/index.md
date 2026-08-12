@@ -1,5 +1,6 @@
 ---
 title: Miles Documentation
+description: Miles is an open-source RL framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.
 ---
 Miles is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. It
 couples [SGLang](https://github.com/sgl-project/sglang) for high-throughput rollout with
@@ -23,7 +24,7 @@ needed to run RL at trillion-parameter scale.
 - **Fast weight updates.** Updated weights sync back in-loop without pausing
   rollout — under 10 seconds for a model with 1 T parameters — with
   [P2P RDMA](/advanced/p2p-weight-transfer) as a fast path for disaggregated setups.
-- **Unified low-precision training.** [MXFP8 and NVFP4](/advanced/fp8-low-precision)
+- **Unified low-precision training.** [MXFP8 and NVFP4](/advanced/low-precision)
   training with a numerically stable RL recipe that reduces precision-induced
   divergence; FP8, [INT4 QAT](/advanced/int4-qat), BF16, and FP16 are also supported.
 - **Token-in-token-out (TITO).** Supported for
@@ -101,7 +102,7 @@ and the container images for each.
 - **[2026/01]** INT4 W4A16 QAT. [INT4 Quantization-Aware Training](/advanced/int4-qat)
 - **[2026/01]** Unified VLM/LLM multi-turn rollout. [Multi-Agent Co-Evolution](/examples/multi-agent)
 - **[2025/12]** Rollout Routing Replay (R3) for MoE. [Rollout Routing Replay (R3)](/advanced/miles-router)
-- **[2025/11]** Unified FP8 pipeline generally available. [FP8 and Low Precision](/advanced/fp8-low-precision)
+- **[2025/11]** Unified FP8 pipeline generally available. [Low Precision RL](/advanced/low-precision)
 - **[2025/11]** Speculative decoding with online MTP-SFT. [Speculative Decoding](/advanced/speculative-decoding)
 
 ## Start here

@@ -466,7 +466,7 @@ KL anchor silently and makes the loss curve incomparable to earlier runs.
 </Warning>
 
 For end-to-end FP8 (trainer and inference at bit-identical precision), see
-[Low Precision RL](/advanced/fp8-low-precision). For INT4 quant-aware
+[Low Precision RL](/advanced/low-precision). For INT4 quant-aware
 training, see [INT4 QAT](/advanced/int4-qat).
 
 ---

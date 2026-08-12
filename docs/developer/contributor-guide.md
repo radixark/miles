@@ -274,6 +274,7 @@ map it to a host.
 
 * **Quick questions:** the Miles channel of the [SGLang Slack](https://slack.sglang.ai).
 * **Design discussions:** a GitHub Discussion, or an Issue labeled `discussion`.
-* **CI internals:** `docs/ci/00-stage.md` (stages), `01-label.md` (label semantics),
-  `02-docker-build.md` (images), `03-metric-history-gate.md` (metric gate), and
-  `docs/ci/contributor-guide.md` for the long-form version of this section.
+* **CI internals:** [Stage](/ci/00-stage) (stages), [Labels](/ci/01-label) (label
+  semantics), [Docker build](/ci/02-docker-build) (images),
+  [Metric history & regression gate](/ci/03-metric-history-gate) (metric gate), and the
+  [CI Contributor Guide](/ci/contributor-guide) for the long-form version of this section.

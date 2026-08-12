@@ -92,8 +92,8 @@ Build one yourself with `docker/build.py`:
 python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-experiment --push
 ```
 
-`docs/ci/02-docker-build.md` is the full reference for the build script, the workflow and
-the tag rules.
+[Docker build](/ci/02-docker-build) is the full reference for the build script, the
+workflow and the tag rules.
 
 ## What CI moves, and what it does not
 
@@ -176,4 +176,5 @@ that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
 - [Installation](/getting-started/installation) for pulling and running the image.
 - [Contributing](/developer/contributor-guide) for the CI labels and PR-description
   directives.
-- `docs/ci/02-docker-build.md` for the build script, workflow triggers and tag mechanics.
+- [Docker build](/ci/02-docker-build) for the build script, workflow triggers and tag
+  mechanics.

@@ -34,4 +34,4 @@ See the [Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) page for the dense w
 ## Pairs well with
 
 - [Backends Beyond Megatron](/advanced/architecture-support) — the AutoBridge path Nemotron rides on.
-- [Low Precision RL](/advanced/fp8-low-precision) — Super ships natively in FP8.
+- [Low Precision RL](/advanced/low-precision) — Super ships natively in FP8.

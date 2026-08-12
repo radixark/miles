@@ -123,6 +123,6 @@ Pro selects `--model-name DeepSeek-V4-Pro-FP8`, which flips `optimizer_offload=T
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [Architecture Support](/advanced/architecture-support)
 - [DeepSeek V4 Flash](/models/deepseek/deepseek-v4-flash) — sibling recipe; shares the V4-family architecture.

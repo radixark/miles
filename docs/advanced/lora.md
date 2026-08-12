@@ -72,7 +72,7 @@ reason.
   drives `train.py`.
 * **Low-precision training**: the LoRA branch follows the surrounding
   precision, so block-wise FP8, MXFP8, and INT4 QAT recipes are compatible.
-  See [Low Precision RL](/advanced/fp8-low-precision) and [INT4 QAT](/advanced/int4-qat).
+  See [Low Precision RL](/advanced/low-precision) and [INT4 QAT](/advanced/int4-qat).
 * **Target modules**: `--target-modules` is required whenever
   `--lora-rank > 0`. There is no auto-detection; the launcher asserts at
   startup.

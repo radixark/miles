@@ -1,7 +1,7 @@
 ---
 title: GPT-OSS 20B
 sidebarTitle: GPT-OSS
-description: Megatron BF16 launcher (8 GPU, mbridge).
+description: Launch recipe for OpenAI's GPT-OSS 20B — Megatron BF16 on a single 8-GPU node, loading the MXFP4 HF checkpoint through mbridge.
 ---
 ## 1. Model Introduction
 
@@ -91,4 +91,4 @@ The launcher doesn't write `--save`/`--load`/`--save-interval`.
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
