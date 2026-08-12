@@ -6,12 +6,12 @@ import os
 import time
 from urllib.parse import quote
 
-import ray
 import requests
 import sglang_router
 from packaging.version import parse
-from ray.util.placement_group import PlacementGroup
 from sglang.srt.environ import envs
+from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
+from sglang.srt.ray import get_scheduler_actor_name
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -140,7 +140,6 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
-        placement_group: PlacementGroup | None = None,
         pg_bundles: list[int] | None = None,
     ):
         self.args = args
@@ -149,7 +148,6 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
-        self.placement_group = placement_group
         self.pg_bundles = pg_bundles
         self._scheduler_actors = []
 
@@ -267,17 +265,21 @@ class SGLangEngine(RayActor):
                 return
             server_args_dict["use_ray"] = True
             server_args_dict["enable_rdt_weight_sync"] = True
-            assert self.placement_group is not None and self.pg_bundles
+            assert self.pg_bundles
         logger.info(
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
             f"{' (use_ray=True for RDT)' if use_rdt else ''}"
         )
         server_args = ServerArgs(**server_args_dict)
         if use_rdt:
+            import ray
+
+            placement_group = ray.util.get_current_placement_group()
+            assert placement_group is not None
             envs.SGLANG_RAY_BUNDLE_INDICES.set(",".join(str(bundle) for bundle in self.pg_bundles))
             server_args.override(
                 "miles.rdt.ray_context",
-                placement_group=self.placement_group,
+                placement_group=placement_group,
                 ray_runtime_env=dict(ray.get_runtime_context().runtime_env),
             )
         self.process = launch_server_process(server_args)
@@ -555,44 +557,43 @@ class SGLangEngine(RayActor):
     def get_scheduler_actors(self) -> list:
         """Return this engine's SchedulerActor handles (RDT mode, use_ray=True).
 
-        RayEngine names one actor per (pp, tp) rank
-        ``sglang_scheduler_node{ip}[_dp{dp}]_pp{pp}_tp{tp}_port{port}_pg{hex}_bundle{idx}``.
-        The pg/bundle suffix is unknown here, so match on node IP, HTTP port,
-        and TP rank across namespaces. Ports are allocated per host, making
-        ``(node IP, port)`` the engine's unique key. Raises unless every TP rank
-        matches exactly one actor: a partial list would silently sync a subset.
+        Reconstructs each actor name with ``get_scheduler_actor_name`` from the
+        bundle list handed to RayEngine at launch.
         """
         if self._scheduler_actors:
             return self._scheduler_actors
 
-        tp_size = getattr(self.args, "rollout_num_gpus_per_engine", 1)
-        node_prefix = f"sglang_scheduler_node{ray.util.get_node_ip_address()}_"
-        port_token = f"_port{self.server_port}_"
+        assert self.pg_bundles, "get_scheduler_actors requires the RDT bundle list"
 
-        try:
-            raw = ray.util.list_named_actors(all_namespaces=True)
-        except TypeError:
-            # Older Ray without the all_namespaces kwarg.
-            raw = ray.util.list_named_actors()
-        entries = [(e["name"], e.get("namespace")) if isinstance(e, dict) else (e, None) for e in raw]
-        # Kept for the failure message below.
-        sched_like = [(n, ns) for (n, ns) in entries if "scheduler" in n.lower() or "sglang" in n.lower()]
-        engine_entries = [(n, ns) for (n, ns) in entries if n.startswith(node_prefix) and port_token in n]
+        import ray
+
+        tp_size = self.num_gpus_per_engine or self.args.rollout_num_gpus_per_engine
+        enable_dp_attention = bool(getattr(self.args, "sglang_enable_dp_attention", False))
+        dp_size = getattr(self.args, "sglang_dp_size", 1)
+        attn_cp_size = getattr(self.args, "sglang_attn_cp_size", 1)
+        rank0_node_ip = ray.util.get_node_ip_address()
 
         actors = []
-        for tp_rank in range(tp_size):
-            tp_token = f"_pp0_tp{tp_rank}_"
-            matches = [(n, ns) for (n, ns) in engine_entries if tp_token in n]
-            if len(matches) != 1:
+        for rank, bundle_idx in enumerate(self.pg_bundles):
+            tp_rank = rank % tp_size
+            _, _, dp_rank, _ = compute_dp_attention_world_info(
+                enable_dp_attention, tp_rank, tp_size, dp_size, attn_cp_size
+            )
+            name = get_scheduler_actor_name(
+                rank0_node_ip=rank0_node_ip,
+                dp_rank=dp_rank,
+                pp_rank=rank // tp_size,
+                tp_rank=tp_rank,
+                port=self.server_port,
+                bundle_idx=bundle_idx,
+            )
+            try:
+                actors.append(ray.get_actor(name))
+            except ValueError as e:
                 raise RuntimeError(
-                    f"SchedulerActor discovery for engine {self.server_host}:{self.server_port} "
-                    f"tp_rank={tp_rank} matched {len(matches)} actors (expected 1): "
-                    f"{[n for n, _ in matches]}. tokens: '{node_prefix}', '{port_token}', "
-                    f"'{tp_token}'. Discovered {len(entries)} named actors, "
-                    f"{len(sched_like)} scheduler-like: {[n for n, _ in sched_like[:20]]}."
-                )
-            name, namespace = matches[0]
-            actors.append(ray.get_actor(name, namespace=namespace) if namespace else ray.get_actor(name))
+                    f"SchedulerActor {name!r} not found for engine "
+                    f"{self.server_host}:{self.server_port} rank={rank}"
+                ) from e
 
         self._scheduler_actors = actors
         return actors

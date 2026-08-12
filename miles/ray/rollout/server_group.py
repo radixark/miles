@@ -73,12 +73,7 @@ class ServerGroup:
 
         pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
 
-        # RDT no-double-booking: hand miles' reserved rollout bundles to sglang's
-        # RayEngine so its SchedulerActors reuse them instead of auto-creating a
-        # second PG that double-books the rollout GPUs. Also the only way to run
-        # a multi-node engine: the auto-PG cannot co-locate its rank-0 bundle
-        # with the engine once the engine's node is fully booked by miles' own
-        # bundles.
+        # RDT: reuse miles' PG so RayEngine does not auto-create a second one.
         rdt_reuse_pg = self.args.update_weight_transfer_mode == "rdt"
 
         RolloutRayActor = ray.remote(SGLangEngine)
@@ -134,7 +129,6 @@ class ServerGroup:
             rdt_pg_kwargs = {}
             if rdt_reuse_pg and i % self.nodes_per_engine == 0:
                 rdt_pg_kwargs = dict(
-                    placement_group=pg,
                     pg_bundles=[reordered_bundle_indices[gpu_index + k] for k in range(self.num_gpus_per_engine)],
                 )
 
