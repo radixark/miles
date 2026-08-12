@@ -12,7 +12,6 @@ run:
   env:
     CUDA_DEVICE_MAX_CONNECTIONS: '1'
     PYTHONUNBUFFERED: '1'
-  stateFile: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state
   id: 260101-000000-000
   inferenceEngines:
   - command:
@@ -29,6 +28,7 @@ run:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-0-0
     objectName: miles-run-260101-000000-000-inference-engine-0-0
+    poolId: inference-engine-0-0
     ports:
     - name: primary
       port: 8000
@@ -39,7 +39,6 @@ run:
       limits:
         nvidia.com/gpu: 8
     size: 2
-    poolId: inference-engine-0-0
   objectNames:
     colocatePairing: miles-run-260101-000000-000-colocate-pairing
     mooncakeMaster: miles-run-260101-000000-000-mooncake-master
@@ -56,6 +55,7 @@ run:
     - kubernetes
     - --run-uuid
     - f52ecf8e9d7d4889
+  stateFile: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state
   staticWorkers:
   - command:
     - python
@@ -67,11 +67,11 @@ run:
     - '30000'
     name: inference-router-0
     objectName: miles-run-260101-000000-000-inference-router-0
+    poolId: inference-router-0
     ports:
     - name: primary
       port: 30000
     replicas: 1
-    poolId: inference-router-0
   trainerEngines:
   - command:
     - <PYTHON>
@@ -98,6 +98,7 @@ run:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: trainer-engine-actor
     objectName: miles-run-260101-000000-000-trainer-engine-actor
+    poolId: trainer-engine-actor
     ports:
     - name: master
       port: 9000
@@ -107,5 +108,4 @@ run:
     resources:
       limits:
         nvidia.com/gpu: 8
-    poolId: trainer-engine-actor
 
