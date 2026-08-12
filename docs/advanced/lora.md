@@ -7,31 +7,20 @@ miles trains the adapter matrices in Megatron and serves the same live adapter
 from SGLang. The base model stays frozen; at each configured weight-update
 boundary, miles exports and synchronizes the updated LoRA weights. The default
 boundary is once per rollout/train iteration. No merge-to-base or checkpoint
-conversion is required inside the training-rollout loop. Remote rollout and
-colocated base-backup recipes transfer only the adapter after startup; a
-colocated job without the base backup may also re-send frozen base weights as
-part of pause/resume.
+conversion is required inside the training-rollout loop.
 
 ## Training and rollout lifecycle
 
-```mermaid
-flowchart TB
-    HF["HF base checkpoint<br/>+ target module names"] --> Build{"LoRA implementation"}
-    Build --> Bridge["Megatron-Bridge<br/>AutoBridge PEFT"]
-    Build --> Native["Native / raw<br/>miles provider + model-aware adapter spec"]
-    Bridge --> Train["Frozen base + trainable LoRA A/B matrices"]
-    Native --> Train
-    Train --> Step["Optimizer step(s)"]
-    Step --> Boundary["Configured weight-update boundary"]
-    Boundary --> Export["Export adapter tensors"]
-    Export --> IPC["Colocated<br/>local IPC"]
-    Export --> NCCL["Disaggregated<br/>NCCL broadcast<br/>(Bridge on current main)"]
-    IPC --> SGLang["SGLang base + named adapter"]
-    NCCL --> SGLang
-    SGLang --> Request["Rollout requests select lora_path"]
-    Request --> RL["Reward / advantages / next step"]
-    RL --> Step
-```
+For a single adapter, miles exports the updated LoRA tensors at each configured
+publish boundary. Colocated jobs load them through the local tensor/IPC path;
+disaggregated Bridge jobs broadcast them to remote SGLang engines over NCCL.
+Rollout requests then select the live named adapter with `lora_path`.
+
+Multi-LoRA currently supports disaggregated rollout only and rejects
+`--colocate` at launch. Each SGLang engine keeps the base checkpoint resident;
+miles selectively exports and NCCL-broadcasts newly loaded or optimizer-stepped
+adapters into their corresponding SGLang slots. New or restarted engines receive
+every loaded adapter, while unchanged adapters are not resent.
 
 Model support is therefore a three-way contract rather than a hard-coded
 allowlist:
