@@ -720,11 +720,6 @@ class MetricStore:
         return lanes
 
     def _phase_events(self, t0: float | None, t1: float | None) -> list[PhaseEvent]:
-        # closed phases partition by END hour (lower bound exact, slack one
-        # max phase duration FORWARD — design §17). OPEN markers partition by
-        # their START hour and may be arbitrarily old (a stalled run can sit
-        # in one phase for many hours), so no lower bound: the stream is
-        # low-rate enough that reading every partition stays cheap
         upper = None if t1 is None else t1 + self.MAX_WINDOW_S
         return self._readers[Stream.PHASES].window(None, upper)
 
