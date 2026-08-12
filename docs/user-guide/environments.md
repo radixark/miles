@@ -12,7 +12,7 @@ where the environment itself comes from:
 - **Your own environment** — plug your code into one of the three rollout
   layers described in [Integration shapes](#integration-shapes); most
   environments sit in the agent function, with the session server recording
-  tokens (see [Rollout Endpoints](/user-guide/rollout-endpoints)).
+  tokens (see [Agentic Rollout (TITO)](/user-guide/agentic-rollout)).
 - **An external ecosystem** — adopt a prebuilt connector from the table below;
   connectors occupy the same three layers.
 

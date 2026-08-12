@@ -11,8 +11,15 @@ inference and assembles them into training samples. For the design rationale, se
 
 This page owns the agentic path: wrapper setup, the custom agent contract,
 session behavior, token ownership, model-family selection, and verification.
-Use [Rollout Endpoints](/user-guide/rollout-endpoints) for the lower-level,
+Use [Generate Endpoint](/user-guide/generate-endpoint) for the lower-level,
 stateless `/generate` interface.
+
+<Warning>
+
+**No VLM support yet.** Currently the TITO session path cannot carry image or video inputs. For vision-language models, use the
+[Generate Endpoint](/user-guide/generate-endpoint) path instead.
+
+</Warning>
 
 ## Configure the wrapper
 

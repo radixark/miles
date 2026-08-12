@@ -66,6 +66,10 @@ async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample
     ...
 ```
 
+The hook also accepts the `GenerateFnInput -> GenerateFnOutput` form; both
+signatures load through the same adapter. See
+[Generate Endpoint](/user-guide/generate-endpoint) for the full contract.
+
 **Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
 
 

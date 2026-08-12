@@ -11,7 +11,7 @@ description: Concepts, launch scripts, customization hooks, and a complete CLI r
 | [Training Backends](/user-guide/training-backend) | Megatron-LM and FSDP: what each one owns, how to choose, parallelism, checkpoints, and hooks. |
 | [Monitoring & Logging](/user-guide/monitoring) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |
 | [Customization](/user-guide/customization) | The `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
-| [Rollout Endpoints](/user-guide/rollout-endpoints) | The low-level `/generate` endpoint for custom generation. |
+| [Generate Endpoint](/user-guide/generate-endpoint) | Custom generate functions that own tokens and loss masks via the raw `/generate` endpoint. |
 | [Agentic Rollout (TITO)](/user-guide/agentic-rollout) | Configure an OpenAI-compatible agent loop with TITO trajectory assembly. |
 | [CLI Reference](/user-guide/cli-reference) | Every flag Miles accepts, grouped by subsystem. |
 | [Environments](/user-guide/environments) | Supplying an environment: dataset + reward, your own env via the plug points, or an external ecosystem. |

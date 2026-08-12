@@ -192,7 +192,7 @@
        "user-guide/monitoring",
        "user-guide/dashboard",
        "user-guide/customization",
-       "user-guide/rollout-endpoints",
+       "user-guide/generate-endpoint",
        "user-guide/agentic-rollout",
        "user-guide/cli-reference"
       ]
@@ -339,6 +339,10 @@
   ]
  },
  "redirects": [
+  {
+   "source": "/user-guide/rollout-endpoints",
+   "destination": "/user-guide/generate-endpoint"
+  },
   {
    "source": "/user-guide/usage",
    "destination": "/user-guide/training-backend"
