@@ -303,7 +303,9 @@ Common `--sglang-*` flags:
 
 ### Agentic sessions
 
-These flags wire an OpenAI-format agent loop through Miles' TITO session server. See [Rollout Endpoints](/user-guide/rollout-endpoints#the-openai-chat-endpoint) for the request contract and [Agentic Rollout (TITO)](/user-guide/agentic-chat-template) for model-family selection.
+These flags wire an OpenAI-compatible agent loop through Miles' TITO session
+server. See [Agentic Rollout (TITO)](/user-guide/agentic-rollout) for the request
+contract, session behavior, and model-family selection.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|

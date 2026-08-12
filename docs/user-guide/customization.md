@@ -58,7 +58,12 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 
 ### `--custom-agent-function-path`
 
-Use this innermost hook for an agent or environment loop that speaks OpenAI chat through Miles' TITO session server. Select the wrapper with `--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate`; this dynamically registers `--custom-agent-function-path` and `--max-seq-len`.
+Use `--custom-agent-function-path` to specify the async agent or environment loop
+that sends OpenAI-compatible chat requests through Miles' TITO session server.
+First select the agentic wrapper with
+`--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate`;
+the wrapper then adds the `--custom-agent-function-path` and `--max-seq-len` CLI
+options.
 
 ```python
 async def run_agent(
@@ -71,7 +76,11 @@ async def run_agent(
     ...
 ```
 
-`base_url` already includes `/sessions/<id>`. Return a dictionary to merge environment rewards, reports, or metrics into each output sample's metadata, or `None` when there is no extra metadata. See [Rollout Endpoints](/user-guide/rollout-endpoints#the-openai-chat-endpoint) for the full wiring and message/token ownership contract.
+`base_url` already includes `/sessions/<id>`. Return a dictionary to merge
+environment rewards, reports, or metrics into each output sample's metadata, or
+`None` when there is no extra metadata. See
+[Agentic Rollout (TITO)](/user-guide/agentic-rollout) for the full wiring and
+message/token ownership contract.
 
 ### `--custom-generate-function-path`
 

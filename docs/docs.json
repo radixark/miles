@@ -193,7 +193,7 @@
        "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
-       "user-guide/agentic-chat-template",
+       "user-guide/agentic-rollout",
        "user-guide/cli-reference"
       ]
      },
