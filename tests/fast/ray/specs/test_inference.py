@@ -1140,3 +1140,9 @@ class TestSpecInferenceController:
         spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
 
         assert capability.requested_pool_ids == [[]]
+
+
+class TestTheEngineEnvironment:
+    def test_every_engine_is_told_to_report_its_own_env_vars(self) -> None:
+        """Without the gate the engine answers /server_info with no env_vars, and the audit is empty."""
+        assert compute_inference_engine_env_vars(make_args())["SGLANG_EXPOSE_OWN_ENV_VARS"] == "1"
