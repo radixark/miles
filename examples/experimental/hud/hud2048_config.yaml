@@ -1,0 +1,39 @@
+# HUD 2048, sized from measurements on hudevals/hud-browser:0.1.6.
+#
+# Move budget drives the signal. A random policy and a corner strategy both cap
+# at tile 8 by ~12 moves, and only separate from ~20 moves on (at 40: greedy 32
+# vs random 16). Turns are the expensive axis -- each one re-prefills the
+# screenshot history through the ViT -- while keys within a turn are nearly
+# free, so an action carries 4 keys and 24 turns buy ~92 moves for ~5.3k vision
+# tokens of context.
+#
+# Reward: the taskset grades on log2(max_tile)/log2(target), which is a
+# five-level step function. Twice in a row a population converged on one tile
+# (all 32 episodes at exactly 3/7, then at exactly 5/7), within-group variance
+# went to zero and GRPO had no gradient. hud_reward_tool switches training onto
+# the same environment's score, which is min(1, score/target_score): continuous,
+# monotone in good play, and it cannot go flat. The taskset's own grade is still
+# recorded every episode as task_reward.
+max_turns: 24
+rollout_interaction_env_path: examples.experimental.hud.hud_task_env
+hud_screenshot_width: 640
+hud_keys_per_turn: 4
+# A turn is two sentences of reasoning and one action line. Capping it keeps one
+# rambling turn from eating an episode's whole response budget, which otherwise
+# ends the episode early with most of its move budget unspent.
+hud_max_tokens_per_turn: 200
+hud_max_sandboxes: 32
+hud_sandbox_max_age_min: 20
+hud_inference_timeout_s: 600
+# target_score sets where the reward saturates, and saturation is the fourth
+# ceiling this recipe hit: at 512 an untrained policy starts near 0.34, but by
+# the time the mean reaches 0.71 some 59% of episodes score above 512, clip to
+# 1.0, and stop being distinguishable from each other -- the best half of the
+# batch carries no gradient. 1024 keeps the top of the reachable range (a strong
+# episode scores ~900) inside the linear part.
+hud_reward_tool:
+  name: evaluate
+  arguments:
+    name: game_2048_score_reached
+    arguments:
+      target_score: 1024
