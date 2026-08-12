@@ -20,6 +20,7 @@ from miles.ray.rollout.cell_state import (
     StateServing,
     StateUninitialized,
 )
+from miles.ray.rollout.engine_env_reporter import EngineEnvReporter
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
@@ -59,9 +60,11 @@ class ServerCell:
     provider: BaseWorkerProvider
     global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
+    _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
 
     def __post_init__(self) -> None:
+        self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
         self._health_checker = create_rollout_cell_health_checker(
             args=self.args,
             name=f"rollout-cell-{self.meta.cell_id}",
@@ -146,7 +149,7 @@ class ServerCell:
 
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.server_url)
+        return SGLangApiClient(server_url=self.server_url, api_key=self.meta.sglang_api_key)
 
     async def init(self) -> None:
         if self.args.rollout_external:
@@ -163,6 +166,14 @@ class ServerCell:
     async def tick(self) -> None:
         if isinstance(self._state, StateInitializing):
             await self._tick_when_initializing()
+        await self._report_env_if_due()
+
+    async def _report_env_if_due(self) -> None:
+        if not self.is_pending_weights_or_serving:
+            return
+        await self._env_reporter.report_if_due(
+            cell_id=self.meta.cell_id, server_url=self.server_url, api_client=self.api_client
+        )
 
     async def _tick_when_initializing(self) -> None:
         addr_info = self._state.addr_info

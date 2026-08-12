@@ -49,6 +49,15 @@ def redact_argv(argv: list[str]) -> list[str]:
     return redacted
 
 
+def redact_server_info(server_info: dict[str, Any]) -> dict[str, Any]:
+    redacted = _redact_server_args(server_info)
+
+    if isinstance(internal_states := redacted.get("internal_states"), list):
+        redacted["internal_states"] = [_redact_internal_state(state) for state in internal_states]
+
+    return redacted
+
+
 def redact_arg(name: str, value: Any) -> Any:
     if name in _ENV_VAR_ARG_NAMES and isinstance(value, dict):
         return redact_env_vars({key: str(item) for key, item in value.items()})
@@ -80,6 +89,23 @@ def _redact_env_var_json(value: str) -> str:
     if not isinstance(env_vars, dict):
         return _redact(value)
     return json.dumps(redact_env_vars({name: str(item) for name, item in env_vars.items()}))
+
+
+def _redact_internal_state(state: Any) -> Any:
+    if not isinstance(state, dict):
+        return state
+
+    redacted = _redact_server_args(state)
+    if isinstance(env_vars := redacted.get("env_vars"), dict):
+        redacted["env_vars"] = redact_env_vars({name: str(value) for name, value in env_vars.items()})
+    return redacted
+
+
+def _redact_server_args(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        name: _redact_secret_value(value) if name in _SGLANG_SECRET_ARG_BASE_NAMES else value
+        for name, value in values.items()
+    }
 
 
 def _redact_secret_value(value: Any) -> Any:

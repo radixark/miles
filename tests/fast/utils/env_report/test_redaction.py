@@ -1,6 +1,6 @@
 import pytest
 
-from miles.utils.env_report.redaction import _redact, redact_argv, redact_env_vars
+from miles.utils.env_report.redaction import _redact, redact_argv, redact_env_vars, redact_server_info
 
 
 class TestRedactArgv:
@@ -76,3 +76,65 @@ class TestRedactEnvVars:
         redacted = redact_env_vars({"ZZZ": "z", "HF_TOKEN": "t", "RANK": "3"})
         assert list(redacted.keys()) == ["HF_TOKEN", "RANK", "ZZZ"]
         assert redacted["RANK"] == "3"
+
+
+class TestRedactServerInfo:
+    def test_redacts_the_keys_repeated_inside_every_internal_state(self) -> None:
+        """Each internal state is a whole ServerArgs, so the credentials appear once per scheduler."""
+        redacted = redact_server_info(
+            {"internal_states": [{"api_key": "a", "waiting_queue": 0}, {"ssl_keyfile_password": "c"}]}
+        )
+
+        assert redacted["internal_states"][0]["api_key"].startswith("redacted-sha256:")
+        assert redacted["internal_states"][0]["waiting_queue"] == 0
+        assert redacted["internal_states"][1]["ssl_keyfile_password"].startswith("redacted-sha256:")
+
+    def test_redacts_an_internal_state_that_carries_no_environment(self) -> None:
+        """An engine too old to answer with env_vars still repeats its ServerArgs in every state."""
+        redacted = redact_server_info({"internal_states": [{"api_key": "a"}]})
+
+        assert redacted["internal_states"][0]["api_key"].startswith("redacted-sha256:")
+
+    def test_redacts_the_engine_keys_that_arrive_without_a_miles_prefix(self) -> None:
+        """The engine reports its own ServerArgs, whose names lack the sglang_ prefix miles args carry."""
+        redacted = redact_server_info(
+            {"api_key": "a", "admin_api_key": "b", "ssl_keyfile_password": "c", "model_path": "/models/qwen"}
+        )
+
+        assert all(redacted[name].startswith("redacted-sha256:") for name in ("api_key", "admin_api_key"))
+        assert redacted["ssl_keyfile_password"].startswith("redacted-sha256:")
+        assert redacted["model_path"] == "/models/qwen"
+
+    def test_redacts_the_environment_of_every_scheduler(self) -> None:
+        """internal_states holds one entry per DP scheduler, and each carries a whole environment."""
+        redacted = redact_server_info(
+            {
+                "internal_states": [
+                    {"env_vars": {"HF_TOKEN": "t0", "RANK": "0"}},
+                    {"env_vars": {"WANDB_API_KEY": "k1"}},
+                ]
+            }
+        )
+
+        assert redacted["internal_states"][0]["env_vars"]["HF_TOKEN"].startswith("redacted-sha256:")
+        assert redacted["internal_states"][0]["env_vars"]["RANK"] == "0"
+        assert redacted["internal_states"][1]["env_vars"]["WANDB_API_KEY"].startswith("redacted-sha256:")
+
+    def test_keeps_an_internal_state_that_carries_no_environment(self) -> None:
+        """An engine built before the env var gate existed reports no env_vars key at all."""
+        server_info = {"internal_states": [{"waiting_queue": 0}], "version": "0.5.0"}
+        assert redact_server_info(server_info) == server_info
+
+    def test_leaves_the_caller_copy_untouched(self) -> None:
+        """The raw response is the engine's answer, and redaction must not rewrite it under the caller."""
+        server_info = {"api_key": "a", "internal_states": [{"env_vars": {"HF_TOKEN": "t"}}]}
+
+        redact_server_info(server_info)
+
+        assert server_info["api_key"] == "a"
+        assert server_info["internal_states"][0]["env_vars"]["HF_TOKEN"] == "t"
+
+    def test_ignores_an_internal_states_shape_it_does_not_know(self) -> None:
+        """The engine's schema is not miles's to control, and an unexpected shape must not raise."""
+        assert redact_server_info({"internal_states": None}) == {"internal_states": None}
+        assert redact_server_info({"internal_states": ["opaque"]}) == {"internal_states": ["opaque"]}
