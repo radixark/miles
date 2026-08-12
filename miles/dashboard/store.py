@@ -28,6 +28,7 @@ import calendar
 import io
 import json
 import os
+import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -407,6 +408,13 @@ class MetricStore:
         self._offsets: dict[Stream, int] = {s: 0 for s in Stream if s not in self.PARTITIONED_STREAMS}
         self._readers: dict[Stream, _PartitionReader] = {s: self._make_reader(s) for s in self.PARTITIONED_STREAMS}
         self._catalog: dict[str, dict] | None = None  # write-side lane catalog accumulator
+        # full-window engine query cache, versioned by partition file sizes so
+        # appended scrapes invalidate it; the lock is load-bearing because sync
+        # endpoints serve concurrently from FastAPI's threadpool
+        self._engine_cache_lock = threading.Lock()
+        self._engine_cache_version: tuple | None = None
+        self._engine_frame_cache: pl.DataFrame | None = None
+        self._engine_parts_cache: dict[str, dict[tuple[str, str], pl.DataFrame]] = {}
 
     def _make_reader(self, stream: Stream) -> _PartitionReader:
         if stream in self.COLUMNAR_STREAMS:
@@ -993,7 +1001,8 @@ class MetricStore:
 
     def engine_metric_names(self) -> list[str]:
         """Distinct scraped engine metrics — the L0 sglang category catalog."""
-        raw = set(self._readers[Stream.ENGINE_SERIES].window(None, None).get_column("metric").unique())
+        frame, _ = self._engine_cache()
+        raw = set(frame.get_column("metric").unique())
         names = {name for name in raw if not name.endswith(self._CUMULATIVE_SUFFIXES)}
         names.update(derived for derived, base in self.ENGINE_RATE_METRICS.items() if base in raw)
         names.update(
@@ -1026,6 +1035,8 @@ class MetricStore:
         return out
 
     def _engine_parts(self, metric: str, t0: float | None, t1: float | None) -> dict[tuple[str, str], pl.DataFrame]:
+        if t0 is None and t1 is None:
+            return self._engine_parts_cached(metric)
         frame = self._window(self._readers[Stream.ENGINE_SERIES].window(t0, t1), t0, t1).filter(
             pl.col("metric") == metric
         )
@@ -1033,6 +1044,30 @@ class MetricStore:
             key: part.sort("ts")
             for key, part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items())
         }
+
+    def _engine_cache(self) -> tuple[pl.DataFrame, dict[str, dict[tuple[str, str], pl.DataFrame]]]:
+        """The full-window frame and its partition cache, returned as a pair so a
+        caller racing a rebuild files partitions under the frame they came from."""
+        reader = self._readers[Stream.ENGINE_SERIES]
+        with self._engine_cache_lock:
+            version = tuple((key, path.stat().st_size) for key, path in reader.files())
+            if version != self._engine_cache_version:
+                self._engine_frame_cache = reader.window(None, None)
+                self._engine_parts_cache = {}
+                self._engine_cache_version = version  # last: a failed rebuild must not look cached
+            return self._engine_frame_cache, self._engine_parts_cache
+
+    def _engine_parts_cached(self, metric: str) -> dict[tuple[str, str], pl.DataFrame]:
+        frame, cache = self._engine_cache()
+        parts = cache.get(metric)
+        if parts is None:
+            frame = frame.filter(pl.col("metric") == metric)
+            parts = {
+                key: part.sort("ts")
+                for key, part in sorted(frame.partition_by(["addr", "labels_json"], as_dict=True).items())
+            }
+            cache[metric] = parts
+        return parts
 
     def _derived_series(self, num_parts, den_parts, max_points: int) -> list[dict]:
         """Per-interval derivative: rate when ``den_parts`` is None (dt as the

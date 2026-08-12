@@ -35,6 +35,10 @@ export const fmtNum = (v) => {
   return v.toFixed(3);
 };
 
+export function statBox(label, value) {
+  return el("div", { class: "stat" }, [el("div", { class: "v" }, [fmtNum(value)]), el("div", { class: "k" }, [label])]);
+}
+
 function parseRoute() {
   const [path, query] = (location.hash.slice(1) || "/").split("?");
   const segments = path.split("/").filter(Boolean);
