@@ -3,7 +3,8 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable
-from typing import Annotated, TypeVar, overload
+from enum import Enum
+from typing import Annotated, Any, TypeVar, overload
 
 import typer
 
@@ -59,6 +60,23 @@ def _resolve_default(field: dataclasses.Field, param: inspect.Parameter) -> obje
     return param.default
 
 
+def dataclass_from_env(dataclass_cls: type, *, env_var_prefix: str = SCRIPT_ENV_VAR_PREFIX) -> Any:
+    """Build the dataclass from the environment alone, letting click read it exactly as it would on the cli."""
+    built: list[Any] = []
+
+    def build(**kwargs: object) -> None:
+        built.append(_build(dataclass_cls, kwargs))
+
+    build.__signature__ = inspect.Signature(_cli_parameters(dataclass_cls, env_var_prefix=env_var_prefix))
+    build.__name__ = dataclass_cls.__name__
+
+    app = typer.Typer(add_completion=False)
+    app.command()(build)
+    typer.main.get_command(app)(args=[], standalone_mode=False)
+
+    return built[0]
+
+
 def _wrap(func: _F, *, env_var_prefix: str) -> _F:
     hints: dict[str, type] = typing.get_type_hints(func)
     first_param_name: str = next(iter(inspect.signature(func).parameters))
@@ -100,13 +118,30 @@ def _cli_parameters(dataclass_cls: type, *, env_var_prefix: str) -> list[inspect
             typer_kwargs["help"] = field.metadata["help"]
 
         resolved_type: type = resolved_hints.get(param.name, param.annotation)
-        new_annotation = Annotated[resolved_type, typer.Option(**typer_kwargs)]
-        new_parameters.append(param.replace(annotation=new_annotation, default=_resolve_default(field, param)))
+        new_annotation = Annotated[_repeatable_as_list(resolved_type), typer.Option(**typer_kwargs)]
+        default = _resolve_default(field, param)
+
+        new_parameters.append(
+            param.replace(annotation=new_annotation, default=list(default) if isinstance(default, tuple) else default)
+        )
     return new_parameters
 
 
-def _build(dataclass_cls: type, kwargs: dict[str, object]) -> object:
-    return dataclass_cls(**kwargs)
+def _repeatable_as_list(annotation: type) -> type:
+    """click has no variadic tuple, so a repeatable option reaches it as the list it is spelled with."""
+    if typing.get_origin(annotation) is tuple and typing.get_args(annotation)[1:] == (Ellipsis,):
+        return list[typing.get_args(annotation)[0]]  # type: ignore[misc, return-value]
+    return annotation
+
+
+def _build(dataclass_cls: type, kwargs: dict[str, object]) -> Any:
+    hints: dict[str, type] = typing.get_type_hints(dataclass_cls)
+    return dataclass_cls(
+        **{
+            name: tuple(value) if typing.get_origin(hints[name]) is tuple and isinstance(value, list) else value
+            for name, value in kwargs.items()
+        }
+    )
 
 
 def _print_arguments(data: object) -> None:
@@ -117,7 +152,8 @@ def _print_arguments(data: object) -> None:
     print(f"| {'Argument':<{max_key_len}} | {'Value':<50} |")
     print(sep)
     for f in fields:
-        val = str(getattr(data, f.name))
+        val_raw = getattr(data, f.name)
+        val = str(val_raw.value if isinstance(val_raw, Enum) else val_raw)
         if len(val) > 50:
             val = val[:47] + "..."
         print(f"| {f.name:<{max_key_len}} | {val:<50} |")
