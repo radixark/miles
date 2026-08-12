@@ -29,7 +29,7 @@ For miles, this boundary brings:
   by version, and record which version generated every returned trajectory.
 
 The last property is what turns remote inference capacity into an RL rollout
-service rather than an ordinary model-serving endpoint. Miles must update the
+service rather than an ordinary model-serving endpoint. miles must update the
 policy without owning every engine and must preserve the behavior-policy
 identity required for staleness control and off-policy training.
 
@@ -41,11 +41,11 @@ the prefill and decode phases inside an SGLang deployment.
 
 | Topology | Engine lifecycle | What miles talks to | Policy updates |
 |---|---|---|---|
-| Miles-managed rollout | Part of the miles job | A miles-managed router and engine handles | miles converts, transfers, pauses, updates, and resumes the engines |
+| miles-managed rollout | Part of the miles job | A miles-managed router and engine handles | miles converts, transfers, pauses, updates, and resumes the engines |
 | Attached SGLang engines | Owned by the deployment | Fixed engine addresses supplied with `--rollout-external-engine-addrs` | miles still addresses and controls each engine through its engine handle |
 | External rollout service | Independent and dynamically scaled | One stable rollout endpoint | miles publishes versions; the rollout service materializes and activates them across its replicas |
 
-Miles supports the first two topologies today. The single-endpoint external
+miles supports the first two topologies today. The single-endpoint external
 rollout service is coming soon and extends that separation from GPU placement
 to independent scaling, routing, and lifecycle.
 
@@ -54,7 +54,7 @@ launching SGLang, but miles still knows the individual engine addresses, checks
 their configuration, registers them with its router, and calls their
 weight-update lifecycle.
 
-An external rollout service is a narrower interface. Miles sends rollout
+An external rollout service is a narrower interface. miles sends rollout
 requests to one endpoint and publishes new policy versions without needing an
 engine handle for every replica. The service behind that endpoint can be
 implemented by any deployment or control-plane package that satisfies the
@@ -95,12 +95,12 @@ miles still runs the selected weight-update lifecycle.
 
 Once training and rollout use different GPUs, updated weights have to cross the
 boundary between them. `--update-weight-transfer-mode` selects the current
-Miles-managed path:
+miles-managed path:
 
 | Mode | Data path | Use when |
 |---|---|---|
 | `broadcast` | Gather and convert trainer weights, then broadcast them to the SGLang ranks over NCCL | Trainer and rollout ranks have NCCL connectivity; this is the default |
-| `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | Miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
+| `p2p` | Convert and re-shard weights, then write them directly to rollout-rank memory over RDMA | miles-managed, in-cluster jobs with direct rank-to-rank connectivity; see [P2P Weight Transfer](/advanced/p2p-weight-transfer) |
 | `disk-delta` | Publish changed canonical checkpoint bytes to shared storage, let rollout hosts materialize them locally, then reload | Trainer and rollout cannot share an NCCL fabric, or model-sized full-weight transfer dominates the update |
 
 These are weight synchronization choices, not different rollout APIs. In the
@@ -130,13 +130,13 @@ The current lifecycle is:
 2. At the next update boundary, source trainer ranks gather Megatron tensors
    under their canonical Hugging Face names and compare their bytes with the
    previous snapshot.
-3. Miles publishes `weight_vNNNNNN/` with compressed changed bytes and an index
+3. miles publishes `weight_vNNNNNN/` with compressed changed bytes and an index
    containing the version, base version, delta encoding, and final-state
    checksums. Files are written atomically before the version is consumed.
 4. Each rollout host pulls the version and patches its host-local checkpoint.
    Delta application verifies the checksum of the resulting tensor, not only
    the transferred delta.
-5. Miles pauses generation, reloads the materialized checkpoint into SGLang,
+5. miles pauses generation, reloads the materialized checkpoint into SGLang,
    advances the engine weight version, and resumes generation.
 
 Pull and local materialization happen before the engine pause and can overlap
@@ -175,25 +175,25 @@ general FSDP weight-update path.
 
 The coming single-endpoint integration builds on the current disk-delta
 publication path and removes the need for miles to hold one handle per rollout
-engine. The commands above cover Miles-managed and attached-engine deployments;
+engine. The commands above cover miles-managed and attached-engine deployments;
 this section defines the external-service boundary.
 
 The intended boundary has two independent data paths:
 
 ```mermaid
 flowchart LR
-    T[Miles trainer] -->|publish policy version| S[(Version store)]
-    W[Miles rollout worker] -->|version-constrained request| G[External rollout endpoint]
+    T[miles trainer] -->|publish policy version| S[(Version store)]
+    W[miles rollout worker] -->|version-constrained request| G[External rollout endpoint]
     S -->|materialize and verify| E[Rollout replicas]
     G --> E
     E -->|trajectory and served version| W
 ```
 
-Miles does not need to know how many replicas are behind the endpoint, where
+miles does not need to know how many replicas are behind the endpoint, where
 they run, or how the service replaces them. The integration is defined by
 ownership:
 
-| Miles owns | The external rollout service owns |
+| miles owns | The external rollout service owns |
 |---|---|
 | Training state and optimizer steps | Replica placement, scaling, and health |
 | Conversion to canonical rollout-visible tensors | Materializing published versions on rollout hosts |
@@ -208,14 +208,14 @@ version should not require miles to enumerate the current replicas.
 ### Reference implementation: Stitch
 
 [Stitch](https://github.com/modal-projects/stitch) is the first open-source
-implementation being integrated with this Miles boundary. It connects miles
+implementation being integrated with this service boundary. It connects miles
 policy publication to an independently scaled inference pool and implements
 the rollout-side responsibilities above: version storage and reconciliation,
 replica materialization, request admission, weight activation, and
 served-version reporting.
 
 Stitch is one implementation of the service contract, not a dependency of the
-miles training loop. The Miles-side endpoint, publication, and request hooks
+miles training loop. The miles-side endpoint, publication, and request hooks
 are intended to remain general so another rollout system can provide the same
 version and request semantics. Stitch is also the source of the end-to-end
 weight-sync measurements in [What to measure](#what-to-measure).
@@ -239,7 +239,7 @@ generation can be replayed.
 The response reports which version served the request. For long or agentic
 trajectories, recording both the version at generation start and at generation
 end also exposes whether an activation occurred while the request was in
-flight. Miles can then attach the observed version to the sample rather than
+flight. miles can then attach the observed version to the sample rather than
 inferring it from the trainer's latest published version.
 
 ### Publication and replica convergence
@@ -271,7 +271,7 @@ Disaggregation and fully async rollout answer different questions:
 - [Fully Async RL](/user-guide/fully-async) decides how generation, buffering,
   and optimizer steps overlap.
 
-With Miles-managed engines, fully async rollout keeps generation in flight
+With miles-managed engines, fully async rollout keeps generation in flight
 while the trainer consumes completed groups and takes optimizer steps. At each
 configured update boundary, the current schedule still synchronizes the active
 generation call before invoking the weight updater. Disk-delta host
@@ -285,7 +285,7 @@ engine-local pause. Different replicas may converge at different times, so
 request constraints and served-version attribution become part of the RL data
 contract rather than optional serving metadata.
 
-Miles already uses weight versions to measure fully async sample staleness. A
+miles already uses weight versions to measure fully async sample staleness. A
 service integration must preserve that information so
 `--max-weight-staleness` and custom data-buffer policies make decisions from
 the policy that generated each sample.
