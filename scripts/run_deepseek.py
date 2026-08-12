@@ -4,6 +4,7 @@ This file is in preview, and will be further refined and optimized.
 
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal
 
 import typer
@@ -103,7 +104,7 @@ def _prepare_cp(args: ScriptArgs):
     )
 
 
-def _execute_train(args: ScriptArgs):
+def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
@@ -304,6 +305,7 @@ def _execute_train(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
+        before_ray_job_submit=before_ray_job_submit,
     )
 
 
@@ -312,9 +314,17 @@ def _execute_train(args: ScriptArgs):
 def train(args: ScriptArgs):
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
+    # The conversion and the node-local copy fan out over ray, so they need a live
+    # cluster: execute_train's hook runs them once its head is up (or, under
+    # MILES_SCRIPT_EXTERNAL_RAY, on the cluster it left alone). Running them before
+    # execute_train instead fails on a clean host, and any cluster started by hand to
+    # get past that is torn down by execute_train's own `ray stop`.
+    _execute_train(args, before_ray_job_submit=partial(_prepare_ray_dependent, args))
+
+
+def _prepare_ray_dependent(args: ScriptArgs):
     _prepare_megatron_ckpt(args)
     _prepare_cp(args)
-    _execute_train(args)
 
 
 @app.callback()

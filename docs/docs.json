@@ -75,7 +75,8 @@
           ],
           "expanded": false
          },
-         "models/deepseek/deepseek-v3-2"
+         "models/deepseek/deepseek-v3-2",
+         "models/deepseek/deepseek"
         ],
         "expanded": false
        },
@@ -323,11 +324,6 @@
   ]
  },
  "redirects": [
-  {
-   "source": "/models/deepseek/deepseek",
-   "destination": "/models/deepseek/deepseek-v3-2",
-   "permanent": true
-  },
   {
    "source": "/platforms/index",
    "destination": "/getting-started/installation",
