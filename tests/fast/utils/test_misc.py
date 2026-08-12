@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from miles.utils import misc
 from miles.utils.env_report import ENV_REPORT_PREFIX
 from miles.utils.http_utils import MILES_HOST_IP_ENV, get_host_info
 from miles.utils.misc import (
@@ -144,6 +145,77 @@ class TestNodeProbeMixin:
                         socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     )
                     available_socket.bind(("", port))
+
+    def test_the_scan_wraps_instead_of_walking_past_the_last_port(self, monkeypatch):
+        """The allocator cursor only grows, so an unbounded scan spun forever and wedged its caller."""
+        free_port = 20005
+        monkeypatch.setattr(misc, "is_port_available", lambda port: port == free_port)
+
+        assert get_free_port(start_port=65530, consecutive=1) == free_port
+
+    def test_a_range_with_nothing_free_raises(self, monkeypatch):
+        """Reporting exhaustion is the whole point: the old loop incremented past 65535 forever."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: False)
+
+        with pytest.raises(RuntimeError, match="consecutive free ports"):
+            get_free_port(start_port=65000, consecutive=4)
+
+    def test_a_block_that_cannot_fit_below_the_last_port_is_rejected(self, monkeypatch):
+        """Asking for a block that runs off the end is a caller bug, not something to scan for."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: True)
+
+        with pytest.raises(AssertionError):
+            get_free_port(start_port=65535, consecutive=2)
+
+    def test_is_port_available_separates_a_bound_port_from_a_free_one(self) -> None:
+        """The probe answers False exactly for a port another process is already listening on."""
+        free_port: int = get_free_port(start_port=15000, consecutive=2)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_socket:
+            occupied_socket.bind(("", free_port))
+            occupied_socket.listen()
+
+            assert NodeProbeMixin._is_port_available(port=free_port) is False
+            assert NodeProbeMixin._is_port_available(port=free_port + 1) is True
+
+    def test_get_node_ip_honours_the_host_ip_override(self, monkeypatch):
+        """Deployments where the reachable address is not the ray node ip pin it through this env var."""
+        monkeypatch.setenv("MILES_HOST_IP", "10.20.30.40")
+
+        assert NodeProbeMixin._get_node_ip() == "10.20.30.40"
+
+    def test_get_node_ip_falls_back_to_the_ray_node_ip(self, monkeypatch):
+        """Without an override the worker reports the address ray placed it on."""
+        monkeypatch.delenv("MILES_HOST_IP", raising=False)
+
+        assert NodeProbeMixin._get_node_ip() == get_current_node_ip()
+
+    def test_get_node_ip_falls_back_when_the_override_is_set_but_empty(self, monkeypatch):
+        """An override exported as an empty string carries no address, so publishing it would advertise nothing."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "")
+
+        assert NodeProbeMixin._get_node_ip() == get_current_node_ip()
+
+    def test_get_node_ip_publishes_the_same_override_as_the_host_info_probe(self, monkeypatch):
+        """The worker and the host probe must read one env var, or a deployment's override reaches only half of them."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
+
+        assert NodeProbeMixin._get_node_ip() == get_host_info()[1]
+
+    def test_get_node_ip_follows_an_override_that_changes_between_calls(self, monkeypatch):
+        """The probe runs inside the worker at allocation time, so a cached first answer would outlive its address."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.40")
+        assert NodeProbeMixin._get_node_ip() == "10.20.30.40"
+
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.20.30.41")
+
+        assert NodeProbeMixin._get_node_ip() == "10.20.30.41"
+
+    def test_get_node_ip_publishes_a_non_numeric_override_verbatim(self, monkeypatch):
+        """Deployments pin a routable dns name here, so resolving or validating it would drop the reachable address."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "miles-worker-0.miles.svc.cluster.local")
+
+        assert NodeProbeMixin._get_node_ip() == "miles-worker-0.miles.svc.cluster.local"
 
     def test_to_local_gpu_ids_passes_ids_through_without_a_visibility_mask(self, monkeypatch):
         """A worker that sees every gpu already got local ids, so remapping them would corrupt them."""
