@@ -205,20 +205,10 @@ The rollout endpoint and the version store are separate interfaces. The
 request path should not have to carry model-sized weights, and publishing a new
 version should not require miles to enumerate the current replicas.
 
-### Reference implementation: Stitch
-
-[Stitch](https://github.com/modal-projects/stitch) is an open-source package
-that implements this service boundary. It connects miles policy publication to
-an independently scaled inference pool and implements the rollout-side
-responsibilities above: version storage and reconciliation, replica
-materialization, request admission, weight activation, and served-version
-reporting.
-
-Stitch is one implementation of the service contract, not a dependency of the
-miles training loop. The miles-side endpoint, publication, and request hooks
-are intended to remain general so another rollout system can provide the same
-version and request semantics. Stitch is also the source of the end-to-end
-weight-sync measurements in [What to measure](#what-to-measure).
+One open-source package implementing the rollout-service side is
+[Stitch](https://github.com/modal-projects/stitch). It connects miles policy
+publication and version-constrained requests to an independently managed
+rollout fleet. The miles contract remains package-agnostic.
 
 ### Policy-version requirements
 
@@ -328,3 +318,4 @@ claim for miles, SGLang, or another rollout service.
 - [Training Backends](/user-guide/training-backend)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
 - [PD Disaggregation](/advanced/pd-disaggregation)
+- [Stitch: open-source disaggregated rollout service](https://github.com/modal-projects/stitch)
