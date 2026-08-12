@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import difflib
 from dataclasses import dataclass
 
 import yaml
@@ -65,7 +66,7 @@ class FSDPArgs:
     config: str | None = None
 
 
-def parse_fsdp_cli(extra_args_provider=None):
+def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("FSDP SFT Training (miles)")
     parser.add_argument("--config", type=str, default=None, help="YAML config path")
     for f in dataclasses.fields(FSDPArgs):
@@ -89,18 +90,34 @@ def parse_fsdp_cli(extra_args_provider=None):
 
     if extra_args_provider is not None:
         parser = extra_args_provider(parser)
-    args = parser.parse_args()
-    return args
+    return parser
+
+
+def parse_fsdp_cli(extra_args_provider=None):
+    return build_fsdp_parser(extra_args_provider).parse_args()
+
+
+def reject_unknown_config_keys(data: dict, known: set[str]) -> None:
+    unknown = sorted(set(data) - known)
+    if not unknown:
+        return
+
+    described = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, known, n=1)
+        described.append(f"{key!r} (did you mean {close[0]!r}?)" if close else repr(key))
+    raise ValueError(f"unknown key(s) in the YAML config: {', '.join(described)}")
 
 
 def load_fsdp_args(extra_args_provider=None):
-    args = parse_fsdp_cli(extra_args_provider)
+    parser = build_fsdp_parser(extra_args_provider)
+    args = parser.parse_args()
     if args.config:
         with open(args.config) as f:
             data = yaml.safe_load(f) or {}
-        for k, v in data.items():
-            if not hasattr(args, k):
-                setattr(args, k, v)
+        reject_unknown_config_keys(data, set(vars(args)))
+        parser.set_defaults(**data)
+        args = parser.parse_args()
     args.bf16 = not args.fp16
     return args
 

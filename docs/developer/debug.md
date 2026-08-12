@@ -67,7 +67,7 @@ bitwise comparable, and it is how the Megatron-versus-FSDP alignment test can as
 equality at all. It is slow; never enable it in production.
 
 For end-to-end reproducibility of a whole run, including the sampling path, see the
-[Reproducibility recipe](/examples/reproducibility).
+[Reproducibility recipe](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility).
 
 ## The assertion harness CI uses
 
@@ -149,7 +149,7 @@ from the right key (a `--label-key` typo is the usual cause).
 
 The trainer's offload and reload cycle is colliding with the engine's static memory. Lower
 `--sglang-mem-fraction-static` to 0.7 or 0.6. See
-[Training Backends](/user-guide/usage) for the layout and offload knobs.
+[Training Backends](/user-guide/training-backend) for the layout and offload knobs.
 
 ## Common kernel pitfalls
 
@@ -191,7 +191,7 @@ dashboard.
 ## When all else fails
 
 * Drop to a tiny model on a known-good recipe (the
-  [Reproducibility](/examples/reproducibility) one) to separate framework from model.
+  [Reproducibility](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility) one) to separate framework from model.
 * `git bisect` between a known-good commit and HEAD, with the record-and-replay pattern
   above pinning the inputs and `--debug-deterministic-collective` pinning the reductions.
 * Open a GitHub issue with the launch script, `pip freeze`, the first 200 lines of trainer

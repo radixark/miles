@@ -6,6 +6,9 @@ In a typical SGLang deployment, every engine handles both **prefill** (the
 one-shot forward over the prompt) and **decode** (the per-token autoregressive
 loop). The two phases have different compute profiles:
 
+This page covers separation inside the rollout deployment. To separate policy
+training from rollout inference, see [Disaggregated RL Rollout](/advanced/disaggregated-rollout).
+
 | Phase | Compute pattern | Bottleneck |
 |---|---|---|
 | Prefill | Long sequence × full batch | FLOPs |

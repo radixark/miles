@@ -75,7 +75,8 @@
           ],
           "expanded": false
          },
-         "models/deepseek/deepseek-v3-2"
+         "models/deepseek/deepseek-v3-2",
+         "models/deepseek/deepseek"
         ],
         "expanded": false
        },
@@ -127,8 +128,7 @@
          "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
-         "models/glm/glm4-5",
-         "models/glm/glm4"
+         "models/glm/glm4-5"
         ],
         "expanded": false
        },
@@ -138,8 +138,7 @@
         "pages": [
          "models/kimi/kimi-k3",
          "models/kimi/kimi-k2.5",
-         "models/kimi/kimi-k2",
-         "models/kimi/moonlight"
+         "models/kimi/kimi-k2"
         ],
         "expanded": false
        },
@@ -168,7 +167,6 @@
         ],
         "expanded": false
        },
-       "models/mimo/mimo",
        "models/gpt-oss/gpt-oss"
       ]
      }
@@ -182,10 +180,15 @@
       "root": "user-guide/index",
       "pages": [
        "user-guide/concepts",
-       "user-guide/argument-groups",
+       {
+        "group": "Launch Script",
+        "pages": [
+         "user-guide/launch-script",
+         "user-guide/argument-groups"
+        ]
+       },
        "user-guide/fully-async",
-       "user-guide/usage",
-       "user-guide/training-script-walkthrough",
+       "user-guide/training-backend",
        "user-guide/monitoring",
        "user-guide/dashboard",
        "user-guide/customization",
@@ -230,6 +233,7 @@
          "advanced/fault-tolerance",
          "advanced/pd-disaggregation",
          "advanced/p2p-weight-transfer",
+         "advanced/disaggregated-rollout",
          "advanced/disk-offload"
         ],
         "expanded": false
@@ -238,13 +242,6 @@
         "group": "MoE & Routing",
         "pages": [
          "advanced/miles-router"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Backends",
-        "pages": [
-         "advanced/architecture-support"
         ],
         "expanded": false
        }
@@ -259,11 +256,33 @@
       "group": "Examples",
       "root": "examples/index",
       "pages": [
-       "examples/fully-async",
-       "examples/search-r1",
-       "examples/multi-agent",
-       "examples/reproducibility",
-       "examples/openhermes-sft"
+       {
+        "group": "Recipes",
+        "pages": [
+         "examples/fully-async",
+         "examples/geo3k-vlm",
+         "examples/geo3k-vlm/multi-turn",
+         "examples/multi-lora",
+         "examples/on-policy-distillation",
+         "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
+         "examples/ppo",
+         "examples/retool-v2",
+         "examples/swe-agent-harbor-docker"
+        ],
+        "expanded": true
+       },
+       {
+        "group": "Infra Features",
+        "root": "examples/infra-features",
+        "pages": [
+         "examples/infra-features/low-precision",
+         "examples/infra-features/p2p-weight-transfer",
+         "examples/infra-features/random-async",
+         "examples/infra-features/train-infer-mismatch-helper",
+         "examples/infra-features/true-on-policy"
+        ],
+        "expanded": false
+       }
       ]
      }
     ]
@@ -279,7 +298,6 @@
        "developer/architecture",
        "developer/versions",
        "developer/debug",
-       "developer/experimental-features",
        {
         "group": "CI",
         "pages": [
@@ -322,9 +340,16 @@
  },
  "redirects": [
   {
-   "source": "/models/deepseek/deepseek",
-   "destination": "/models/deepseek/deepseek-v3-2",
-   "permanent": true
+   "source": "/user-guide/usage",
+   "destination": "/user-guide/training-backend"
+  },
+  {
+   "source": "/advanced/architecture-support",
+   "destination": "/user-guide/training-backend#going-deeper-bringing-in-a-new-architecture"
+  },
+  {
+   "source": "/developer/experimental-features",
+   "destination": "/user-guide/training-backend#fsdp"
   },
   {
    "source": "/platforms/index",
@@ -344,6 +369,26 @@
   {
    "source": "/advanced/fp8-low-precision",
    "destination": "/advanced/low-precision",
+   "permanent": true
+  },
+  {
+   "source": "/examples/search-r1",
+   "destination": "/examples",
+   "permanent": true
+  },
+  {
+   "source": "/examples/multi-agent",
+   "destination": "/examples",
+   "permanent": true
+  },
+  {
+   "source": "/examples/reproducibility",
+   "destination": "/examples",
+   "permanent": true
+  },
+  {
+   "source": "/examples/openhermes-sft",
+   "destination": "/models/qwen/qwen3",
    "permanent": true
   }
  ],

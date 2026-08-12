@@ -31,9 +31,9 @@ short tour for new contributors.
 
   </Card>
 
-  <Card title="Experimental Features" icon="flask" href="/developer/experimental-features">
+  <Card title="Training Backends" icon="server" href="/user-guide/training-backend">
 
-    Opt-in backends and features (FSDP, …) that aren't production-ready yet.
+    Megatron-LM and FSDP: what each backend owns and where its code lives.
 
   </Card>
 
@@ -42,7 +42,7 @@ short tour for new contributors.
 ## TL;DR for first-time contributors
 
 1. Pick something small from `good first issue` on [GitHub](https://github.com/radixark/miles/issues).
-2. Run the [Reproducibility recipe](/examples/reproducibility) so you can be sure
+2. Run the [Reproducibility recipe](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility) so you can be sure
    "I changed X and it broke" actually means that.
 3. Use `--debug-train-only` or `--debug-rollout-only` to scope your changes, and
    `--list-only` to confirm your test is actually registered in CI.

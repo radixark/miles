@@ -4,8 +4,9 @@ description: Systems-level features for large-scale and long-running RL.
 ---
 This section covers the Miles features that the Core-features section of the
 homepage points at: low-precision training (FP8 / MXFP8 / NVFP4 / INT4 QAT),
-Rollout Routing Replay for MoE, fast weight updates over P2P RDMA, fault
-tolerance, speculative decoding, and LoRA training and serving.
+Rollout Routing Replay for MoE, fast weight updates over P2P RDMA,
+disaggregated RL rollout through an external service, fault tolerance,
+speculative decoding, and LoRA training and serving.
 
 <CardGroup cols={2}>
 
@@ -40,6 +41,13 @@ tolerance, speculative decoding, and LoRA training and serving.
 
     Train a student on its own rollouts while matching teacher token
     probabilities through SGLang or Megatron teacher modes.
+
+  </Card>
+
+  <Card title="Disaggregated RL Rollout" icon="server" href="/advanced/disaggregated-rollout">
+
+    Scale rollout across clusters and regions through an independent service,
+    with versioned policy publication and request attribution.
 
   </Card>
 

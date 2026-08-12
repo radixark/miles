@@ -274,7 +274,12 @@ class DumpReader:
                 response_length_mean=pl.col("response_length").mean(),
                 truncated_frac=pl.col("truncated").cast(pl.Float64).mean(),
             )
-            .with_columns(zero_std=pl.col("reward_std").fill_null(0.0) <= 1e-12)
+            # a null mean is absent reward data (train dumps missing), not a
+            # degenerate group; a null std with a mean present is a 1-sample
+            # group, which IS degenerate
+            .with_columns(
+                zero_std=pl.col("reward_mean").is_not_null() & (pl.col("reward_std").fill_null(0.0) <= 1e-12)
+            )
             .sort("group_index")
         )
 
@@ -396,9 +401,15 @@ class DumpReader:
             return None if values is None else [float(v) for v in values[a:b]]
 
         token_ids = [int(t) for t in columns["tokens"][start:end]]
+        # A dump carries no rollout log-prob for positions the loss ignores (tool
+        # output, masked turns): the inference engine never generated them, so
+        # 0.0 is stored. Blank the trainer side the same way, otherwise lp_diff
+        # and imp_ratio score a real log-prob against that placeholder and report
+        # a disagreement of tens of nats on tokens that never train.
+        train_log_probs = None if row is None else _zero_masked(row.log_probs, row.loss_mask > 0)
         lp_diff = (
-            row.log_probs - row.rollout_log_probs
-            if row is not None and row.log_probs is not None and row.rollout_log_probs is not None
+            train_log_probs - row.rollout_log_probs
+            if row is not None and train_log_probs is not None and row.rollout_log_probs is not None
             else None
         )
         return dict(
@@ -418,7 +429,7 @@ class DumpReader:
                 else response_slice(row.rollout_log_probs) if row is not None else None
             ),
             loss_mask=None if row is None else [int(v) for v in row.loss_mask[a:b]],
-            train_log_probs=None if row is None or row.log_probs is None else response_slice(row.log_probs),
+            train_log_probs=response_slice(train_log_probs),
             ref_log_probs=None if row is None else response_slice(row.ref_log_probs),
             lp_diff=response_slice(lp_diff),
             imp_ratio=None if lp_diff is None else response_slice(lp_diff.exp()),
@@ -536,6 +547,13 @@ def _masked(values: torch.Tensor | None, mask: torch.Tensor) -> torch.Tensor | N
         return None
     selected = values[mask]
     return selected.float() if selected.numel() else None
+
+
+def _zero_masked(values: torch.Tensor | None, mask: torch.Tensor) -> torch.Tensor | None:
+    """Zero the loss-masked positions of a per-token array, keeping its length so
+    it stays aligned with the token slice it annotates (the token view needs
+    every position; only the summary statistics can drop them)."""
+    return None if values is None else torch.where(mask, values, torch.zeros_like(values))
 
 
 def _mean(values: torch.Tensor | None) -> float | None:

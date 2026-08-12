@@ -57,7 +57,7 @@ forward pass so recorded routes are used instead of recomputed ones.
   masks the off-policy term.
 
 For MoE training with `--advantage-estimator grpo`, current recipes turn R3
-on (for example `scripts/run-glm4.7-flash.sh`).
+on (for example `scripts/run_glm47_flash.py`).
 
 ## References
 

@@ -18,8 +18,7 @@ Miles supports NVIDIA's Nemotron-3 line: a Mamba + Attention hybrid that, in the
 Nemotron-3-Nano (dense, 4 B) is the smallest and runs on a single 8-GPU node:
 
 ```bash
-cd /root/miles
-bash scripts/run-nemotron-3-nano.sh
+python scripts/run_nemotron_3_nano.py --model-name NVIDIA-Nemotron-3-Nano-4B-BF16
 ```
 
 See the [Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) page for the dense walkthrough, [Nemotron-3-Nano MoE](/models/nemotron/nemotron-3-nano-moe) for the 30 B MoE variant, and [Nemotron-3-Super](/models/nemotron/nemotron-3-super) for the FP8-native 120 B-A12B recipe.

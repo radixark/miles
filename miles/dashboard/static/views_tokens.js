@@ -2,7 +2,7 @@ import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
 import { el, fmtNum } from "./app.js";
 import { divergingColor, drawChart, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
-import { renderConversation } from "./conversation.js";
+import { renderConversation, renderSampleChips } from "./conversation.js";
 
 const WINDOW_SIZES = [256, 1024, 4096];
 
@@ -118,7 +118,9 @@ export async function renderTokens(view, meta, route) {
     body.replaceChildren(name === "conversation" ? conversationPane : tokensPane);
     if (name === "tokens") startTokens();
   };
-  view.replaceChildren(...panels, tabs, body);
+  // chips sit above the tab bar, not inside either pane, so status/reward stay
+  // on screen while reading tokens
+  view.replaceChildren(...panels, renderSampleChips(conversationRow), tabs, body);
   select("conversation");
 }
 

@@ -231,7 +231,7 @@ def test_dashboard_log_without_handle_is_noop():
 
 
 def _router_args(ip="10.0.0.5", port=3333):
-    return type("Args", (), {"sglang_router_ip": ip, "sglang_router_port": port, "use_miles_router": False})()
+    return type("Args", (), {"sglang_router_ip": ip, "sglang_router_port": port})()
 
 
 def test_register_router_pushes_resolved_addr(monkeypatch):
@@ -240,7 +240,7 @@ def test_register_router_pushes_resolved_addr(monkeypatch):
     hooks.register_router(_router_args())
     [(args, kwargs)] = handle.set_router.calls
     assert args == ("http://10.0.0.5:3333",)
-    assert kwargs == {"use_miles_router": False}
+    assert kwargs == {}
 
 
 def test_register_router_before_router_start_is_a_wiring_bug(monkeypatch):

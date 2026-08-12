@@ -35,7 +35,12 @@ Then open http://localhost:3000.
    the sitemap and out of search results entirely.
 3. When linking between pages, use absolute paths: `[Quick Start](/getting-started/quick-start)`.
    Drop the `.md` extension.
-4. Images and other assets go in `assets/` and are referenced the same way:
+4. Do not edit anything under `examples/`. Those pages, and the Examples tab of
+   `docs.json`, are generated from the `README.md` files under the repository's
+   `examples/` directory, which is the single source of truth. Edit the README and run
+   `python scripts/tools/sync_example_docs.py` — pre-commit runs it for you and fails if
+   the two ever diverge.
+5. Images and other assets go in `assets/` and are referenced the same way:
    `/assets/images/arch.png`. Group them into a subdirectory once a topic has more than
    one image, named after the page or area that uses them: `assets/images/dashboard/` for
    the dashboard screenshots, `assets/images/brand/` for the logo and favicon. A one-off

@@ -1,0 +1,3 @@
+# Mirrored from examples/**/README.md by scripts/tools/sync_example_docs.py.
+# linguist-generated collapses these files in PR diffs; review the README instead.
+docs/examples/** linguist-generated=true

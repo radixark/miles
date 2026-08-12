@@ -51,6 +51,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: sync-example-docs
+        name: Mirror examples/ READMEs into the docs site
+        language: system
+        entry: python3 scripts/tools/sync_example_docs.py
+        files: '^(examples/.*README\.md|docs/examples/.*|docs/docs\.json|scripts/tools/sync_example_docs\.py)$'
+        pass_filenames: false
+
       - id: ban-mpu-get
         name: Ban direct mpu.get_* calls (use ParallelState)
         language: pygrep

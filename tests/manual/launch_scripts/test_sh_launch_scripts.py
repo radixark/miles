@@ -18,7 +18,6 @@ class LaunchScriptCase:
     env: dict[str, str] = field(default_factory=dict)
 
 
-_CHECKPOINT_DIR = "/frozen/checkpoints"
 _HEAD_NODE_IP = "10.0.0.1"
 
 _SCRIPTS_REFUSING_TO_RUN_WITHOUT_EXPLICIT_INPUTS: dict[str, LaunchScriptCase] = {
@@ -50,12 +49,6 @@ _SCRIPTS_REFUSING_TO_RUN_WITHOUT_EXPLICIT_INPUTS: dict[str, LaunchScriptCase] = 
     "examples/infra_features/p2p_weight_transfer/run-qwen3-30B-A3B-4node-profile.sh": LaunchScriptCase(
         args=("p2p", "0", _HEAD_NODE_IP)
     ),
-    "scripts/run-nemotron-3-super-120b-a12b.sh": LaunchScriptCase(args=("head", _HEAD_NODE_IP)),
-    "scripts/run-qwen3-235B-A22B-sft.sh": LaunchScriptCase(env={"BASE_FOLDER": _CHECKPOINT_DIR}),
-    "scripts/run-qwen3-235B-A22B.sh": LaunchScriptCase(env={"BASE_FOLDER": _CHECKPOINT_DIR}),
-    "scripts/run-qwen3-next-80B-A3B-8gpus.sh": LaunchScriptCase(env={"BASE_FOLDER": _CHECKPOINT_DIR}),
-    "scripts/run-qwen3-next-80B-A3B.sh": LaunchScriptCase(env={"BASE_FOLDER": _CHECKPOINT_DIR}),
-    "scripts/run-qwen3.6-27B.sh": LaunchScriptCase(env={"OUTPUT_DIR": _CHECKPOINT_DIR}),
 }
 
 _SCRIPTS = [script.relative_to(REPO_ROOT).as_posix() for script in iter_launch_scripts()]
@@ -99,4 +92,4 @@ class TestDiscovery:
         recorded = {path.relative_to(_SNAPSHOT_DIR).as_posix() for path in _SNAPSHOT_DIR.rglob("*.txt")}
 
         assert discovered == recorded
-        assert len(discovered) > 60
+        assert len(discovered) > 30

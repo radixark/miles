@@ -47,11 +47,11 @@ Three downloads:
 
 ```bash
 # The model you will train
-hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
+hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B
 # Training prompts: 17k math problems with checkable answers
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 # Eval benchmark: harder problems, evaluated on but never trained on
-hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024
+hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024
 ```
 
 ## Step 3: Convert to Megatron format
@@ -68,8 +68,8 @@ read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 # Map the HuggingFace weights into a sharded torch_dist checkpoint
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3-4B \
-   --save /root/Qwen3-4B_torch_dist
+   --hf-checkpoint /root/models/Qwen3-4B \
+   --save /root/models/Qwen3-4B_torch_dist
 ```
 
 Keep the original HuggingFace directory too — the rollout engines still read from
@@ -78,19 +78,20 @@ it.
 ## Step 4: Launch training
 
 ```bash
-bash scripts/run-qwen3-4B.sh
+python scripts/run_qwen3_dense.py --model-name Qwen3-4B
 ```
 
-That's it — the script starts a local Ray cluster and submits the training job!
+That's it — the launcher starts a local Ray cluster and submits the training job!
 A few things it already does for you:
 
-- Checkpoints land in `/root/Qwen3-4B_miles/` every 20 rollouts.
+- Checkpoints land in `/root/shared_data/checkpoints` every 20 rollouts; `--output-dir`
+  moves them.
 - The policy is evaluated on AIME-2024 every 20 rollouts.
-- If the run dies, relaunch the same script — training resumes from the last
+- If the run dies, relaunch the same command — training resumes from the last
   checkpoint.
 - The [Miles dashboard](/user-guide/dashboard) records what every GPU was doing
   during a step and what every trajectory contained, token by token. Serve it with
-  `python -m miles.dashboard.serve --dump-details /root/Qwen3-4B_miles/dump_details`
+  `python -m miles.dashboard.serve --dump-details /root/shared_data/dump_details`
   and open `http://localhost:7788`.
 
 Once the engines warm up and the first rollout completes, the log settles into
@@ -151,18 +152,21 @@ size 256.
 - **`MODEL_ARGS` (Step 3).** The Megatron-side description of the architecture
   (layer count, hidden sizes, attention layout). The converter uses it to map the
   HuggingFace weights into a sharded `torch_dist` checkpoint.
-- **The launch script (Step 4).** `scripts/run-qwen3-4B.sh` is organized into named
-  argument groups (`CKPT_ARGS`, `ROLLOUT_ARGS`, `GRPO_ARGS`, and so on) and is meant
-  to be read and edited — it is the canonical place to change hyperparameters, such
-  as `--save-interval`, `--eval-interval`, or `--use-wandb` to mirror every metric
-  to wandb.
+- **The launcher (Step 4).** `scripts/run_qwen3_dense.py` builds the flags it passes
+  to `train.py` as one group per concern (checkpoint paths, rollout, GRPO, optimizer,
+  performance, eval, SGLang) and is meant to be read and edited — it is the canonical
+  place to change hyperparameters. `--extra-args` appends flags without touching the
+  file, and the same launcher covers Qwen3-32B and the Qwen3.5 / Qwen3.6 dense sizes
+  through `--model-name`.
 - **Colocation.** The recipe sets `--colocate`: four SGLang engines (2 GPUs each)
   and the Megatron trainer share the same 8 GPUs, alternating between generation
   and training. Sharing GPUs also makes the weight sync local — each rank gathers
   its shards over NCCL and hands them to its engine through IPC, no network
   involved. Disaggregated runs choose a transport with
-  `--update-weight-transfer-mode`: `broadcast` (the default, over NCCL) or `p2p`
-  (point-to-point RDMA via Mooncake; incompatible with `--colocate`).
+  `--update-weight-transfer-mode`: `broadcast` (the default, over NCCL),
+  [`p2p`](/advanced/p2p-weight-transfer) (point-to-point RDMA via Mooncake), or
+  [`disk-delta`](/advanced/disaggregated-rollout) (versioned deltas through
+  shared storage). `p2p` and `disk-delta` are incompatible with `--colocate`.
 - **The reward function.** `--rm-type deepscaler` — a rule-based verifier, no
   learned reward model.
 - **KL regularization.** The frozen reference model can add a KL term to the loss;
@@ -184,10 +188,9 @@ size 256.
 ## Next steps
 
 - [Core concepts](/user-guide/concepts) — the model behind rollout / actor / reference.
-- [Training script walkthrough](/user-guide/training-script-walkthrough) —
-  an annotated tour through every argument group in a launch script, plus colocation,
-  dynamic sampling, partial rollout, and BF16+FP8 inference.
-- [Training backends](/user-guide/usage) — Megatron vs FSDP.
+- [Launch script](/user-guide/launch-script) — what a launch script does when you run it,
+  how it is structured, and the three ways to override a recipe.
+- [Training backends](/user-guide/training-backend) — Megatron vs FSDP.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
 - [Models](/models/index) — recipes for Qwen3.5, GLM5.2, DeepSeek V4, Kimi K2.6, and more.
 

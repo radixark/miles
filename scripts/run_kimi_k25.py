@@ -48,6 +48,8 @@ INT4_GROUP_SIZE = 32
 # Megatron bridge identifier consumed by megatron_to_hf dispatch ("kimi_k25" in model_name).
 BRIDGE_MODEL_NAME = "kimi_k25"
 
+_CUDA_GRAPH_BS = " ".join(str(bs) for bs in [1, 2, 4, 8, *range(16, 129, 8)])
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -198,6 +200,7 @@ def _execute_train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         f"--sglang-ep-size {args.num_gpus_per_node} "
         "--sglang-server-concurrency 1024 "
+        f"--sglang-cuda-graph-bs {_CUDA_GRAPH_BS} "
         "--use-rollout-routing-replay "
     )
 
