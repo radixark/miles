@@ -10,6 +10,8 @@ from miles.true_on_policy import (
     get_megatron_model_type,
 )
 
+app = typer.Typer()
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -61,7 +63,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
             )
 
 
-def prepare(args: ScriptArgs):
+def _prepare_download(args: ScriptArgs):
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -76,6 +78,8 @@ def prepare(args: ScriptArgs):
             f"hf download Qwen/{args.model_name}-FP8 --local-dir {args.model_dir}/{args.model_name}-FP8"
         )
 
+
+def _prepare_megatron_ckpt(args: ScriptArgs):
     if (args.train_backend == "megatron") and not args.enable_megatron_bridge:
         U.convert_checkpoint(
             model_name=args.model_name,
@@ -87,7 +91,7 @@ def prepare(args: ScriptArgs):
         )
 
 
-def execute(args: ScriptArgs):
+def _execute_train(args: ScriptArgs):
     is_debug_mode = args.mode != "normal"
     is_debug_one_sample = args.mode == "debug_one_sample"
     model_parallel_size = (
@@ -309,7 +313,6 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         # TODO may get it from `config`
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
@@ -321,11 +324,31 @@ tis_batch_normalize: true
     )
 
 
+@app.command()
 @U.dataclass_cli
-def main(args: ScriptArgs):
-    prepare(args)
-    execute(args)
+def full_train(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
+    _execute_train(args)
+
+
+@app.command()
+@U.dataclass_cli
+def prepare(args: ScriptArgs) -> None:
+    _prepare_download(args)
+    _prepare_megatron_ckpt(args)
+
+
+@app.command()
+@U.dataclass_cli
+def train(args: ScriptArgs) -> None:
+    _execute_train(args)
+
+
+@app.callback()
+def _callback() -> None:
+    pass
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    app()
