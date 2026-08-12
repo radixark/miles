@@ -212,11 +212,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _download_dataset(args: ScriptArgs) -> None:
+    backend = args.create_backend()
     if args.task == "gsm8k":
-        U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
+        backend.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
     else:
-        U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
-        U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
+        backend.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+        backend.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
 
 @app.command()
@@ -227,9 +228,10 @@ def prepare_data(args: ScriptArgs) -> None:
 
 def _prepare_download(args: ScriptArgs) -> None:
     """Native MXFP4 checkpoint + task dataset. Idempotent: hf skips existing blobs."""
-    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    backend = args.create_backend()
+    backend.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     if args.hf_checkpoint == f"{args.model_dir}/{args.model_name}":
-        U.exec_command_cpu(f"hf download {args.model_org}/{args.model_name} --local-dir {args.hf_checkpoint}")
+        backend.exec_command_cpu(f"hf download {args.model_org}/{args.model_name} --local-dir {args.hf_checkpoint}")
     _download_dataset(args)
 
 
@@ -241,7 +243,8 @@ def prepare_download(args: ScriptArgs) -> None:
 
 def _prepare_bf16(args: ScriptArgs) -> None:
     """Dequantize the MXFP4 experts; Megatron loads BF16. One node, GPU."""
-    U.exec_command_gpu(
+    backend = args.create_backend()
+    backend.exec_command_gpu(
         f"python {U.repo_base_dir}/tools/convert_mxfp4_to_bf16.py "
         f"--model-dir {args.hf_checkpoint} --save-dir {args.bf16_checkpoint} --device cuda"
     )
@@ -262,7 +265,8 @@ def _prepare_torch_dist(args: ScriptArgs) -> None:
         )
     # TP>1 needs CUDA_DEVICE_MAX_CONNECTIONS=1, which the converter does not set; EP alone shards the
     # experts that dominate the 4-layer prune, and the torch_dist output re-shards at load
-    U.convert_checkpoint(
+    backend = args.create_backend()
+    backend.convert_checkpoint(
         model_name=args.bf16_name,
         megatron_model_type=args.megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
@@ -518,9 +522,9 @@ def _train(args: ScriptArgs) -> None:
         if cache_dir:
             extra_env_vars[cache_var] = cache_dir
 
-    U.execute_train(
+    backend = args.create_backend()
+    backend.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,

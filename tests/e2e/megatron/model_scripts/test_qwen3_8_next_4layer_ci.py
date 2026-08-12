@@ -5,8 +5,6 @@ from scripts.run_qwen3_8_next import _MODEL_REGISTRY, ScriptArgs, _train
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
-
 
 register_cuda_ci(
     est_time=1800,
@@ -40,6 +38,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     os.environ["CONVERT_KEEP_PP1"] = "1"
     os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.ckpt_dir} {args.data_dir}")
