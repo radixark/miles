@@ -19,8 +19,8 @@ from pathlib import Path
 
 import uvicorn
 
-from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.advisory import DEFAULT_LOW_MFU
+from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
 from miles.dashboard.store import MetricStore
 
