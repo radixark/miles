@@ -380,7 +380,7 @@ class TestReconcileAfterAFailedInit:
         controller = _make_controller({})
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=False, ft_components=[]),
+            args=make_args(colocate=False, ft_components=[]),
             context_lock=controller.context_lock,
             engine_provider=_FakeWorkerProvider([]),
         )
@@ -405,7 +405,7 @@ class TestReconcileAfterAFailedInit:
         controller = _make_controller({})
         srv = RolloutServer(
             server_cells={},
-            args=SimpleNamespace(colocate=False, ft_components=[]),
+            args=make_args(colocate=False, ft_components=[]),
             context_lock=controller.context_lock,
             engine_provider=_FakeWorkerProvider([]),
         )

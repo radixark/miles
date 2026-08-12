@@ -130,3 +130,14 @@ class TestComputeNodesPerEngine:
     def test_an_engine_spanning_several_nodes_reports_how_many_it_spans(self):
         """A multi-node engine is launched once per node it covers, so the count must scale with it."""
         assert compute_nodes_per_engine(num_gpus_per_engine=32, num_gpus_per_node=8) == 4
+
+
+class TestTheApiClientOfACell:
+    async def test_carries_the_engine_api_key(self, stub_provider) -> None:
+        """A protected /server_info answers 401 without it, so the engine env would never be recorded."""
+        cell = _make_cell(
+            stub_provider(dict(primary=HostAndPort(host="10.0.0.1", port=30000))), sglang_api_key="a-key"
+        )
+        await cell.init()
+
+        assert cell.api_client.api_key == "a-key"
