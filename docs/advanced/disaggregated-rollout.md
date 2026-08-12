@@ -207,12 +207,12 @@ version should not require miles to enumerate the current replicas.
 
 ### Reference implementation: Stitch
 
-[Stitch](https://github.com/modal-projects/stitch) is the first open-source
-implementation being integrated with this service boundary. It connects miles
-policy publication to an independently scaled inference pool and implements
-the rollout-side responsibilities above: version storage and reconciliation,
-replica materialization, request admission, weight activation, and
-served-version reporting.
+[Stitch](https://github.com/modal-projects/stitch) is an open-source package
+that implements this service boundary. It connects miles policy publication to
+an independently scaled inference pool and implements the rollout-side
+responsibilities above: version storage and reconciliation, replica
+materialization, request admission, weight activation, and served-version
+reporting.
 
 Stitch is one implementation of the service contract, not a dependency of the
 miles training loop. The miles-side endpoint, publication, and request hooks
