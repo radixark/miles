@@ -16,8 +16,18 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.session.anthropic import (
+    AnthropicGenerationAbortedError,
+    AnthropicProtocolError,
+    anthropic_to_openai_request,
+    openai_error_to_anthropic,
+    openai_to_anthropic_response,
+    render_anthropic_sse,
+    restore_replayed_tool_arguments,
+)
 from miles.rollout.session.errors import (
     MessageValidationError,
+    SessionError,
     SessionNotFoundError,
     TokenizationError,
     UpstreamResponseError,
@@ -69,6 +79,14 @@ def _lcp_len(a: list[int], b: list[int]) -> int:
 def _samples_response(payload: bytes) -> Response:
     """The samples-op reply: one safetensors binary payload."""
     return Response(content=payload, status_code=200, media_type="application/octet-stream")
+
+
+def _anthropic_error_response(status_code: int, payload: object) -> Response:
+    return Response(
+        content=_render_json(openai_error_to_anthropic(status_code, payload)),
+        status_code=status_code,
+        media_type=JSON_MEDIA_TYPE,
+    )
 
 
 _CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
@@ -353,7 +371,14 @@ class SessionCore:
         return Response(status_code=204)
 
     async def chat_completions(
-        self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
+        self,
+        session_id: str,
+        *,
+        method: str,
+        query: str,
+        headers: dict,
+        body: bytes,
+        restore_anthropic_arguments: bool = False,
     ) -> Response:
         """Proxy a chat completion through the backend with TITO token tracking.
 
@@ -377,6 +402,8 @@ class SessionCore:
             )
 
             request_messages = request_body.get("messages", [])
+            if restore_anthropic_arguments:
+                restore_replayed_tool_arguments(request_messages, session.messages)
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
                 tools=request_body.get("tools"),
@@ -441,6 +468,62 @@ class SessionCore:
         # --- lock released ---
 
         return _chat_client_response(result, response, client_stream)
+
+    async def messages(self, session_id: str, *, method: str, query: str, headers: dict, body: bytes) -> Response:
+        """Serve Anthropic Messages through the recorded chat-completion path.
+
+        Claude Code sees Anthropic request/response shapes, while the existing
+        ``chat_completions`` implementation remains the single owner of TITO,
+        log-probability recording, rollback/branching, and concurrency rules.
+        """
+        try:
+            anthropic_request = json.loads(body) if body else {}
+        except json.JSONDecodeError as exc:
+            return _anthropic_error_response(400, {"error": f"invalid JSON body: {exc}"})
+
+        try:
+            openai_request = anthropic_to_openai_request(anthropic_request)
+        except AnthropicProtocolError as exc:
+            return _anthropic_error_response(400, {"error": str(exc)})
+
+        client_stream = bool(openai_request.pop("stream", False))
+        try:
+            openai_response = await self.chat_completions(
+                session_id,
+                method=method,
+                query=query,
+                headers=headers,
+                body=json.dumps(openai_request).encode(),
+                restore_anthropic_arguments=True,
+            )
+        except SessionError as exc:
+            return _anthropic_error_response(exc.status_code, {"error": str(exc)})
+
+        try:
+            response_body = json.loads(openai_response.body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _anthropic_error_response(
+                openai_response.status_code,
+                {"error": openai_response.body.decode(errors="replace")},
+            )
+        if openai_response.status_code != 200:
+            return _anthropic_error_response(openai_response.status_code, response_body)
+
+        try:
+            if client_stream:
+                return Response(
+                    content=render_anthropic_sse(response_body),
+                    status_code=200,
+                    headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
+                    media_type="text/event-stream",
+                )
+            return Response(
+                content=_render_json(openai_to_anthropic_response(response_body)),
+                status_code=200,
+                media_type=JSON_MEDIA_TYPE,
+            )
+        except AnthropicGenerationAbortedError as exc:
+            return _anthropic_error_response(529, {"error": str(exc)})
 
     async def proxy(
         self, session_id: str, path: str, *, method: str, query: str, headers: dict, body: bytes

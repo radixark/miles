@@ -243,6 +243,59 @@ def _convert_tool_choice(tool_choice: Any, tools: list[dict[str, Any]] | None) -
     raise AnthropicProtocolError(f"unsupported tool_choice type: {choice_type!r}")
 
 
+def _json_text_matches(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    try:
+        return json.loads(left) == json.loads(right)
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
+def restore_replayed_tool_arguments(messages: list[dict[str, Any]], stored_messages: list[dict[str, Any]]) -> None:
+    """Restore the model's exact JSON spelling for replayed tool calls.
+
+    Anthropic exposes ``tool_use.input`` as an object, so Claude Code cannot
+    replay the whitespace and escaping from the model's original OpenAI
+    ``function.arguments`` string. TITO needs that exact spelling because it
+    reuses the generated token prefix. Restore it only when the tool id, name,
+    and decoded JSON value all match a recorded assistant message.
+    """
+    stored_arguments: dict[tuple[str, str], str] = {}
+    for message in stored_messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, Mapping):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, Mapping):
+                continue
+            tool_id = tool_call.get("id")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if isinstance(tool_id, str) and isinstance(name, str) and isinstance(arguments, str):
+                stored_arguments[(tool_id, name)] = arguments
+
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            tool_id = tool_call.get("id")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if not isinstance(tool_id, str) or not isinstance(name, str) or not isinstance(arguments, str):
+                continue
+            original = stored_arguments.get((tool_id, name))
+            if original is not None and _json_text_matches(original, arguments):
+                function["arguments"] = original
+
+
 def anthropic_to_openai_request(request: Mapping[str, Any]) -> dict[str, Any]:
     """Convert one Anthropic Messages request to OpenAI chat-completion form."""
     request = _require_mapping(request, "request")

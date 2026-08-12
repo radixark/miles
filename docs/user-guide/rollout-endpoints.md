@@ -1,19 +1,20 @@
 ---
 title: Rollout Endpoints
-description: How Miles talks to SGLang. The /generate endpoint and the OpenAI-format /v1/chat/completions endpoint.
+description: How Miles talks to SGLang through /generate, OpenAI chat completions, and Anthropic Messages.
 ---
-Miles supports two ways for a custom rollout function to talk to SGLang. The
+Miles supports three ways for a custom rollout function to talk to SGLang. The
 `/generate` endpoint is the most direct interface; you control tokenization. The
 OpenAI-format `/v1/chat/completions` endpoint is router-session aware and fits
-agent loops with multi-turn dialogue.
+agent loops with multi-turn dialogue. The Anthropic-format `/v1/messages`
+endpoint uses the same recorded session path for agents such as Claude Code.
 
-| | `/generate` | OpenAI `/v1/chat/completions` |
-|---|---|---|
-| Input | Text or tokens | `messages` list |
-| Tokenization | Your code | SGLang |
-| Session state | Stateless | Router sessions (base_url includes `/sessions/<id>`) |
-| Best for | Tool use with custom token handling, benchmarking | Agentic loops, multi-turn dialogue |
-| Reference generator | `generate_hub/single_turn.py`, `generate_hub/multi_turn.py` | `generate_hub/agentic_tool_call.py` |
+| | `/generate` | OpenAI `/v1/chat/completions` | Anthropic `/v1/messages` |
+|---|---|---|---|
+| Input | Text or tokens | OpenAI `messages` | Anthropic `messages` and content blocks |
+| Tokenization | Your code | SGLang | SGLang |
+| Session state | Stateless | Router sessions (base_url includes `/sessions/<id>`) | Same router sessions |
+| Best for | Tool use with custom token handling, benchmarking | OpenAI-compatible agent loops | Claude Code and Anthropic-compatible agent loops |
+| Reference generator | `generate_hub/single_turn.py`, `generate_hub/multi_turn.py` | `generate_hub/agentic_tool_call.py` | Custom agent through `agentic_tool_call.py` |
 
 Both entry points are wired up through `--custom-generate-function-path`.
 
@@ -142,6 +143,24 @@ Standard OpenAI format:
   "return_prompt_token_ids": true
 }
 ```
+
+### Anthropic Messages for Claude Code
+
+Send Anthropic-format requests to the same session-scoped base URL:
+
+```text
+POST <base_url>/v1/messages
+```
+
+Miles translates system, text, image, thinking, tool-use, and tool-result blocks
+to an OpenAI chat-completion request. It then translates the recorded response
+back to Anthropic JSON or server-sent events. The internal request still passes
+through the normal session recorder, so TITO checks, logprobs, retries, and v2
+trajectory branching behave the same as they do for `/v1/chat/completions`.
+
+Anthropic server-side tools and redacted-thinking history are rejected with an
+Anthropic-format `invalid_request_error` because they cannot be represented by
+the SGLang chat-completion interface.
 
 <Warning>
 

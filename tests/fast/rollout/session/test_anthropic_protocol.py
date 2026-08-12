@@ -9,6 +9,7 @@ from miles.rollout.session.anthropic import (
     openai_error_to_anthropic,
     openai_to_anthropic_response,
     render_anthropic_sse,
+    restore_replayed_tool_arguments,
 )
 
 
@@ -253,6 +254,106 @@ def test_request_joins_thinking_and_defaults_tool_input() -> None:
             ],
         }
     ]
+
+
+def test_restore_replayed_tool_arguments_preserves_original_json_spelling() -> None:
+    stored_messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command": "pwd"}'},
+                }
+            ],
+        }
+    ]
+    replayed_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                },
+                {
+                    "id": "toolu_changed",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"ls"}'},
+                },
+            ],
+        }
+    ]
+
+    restore_replayed_tool_arguments(replayed_messages, stored_messages)
+
+    tool_calls = replayed_messages[0]["tool_calls"]
+    assert tool_calls[0]["function"]["arguments"] == '{"command": "pwd"}'
+    assert tool_calls[1]["function"]["arguments"] == '{"command":"ls"}'
+
+
+@pytest.mark.parametrize(
+    ("stored_arguments", "replayed_arguments", "expected"),
+    [
+        ('{"value":1}', '{"value":1}', '{"value":1}'),
+        ("{", "{}", "{}"),
+        ('{"value": 1}', '{"value": 2}', '{"value": 2}'),
+    ],
+)
+def test_restore_replayed_tool_arguments_handles_exact_and_nonmatching_json(
+    stored_arguments: str, replayed_arguments: str, expected: str
+) -> None:
+    stored_call = {
+        "id": "toolu_1",
+        "function": {"name": "bash", "arguments": stored_arguments},
+    }
+    replayed_call = {
+        "id": "toolu_1",
+        "function": {"name": "bash", "arguments": replayed_arguments},
+    }
+
+    restore_replayed_tool_arguments(
+        [{"role": "assistant", "tool_calls": [replayed_call]}],
+        [{"role": "assistant", "tool_calls": [stored_call]}],
+    )
+
+    assert replayed_call["function"]["arguments"] == expected
+
+
+@pytest.mark.parametrize("side", ["stored", "replayed"])
+@pytest.mark.parametrize(
+    "malformed_call",
+    [
+        None,
+        {"id": "toolu_1", "function": None},
+        {"id": 1, "function": {"name": "bash", "arguments": "{}"}},
+        {"id": "toolu_1", "function": {"name": 1, "arguments": "{}"}},
+        {"id": "toolu_1", "function": {"name": "bash", "arguments": {}}},
+    ],
+)
+def test_restore_replayed_tool_arguments_skips_malformed_calls(side: str, malformed_call: object) -> None:
+    valid_call = {
+        "id": "toolu_1",
+        "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+    }
+    stored_call = malformed_call if side == "stored" else valid_call
+    replayed_call = malformed_call if side == "replayed" else valid_call
+    stored_messages = [
+        {"role": "user", "content": "ignored"},
+        {"role": "assistant", "tool_calls": [stored_call]},
+    ]
+    replayed_messages = [
+        {"role": "user", "content": "ignored"},
+        {"role": "assistant", "tool_calls": [replayed_call]},
+    ]
+
+    restore_replayed_tool_arguments(replayed_messages, stored_messages)
+
+    assert replayed_messages[-1]["tool_calls"] == [replayed_call]
 
 
 @pytest.mark.parametrize(

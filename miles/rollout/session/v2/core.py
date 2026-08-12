@@ -4,6 +4,7 @@ import time
 
 from starlette.responses import Response
 
+from miles.rollout.session.anthropic import restore_replayed_tool_arguments
 from miles.rollout.session.core import (
     JSON_MEDIA_TYPE,
     ProxyRequest,
@@ -127,7 +128,14 @@ class SessionCoreV2(SessionCore):
         return _samples_response(encode_samples(samples, metadata, fields=COMPUTED_FIELDS_V2))
 
     async def chat_completions(
-        self, session_id: str, *, method: str, query: str, headers: dict, body: bytes
+        self,
+        session_id: str,
+        *,
+        method: str,
+        query: str,
+        headers: dict,
+        body: bytes,
+        restore_anthropic_arguments: bool = False,
     ) -> Response:
         """Proxy a chat completion through the backend with TITO token tracking.
 
@@ -151,6 +159,8 @@ class SessionCoreV2(SessionCore):
             )
 
             request_messages = request_body.get("messages", [])
+            if restore_anthropic_arguments:
+                restore_replayed_tool_arguments(request_messages, session.active_messages())
             position_for_request(session, request_messages)
             prompt_token_ids = prepare_pretokenized(
                 session,
