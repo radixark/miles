@@ -1,104 +1,109 @@
 ---
 title: INT4 Quantization-Aware Training
-description: Run MoE RL with W4A16 rollout weights and a matching fake-quantized Megatron forward.
+description: Train MoE policies with fake-quantized expert weights in Megatron and packed W4A16 rollout weights in SGLang.
 ---
 
-INT4 QAT in miles is a matched training-and-rollout path for Mixture-of-Experts
-(MoE) models. SGLang serves routed expert projections with packed INT4 weights,
-while Megatron fake-quantizes the same projections during each training forward
-pass. The trainable weights, gradients, optimizer state, activations, and
-trainer GEMMs remain in their configured higher precision.
+miles INT4 QAT keeps the actor parameters in BF16 and applies symmetric INT4
+fake quantization to routed MoE expert weights before each Megatron forward.
+SGLang serves the same expert projections from a packed W4A16 checkpoint.
 
-Use this path to reduce rollout weight memory, accelerate supported rollout
-GEMMs, and reduce the numerical drift caused by training an expert in BF16 but
-serving it in INT4. It is not an INT4 optimizer or a general-purpose way to cut
-trainer memory by 4x.
+This reduces the precision mismatch between training and rollout while keeping
+the rollout model compact. It does not quantize Megatron parameters, optimizer
+state, gradients, or activations to INT4, so it is not a trainer-memory feature.
 
-INT4 QAT is beta and model-specific. The current Megatron hook covers routed
-expert weights implemented with Transformer Engine's grouped linear layer. It
-does not fake-quantize attention, embeddings, shared experts, ordinary dense
-MLPs, or the LM head. The checkpoint's quantized tensor set must match that
-scope.
+The current path is beta, uses the Megatron backend, and covers routed experts
+implemented by Transformer Engine `GroupedLinear`. Attention, embeddings,
+routers, shared experts, dense MLPs, and the LM head remain in their configured
+precision.
 
-## What W4A16 means in miles
+## Component roles
 
-| Stage | Weight representation | Compute |
-|---|---|---|
-| Megatron parameters | BF16 or the recipe's configured training precision | Trainable master weights stay uncompressed. |
-| Megatron forward | Routed expert weights are quantized and immediately dequantized, group by group | Grouped GEMMs consume the dequantized values with BF16 activations. |
-| Megatron backward | Straight-through estimator (STE) | Gradients update the higher-precision parameters through the rounding operation. |
-| Live weight update | Updated expert weights are requantized and packed from the Hugging Face checkpoint's quantization config | miles sends packed weights, scales, and shape metadata. |
-| SGLang rollout | Packed INT4 routed expert weights; excluded tensors keep their checkpoint dtype | W4A16 kernels consume BF16 or FP16 activations. |
+| Component | Role |
+|---|---|
+| Hugging Face checkpoint | `--hf-checkpoint` initializes SGLang and supplies the quantization config used by every weight update. |
+| Megatron | Keeps trainable BF16 weights. Before a grouped-expert forward, it quantizes each weight group to INT4 and dequantizes it back to BF16 for the GEMM. |
+| Megatron Bridge or the miles raw-mode weight exporter | Maps updated Megatron weights to Hugging Face names and returns the packed tensors expected by the rollout checkpoint. |
+| SGLang | Selects a compressed-tensors WNA16 MoE implementation, loads the packed INT4 weights, and runs rollout with 16-bit activations. |
 
-For each group of `g` consecutive values along the input dimension, Megatron
-uses symmetric quantization:
+The `W4` in W4A16 describes the stored SGLang expert weights. On the trainer,
+INT4 is simulated in the forward pass; the underlying Megatron parameters stay
+in BF16. `A16` means the expert GEMM uses BF16 or FP16 activations rather than
+quantized activations.
+
+## Weight lifecycle
+
+1. SGLang loads the compressed Hugging Face checkpoint from
+   `--hf-checkpoint`.
+2. Megatron initializes the actor in its training dtype. Kimi-K2.5 can load the
+   packed checkpoint directly through Megatron Bridge; raw-mode recipes
+   initialize from a higher-precision Megatron checkpoint.
+3. During training, Megatron fake-quantizes every routed-expert
+   `GroupedLinear` weight immediately before the forward GEMM. Backward uses a
+   straight-through estimator (STE), so the optimizer updates the BF16 weight.
+4. At a weight-update boundary, Megatron Bridge or the miles raw-mode exporter
+   exports Hugging Face-named tensors. The Kimi-K2.5 Bridge returns routed
+   experts already packed as INT4; the generic miles path packs them from the
+   checkpoint quantization config.
+5. SGLang opens a weight-update session, restores the checkpoint-facing tensor
+   layout, loads the new packed tensors, and rebuilds the layout required by
+   its selected WNA16 kernel before rollout resumes.
+
+For a Megatron weight group `w`, fake quantization is:
 
 ```text
-scale = max(max(abs(weight_group)) / 7, 1e-5)
-fake_weight = clamp(round(weight_group / scale), -7, 7) * scale
+scale = max(max(abs(w)) / 7, 1e-5)
+fake_w = clamp(round(w / scale), -7, 7) * scale
 ```
 
-The backward pass treats the fake-quantization operation as the identity. The
-model can therefore adapt its higher-precision weights to the INT4 grid seen by
-both the trainer forward and rollout inference.
+## Quantization contract
 
-## The end-to-end contract
+The trainer, live exporter, and SGLang checkpoint must agree on all of the
+following:
 
-INT4 QAT has two paths sourced from the same higher-precision policy weights:
+- Format: compressed-tensors `pack-quantized` with `num_bits: 4`,
+  `strategy: group`, no activation quantization, and `symmetric: true`.
+- Group size: the checkpoint's `group_size` must equal
+  `OPEN_TRAINING_INT4_GROUP_SIZE`.
+- Tensor scope: only the routed expert projections handled by Megatron
+  `GroupedLinear` may be packed. All other tensors stay in their checkpoint
+  dtype.
+- Shape: the final dimension of each packed matrix must be divisible by the
+  group size.
 
-```mermaid
-flowchart LR
-    W[Higher-precision Megatron weights]
-    W --> F[Fake INT4 quantization]
-    F --> T[BF16 trainer forward]
-    W --> P[Quantize and pack at weight sync]
-    P --> S[SGLang W4A16 rollout]
+Changing the environment variable does not convert a checkpoint. Changing only
+the checkpoint config does not change the fake-quantization grid used by
+Megatron.
+
+## Kimi-K2.5
+
+[Kimi-K2.5](https://huggingface.co/moonshotai/Kimi-K2.5) publishes routed
+expert weights as symmetric group-size-32 INT4 tensors. It is the clearest
+reference for the Bridge path.
+
+With `--megatron-to-hf-mode bridge`, the Kimi Bridge handles both directions:
+
+- On Hugging Face to Megatron load, it unpacks the INT4 expert tensors and
+  casts each distributed shard to the Megatron parameter dtype, BF16 in the
+  current recipe.
+- On Megatron to Hugging Face export, it repacks the updated routed experts to
+  group-size-32 INT4 and returns `weight_packed`, `weight_scale`, and
+  `weight_shape` tensors for SGLang.
+
+The Bridge can therefore initialize a fresh actor directly from the published
+INT4 checkpoint:
+
+```bash
+--hf-checkpoint /root/models/Kimi-K2.5
+--megatron-to-hf-mode bridge
 ```
 
-`--hf-checkpoint` is more than the checkpoint SGLang initially loads. Its
-`quantization_config` defines the format, group size, symmetry, and ignore rules
-used for every live weight update. A model-specific Megatron Bridge can perform
-the precision conversion itself. The Kimi-K2.5 Bridge dequantizes packed expert
-weights when loading them into Megatron's target parameter dtype, then
-re-quantizes updated routed experts and returns packed INT4 tensors during
-export. For Bridge models without model-specific packing, miles uses the
-safetensors index and quantizes exactly the tensor basenames stored in the
-checkpoint as packed weights.
+When a fresh run has no usable `--load` checkpoint and no `--ref-load`, miles
+falls back to `--hf-checkpoint` for Bridge initialization. The current
+`scripts/run_kimi_k25.py` launcher also materializes a BF16 copy and passes it
+through `--ref-load`; that is how the launcher is written today, not a
+requirement of the Kimi Bridge.
 
-SGLang temporarily restores its loadable checkpoint layout, receives the
-updated `weight_packed`, `weight_scale`, and `weight_shape` tensors, and then
-preprocesses them into its kernel layout again.
-
-Four settings must agree:
-
-1. The checkpoint must use compressed-tensors `pack-quantized`, weight-only
-   INT4, group quantization, and symmetric scales.
-2. Its `group_size` must equal `OPEN_TRAINING_INT4_GROUP_SIZE`.
-3. Its quantized tensor set must be the routed expert projections that
-   Megatron fake-quantizes. All other tensors must remain in higher precision.
-4. The final dimension of every quantized matrix must be divisible by the group
-   size used by the converter and live exporter.
-
-Changing only the environment variable does not convert the rollout
-checkpoint. Changing only the checkpoint config does not change Megatron's
-fake-quantization grid.
-
-## Recommended start: Kimi-K2.5
-
-Kimi-K2.5 ships as a symmetric group-size-32 INT4 compressed-tensors
-checkpoint. With `--megatron-to-hf-mode bridge`, the published checkpoint can
-initialize both sides directly: SGLang retains the packed checkpoint, while the
-Kimi Bridge dequantizes routed expert weights as it loads them into Megatron and
-casts each shard to the target parameter dtype. No separately materialized BF16
-checkpoint is required by this Bridge path.
-
-During live export, the Kimi Bridge performs the inverse conversion. It returns
-the updated routed experts as group-size-32 packed INT4 weights and scales;
-miles passes those target-precision tensors to SGLang. The current maintained
-launcher still creates a BF16 copy and supplies it through `--ref-load`, but
-that is a launcher choice rather than a Megatron Bridge requirement.
-
-Run the reduced two-layer smoke test on one 4-GPU node:
+Run the CI-sized two-layer recipe on one 4-GPU H200 node:
 
 ```bash
 python scripts/run_kimi_k25.py full-train \
@@ -107,8 +112,8 @@ python scripts/run_kimi_k25.py full-train \
   --num-gpus-per-node 4
 ```
 
-For the full model, first start a Ray cluster whose storage paths are visible
-from every node, then run on the head node:
+For the full 32-node recipe, start Ray on the cluster and then run on the head
+node:
 
 ```bash
 python scripts/run_kimi_k25.py prepare \
@@ -120,14 +125,13 @@ MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_kimi_k25.py train \
   --num-nodes 32
 ```
 
-The full launcher is a 32 × 8 H200 recipe, not a claim that every INT4 model
-needs that topology. See the [Kimi-K2.5 recipe](/models/kimi/kimi-k2.5) for its
-parallel layout and RL configuration.
+See the [Kimi-K2.5 model guide](/models/kimi/kimi-k2.5) for its parallelism and
+RL settings.
 
 ## Prepare another MoE checkpoint
 
-If the model does not already publish a compatible INT4 checkpoint, the direct
-converter applies group-wise min-max quantization without calibration:
+The miles direct converter creates a symmetric, group-wise INT4 checkpoint
+without a calibration dataset:
 
 ```bash
 python tools/convert_hf_to_int4_direct.py \
@@ -136,64 +140,37 @@ python tools/convert_hf_to_int4_direct.py \
   --group-size 128
 ```
 
-The default ignore rules preserve embeddings, norms, attention, routers,
-shared experts, non-expert MLPs, vision modules, and the LM head. Review those
-rules against the model's actual Hugging Face tensor names before training a
-new architecture. The converter requires CUDA and the
-`fake_int4_quant_cuda` extension included in the miles image.
+Its default ignore rules leave embeddings, norms, attention, routers, shared
+experts, dense MLPs, vision modules, and the LM head unquantized. Before using a
+new model, compare those rules with its actual Hugging Face tensor names. The
+converter requires CUDA and the `fake_int4_quant_cuda` extension installed by
+the miles image.
 
-<Note>
-The direct converter defaults to group size 32. Pass `--group-size` explicitly
-when a recipe expects another value. The Qwen3 INT4 example configurations set
-the trainer group size to 128, so prepare those checkpoints with an explicit
-`--group-size 128` rather than relying on the converter default.
-</Note>
+The converter defaults to group size 32. The Qwen3 INT4 configurations set
+Megatron QAT to group size 128, so pass `--group-size 128` explicitly when
+preparing those checkpoints.
 
-For GPTQ calibration, use `tools/convert_hf_to_int4.py` instead:
+The current `scripts/run_qwen3_30b_a3b.py --rollout-int4` preparation path does
+not pass that argument: it converts with the group-size-32 default while setting
+Megatron QAT to 128. Until the launcher is aligned, prepare the Qwen3 INT4
+checkpoint manually with the command above and run the training stage against
+that directory.
 
-```bash
-python tools/convert_hf_to_int4.py \
-  --input-dir /root/models/MyMoE-BF16 \
-  --output-dir /root/models/MyMoE-INT4 \
-  --data-dir /root/datasets/calibration \
-  --quant-type W4A16 \
-  --num-calibration-samples 256 \
-  --max-sequence-length 2048 \
-  --quant-group-size 128
-```
-
-`--data-dir` must contain `train-00000-of-00001.parquet` with a `text` column.
-This path uses `llmcompressor` and writes the same compressed-tensors checkpoint
-format. Calibration changes how the initial INT4 checkpoint is produced; it
-does not remove the requirement for matching QAT settings.
-
-Initialization depends on the conversion mode. The raw miles converters need a
-higher-precision Megatron checkpoint alongside the INT4 rollout checkpoint:
+In raw mode, use the INT4 checkpoint for SGLang and a higher-precision
+`torch_dist` checkpoint to initialize Megatron:
 
 ```bash
 --hf-checkpoint /root/models/MyMoE-INT4
 --ref-load /root/models/MyMoE-BF16_torch_dist
 ```
 
-A model-specific Bridge may instead load the INT4 Hugging Face checkpoint
-directly and return tensors in Megatron's target precision. Kimi-K2.5 supports
-this path:
+Bridge mode can load the packed checkpoint directly only when that model's
+Bridge implements the corresponding dequantization path, as Kimi-K2.5 does.
 
-```bash
---hf-checkpoint /root/models/Kimi-K2.5
---megatron-to-hf-mode bridge
-```
+## Enable fake QAT
 
-On a fresh run without `--ref-load`, miles initializes the Bridge model from
-`--hf-checkpoint`. Supplying `--ref-load` remains useful when the actor must be
-initialized from a different checkpoint or the selected Bridge does not
-implement direct loading for the quantized format.
-
-## Enable QAT
-
-The Kimi launcher sets the environment automatically. In a custom launcher,
-propagate both variables to every Megatron worker through the Ray runtime
-environment:
+Set both variables in the Ray runtime environment used by every Megatron
+worker:
 
 ```bash
 RUNTIME_ENV_JSON='{
@@ -208,14 +185,15 @@ ray job submit --address="http://127.0.0.1:8265" \
   -- python train.py ...
 ```
 
-The current hook is in Megatron's Transformer Engine grouped-linear expert
-path. If a model uses another expert implementation, setting the variables can
-succeed without applying fake quantization; validate the module path before
-running a full experiment.
+The Kimi launcher sets the same variables through `U.execute_train`, using
+group size 32. If the selected Megatron model does not build its routed experts
+with Transformer Engine `GroupedLinear`, the environment variables do not
+enable QAT for that model.
 
-## Validate a run
+## Validate the setup
 
-Inspect the rollout checkpoint before launch:
+Inspect the checkpoint config before launch. The expression handles both a
+top-level quantization config and Kimi-K2.5's nested text config:
 
 ```bash
 jq '(.quantization_config // .text_config.quantization_config) | {
@@ -226,55 +204,48 @@ jq '(.quantization_config // .text_config.quantization_config) | {
 }' /root/models/MyMoE-INT4/config.json
 ```
 
-Check for all of the following:
+Confirm that:
 
 - `format` is `pack-quantized` and `quant_method` is `compressed-tensors`.
 - `num_bits` is `4`, `strategy` is `group`, and `symmetric` is `true`.
 - `group_size` matches `OPEN_TRAINING_INT4_GROUP_SIZE`.
-- The safetensors index contains `weight_packed`, `weight_scale`, and
-  `weight_shape` entries for routed experts, but not for excluded modules.
+- The safetensors index has `weight_packed`, `weight_scale`, and
+  `weight_shape` entries for routed experts only.
 
-For a new model, compare against a BF16 rollout before a long run. Track reward,
-KL, gradient norm, and train-versus-rollout log-probability differences. The
-reduced Kimi test establishes that the pipeline loads, trains, and updates
-weights; it is not an accuracy qualification for a new model or group size.
+During a smoke test, confirm that SGLang selects a WNA16 MoE scheme and that a
+weight update completes after the first optimizer step. For a new model, also
+compare reward, KL, gradient norm, and train-versus-rollout log-probability
+differences with a BF16 rollout baseline.
 
-| Symptom | Likely cause |
+| Symptom | Check |
 |---|---|
-| SGLang fails while loading or updating weights | The checkpoint format, packed tensor names, or ignore rules do not match the model and SGLang implementation. |
-| Training runs but QAT has no effect | The environment did not reach Megatron workers, or the experts do not use the Transformer Engine grouped-linear path. |
-| Train/rollout log-probabilities diverge sharply | The group size or quantized module scope differs between Megatron and SGLang; MoE routing drift can be an additional cause. |
-| Trainer memory is still high | Expected: QAT keeps higher-precision parameters, gradients, and optimizer state. Use parallelism, recomputation, or optimizer offload for trainer memory. |
-| Conversion cannot import `fake_int4_quant_cuda` | Use the miles CUDA image or build the repository's INT4 QAT CUDA extension. |
+| SGLang fails at load or weight update | Check the packed tensor names, shapes, group size, and checkpoint ignore rules. |
+| Training runs but QAT has no effect | Check that the environment reached every Megatron worker and that routed experts use Transformer Engine `GroupedLinear`. |
+| Train and rollout log-probabilities diverge | Check the quantized tensor scope and group size first; MoE routing can be a separate source of mismatch. |
+| Trainer memory does not decrease | Expected. Parameters, gradients, and optimizer state are not stored in INT4. |
+| The converter cannot import `fake_int4_quant_cuda` | Use the miles CUDA image or build the repository's INT4 QAT extension. |
 
-## Hardware and limitations
+## Hardware and related features
 
-The current pipeline is CUDA-only. SGLang's WNA16 kernels require NVIDIA
-compute capability 8.0 or newer; miles' reduced end-to-end coverage currently
-runs on H200. Kernel availability does not imply that an arbitrary model has
-been validated.
+The direct converter and generic miles INT4 packer use the CUDA
+`fake_int4_quant_cuda` extension. SGLang's CUDA WNA16 MoE path requires NVIDIA
+compute capability 8.0 or newer. SGLang also contains a ROCm WNA16 MoE
+implementation, but the repository's reduced end-to-end INT4 QAT coverage is
+currently the Kimi-K2.5 test on H200; treat other platforms as unvalidated.
 
-INT4 can reduce the routed expert portion of rollout weight storage and its
-live-update payload by close to the raw BF16-to-INT4 ratio. Scales, metadata,
-padding, and unquantized tensors make the whole-model saving smaller. Actual
-throughput depends on the model shape, selected SGLang backend, batch shape,
-expert parallelism, and how much time the workload spends outside expert
-GEMMs.
+INT4 reduces storage and weight-update traffic for the packed routed experts.
+The whole-model reduction is smaller because scales, metadata, and unquantized
+tensors remain. Rollout throughput depends on the model, batch shape, expert
+parallelism, and the WNA16 backend SGLang selects.
 
-For MoE jobs, [Rollout Routing Replay (R3)](/advanced/miles-router) can remove a
-separate source of train/rollout mismatch by replaying rollout-time expert
-routing during training. [Truncated Importance Sampling
-(TIS)](/user-guide/cli-reference) can correct residual policy mismatch. Neither
-feature replaces the matched INT4 group and module contract.
+[Rollout Routing Replay (R3)](/advanced/miles-router) addresses a different MoE
+mismatch by replaying SGLang's expert choices in Megatron. Truncated Importance
+Sampling (TIS) can correct residual train/rollout policy mismatch. Neither
+changes the INT4 checkpoint or group-size contract.
 
-Use BF16 or another [low-precision recipe](/advanced/low-precision) while
-bringing up a dense model, an unvalidated expert implementation, or an
-architecture whose quantized tensor names cannot be aligned across Megatron
-and SGLang.
+## Related guides
 
-## Further reading
-
-- [Kimi-K2.5 checkpoint and model card](https://huggingface.co/moonshotai/Kimi-K2.5)
-- [LLM Compressor W4A16 and W8A16 schemes](https://docs.vllm.ai/projects/llm-compressor/en/stable/guides/compression_schemes/)
-- [slime low-precision training guide](https://thudm.github.io/slime/advanced/low-precision.html)
+- [Low Precision RL](/advanced/low-precision)
+- [Kimi-K2.5 model guide](/models/kimi/kimi-k2.5)
 - [P2P weight transfer](/advanced/p2p-weight-transfer)
+- [slime low-precision training and rollout](https://thudm.github.io/slime/advanced/low-precision.html)
