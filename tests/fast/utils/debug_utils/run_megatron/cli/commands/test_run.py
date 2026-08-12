@@ -41,14 +41,14 @@ class TestRunImplValidation:
 
 
 class TestRunImplExecCommand:
-    """Only mock exec_command_gpu, generate_token_ids, write_token_ids_to_tmpfile,
+    """Only mock run_shell_command, generate_token_ids, write_token_ids_to_tmpfile,
     and load_model_args — let the rest (build_worker_args, build_dumper_env,
     build_torchrun_cmd, ParallelConfig, WorkerScriptArgs) run for real."""
 
     @pytest.fixture(autouse=True)
     def _patch_externals(self) -> Generator[None, None, None]:
         with (
-            patch("miles.utils.debug_utils.run_megatron.cli.commands.run.exec_command_gpu") as mock_exec,
+            patch("miles.utils.debug_utils.run_megatron.cli.commands.run.run_shell_command") as mock_exec,
             patch(
                 "miles.utils.debug_utils.run_megatron.cli.commands.run.generate_token_ids",
                 return_value=list(range(200)),

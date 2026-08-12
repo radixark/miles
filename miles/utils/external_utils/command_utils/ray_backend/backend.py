@@ -10,8 +10,9 @@ from miles.utils.external_utils.command_utils.base_backend import (
 from miles.utils.external_utils.command_utils.common import (
     _pythonpath_with_sources,
     get_bool_env_var,
+    run_shell_command,
 )
-from miles.utils.external_utils.exec_command import exec_command_gpu, exec_command_multi_node
+from miles.utils.external_utils.command_utils.ray_backend.command import exec_command_all_ray_nodes
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 
 
@@ -87,7 +88,7 @@ class RayCommandBackend(BaseCommandBackend):
     def exec_command_gpu(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
-        return exec_command_gpu(cmd, capture_output=capture_output)
+        return run_shell_command(cmd, capture_output=capture_output)
 
     def exec_command_multi_node(
         self,
@@ -96,7 +97,7 @@ class RayCommandBackend(BaseCommandBackend):
         num_nodes: int | None = None,
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
-        return exec_command_multi_node(cmd, capture_output=capture_output, num_nodes=num_nodes)
+        return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
 
     def _check_has_nvlink(self) -> bool:
         output = self.exec_command_gpu(

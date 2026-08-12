@@ -21,9 +21,13 @@ import typer
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS, clear_proxy_env
 
-import miles.utils.external_utils.command_utils as U
 from miles.utils.debug_utils.run_megatron.cli.parallel_utils import ParallelConfig, parse_parallel_args
-from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu
+from miles.utils.external_utils import command_utils
+
+
+def _backend():
+    return command_utils.default_config().create_backend()
+
 
 app: typer.Typer = typer.Typer()
 
@@ -75,14 +79,15 @@ def _resolve_mode(mode: str) -> tuple[str, _ModeConfig]:
 
 def _prepare(dump_dir: Path, config: _ModeConfig) -> Path:
     """Download model, convert checkpoint, write source patcher config."""
-    exec_command_cpu("mkdir -p /root/models")
-    exec_command_cpu(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
+    U = _backend()
+    U.exec_command_cpu("mkdir -p /root/models")
+    U.exec_command_cpu(f"hf download {HF_REPO} --local-dir /root/models/{MODEL_NAME}")
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
         num_gpus_per_node=min(NUM_GPUS, NUM_LAYERS),
     )
-    exec_command_cpu(f"rm -rf {dump_dir}")
+    U.exec_command_cpu(f"rm -rf {dump_dir}")
 
     source_patcher_path: Path = _RUN_DIR / "megatron_source_patcher.yaml"
     yaml_content: str = (
@@ -129,7 +134,7 @@ def run(
         f"{target_extra_args_part}"
         f"--extra-args '{extra_args}'"
     )
-    exec_command_gpu(cmd)
+    _backend().exec_command_gpu(cmd)
 
 
 @app.command()
@@ -149,7 +154,7 @@ def compare(
         f"--baseline-dir {base / baseline_dir_name / 'standalone'} "
         f"--target-dir {base / target_dir_name / 'standalone'}"
     )
-    exec_command_cpu(cmd)
+    _backend().exec_command_cpu(cmd)
 
 
 if __name__ == "__main__":
