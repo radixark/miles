@@ -127,7 +127,7 @@ against what the run was configured to allow:
 | Peak `sglang_num_running_reqs` stayed below 30% of `--sglang-max-running-requests` | Lower it. Under `--colocate` this also frees memory for training |
 | Mean `sglang_cache_hit_rate` below 10%, on non-colocated runs only | Raise `--sglang-mem-fraction-static` for a bigger KV cache |
 | Mean `sglang_token_usage` above 95% | KV cache is the throughput bottleneck. Add GPUs or use a smaller rollout batch |
-| Mean `perf/actor_train_mfu` below 15%, excluding the first step | The training step itself is computing slowly. See the caveats below: at this threshold the rule fires on any run using a CPU-offloaded optimizer or full activation recompute |
+| Mean `perf/actor_train_mfu` below `--low-mfu-threshold`, default 15%, excluding the first step | The training step itself is computing slowly. See the caveats below, and set the threshold to suit the run |
 
 These are heuristics, not guarantees, and the thresholds will be tuned as real runs surface false
 positives and negatives. The panel is empty when no sglang series was scraped, since it has
@@ -191,9 +191,12 @@ Measured on 8xH200, three rollout steps each, all with gradient checkpointing:
 | Qwen3.5-35B-A3B MoE, expert parallel, `--optimizer-cpu-offload`, MTP | 5.0 / 5.8% | 5.4% |
 
 Two things to take from this. First, both rows are healthy runs and they differ five-fold, so
-a single absolute threshold cannot separate "slow by configuration" from "slow because
-something broke" — which is why the advisory rule above is best read as a placeholder rather
-than a calibrated number.
+no single absolute threshold separates "slow by configuration" from "slow because something
+broke". Long-context MLA training is a third point on that spread: a well-tuned Kimi-K2.5 run
+on GB300 tops out around 17 to 18%, close enough to the 15% default that a slightly different
+config would trip it. That is why the threshold is `--low-mfu-threshold` rather than a
+constant: set it from what your own run does in a healthy step, or pass `0` to turn the rule
+off and read the tile directly.
 
 Second, and more useful day to day: **MFU barely moves between colocate and fully-async while
 `perf/wait_time_ratio` collapses**, from 0.708 to 0.060 on the dense run and from 0.760 to
@@ -337,6 +340,7 @@ ssh -L 7788:localhost:7788 <training-or-login-node>
 | `--tensor-lru` | `2` | Rollout steps kept resident in tensor memory |
 | `--cache-dir` | `<dump>/dashboard/cache` | Summary cache directory |
 | `--use-utilization-overview` | auto | Always show the fleet overview instead of the per-rank carpet. Turns on automatically above 64 lanes |
+| `--low-mfu-threshold` | `0.15` | Fraction below which the MFU advisory fires. `0` turns the rule off |
 | `--demo` | off | Serve generated demo data, which needs a repository checkout |
 
 Two notes if you are opening someone else's run. Leave `--follow` off for a finished run: the

@@ -18,7 +18,7 @@ LOW_CONCURRENCY_RATIO = 0.3
 LOW_CACHE_HIT_RATE = 0.10
 HIGH_TOKEN_USAGE = 0.95
 
-LOW_MFU = 0.15
+DEFAULT_LOW_MFU = 0.15
 MFU_KEY = "perf/actor_train_mfu"
 MFU_PEAK_KEY = "perf/mfu_peak_tflops"
 MFU_STEP_KEY = "rollout/step"
@@ -53,11 +53,11 @@ def mfu_summary(store: MetricStore) -> dict | None:
     )
 
 
-def _mfu_advisories(summary: dict | None) -> list[Advisory]:
-    if summary is None or summary["steps"] < MFU_MIN_STEPS:
+def _mfu_advisories(summary: dict | None, low_mfu: float) -> list[Advisory]:
+    if low_mfu <= 0 or summary is None or summary["steps"] < MFU_MIN_STEPS:
         return []
     mean_mfu, peak = summary["mean"], summary["peak"]
-    if mean_mfu >= LOW_MFU:
+    if mean_mfu >= low_mfu:
         return []
     return [
         Advisory(
@@ -74,9 +74,14 @@ def _mfu_advisories(summary: dict | None) -> list[Advisory]:
 
 
 def compute_advisories(
-    store: MetricStore, *, t0: float | None = None, t1: float | None = None, mfu: dict | None = None
+    store: MetricStore,
+    *,
+    t0: float | None = None,
+    t1: float | None = None,
+    mfu: dict | None = None,
+    low_mfu: float = DEFAULT_LOW_MFU,
 ) -> list[Advisory]:
-    out: list[Advisory] = _mfu_advisories(mfu if mfu is not None else mfu_summary(store))
+    out: list[Advisory] = _mfu_advisories(mfu if mfu is not None else mfu_summary(store), low_mfu)
     if not store.has_stream(Stream.ENGINE_SERIES):
         return out
     args = store.meta.args if store.meta else {}

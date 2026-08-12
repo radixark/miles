@@ -124,6 +124,19 @@ def test_healthy_mfu_is_quiet(tmp_path):
     assert compute_advisories(_mfu_store(tmp_path, [0.02, 0.38, 0.36, 0.37, 0.39])) == []
 
 
+def test_threshold_is_configurable(tmp_path):
+    store = _mfu_store(tmp_path, [0.02, 0.18, 0.17, 0.18, 0.17])
+    assert compute_advisories(store) == []
+    [advisory] = compute_advisories(store, low_mfu=0.25)
+    assert advisory.level == "warning"
+
+
+def test_zero_threshold_disables_the_rule(tmp_path):
+    store = _mfu_store(tmp_path, [0.02, 0.01, 0.01, 0.01, 0.01])
+    assert len(compute_advisories(store)) == 1
+    assert compute_advisories(store, low_mfu=0.0) == []
+
+
 def test_first_step_is_excluded_from_the_mean(tmp_path):
     assert compute_advisories(_mfu_store(tmp_path, [0.0, 0.35, 0.35, 0.35, 0.35])) == []
 
