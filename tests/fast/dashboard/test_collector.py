@@ -2,8 +2,6 @@ import logging
 import time
 from pathlib import Path
 
-import pytest
-
 from tests.fast.dashboard.dummy_telemetry import BASE_TS, dump_dummy_telemetry
 
 from miles.dashboard.collector import CollectorConfig, DashboardCollector
@@ -128,7 +126,7 @@ def test_flush_thread_persists_periodically(tmp_path):
 
 def test_shutdown_flushes_and_stops_scraper(tmp_path):
     collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000", use_miles_router=False)
+    collector.set_router("http://router:3000")
     assert collector._scraper is not None
     collector.push_metrics(MetricsRecord(ts=1.0, step_key="rollout/step", step=0, metrics={"a": 1}))
     collector.shutdown()
@@ -138,43 +136,39 @@ def test_shutdown_flushes_and_stops_scraper(tmp_path):
     assert len(loaded.records[Stream.METRICS]) == 1
 
 
-@pytest.mark.parametrize("use_miles_router", [False, True])
-def test_auto_scrape_mode_is_direct_for_either_router(tmp_path, use_miles_router):
-    """Neither router serves per-engine sglang samples at ``router_addr``, so
-    auto must scrape the engines regardless of which router is in front."""
+def _router_mode_collector(tmp_path):
+    config = CollectorConfig(
+        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
+    )
+    return make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
+
+
+def test_auto_scrape_mode_is_direct(tmp_path):
     collector = make_collector(tmp_path, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000", use_miles_router=use_miles_router)
+    collector.set_router("http://router:3000")
     assert collector._scraper.mode == ScrapeMode.DIRECT
     collector.shutdown()
 
 
 def test_explicit_router_scrape_mode_is_honoured(tmp_path):
-    config = CollectorConfig(
-        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
-    )
-    collector = make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000", use_miles_router=False)
+    collector = _router_mode_collector(tmp_path)
+    collector.set_router("http://router:3000")
     assert collector._scraper.mode == ScrapeMode.ROUTER
     collector.shutdown()
 
 
 def test_scraper_repoint(tmp_path):
-    config = CollectorConfig(
-        dashboard_dir=str(tmp_path / "dashboard"), run_name="collector-test", start_ts=1.0, scrape_mode="router"
-    )
-    collector = make_collector(tmp_path, config=config, scraper_http_get=lambda url, timeout: ROUTER_FIXTURE)
-    collector.set_router("http://router:3000", use_miles_router=False)
+    collector = _router_mode_collector(tmp_path)
+    collector.set_router("http://router:3000")
     first = collector._scraper
 
-    collector.set_router("http://router:3000", use_miles_router=False)  # no-op
+    collector.set_router("http://router:3000")  # no-op
     assert collector._scraper is first
 
     collector.update_topology(TopologySnapshot(ts=1.0, engines=[_engine("http://e:1")]))
-    collector.config.scrape_mode = "direct"
-    collector.set_router("http://router2:3000", use_miles_router=False)  # router restarted
+    collector.set_router("http://router2:3000")  # router restarted
     assert collector._scraper is not first
     assert first._stop_event.is_set()
-    assert collector._scraper.mode == ScrapeMode.DIRECT
     # actor-registered engine first, then the externals remembered from the
     # first router's scrapes (never actor-known -> kept as scrape targets)
     assert collector._scraper.engine_addrs() == [

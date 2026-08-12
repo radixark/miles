@@ -257,21 +257,9 @@ class DashboardCollector:
         if missing:
             self.update_topology(TopologySnapshot(ts=time.time(), engines=base))
 
-    def set_router(self, router_addr: str, *, use_miles_router: bool) -> None:
-        """Register the sglang router and start (or re-point) the scraper.
-
-        ``use_miles_router`` is accepted for call compatibility but no longer
-        selects the mode: neither router aggregates engine metrics reachable
-        at ``router_addr``. The sglang router serves ``/engine_metrics`` on its
-        prometheus port, which is not this address, and that payload carries
-        only the gateway's own ``smg_*`` counters — no per-engine ``sglang:``
-        samples. Scrape the engines instead; ``--dashboard-sglang-scrape-mode
-        router`` remains available for a gateway that does aggregate them.
-        """
-        if self.config.scrape_mode == "auto":
-            mode = ScrapeMode.DIRECT
-        else:
-            mode = ScrapeMode(self.config.scrape_mode)
+    def set_router(self, router_addr: str) -> None:
+        """Register the sglang router and start (or re-point) the scraper."""
+        mode = ScrapeMode.DIRECT if self.config.scrape_mode == "auto" else ScrapeMode(self.config.scrape_mode)
         # never hold the lock while stopping a scraper: its thread may be
         # blocked on the same lock inside the _append sink (deadlock)
         with self._lock:
