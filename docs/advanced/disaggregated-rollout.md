@@ -311,12 +311,6 @@ weight delta is applied and the next weights are prepared. This makes staged
 weight updates a natural fit for fully async training, because only activation
 requires a brief engine pause.
 
-The GLM-4.7-Flash result is from steady-state updates in a deployment with 4 ×
-8 H200 trainer GPUs and 48 × 1 H200 rollout replicas. The Kimi K2.6 result is
-the lowest reported verified single-update result at TP4. These are external
-reference measurements, not a general performance claim for miles, SGLang, or
-another rollout service.
-
 ## Related guides
 
 - [Fully Async RL](/user-guide/fully-async)
