@@ -124,4 +124,4 @@ preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeli
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)

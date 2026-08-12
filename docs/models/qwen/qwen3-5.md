@@ -106,4 +106,4 @@ See [Backends Beyond Megatron](/advanced/architecture-support) for how miles pre
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
-- [Low Precision RL](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)

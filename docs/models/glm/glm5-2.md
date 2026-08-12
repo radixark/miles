@@ -143,7 +143,7 @@ The launcher exposes these as flags:
 ## 6. Pairs Well With
 
 - [PD Disaggregation](/advanced/pd-disaggregation) — on by default for multi-node runs.
-- [Low Precision RL](/advanced/fp8-low-precision) — opt-in via `--fp8-rollout`.
+- [Low Precision RL](/advanced/low-precision) — opt-in via `--fp8-rollout`.
 - [Speculative Decoding](/advanced/speculative-decoding) — opt-in via `--enable-mtp`.
 - [LoRA](/advanced/lora) — via `scripts/run_glm5_2_744b_a40b_lora.py`.
 - [Fully Async Rollout](/examples/fully-async) — the terminal-bench-2 agentic example (§4.2) runs fully async.
