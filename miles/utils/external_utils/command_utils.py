@@ -169,8 +169,7 @@ def execute_train(
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             }
         ),
-        # python evaluates a get() default eagerly, so probing inline would shell out to
-        # nvidia-smi even when the caller already decided
+        # a get() default is evaluated eagerly, which would probe even when already decided
         "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
         **{
             k: os.environ[k]

@@ -456,10 +456,6 @@ def full_train(args: ScriptArgs):
     _prepare_bf16_ckpt(args)
     _prepare_mxfp8_ckpt(args)
     _prepare_fp8_ckpt(args)
-    # The conversion fans out over ray, so it needs a live cluster: execute_train's hook
-    # runs it once its head is up (or, under MILES_SCRIPT_EXTERNAL_RAY, on the cluster it
-    # left alone). Running it before execute_train instead fails on a clean host, and any
-    # cluster started by hand to get past that is torn down by execute_train's `ray stop`.
     _execute_train(args, before_ray_job_submit=partial(_prepare_megatron_ckpt, args))
 
 
