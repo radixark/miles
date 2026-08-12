@@ -24,11 +24,18 @@ def build_fsdp_meshes(
     )
     fsdp_mesh = dp_mesh
     if dp_replicate_size > 1:
-        fsdp_mesh = dp_mesh._unflatten(
-            0,
-            (dp_replicate_size, world_size // dp_replicate_size),
-            ("dp_replicate", "dp_shard"),
-        )
+        if hasattr(dp_mesh, "_unflatten"):
+            fsdp_mesh = dp_mesh._unflatten(
+                0,
+                (dp_replicate_size, world_size // dp_replicate_size),
+                ("dp_replicate", "dp_shard"),
+            )
+        else:
+            fsdp_mesh = init_device_mesh(
+                device_type,
+                mesh_shape=(dp_replicate_size, world_size // dp_replicate_size),
+                mesh_dim_names=("dp_replicate", "dp_shard"),
+            )
 
     return {
         "dp": dp_mesh,
