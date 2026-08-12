@@ -115,6 +115,8 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
 
         actual_partial = replace(
             deepcopy(actual_item),
+            index=None,
+            rollout_id=None,
             tokens=[],
             loss_mask=[],
             rollout_log_probs=[],
@@ -129,6 +131,8 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
 
 
 def _run_generate(variant: str, env: GenerateEnv, sample: Sample, sampling_params: dict | None = None):
+    if is_agentic_variant(variant) and sample.index is None:
+        sample.index = 0
     return run_generate(env, sample, sampling_params, variant=variant)
 
 
