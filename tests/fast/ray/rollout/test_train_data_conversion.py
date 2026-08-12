@@ -336,45 +336,75 @@ class TestPostProcessRewards:
 
         assert processed == pytest.approx([-(2**-0.5), 2**-0.5, 2**-0.5], abs=1e-5)
 
-    def test_grpo_preserves_distinct_sibling_rewards_with_rollout_weighted_stats(self):
+    def test_grpo_uses_most_trainable_sibling_reward_for_rollout(self):
         args = make_args(
             advantage_estimator="grpo",
             rewards_normalization=True,
-            grpo_std_normalization=True,
+            grpo_std_normalization=False,
             n_samples_per_prompt=2,
             rollout_batch_size=1,
         )
         samples = [
-            make_sample(group_index=0, index=0, rollout_id=10, reward=0.0),
-            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
-            make_sample(group_index=0, index=1, rollout_id=11, reward=3.0),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=0.0, loss_mask=[1, 1, 1, 1]),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=2.0, loss_mask=[1, 0, 0, 0]),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 1, 0]),
         ]
 
         raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
 
-        assert raw == [0.0, 1.0, 3.0]
-        assert processed == pytest.approx([-(2**-0.5), 0.0, 2**0.5], abs=1e-5)
-        rollout_advantages = torch.tensor([processed[0], sum(processed[1:]) / 2])
-        assert rollout_advantages.mean().item() == pytest.approx(0.0, abs=1e-5)
-        assert rollout_advantages.std().item() == pytest.approx(1.0, abs=1e-5)
+        assert raw == [0.0, 2.0, 6.0]
+        assert processed == pytest.approx([-3.0, 3.0, 3.0])
 
-    def test_grpo_skips_std_scaling_when_rollout_means_are_equal(self):
+    def test_grpo_mainstream_count_matches_final_training_mask(self):
         args = make_args(
             advantage_estimator="grpo",
             rewards_normalization=True,
-            grpo_std_normalization=True,
+            grpo_std_normalization=False,
             n_samples_per_prompt=2,
             rollout_batch_size=1,
         )
         samples = [
-            make_sample(group_index=0, index=0, rollout_id=10, reward=0.0),
-            make_sample(group_index=0, index=0, rollout_id=10, reward=2.0),
-            make_sample(group_index=0, index=1, rollout_id=11, reward=1.0),
+            make_sample(
+                group_index=0,
+                index=0,
+                rollout_id=10,
+                reward=100.0,
+                response_length=8,
+                remove_sample=True,
+            ),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=2.0, response_length=4),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 0, 0]),
+        ]
+
+        train_data = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert train_data["raw_reward"] == [100.0, 2.0, 6.0]
+        assert train_data["rewards"] == pytest.approx([-2.0, -2.0, 2.0])
+        assert train_data["loss_masks"] == [[0] * 8, [1] * 4, [1, 1, 0, 0]]
+
+    def test_grpo_mainstream_ties_use_first_sibling(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=False,
+            n_samples_per_prompt=2,
+            rollout_batch_size=1,
+        )
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=2.0, loss_mask=[0, 0, 0, 0]),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=8.0, loss_mask=[0, 0, 0, 0]),
+            make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 1, 1]),
         ]
 
         _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
 
-        assert processed == pytest.approx([-1.0, 1.0, 0.0])
+        assert processed == pytest.approx([-2.0, -2.0, 2.0])
 
     def test_prompt_group_sizes_override_reused_group_index(self):
         args = make_args(advantage_estimator="grpo", rewards_normalization=True)
@@ -393,6 +423,19 @@ class TestPostProcessRewards:
         )
 
         assert processed == pytest.approx([-1.0, 1.0, -2.0, 2.0])
+
+    def test_noncontiguous_group_indices_share_reward_group(self):
+        args = make_args(advantage_estimator="grpo", rewards_normalization=True)
+        samples = [
+            make_sample(group_index=0, rollout_id=10, reward=0.0),
+            make_sample(group_index=1, rollout_id=20, reward=10.0),
+            make_sample(group_index=0, rollout_id=11, reward=2.0),
+            make_sample(group_index=1, rollout_id=21, reward=14.0),
+        ]
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == pytest.approx([-1.0, -2.0, 1.0, 2.0])
 
     @pytest.mark.parametrize(
         ("rewards", "expected"),
