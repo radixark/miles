@@ -152,13 +152,9 @@ class ServerCell:
         return SGLangApiClient(server_url=self.server_url, api_key=self.meta.sglang_api_key)
 
     async def init(self) -> None:
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
         addr_info = await self._compute_addr_info()
-        await activate_launch_gate(gate_url=addr_info.gate_url)
+        if (gate_url := addr_info.gate_url) is not None:
+            await activate_launch_gate(gate_url=gate_url)
         self._change_state(
             "init", StateUninitialized, StateInitializing(addr_info=addr_info, start_time=time.monotonic())
         )
@@ -250,11 +246,11 @@ class ServerCell:
     async def _compute_addr_info(self) -> CellAddrInfo:
         master_addrs = await self.provider.get_addrs(worker_name=self.meta.worker_name)
         primary = master_addrs["primary"]
-        gate = master_addrs[GATE_PORT_NAME]
+        gate = master_addrs.get(GATE_PORT_NAME)
         return CellAddrInfo(
             server_url=build_server_url(host=primary.host, port=primary.port),
             bootstrap_port=x.port if (x := master_addrs.get("disaggregation_bootstrap")) else None,
-            gate_url=build_server_url(host=gate.host, port=gate.port),
+            gate_url=build_server_url(host=gate.host, port=gate.port) if gate else None,
         )
 
     def _mark_serving(self) -> None:
