@@ -2308,6 +2308,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "this process.",
             )
             parser.add_argument(
+                "--env-report-interval-seconds",
+                type=float,
+                default=3600.0,
+                help="How often every process re-records its environment, so that code loaded later "
+                "(lazy imports, a swapped shared disk) is still captured. Non-positive records only at startup.",
+            )
+            parser.add_argument(
                 "--debug-deterministic-collective",
                 action="store_true",
                 default=False,

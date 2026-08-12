@@ -66,6 +66,18 @@ def collect_env_report(*, snapshot: EnvReportSnapshot) -> EnvReport:
         editable_packages=editable_packages,
         git_repos=git_repos,
         full_pip_list=full_pip_list,
+        packages_probed=True,
+    )
+
+
+def collect_unprobed_env_report(*, snapshot: EnvReportSnapshot) -> EnvReport:
+    return EnvReport(
+        process=snapshot.facts,
+        key_versions=_collect_key_versions([]),
+        editable_packages=[],
+        git_repos=[],
+        full_pip_list=[],
+        packages_probed=False,
     )
 
 

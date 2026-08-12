@@ -42,7 +42,7 @@ SAMPLE_PIP_INSPECT = {
 
 
 def make_args(**overrides) -> argparse.Namespace:
-    return argparse.Namespace(**{"env_report": "", **overrides})
+    return argparse.Namespace(**{"env_report": "", "env_report_interval_seconds": 3600.0, **overrides})
 
 
 def mock_pip_inspect() -> subprocess.CompletedProcess:
