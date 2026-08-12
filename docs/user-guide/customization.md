@@ -56,14 +56,25 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 
 **Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
+### `--custom-generate-function-path`
+
+Replace just the generation step inside the default rollout. Most tool-use, RAG, and
+multi-turn workflows live here.
+
+```python
+async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample:
+    ...
+```
+
+**Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
+
+
 ### `--custom-agent-function-path`
 
+Enabled when you set `--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate` 
 Use `--custom-agent-function-path` to specify the async agent or environment loop
 that sends OpenAI-compatible chat requests through Miles' TITO session server.
-First select the agentic wrapper with
-`--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate`;
-the wrapper then adds the `--custom-agent-function-path` and `--max-seq-len` CLI
-options.
+
 
 ```python
 async def run_agent(
@@ -76,23 +87,9 @@ async def run_agent(
     ...
 ```
 
-`base_url` already includes `/sessions/<id>`. Return a dictionary to merge
-environment rewards, reports, or metrics into each output sample's metadata, or
-`None` when there is no extra metadata. See
-[Agentic Rollout (TITO)](/user-guide/agentic-rollout) for the full wiring and
+See [Agentic Rollout (TITO)](/user-guide/agentic-rollout) for the full wiring and
 message/token ownership contract.
 
-### `--custom-generate-function-path`
-
-Replace just the generation step inside the default rollout. Most tool-use, RAG, and
-multi-turn workflows live here.
-
-```python
-async def custom_generate(args, sample: Sample, sampling_params: dict) -> Sample:
-    ...
-```
-
-**Reference:** [`examples/experimental/search-r1/generate_with_search.py`](https://github.com/radixark/miles/blob/main/examples/experimental/search-r1/generate_with_search.py).
 
 ### `--data-source-path`
 
