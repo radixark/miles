@@ -107,9 +107,6 @@ class MockSGLangEngine:
         self._record("_get_gpu_uuids", (gpu_ids,), {})
         return [None] * len(gpu_ids)
 
-    def _collect_env_report(self, *, role: str, rank: int, partial_env_report: str):
-        self._record("_collect_env_report", (), {"role": role, "rank": rank, "partial_env_report": partial_env_report})
-
     def _record(self, name: str, args: tuple, kwargs: dict) -> None:
         self.calls.append((name, args, kwargs))
 
