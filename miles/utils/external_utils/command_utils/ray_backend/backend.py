@@ -1,18 +1,16 @@
 import os
 import shlex
 
-from miles.utils.external_utils.command_utils.base_backend import (
-    BaseCommandBackend,
-    ExecuteTrainRequest,
-    resolve_extra_env_vars,
-)
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_BACKEND_NAME,
     OBJECT_STORE_BACKEND_FLAG,
     ArgvManipulator,
     _pythonpath_with_sources,
     get_bool_env_var,
+    get_mooncake_master_port,
     run_shell_command,
+    train_env_vars,
 )
 from miles.utils.external_utils.command_utils.ray_backend.command import (
     exec_command_all_ray_nodes,
@@ -26,7 +24,9 @@ class RayCommandBackend(BaseCommandBackend):
     def _execute_train_inner(self, request: ExecuteTrainRequest) -> None:
         external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
-        mooncake_master_port = self._resolve_owned_mooncake_master_port(request.train_args)
+        mooncake_master_port = (
+            None if self.config.external_mooncake else self._resolve_mooncake_master_port(request.train_args)
+        )
 
         self._clean_up_previous_run(external_ray=external_ray)
 
@@ -37,10 +37,8 @@ class RayCommandBackend(BaseCommandBackend):
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
             )
 
-        if MOONCAKE_BACKEND_NAME in ArgvManipulator.values_of(
-            shlex.split(request.train_args), OBJECT_STORE_BACKEND_FLAG
-        ):
-            start_mooncake_master()
+        if mooncake_master_port is not None:
+            start_mooncake_master(rpc_port=mooncake_master_port)
 
         for cmd in request.prepare_cmd.values():
             self.exec_command_multi_node(cmd)
@@ -48,39 +46,7 @@ class RayCommandBackend(BaseCommandBackend):
         if (f := request.before_ray_job_submit) is not None:
             f()
 
-        runtime_env_vars = {
-            # exported for the submitting client too, but only the runtime env reaches the ray workers
-            "PYTHONUNBUFFERED": "1",
-            # If setting this in FSDP, the computation communication overlapping may have issues
-            **(
-                {}
-                if request.train_backend_fsdp
-                else {
-                    "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-                }
-            ),
-            # a get() default is evaluated eagerly, which would probe even when already decided
-            "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(self._check_has_nvlink())),
-            **{
-                k: os.environ[k]
-                for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
-                if k in os.environ
-            },
-            "no_proxy": f"127.0.0.1,{master_addr}",
-            # This is needed by megatron / torch distributed in multi-node setup
-            "MASTER_ADDR": master_addr,
-            **(
-                {
-                    "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
-                    "CUDA_COREDUMP_SHOW_PROGRESS": "1",
-                    "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
-                    "CUDA_COREDUMP_FILE": f"{self.config.output_dir}/cuda_coredump_%h.%p.%t",
-                }
-                if self.config.cuda_core_dump
-                else {}
-            ),
-            **resolve_extra_env_vars(request.extra_env_vars, self.config),
-        }
+        runtime_env_vars = train_env_vars(request, self._ray_env_vars(master_addr=master_addr), config=self.config)
         runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(
             request.megatron_path, runtime_env_vars.get("PYTHONPATH")
         )
@@ -97,6 +63,13 @@ class RayCommandBackend(BaseCommandBackend):
                 if request.job_lifetime == "launcher" and not external_ray:
                     self.exec_command_cpu("ray stop --force")
 
+    def _resolve_mooncake_master_port(self, train_args: str) -> int | None:
+        train_argv = shlex.split(train_args)
+        if ArgvManipulator.get_effective(train_argv, OBJECT_STORE_BACKEND_FLAG) != MOONCAKE_BACKEND_NAME:
+            return None
+
+        return get_mooncake_master_port(train_argv)
+
     def exec_command_gpu(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
@@ -110,12 +83,6 @@ class RayCommandBackend(BaseCommandBackend):
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         return exec_command_all_ray_nodes(cmd, capture_output=capture_output, num_nodes=num_nodes)
-
-    def _check_has_nvlink(self) -> bool:
-        output = self.exec_command_gpu(
-            "nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True
-        )
-        return int(output) > 0
 
     def _clean_up_previous_run(self, external_ray: bool) -> None:
         self.exec_command_cpu(
@@ -134,3 +101,23 @@ class RayCommandBackend(BaseCommandBackend):
             "pkill -9 redis; "
             "true; "
         )
+
+    def _check_has_nvlink(self) -> bool:
+        output = self.exec_command_gpu(
+            "nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l", capture_output=True
+        )
+        return int(output) > 0
+
+    def _ray_env_vars(self, master_addr: str) -> dict[str, str]:
+        return {
+            # a get() default is evaluated eagerly, which would probe even when already decided
+            "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(self._check_has_nvlink())),
+            **{
+                k: os.environ[k]
+                for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
+                if k in os.environ
+            },
+            "no_proxy": f"127.0.0.1,{master_addr}",
+            # This is needed by megatron / torch distributed in multi-node setup
+            "MASTER_ADDR": master_addr,
+        }
