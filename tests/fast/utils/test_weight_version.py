@@ -3,13 +3,24 @@ from argparse import Namespace
 import pytest
 
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
-from miles.utils.weight_version import SGLANG_DEFAULT_WEIGHT_VERSION, assert_samples_weight_version_sane
+from miles.utils.weight_version import (
+    MAX_ROLLOUTS_WITHOUT_PUBLISHED_WEIGHT_VERSION,
+    SGLANG_DEFAULT_WEIGHT_VERSION,
+    assert_samples_weight_version_sane,
+    assert_weight_version_is_published,
+)
 
 SGLANG_LITERAL = "default"
 
 
 def _make_args(**overrides: object) -> Namespace:
-    args = Namespace(debug_rollout_only=False, debug_skip_weight_update=False, lora_rank=0, lora_adapter_path=None)
+    args = Namespace(
+        debug_rollout_only=False,
+        debug_train_only=False,
+        debug_skip_weight_update=False,
+        lora_rank=0,
+        lora_adapter_path=None,
+    )
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
@@ -79,3 +90,36 @@ class TestAssertSamplesWeightVersionSane:
     def test_modes_that_never_push_weights_are_exempt(self, overrides: dict[str, object]):
         """Debug modes and LoRA legitimately serve un-updated weights, so the default version is allowed."""
         assert_samples_weight_version_sane(_make_args(**overrides), samples=[_make_sample([SGLANG_LITERAL])])
+
+
+class TestAssertWeightVersionIsPublished:
+    def test_a_freshly_published_version_passes(self):
+        """The normal loop publishes a version every step, so the count resets to one rollout."""
+        assert_weight_version_is_published(_make_args(), rollouts_since_publish=1)
+
+    def test_a_short_gap_passes(self):
+        """One late publish is tolerated so an ordinary reordering does not fail the run."""
+        assert_weight_version_is_published(
+            _make_args(), rollouts_since_publish=MAX_ROLLOUTS_WITHOUT_PUBLISHED_WEIGHT_VERSION
+        )
+
+    def test_a_frozen_version_fails(self):
+        """A training script that never forwards the version silently disables staleness accounting."""
+        with pytest.raises(AssertionError, match="set_weight_version"):
+            assert_weight_version_is_published(
+                _make_args(), rollouts_since_publish=MAX_ROLLOUTS_WITHOUT_PUBLISHED_WEIGHT_VERSION + 1
+            )
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"debug_rollout_only": True},
+            {"debug_train_only": True},
+            {"debug_skip_weight_update": True},
+            {"lora_rank": 8},
+            {"lora_adapter_path": "/adapters/foo"},
+        ],
+    )
+    def test_modes_that_never_publish_a_version_are_exempt(self, overrides: dict[str, object]):
+        """These modes legitimately never push weights, so a frozen version is expected."""
+        assert_weight_version_is_published(_make_args(**overrides), rollouts_since_publish=1000)

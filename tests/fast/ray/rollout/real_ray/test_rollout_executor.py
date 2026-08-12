@@ -19,6 +19,7 @@ from miles.rollout.base_types import (
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn
 from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.weight_version import MAX_ROLLOUTS_WITHOUT_PUBLISHED_WEIGHT_VERSION
 
 
 @pytest.fixture
@@ -186,6 +187,36 @@ class TestGenerate:
 
         with pytest.raises(AssertionError, match="never updated"):
             await executor.get(rollout_id=42)
+
+    async def test_a_frozen_weight_version_eventually_fails_the_run(self, ray_local_mode, patch_low_level):
+        """A driver that never forwards the version must fail loudly, not silently disable staleness filtering."""
+        args = _make_test_args()
+        args.global_batch_size = 8
+
+        executor = _make_executor(args)
+        executor.set_train_parallel_config({"dp_size": 2})
+        executor.generate_rollout = lambda input: RolloutFnTrainOutput(
+            samples=[make_samples_grouped(n_groups=2, group_size=4)], metrics=None
+        )
+
+        with pytest.raises(AssertionError, match="set_weight_version"):
+            for rollout_id in range(MAX_ROLLOUTS_WITHOUT_PUBLISHED_WEIGHT_VERSION + 1):
+                await executor.get(rollout_id=rollout_id)
+
+    async def test_publishing_a_version_every_step_keeps_the_run_alive(self, ray_local_mode, patch_low_level):
+        """The supported driver publishes after each update, which must never trip the staleness assert."""
+        args = _make_test_args()
+        args.global_batch_size = 8
+
+        executor = _make_executor(args)
+        executor.set_train_parallel_config({"dp_size": 2})
+        executor.generate_rollout = lambda input: RolloutFnTrainOutput(
+            samples=[make_samples_grouped(n_groups=2, group_size=4)], metrics=None
+        )
+
+        for rollout_id in range(3 * MAX_ROLLOUTS_WITHOUT_PUBLISHED_WEIGHT_VERSION):
+            executor.set_weight_version(rollout_id)
+            await executor.get(rollout_id=rollout_id)
 
     async def test_does_not_touch_the_inference_side(self, ray_local_mode, patch_low_level):
         """The controller is a driver-side object the executor cannot reach, so generate must not need it."""

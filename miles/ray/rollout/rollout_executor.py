@@ -34,7 +34,7 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
-from miles.utils.weight_version import assert_samples_weight_version_sane
+from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
@@ -54,6 +54,7 @@ class RolloutExecutor:
         self.args = args
         # set by the training actor after each weight update
         self.weight_version: int | None = None
+        self._rollouts_since_weight_version_publish = 0
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
@@ -114,6 +115,10 @@ class RolloutExecutor:
     async def get(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
+        self._rollouts_since_weight_version_publish += 1
+        assert_weight_version_is_published(
+            self.args, rollouts_since_publish=self._rollouts_since_weight_version_publish
+        )
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
@@ -263,6 +268,7 @@ class RolloutExecutor:
             assert self.args.indep_dp, message
             logger.warning(message)
         self.weight_version = weight_version
+        self._rollouts_since_weight_version_publish = 0
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config
