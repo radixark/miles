@@ -115,6 +115,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     samples = result.samples
     if use_v2:
+        # FIXME: handle sample index issues.
         rollout_id = input.sample.rollout_id if input.sample.rollout_id is not None else input.sample.index
         assert rollout_id is not None, "v2 agentic samples require input Sample.rollout_id or Sample.index"
         for sample in samples:
