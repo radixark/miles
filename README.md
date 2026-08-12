@@ -106,7 +106,7 @@ the largest models all live on Megatron-LM. See
 
 <!-- TODO: acknowledgment figure -->
 
-Miles builds on the work of [slime](https://github.com/THUDM/slime),
+Miles was forked from [slime](https://github.com/THUDM/slime), and builds on
 [SGLang](https://github.com/sgl-project/sglang),
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and
 [torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
