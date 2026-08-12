@@ -46,8 +46,8 @@ speculative decoding, and LoRA training and serving.
 
   <Card title="Disaggregated RL Rollout" icon="server" href="/advanced/disaggregated-rollout">
 
-    Connect miles to an independently managed rollout service through policy
-    publication and versioned requests.
+    Scale rollout across clusters and regions through an independent service,
+    with versioned policy publication and request attribution.
 
   </Card>
 

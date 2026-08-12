@@ -1,18 +1,37 @@
 ---
 title: Disaggregated RL Rollout
-description: Run miles training and SGLang rollout on separate systems, synchronize policy versions, and define the boundary to an external rollout service.
+description: Scale rollout independently across clusters and regions while miles preserves policy publication and version attribution.
 ---
 
-Disaggregated RL rollout separates policy training from the inference resources
-that generate trajectories. In the standard miles topology, the trainer and
-SGLang engines use different GPUs inside one miles job. A stronger separation
-puts rollout behind an external service that owns its replicas, routing, and
-weight activation.
+Policy training and rollout inference have different resource and scaling
+profiles. A trainer is a long-lived, tightly coupled cluster whose ranks step
+together. Rollout is request-driven and bursty: long and agentic trajectories
+finish at different times, demand changes over a run, and inference capacity
+may be available in different clusters, regions, or compute providers.
 
-Both forms solve the same placement problem, but the external-service boundary
-adds a policy-version problem: miles must publish new policies without owning
-each rollout engine, and every trajectory must still identify the policy that
-generated it.
+Keeping both roles inside one job ties rollout capacity to the trainer's
+placement, network, and lifecycle. Disaggregated RL rollout instead makes
+inference an independent service. The trainer remains on its stable cluster,
+while rollout replicas can scale with the live queue and draw on compute across
+the globe without joining the trainer's Ray placement group or NCCL fabric.
+
+For miles, this boundary brings:
+
+- **Independent scaling.** Add or remove rollout capacity without resizing or
+  restarting the trainer.
+- **Flexible placement.** Run inference where GPUs are available, including
+  other clusters, regions, and providers.
+- **Separate failure domains.** Replace rollout replicas without making their
+  process lifecycle part of the training job.
+- **Better asynchronous utilization.** Keep a changing pool of rollout workers
+  busy while training consumes completed trajectories.
+- **Policy correctness.** Publish immutable policy versions, constrain requests
+  by version, and record which version generated every returned trajectory.
+
+The last property is what turns remote inference capacity into an RL rollout
+service rather than an ordinary model-serving endpoint. Miles must update the
+policy without owning every engine and must preserve the behavior-policy
+identity required for staleness control and off-policy training.
 
 This page is about separating **RL training from rollout inference**. It is
 different from [PD disaggregation](/advanced/pd-disaggregation), which separates
@@ -20,11 +39,15 @@ the prefill and decode phases inside an SGLang deployment.
 
 ## Topologies
 
-| Topology | Who starts the engines? | What miles talks to | Weight-update ownership | Availability |
-|---|---|---|---|---|
-| Miles-managed rollout | miles | A miles-managed router and engine handles | miles converts, transfers, pauses, updates, and resumes the engines | Current `main` |
-| Attached SGLang engines | The deployment owner | Fixed engine addresses supplied with `--rollout-external-engine-addrs` | miles still addresses and controls each engine through its engine handle | Current `main` |
-| External rollout service | An independent rollout system | One rollout endpoint | miles publishes policy versions; the rollout system materializes and activates them | Miles-side integration is being upstreamed |
+| Topology | Engine lifecycle | What miles talks to | Policy updates |
+|---|---|---|---|
+| Miles-managed rollout | Part of the miles job | A miles-managed router and engine handles | miles converts, transfers, pauses, updates, and resumes the engines |
+| Attached SGLang engines | Owned by the deployment | Fixed engine addresses supplied with `--rollout-external-engine-addrs` | miles still addresses and controls each engine through its engine handle |
+| External rollout service | Independent and dynamically scaled | One stable rollout endpoint | miles publishes versions; the rollout service materializes and activates them across its replicas |
+
+Miles supports the first two topologies today. The single-endpoint external
+rollout service is coming soon and extends that separation from GPU placement
+to independent scaling, routing, and lifecycle.
 
 `--rollout-external` is the second row, not the third. It prevents miles from
 launching SGLang, but miles still knows the individual engine addresses, checks
@@ -150,9 +173,10 @@ general FSDP weight-update path.
 
 ## External rollout service contract
 
-Current `main` does not accept a single external rollout-service URL and cannot
-publish disk deltas without Miles-managed rollout-engine handles. This section
-records the interface being upstreamed; it is not a current launch recipe.
+The coming single-endpoint integration builds on the current disk-delta
+publication path and removes the need for miles to hold one handle per rollout
+engine. The commands above cover Miles-managed and attached-engine deployments;
+this section defines the external-service boundary.
 
 The intended boundary has two independent data paths:
 
