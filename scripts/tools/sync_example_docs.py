@@ -101,6 +101,8 @@ VOID_TAGS = {"br", "hr", "img", "input"}
 
 # - **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation.
 INDEX_BULLET = re.compile(r"^\s*[-*]\s+\*\*\[([^\]]+)\]\(([^)]+)\)\*\*:\s*(.+?)\s*$")
+# ## [Infra Features](./infra_features) — a group root registered as a section heading.
+INDEX_HEADING = re.compile(r"^#{2,}\s+\[([^\]]+)\]\(([^)]+)\)\s*$")
 MD_LINK = re.compile(r"(!?)\[([^\]]*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
 IMG_LINK = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
 # Link text may carry one nested image ([![badge](img)](target)), which MD_LINK would
@@ -146,18 +148,29 @@ def repo_dir_of(rel_dir):
     return "examples" if not rel_dir else f"examples/{rel_dir}"
 
 
-def parse_index_descriptions(index_readme):
-    """One-line descriptions keyed by directory, taken from the bullets in examples/README.md."""
-    out = {}
+def parse_index(index_readme):
+    """Read examples/README.md, the registry for every mirrored page.
+
+    Returns (descriptions, registered): one-line descriptions keyed by directory in
+    bullet order, and the set of every directory the index mentions — as a bullet or,
+    for a group root like infra_features, as a section-heading link.
+    """
+    descriptions, registered = {}, set()
     for line in index_readme.read_text().splitlines():
-        m = INDEX_BULLET.match(line)
+        bullet = INDEX_BULLET.match(line)
+        heading = None if bullet else INDEX_HEADING.match(line)
+        m = bullet or heading
         if not m:
             continue
         target = m.group(2).split("#")[0].strip().rstrip("/")
         rel = os.path.normpath(os.path.join("examples", target))
-        if rel.startswith("examples/"):
-            out[rel[len("examples/") :]] = m.group(3)
-    return out
+        if not rel.startswith("examples/"):
+            continue
+        rel_dir = rel[len("examples/") :]
+        registered.add(rel_dir)
+        if bullet:
+            descriptions[rel_dir] = bullet.group(3)
+    return descriptions, registered
 
 
 def first_sentence(text):
@@ -359,7 +372,14 @@ def build_pages():
     if "" not in pages:
         raise SyncError("examples/README.md is missing; it is the source of the Examples index page")
     mirrored = {repo_dir_of(rel): rel for rel in pages}
-    descriptions = parse_index_descriptions(pages[""])
+    descriptions, registered = parse_index(pages[""])
+
+    unregistered = sorted(rel_dir for rel_dir in pages if rel_dir and rel_dir not in registered)
+    if unregistered:
+        raise SyncError(
+            "mirrored but not listed in examples/README.md — add a bullet for:\n  "
+            + "\n  ".join(repo_dir_of(d) for d in unregistered)
+        )
 
     broken, rendered, slug_owner = [], {}, {}
     for rel_dir, readme in sorted(pages.items()):
@@ -395,13 +415,20 @@ def build_pages():
 
     if broken:
         raise SyncError("READMEs link to paths that do not exist:\n  " + "\n  ".join(sorted(set(broken))))
-    return pages, rendered
+    # dicts preserve insertion order, so this is the bullet order of examples/README.md.
+    return pages, rendered, list(descriptions)
 
 
-def build_navigation(pages):
-    """Examples tab, mirroring the directory layout: top-level recipes, then infra_features."""
+def build_navigation(pages, bullet_order):
+    """Examples tab, mirroring the directory layout: top-level recipes, then infra_features.
+
+    Sidebar order follows the bullet order in examples/README.md — the index README owns
+    ordering along with titles and descriptions. Directories without a bullet sort last,
+    alphabetically.
+    """
+    rank = {rel_dir: i for i, rel_dir in enumerate(bullet_order)}
     recipes, infra = [], []
-    for rel_dir in sorted(pages):
+    for rel_dir in sorted(pages, key=lambda d: (rank.get(d, len(rank)), d)):
         if not rel_dir:
             continue
         page = f"examples/{slug_for(rel_dir)}"
@@ -432,7 +459,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        pages, rendered = build_pages()
+        pages, rendered, bullet_order = build_pages()
     except SyncError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -443,7 +470,7 @@ def main():
     except SyncError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    tab["groups"] = [build_navigation(pages)]
+    tab["groups"] = [build_navigation(pages, bullet_order)]
     docs_json_text = render_docs_json(config)
 
     existing = {p for p in OUT_DIR.rglob("*.md")} if OUT_DIR.exists() else set()

@@ -54,9 +54,11 @@ Every README outside `experimental/` is mirrored onto
 [miles.radixark.com/docs/examples](https://miles.radixark.com/docs/examples) by
 `scripts/tools/sync_example_docs.py`, which pre-commit runs for you. The docs site is
 generated from this directory and never edited directly, so a new example needs nothing
-beyond its README and an entry in the list above. Two things that list controls: the
-level-1 heading of each README becomes the page title, and the one-line description
-becomes the page's meta description, so keep it under 160 characters. Content between
+beyond its README and an entry in the list above — the sync fails if either is missing.
+Three things that list controls: the
+level-1 heading of each README becomes the page title, the one-line description becomes
+the page's meta description (keep it under 160 characters), and the bullet order is the
+sidebar order. Content between
 `docs:exclude:start` / `docs:exclude:end` HTML comments (like this section) stays on
 GitHub but is left out of the site.
 <!-- docs:exclude:end -->
