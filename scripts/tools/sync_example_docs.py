@@ -225,8 +225,10 @@ def mask_code(text):
     # A code span may wrap a line but not a paragraph, so an unpaired backtick cannot
     # swallow the rest of the document into the stash.
     text = re.sub(r"(`+)((?:(?!\n\n)[^`])+?)\1", lambda m: keep(m.group(0)), text)
-    # Inline math, bounded to one line so a stray "$5" in prose stays inert.
-    text = re.sub(r"(?<!\$)\$(?!\$)(?:\\.|[^$\n])+\$(?!\$)", lambda m: keep(m.group(0)), text)
+    # Inline math, bounded to one line so a stray "$5" in prose stays inert. The two
+    # alternatives are disjoint (an escape, or anything but a backslash), so an
+    # unterminated span cannot trigger exponential backtracking.
+    text = re.sub(r"(?<!\$)\$(?!\$)(?:\\[^\n]|[^\\$\n])+\$(?!\$)", lambda m: keep(m.group(0)), text)
     return text, stash
 
 
