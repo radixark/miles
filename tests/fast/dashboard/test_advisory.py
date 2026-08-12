@@ -148,6 +148,21 @@ def test_open_phase_with_closing_twin_is_not_a_stall(tmp_path):
     assert compute_advisories(MetricStore.load(tmp_path)) == []
 
 
+def test_previous_attempt_open_marker_is_not_a_stall(tmp_path):
+    # resuming into the same dump dir appends: the crashed attempt's open
+    # markers are still in the stream and never close, and their age against
+    # this attempt's clock would latch a critical for the rest of the run
+    writer = MetricStore(tmp_path)
+    for event in [*_closed_steps(), _phase("train_wait", 300.0, PhaseEvent.OPEN_T1)]:
+        writer.append(event)
+    for event in _closed_steps(start=10000.0):
+        writer.append(event)
+    writer.append(_engine("sglang_num_running_reqs", 80.0, ts=20000.0))
+    writer.write_meta(Meta(run_name="advisory-test", start_ts=10000.0, args={}))
+    writer.flush()
+    assert compute_advisories(MetricStore.load(tmp_path)) == []
+
+
 def test_forever_open_phase_without_baseline_is_not_a_stall(tmp_path):
     # fully-async rollout keeps one manager phase open for the whole run by
     # design; with no closed instances there is no baseline and no claim
@@ -197,7 +212,46 @@ def test_abort_storm_survives_an_engine_restart(tmp_path):
     )
     [advisory] = compute_advisories(store)
     assert advisory.level == "warning"
-    assert "60% of engine requests were aborted client-side (900/1500)" in advisory.message
+    assert "60%" in advisory.message
+    assert "(900/1500" in advisory.message
+
+
+def test_cleared_abort_storm_stops_alarming(tmp_path):
+    # 900/9000 over the run stays above the threshold forever, but the engine
+    # has been healthy for hours: the alarm — and the tuning tier it suppresses
+    # — must follow the current state
+    store = _store(
+        tmp_path,
+        args={"sglang_max_running_requests": 100},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 1000.0, ts=100.0),
+            _engine("sglang_num_requests_total", 5000.0, ts=9000.0),
+            _engine("sglang_num_requests_total", 9000.0, ts=10000.0),
+            _engine("sglang_num_aborted_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_aborted_requests_total", 900.0, ts=100.0),
+            _engine("sglang_num_aborted_requests_total", 900.0, ts=9000.0),
+            _engine("sglang_num_aborted_requests_total", 900.0, ts=10000.0),
+            _engine("sglang_num_running_reqs", 5.0, ts=10000.0),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "info"  # the storm is history; tuning advice is back
+
+
+def test_low_volume_window_is_not_an_abort_storm(tmp_path):
+    # an idle window: 6 requests, 1 aborted is 17% but says nothing
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 6.0, ts=2.0),
+            _engine("sglang_num_aborted_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_aborted_requests_total", 1.0, ts=2.0),
+        ],
+    )
+    assert compute_advisories(store) == []
 
 
 def test_kv_bound_concurrency_names_the_real_bottleneck(tmp_path):

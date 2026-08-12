@@ -25,6 +25,9 @@ STALL_MIN_AGE_S = 1800.0
 STALL_MIN_CLOSED = 3
 
 ABORT_RATIO_WARN = 0.05
+ABORT_WINDOW_S = 1800.0
+# a short window can cover an idle stretch; 1/12 aborted is not a storm
+ABORT_MIN_REQUESTS = 100.0
 ZERO_STD_FRAC_WARN = 0.5
 TRUNCATED_FRAC_WARN = 0.25
 KV_BOUND_TOKEN_USAGE = 0.90
@@ -74,7 +77,14 @@ def _stall_advisories(store: MetricStore) -> list[Advisory]:
     if time_range is None:
         return []
     edge = time_range[1]
-    events = store.phase_events()
+    # resuming into the same dump dir appends to the existing streams, so the
+    # crashed attempt's open markers are still there and never close; measuring
+    # their age against this attempt's clock would latch a critical forever.
+    # meta.json is rewritten per attempt, so start_ts is the boundary (same one
+    # phases_by_lane anchors the synthesized initialize band to). It also keeps
+    # the previous attempt's closed durations out of the median baseline.
+    attempt_start = store.meta.start_ts if store.meta else float("-inf")
+    events = [event for event in store.phase_events() if event.t0 >= attempt_start]
     closed_keys = {(e.node, e.rank, e.name, e.t0) for e in events if not e.open}
     durations: dict[str, list[float]] = {}
     open_ages: dict[str, list[float]] = {}
@@ -105,17 +115,19 @@ def _stall_advisories(store: MetricStore) -> list[Advisory]:
     return out
 
 
-def _counter_delta(store: MetricStore, metric: str, t0: float | None, t1: float | None) -> float:
-    """Total increase of a cumulative counter across every engine series.
+def _counter_delta(series: list[dict], *, since: float = float("-inf")) -> float:
+    """Total increase of a cumulative counter over ``engine_series`` results.
 
     Summed per interval, dropping the negative ones: an engine restarting on
     the same address resets its counters mid-series, and last-minus-first
     would then read the post-restart segment alone (same reset rule as
-    ``MetricStore._derived_series``)."""
+    ``MetricStore._derived_series``). ``since`` keeps only intervals ending at
+    or after it."""
     total = 0.0
-    for series in store.engine_series(metric, t0=t0, t1=t1):
-        values = series["value"]
-        total += sum(max(after - before, 0.0) for before, after in pairwise(values))
+    for one in series:
+        for ts, (before, after) in zip(one["ts"][1:], pairwise(one["value"]), strict=True):
+            if ts >= since:
+                total += max(after - before, 0.0)
     return total
 
 
@@ -124,12 +136,26 @@ def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t
         return []
     out = []
 
-    total = _counter_delta(store, "sglang_num_requests_total", t0, t1)
-    aborted = _counter_delta(store, "sglang_num_aborted_requests_total", t0, t1)
-    if total > 0 and aborted / total > ABORT_RATIO_WARN:
+    # like the stall watchdog, the abort ratio claims something about the
+    # engine's current state, so it is judged over a recent window rather than
+    # the query window: a run-lifetime ratio stays above the threshold long
+    # after the storm cleared, latching the alarm — and with it the suppression
+    # of the tuning tier. The window is anchored to the newest engine scrape,
+    # not store.time_range(): when the engines die the other streams keep
+    # advancing, and a window that slid past the engine data would drop the
+    # alarm exactly when it matters most.
+    requests = store.engine_series("sglang_num_requests_total")
+    aborts = store.engine_series("sglang_num_aborted_requests_total")
+    edge = max((one["ts"][-1] for one in requests + aborts if one["ts"]), default=0.0)
+    total = _counter_delta(requests, since=edge - ABORT_WINDOW_S)
+    aborted = _counter_delta(aborts, since=edge - ABORT_WINDOW_S)
+    if total >= ABORT_MIN_REQUESTS and aborted / total > ABORT_RATIO_WARN:
+        run_total = _counter_delta(requests)
+        run_aborted = _counter_delta(aborts)
         message = (
-            f"{aborted / total:.0%} of engine requests were aborted client-side "
-            f"({aborted:.0f}/{total:.0f}) — request timeouts are poisoning samples"
+            f"{aborted / total:.0%} of engine requests were aborted client-side in the last "
+            f"{_fmt_duration(ABORT_WINDOW_S)} ({aborted:.0f}/{total:.0f}; "
+            f"{run_aborted / run_total:.0%} over the run) — request timeouts are poisoning samples"
         )
         group_size = args.get("n_samples_per_prompt")
         if group_size:
