@@ -1,6 +1,6 @@
 # Fully Asynchronous Rollout Example
 
-> **Read the docs first:** [Fully Async RL](https://miles.radixark.com/docs/user-guide/fully-async)
+> **Read the docs:** [Fully Async RL](https://miles.radixark.com/docs/user-guide/fully-async)
 > covers the schedule, the data buffer, the three evaluation modes, and every `--fully-async`
 > argument. The [example walkthrough](https://miles.radixark.com/docs/examples/fully-async)
 > annotates the launcher below, with tuning knobs, metrics to watch, and known limitations.
