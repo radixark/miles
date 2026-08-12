@@ -20,6 +20,10 @@ class EnvReportGitRepoInfo(FrozenStrictBaseModel):
     commit: str
     dirty: bool
     diff_stat: str
+    uncommitted_hash: str | None
+    untracked_paths: list[str]
+    untracked_paths_truncated: bool
+    untracked_unhashed_paths: list[str]
 
 
 class EnvReportArgsDump(FrozenStrictBaseModel):
