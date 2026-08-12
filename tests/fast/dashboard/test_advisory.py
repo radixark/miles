@@ -177,6 +177,29 @@ def test_abort_storm_is_warning_and_suppresses_tuning(tmp_path):
     assert "8-sample group" in advisory.message
 
 
+def test_abort_storm_survives_an_engine_restart(tmp_path):
+    # an engine coming back on the same address resets its counters mid-series;
+    # last-minus-first would see only the healthy post-restart segment and drop
+    # the storm entirely
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[
+            _engine("sglang_num_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_requests_total", 1000.0, ts=2.0),
+            _engine("sglang_num_requests_total", 0.0, ts=3.0),
+            _engine("sglang_num_requests_total", 500.0, ts=4.0),
+            _engine("sglang_num_aborted_requests_total", 0.0, ts=1.0),
+            _engine("sglang_num_aborted_requests_total", 900.0, ts=2.0),
+            _engine("sglang_num_aborted_requests_total", 0.0, ts=3.0),
+            _engine("sglang_num_aborted_requests_total", 0.0, ts=4.0),
+        ],
+    )
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "warning"
+    assert "60% of engine requests were aborted client-side (900/1500)" in advisory.message
+
+
 def test_kv_bound_concurrency_names_the_real_bottleneck(tmp_path):
     # token usage pegged while concurrency sits far under the cap: the pool is
     # the limit — the advice must be "raise mem-fraction", never "lower the cap"

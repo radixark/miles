@@ -12,6 +12,7 @@ utilization" that was a symptom, not headroom.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from statistics import median
 
 from miles.dashboard.dump_reader import DumpReader
@@ -105,8 +106,17 @@ def _stall_advisories(store: MetricStore) -> list[Advisory]:
 
 
 def _counter_delta(store: MetricStore, metric: str, t0: float | None, t1: float | None) -> float:
-    series = store.engine_series(metric, t0=t0, t1=t1)
-    return sum(s["value"][-1] - s["value"][0] for s in series if len(s["value"]) >= 2)
+    """Total increase of a cumulative counter across every engine series.
+
+    Summed per interval, dropping the negative ones: an engine restarting on
+    the same address resets its counters mid-series, and last-minus-first
+    would then read the post-restart segment alone (same reset rule as
+    ``MetricStore._derived_series``)."""
+    total = 0.0
+    for series in store.engine_series(metric, t0=t0, t1=t1):
+        values = series["value"]
+        total += sum(max(after - before, 0.0) for before, after in pairwise(values))
+    return total
 
 
 def _engine_alarm_advisories(store: MetricStore, args: dict, t0: float | None, t1: float | None) -> list[Advisory]:
