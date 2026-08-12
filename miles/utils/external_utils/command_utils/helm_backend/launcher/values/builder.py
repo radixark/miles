@@ -52,6 +52,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
     return RunValues(
         id=plan.run_id,
         state_file=plan.state_file,
+        launch_record=plan.launch_record,
         object_names=_object_names(plan.release),
         orchestrator=OrchestratorSection(command=plan.orchestrator_command),
         static_workers=entries[STATIC_WORKERS_SECTION],

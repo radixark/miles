@@ -26,6 +26,14 @@ class TestRunDir:
 
         assert path.as_posix() == "/runs/abc/state/orchestrator-abc123.state"
 
+    def test_gives_every_launch_its_own_record_file(self):
+        """Two launches of one run must not overwrite each other's record of what they launched."""
+        first = RunFiles.new_record_file(run_directory="/runs/abc")
+        second = RunFiles.new_record_file(run_directory="/runs/abc")
+
+        assert first.parent.as_posix() == "/runs/abc/launches"
+        assert first != second
+
 
 class TestLatestExitFile:
     def test_names_no_file_before_a_launch_has_written_one(self, tmp_path):

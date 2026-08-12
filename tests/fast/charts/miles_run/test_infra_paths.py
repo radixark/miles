@@ -115,7 +115,7 @@ class TestPythonPathIsNotAnEnvironmentVariable:
         assert "PYTHONPATH" in error
 
     def test_an_ordinary_cluster_variable_is_still_accepted(self):
-        """Only PYTHONPATH is reserved; refusing the rest would make infra.env useless."""
+        """Only the variables the launcher derives are reserved; refusing the rest would make infra.env useless."""
         objects = render_run("--set", "infra.env.NCCL_SOCKET_IFNAME=bond0")
 
         env = sole_container_of(objects, "StatefulSet", ORCHESTRATOR)["env"]
@@ -162,3 +162,30 @@ class TestCheckoutWorkingDirectory:
 
         assert {container["name"] for container in containers} == {"orchestrator", "worker", "engine", "trainer"}
         assert {container.get("workingDir") for container in containers} == {"/root/miles"}
+
+
+@requires_helm
+class TestTheLaunchRecordIsNotAnEnvironmentVariable:
+    def test_every_container_is_told_what_launched_this_run(self):
+        """The record is how --env-report reaches each process's env report and the wandb config."""
+        container = orchestrator_container("--set-string", "run.launchRecord=/shared/launches/launch-1.json")
+
+        assert environment(container)["MILES_SCRIPT_ENV_REPORT"] == "/shared/launches/launch-1.json"
+
+    def test_a_run_launched_without_a_record_carries_no_empty_one(self):
+        """An empty record would look like a launcher that recorded nothing, rather than one that never ran."""
+        assert "MILES_SCRIPT_ENV_REPORT" not in environment(orchestrator_container())
+
+    def test_the_schema_refuses_a_record_in_the_cluster_environment(self):
+        """infra.env outranks run.env, so a hand-set record would silently replace the real one."""
+        assert "MILES_SCRIPT_ENV_REPORT" in render_run_error(
+            "--set", "infra.env.MILES_SCRIPT_ENV_REPORT=/hijacked.json"
+        )
+
+    def test_the_schema_refuses_a_record_in_a_pool_environment(self):
+        """A per-pool variable outranks everything, so those pods would report a different launch."""
+        assert "MILES_SCRIPT_ENV_REPORT" in render_run_error(
+            "--set-json",
+            """run.staticWorkers=[{"name":"router","objectName":"myrun-router","command":["sleep"],"""
+            """"env":{"MILES_SCRIPT_ENV_REPORT":"hijacked"}}]""",
+        )

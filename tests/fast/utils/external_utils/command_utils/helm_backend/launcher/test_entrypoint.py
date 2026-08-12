@@ -255,3 +255,24 @@ class TestFollowUntilFinished:
             _follow(monkeypatch, tmp_path, outcome=SimpleNamespace(exit_code=3), diagnosed=diagnosed)
 
         assert diagnosed == ["r"]
+
+
+class TestTheLaunchRecordThePodsAreTold:
+    def test_refuses_a_record_path_a_run_set_through_its_worker_environment(self, monkeypatch):
+        """The serving entrypoint execs into this environment over the chart's value, so it wins."""
+        with pytest.raises(AssertionError):
+            _compute_train_argv(
+                monkeypatch, f'--train-env-vars \'{{"{entrypoint.LAUNCHER_REPORT_ENV_VAR}": "/w/mine.json"}}\''
+            )
+
+    def test_leaves_an_ordinary_worker_environment_alone(self, monkeypatch):
+        """--train-env-vars is how a run passes allocator settings, and none of that is a launch record."""
+        _, args = _compute_train_argv(monkeypatch, '--train-env-vars \'{"PYTORCH_CUDA_ALLOC_CONF": "a:b"}\'')
+
+        assert args.train_env_vars == {"PYTORCH_CUDA_ALLOC_CONF": "a:b"}
+
+    def test_a_run_that_names_no_worker_environment_is_launched(self, monkeypatch):
+        """Almost every launch names none, and the check may not stand in the way of those."""
+        pod_argv, _ = _compute_train_argv(monkeypatch, "")
+
+        assert "--train-env-vars" not in pod_argv

@@ -28,7 +28,10 @@
           },
           "propertyNames": {
             "not": {
-              "const": "PYTHONPATH"
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT"
+              ]
             },
             "pattern": "^[ -<>-~]+$"
           },
