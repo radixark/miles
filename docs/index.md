@@ -92,6 +92,17 @@ parallelism settings.
 See [Installation](/getting-started/installation#hardware-requirements) for per-GPU status
 and the container images for each.
 
+## News
+
+- [2026/07] 🔥 SGLang and Miles add day-0 support for Kimi K3 ([blog](https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support)).
+- [2026/07] On-policy distillation lands in Miles ([blog](https://www.lmsys.org/blog/2026-07-18-opd-support-in-miles)).
+- [2026/07] 🔥 SGLang and Miles add day-0 support for Inkling, a frontier multimodal model ([blog](https://www.lmsys.org/blog/2026-07-15-inkling-day0-support)).
+- [2026/07] DeepSeek-V4 Flash RL training comes to AMD Instinct MI355X with Miles ([blog](https://www.lmsys.org/blog/2026-07-10-rocm-miles-dsv4)).
+- [2026/06] SGLang and Miles add day-0 support for NVIDIA Nemotron 3 Ultra ([blog](https://www.lmsys.org/blog/2026-06-04-nvidia-run-nemotron-3-ultra)).
+- [2026/05] No token left behind: token-in-token-out in Miles ([blog](https://www.lmsys.org/blog/2026-05-13-no-token-left-behind)).
+- [2026/04] Updating 1 T parameters in seconds: P2P weight transfer in large-scale distributed RL ([blog](https://www.lmsys.org/blog/2026-04-29-p2p-update)).
+- [2026/04] 🔥 DeepSeek-V4 on day 0: from fast inference to verified RL with SGLang and Miles ([blog](https://www.lmsys.org/blog/2026-04-25-deepseek-v4)).
+
 ## Start here
 
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
