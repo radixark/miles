@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from miles.utils import misc
 from miles.utils.env_report import ENV_REPORT_PREFIX
 from miles.utils.misc import NodeProbeMixin, SimpleTicker, filter_keys, get_free_port, get_gpu_uuids
 
@@ -135,6 +136,27 @@ class TestNodeProbeMixin:
                         socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     )
                     available_socket.bind(("", port))
+
+    def test_the_scan_wraps_instead_of_walking_past_the_last_port(self, monkeypatch):
+        """The allocator cursor only grows, so an unbounded scan spun forever and wedged its caller."""
+        free_port = 20005
+        monkeypatch.setattr(misc, "is_port_available", lambda port: port == free_port)
+
+        assert get_free_port(start_port=65530, consecutive=1) == free_port
+
+    def test_a_range_with_nothing_free_raises(self, monkeypatch):
+        """Reporting exhaustion is the whole point: the old loop incremented past 65535 forever."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: False)
+
+        with pytest.raises(RuntimeError, match="consecutive free ports"):
+            get_free_port(start_port=65000, consecutive=4)
+
+    def test_a_block_that_cannot_fit_below_the_last_port_is_rejected(self, monkeypatch):
+        """Asking for a block that runs off the end is a caller bug, not something to scan for."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: True)
+
+        with pytest.raises(AssertionError):
+            get_free_port(start_port=65535, consecutive=2)
 
     def test_get_gpu_uuids_returns_one_entry_per_gpu(self):
         """The uuid probe is best-effort: without NVML it still answers per gpu."""

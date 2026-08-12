@@ -68,3 +68,19 @@ class TestPortAllocator:
         cursors.alloc(engine_a, node_ip="10.0.0.1")
         cursors.alloc(engine_b, node_ip="10.0.0.2")
         assert set(cursors._next_port_of_ip.keys()) == {"10.0.0.1", "10.0.0.2"}
+
+    def test_a_cursor_past_the_last_port_restarts_at_the_base_port(self, patch_ray_get):
+        """Ports are never reclaimed, so a long fault-tolerance run walks the cursor off the end."""
+        cursors = PortAllocator()
+        engine = fake_engine(host="10.0.0.1", port_seed=0)
+        cursors._next_port_of_ip["10.0.0.1"] = 65535
+
+        assert cursors.alloc(engine, node_ip="10.0.0.1", consecutive=4) == 20000
+
+    def test_a_cursor_that_still_fits_is_left_alone(self, patch_ray_get):
+        """Resetting early would hand out ports that are still in use by live cells."""
+        cursors = PortAllocator()
+        engine = fake_engine(host="10.0.0.1", port_seed=0)
+        cursors._next_port_of_ip["10.0.0.1"] = 65530
+
+        assert cursors.alloc(engine, node_ip="10.0.0.1", consecutive=4) == 65530
