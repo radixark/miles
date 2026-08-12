@@ -88,12 +88,11 @@ the driver's step schedule:
    enough have finished yet.
 2. It runs the optimizer step while the worker keeps generating.
 3. Every `--update-weights-interval` steps it pauses generation, synchronizes the new
-   weights through the configured
-   [disaggregated weight-update path](/advanced/disaggregated-rollout#weight-synchronization),
-   and resumes. The `--pause-generation-mode` flag decides how in-flight requests
-   survive that pause: the default `retract` returns them to the waiting queue and
-   recomputes their KV cache, while `in_place` freezes them and resumes on the existing
-   cache. Passing `abort` would kill them outright, which is why fully async rejects it.
+   weights through the configured update mode, and resumes. The
+   `--pause-generation-mode` flag decides how in-flight requests survive that pause: the
+   default `retract` returns them to the waiting queue and recomputes their KV cache,
+   while `in_place` freezes them and resumes on the existing cache. Passing `abort`
+   would kill them outright, which is why fully async rejects it.
 
 Because generation spans those weight updates, the samples in one group can carry
 different weight versions. The gap between a group's oldest weight version and the
