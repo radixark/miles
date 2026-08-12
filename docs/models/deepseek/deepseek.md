@@ -24,18 +24,21 @@ definition — the single-node smoke-test path.
 
 ## 3. Launch
 
-`scripts/run_deepseek.py` drives the whole pipeline: HF download, FP8 → BF16 cast, HF → Megatron
-`torch_dist` conversion, an rsync of both directories to node-local storage, and the `train.py`
-submission.
+`scripts/run_deepseek.py` splits the pipeline across three commands:
+
+- `prepare` — HF download, FP8 → BF16 cast, HF → Megatron `torch_dist` conversion.
+- `train` — the `train.py` submission; each trainer pod first rsyncs both model directories to
+  node-local storage.
+- `full-train` — `prepare` followed by `train`, which is the whole pipeline in one invocation.
 
 ```bash
-python scripts/run_deepseek.py train --num-nodes 16 --num-gpus-per-node 8
+python scripts/run_deepseek.py full-train --num-nodes 16 --num-gpus-per-node 8
 ```
 
 Single-node smoke test on a pruned checkpoint:
 
 ```bash
-python scripts/run_deepseek.py train --model-name DeepSeek-V3-0324-5layer --num-nodes 1
+python scripts/run_deepseek.py full-train --model-name DeepSeek-V3-0324-5layer --num-nodes 1
 ```
 
 Directories default to `--model-dir /root/models` (shared FS), `--data-dir /root/datasets`, and
@@ -59,7 +62,7 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 \
           --node-ip-address ${WORKER_IP} --disable-usage-stats
 
 # back on node 0
-MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek.py train \
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_deepseek.py full-train \
    --num-nodes 16 --num-gpus-per-node 8
 ```
 
@@ -84,7 +87,8 @@ runs on that one node.
 
 ## 4. Checkpoint conversion
 
-`train` performs the two conversion steps for you; the equivalent manual commands are below.
+`prepare`, and therefore `full-train`, performs the two conversion steps for you; the equivalent
+manual commands are below.
 
 The HF checkpoint ships in block-quantized FP8 — first cast it to BF16:
 
