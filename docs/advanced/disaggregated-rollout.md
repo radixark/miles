@@ -298,29 +298,19 @@ For current disk-delta runs, miles records
 `perf/update_weights_density` and `perf/update_weights_wire_bytes` in addition
 to the normal weight-update timing.
 
-The open-source Stitch integration reports the following reference
-measurements. For Kimi K2.6, the lowest reported total is shown:
+The open-source Stitch integration reports the following reference weight
+update times:
 
-| Model | Trainer publish | Preparation while serving | Activation pause | Total update |
-|---|---:|---:|---:|---:|
-| GLM-4.7-Flash | 15.0 s | 15.8 s | 0.75 s | about 30–35 s |
-| Kimi K2.6 NVFP4 | not included | 72.5 s | 2.82 s | 75.3 s |
+| Model | Update time |
+|---|---:|
+| GLM-4.7-Flash | about 30–35 s |
+| Kimi K2.6 NVFP4 | 75.3 s |
 
-The GLM-4.7-Flash values are steady-state means from a deployment with 4 × 8
-H200 trainer GPUs and 48 × 1 H200 rollout replicas. Its deltas averaged
-0.252% changed-byte density and 0.469 GB compressed. The Kimi K2.6 result is a
-verified single update at TP4 using a synthetic XOR delta with 0.3%
-quantized-value density; its total excludes remote transfer, trainer-side delta
-generation, and one-time CPU destination initialization. In both cases,
-preparation ran while inference remained available and only activation paused
-the engine.
-
-See the source measurements for
-[GLM-4.7-Flash](https://github.com/modal-projects/stitch/blob/main/cookbook/README.md#weight-update-performance)
-and
-[Kimi K2.6 NVFP4](https://github.com/modal-projects/stitch/blob/main/README.md#measured-delta-updates).
-They are external reference measurements, not a general performance claim for
-miles, SGLang, or another rollout service.
+The GLM-4.7-Flash result is from steady-state updates in a deployment with 4 ×
+8 H200 trainer GPUs and 48 × 1 H200 rollout replicas. The Kimi K2.6 result is
+the lowest reported verified single-update time at TP4. These are external
+reference measurements, not a general performance claim for miles, SGLang, or
+another rollout service.
 
 ## Related guides
 
