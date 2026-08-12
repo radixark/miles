@@ -1,6 +1,7 @@
 {
- "$schema": "https://mintlify.com/schema.json",
+ "$schema": "https://mintlify.com/docs.json",
  "name": "Miles",
+ "description": "Miles is an open-source reinforcement learning framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.",
  "theme": "mint",
  "logo": {
   "light": "/assets/images/brand/miles_logo_light.png",
@@ -11,8 +12,14 @@
  "favicon": "/assets/images/brand/miles_square.png",
  "seo": {
   "metatags": {
-   "canonical": "https://miles.radixark.com/docs",
    "og:site_name": "Miles Documentation"
+  },
+  "organization": {
+   "name": "RadixArk",
+   "url": "https://www.radixark.com",
+   "sameAs": [
+    "https://github.com/radixark"
+   ]
   }
  },
  "colors": {
@@ -211,10 +218,11 @@
        {
         "group": "Performance",
         "pages": [
-         "advanced/fp8-low-precision",
+         "advanced/low-precision",
          "advanced/int4-qat",
          "advanced/speculative-decoding",
-         "advanced/lora"
+         "advanced/lora",
+         "advanced/on-policy-distillation"
         ],
         "expanded": false
        },
@@ -273,7 +281,18 @@
        "developer/architecture",
        "developer/versions",
        "developer/debug",
-       "developer/experimental-features"
+       "developer/experimental-features",
+       {
+        "group": "CI",
+        "pages": [
+         "ci/contributor-guide",
+         "ci/00-stage",
+         "ci/01-label",
+         "ci/02-docker-build",
+         "ci/03-metric-history-gate"
+        ],
+        "expanded": false
+       }
       ]
      }
     ]
@@ -323,13 +342,17 @@
    "source": "/platforms/amd",
    "destination": "/getting-started/installation",
    "permanent": true
+  },
+  {
+   "source": "/advanced/fp8-low-precision",
+   "destination": "/advanced/low-precision",
+   "permanent": true
   }
  ],
  "background": {
   "dark": "#0c0b0a",
   "light": "#faf7f4"
  },
- "url": "https://www.radixark.com",
  "contextual": {
   "options": [
    {

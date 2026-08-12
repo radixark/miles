@@ -113,5 +113,5 @@ The launcher exposes these as flags:
 ## 6. Pairs Well With
 
 - [PD Disaggregation](/advanced/pd-disaggregation) — on by default for `num_nodes ≥ 1`.
-- [Low Precision RL](/advanced/fp8-low-precision) — opt-in via `--fp8-rollout`.
+- [Low Precision RL](/advanced/low-precision) — opt-in via `--fp8-rollout`.
 - [Speculative Decoding](/advanced/speculative-decoding) — opt-in via `--enable-mtp`.

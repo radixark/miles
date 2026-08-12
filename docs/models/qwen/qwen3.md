@@ -118,11 +118,11 @@ The 4 B / 8 B / 14 B recipes leave Adam on GPU.
 
 ### 5.5 Notable quirks
 
-- **BF16 train + FP8 inference**: download `Qwen/Qwen3-4B-FP8` and pass `--extra-args "--hf-checkpoint /root/models/Qwen3-4B-FP8"` to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/advanced/fp8-low-precision).
+- **BF16 train + FP8 inference**: download `Qwen/Qwen3-4B-FP8` and pass `--extra-args "--hf-checkpoint /root/models/Qwen3-4B-FP8"` to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/advanced/low-precision).
 - **FSDP backend**: `python3 scripts/run_qwen3_0_6b_fsdp.py` runs a Qwen3-0.6B recipe with `--train-backend fsdp` (downloads model + datasets itself); no Megatron `torch_dist` conversion needed.
 - **AMD ROCm**: `python scripts/amd/run_qwen3_4b.py` mirrors the recipe, with the GPU count per node resolved from `--hardware` (`MI350X` / `MI355X`).
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [Backends Beyond Megatron](/advanced/architecture-support) — for the FSDP variant.

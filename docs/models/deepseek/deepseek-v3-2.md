@@ -213,7 +213,7 @@ Both MXFP8 options require Blackwell and are rejected on H100 / H200, and the tw
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](/advanced/fp8-low-precision) — background for the rollout and training quantization flags above.
+- [Low Precision RL](/advanced/low-precision) — background for the rollout and training quantization flags above.
 - [Fault Tolerance](/advanced/fault-tolerance) — enabled by default in this recipe.
 - [GLM-5.2](/models/glm/glm5-2) — the other recipe built on the same DSA attention implementation.
 - [Agentic Chat Template](/user-guide/agentic-chat-template) — V3.2 renders through the `deepseekv32` template.
