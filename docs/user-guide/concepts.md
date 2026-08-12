@@ -86,6 +86,6 @@ Use this map when reading any launch script:
 
 - [Launch Script](/user-guide/launch-script) — what a launch script does when you run it,
   and how to override a recipe.
+- [Training Backends](/user-guide/training-backend) — Megatron-LM and FSDP, parallelism, checkpoints, and hooks.
 - [Argument Groups](/user-guide/argument-groups) — where each launch-script array belongs.
-- [Training Backend](/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
 - [CLI Reference](/user-guide/cli-reference) — every flag, grouped and fully cataloged.

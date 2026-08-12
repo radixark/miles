@@ -149,7 +149,7 @@ from the right key (a `--label-key` typo is the usual cause).
 
 The trainer's offload and reload cycle is colliding with the engine's static memory. Lower
 `--sglang-mem-fraction-static` to 0.7 or 0.6. See
-[Training Backends](/user-guide/usage) for the layout and offload knobs.
+[Training Backends](/user-guide/training-backend) for the layout and offload knobs.
 
 ## Common kernel pitfalls
 

@@ -49,11 +49,7 @@ Three downloads:
 # The model you will train
 hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B
 # Training prompts: 17k math problems with checkable answers
-<<<<<<< HEAD
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/datasets/dapo-math-17k
-=======
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
->>>>>>> yueming/script-bugfix
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 # Eval benchmark: harder problems, evaluated on but never trained on
 hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/datasets/aime-2024
 ```
@@ -192,7 +188,7 @@ size 256.
 - [Core concepts](/user-guide/concepts) — the model behind rollout / actor / reference.
 - [Launch script](/user-guide/launch-script) — what a launch script does when you run it,
   how it is structured, and the three ways to override a recipe.
-- [Training backends](/user-guide/usage) — Megatron vs FSDP.
+- [Training backends](/user-guide/training-backend) — Megatron vs FSDP.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
 - [Models](/models/index) — recipes for Qwen3.5, GLM5.2, DeepSeek V4, Kimi K2.6, and more.
 

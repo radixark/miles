@@ -8,7 +8,7 @@ description: Concepts, launch scripts, customization hooks, and a complete CLI r
 | [Launch Script](/user-guide/launch-script) | What `python scripts/run_*.py` does, how a launch script is structured, and how to override a recipe. |
 | [Argument Groups](/user-guide/argument-groups) | Where `MODEL_ARGS`, `PERF_ARGS`, `GRPO_ARGS`, and the other launch-script arrays belong. |
 | [Fully Async RL](/user-guide/fully-async) | Continuous generation decoupled from training: the schedule, the data buffer, async eval, and the metrics to watch. |
-| [Training Backend](/user-guide/usage) | Megatron-LM as the training backend — parallelism, checkpoints, and hooks. |
+| [Training Backends](/user-guide/training-backend) | Megatron-LM and FSDP: what each one owns, how to choose, parallelism, checkpoints, and hooks. |
 | [Monitoring & Logging](/user-guide/monitoring) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |
 | [Customization](/user-guide/customization) | The 21 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
 | [Rollout Endpoints](/user-guide/rollout-endpoints) | The `/generate` endpoint and the OpenAI chat endpoint for agentic sessions. |

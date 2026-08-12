@@ -95,7 +95,7 @@ jobs:
           # the recorded base.sha, which can lag main and pull in unrelated changes.
           # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
           if git diff --name-only HEAD^1 HEAD \
-              | grep -qE '^(docker/(Dockerfile|build\.py|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
+              | grep -qE '^(docker/(Dockerfile|build\.py|install-kube-tools\.sh|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -128,8 +128,11 @@ jobs:
       - name: Install Python + dependencies
         if: env.BUILD == 'true'
         run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
+          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=600 update
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
+          fi
+          pip3 install --break-system-packages --ignore-installed typer
       - name: Login to Docker Hub
         if: env.BUILD == 'true'
         uses: docker/login-action@v3
