@@ -81,8 +81,9 @@ class _RecordingApiClient:
 
 
 class _NoopEngineApiClient:
-    def __init__(self, server_url: str) -> None:
+    def __init__(self, server_url: str, api_key: str | None = None) -> None:
         self.server_url = server_url
+        self.api_key = api_key
 
     async def health_generate(self, timeout: float = 5.0) -> bool:
         return True
