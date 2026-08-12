@@ -1,3 +1,4 @@
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -188,6 +189,34 @@ _DELETE_UNINSTALL_JOB = [
 ]
 
 
+class TestTheRelaunchKeepsThePodsItAttachesTo:
+    def test_the_pods_keep_the_record_of_the_launch_that_installed_them(self, monkeypatch, tmp_path):
+        """A new record in the pod template is a new pod template, so a resize would restart every worker."""
+        recorded = _Recorded()
+
+        _launch(monkeypatch, tmp_path, recorded, installed=True, rendered=_RENDERED_WITH_RECORD)
+
+        assert _written_values(tmp_path)["run"]["launchRecord"] == _INSTALLED_RECORD
+
+    def test_a_first_install_points_the_pods_at_the_record_of_this_launch(self, monkeypatch, tmp_path):
+        recorded = _Recorded()
+
+        _launch(monkeypatch, tmp_path, recorded, installed=False)
+
+        written = sorted((tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / _RUN_ID / "launches").glob("*"))
+        assert _written_values(tmp_path)["run"]["launchRecord"] == str(written[0])
+
+    def test_this_launch_is_still_recorded_on_disk_when_the_pods_keep_an_older_one(self, monkeypatch, tmp_path):
+        """The pods keeping their own record must not cost the run the record of this invocation."""
+        recorded = _Recorded()
+
+        _launch(monkeypatch, tmp_path, recorded, installed=True, rendered=_RENDERED_WITH_RECORD)
+
+        written = sorted((tmp_path / "cluster-storage" / "miles_data" / "miles-runs" / _RUN_ID / "launches").glob("*"))
+        assert len(written) == 1
+        assert json.loads(written[0].read_text())["run_id"] == _RUN_ID
+
+
 def _launch(
     monkeypatch,
     tmp_path,
@@ -196,6 +225,7 @@ def _launch(
     installed: bool,
     proposed_differs: bool = False,
     delete_fails: bool = False,
+    rendered: str | None = None,
 ) -> None:
     def fake_run_process(command, **kwargs):
         arguments = [str(part) for part in command]
@@ -209,10 +239,11 @@ def _launch(
 
     monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
     monkeypatch.setattr(Helm, "build_dependencies", staticmethod(lambda chart: None))
+    rendered = rendered if rendered is not None else _RENDERED
     monkeypatch.setattr(
-        Helm, "get_manifest", staticmethod(lambda release, namespace: Manifest.parse(_RENDERED) if installed else None)
+        Helm, "get_manifest", staticmethod(lambda release, namespace: Manifest.parse(rendered) if installed else None)
     )
-    proposed = _RENDERED_WITH_ANOTHER_KEY if proposed_differs else _RENDERED
+    proposed = _RENDERED_WITH_ANOTHER_KEY if proposed_differs else rendered
     monkeypatch.setattr(Helm, "render_upgrade", staticmethod(lambda **kwargs: Manifest.parse(proposed)))
     monkeypatch.setattr(Helm, "upgrade", staticmethod(lambda **kwargs: recorded.upgraded.append(kwargs["release"])))
     monkeypatch.setattr(Manifest, "state_file", lambda self, container: tmp_path / "attached.state")
@@ -256,6 +287,22 @@ def _launchable_infra_file(tmp_path) -> Path:
 
 
 _RENDERED = "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: myrun-values\n"
+_INSTALLED_RECORD = "/shared/miles-runs/the-launch-that-installed-these-pods/launches/launch-1.json"
+_RENDERED_WITH_RECORD = f"""---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: myrun-orchestrator
+spec:
+  template:
+    spec:
+      containers:
+        - name: orchestrator
+          command: [python]
+          env:
+            - name: MILES_SCRIPT_ENV_REPORT
+              value: '{_INSTALLED_RECORD}'
+"""
 _RENDERED_WITH_ANOTHER_KEY = _RENDERED + "data:\n  extra: added\n"
 
 

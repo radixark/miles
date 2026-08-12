@@ -14,6 +14,7 @@ _UNINSTALL_MANIFEST_COMPONENT = "uninstall-manifest"
 _RUNS_DIR_NAME = "miles-runs"
 _STATE_DIR_NAME = "state"
 _VALUES_DIR_NAME = "values"
+_RECORDS_DIR_NAME = "launches"
 _STATE_FILE_GLOB = "orchestrator-*.state"
 
 
@@ -51,6 +52,10 @@ class RunFiles:
     @staticmethod
     def new_state_file(*, run_directory: str | Path) -> Path:
         return _orchestrator_state_path(run_directory, _new_launch_token())
+
+    @staticmethod
+    def new_record_file(*, run_directory: str | Path) -> Path:
+        return Path(run_directory) / _RECORDS_DIR_NAME / f"launch-{_new_launch_token()}.json"
 
     @staticmethod
     def latest_state_file(*, run_directory: str | Path) -> Path | None:
