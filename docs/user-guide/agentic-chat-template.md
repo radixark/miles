@@ -11,7 +11,7 @@ Your harness only ever sends and receives **OpenAI chat messages**, never tokens
 History handling depends on the selected session-server version:
 
 - **v1 is linear.** Each turn must extend the previous messages at the tail. Retrying the latest turn may roll back one assistant checkpoint, including to an empty session when retrying the first turn; diverging earlier or discarding more than one generated checkpoint is rejected.
-- **v2 is an append-only tree.** A request attaches to the deepest checkpoint whose complete message path is a prefix of the request. Any unmatched suffix creates a new branch; existing branches are never deleted. A path whose last generation ended with `finish_reason=length` is closed and cannot be extended.
+- **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint whose complete message path is a prefix of the request. Any unmatched suffix creates a new branch; existing branches are never deleted. A path whose last generation ended with `finish_reason=length` is closed and cannot be extended.
 - **Appended roles follow the chat template.** After an existing checkpoint, the selected model's fixed template determines which roles may be appended; users do not configure this separately.
 
 ## Pick your `--tito-model`
