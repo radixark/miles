@@ -497,6 +497,47 @@ class TestTick:
 
         assert [name for name, _kwargs in cell_env["memory_calls"] if name == "check_weights"] == []
 
+    async def test_a_failing_weight_check_leaves_the_cell_initializing_for_a_retry(self, cell_env, monkeypatch):
+        """Publishing despite a failed reset would silently disable a check the user asked for."""
+
+        async def _failing_check_weights(self, action, allow_quant_error, selector, skip_list):
+            if action == "reset_tensors":
+                raise RuntimeError("engine refused to reset its tensors")
+
+        monkeypatch.setattr(ServerCell, "check_weights", _failing_check_weights)
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True))
+        await cell.init()
+
+        with pytest.raises(RuntimeError):
+            await cell.tick()
+
+        assert cell.is_initializing
+
+    async def test_a_weight_check_that_recovers_lets_the_cell_move_on(self, cell_env, monkeypatch):
+        """The retry is only worth anything if a later tick actually completes the transition."""
+        failures = {"remaining": 1}
+        original_check_weights = ServerCell.check_weights
+
+        async def _flaky_check_weights(self, action, allow_quant_error, selector, skip_list):
+            if action == "reset_tensors" and failures["remaining"] > 0:
+                failures["remaining"] -= 1
+                raise RuntimeError("engine refused to reset its tensors")
+            return await original_check_weights(
+                self, action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+            )
+
+        monkeypatch.setattr(ServerCell, "check_weights", _flaky_check_weights)
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True))
+        await cell.init()
+        with pytest.raises(RuntimeError):
+            await cell.tick()
+
+        await cell.tick()
+
+        assert isinstance(cell._state, StatePendingWeights)
+
+
+class TestAddressing:
     async def test_an_uninitialized_cell_has_no_address_to_offer(self, cell_env):
         """Reading an address before the gate opens is what silently dialed nothing before."""
         cell = _make_cell()
