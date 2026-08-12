@@ -298,19 +298,29 @@ For current disk-delta runs, miles records
 `perf/update_weights_density` and `perf/update_weights_wire_bytes` in addition
 to the normal weight-update timing.
 
-As one external reference, a fully async GLM-4.7-Flash deployment used 4 × 8
-H200 trainer GPUs and 48 × 1 H200 rollout replicas. Across its recorded
-steady-state samples, trainer XOR encode and publish averaged 15.0 seconds,
-replica preparation while serving averaged 15.8 seconds, and activation paused
-an engine for 0.75 seconds on average. The average changed-byte density was
-0.252%, producing a 0.469 GB compressed delta. The complete path took roughly
-30–35 seconds, but only activation paused inference.
+The open-source Stitch integration reports the following reference
+measurements. For Kimi K2.6, the lowest reported total is shown:
 
-Those measurements come from the open-source
-[Stitch reference integration](https://github.com/modal-projects/stitch/blob/main/cookbook/README.md#weight-update-performance),
-not from the registered miles E2E test. They illustrate why preparation and
-activation should be reported separately; they are not a general performance
-claim for miles, SGLang, or another rollout service.
+| Model | Trainer publish | Preparation while serving | Activation pause | Total update |
+|---|---:|---:|---:|---:|
+| GLM-4.7-Flash | 15.0 s | 15.8 s | 0.75 s | about 30–35 s |
+| Kimi K2.6 NVFP4 | not included | 72.5 s | 2.82 s | 75.3 s |
+
+The GLM-4.7-Flash values are steady-state means from a deployment with 4 × 8
+H200 trainer GPUs and 48 × 1 H200 rollout replicas. Its deltas averaged
+0.252% changed-byte density and 0.469 GB compressed. The Kimi K2.6 result is a
+verified single update at TP4 using a synthetic XOR delta with 0.3%
+quantized-value density; its total excludes remote transfer, trainer-side delta
+generation, and one-time CPU destination initialization. In both cases,
+preparation ran while inference remained available and only activation paused
+the engine.
+
+See the source measurements for
+[GLM-4.7-Flash](https://github.com/modal-projects/stitch/blob/main/cookbook/README.md#weight-update-performance)
+and
+[Kimi K2.6 NVFP4](https://github.com/modal-projects/stitch/blob/main/README.md#measured-delta-updates).
+They are external reference measurements, not a general performance claim for
+miles, SGLang, or another rollout service.
 
 ## Related guides
 
