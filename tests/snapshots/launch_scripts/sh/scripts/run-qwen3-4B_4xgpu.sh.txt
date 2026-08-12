@@ -71,6 +71,8 @@
 "1"
 "--actor-num-gpus-per-node"
 "4"
+"--num-gpus-per-node"
+"4"
 "--colocate"
 "--swiglu"
 "--num-layers"

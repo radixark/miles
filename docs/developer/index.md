@@ -1,6 +1,6 @@
 ---
 title: Developer Guide
-description: Architecture, contribution conventions, debugging, and migration notes.
+description: Contribution conventions, internal architecture, dependency versions, and debugging.
 ---
 You're here because you want to change Miles, not just use it. This section is the
 short tour for new contributors.
@@ -9,25 +9,25 @@ short tour for new contributors.
 
   <Card title="Contributing" icon="file-pen" href="/developer/contributor-guide">
 
-    PR conventions, code layout, how reviews work.
-
-  </Card>
-
-  <Card title="Debugging" icon="bug" href="/developer/debug">
-
-    Aligning precision, separate train/rollout debugging, common kernel pitfalls.
-
-  </Card>
-
-  <Card title="Migration Guide" icon="code-branch" href="/developer/migration">
-
-    Sync → async loop, breaking flag changes between releases.
+    Repo layout, what enforces code style, what lives in .claude, and how to drive CI from a PR.
 
   </Card>
 
   <Card title="Architecture Overview" icon="diagram-project" href="/developer/architecture">
 
     The 30-minute tour of how Miles is organized internally.
+
+  </Card>
+
+  <Card title="Versions and Images" icon="layer-group" href="/developer/versions">
+
+    How the miles, SGLang and Megatron-LM trees fit together, and how to bump one.
+
+  </Card>
+
+  <Card title="Debugging" icon="bug" href="/developer/debug">
+
+    Isolating rollout from training, the debug and CI assertion flags, aligning precision.
 
   </Card>
 
@@ -44,5 +44,6 @@ short tour for new contributors.
 1. Pick something small from `good first issue` on [GitHub](https://github.com/radixark/miles/issues).
 2. Run the [Reproducibility recipe](/examples/reproducibility) so you can be sure
    "I changed X and it broke" actually means that.
-3. Use `--debug-train-only` or `--debug-rollout-only` to scope your changes.
+3. Use `--debug-train-only` or `--debug-rollout-only` to scope your changes, and
+   `--list-only` to confirm your test is actually registered in CI.
 4. Open a PR. We'll review within ~48h.

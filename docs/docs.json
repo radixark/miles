@@ -1,18 +1,25 @@
 {
- "$schema": "https://mintlify.com/schema.json",
+ "$schema": "https://mintlify.com/docs.json",
  "name": "Miles",
+ "description": "Miles is an open-source reinforcement learning framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.",
  "theme": "mint",
  "logo": {
-  "light": "/assets/images/miles_logo_light.png",
-  "dark": "/assets/images/miles_logo_dark.png",
+  "light": "/assets/images/brand/miles_logo_light.png",
+  "dark": "/assets/images/brand/miles_logo_dark.png",
   "href": "/",
   "width": 130
  },
- "favicon": "/assets/images/miles_square.png",
+ "favicon": "/assets/images/brand/miles_square.png",
  "seo": {
   "metatags": {
-   "canonical": "https://miles.radixark.com/docs",
    "og:site_name": "Miles Documentation"
+  },
+  "organization": {
+   "name": "RadixArk",
+   "url": "https://www.radixark.com",
+   "sameAs": [
+    "https://github.com/radixark"
+   ]
   }
  },
  "colors": {
@@ -68,6 +75,7 @@
           ],
           "expanded": false
          },
+         "models/deepseek/deepseek-v3-2",
          "models/deepseek/deepseek"
         ],
         "expanded": false
@@ -117,10 +125,10 @@
         "group": "GLM",
         "root": "models/glm/index",
         "pages": [
+         "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
-         "models/glm/glm4-5",
-         "models/glm/glm4"
+         "models/glm/glm4-5"
         ],
         "expanded": false
        },
@@ -128,9 +136,9 @@
         "group": "Kimi",
         "root": "models/kimi/index",
         "pages": [
+         "models/kimi/kimi-k3",
          "models/kimi/kimi-k2.5",
-         "models/kimi/kimi-k2",
-         "models/kimi/moonlight"
+         "models/kimi/kimi-k2"
         ],
         "expanded": false
        },
@@ -146,11 +154,19 @@
           ],
           "expanded": false
          },
-         "models/nemotron/nemotron-3-super"
+         "models/nemotron/nemotron-3-super",
+         "models/nemotron/nemotron-3-ultra"
         ],
         "expanded": false
        },
-       "models/mimo/mimo",
+       {
+        "group": "Gemma",
+        "root": "models/gemma/index",
+        "pages": [
+         "models/gemma/gemma-4"
+        ],
+        "expanded": false
+       },
        "models/gpt-oss/gpt-oss"
       ]
      }
@@ -165,13 +181,13 @@
       "pages": [
        "user-guide/concepts",
        "user-guide/argument-groups",
+       "user-guide/fully-async",
        "user-guide/usage",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
        "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/rollout-endpoints",
-       "user-guide/fully-async",
        "user-guide/agentic-chat-template",
        "user-guide/cli-reference"
       ]
@@ -198,10 +214,11 @@
        {
         "group": "Performance",
         "pages": [
-         "advanced/fp8-low-precision",
+         "advanced/low-precision",
          "advanced/int4-qat",
          "advanced/speculative-decoding",
-         "advanced/lora"
+         "advanced/lora",
+         "advanced/on-policy-distillation"
         ],
         "expanded": false
        },
@@ -257,23 +274,21 @@
       "root": "developer/index",
       "pages": [
        "developer/contributor-guide",
-       "developer/debug",
-       "developer/migration",
        "developer/architecture",
-       "developer/experimental-features"
-      ]
-     }
-    ]
-   },
-   {
-    "tab": "Platforms",
-    "groups": [
-     {
-      "group": "Platforms",
-      "root": "platforms/index",
-      "pages": [
-       "platforms/nvidia",
-       "platforms/amd"
+       "developer/versions",
+       "developer/debug",
+       "developer/experimental-features",
+       {
+        "group": "CI",
+        "pages": [
+         "ci/contributor-guide",
+         "ci/00-stage",
+         "ci/01-label",
+         "ci/02-docker-build",
+         "ci/03-metric-history-gate"
+        ],
+        "expanded": false
+       }
       ]
      }
     ]
@@ -284,19 +299,51 @@
      {
       "group": "Resources",
       "pages": [
-       "faq",
-       "blog/index"
+       "blog/index",
+       "subscribe"
+      ]
+     }
+    ]
+   },
+   {
+    "tab": "FAQ",
+    "groups": [
+     {
+      "group": "FAQ",
+      "pages": [
+       "faq"
       ]
      }
     ]
    }
   ]
  },
+ "redirects": [
+  {
+   "source": "/platforms/index",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/nvidia",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/amd",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/advanced/fp8-low-precision",
+   "destination": "/advanced/low-precision",
+   "permanent": true
+  }
+ ],
  "background": {
   "dark": "#0c0b0a",
   "light": "#faf7f4"
  },
- "url": "https://www.radixark.com",
  "contextual": {
   "options": [
    {

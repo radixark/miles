@@ -52,30 +52,13 @@ the native path. Bridge remains the compatibility path for existing validated
 recipes during the transition; this is not an immediate Bridge deprecation.
 </Note>
 
-### Generalized native plugin
+### Native LoRA
 
-[PR #1792](https://github.com/radixark/miles/pull/1792) implements a declarative
-`miles_plugins/lora` provider for raw-mode Megatron models. It owns adapter
-attachment, TP/EP/SP gradient handling, HF adapter import/export, checkpointing,
-and SGLang target expansion behind a model-spec registry. The implementation is
-validated in the PR but is still open, so the following is upcoming coverage,
-not functionality in the current `main` branch.
-
-On the PR branch, `--megatron-to-hf-mode raw` selects native construction and
-`--lora-provider-path` defaults to `miles_plugins.lora`; a model with a custom
-module layout can point that flag at a model-specific provider.
-
-| Evidence tier in PR #1792 | Model coverage |
-|---|---|
-| E2E or recorded GRPO validation | Qwen3 (0.6B CI and 8B run), Qwen3.5 (9B and 35B-A3B), GLM-4.7-Flash, GLM-5.2 5-layer, Kimi-K2.5 2-layer, and Inkling-Small. |
-| Registered architecture specs | Llama; Qwen2/Qwen3 dense and MoE; MiMo; GLM-4 dense and MoE; Qwen3.5/3.6 and Qwen3-Next; DeepSeek-V3/V3.2; GLM MLA/DSA families; Kimi K2/K2.5; JoyAI-LLM-Flash; and Inkling. |
-
-A registered spec means the architecture and export layout are known; it does
-not mean every model or target has a full-scale E2E run. In particular, the
-generic native provider does not yet adapt routed/grouped expert projections,
-and GDN attention/mixer projections are not adapted. GQA attention layers and
-eligible dense/shared-expert MLP projections remain available. Inkling is the
-model-specific exception with native routed-expert support.
+Native LoRA attaches adapter modules directly to raw-mode Megatron models
+instead of relying on Bridge PEFT conversion. The implementation on `main` is
+model-specific to Inkling and Inkling-Small. Generalized model-provider support
+is under development in open [PR #1792](https://github.com/radixark/miles/pull/1792)
+and is not released on `main`.
 
 ## Validated models and recipes
 
@@ -221,6 +204,8 @@ LoRA actor in BF16 while SGLang serves a separately quantized FP8 base
 checkpoint. Adapter tensors remain unquantized and are synchronized at each
 configured weight-update boundary. The GLM-5.2 launcher exposes this as its
 `--fp8-rollout` option and writes an SGLang config with `update_weights: true`.
+See [Low Precision RL](/advanced/low-precision) and
+[INT4 QAT](/advanced/int4-qat) for the underlying precision features.
 
 Historical GLM-5.2 validation measured:
 
@@ -376,12 +361,10 @@ training, and cross-world-size restore are outside v1.
 This backend is implemented in an open PR, not released on `main`; the PR
 reports H200 validation. PR #2273 provides the operation backend, but its v1
 training operations are still exposed through the controller's Ray API. The
-stacked draft [PR #2346](https://github.com/radixark/miles/pull/2346) adds a REST
+stacked [PR #2346](https://github.com/radixark/miles/pull/2346) adds a REST
 frontend compatible with the official `tinker==0.24.1` client; its GPU frontend
-E2E is still pending. An alternative open design,
-[PR #2137](https://github.com/radixark/miles/pull/2137), retains dataset-driven
-whole-batch scheduling. If #2273 lands as proposed, it replaces the current
-dataset-driven driver rather than guaranteeing both modes will coexist.
+E2E is still pending. If #2273 lands as proposed, it replaces the current
+dataset-driven driver.
 </Warning>
 
 ## Compatibility and limitations

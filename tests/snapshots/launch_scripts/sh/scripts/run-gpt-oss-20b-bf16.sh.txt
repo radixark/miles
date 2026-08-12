@@ -39,11 +39,16 @@
 "python"
 
 ### 8
+"nvidia-smi"
+"topo"
+"-m"
+
+### 9
 "python3"
 "<REPO_ROOT>/scripts/../miles/utils/external_utils/model_args_utils.py"
 "gpt-oss-20b"
 
-### 9
+### 10
 "ray"
 "start"
 "--head"
@@ -55,12 +60,12 @@
 "--dashboard-host=0.0.0.0"
 "--dashboard-port=8265"
 
-### 10
+### 11
 "ray"
 "job"
 "submit"
 "--address=http://127.0.0.1:8265"
-"--runtime-env-json={\n  \"env_vars\": {\n    \"PYTHONPATH\": \"/root/Megatron-LM/\",\n    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\n    \"NCCL_NVLS_ENABLE\": \"\"\n  }\n}"
+"--runtime-env-json={\n  \"env_vars\": {\n    \"PYTHONPATH\": \"/root/Megatron-LM/\",\n    \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",\n    \"NCCL_NVLS_ENABLE\": \"0\"\n  }\n}"
 "--"
 "python3"
 "train.py"

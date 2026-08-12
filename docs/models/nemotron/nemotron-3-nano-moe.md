@@ -143,4 +143,4 @@ shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto the Megatron
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)

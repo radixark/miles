@@ -15,13 +15,6 @@ set -ex
 # will prevent ray from buffering stdout/stderr
 export PYTHONUNBUFFERED=1
 
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then
-    HAS_NVLINK=1
-else
-    HAS_NVLINK=0
-fi
-echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "glm4.5-355B-A32B")" || exit 1
@@ -189,7 +182,6 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor-num-nodes 8 \
    --actor-num-gpus-per-node 8 \
    --colocate \
-   --save-debug-rollout-data /mnt/zhuzilin/github-miles/data.pt \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \

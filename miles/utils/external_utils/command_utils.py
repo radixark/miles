@@ -169,7 +169,8 @@ def execute_train(
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             }
         ),
-        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+        # a get() default is evaluated eagerly, which would probe even when already decided
+        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
         **{
             k: os.environ[k]
             for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")

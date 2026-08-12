@@ -14,30 +14,31 @@ logger = logging.getLogger(__name__)
 def build_fsdp_meshes(
     device_type: str,
     world_size: int,
-    context_parallel_size: int,
     dp_replicate_size: int,
 ) -> dict[str, DeviceMesh]:
-    """Build the data/context-parallel views and the FSDP2 shard mesh."""
-    data_parallel_size = world_size // context_parallel_size
-
-    dp_cp_mesh = init_device_mesh(
+    """Build the data-parallel view and the FSDP2 shard mesh."""
+    dp_mesh = init_device_mesh(
         device_type,
-        mesh_shape=(data_parallel_size, context_parallel_size),
-        mesh_dim_names=("dp", "cp"),
+        mesh_shape=(world_size,),
+        mesh_dim_names=("dp",),
     )
-    dp_mesh = dp_cp_mesh["dp"]
     fsdp_mesh = dp_mesh
     if dp_replicate_size > 1:
-        fsdp_mesh = dp_mesh._unflatten(
-            0,
-            (dp_replicate_size, data_parallel_size // dp_replicate_size),
-            ("dp_replicate", "dp_shard"),
-        )
+        if hasattr(dp_mesh, "_unflatten"):
+            fsdp_mesh = dp_mesh._unflatten(
+                0,
+                (dp_replicate_size, world_size // dp_replicate_size),
+                ("dp_replicate", "dp_shard"),
+            )
+        else:
+            fsdp_mesh = init_device_mesh(
+                device_type,
+                mesh_shape=(dp_replicate_size, world_size // dp_replicate_size),
+                mesh_dim_names=("dp_replicate", "dp_shard"),
+            )
 
     return {
-        "dp_cp": dp_cp_mesh,
         "dp": dp_mesh,
-        "cp": dp_cp_mesh["cp"],
         "fsdp": fsdp_mesh,
     }
 
@@ -47,41 +48,29 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
     world_size = dist.get_world_size()
     rank = dist.get_rank()
 
-    cp_size = args.context_parallel_size
-    dp_rank = rank // cp_size
-    cp_rank = rank % cp_size
-
     meshes = build_fsdp_meshes(
         device_type="cuda",
         world_size=world_size,
-        context_parallel_size=cp_size,
         dp_replicate_size=args.dp_replicate_size,
     )
     dp_mesh = meshes["dp"]
-    cp_mesh = meshes["cp"]
     fsdp_mesh = meshes["fsdp"]
 
     logger.info(
         f"[Rank {rank}] FSDP mesh shape={fsdp_mesh.shape}, "
         f"dp_replicate_size={args.dp_replicate_size}, "
-        f"dp_shard_size={(world_size // cp_size) // args.dp_replicate_size}, "
-        f"dp_rank={dp_rank}, cp_rank={cp_rank}"
+        f"dp_shard_size={world_size // args.dp_replicate_size}, "
+        f"dp_rank={rank}"
     )
 
-    # Setup Ring Flash Attention with CP group from mesh (only when cp_size > 1)
-    if cp_size > 1:
-        # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
-        from ring_flash_attn import substitute_hf_flash_attn
-
-        substitute_hf_flash_attn(cp_mesh.get_group(), heads_k_stride=1)
-        logger.info(f"[Rank {rank}] CP initialized via device mesh")
-    else:
-        logger.info(f"[Rank {rank}] Pure DP mode (cp_size=1)")
+    # The FSDP backend is pure data parallel: every parallelism axis other than dp is
+    # a single-rank group, so collectives issued on them are no-ops.
+    self_group = dist.new_group([rank])
 
     parallel_state = ParallelState(
         intra_dp=GroupInfo(
-            rank=dp_rank,
-            size=world_size // cp_size,
+            rank=rank,
+            size=world_size,
             group=dp_mesh.get_group(),
         ),
         intra_dp_cp=GroupInfo(
@@ -91,14 +80,14 @@ def create_fsdp_parallel_state(args: Namespace) -> ParallelState:
             gloo_group=get_gloo_group(),
         ),
         cp=GroupInfo(
-            rank=cp_rank,
-            size=cp_size,
-            group=cp_mesh.get_group(),
+            rank=0,
+            size=1,
+            group=self_group,
         ),
         tp=GroupInfo(
             rank=0,
             size=1,
-            group=dist.new_group([rank]),
+            group=self_group,
         ),
         pp=GroupInfo(rank=0, size=1, group=None),
         ep=GroupInfo(rank=0, size=1, group=None),

@@ -155,11 +155,17 @@ def host_filesystem_frozen(sandbox: Path) -> Iterator[None]:
 def call_entrypoint(module: ModuleType, name: str, overrides: dict[str, object], sandbox: Path) -> None:
     entrypoint = getattr(module, name)
     first = next(iter(inspect.signature(entrypoint).parameters.values()), None)
-    with host_filesystem_frozen(sandbox):
-        if first is not None and first.name == "args":
-            entrypoint(module.ScriptArgs(**overrides))
-        else:
-            entrypoint(**overrides)
+    saved_env = dict(os.environ)
+    try:
+        with host_filesystem_frozen(sandbox):
+            if first is not None and first.name == "args":
+                entrypoint(module.ScriptArgs(**overrides))
+            else:
+                entrypoint(**overrides)
+    finally:
+        # a leaked knob would make later recordings depend on which launcher ran first
+        os.environ.clear()
+        os.environ.update(saved_env)
 
 
 def format_recording(recording: Recording, sandbox: Path) -> str:

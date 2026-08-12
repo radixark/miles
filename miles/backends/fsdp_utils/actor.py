@@ -659,25 +659,9 @@ class FSDPTrainRayActor(TrainRayActor):
             raise NotImplementedError(f"Loading from checkpoint file {ref_load_path} not yet implemented")
 
     def _get_model_inputs_args(self, batch: dict) -> dict:
-        input_ids = batch["tokens"]
-        position_ids = batch["position_ids"]
-
-        if get_parallel_state().cp.size > 1:
-            # TODO: Pin ring_flash_attn for torch 2.11+ compatibility; keep this local import to unblock non-FSDP+CP paths.
-            from ring_flash_attn import update_ring_flash_attn_params
-
-            if "cu_seqlens" in batch:
-                cu_seqlens = batch["cu_seqlens"]
-                if not cu_seqlens.is_cuda:
-                    cu_seqlens = cu_seqlens.cuda()
-                update_ring_flash_attn_params(cu_seqlens, self.cp_group)
-
-            input_ids = torch.chunk(input_ids, get_parallel_state().cp.size, dim=1)[get_parallel_state().cp.rank]
-            position_ids = torch.chunk(position_ids, get_parallel_state().cp.size, dim=1)[get_parallel_state().cp.rank]
-
         model_args = {
-            "input_ids": input_ids,
-            "position_ids": position_ids,
+            "input_ids": batch["tokens"],
+            "position_ids": batch["position_ids"],
             "attention_mask": None,
         }
 
