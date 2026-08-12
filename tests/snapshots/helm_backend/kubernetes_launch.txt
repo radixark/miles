@@ -39,6 +39,7 @@ run:
       limits:
         nvidia.com/gpu: 8
     size: 2
+  launchRecord: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/launches/launch-260101-000000-000001.json
   objectNames:
     colocatePairing: miles-run-260101-000000-000-colocate-pairing
     mooncakeMaster: miles-run-260101-000000-000-mooncake-master
