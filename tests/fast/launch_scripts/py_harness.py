@@ -13,9 +13,9 @@ from types import ModuleType
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
 from tests.fast.utils.command_recorder import record_commands
 
-import miles.utils.external_utils.command_utils as command_utils
+from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils import base_backend
-from miles.utils.external_utils.model_args_utils import import_module_from_path
+from miles.utils.external_utils.model_args_utils import _import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
 FROZEN_HARDWARE = "H200"
@@ -144,7 +144,7 @@ def install_command_recorder(monkeypatch) -> Recording:
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    return import_module_from_path(path, name)
+    return _import_module_from_path(path, name)
 
 
 @contextmanager

@@ -22,16 +22,16 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
-_ADAPTER_DIR = f"{U.repo_base_dir}/examples/multi_lora/adapters"
+_ADAPTER_DIR = f"{command_utils.repo_base_dir}/examples/multi_lora/adapters"
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
 
     hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
@@ -75,6 +75,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     U.exec_command_cpu(f"hf download Qwen/Qwen3-4B --local-dir {args.model_dir}/Qwen3-4B")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -82,6 +83,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs, service: bool):
+    U = args.create_backend()
     mode = "service" if service else "bounded"
     print(
         f"[run] multi-LoRA ({mode}): {args.actor_num_gpus} train + {args.rollout_num_gpus} rollout GPUs, tp={args.tp}"
@@ -148,7 +150,7 @@ def _train(args: ScriptArgs, service: bool):
         "--attention-softmax-in-fp32 --attention-backend flash "
     )
 
-    wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
+    wandb_args = command_utils.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
     train_args = (
         f"{ckpt_args} {lora_args} {multi_lora_args} {sync_args} {rollout_args} {grpo_args} "
@@ -158,7 +160,6 @@ def _train(args: ScriptArgs, service: bool):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="qwen3-4B",
         train_script="train_multi_lora_async.py",
@@ -167,21 +168,21 @@ def _train(args: ScriptArgs, service: bool):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download Qwen3-4B and both task datasets. Run once per node before training."""
     _prepare_download(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Bounded run: register the adapters from adapters/, train until each hits num_step, exit."""
     _train(args, service=False)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Download model + datasets, then run the bounded training."""
     _prepare_download(args)
@@ -189,7 +190,7 @@ def full_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def serve(args: ScriptArgs):
     """Service mode: no adapters preloaded; register/deregister via the HTTP API while it idles."""
     _train(args, service=True)
