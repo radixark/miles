@@ -826,74 +826,9 @@ class InklingTITOTokenizer(TITOTokenizer):
                 stored_message, request_message
             ):
                 continue
-            server_fields = {
-                key: stored_message[key]
-                for key in ("content_blocks", "_miles_raw_completion_token_ids")
-                if key in stored_message
-            }
-            if server_fields:
-                preserved[index] = {**request_message, **server_fields}
+            if "content_blocks" in stored_message:
+                preserved[index] = {**request_message, "content_blocks": stored_message["content_blocks"]}
         return preserved
-
-    def apply_chat_template(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        add_generation_prompt: bool,
-        tools: list[dict[str, Any]] | None = None,
-        tokenize: bool = False,
-    ) -> str | list[int]:
-        """Render exact server-owned Inkling assistant completions by ID.
-
-        Ordinary prompts still use the fixed Jinja renderer. Session mismatch
-        reconstruction splices raw completion IDs at generated assistant
-        checkpoints and uses the existing incremental merge path between them,
-        preserving repeated and interleaved block boundaries exactly.
-        """
-        checkpoints = [
-            index
-            for index, message in enumerate(messages)
-            if message.get("role") == "assistant" and isinstance(message.get("_miles_raw_completion_token_ids"), list)
-        ]
-        if not tokenize or not checkpoints:
-            return super().apply_chat_template(
-                messages,
-                add_generation_prompt=add_generation_prompt,
-                tools=tools,
-                tokenize=tokenize,
-            )
-
-        token_ids: list[int] | None = None
-        checkpoint_messages: list[dict[str, Any]] = []
-        for index in checkpoints:
-            before = messages[:index]
-            if token_ids is None:
-                prompt_ids = super().apply_chat_template(
-                    before,
-                    add_generation_prompt=True,
-                    tools=tools,
-                    tokenize=True,
-                )
-            else:
-                prompt_ids = self.merge_tokens(
-                    old_messages=checkpoint_messages,
-                    new_messages=before,
-                    pretokenized_token_ids=token_ids,
-                    tools=tools,
-                )
-            raw_completion_ids = messages[index]["_miles_raw_completion_token_ids"]
-            token_ids = prompt_ids + [int(token_id) for token_id in raw_completion_ids]
-            checkpoint_messages = messages[: index + 1]
-
-        assert token_ids is not None
-        appended_messages = messages[len(checkpoint_messages) :]
-        incremental = self._tokenize_rendered_suffix(
-            [_DUMMY_SYSTEM, _build_dummy_assistant(checkpoint_messages[-1])],
-            appended_messages,
-            tools=tools,
-            add_generation_prompt=add_generation_prompt,
-        )
-        return token_ids + incremental
 
 
 # ---------------------------------------------------------------------------

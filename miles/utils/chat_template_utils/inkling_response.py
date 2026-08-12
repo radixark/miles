@@ -209,7 +209,6 @@ class InklingResponseParser:
         stored_message = {
             **client_message,
             "content_blocks": blocks,
-            "_miles_raw_completion_token_ids": list(completion_token_ids),
         }
         return ParsedAssistantCompletion(
             client_message=client_message,

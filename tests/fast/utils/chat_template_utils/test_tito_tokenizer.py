@@ -411,6 +411,65 @@ class TestInklingFixedTemplate:
             "<|content_model_end_sampling|>"
         ) in rendered
 
+    def test_ordered_blocks_preserve_thinking_tool_call_and_text_order(self):
+        raw_json = '{ "args": {"command": "pwd"}, "name": "bash_command" }'
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "flattened-text",
+                    "reasoning_content": "flattened-thinking",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "bash_command", "arguments": {"command": "pwd"}},
+                        }
+                    ],
+                    "content_blocks": [
+                        {"type": "thinking", "text": "think-1"},
+                        {"type": "text", "text": ""},
+                        {
+                            "type": "tool_call",
+                            "recipient": "bash",
+                            "name": "bash_command",
+                            "arguments": {"command": "pwd"},
+                            "raw_json": raw_json,
+                        },
+                        {"type": "thinking", "text": "think-2"},
+                        {"type": "text", "text": "done"},
+                    ],
+                },
+            ]
+        )
+
+        assert (
+            "<|message_model|><|content_thinking|>think-1<|end_message|>"
+            "<|message_model|><|content_text|><|end_message|>"
+            f"<|message_model|>bash<|content_invoke_tool_json|>{raw_json}<|end_message|>"
+            "<|message_model|><|content_thinking|>think-2<|end_message|>"
+            "<|message_model|><|content_text|>done<|end_message|>"
+            "<|content_model_end_sampling|>"
+        ) in rendered
+        assert "flattened-text" not in rendered
+        assert "flattened-thinking" not in rendered
+        assert rendered.count("<|content_invoke_tool_json|>") == 1
+
+    def test_empty_ordered_block_sequence_keeps_sampling_terminator(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "content_blocks": [],
+                },
+            ]
+        )
+
+        assert rendered.endswith("<|content_model_end_sampling|>")
+
 
 class TestDeepSeekV32IncrementalAppend:
     """V3.2 rides the default synthetic-prefix suffix diff; with the family's
