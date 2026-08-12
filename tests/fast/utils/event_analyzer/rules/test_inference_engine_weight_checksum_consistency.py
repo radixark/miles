@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_consistency import check
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -14,7 +14,7 @@ def _make_event(
 ) -> InferenceEngineWeightChecksumEvent:
     return InferenceEngineWeightChecksumEvent(
         timestamp=_FIXED_TS,
-        source=MainProcessIdentity(),
+        source=SimpleProcessIdentity(component="main"),
         rollout_id=rollout_id,
         engine_checksums=engine_checksums,
     )

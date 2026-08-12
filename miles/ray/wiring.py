@@ -27,4 +27,4 @@ def _launch_ray_worker_manager(args):
     specs = compute_specs(args)
     # TODO: pass in specs instead of args
     pgs = create_placement_groups(args)
-    return RayWorkerManager.launch(specs, pgs)
+    return RayWorkerManager.launch(args, specs, pgs)

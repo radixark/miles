@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,12 +12,13 @@ from miles.utils.audit_utils.event_logger.logger import (
     EventLogger,
     event_logger_context,
     get_event_logger,
+    read_events,
     set_event_logger,
 )
 from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
-_TEST_SOURCE = MainProcessIdentity()
+_TEST_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _make_logger(log_dir: Path, file_name: str = "events.jsonl") -> EventLogger:
@@ -208,6 +210,18 @@ class TestReadEvents:
 
         events = read_events(tmp_path)
         assert len(events) == 3
+
+
+class TestEventLoggerKeepsNonFiniteMetrics:
+    def test_a_nan_metric_reads_back_as_a_nan(self, tmp_path: Path) -> None:
+        """Written as json null it reads back absent, so a diverged run would look like one that never reported."""
+        logger = _make_logger(tmp_path)
+        logger.log(MetricEvent, dict(rollout_id=0, attempt=0, metrics={"train/loss": math.nan}), print_log=False)
+        logger.close()
+
+        [event] = read_events(tmp_path)
+
+        assert math.isnan(event.metrics["train/loss"])
 
 
 class TestWithContext:
