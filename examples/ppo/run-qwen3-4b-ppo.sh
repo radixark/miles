@@ -15,14 +15,6 @@ set -ex
 
 export PYTHONUNBUFFERED=1
 
-NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
-if [ "$NVLINK_COUNT" -gt 0 ]; then
-    HAS_NVLINK=1
-else
-    HAS_NVLINK=0
-fi
-echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
-
 # actor world size = NUM_GPUS = TP * PP * CP below. The critic inherits this same shape.
 NUM_GPUS=4
 
