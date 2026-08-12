@@ -231,6 +231,7 @@
         "group": "Scale & Reliability",
         "pages": [
          "advanced/fault-tolerance",
+         "advanced/disaggregated-rollout",
          "advanced/pd-disaggregation",
          "advanced/p2p-weight-transfer",
          "advanced/disk-offload"
