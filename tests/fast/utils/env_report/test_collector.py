@@ -53,8 +53,10 @@ class TestCollectPipInfo:
             stderr="",
         )
         with patch("miles.utils.env_report.collector.subprocess.run", return_value=mock_result):
-            editable, full_list = _collect_pip_info({})
+            pip_info = _collect_pip_info({})
 
+        editable, full_list = pip_info.editable_packages, pip_info.full_pip_list
+        assert pip_info.probed is True
         assert len(full_list) == 4
         assert full_list[0] == {"name": "miles", "version": "0.2.1"}
         assert full_list[2] == {"name": "torch", "version": "2.5.0"}
@@ -79,15 +81,17 @@ class TestCollectPipInfo:
             stderr="error",
         )
         with patch("miles.utils.env_report.collector.subprocess.run", return_value=mock_result):
-            editable, full_list = _collect_pip_info({})
-        assert editable == []
-        assert full_list == []
+            pip_info = _collect_pip_info({})
+        assert pip_info.editable_packages == []
+        assert pip_info.full_pip_list == []
+        assert pip_info.probed is False
 
     def test_pip_inspect_exception_returns_empty(self) -> None:
         with patch("miles.utils.env_report.collector.subprocess.run", side_effect=OSError("no pip")):
-            editable, full_list = _collect_pip_info({})
-        assert editable == []
-        assert full_list == []
+            pip_info = _collect_pip_info({})
+        assert pip_info.editable_packages == []
+        assert pip_info.full_pip_list == []
+        assert pip_info.probed is False
 
     def test_runs_pip_with_the_environment_it_is_given(self) -> None:
         """The caller hands in a snapshot; reading os.environ here would race whoever mutates it."""
@@ -223,6 +227,18 @@ class TestCollectEnvReport:
         assert report.process.launcher_env_report == {"flavor": "test"}
         assert len(report.editable_packages) == 2
         assert len(report.full_pip_list) == 4
+
+    def test_says_it_probed_the_packages_it_listed(self, mocked_pip_inspect) -> None:
+        """An empty package list means nothing to an audit that cannot tell a failed probe from it."""
+        assert self._collect().packages_probed is True
+
+    def test_says_it_did_not_probe_when_the_probe_failed(self, mocked_pip_inspect) -> None:
+        """A failed pip inspect returns no package, exactly as an empty environment does."""
+        with patch("miles.utils.env_report.collector.subprocess.run", side_effect=OSError("no pip")):
+            report = self._collect()
+
+        assert report.full_pip_list == []
+        assert report.packages_probed is False
 
     def test_records_process_identity_context(self, mocked_pip_inspect) -> None:
         """The audit needs to know which host and command line produced this report."""
