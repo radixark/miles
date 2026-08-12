@@ -53,6 +53,18 @@ class Sample:
     remove_sample: bool = False
     teacher_log_probs: list[float] | None = None  # Log probabilities from teacher model for OPD
     opd_reverse_kl: list[float] | None = None  # Precomputed per-token OPD reverse-KL estimate
+    # "turnhint" = a teacher view in which hint turns are interleaved INSIDE the
+    # response span (as opposed to prefix-only, suffix-aligned augmentation).
+    teacher_tokens: list[int] | None = None  # Experience-augmented teacher view for in-trainer OPD:
+    # privileged_prefix + response; MUST end with the same response tokens as `tokens`
+    # (the response-suffix alignment the OPD KL rests on -- asserted at train-data conversion)
+    # -- UNLESS teacher_gather_positions is set (turnhint views; alignment then
+    # rests on the position map below).
+    teacher_gather_positions: list[int] | None = None  # turnhint view: for each of the
+    # student's response tokens (in order), its position within the teacher view's OWN
+    # response span. None = suffix-aligned teacher view (begin/end/user_turn placements).
+    teacher_response_length: int | None = None  # length of the teacher view's response
+    # span (>= response_length when hint turns are interleaved). None = response_length.
 
     class Status(Enum):
         PENDING = "pending"
@@ -231,6 +243,31 @@ class Sample:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
         if self.teacher_log_probs is not None:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
+        if self.teacher_tokens is not None:
+            if self.teacher_gather_positions is not None:
+                # turnhint view: drop the last n student positions from the map
+                # and cut the teacher view at the first dropped student token's own
+                # position -- everything after it (including any interleaved hint
+                # turns for dropped calls) belongs to the stripped tail.
+                keep = len(self.teacher_gather_positions) - n
+                assert keep >= 0, (
+                    f"cannot strip {n} tokens: teacher_gather_positions only "
+                    f"maps {len(self.teacher_gather_positions)}"
+                )
+                teacher_resp = self.teacher_response_length
+                assert teacher_resp is not None, (
+                    "teacher_gather_positions set without teacher_response_length"
+                )
+                positions = self.teacher_gather_positions
+                cut = positions[keep] if keep < len(positions) else teacher_resp
+                self.teacher_tokens = self.teacher_tokens[: len(self.teacher_tokens) - (teacher_resp - cut)]
+                self.teacher_response_length = cut
+                self.teacher_gather_positions = self.teacher_gather_positions[:keep]
+            else:
+                # contract above: teacher_tokens MUST end with the same response
+                # suffix as `tokens` -- trimming tokens without it breaks the
+                # OPD suffix alignment asserted at train-data conversion.
+                self.teacher_tokens = self.teacher_tokens[:-n]
         if self.opd_reverse_kl is not None:
             self.opd_reverse_kl = self.opd_reverse_kl[:-n]
         if self.metadata and "opd_student_top_logprobs" in self.metadata:

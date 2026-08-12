@@ -1,3 +1,5 @@
+import os
+
 import einops
 import torch
 from megatron.core import parallel_state
@@ -12,11 +14,21 @@ from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp, get_fre
 from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
     _make_causal_cu_seqlens,
     batched_indexer_fwd,
+    batched_indexer_topk_chunked,
 )
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
+
+# ctx128k indexer OOM workaround: the unchunked path materializes a full
+# [seqlen_global, seqlen_kv] fp32 logits tensor (S^2/compress_ratio bytes), which
+# OOMs at long context. Above this byte threshold, use the chunked fwd+topk fusion
+# instead (peak O(q_chunk * seqlen_kv) instead of O(seqlen_global * seqlen_kv)).
+# Bit-exact equivalence with the unchunked path is required; do not change the
+# threshold without re-verifying equivalence at the new target shape.
+_INDEXER_CHUNK_THRESHOLD_BYTES = int(os.environ.get("V4_INDEXER_CHUNK_THRESHOLD_BYTES", 8 * (1024**3)))
+_INDEXER_CHUNK_Q = int(os.environ.get("V4_INDEXER_CHUNK_Q", "8192"))
 
 
 class V4Indexer(MegatronModule):
@@ -128,9 +140,27 @@ class V4Indexer(MegatronModule):
             cp_rank = cp_group.rank()
             cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
             cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
-        index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
+        weights = weights.float()
+        # Full size across all batch elements (matches batched_indexer_fwd's
+        # all_logits = torch.empty([bsz, seqlen_global, seqlen_kv], ...) pre-allocation) --
+        # must include bsz, else the threshold under-estimates and stays too
+        # permissive when bsz > 1.
+        full_logits_bytes = bsz * seqlen_global * seqlen_kv * 4  # fp32
 
-        topk_count = min(self.index_topk, index_scores.size(-1))
-        topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
+        if full_logits_bytes > _INDEXER_CHUNK_THRESHOLD_BYTES:
+            topk_indices = batched_indexer_topk_chunked(
+                q,
+                k,
+                weights,
+                cu_ks,
+                cu_ke,
+                topk_fn=get_dsa_topk_fn(self.topk_backend),
+                topk_count=min(self.index_topk, seqlen_kv),
+                q_chunk=_INDEXER_CHUNK_Q,
+            )
+        else:
+            index_scores = batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
+            topk_count = min(self.index_topk, index_scores.size(-1))
+            topk_indices = get_dsa_topk_fn(self.topk_backend)(index_scores, topk_count)
 
         return topk_indices

@@ -18,6 +18,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_opsm_mask,
     compute_policy_loss,
 )
+from miles.backends.training_utils.loss_hub.opd import compute_opd_topk_distill, uses_opd_loss_placement
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
 from miles.utils.types import RolloutBatch
@@ -325,6 +326,16 @@ def policy_loss_function(
         if args.kl_loss_coef != 0:
             loss = loss + args.kl_loss_coef * kl_loss
 
+    # Loss placement of the in-trainer top-k OPD reverse KL. The ids and the
+    # teacher's logprobs at them are constants from the pre-passes; the student
+    # side is re-read from THIS forward, so the gradient of the KL is taken
+    # directly instead of riding on the score function (which averages it to
+    # zero over the action).
+    opd_distill_loss = None
+    if uses_opd_loss_placement(args):
+        opd_distill_loss = sum_of_sample_mean(torch.cat(compute_opd_topk_distill(args, batch, logits), dim=0))
+        loss = loss + args.opd_kl_coef * opd_distill_loss
+
     # make sure the gradient could backprop correctly.
     if log_probs.numel() == 0:
         loss += 0 * logits.sum()
@@ -379,6 +390,11 @@ def policy_loss_function(
 
     if args.use_opsm:
         reported_loss["opsm_clipfrac"] = opsm_clipfrac
+
+    if opd_distill_loss is not None:
+        # The raw KL, NOT scaled by opd_kl_coef -- comparable across runs that use
+        # different coefficients.
+        reported_loss["opd_distill_loss"] = opd_distill_loss.clone().detach()
 
     # Add OPD metrics if available
     if batch.get("opd_reverse_kl") is not None:

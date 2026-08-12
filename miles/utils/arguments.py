@@ -431,6 +431,20 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Allocate optimizer states on CPU during checkpoint loading to prevent GPU OOM on memory spike. "
                 ),
             )
+            parser.add_argument(
+                "--keep-logits-in-model-precision",
+                action="store_true",
+                default=False,
+                help=(
+                    "Do not let Megatron's Float16Module upcast the LM head's output to fp32. "
+                    "For an LM head that upcast allocates a full fp32 [S, V_local] copy of bf16 "
+                    "logits -- a multi-GiB allocation at long sequence lengths and the one that "
+                    "OOM'd long-sequence training runs -- and it is redundant: every vocab-wide consumer upcasts "
+                    "per chunk on its own, and bf16->fp32 is exact, so the chunk-wise values are "
+                    "bit-identical. Requires bf16 or fp16. Can also be enabled via MILES_BF16_LOGITS=1 "
+                    "in --train-env-vars."
+                ),
+            )
 
             return parser
 
@@ -1678,6 +1692,75 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--opd-teacher-ckpt-step", type=int, default=None, help="The checkpoint step for OPD teacher model."
+            )
+            parser.add_argument(
+                "--opd-topk-in-trainer",
+                type=int,
+                default=0,
+                help=(
+                    "In-trainer top-k OPD: the actor's compute_log_prob pass "
+                    "also extracts per-position top-k logprobs (full-vocab log-softmax, "
+                    "TP allgather, no_grad), and the megatron OPD teacher -- forwarding "
+                    "the experience-augmented teacher view in Sample.teacher_tokens when "
+                    "present -- gathers at those ids; reverse KL (unnormalized student_p "
+                    "weights) lands in rollout_data['opd_reverse_kl']. Requires "
+                    "--opd-type=megatron. 0 disables."
+                ),
+            )
+            parser.add_argument(
+                "--opd-topk-placement",
+                type=str,
+                choices=["loss", "advantage"],
+                default="loss",
+                help=(
+                    "Where the in-trainer top-k OPD reverse KL enters the update. "
+                    "'loss' (default): a loss term differentiable "
+                    "through the student's current logits -- the training forward "
+                    "re-reads the student side at the precomputed top-k ids. "
+                    "'advantage': subtract it from the per-token advantage. This is "
+                    "REJECTED at validate time unless --opd-topk-in-trainer is 0, i.e. "
+                    "unless the OPD is the SAMPLED-TOKEN form, whose coefficient keeps "
+                    "the action inside A. With an in-trainer top-k the sum has already "
+                    "marginalized over the action, so "
+                    "E_a[A(r)*grad log pi(a|r)] = 0 -- an exact baseline that cannot "
+                    "teach and gets MORE perfect as k grows."
+                ),
+            )
+            parser.add_argument(
+                "--opd-pointwise-clip",
+                type=float,
+                default=0.0,
+                help=(
+                    "Cap each per-(position,k) contribution of the in-trainer OPD "
+                    "reverse KL at this value (0 disables). Guards against a single "
+                    "spike token dominating. The clipped fraction is logged as "
+                    "opd_clipfrac."
+                ),
+            )
+            parser.add_argument(
+                "--opd-topk-dist-comm",
+                action="store_true",
+                help=(
+                    "Use exact distributed top-k/gather for in-trainer OPD instead of "
+                    "the full-vocab TP allgather: per-rank logsumexp merge for the "
+                    "normalizer, ws*k candidate merge for top-k, masked all-reduce for "
+                    "the teacher gather. Same values (up to fp reduction order), "
+                    "~485x less TP traffic at V=248320/TP4/k=128."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-refresh-from-actor",
+                action="store_true",
+                help=(
+                    "After every update_weights(), re-backup the 'teacher' tag from the "
+                    "current (just-updated) actor instead of leaving it pinned at "
+                    "--opd-teacher-load forever. Makes the teacher == the 'old actor' "
+                    "relative to the NEXT rollout batch's gradient step -- matching what "
+                    "a self-scored teacher actually is (its rollout engine only picks up "
+                    "the new weights after the next update, so the teacher must follow "
+                    "the actor to stay on-policy). --opd-teacher-load is still required "
+                    "as the step-0 seed."
+                ),
             )
             return parser
 
@@ -2947,6 +3030,25 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        # Local import to keep miles.utils free of training imports at module load.
+        from miles.backends.training_utils.loss_hub.opd import validate_opd_topk_placement
+
+        validate_opd_topk_placement(args)
+        if args.opd_topk_in_trainer > 0 and args.opd_type != "megatron":
+            raise ValueError(
+                "--opd-topk-in-trainer requires --opd-type=megatron: the top-k ids are "
+                "extracted inside the trainer and the teacher gather runs in a megatron "
+                "teacher pass. With --opd-type=sglang the sampled-token teacher logprobs "
+                "would be silently discarded and the first training microbatch would fail."
+            )
+        if args.opd_teacher_refresh_from_actor and not (
+            args.opd_type == "megatron" and args.opd_teacher_load is not None
+        ):
+            raise ValueError(
+                "--opd-teacher-refresh-from-actor requires --opd-type=megatron with "
+                "--opd-teacher-load: the refresh re-backs-up the 'teacher' tag of the "
+                "colocated megatron teacher, which only exists in that configuration."
+            )
         if args.opd_teacher_urls:
             if args.opd_type != "sglang":
                 raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")

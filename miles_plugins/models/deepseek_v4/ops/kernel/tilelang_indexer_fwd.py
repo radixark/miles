@@ -192,3 +192,47 @@ def batched_indexer_fwd(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):
             cu_seqlen_ke,
         )
     return all_logits
+
+
+def batched_indexer_topk_chunked(q, k, weights, cu_seqlen_ks, cu_seqlen_ke, topk_fn, topk_count, q_chunk):
+    """Chunked forward+topk fusion: never materializes the full [seqlen, seqlen_kv]
+    logits tensor. Peak memory is O(q_chunk * seqlen_kv) instead of O(seqlen * seqlen_kv).
+
+    Mathematically identical to calling `batched_indexer_fwd` followed by `topk_fn`
+    on the full result: topk is row-independent (each output row depends only on
+    that row's own logits, which depend only on that row's own q/weights/cu_seqlens),
+    so chunking the query dimension cannot change any row's result.
+
+    No intermediate buffer is pre-allocated/reused across chunks --
+    `indexer_fwd_interface` allocates its own (chunk, seqlen_kv) logits tensor per
+    call (same as the unchunked path), which is consumed by `topk_fn` and then
+    freed; only one chunk's logits are ever live at once.
+
+    Args:
+        q: [seqlen, batch, heads, dim] bf16
+        k: [seqlen_kv, batch, dim] bf16
+        weights: [seqlen, batch, heads] fp32
+        cu_seqlen_ks: [seqlen] int32
+        cu_seqlen_ke: [seqlen] int32
+        topk_fn: e.g. torch_dsa_topk / flashinfer_dsa_topk (same backend as the unchunked path)
+        topk_count: int
+        q_chunk: int, query-dimension chunk size
+
+    Returns:
+        topk_indices: [batch, seqlen, topk_count] int32
+    """
+    seqlen, batch, heads, dim = q.shape
+
+    topk_indices = torch.empty(batch, seqlen, topk_count, device=q.device, dtype=torch.int32)
+    for b0 in range(0, seqlen, q_chunk):
+        b1 = min(b0 + q_chunk, seqlen)
+        for b in range(batch):
+            logits_chunk = indexer_fwd_interface(
+                q[b0:b1, b, :, :].contiguous(),
+                k[:, b, :].contiguous(),
+                weights[b0:b1, b, :].contiguous(),
+                cu_seqlen_ks[b0:b1],
+                cu_seqlen_ke[b0:b1],
+            )
+            topk_indices[b, b0:b1] = topk_fn(logits_chunk, topk_count)
+    return topk_indices

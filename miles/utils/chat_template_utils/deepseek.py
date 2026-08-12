@@ -56,6 +56,33 @@ def _inject_tools_into_system(messages: list[dict[str, Any]], tools: list[dict[s
     return out
 
 
+def _flatten_openai_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten OpenAI-style list-of-blocks ``content`` to the plain string the
+    official encoders require (structured input rides ``content_blocks``, which
+    this leaves untouched). Text-only by contract: a non-text block on this
+    text-only model family is a routing bug upstream -- fail loud.
+    """
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            parts = []
+            for b in c:
+                if isinstance(b, str):
+                    parts.append(b)
+                elif isinstance(b, dict) and b.get("type") == "text":
+                    parts.append(b.get("text", ""))
+                else:
+                    bt = b.get("type") if isinstance(b, dict) else type(b).__name__
+                    raise ValueError(
+                        f"deepseek bridge: unsupported content block {bt!r} in role="
+                        f"{m.get('role')!r} -- this family is text-only (blocks must be 'text')"
+                    )
+            m = {**m, "content": "\n\n".join(parts)}
+        out.append(m)
+    return out
+
+
 class DeepSeekFamily:
     """Shared behavior for the DeepSeek official-encoder families."""
 
@@ -96,6 +123,17 @@ class DeepSeekFamily:
         generation-ready tails; ``add_generation_prompt=False`` strips it.
         """
         encode_config = self._build_encode_config(kwargs)
+        # The official encoders expect `content` to be a plain STRING
+        # (structured input rides the separate `content_blocks` key).
+        # OpenAI-style clients send content as a LIST of blocks --
+        # unnormalized, encode_messages dies with a "expected str instance,
+        # list found" error. HF-jinja families flatten for free; this bridge
+        # must do it explicitly. Do NOT also pre-merge role=tool messages
+        # here: encode_messages calls merge_tool_messages itself, and that
+        # merge is NOT idempotent -- a second pass replaces an already-merged
+        # user's content_blocks with an empty text block (silent tool-result
+        # loss).
+        messages = _flatten_openai_content(messages)
         if tools:
             messages = _inject_tools_into_system(messages, tools)
         rendered = self.template.encode_messages(messages, **encode_config)
