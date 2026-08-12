@@ -31,6 +31,7 @@ def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | 
 def chart_dir(*, repo_base_dir: str | Path) -> Path:
     return Path(repo_base_dir) / "charts" / CHART_NAME
 
+
 def rsync_cmd(path_src: str, path_dst: str) -> str:
     return f"mkdir -p {path_dst} && rsync -a --info=progress2 {path_src}/ {path_dst}"
 
@@ -235,6 +236,9 @@ def detect_hardware() -> str:
     return detected
 
 
+_PLACEHOLDERS = ("{{node_rank}}", "{{nnodes}}", "{{master_addr}}", "{{node_ip}}")
+
+
 def run_shell_command(cmd: str, capture_output: bool = False) -> str | None:
     logger.info(f"EXEC: {cmd}")
 
@@ -262,3 +266,15 @@ def run_process(
 ) -> subprocess.CompletedProcess[str]:
     logger.info(f"EXEC: {shlex.join(argv)}")
     return subprocess.run(argv, check=check, capture_output=capture_output, text=True, input=input)
+
+
+def substitute_placeholders(cmd: str, *, node_rank: str, nnodes: str, master_addr: str, node_ip: str) -> str:
+    values = {
+        "{{node_rank}}": node_rank,
+        "{{nnodes}}": nnodes,
+        "{{master_addr}}": master_addr,
+        "{{node_ip}}": node_ip,
+    }
+    for placeholder in _PLACEHOLDERS:
+        cmd = cmd.replace(placeholder, values[placeholder])
+    return cmd
