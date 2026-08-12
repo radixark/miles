@@ -331,6 +331,7 @@ def compute_inference_engine_env_vars(args) -> dict[str, str]:
             "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "true",
             "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
             "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
+            "SGLANG_EXPOSE_OWN_ENV_VARS": "1",
         }.items()
     }
     env_vars.update(dumper_utils.get_sglang_env(args))
