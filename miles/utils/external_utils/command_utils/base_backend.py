@@ -14,17 +14,12 @@ from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
     create_run_id,
     run_shell_command,
-    MOONCAKE_MASTER_LOG_PATH,
-    MOONCAKE_MASTER_METRICS_PORT,
-    MOONCAKE_MASTER_PORT,
-    _is_tcp_server_ready,
     _parse_extra_env_vars,
     _pythonpath_with_sources,
     detect_hardware,
     repo_base_dir,
 )
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
-from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -234,39 +229,6 @@ def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainC
         **extra_env_vars,
         **_parse_extra_env_vars(config.extra_env_vars),
     }
-
-
-def start_mooncake_master(
-    rpc_port: int = MOONCAKE_MASTER_PORT,
-    metrics_port: int = MOONCAKE_MASTER_METRICS_PORT,
-    timeout: float = 30,
-    log_path: str | Path = MOONCAKE_MASTER_LOG_PATH,
-) -> None:
-    host = "127.0.0.1"
-    if _is_tcp_server_ready(host, rpc_port):
-        logger.info(f"Mooncake master is already ready at {host}:{rpc_port}")
-        return
-
-    log_path = Path(log_path)
-    quoted_log_path = shlex.quote(str(log_path))
-    run_shell_command(
-        "pkill -x mooncake_master >/dev/null 2>&1 || true; "
-        f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
-        f"> {quoted_log_path} 2>&1 &)"
-    )
-    try:
-        wait_for_server_ready(host, rpc_port, timeout=timeout)
-    except RuntimeError as exc:
-        run_shell_command("pkill -x mooncake_master >/dev/null 2>&1 || true")
-        try:
-            log_lines = log_path.read_text(errors="replace").splitlines()
-            log_tail = "\n".join(log_lines[-100:]) or "<empty>"
-        except OSError as log_error:
-            log_tail = f"<unable to read {log_path}: {log_error}>"
-        raise RuntimeError(
-            f"Mooncake master at {host}:{rpc_port} did not become ready.\n"
-            f"Last 100 lines of {log_path}:\n{log_tail}"
-        ) from exc
 
 
 def resolve_hardware(config: ExecuteTrainConfig) -> str:
