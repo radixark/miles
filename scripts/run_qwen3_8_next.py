@@ -179,9 +179,8 @@ def _train(args: ScriptArgs):
         if cache_dir:
             extra_env_vars[cache_var] = cache_dir
 
-    U.execute_train(
+    args.create_backend().execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
         extra_env_vars=extra_env_vars,

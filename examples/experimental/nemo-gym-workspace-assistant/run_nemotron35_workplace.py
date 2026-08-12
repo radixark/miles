@@ -220,7 +220,7 @@ def _miscellaneous_args(args: ScriptArgs) -> str:
 
 
 def execute(args: ScriptArgs) -> None:
-    U.execute_train(
+    args.create_backend().execute_train(
         train_args=" ".join(
             [
                 _checkpoint_args(args),
@@ -231,7 +231,6 @@ def execute(args: ScriptArgs) -> None:
                 U.get_default_wandb_args(__file__, run_id=args.run_name),
             ]
         ),
-        config=args,
         train_script="train_async.py",
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="nemotron-3-nano-30b-a3b",
