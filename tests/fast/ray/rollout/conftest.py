@@ -36,6 +36,7 @@ def make_args(**overrides: Any) -> Namespace:
         over_sampling_batch_size=None,
         rollout_global_dataset=False,
         num_rollout=1,
+        update_weights_interval=1,
         check_weight_update_equal=False,
         check_weight_update_skip_list=None,
         # batch / training
@@ -98,6 +99,10 @@ def make_args(**overrides: Any) -> Namespace:
         # routers / session server
         use_miles_dashboard=False,
         use_miles_router=False,
+        miles_router_timeout=None,
+        miles_router_max_connections=None,
+        miles_router_health_check_failure_threshold=3,
+        sglang_server_concurrency=512,
         use_session_server=False,
         use_rollout_routing_replay=False,
         session_server_ip=None,
