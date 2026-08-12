@@ -28,14 +28,17 @@
 
 ## About
 
-Miles is a high-performance, enterprise-ready reinforcement learning framework for
-**large-scale model post-training**. It pairs [SGLang](https://github.com/sgl-project/sglang)
-for high-throughput rollout with [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for
-scalable training, and ships the precision, stability and observability features an RL run
-needs at trillion-parameter scale. A PyTorch FSDP2 backend is available for runs that would
-rather train the HuggingFace implementation as-is, though the recipes, the parallelism and
-the largest models all live on Megatron-LM. See
-[Training Backends](https://miles.radixark.com/docs/user-guide/training-backend).
+Miles is an open-source reinforcement learning framework for **large-scale model
+post-training**. Rollout runs on [SGLang](https://github.com/sgl-project/sglang), training
+runs on [Megatron-LM](https://github.com/NVIDIA/Megatron-LM), and Ray holds the two
+together. What Miles adds is everything those two halves need in order to stay aligned at
+frontier scale: token-exact rollout recording, MoE routing replay, Blackwell-native
+low-precision recipes, in-loop weight updates measured in seconds, and a run that survives
+a dead engine.
+
+A PyTorch FSDP2 backend is available for runs that would rather train the HuggingFace
+implementation as-is, though the recipes, the parallelism and the largest models all live on
+Megatron-LM. See [Training Backends](https://miles.radixark.com/docs/user-guide/training-backend).
 
 > *"A journey of a thousand miles begins with a single rollout."*
 
@@ -80,6 +83,10 @@ the largest models all live on Megatron-LM. See
   Daytona, E2B or Modal.
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
+- **Extensive hardware support.** NVIDIA GB300, GB200, B300, B200, H200, H100 and A100, and
+  AMD MI300X, MI325, MI350 and MI355X via ROCm. See
+  [Installation](https://miles.radixark.com/docs/getting-started/installation#hardware-requirements)
+  for per-GPU status and the container image for each.
 - **Miles dashboard.** A self-hosted web UI for a run's
   [training dynamics and compute efficiency](https://miles.radixark.com/docs/user-guide/dashboard):
   what every GPU was doing during a step, and what each trajectory contained at the token
