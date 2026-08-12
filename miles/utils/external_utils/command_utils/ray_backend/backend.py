@@ -30,6 +30,9 @@ class RayCommandBackend(BaseCommandBackend):
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
             )
 
+        for cmd in request.prepare_cmd.values():
+            self.exec_command_multi_node(cmd)
+
         if (f := request.before_ray_job_submit) is not None:
             f()
 
