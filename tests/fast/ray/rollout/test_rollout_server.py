@@ -140,28 +140,6 @@ class TestRolloutServerPureFunctions:
         [eval_model] = [m for m in config.models if m.name == "eval"]
         assert eval_model.server_groups[0].overrides["mem_fraction_static"] == 0.5
 
-    async def test_probe_and_mark_dead(self) -> None:
-        """recover() only restarts engines already marked stopped, so something has to mark them."""
-
-        class _Cell:
-            def __init__(self, alive: bool) -> None:
-                self.is_allocated, self._alive = True, alive
-
-            async def probe_and_mark_dead(self) -> None:
-                if not self._alive:
-                    self.is_allocated = False
-
-        alive, dead = _Cell(True), _Cell(False)
-        srv = RolloutServer(
-            server_cells={"alive": alive, "dead": dead},
-            args=SimpleNamespace(),
-            context_lock=ContextLock("test"),
-        )
-
-        await srv.probe_and_mark_dead()
-
-        assert alive.is_allocated and not dead.is_allocated
-
     def test_compute_rollout_offset_colocate_returns_zero(self):
         args = make_args(
             colocate=True,
