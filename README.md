@@ -101,24 +101,6 @@ Megatron-LM. See [Training Backends](https://miles.radixark.com/docs/user-guide/
 - [Training Backends](https://miles.radixark.com/docs/user-guide/training-backend)
 - [Contribution Guide](https://miles.radixark.com/docs/developer/contributor-guide)
 
-Docker is the recommended way in, since Miles pins patched builds of SGLang, Megatron-LM
-and a few CUDA kernels:
-
-```bash
-docker pull radixark/miles:latest
-docker run --rm --gpus all --ipc=host --shm-size=32g \
-  --ulimit memlock=-1 --ulimit stack=67108864 --network=host \
-  -it radixark/miles:latest /bin/bash
-```
-
-From there the [Quick Start](https://miles.radixark.com/docs/getting-started/quick-start)
-takes one node of 8 GPUs from a fresh container to a GRPO run with the reward climbing, and
-ends on a single command:
-
-```bash
-python scripts/run_qwen3_dense.py --model-name Qwen3-4B
-```
-
 ## Acknowledgment
 
 <!-- TODO: acknowledgment figure -->
