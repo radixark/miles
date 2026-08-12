@@ -13,6 +13,7 @@ class StateUninitialized(FrozenStrictBaseModel):
 
 class StateInitializing(FrozenStrictBaseModel):
     addr_info: CellAddrInfo
+    start_time: float
 
 
 class StatePendingWeights(FrozenStrictBaseModel):
