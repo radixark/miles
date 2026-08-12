@@ -7,13 +7,13 @@ import pytest
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
 
 
 def _write_inference_engine_events(side_dir: Path, partials: list[dict[str, Any]]) -> None:
     events_dir = side_dir / "events"
-    event_logger = EventLogger(log_dir=events_dir, source=MainProcessIdentity())
+    event_logger = EventLogger(log_dir=events_dir, source=SimpleProcessIdentity(component="main"))
     for partial in partials:
         event_logger.log(InferenceEngineWeightChecksumEvent, partial, print_log=False)
     event_logger.close()
