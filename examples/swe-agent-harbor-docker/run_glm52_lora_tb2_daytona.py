@@ -406,13 +406,12 @@ def execute(args: ScriptArgs):
         "SGLANG_NSA_FORCE_MLA": "1",
         # Variable-length agentic batches fragment the allocator pool until NCCL's own
         # cudaMalloc (outside torch's pool) finds nothing free during the LoRA grad
-        # all-reduce. expandable_segments:True, the usual answer, breaks
-        # torch_memory_saver under colocate, so instead release cached blocks
-        # aggressively and cap torch's share of the device (MILES_TRAIN_MEMORY_FRACTION,
-        # honored by the trainer actor) so NCCL always has headroom; gc_threshold is
-        # relative to that cap, so the cap is what makes it effective.
+        # all-reduce; gc_threshold + max_split_size keep the pool releasable.
+        # expandable_segments:True, the usual answer, breaks torch_memory_saver under
+        # colocate. Do NOT add per_process_memory_fraction (torch >= 2.10) here: these
+        # env vars reach every actor in the ray job, so under --colocate the rollout
+        # engines would inherit the cap and OOM below --sglang-mem-fraction-static.
         "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
-        "MILES_TRAIN_MEMORY_FRACTION": "0.80",
     }
     if args.router_external_host:
         extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
