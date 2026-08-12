@@ -2,6 +2,7 @@ import argparse
 import importlib
 import shlex
 from fnmatch import fnmatchcase
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -171,13 +172,16 @@ def test_targets_match_native_hf_model(model_type, overrides):
 
 
 @pytest.mark.parametrize("launcher", ["run_glm5_1_744b_a40b_lora", "run_glm5_2_744b_a40b_lora"])
-def test_glm_launcher_ablation_selects_only_attention(monkeypatch, launcher):
+def test_glm_launcher_ablation_selects_only_attention(monkeypatch: pytest.MonkeyPatch, launcher: str) -> None:
+    """Disabling expert LoRA selects only attention targets in both GLM launchers."""
     module = importlib.import_module(f"scripts.{launcher}")
     train_commands = []
     monkeypatch.setenv("KEEP_MOE_LORA", "0")
     monkeypatch.delenv("MOE_LORA_LAYERS", raising=False)
-    monkeypatch.setattr(module.U, "execute_train", lambda **kwargs: train_commands.append(kwargs["train_args"]))
-    module._train(module.ScriptArgs(enable_wandb=False))
+    script_args = module.ScriptArgs(enable_wandb=False)
+    backend = SimpleNamespace(execute_train=lambda **kwargs: train_commands.append(kwargs["train_args"]))
+    monkeypatch.setattr(script_args, "create_backend", lambda: backend)
+    module._train(script_args)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--target-modules")
