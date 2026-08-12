@@ -50,6 +50,23 @@ def _dp_rank_means(series: list[dict]) -> dict[str, dict[str, float]]:
     return out
 
 
+def _dp_spread_hint(args: dict) -> str:
+    """Which knob actually decides how requests spread across dp ranks. Only a
+    dp-aware sglang router routes per rank; otherwise the engine looks like one
+    worker and sglang's own dp controller dispatches."""
+    if args.get("use_miles_router"):
+        return "the miles router routes per engine; --sglang-load-balance-method decides the rank"
+    if not args.get("router_dp_aware"):
+        return "the router sees one worker per engine; --router-dp-aware makes it route per rank"
+    policy = args.get("sglang_router_policy") or args.get("router_policy")
+    if policy == "manual":
+        return (
+            f"manual routing pins each key to a rank via --router-assignment-mode "
+            f"({args.get('router_assignment_mode')}); min_load spreads by load"
+        )
+    return f"--router-policy ({policy}) picks the rank"
+
+
 def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float | None = None) -> list[Advisory]:
     if not store.has_stream(Stream.ENGINE_SERIES):
         return []  # no sglang scrape data to compare against
@@ -115,7 +132,7 @@ def compute_advisories(store: MetricStore, *, t0: float | None = None, t1: float
                     level="warning",
                     message=(
                         f"{addr}: dp ranks imbalanced (mean running reqs {detail}) — requests pile onto "
-                        "few ranks while others idle; check the router's dp-aware routing (--router-dp-aware)"
+                        f"few ranks while others idle; {_dp_spread_hint(args)}"
                     ),
                 )
             )

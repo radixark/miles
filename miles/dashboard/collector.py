@@ -160,9 +160,7 @@ class DashboardCollector:
         # latest-value caches for the Prometheus forwarding snapshot; kept
         # separately because store buffers empty out on every flush
         self._latest_gpu: dict[tuple[str, int], GpuSample] = {}
-        # addr -> (scrape ts, sum over that tick's samples): dp-attention
-        # engines emit one sample per dp rank per tick, and the engine's
-        # concurrency is their sum
+        # addr -> (scrape ts, running reqs summed over that tick's dp ranks)
         self._latest_running_reqs: dict[str, tuple[float, float]] = {}
         self._latest_phase_seconds: dict[str, float] = {}
         self._scraped_engine_addrs: set[str] = set()
