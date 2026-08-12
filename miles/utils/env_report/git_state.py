@@ -1,21 +1,13 @@
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+
+from miles.utils.audit_utils.event_logger.models import EnvReportGitRepoInfo
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class GitRepoInfo:
-    package_name: str
-    location: str
-    commit: str
-    dirty: bool
-    diff_stat: str
-
-
-def collect_git_info(*, package_name: str, location: str) -> GitRepoInfo | None:
+def collect_git_info(*, package_name: str, location: str) -> EnvReportGitRepoInfo | None:
     if not location or not os.path.isdir(location):
         return None
     try:
@@ -40,7 +32,7 @@ def collect_git_info(*, package_name: str, location: str) -> GitRepoInfo | None:
         diff_stat = diff_result.stdout.strip()
         dirty = bool(diff_stat)
 
-        return GitRepoInfo(
+        return EnvReportGitRepoInfo(
             package_name=package_name,
             location=location,
             commit=commit,

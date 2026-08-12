@@ -6,11 +6,18 @@ from pathlib import Path
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 
 
-def _args(*, event_dir: Path | None, save: Path | None = None, load: Path | None = None) -> Namespace:
+def _args(
+    *,
+    event_dir: Path | None,
+    save: Path | None = None,
+    load: Path | None = None,
+    requested_load: Path | None = None,
+) -> Namespace:
     return Namespace(
         save_debug_event_data=str(event_dir) if event_dir else None,
         save=str(save) if save else None,
         load=str(load) if load else None,
+        requested_load=str(one) if (one := requested_load or load) else None,
     )
 
 
@@ -72,6 +79,19 @@ class TestNoOpCases:
         event_logger_checkpoint.restore(_args(event_dir=events, load=ckpt))
 
         assert (events / "main.jsonl").read_text() == "keep\n"
+
+    def test_restore_skips_a_reference_checkpoint_a_fresh_run_fell_back_to(self, tmp_path: Path) -> None:
+        """A run whose --load holds nothing resumable must not import the reference events."""
+        ref = tmp_path / "ref"
+        events = tmp_path / "events"
+        events.mkdir()
+        (events / "main.jsonl").write_text("fresh\n")
+        event_logger_checkpoint.snapshot(_args(event_dir=events, save=ref), iteration=7)
+        _write_tracker(ref, "7")
+
+        event_logger_checkpoint.restore(_args(event_dir=events, load=ref, requested_load=tmp_path / "run"))
+
+        assert (events / "main.jsonl").read_text() == "fresh\n"
 
     def test_restore_skips_release_tracker(self, tmp_path: Path) -> None:
         """A non-numeric tracker (e.g. 'release') is not a resumable iteration."""
