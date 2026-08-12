@@ -60,9 +60,11 @@ def render_cli_argv(
     actions_by_dest = _actions_by_dest(make_parser())
     field_to_dest = field_to_dest or {}
 
+    def action_of(field_name: str) -> argparse.Action:
+        return _resolve_action(actions_by_dest, field_name=field_name, field_to_dest=field_to_dest or {})
+
     def render(field_name: str, value: object) -> list[str]:
-        action = _resolve_action(actions_by_dest, field_name=field_name, field_to_dest=field_to_dest)
-        return _render_action_argv(action, value)
+        return _render_action_argv(action_of(field_name), value)
 
     argv = [
         token
@@ -79,11 +81,12 @@ def render_cli_argv(
     for name, value in input_values.items():
         if name in always_render_fields or value is None:
             continue
-
-        action = _resolve_action(actions_by_dest, field_name=name, field_to_dest=field_to_dest)
+        action = action_of(name)
+        if not _is_renderable(action, value):
+            continue
         if value == action.default:
             continue
-        argv.extend(_render_action_argv(action, value))
+        argv.extend(render(name, value))
 
     parsed = from_parsed(make_parser().parse_args(argv))
     mismatch = _describe_mismatch(parsed, expected_obj, uncompared_fields=uncompared_fields)
@@ -121,6 +124,14 @@ def _resolve_action(
         f"{field_name!r} cannot be rendered: the parser registers no option for dest {dest!r}. "
         f"Add an entry to field_to_dest, or pass the value through the native passthrough path."
     )
+
+
+def _is_renderable(action: argparse.Action, value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(action, argparse.BooleanOptionalAction):
+        return True
+    return action.nargs != 0 or value == action.const
 
 
 def _render_action_argv(action: argparse.Action, value: object) -> list[str]:
