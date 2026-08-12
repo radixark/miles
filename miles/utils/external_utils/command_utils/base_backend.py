@@ -38,7 +38,7 @@ class ExecuteTrainConfig:
     run_id: str = field(default_factory=create_run_id)
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
-    force: bool = False
+    skip_upgrade_check: bool = False
     ci_run: bool = False
 
     def create_backend(self) -> BaseCommandBackend:
