@@ -9,6 +9,13 @@ _ = rollout_env, generation_env
 
 
 @pytest.fixture(autouse=True)
+def no_env_reporting(monkeypatch):
+    """Constructing a worker configures its logger, which in a real process starts a thread that
+    shells out to pip and git; tests exercise that reporter directly instead."""
+    monkeypatch.setattr("miles.utils.logging_utils.start_env_reporting", lambda args: None)
+
+
+@pytest.fixture(autouse=True)
 def clear_legacy_rollout_gate(monkeypatch):
     # an ambient value changes which arguments the parser registers
     monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
