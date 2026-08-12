@@ -103,6 +103,61 @@ def test_window_narrows_to_requested_range(tmp_path):
     assert compute_advisories(store, t0=50.0, t1=150.0) == []
 
 
+def _dp_engine(rank: str, value: float, ts: float = 1.0) -> EngineSample:
+    return EngineSample(
+        ts=ts, addr="http://n:1", metric="sglang_num_running_reqs", labels={"dp_rank": rank}, value=value
+    )
+
+
+def _imbalanced(tmp_path, args: dict) -> str:
+    store = _store(
+        tmp_path,
+        args=args,
+        engine_samples=[_dp_engine("0", 11.0), _dp_engine("1", 0.5), _dp_engine("2", 0.0), _dp_engine("3", 1.0)],
+    )
+    [advisory] = compute_advisories(store)
+    assert advisory.level == "warning"
+    assert "dp ranks imbalanced" in advisory.message
+    return advisory.message
+
+
+def test_dp_imbalance_names_the_knob_that_applies(tmp_path):
+    assert "--router-dp-aware" in _imbalanced(tmp_path / "a", {})
+    assert "--sglang-load-balance-method" in _imbalanced(tmp_path / "b", {"use_miles_router": True})
+    assert "--router-policy (cache_aware)" in _imbalanced(
+        tmp_path / "c", {"router_dp_aware": True, "router_policy": "cache_aware"}
+    )
+    # miles overrides router_policy with sglang_router_policy when both are set
+    assert "--router-assignment-mode (random)" in _imbalanced(
+        tmp_path / "d",
+        {
+            "router_dp_aware": True,
+            "router_policy": "cache_aware",
+            "sglang_router_policy": "manual",
+            "router_assignment_mode": "random",
+        },
+    )
+
+
+def test_dp_balanced_not_flagged(tmp_path):
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[_dp_engine("0", 5.0), _dp_engine("1", 4.0), _dp_engine("2", 6.0), _dp_engine("3", 5.0)],
+    )
+    assert compute_advisories(store) == []
+
+
+def test_dp_idle_engine_not_flagged(tmp_path):
+    # everything near zero (drained engine): no load, no imbalance signal
+    store = _store(
+        tmp_path,
+        args={},
+        engine_samples=[_dp_engine("0", 0.5), _dp_engine("1", 0.0)],
+    )
+    assert compute_advisories(store) == []
+
+
 # ------------------------- v2: health alarms + gating -------------------------
 
 

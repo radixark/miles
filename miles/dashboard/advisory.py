@@ -38,6 +38,10 @@ KV_BOUND_RUNNING_RATIO = 0.5
 LOW_CONCURRENCY_RATIO = 0.3
 LOW_CACHE_HIT_RATE = 0.10
 HIGH_TOKEN_USAGE = 0.95
+# dp-attention imbalance: flag when the busiest dp rank carries real load but
+# the idlest sits under this fraction of it (requests piling on few ranks)
+DP_IMBALANCE_MIN_RUNNING = 1.0
+DP_IMBALANCE_RATIO = 0.25
 
 DEFAULT_LOW_MFU = 0.15
 MFU_KEY = "perf/actor_train_mfu"
@@ -254,6 +258,35 @@ def _aggregate(series: list[dict], *, agg: str) -> float | None:
     return max(values) if agg == "max" else sum(values) / len(values)
 
 
+def _dp_rank_means(series: list[dict]) -> dict[str, dict[str, float]]:
+    """Per-engine ``{dp_rank: mean(value)}`` from a ``per_dp_rank`` result;
+    series without a dp_rank label (non-dp engines) are skipped."""
+    out: dict[str, dict[str, float]] = {}
+    for s in series:
+        rank = s["labels"].get("dp_rank")
+        if rank is None or not s["value"]:
+            continue
+        out.setdefault(s["addr"], {})[rank] = sum(s["value"]) / len(s["value"])
+    return out
+
+
+def _dp_spread_hint(args: dict) -> str:
+    """Which knob actually decides how requests spread across dp ranks. Only a
+    dp-aware sglang router routes per rank; otherwise the engine looks like one
+    worker and sglang's own dp controller dispatches."""
+    if args.get("use_miles_router"):
+        return "the miles router routes per engine; --sglang-load-balance-method decides the rank"
+    if not args.get("router_dp_aware"):
+        return "the router sees one worker per engine; --router-dp-aware makes it route per rank"
+    policy = args.get("sglang_router_policy") or args.get("router_policy")
+    if policy == "manual":
+        return (
+            f"manual routing pins each key to a rank via --router-assignment-mode "
+            f"({args.get('router_assignment_mode')}); min_load spreads by load"
+        )
+    return f"--router-policy ({policy}) picks the rank"
+
+
 def mfu_summary(store: MetricStore) -> dict | None:
     series = store.metric_series([MFU_KEY, MFU_PEAK_KEY], x_key=MFU_STEP_KEY)
     steady = series[MFU_KEY]["y"][1:]
@@ -332,4 +365,23 @@ def _tuning_advisories(
                 ),
             )
         )
+
+    per_rank = store.engine_series("sglang_num_running_reqs", t0=t0, t1=t1, per_dp_rank=True)
+    for addr, means in sorted(_dp_rank_means(per_rank).items()):
+        if len(means) < 2:
+            continue
+        busiest, idlest = max(means.values()), min(means.values())
+        if busiest >= DP_IMBALANCE_MIN_RUNNING and idlest < DP_IMBALANCE_RATIO * busiest:
+            detail = ", ".join(
+                f"dp{rank}={mean:.1f}" for rank, mean in sorted(means.items(), key=lambda kv: int(kv[0]))
+            )
+            out.append(
+                Advisory(
+                    level="warning",
+                    message=(
+                        f"{addr}: dp ranks imbalanced (mean running reqs {detail}) — requests pile onto "
+                        f"few ranks while others idle; {_dp_spread_hint(args)}"
+                    ),
+                )
+            )
     return out

@@ -680,7 +680,9 @@ export async function renderTimeline(view, meta, route) {
           });
           return el("span", { style: "display: inline-flex; gap: 4px; align-items: center" }, [swatch, name]);
         }),
-        el("span", { style: `color: ${OVERLAY_COLOR}` }, ["— engine overlay"]),
+        ...(overlayMetric
+          ? [el("span", { style: `color: ${OVERLAY_COLOR}` }, [`— ${overlayMetric.replace("sglang_", "")}`])]
+          : []),
         el("span", { style: `color: ${UTIL_STROKE}` }, ["— gpu util"]),
       ]),
     );

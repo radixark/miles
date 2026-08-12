@@ -160,7 +160,7 @@ class DashboardCollector:
         # latest-value caches for the Prometheus forwarding snapshot; kept
         # separately because store buffers empty out on every flush
         self._latest_gpu: dict[tuple[str, int], GpuSample] = {}
-        self._latest_running_reqs: dict[str, float] = {}
+        self._latest_running_reqs: dict[str, tuple[float, float]] = {}
         self._latest_phase_seconds: dict[str, float] = {}
         self._scraped_engine_addrs: set[str] = set()
         self._actor_engine_addrs: set[str] = set()
@@ -303,7 +303,11 @@ class DashboardCollector:
         elif isinstance(record, EngineSample):
             self._scraped_engine_addrs.add(record.addr)
             if record.metric == "sglang_num_running_reqs":
-                self._latest_running_reqs[record.addr] = record.value
+                ts, total = self._latest_running_reqs.get(record.addr, (None, 0.0))
+                self._latest_running_reqs[record.addr] = (
+                    record.ts,
+                    (total if ts == record.ts else 0.0) + record.value,
+                )
         elif isinstance(record, PhaseEvent):
             self._latest_phase_seconds[record.name] = record.t1 - record.t0
 
@@ -375,7 +379,7 @@ class DashboardCollector:
             }
             snapshot |= {
                 f"dashboard/engine_{safe(addr)}_running_reqs": value
-                for addr, value in self._latest_running_reqs.items()
+                for addr, (_, value) in self._latest_running_reqs.items()
             }
             snapshot |= {
                 f"dashboard/phase_{name}_seconds": seconds for name, seconds in self._latest_phase_seconds.items()
