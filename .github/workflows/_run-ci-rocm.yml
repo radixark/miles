@@ -15,10 +15,6 @@ on:
         # source of the image name, so a dated tag can't rot here.
         type: string
         required: true
-      checkout_ref:
-        description: Git ref to test. PR callers pass the merge ref explicitly.
-        type: string
-        required: true
       skip_dependency_install:
         # Default true: the ROCm image ships SGLang / Megatron-LM baked in.
         # Pass false to fetch and install refs (PR body ci-megatron-pr: /
@@ -71,15 +67,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.checkout_ref }}
           persist-credentials: false
-          # Callers run on pull_request_target and pass refs/pull/<n>/merge, so
-          # checkout refuses fork code by default ("pwn request"). Running the
-          # PR's code on the MI300X host is this stage's purpose; the controls
-          # that guardrail asks for are already here -- pr-test-rocm.yml admits a
-          # fork only after a maintainer adds a run-ci-* label, and fork jobs get
-          # no secrets. Without this, every fork PR fails before any test runs.
-          allow-unsafe-pr-checkout: true
 
       - name: Cleanup Ray processes
         shell: bash
