@@ -11,9 +11,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
-from miles.utils.chat_template_utils.tito_tokenizer import ParsedAssistantCompletion
+
+@dataclass(frozen=True)
+class ParsedAssistantCompletion:
+    """Optional model-family projection of one raw assistant completion."""
+
+    client_message: dict[str, Any]
+    stored_message: dict[str, Any]
+    parser_name: str
+    parse_error: str | None = None
 
 
 class InklingResponseParser:

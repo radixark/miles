@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from miles.utils.chat_template_utils import deepseek, template
+from miles.utils.chat_template_utils.inkling_response import InklingResponseParser
 from miles.utils.chat_template_utils.template import assert_messages_append_only_with_allowed_role
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
@@ -61,16 +62,6 @@ class FixedTemplate:
                 f"supported roles are {sorted(ALL_APPEND_ROLES)}"
             )
         object.__setattr__(self, "allowed_append_roles", roles)
-
-
-@dataclass(frozen=True)
-class ParsedAssistantCompletion:
-    """Optional model-family projection of one raw assistant completion."""
-
-    client_message: dict[str, Any]
-    stored_message: dict[str, Any]
-    parser_name: str
-    parse_error: str | None = None
 
 
 def _build_dummy_assistant(stored_assistant: dict[str, Any]) -> dict[str, Any]:
@@ -796,8 +787,6 @@ class InklingTITOTokenizer(TITOTokenizer):
         completion_token_ids: list[int],
     ) -> dict[str, Any]:
         if self._response_parser is None:
-            from miles.utils.chat_template_utils.inkling_response import InklingResponseParser
-
             self._response_parser = InklingResponseParser(self.tokenizer)
         parsed = self._response_parser.parse(
             completion_token_ids,
