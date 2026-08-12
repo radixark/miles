@@ -185,6 +185,7 @@ def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes:
             start = end
         return groups
 
+    # Standard rollout samples carry their prompt identity in `group_index`.
     group_indices = [sample.group_index for sample in samples]
     if all(group_index is not None for group_index in group_indices):
         segments_by_group_index: dict[int, list[int]] = {}
@@ -192,12 +193,14 @@ def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes:
             segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
         return list(segments_by_group_index.values())
 
+    # Legacy fixed-fanout batches store each prompt's segments contiguously.
     expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
     if len(samples) == expected_samples:
         return [
             list(range(start, start + args.n_samples_per_prompt))
             for start in range(0, len(samples), args.n_samples_per_prompt)
         ]
+    # Without prompt identities or a complete fixed layout, use one reward group.
     return [list(range(len(samples)))]
 
 
