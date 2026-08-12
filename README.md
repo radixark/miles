@@ -36,37 +36,59 @@ needs at trillion-parameter scale.
 
 > *"A journey of a thousand miles begins with a single rollout."*
 
-The core features include:
+### Efficiency and stability
 
-- **Fast rollout and weight updates**: fully async RL with configurable on- and off-policy
-  schedules, high-throughput agentic generation on SGLang, and in-loop weight sync that
-  moves 1 T parameters in under 10 seconds, with
+- **Fully async RL.** Rollout and training workers are decoupled, with configurable on- and
+  off-policy schedules, a pipeline tuned for fewer bubbles, and customizable async rollout
+  and eval modes. See [Fully Async RL](https://miles.radixark.com/docs/user-guide/fully-async).
+- **Fast agentic rollout.** Generation runs on [SGLang](https://github.com/sgl-project/sglang)
+  behind a router that spreads requests across engines, preserves per-request metadata and
+  health-checks the fleet. Tuned for multi-turn agentic workloads.
+- **Fast weight updates.** New weights reach the engines in-loop in seconds, even on a
+  trillion-parameter model such as Kimi-K2.6, with
   [P2P RDMA](https://miles.radixark.com/docs/advanced/p2p-weight-transfer) as the fast path
   for disaggregated setups.
-- **Correctness at scale**: [token-in-token-out](https://miles.radixark.com/docs/user-guide/agentic-chat-template)
-  for every model and every black-box agent harness,
-  [rollout routing replay](https://miles.radixark.com/docs/advanced/miles-router) to remove
-  the MoE routing mismatch that destabilizes large runs, and true-on-policy alignment
-  between the trainer and the engine.
-- **Low-precision training**: end-to-end
-  [MXFP8 and NVFP4](https://miles.radixark.com/docs/advanced/low-precision) on Blackwell,
-  plus FP8, [INT4 QAT](https://miles.radixark.com/docs/advanced/int4-qat), BF16 and FP16.
-- **Broad model support**: day-0 enablement of frontier releases including DeepSeek-V4,
-  Kimi-K3, GLM-5.2, Qwen3.6, Inkling, Nemotron 3 and Gemma 4, covering dense, MoE, hybrid
-  attention and multimodal architectures. See
-  [Models](https://miles.radixark.com/docs/models).
-- **Extensive hardware support**: NVIDIA GB300, GB200, B300, B200, H200, H100 and A100, and
-  AMD MI300X, MI325, MI350 and MI355X via ROCm.
-- **Recipes and environments**: RL (GRPO, GSPO, PPO), SFT,
-  [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation)
-  and [LoRA](https://miles.radixark.com/docs/advanced/lora), with
-  [Harbor, OpenEnv and NeMo Gym](https://miles.radixark.com/docs/user-guide/environments)
-  integrations for coding-agent sandboxes.
-- **Built to keep running**: [fault tolerance](https://miles.radixark.com/docs/advanced/fault-tolerance)
-  that recovers a dead SGLang engine in place, twenty-plus
-  [plug-points](https://miles.radixark.com/docs/user-guide/customization) for custom Python,
-  and a [dashboard](https://miles.radixark.com/docs/user-guide/dashboard) showing what every
-  GPU did during a step and what every trajectory contained at the token level.
+- **Low-precision training.** [MXFP8 and NVFP4](https://miles.radixark.com/docs/advanced/low-precision)
+  training with a numerically stable RL recipe that reduces precision-induced divergence.
+  FP8, [INT4 QAT](https://miles.radixark.com/docs/advanced/int4-qat), BF16 and FP16 are also
+  supported.
+- **Token-in-token-out (TITO).** Supported for
+  [every model and every black-box harness](https://miles.radixark.com/docs/user-guide/agentic-chat-template),
+  with no detokenize and retokenize round-trip between rollout and training.
+- **Rollout Routing Replay (R3).** Expert routing recorded during rollout is
+  [replayed in the trainer's forward pass](https://miles.radixark.com/docs/advanced/miles-router),
+  removing the MoE routing mismatch that destabilizes large runs, with compute and
+  communication overlapped to keep the cost down.
+- **LoRA and multi-LoRA.** [Low-rank adapters](https://miles.radixark.com/docs/advanced/lora)
+  train frontier-scale models on a fraction of the GPUs, and the same adapters load straight
+  into SGLang for rollout.
+- **Fault tolerance.** When an SGLang engine dies, Miles
+  [recovers it and resumes the run in place](https://miles.radixark.com/docs/advanced/fault-tolerance):
+  no restart, no pause.
+- **Day-0 model support.** DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling and Nemotron landed on
+  release day. Beyond day 0, nearly every frontier model runs on Miles, including Kimi-K2.6
+  and Qwen3.5. See [Models](https://miles.radixark.com/docs/models).
+
+### Design, support and experience
+
+- **Coding-agent environments.** Connectors for
+  [Harbor, NeMo Gym, OpenEnv, Verifiers, Strands Agents and tau-bench](https://miles.radixark.com/docs/user-guide/environments),
+  each plugging into the rollout layer that fits it, with task sandboxes on AgentENV,
+  Daytona, E2B or Modal.
+- **Highly customizable pipeline.** Shape every workload through
+  [21 plug-points](https://miles.radixark.com/docs/user-guide/customization), from reward
+  computation to the full rollout function.
+- **Megatron or FSDP.**
+  [Switch training backends](https://miles.radixark.com/docs/user-guide/training-backend)
+  without rewriting your training loop.
+- **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
+  [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
+- **Verified on many hardware generations.** NVIDIA GB300, GB200, B200, H200 and H100, and
+  AMD MI355X via ROCm.
+- **Miles dashboard.** A self-hosted web UI for a run's
+  [training dynamics and compute efficiency](https://miles.radixark.com/docs/user-guide/dashboard):
+  what every GPU was doing during a step, and what each trajectory contained at the token
+  level.
 
 ## Getting Started
 
