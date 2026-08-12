@@ -35,11 +35,15 @@ the same drift class that affects the Nano-MoE recipe.
 ### 3.1 Download model + datasets
 
 ```bash
-export BASE_DIR=/root/miles_data
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir $BASE_DIR/dapo-math-17k
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
 hf download nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8 \
-   --local-dir $BASE_DIR/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+   --local-dir /root/models/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
 ```
+
+Those are the `--data-dir` and `--model-dir` defaults; on the cluster they are
+`/cluster_public/miles_data/datasets` and `/cluster_public/miles_data/models`. `--model-name`
+names the checkpoint directory inside `--model-dir` and defaults to the BF16 release, so pass
+`--model-name NVIDIA-Nemotron-3-Super-120B-A12B-FP8` for the FP8 one.
 
 ### 3.2 No `torch_dist` conversion
 
@@ -47,27 +51,31 @@ AutoBridge + the NemotronH MoE shim load the FP8 HF checkpoint directly. Both
 `--hf-checkpoint` and `--ref-load` point at the HF directory:
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
-   --ref-load     $BASE_DIR/NVIDIA-Nemotron-3-Super-120B-A12B-FP8
-   --save         $BASE_DIR/nemotron-3-super-120b-a12b_miles
-   --save-interval 20
-   --megatron-to-hf-mode bridge
-)
+--hf-checkpoint <model-dir>/<model-name>
+--ref-load      <model-dir>/<model-name>
+--save          <output-dir>/checkpoints
+--save-interval 20
+--megatron-to-hf-mode bridge
 ```
 
 ## 4. Launch
 
 ### 4.1 Quick start
 
+The two pods take different roles, and each runs exactly one command:
+
 ```bash
 cd /root/miles
-export BASE_DIR=/root/miles_data
-bash scripts/run-nemotron-3-super-120b-a12b.sh
+
+# on each worker pod — joins the head's ray cluster and blocks
+python scripts/run_nemotron_3_super_120b_a12b.py worker --head-ip <head_ip>
+
+# on the head pod — starts the ray head, waits for both nodes' GPUs, submits
+python scripts/run_nemotron_3_super_120b_a12b.py train --head-ip <head_ip>
 ```
 
-The script targets **2 nodes × 8 GPU (H200, FP8)**. Default cell is
-`TP=4 PP=2 EP=8`.
+The recipe targets **2 nodes × 8 GPU (H200, FP8)** (`--num-nodes` / `--num-gpus-per-node`).
+Default cell is `TP=4 PP=2 EP=8`, and it is a 10-step smoke test (`--num-rollout`).
 
 ## 5. Recipe Configuration
 
@@ -79,11 +87,11 @@ Mamba+Attention stack at the FP8 weight resolution.
 
 | Cell | TP | PP | CP | EP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|
-| **default (run script)** | 4 | 2 | 1 | 8 | 1024 | 16 (2 × 8) |
+| **default (launcher)** | 4 | 2 | 1 | 8 | 1024 | 16 (2 × 8) |
 | TP=4×EP=8 (1 node)       | 4 | 1 | 1 | 8 | 1024 | 8 (1 × 8) |
 | TP=2×PP=2×EP=8 + SP      | 2 | 2 | 1 | 8 | 1024 | 16 (2 × 8) |
 
-`--sequence-parallel` is enabled in the run script. Activation checkpointing is
+`--sequence-parallel` is enabled by the recipe. Activation checkpointing is
 on (`--recompute-granularity full --recompute-method uniform
 --recompute-num-layers 1`). `--log-probs-chunk-size 128` keeps the smoke
 memory budget intact for FP8.
@@ -93,27 +101,23 @@ memory budget intact for FP8.
 GRPO with low-variance KL — same defaults as Nano-MoE:
 
 ```bash
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
+--advantage-estimator grpo
+--use-kl-loss
+--kl-loss-coef 0.00
+--kl-loss-type low_var_kl
+--entropy-coef 0.00
+--eps-clip 0.2
+--eps-clip-high 0.28
 ```
 
 ### 5.3 Rollout & SGLang
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.7
-   # Replay the exact rollout routing during training forward so
-   # train logprobs match rollout logprobs (needed for sigmoid-routed MoE).
-   --use-rollout-routing-replay
-)
+--rollout-num-gpus-per-engine 8     # follows --num-gpus-per-node
+--sglang-mem-fraction-static 0.7
+# Replay the exact rollout routing during training forward so
+# train logprobs match rollout logprobs (needed for sigmoid-routed MoE).
+--use-rollout-routing-replay
 ```
 
 The `--use-rollout-routing-replay` flag keeps train and rollout
@@ -144,11 +148,11 @@ this scale.
 
 See [Backends Beyond Megatron](/advanced/architecture-support) for how
 the bridge shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto
-the Megatron provider, and [FP8 & Low Precision](/advanced/fp8-low-precision)
+the Megatron provider, and [Low Precision RL](/advanced/low-precision)
 for the FP8 weight format.
 
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)

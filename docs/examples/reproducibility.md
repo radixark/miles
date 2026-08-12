@@ -66,7 +66,7 @@ PERF_ARGS+=(
 ### 4. Download + convert + run
 
 ```bash
-hf download --repo-type dataset openai/gsm8k         --local-dir /root/gsm8k
+hf download --repo-type dataset zhuzilin/gsm8k       --local-dir /root/gsm8k
 hf download Qwen/Qwen2.5-0.5B-Instruct               --local-dir /root/Qwen2.5-0.5B-Instruct
 
 cd /root/miles

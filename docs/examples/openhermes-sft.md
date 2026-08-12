@@ -24,15 +24,15 @@ Why use Miles for SFT? Two reasons:
 If you don't already have it:
 
 ```bash
-hf download Qwen/Qwen3-4B-Base --local-dir /root/Qwen3-4B-Base
+hf download Qwen/Qwen3-4B-Base --local-dir /root/models/Qwen3-4B-Base
 
 cd /root/miles
 MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-4B)" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3-4B-Base \
-   --save           /root/Qwen3-4B-Base_torch_dist
+   --hf-checkpoint /root/models/Qwen3-4B-Base \
+   --save           /root/models/Qwen3-4B-Base_torch_dist
 ```
 
 ### 2. Prepare the dataset
@@ -54,41 +54,44 @@ def convert(sample):
     }
 
 ds = ds.map(convert)
-ds.to_parquet("/root/openhermes2_5.parquet")
+ds.to_parquet("/root/datasets/openhermes2_5.parquet")
 ```
 
 ### 3. Run
 
 ```bash
-bash scripts/run-qwen3-4B-base-sft.sh
+python scripts/run_qwen3_sft.py --model-name Qwen3-4B-Base
 ```
+
+The same launcher runs the 4-node Qwen3-235B-A22B SFT with `--model-name Qwen3-235B-A22B`.
+The dataset is read from `--data-dir` (default `/root/datasets`), the checkpoints from
+`--model-dir` (default `/root/models`), and the run writes to `--output-dir`
+(default `/root/shared_data`).
 
 ## What changes vs. the GRPO recipe
 
-Compare to [run-qwen3-4B.sh](/models/qwen/qwen3). The deltas:
+Compare to [run_qwen3_dense.py](/models/qwen/qwen3). The deltas:
 
 ```diff
 - python3 train.py
 + python3 train_async.py        # async for data prefetch
 
-- ROLLOUT_ARGS=( ... GRPO knobs, n-samples-per-prompt, ... )
-+ SFT_ARGS=(
-+    --rollout-function-path miles.rollout.sft_rollout.generate_rollout
-+    --prompt-data /root/openhermes2_5.parquet
-+    --input-key messages
-+    --rollout-shuffle
-+    --num-epoch 3
-+    --rollout-batch-size 128
-+    --global-batch-size 128
+- # GRPO knobs, n-samples-per-prompt, ...
++ --rollout-function-path miles.rollout.sft_rollout.generate_rollout
++ --prompt-data <data-dir>/openhermes2_5.parquet
++ --input-key messages
++ --rollout-shuffle
++ --num-epoch 3
++ --rollout-batch-size 128
++ --global-batch-size 128
 +
-+    --loss-type sft_loss
-+    --calculate-per-token-loss
-+    --disable-compute-advantages-and-returns
-+    --debug-train-only
-+ )
++ --loss-type sft_loss
++ --calculate-per-token-loss
++ --disable-compute-advantages-and-returns
++ --debug-train-only
 
-- GRPO_ARGS=( ... )            # removed entirely
-- SGLANG_ARGS=( ... )          # removed — no inference needed
+- # the GRPO flags are gone entirely
+- # so are the --sglang-* flags — no inference needed
 ```
 
 ## Why each flag
@@ -134,11 +137,9 @@ worker count or use parquet (we already do).
 Pass multiple `--prompt-data` entries:
 
 ```bash
-SFT_ARGS+=(
-   --prompt-data \
-      hermes  /root/openhermes2_5.parquet \
-      slimorca /data/slimorca.parquet
-)
+--extra-args "--prompt-data \
+   hermes   /root/datasets/openhermes2_5.parquet \
+   slimorca /data/slimorca.parquet"
 ```
 
 Per-source loss is logged separately.
@@ -148,13 +149,13 @@ Per-source loss is logged separately.
 After SFT, point the RL run at the SFT checkpoint:
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint /root/Qwen3-4B-Base
-   --ref-load      /root/Qwen3-4B-Base_torch_dist     # original (anchor)
-   --load          /root/Qwen3-4B-Base_sft/           # SFT output (start point)
-   --save          /root/Qwen3-4B-Base_rl/
-)
+--hf-checkpoint /root/models/Qwen3-4B-Base
+--ref-load      /root/models/Qwen3-4B-Base_torch_dist   # original (anchor)
+--load          /root/shared_data/checkpoints           # SFT output (start point)
+--save          /root/shared_data_rl/checkpoints
 ```
+
+Both runs derive `--load` / `--save` from `--output-dir`, so give the RL run its own.
 
 ### LoRA SFT
 

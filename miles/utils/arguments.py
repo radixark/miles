@@ -155,8 +155,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--offload-train",
                 action=argparse.BooleanOptionalAction,
                 help=(
-                    "Whether to offload the training actor to CPU during training. "
-                    "This will always be true when --colocate is set."
+                    "Whether to offload the training actor to CPU while the rollout engines generate. "
+                    "Defaults to true when --colocate is set; an explicit --no-offload-train is respected."
                 ),
             )
             parser.add_argument(
@@ -164,7 +164,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action=argparse.BooleanOptionalAction,
                 help=(
                     "Whether to offload the rollout generator to CPU during training. "
-                    "This will always be true when --colocate is set."
+                    "Defaults to true when --colocate is set; an explicit --no-offload-rollout is respected."
                 ),
             )
 
@@ -2876,6 +2876,10 @@ def miles_validate_args(args):
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
 
+    assert not (
+        args.use_session_server and args.pause_generation_mode == "abort"
+    ), "--use-session-server is incompatible with --pause-generation-mode=abort"
+
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
             f"--tito-model={args.tito_model} requires --use-session-server; "
@@ -3296,8 +3300,6 @@ def miles_validate_args(args):
     if args.offload_train:
         args.disable_grad_buffers_cpu_backup = True
         args.disable_param_buffers_cpu_backup = True
-
-    _validate_rematerialize_param_from_master_weight(args)
 
     _validate_rematerialize_param_from_master_weight(args)
 

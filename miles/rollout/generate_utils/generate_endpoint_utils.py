@@ -105,7 +105,7 @@ async def update_sample_from_response(
         sample.loss_mask += [1] * len(new_response_tokens)
 
     # TODO handle multi-turn cases (may need concat instead of assignment)
-    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, sample)
+    sample.rollout_routed_experts = get_routed_experts_from_response(args, output, len(sample.tokens) - 1)
     sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
 
     # TODO may unify (currently there are both methods inside Sample and separate functions)
@@ -121,11 +121,11 @@ def _decode_topk_buffer(info: str, num_tokens: int, num_layers: int, topk: int) 
     return x.reshape(num_tokens, num_layers, topk)
 
 
-def get_routed_experts_from_response(args, output, sample):
+def get_routed_experts_from_response(args, output, num_tokens: int):
     info = output["meta_info"].get("routed_experts")
     if info is None:
         return None
-    return _decode_topk_buffer(info, len(sample.tokens) - 1, args.num_layers, -1)
+    return _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
 
 
 def get_indexer_topk_from_response(args, output, sample):

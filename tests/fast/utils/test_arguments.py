@@ -339,6 +339,28 @@ class TestSessionServerV2Validation:
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
 
 
+class TestSessionServerPauseGenerationMode:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_session_server_rejects_abort(self):
+        args = self._parse(["--use-session-server", "--pause-generation-mode", "abort"])
+
+        with pytest.raises(
+            AssertionError, match="--use-session-server is incompatible with --pause-generation-mode=abort"
+        ):
+            miles_validate_args(args)
+
+    def test_abort_without_session_server_passes(self):
+        miles_validate_args(self._parse(["--pause-generation-mode", "abort"]))
+
+    @pytest.mark.parametrize("mode", ["retract", "in_place"])
+    def test_session_server_accepts_non_abort_modes(self, mode):
+        miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

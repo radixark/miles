@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -166,7 +167,7 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
         )
 
 
-def _execute_train(args: ScriptArgs):
+def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
     ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
@@ -443,6 +444,7 @@ tis_batch_normalize: true
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},
         megatron_path=args.megatron_path,
+        before_ray_job_submit=before_ray_job_submit,
     )
 
 
@@ -454,9 +456,7 @@ def full_train(args: ScriptArgs):
     _prepare_bf16_ckpt(args)
     _prepare_mxfp8_ckpt(args)
     _prepare_fp8_ckpt(args)
-    _prepare_megatron_ckpt(args)
-    # _prepare_cp(args, skip_existing=True)
-    _execute_train(args)
+    _execute_train(args, before_ray_job_submit=partial(_prepare_megatron_ckpt, args))
 
 
 @app.command()

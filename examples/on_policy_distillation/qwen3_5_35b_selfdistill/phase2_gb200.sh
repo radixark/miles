@@ -101,7 +101,7 @@ PERF_ARGS=(
    --recompute-granularity full --recompute-method uniform --recompute-num-layers 1
    --use-dynamic-batch-size --max-tokens-per-gpu 16384 --log-probs-chunk-size 4096
 )
-# Blackwell (GB200 sm100 / B300 sm103) backends, per scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py:
+# Blackwell (GB200 sm100 / B300 sm103) backends, per scripts/run_qwen3_5_35b_a3b_mtp.py:
 # - moe-runner-backend flashinfer_cutlass: the default triton fused-MoE mis-shards
 #   routed experts on the megatron->sglang weight sync (w13 reshape 64 vs 2048).
 # - attention-backend trtllm_mha: FA3 is SM<=90 only; flashinfer/fa3 don't fit here.

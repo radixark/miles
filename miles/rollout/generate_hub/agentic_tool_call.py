@@ -114,6 +114,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         return GenerateFnOutput(samples=[sample] if use_v2 else sample)
 
     samples = result.samples
+    if use_v2:
+        # FIXME: handle sample index issues.
+        rollout_id = input.sample.rollout_id if input.sample.rollout_id is not None else input.sample.index
+        assert rollout_id is not None, "v2 agentic samples require input Sample.rollout_id or Sample.index"
+        for sample in samples:
+            sample.rollout_id = rollout_id
     if not use_v2:
         # v1: the agent's metadata is applied driver-side. Under v2 it traveled
         # through collect_samples and came back applied by the server-side

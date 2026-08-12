@@ -20,11 +20,11 @@ Qwen3-4B on a single 8× H100 node — the canonical starter recipe:
 
 ```bash
 cd /root/miles
-hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
-bash scripts/run-qwen3-4B.sh
+hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B
+python scripts/run_qwen3_dense.py --model-name Qwen3-4B
 ```
 
-Dataset is [DAPO-Math-17k](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17K) at `/root/dapo-math-17k/dapo-math-17k.jsonl`. See the [Qwen3 Dense](/models/qwen/qwen3) page for the full walkthrough, weight conversion, and variants.
+Dataset is [DAPO-Math-17k](https://huggingface.co/datasets/zhuzilin/dapo-math-17k) at `/root/datasets/dapo-math-17k/dapo-math-17k.jsonl`. See the [Qwen3 Dense](/models/qwen/qwen3) page for the full walkthrough, weight conversion, and variants.
 
 ## Which variant do I pick?
 

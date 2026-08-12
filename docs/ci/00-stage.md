@@ -2,9 +2,6 @@
 title: Stage
 description: How CI stages are defined, how a test's suite maps to a stage, and what each stage does.
 ---
-
-# Stage
-
 A *stage* is one CI job in a Miles CI workflow. A *suite* is the `suite=` value a test declares in `register_*_ci(...)`. Stage names and suite names are the same set, mapped **1:1**: a test runs in exactly the stage whose name equals its `suite`.
 
 ## Suite → stage mapping
@@ -40,7 +37,7 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 
 **Policy resolution (`resolve-ci-policy`).**
 
-- `pull_request` / `pull_request_target`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
+- `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
 - Each Miles PR workflow passes trigger facts to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`.
 - A PR `nightly` label maps to nightly cadence.
 - A scheduled run maps its exact `github.event.schedule` cron: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping.
@@ -48,7 +45,7 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 
 A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
 
-`run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see docs/ci/01-label.md for the subtraction semantics).
+`run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see [Labels](/ci/01-label) for the subtraction semantics).
 
 **Dependencies / gating.** In `pr-test.yml`, both CPU stages require both resolvers. Its GPU stages also require both resolvers and, by default, a successful `stage-a-cpu`, so a CPU-test failure short-circuits the expensive NVIDIA fleet. Resolved nightly cadence and the `bypass-fastfail` PR label relax only the `stage-a-cpu` failure gate and make each suite continue after a test failure; neither bypasses resolver failure.
 
@@ -60,17 +57,17 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 Both workflows receive `execute_command`; CUDA callers additionally pass `runs_on` and `container_image`. The reusable workflows own runner setup, dependency and source resolution, and the two command invocations (first `--list-only`, then the real run); each stage owns only which runner class, image, and command to select.
 
-**Secrets.** CPU/CUDA stages call their reusable workflow with `secrets: inherit`. The ROCm caller passes `WANDB_API_KEY` explicitly for schedules, manual runs, and same-repository PRs, but passes an empty value for fork PRs.
+**Secrets.** CPU/CUDA stages call their reusable workflow with `secrets: inherit`. The ROCm caller passes `WANDB_API_KEY` explicitly; GitHub withholds it from fork `pull_request` runs.
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
 ## ROCm PR/nightly mirror
 
-`pr-test-rocm.yml` has PR-level, exact nightly cron, and `workflow_dispatch` entry points. Its `pull_request_target` entry keeps the workflow and authorization code on the trusted base branch, while adapting the event to the same `resolve-ci-policy` path as `pr-test.yml`. It runs `stage-c-4-gpu-mi300x` through `_run-ci-rocm.yml` on two 4-GPU MI300X runners, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
+`pr-test-rocm.yml` has `pull_request`, exact nightly cron, and `workflow_dispatch` entry points. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi300x` through `_run-ci-rocm.yml` on two 4-GPU MI300X runners, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
 
 Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` run; CUDA registrations are not inherited. PR and nightly runs consume the shared cadence and label policy: `run-ci-amd` selects the full MI300X set, other `run-ci-*` labels can select matching subsets, and nightly cadence admits regular plus nightly-only registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
 
-For fork PRs, a base-branch authorization step admits the privileged MI300X stage only when the event carries a canonical `run-ci-*` label. The reusable workflow then checks out `refs/pull/<number>/merge` explicitly, so it tests the PR merge result without trusting workflow or gate code from the fork. Fork jobs receive no `WANDB_API_KEY`; same-repository PRs, schedules, and manual dispatches do not need the label gate.
+Fork PRs use GitHub's standard `pull_request` protections: checkout tests the merge commit, repository secrets are withheld, and held runs follow the shared maintainer approval flow described in [`01-label.md`](01-label.md).
 
 An 8-GPU CUDA case needs a separate 4-GPU `test_amd_<name>.py` variant rather than an `IS_HIP` branch in the original test.
 

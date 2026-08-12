@@ -190,5 +190,5 @@ The `--low-memory-resume` flag (off by default) puts optimizer states on CPU dur
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [Architecture Support](/advanced/architecture-support) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.
