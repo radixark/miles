@@ -1,7 +1,10 @@
-import json
+from __future__ import annotations
+
 import logging
 import os
 import shlex
+from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -15,12 +18,14 @@ from miles.utils.external_utils.command_utils.common import (
     _parse_extra_env_vars,
     _pythonpath_with_sources,
     detect_hardware,
-    get_bool_env_var,
     repo_base_dir,
 )
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.http_utils import wait_for_server_ready
+from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,82 @@ class ExecuteTrainConfig:
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+    cluster_backend: ClusterBackend = ClusterBackend.RAY
+
+    def create_backend(self) -> BaseCommandBackend:
+        match self.cluster_backend:
+            case ClusterBackend.KUBERNETES:
+                raise NotImplementedError("A later milestone teaches this backend to install a run into Kubernetes")
+            case ClusterBackend.RAY:
+                from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
+
+                return RayCommandBackend(self)
+
+
+class ExecuteTrainRequest(FrozenStrictBaseModel):
+    train_args: str
+    num_gpus_per_node: int
+    megatron_model_type: str | None
+    train_script: str
+    train_backend_fsdp: bool
+    extra_env_vars: dict[str, str]
+    megatron_path: str
+    before_ray_job_submit: Callable[[], None] | None
+
+
+class BaseCommandBackend(ABC):
+    def __init__(self, config: ExecuteTrainConfig) -> None:
+        configure_logger_raw("launcher")
+        self.config = config
+
+    def execute_train(
+        self,
+        train_args: str,
+        num_gpus_per_node: int,
+        megatron_model_type: str | None,
+        train_script: str = "train.py",
+        before_ray_job_submit: Callable[[], None] | None = None,
+        extra_env_vars: dict[str, str] | None = None,
+        megatron_path: str = "/root/Megatron-LM",
+    ) -> None:
+        if not os.path.isabs(train_script):
+            train_script = f"{repo_base_dir}/{train_script}"
+
+        train_backend_fsdp = "--train-backend fsdp" in train_args
+        assert train_backend_fsdp == (megatron_model_type is None)
+
+        self._execute_train_inner(
+            ExecuteTrainRequest(
+                train_args=train_args,
+                num_gpus_per_node=num_gpus_per_node,
+                megatron_model_type=megatron_model_type,
+                train_script=train_script,
+                train_backend_fsdp=train_backend_fsdp,
+                extra_env_vars=extra_env_vars if extra_env_vars is not None else {},
+                megatron_path=megatron_path,
+                before_ray_job_submit=before_ray_job_submit,
+            )
+        )
+
+    @abstractmethod
+    def _execute_train_inner(self, request: ExecuteTrainRequest) -> None: ...
+
+    def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
+        return exec_command_cpu(cmd, capture_output=capture_output)
+
+    @abstractmethod
+    def exec_command_gpu(
+        self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
+    ) -> str | None: ...
+
+    @abstractmethod
+    def exec_command_multi_node(
+        self,
+        cmd: str,
+        capture_output: bool = False,
+        num_nodes: int | None = None,
+        num_gpus_per_node: int | None = None,
+    ) -> list[str | None]: ...
 
 
 def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainConfig) -> dict[str, str]:
@@ -51,91 +132,17 @@ def execute_train(
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
 ):
-    if extra_env_vars is None:
-        extra_env_vars = {}
-    if config is None:
-        config = ExecuteTrainConfig()
-    if not os.path.isabs(train_script):
-        train_script = f"{repo_base_dir}/{train_script}"
-    external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
-    master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
-    train_backend_fsdp = "--train-backend fsdp" in train_args
-    assert train_backend_fsdp == (megatron_model_type is None)
-
-    exec_command_cpu(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill miles)
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 miles; "
-        "pkill -9 redis; "
-        "true; "
+    RayCommandBackend(config if config is not None else ExecuteTrainConfig()).execute_train(
+        train_args=train_args,
+        num_gpus_per_node=num_gpus_per_node,
+        megatron_model_type=megatron_model_type,
+        train_script=train_script,
+        before_ray_job_submit=before_ray_job_submit,
+        extra_env_vars=extra_env_vars,
+        megatron_path=megatron_path,
     )
-
-    if not external_ray:
-        exec_command_cpu(
-            # will prevent ray from buffering stdout/stderr
-            f"export PYTHONUNBUFFERED=1 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
-        )
-
-    if (f := before_ray_job_submit) is not None:
-        f()
-
-    runtime_env_vars = {
-        # exported for the submitting client too, but only the runtime env reaches the ray workers
-        "PYTHONUNBUFFERED": "1",
-        # If setting this in FSDP, the computation communication overlapping may have issues
-        **(
-            {}
-            if train_backend_fsdp
-            else {
-                "CUDA_DEVICE_MAX_CONNECTIONS": "1",
-            }
-        ),
-        # a get() default is evaluated eagerly, which would probe even when already decided
-        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
-        **{
-            k: os.environ[k]
-            for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
-            if k in os.environ
-        },
-        "no_proxy": f"127.0.0.1,{master_addr}",
-        # This is needed by megatron / torch distributed in multi-node setup
-        "MASTER_ADDR": master_addr,
-        **(
-            {
-                "CUDA_ENABLE_COREDUMP_ON_EXCEPTION": "1",
-                "CUDA_COREDUMP_SHOW_PROGRESS": "1",
-                "CUDA_COREDUMP_GENERATION_FLAGS": "skip_nonrelocated_elf_images,skip_global_memory,skip_shared_memory,skip_local_memory,skip_constbank_memory",
-                "CUDA_COREDUMP_FILE": f"{config.output_dir}/cuda_coredump_%h.%p.%t",
-            }
-            if config.cuda_core_dump
-            else {}
-        ),
-        **resolve_extra_env_vars(extra_env_vars, config),
-    }
-    runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
-    runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
-
-    if get_bool_env_var("MILES_SCRIPT_ENABLE_RAY_SUBMIT", "1"):
-        model_args = shell_safe_model_args(megatron_model_type)
-        exec_command_cpu(
-            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
-            f"--runtime-env-json={shlex.quote(runtime_env_json)} "
-            f"-- python3 {train_script} "
-            f"{model_args} "
-            f"{train_args}"
-        )
 
 
 def convert_checkpoint(
