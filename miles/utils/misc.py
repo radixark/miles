@@ -147,7 +147,7 @@ class NodeProbeMixin:
 
     @staticmethod
     def _collect_env_report(*, role: str, rank: int, partial_env_report: str) -> None:
-        from miles.utils.env_report import collect_and_print_node_env_report
+        from miles.utils.env_report.reporter import collect_and_print_node_env_report
 
         collect_and_print_node_env_report(role=role, rank=rank, partial_env_report=partial_env_report)
 
