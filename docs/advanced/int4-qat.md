@@ -14,13 +14,11 @@ GEMMs, and reduce the numerical drift caused by training an expert in BF16 but
 serving it in INT4. It is not an INT4 optimizer or a general-purpose way to cut
 trainer memory by 4x.
 
-<Warning>
 INT4 QAT is beta and model-specific. The current Megatron hook covers routed
 expert weights implemented with Transformer Engine's grouped linear layer. It
 does not fake-quantize attention, embeddings, shared experts, ordinary dense
 MLPs, or the LM head. The checkpoint's quantized tensor set must match that
 scope.
-</Warning>
 
 ## What W4A16 means in miles
 
@@ -59,11 +57,17 @@ flowchart LR
 
 `--hf-checkpoint` is more than the checkpoint SGLang initially loads. Its
 `quantization_config` defines the format, group size, symmetry, and ignore rules
-used for every live weight update. On the Megatron Bridge path, miles also reads
-the safetensors index and quantizes exactly the tensor basenames stored in the
-checkpoint as packed weights. SGLang temporarily restores its loadable
-checkpoint layout, receives the newly packed tensors, and then preprocesses
-them into its kernel layout again.
+used for every live weight update. A model-specific Megatron Bridge can perform
+the precision conversion itself. The Kimi-K2.5 Bridge dequantizes packed expert
+weights when loading them into Megatron's target parameter dtype, then
+re-quantizes updated routed experts and returns packed INT4 tensors during
+export. For Bridge models without model-specific packing, miles uses the
+safetensors index and quantizes exactly the tensor basenames stored in the
+checkpoint as packed weights.
+
+SGLang temporarily restores its loadable checkpoint layout, receives the
+updated `weight_packed`, `weight_scale`, and `weight_shape` tensors, and then
+preprocesses them into its kernel layout again.
 
 Four settings must agree:
 
@@ -82,8 +86,17 @@ fake-quantization grid.
 ## Recommended start: Kimi-K2.5
 
 Kimi-K2.5 ships as a symmetric group-size-32 INT4 compressed-tensors
-checkpoint. The maintained launcher downloads it, dequantizes a BF16 copy for
-Megatron, and configures QAT with the same group size.
+checkpoint. With `--megatron-to-hf-mode bridge`, the published checkpoint can
+initialize both sides directly: SGLang retains the packed checkpoint, while the
+Kimi Bridge dequantizes routed expert weights as it loads them into Megatron and
+casts each shard to the target parameter dtype. No separately materialized BF16
+checkpoint is required by this Bridge path.
+
+During live export, the Kimi Bridge performs the inverse conversion. It returns
+the updated routed experts as group-size-32 packed INT4 weights and scales;
+miles passes those target-precision tensors to SGLang. The current maintained
+launcher still creates a BF16 copy and supplies it through `--ref-load`, but
+that is a launcher choice rather than a Megatron Bridge requirement.
 
 Run the reduced two-layer smoke test on one 4-GPU node:
 
@@ -154,14 +167,27 @@ This path uses `llmcompressor` and writes the same compressed-tensors checkpoint
 format. Calibration changes how the initial INT4 checkpoint is produced; it
 does not remove the requirement for matching QAT settings.
 
-Megatron still needs a higher-precision initialization. Depending on the model
-path, provide either a BF16 `torch_dist` checkpoint or a BF16 Hugging Face
-checkpoint supported by Megatron Bridge:
+Initialization depends on the conversion mode. The raw miles converters need a
+higher-precision Megatron checkpoint alongside the INT4 rollout checkpoint:
 
 ```bash
 --hf-checkpoint /root/models/MyMoE-INT4
 --ref-load /root/models/MyMoE-BF16_torch_dist
 ```
+
+A model-specific Bridge may instead load the INT4 Hugging Face checkpoint
+directly and return tensors in Megatron's target precision. Kimi-K2.5 supports
+this path:
+
+```bash
+--hf-checkpoint /root/models/Kimi-K2.5
+--megatron-to-hf-mode bridge
+```
+
+On a fresh run without `--ref-load`, miles initializes the Bridge model from
+`--hf-checkpoint`. Supplying `--ref-load` remains useful when the actor must be
+initialized from a different checkpoint or the selected Bridge does not
+implement direct loading for the quantized format.
 
 ## Enable QAT
 
