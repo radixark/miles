@@ -186,7 +186,6 @@ class TITOTokenizer:
         request_messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         """Restore model-specific server-owned sidecars after client replay."""
-        del stored_messages
         return list(request_messages)
 
     def _encode_text(self, text: str) -> list[int]:
