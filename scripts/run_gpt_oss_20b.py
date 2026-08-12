@@ -144,8 +144,6 @@ def execute(args: ScriptArgs):
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type="gpt-oss-20b",
-        # the ray workers download the tokenizer / config, so the cache belongs in their env
-        extra_env_vars={"HF_HOME": "/workspace/hf_cache"},
         megatron_path=args.megatron_path,
     )
 
