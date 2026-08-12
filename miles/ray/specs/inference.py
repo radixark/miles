@@ -9,6 +9,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
+from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
@@ -47,10 +48,18 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            engine_provider=ctx.capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args)),
+            engine_provider=compute_engine_provider(args, capability=ctx.capability),
             router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
     )
+
+
+def compute_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
+    return load_function(args.custom_inference_engine_provider_path)(args, capability=capability)
+
+
+def backend_inference_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
+    return capability.dynamic_worker_provider(pool_ids=compute_engine_pool_ids(args))
 
 
 def compute_router_providers(args, *, capability: BackendCapability) -> list[BaseWorkerProvider]:
@@ -100,8 +109,10 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         primary = ctx.self_addrs["primary"]
 
+        has_pd_disaggregation = model_cfg.has_pd_disaggregation or args.rollout_external_router_pd
+
         if args.use_miles_router:
-            assert not model_cfg.has_pd_disaggregation, "miles router does not support PD disaggregation."
+            assert not has_pd_disaggregation, "miles router does not support PD disaggregation."
             router_config = compute_miles_router_config(args, host=primary.host, port=primary.port)
             launch_argv = [*interpreter_prefix, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
@@ -110,7 +121,7 @@ def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> Comman
                 host=primary.host,
                 port=primary.port,
                 prometheus_port=ctx.self_addrs["prometheus"].port,
-                has_pd_disaggregation=model_cfg.has_pd_disaggregation,
+                has_pd_disaggregation=has_pd_disaggregation,
             )
             logger.info(f"Launch router with args: {router_args}")
             launch_argv = [
@@ -193,7 +204,7 @@ def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
-    if args.debug_train_only:
+    if args.debug_train_only or args.rollout_external:
         return []
 
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
