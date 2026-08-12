@@ -8,7 +8,7 @@ import requests
 from kimina_client import AsyncKiminaClient, CheckResponse
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from miles.utils.external_utils.exec_command import exec_command_cpu
+from miles.utils.external_utils.command_utils.common import run_shell_command
 from miles.utils.misc import get_free_port
 
 # TODO handle docker stop more gracefully later
@@ -73,7 +73,7 @@ def _docker_start(port: int):
     docker_name = (
         f"kimina_lean_server_auto_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{random.randint(0, 1000000)}"
     )
-    exec_command_cpu(
+    run_shell_command(
         "docker run "
         "-d "
         f"--name {docker_name} "
@@ -100,7 +100,7 @@ def _wait_server_ready(base_url: str):
 
 
 def _docker_stop_all():
-    exec_command_cpu(
+    run_shell_command(
         'ids=$(docker ps -a --filter "name=kimina_lean_server_auto" -q); '
         '[ -n "$ids" ] && docker stop $ids && docker rm $ids; '
         "true"
