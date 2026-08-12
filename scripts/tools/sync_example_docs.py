@@ -14,6 +14,10 @@ Two constructs in a README break the build and are rewritten here: unescaped bra
 (parsed as JSX expressions) and non-self-closing void tags such as <img> and <br>.
 Relative links and images are rewritten to the site page when the target is mirrored,
 and to GitHub otherwise.
+
+docs/docs.json is round-tripped through json.dumps on every run, so this script owns
+that file's formatting (indent=1); hand-edits to other tabs keep their content but are
+renormalized to that style.
 """
 
 import argparse
@@ -68,6 +72,28 @@ HTML_TAGS = {
     "thead",
     "tr",
     "ul",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "caption",
+    "center",
+    "dd",
+    "del",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "ins",
+    "mark",
+    "picture",
+    "s",
+    "small",
+    "source",
+    "u",
+    "video",
     # Mintlify's own component, which <details> blocks are rewritten into.
     "accordion",
 }
@@ -76,6 +102,10 @@ VOID_TAGS = {"br", "hr", "img", "input"}
 # - **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation.
 INDEX_BULLET = re.compile(r"^\s*[-*]\s+\*\*\[([^\]]+)\]\(([^)]+)\)\*\*:\s*(.+?)\s*$")
 MD_LINK = re.compile(r"(!?)\[([^\]]*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
+IMG_LINK = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
+# Link text may carry one nested image ([![badge](img)](target)), which MD_LINK would
+# mis-parse as text "![badge" with href "img".
+OUTER_LINK = re.compile(r"(?<!!)\[((?:[^\[\]\n]|!\[[^\]]*\]\([^)]*\))*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
 HTML_TAG = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9:-]*)((?:\"[^\"]*\"|'[^']*'|[^>\"'])*?)(/?)>")
 IMG_TAG = re.compile(r"<img\b((?:\"[^\"]*\"|'[^']*'|[^>\"'])*)/?>", re.IGNORECASE)
 ATTR = re.compile(r"([A-Za-z-]+)\s*=\s*\"([^\"]*)\"|([A-Za-z-]+)\s*=\s*'([^']*)'")
@@ -179,12 +209,20 @@ def mask_code(text):
     text = "\n".join(out_lines)
 
     text = re.sub(r"\$\$.*?\$\$", lambda m: keep(m.group(0)), text, flags=re.DOTALL)
-    text = re.sub(r"(`+)(.+?)\1", lambda m: keep(m.group(0)), text, flags=re.DOTALL)
+    # A code span may wrap a line but not a paragraph, so an unpaired backtick cannot
+    # swallow the rest of the document into the stash.
+    text = re.sub(r"(`+)((?:(?!\n\n)[^`])+?)\1", lambda m: keep(m.group(0)), text)
+    # Inline math, bounded to one line so a stray "$5" in prose stays inert.
+    text = re.sub(r"(?<!\$)\$(?!\$)(?:\\.|[^$\n])+\$(?!\$)", lambda m: keep(m.group(0)), text)
     return text, stash
 
 
 def unmask_code(text, stash):
-    return re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
+    # A stashed chunk can itself contain a placeholder (inline math around a code
+    # span, say), so expand until none remain.
+    while "\x00" in text:
+        text = re.sub(r"\x00(\d+)\x00", lambda m: stash[int(m.group(1))], text)
+    return text
 
 
 def resolve_link(href, cur_dir, mirrored, broken):
@@ -196,6 +234,7 @@ def resolve_link(href, cur_dir, mirrored, broken):
         return None
     rel = os.path.normpath(os.path.join(repo_dir_of(cur_dir), path))
     if rel.startswith(".."):
+        broken.append(f"{repo_dir_of(cur_dir)}/README.md -> {href} (escapes the repository)")
         return None
     suffix = "#" + fragment if sep else ""
 
@@ -244,7 +283,8 @@ def convert_details_blocks(text):
 
     def replace(match):
         summary, inner = match.group(1) or "Details", match.group(2)
-        title = re.sub(r"[*`_]|<[^>]+>", "", summary).strip().replace('"', "'")
+        # Braces would be escaped to \{ later and render literally inside the attribute.
+        title = re.sub(r"[*`_{}]|<[^>]+>", "", summary).strip().replace('"', "'")
         return f'\n\n<Accordion title="{title}">\n\n{inner.strip()}\n\n</Accordion>\n\n'
 
     return DETAILS.sub(replace, text)
@@ -266,28 +306,34 @@ def escape_html(text):
 
 def convert(readme_text, rel_dir, mirrored, broken):
     readme_text = EXCLUDE_BLOCK.sub("", readme_text)
-    lines = readme_text.split("\n")
+    # Mask before anything else, including the title scan: a "# comment" inside a
+    # fenced block must not be mistaken for the page's level-1 heading.
+    masked, stash = mask_code(readme_text)
+    lines = masked.split("\n")
     title = None
     for i, line in enumerate(lines):
         if line.startswith("# "):
-            title = line[2:].strip()
+            title = unmask_code(line[2:].strip(), stash)
             del lines[i]
             break
     if title is None:
         raise SyncError(f"{repo_dir_of(rel_dir)}/README.md has no level-1 heading to use as the page title")
     body = "\n".join(lines)
 
-    body, stash = mask_code(body)
     # GitHub-only annotations; also raw comments are not valid MDX.
     body = HTML_COMMENT.sub("", body)
     body = convert_img_tags(body, rel_dir, mirrored, broken)
 
-    def rewrite(match):
-        bang, text, href, hint = match.groups()
-        resolved = resolve_link(href, rel_dir, mirrored, broken)
-        return f"{bang}[{text}]({resolved or href}{hint or ''})"
+    def rewrite(bang):
+        def replace(match):
+            text, href, hint = match.groups()
+            resolved = resolve_link(href, rel_dir, mirrored, broken)
+            return f"{bang}[{text}]({resolved or href}{hint or ''})"
 
-    body = MD_LINK.sub(rewrite, body)
+        return replace
+
+    body = IMG_LINK.sub(rewrite("!"), body)
+    body = OUTER_LINK.sub(rewrite(""), body)
     body = convert_details_blocks(body)
     body = escape_html(body)
     body = body.replace("{", "\\{").replace("}", "\\}")
@@ -315,17 +361,22 @@ def build_pages():
     mirrored = {repo_dir_of(rel): rel for rel in pages}
     descriptions = parse_index_descriptions(pages[""])
 
-    broken, rendered = [], {}
+    broken, rendered, slug_owner = [], {}, {}
     for rel_dir, readme in sorted(pages.items()):
         text = readme.read_text()
         title, body = convert(text, rel_dir, mirrored, broken)
         description = descriptions.get(rel_dir)
         if description is None:
             # Derived from the README's own first sentence, which Mintlify already renders
-            # under the title as the description — drop the duplicate from the body.
+            # under the title as the description — drop the duplicate from the body. The
+            # comparison strips markdown the same way first_sentence does, so a link or
+            # emphasis in the opening sentence does not defeat the dedup.
             description = first_sentence(text)
-            if body.startswith(description):
-                body = body[len(description) :].lstrip()
+            lead = re.match(r"\s*(.+?[.!?])(\s|$)", body, re.DOTALL)
+            if lead:
+                normalized = MD_LINK.sub(lambda m: m.group(2) or m.group(3), lead.group(1))
+                if re.sub(r"[*`_]", "", normalized).strip() == description:
+                    body = body[lead.end(1) :].lstrip()
         if not description:
             raise SyncError(f"{repo_dir_of(rel_dir)}/README.md has no description; add a bullet in examples/README.md")
         if len(description) > MAX_DESCRIPTION:
@@ -333,7 +384,14 @@ def build_pages():
                 f"description for {repo_dir_of(rel_dir)} is {len(description)} characters, "
                 f"over the {MAX_DESCRIPTION} the docs site allows; shorten it at the source"
             )
-        rendered[OUT_DIR / f"{slug_for(rel_dir)}.md"] = render_page(title, description, rel_dir, body)
+        out_path = OUT_DIR / f"{slug_for(rel_dir)}.md"
+        if out_path in rendered:
+            raise SyncError(
+                f"slug collision: {repo_dir_of(slug_owner[out_path])} and {repo_dir_of(rel_dir)} "
+                f"both map to {out_path.relative_to(REPO)}"
+            )
+        slug_owner[out_path] = rel_dir
+        rendered[out_path] = render_page(title, description, rel_dir, body)
 
     if broken:
         raise SyncError("READMEs link to paths that do not exist:\n  " + "\n  ".join(sorted(set(broken))))

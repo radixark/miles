@@ -68,7 +68,7 @@ Advantages:
 
 ### Decoupled, 3-policy PPO Importance Sampling  
 
-[Decoupled PPO](https://arxiv.org/pdf/2110.00641) achieves batch-independent PPO by decoupling two roles: Proximal Policy (anchor policy for PPO clipping, control update size) and Behavior Policy (for off-policy correction in importance sampling). Therefore, there are totally 3 roles engaged in this mode, **target policy** $\pi_\theta$, **proximal policy** $\pi_\{\textcolor\{blue\}\{\text\{old\}\}\}$, and **behavior policy** $\pi_\{\textcolor\{red\}\{\text\{SGLang\}\}\}$. $\pi_\{\textcolor\{blue\}\{\text\{old\}\}\}$ is recomputed with Megatron at the beginning of each training step.
+[Decoupled PPO](https://arxiv.org/pdf/2110.00641) achieves batch-independent PPO by decoupling two roles: Proximal Policy (anchor policy for PPO clipping, control update size) and Behavior Policy (for off-policy correction in importance sampling). Therefore, there are totally 3 roles engaged in this mode, **target policy** $\pi_\theta$, **proximal policy** $\pi_{\textcolor{blue}{\text{old}}}$, and **behavior policy** $\pi_{\textcolor{red}{\text{SGLang}}}$. $\pi_{\textcolor{blue}{\text{old}}}$ is recomputed with Megatron at the beginning of each training step.
 
 $$
 L_{\text{PPO-decoupled}}(\theta)
@@ -100,9 +100,9 @@ You may choose from above algorithms by specifying arguments below:
 
 | `use_rollout_logprobs` | `use_rollout_correction` | Algorithm | Policies |Compute old_log_probs | Batch Invariant | Recommended TIS Mode |
 |-----------------|-------------|-----------|--------------|---------------|-----------------|----------------------|
-| False | False | Standard PPO (Algorithm 0) | 2 ($\pi_\theta$, $\pi_\{\textcolor\{blue\}\{\text\{old\}\}\}$)|Yes | No | N/A |
-| True | False | Bypassing PPO (Algorithm 3) | 2 ($\pi_\theta$, $\pi_\{\textcolor\{red\}\{\text\{SGLang\}\}\}$) |🚀 Skipped | No | N/A |
-| False | True | Decoupled PPO (Algorithm 2) | 3 ($\pi_\theta$, $\pi_\{\textcolor\{blue\}\{\text\{old\}\}\}$, $\pi_\{\textcolor\{red\}\{\text\{SGLang\}\}\}$)  |Yes  | Yes | token/seq/geo |
+| False | False | Standard PPO (Algorithm 0) | 2 ($\pi_\theta$, $\pi_{\textcolor{blue}{\text{old}}}$)|Yes | No | N/A |
+| True | False | Bypassing PPO (Algorithm 3) | 2 ($\pi_\theta$, $\pi_{\textcolor{red}{\text{SGLang}}}$) |🚀 Skipped | No | N/A |
+| False | True | Decoupled PPO (Algorithm 2) | 3 ($\pi_\theta$, $\pi_{\textcolor{blue}{\text{old}}}$, $\pi_{\textcolor{red}{\text{SGLang}}}$)  |Yes  | Yes | token/seq/geo |
 
 ## Configs and Recommended Settings
 
@@ -130,21 +130,21 @@ For both IS and RS, we provided 3 levels: **token**, **sequence**, **geometric**
 **Token Level (default)**:
 
 Computes importance weights independently for each token:
-$w_i = \exp\left(\log \pi_\{\text\{train\}\}(x_i) - \log \pi_\{\text\{rollout\}\}(x_i)\right)$
+$w_i = \exp\left(\log \pi_{\text{train}}(x_i) - \log \pi_{\text{rollout}}(x_i)\right)$
 
 Characteristics: Biased but computationally simple, suitable for most scenarios
 
 **Sequence Level**:
 
 Uses the product of all token weights as the sequence weight:
-$w_\{\text\{seq\}\} = \exp\left( \sum_i \left( \log \pi_\{\text\{train\}\}(x_i) - \log \pi_\{\text\{rollout\}\}(x_i) \right) \right)$
+$w_{\text{seq}} = \exp\left( \sum_i \left( \log \pi_{\text{train}}(x_i) - \log \pi_{\text{rollout}}(x_i) \right) \right)$
 
 Characteristics: Unbiased but high variance, suitable for sequence-level optimization
 
 **Geometric Level**:
 
 Uses geometric mean to compute sequence weight:
-$w_\{\text\{seq\}\} = \exp\left( \frac\{1\}\{n\} \sum_\{i=1\}^\{n\} \left( \log \pi_\{\text\{train\}\}(x_i) - \log \pi_\{\text\{rollout\}\}(x_i) \right) \right)$
+$w_{\text{seq}} = \exp\left( \frac{1}{n} \sum_{i=1}^{n} \left( \log \pi_{\text{train}}(x_i) - \log \pi_{\text{rollout}}(x_i) \right) \right)$
 
 Characteristics: Biased but low variance, balances bias and variance
 
@@ -162,12 +162,12 @@ Characteristics: Biased but low variance, balances bias and variance
 **Veto Mechanism**:
 
 Veto mechanism rejects sequences with catastrophically low token probabilities.
-Reject entire sequence if $\exists t \in T$ such that $\rho_t < C_\{\text\{veto\}\}$
+Reject entire sequence if $\exists t \in T$ such that $\rho_t < C_{\text{veto}}$
 
-- Prevents catastrophic updates from tokens with near-zero probability under $\pi_\{\text\{old\}\}$
+- Prevents catastrophic updates from tokens with near-zero probability under $\pi_{\text{old}}$
 - Independent of IS/RS settings
 
-*Typical values: $10^\{-4\}$ to $10^\{-6\}$*
+*Typical values: $10^{-4}$ to $10^{-6}$*
 
 ## Mismatch Metrics
 
@@ -179,12 +179,12 @@ These metrics quantify the difference between training and rollout policies. The
 
 | Metric Name | Description |
 |------------|-------------|
-| `mismatch_training_log_ppl` | Negative mean log probability under training policy: $-\mathbb\{E\}[\log \pi_\{\text\{train\}\}]$ |
-| `mismatch_training_ppl` | Perplexity of training policy: $\exp(-\mathbb\{E\}[\log \pi_\{\text\{train\}\}])$ |
-| `mismatch_rollout_log_ppl` | Negative mean log probability under rollout policy: $-\mathbb\{E\}[\log \pi_\{\text\{rollout\}\}]$ |
-| `mismatch_rollout_ppl` | Perplexity of rollout policy: $\exp(-\mathbb\{E\}[\log \pi_\{\text\{rollout\}\}])$ |
-| `mismatch_kl` | Forward KL divergence estimator: $\mathbb\{E\}[\log \pi_\{\text\{rollout\}\} - \log \pi_\{\text\{train\}\}]$ |
-| `mismatch_k3_kl` | K3 KL estimator: $\mathbb\{E\}[\exp(r) - r - 1]$ where $r = \log \pi_\{\text\{train\}\} - \log \pi_\{\text\{rollout\}\}$ |
+| `mismatch_training_log_ppl` | Negative mean log probability under training policy: $-\mathbb{E}[\log \pi_{\text{train}}]$ |
+| `mismatch_training_ppl` | Perplexity of training policy: $\exp(-\mathbb{E}[\log \pi_{\text{train}}])$ |
+| `mismatch_rollout_log_ppl` | Negative mean log probability under rollout policy: $-\mathbb{E}[\log \pi_{\text{rollout}}]$ |
+| `mismatch_rollout_ppl` | Perplexity of rollout policy: $\exp(-\mathbb{E}[\log \pi_{\text{rollout}}])$ |
+| `mismatch_kl` | Forward KL divergence estimator: $\mathbb{E}[\log \pi_{\text{rollout}} - \log \pi_{\text{train}}]$ |
+| `mismatch_k3_kl` | K3 KL estimator: $\mathbb{E}[\exp(r) - r - 1]$ where $r = \log \pi_{\text{train}} - \log \pi_{\text{rollout}}$ |
 | `mismatch_log_ppl_diff` | Log perplexity difference|
 | `mismatch_log_ppl_abs_diff` | Absolute log perplexity difference |
 | `mismatch_ppl_ratio` | Perplexity ratio |
@@ -200,8 +200,8 @@ When using `--custom-tis-function-path` pointing to MIS implementation (e.g., `m
 
 | Metric Name | Description | Required Args | Optional Control Args |
 |------------|-------------|---------------|----------------------|
-| `ois` | On-policy importance sampling ratio: $\exp(\log \pi_\{\text\{train\}\} - \log \pi_\{\text\{old\}\})$ | `--use-tis` | Only for Algorithm 2 (Decoupled PPO) |
-| `mis_mean_is_weight_before_clip` | Raw IS weights before any correction: $\exp(\text\{log-ratio\})$ | `--use-tis` | `--mis-level` (token/sequence/geometric) |
+| `ois` | On-policy importance sampling ratio: $\exp(\log \pi_{\text{train}} - \log \pi_{\text{old}})$ | `--use-tis` | Only for Algorithm 2 (Decoupled PPO) |
+| `mis_mean_is_weight_before_clip` | Raw IS weights before any correction: $\exp(\text{log-ratio})$ | `--use-tis` | `--mis-level` (token/sequence/geometric) |
 | `mis_ratio_mean_after_mis` | IS weights after correction (bounded or masked) | `--use-tis` | `--mis-mode`, bounds |
 | `mis_truncate_fraction` | Fraction of weights truncated (mode-specific) | `--use-tis`, `--mis-mode=truncate` | `--mis-upper-bound` |
 | `mis_clip_fraction_low` | Fraction of weights clipped below lower bound | `--use-tis`, `--mis-mode=clip` | `--mis-lower-bound`, `--mis-upper-bound` |
