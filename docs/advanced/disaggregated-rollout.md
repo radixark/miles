@@ -205,6 +205,21 @@ The rollout endpoint and the version store are separate interfaces. The
 request path should not have to carry model-sized weights, and publishing a new
 version should not require miles to enumerate the current replicas.
 
+### Reference implementation: Stitch
+
+[Stitch](https://github.com/modal-projects/stitch) is the first open-source
+implementation being integrated with this Miles boundary. It connects miles
+policy publication to an independently scaled inference pool and implements
+the rollout-side responsibilities above: version storage and reconciliation,
+replica materialization, request admission, weight activation, and
+served-version reporting.
+
+Stitch is one implementation of the service contract, not a dependency of the
+miles training loop. The Miles-side endpoint, publication, and request hooks
+are intended to remain general so another rollout system can provide the same
+version and request semantics. Stitch is also the source of the end-to-end
+weight-sync measurements in [What to measure](#what-to-measure).
+
 ### Policy-version requirements
 
 An external rollout request needs more than an inference payload. It must be
@@ -301,8 +316,8 @@ an engine for 0.75 seconds on average. The average changed-byte density was
 0.252%, producing a 0.469 GB compressed delta. The complete path took roughly
 30–35 seconds, but only activation paused inference.
 
-Those measurements come from a
-[Stitch reference deployment](https://github.com/modal-projects/stitch/blob/main/cookbook/README.md#weight-update-performance),
+Those measurements come from the open-source
+[Stitch reference integration](https://github.com/modal-projects/stitch/blob/main/cookbook/README.md#weight-update-performance),
 not from the registered miles E2E test. They illustrate why preparation and
 activation should be reported separately; they are not a general performance
 claim for miles, SGLang, or another rollout service.
