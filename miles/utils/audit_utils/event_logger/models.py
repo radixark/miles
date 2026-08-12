@@ -129,6 +129,13 @@ class EnvReportEvent(EventBase):
     report: EnvReport
 
 
+class EngineEnvReportEvent(EventBase):
+    type: Literal["engine_env_report"] = "engine_env_report"
+    cell_id: str
+    server_url: str
+    server_info: dict[str, Any]
+
+
 class MetricEvent(EventBase):
     type: Literal["metric"] = "metric"
     rollout_id: int | None = None
@@ -145,6 +152,7 @@ Event = Annotated[
     | InferenceEngineWeightChecksumEvent
     | TrainAdvantageComputationEvent
     | EnvReportEvent
+    | EngineEnvReportEvent
     | MetricEvent,
     Discriminator("type"),
 ]
