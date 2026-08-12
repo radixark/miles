@@ -21,8 +21,9 @@ from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_po
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
-from miles.utils.workers.worker_spec import HostAndPort, WorkerMetaContext
+from miles.utils.workers.worker_info import WorkerInfo
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts, WorkerMetaContext
 
 
 def _make_cell_info(
@@ -153,13 +154,24 @@ class _RecordingEvalFleet:
         return None
 
 
-class _FakeWorkerProvider:
+class _FakeWorkerProvider(BaseWorkerProvider):
     def __init__(self, cell_infos: list[CellInfo], *, pool_ids: list[str] | None = None) -> None:
         self._cell_infos = cell_infos
         self._pools = pool_ids or []
         self.watched_pool_ids: list[str] | None = None
+        self.initialized = False
+
+    async def init(self) -> None:
+        self.initialized = True
+
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"the controller must not ask this fake for {worker_name}")
+
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
+        return [[] for _ in cell_ids]
 
     async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        assert self.initialized, "the controller must init the provider before observing its cells"
         self.watched_pool_ids = list(self._pools)
         for info in self._cell_infos:
             if info.pool_id in self._pools:
@@ -441,6 +453,40 @@ class TestGlobalHealthCheckerActiveness:
 
 
 class TestInitSubscription:
+    @pytest.mark.asyncio
+    async def test_init_initializes_the_provider_before_reading_anything_from_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A provider that discovers its engines in init() answers an empty fleet until then, so the
+        router addresses and the startup barrier would both be sized against nothing."""
+        order: list[str] = []
+
+        class _OrderRecordingProvider(_FakeWorkerProvider):
+            async def init(self) -> None:
+                order.append("init")
+                await super().init()
+
+            async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+                order.append("watch_cells")
+                return await super().watch_cells(reconcile)
+
+        async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
+            order.append("create_rollout_servers")
+            return {"default": _RecordingServer()}
+
+        async def _fake_resolve_router_addrs(args: Namespace, **kwargs: Any) -> dict[str, HostAndPort]:
+            order.append("resolve_router_addrs")
+            return {"default": HostAndPort(host="10.0.0.1", port=30000)}
+
+        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
+        monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _fake_resolve_router_addrs)
+        args = make_args()
+        provider = _OrderRecordingProvider([], pool_ids=compute_engine_pool_ids(args))
+
+        await _init_controller(args, engine_provider=provider)
+
+        assert order == ["init", "resolve_router_addrs", "create_rollout_servers", "watch_cells"]
+
     @pytest.mark.asyncio
     async def test_init_watches_the_engine_provider_it_was_handed(self, monkeypatch: pytest.MonkeyPatch):
         """The pools are the provider's own, so the controller may only open a watch on what it was given."""

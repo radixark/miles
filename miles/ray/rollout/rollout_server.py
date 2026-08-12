@@ -46,10 +46,16 @@ async def create_rollout_servers(
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
             global_health_checker_activeness=global_health_checker_activeness,
-            expected_num_cells=model_cfg.num_server_cells,
+            expected_num_cells=_compute_expected_num_cells(engine_provider, model_cfg=model_cfg),
         )
 
     return servers
+
+
+def _compute_expected_num_cells(engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
+    if (n := engine_provider.expected_num_cells(model_id=model_cfg.name)) is not None:
+        return n
+    return model_cfg.num_server_cells
 
 
 @dataclasses.dataclass
