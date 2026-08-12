@@ -95,13 +95,6 @@ ends on a single command:
 python scripts/run_qwen3_dense.py --model-name Qwen3-4B
 ```
 
-## Contact Us
-
-For enterprise adoption, collaboration or support, reach us at
-[miles@radixark.ai](mailto:miles@radixark.ai). For questions and discussion, join the
-`#miles` channel on [Slack](https://slack.sglang.ai), or open an
-[issue](https://github.com/radixark/miles/issues).
-
 ## Acknowledgment
 
 <!-- TODO: acknowledgment figure -->
