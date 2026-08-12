@@ -46,3 +46,17 @@ Not fully verified — for experimental and development use.
 - **[swe-agent-harbor-daytona](./experimental/swe-agent-harbor-daytona)**: The `swe-agent-harbor-docker` pipeline with task sandboxes hosted on Daytona instead of local Docker.
 - **[tau-bench](./experimental/tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).
 - **[verifiers](./experimental/verifiers)**: Training on a Prime Intellect Verifiers environment instead of a Miles prompt dataset.
+
+<!-- docs:exclude:start -->
+## These READMEs are the documentation site
+
+Every README outside `experimental/` is mirrored onto
+[miles.radixark.com/docs/examples](https://miles.radixark.com/docs/examples) by
+`scripts/tools/sync_example_docs.py`, which pre-commit runs for you. The docs site is
+generated from this directory and never edited directly, so a new example needs nothing
+beyond its README and an entry in the list above. Two things that list controls: the
+level-1 heading of each README becomes the page title, and the one-line description
+becomes the page's meta description, so keep it under 160 characters. Content between
+`docs:exclude:start` / `docs:exclude:end` HTML comments (like this section) stays on
+GitHub but is left out of the site.
+<!-- docs:exclude:end -->
