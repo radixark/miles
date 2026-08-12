@@ -2,70 +2,67 @@
 title: Miles Documentation
 description: Miles is an open-source RL framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.
 ---
-Miles is a high-performance, enterprise-ready reinforcement learning (RL) framework specifically optimized for **Large-Scale model Post-Training**. It
-couples [SGLang](https://github.com/sgl-project/sglang) for high-throughput rollout with
-[Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for scalable training, and ships the precision, stability, and observability features
-needed to run RL at trillion-parameter scale.
+Miles is a high-performance, enterprise-ready reinforcement learning framework for
+**large-scale model post-training**. It pairs [SGLang](https://github.com/sgl-project/sglang)
+for high-throughput rollout with [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for
+scalable training, and ships the precision, stability and observability features an RL run
+needs at trillion-parameter scale. A PyTorch FSDP2 backend is available for runs that would
+rather train the HuggingFace implementation as-is, though the recipes, the parallelism and
+the largest models all live on Megatron-LM. See
+[Training Backends](/user-guide/training-backend).
 
-
-*"A journey of a thousand miles begins with a single rollout."* — Miles focuses on the low-level system optimizations that make large-scale RL stable, efficient, and reproducible.
+> *"A journey of a thousand miles begins with a single rollout."*
 
 ## Core features
 
-### Efficiency & stability
+### Performance
 
-- **Fully async RL.** Rollout and training workers are decoupled, with configurable
-  on- and off-policy schedules, an optimized pipeline with fewer bubbles, and
-  customizable async rollout and eval modes. See
-  [Fully Async RL](/user-guide/fully-async).
-- **Fast agentic rollout.** High-throughput generation on
-  [SGLang](https://github.com/sgl-project/sglang), optimized for multi-turn
-  agentic workloads.
-- **Fast weight updates.** Updated weights sync back in-loop without pausing
-  rollout — under 10 seconds for a model with 1 T parameters — with
-  [P2P RDMA](/advanced/p2p-weight-transfer) as a fast path for disaggregated setups.
-- **Unified low-precision training.** [MXFP8 and NVFP4](/advanced/low-precision)
-  training with a numerically stable RL recipe that reduces precision-induced
-  divergence; FP8, [INT4 QAT](/advanced/int4-qat), BF16, and FP16 are also supported.
+- **Fully async RL.** Rollout and training workers are decoupled, with configurable on- and
+  off-policy schedules, a pipeline tuned for fewer bubbles, and customizable async rollout
+  and eval modes. See [Fully Async RL](/user-guide/fully-async).
+- **Fast agentic rollout.** Generation runs on [SGLang](https://github.com/sgl-project/sglang)
+  behind a router that spreads requests across engines, preserves per-request metadata and
+  health-checks the fleet. Tuned for multi-turn agentic workloads.
+- **Fast weight updates.** New weights reach the engines in-loop in seconds, even on a
+  trillion-parameter model such as Kimi-K2.6, with
+  [P2P RDMA](/advanced/p2p-weight-transfer) as the fast path for disaggregated setups.
+- **Low-precision training.** [MXFP8 and NVFP4](/advanced/low-precision) training with a
+  numerically stable RL recipe that reduces precision-induced divergence. FP8,
+  [INT4 QAT](/advanced/int4-qat), BF16 and FP16 are also supported.
+- **LoRA and multi-LoRA.** [Low-rank adapters](/advanced/lora) train frontier-scale models
+  on a fraction of the GPUs, and the same adapters load straight into SGLang for rollout.
+
+### Correctness and resilience
+
 - **Token-in-token-out (TITO).** Supported for
-  [all models and all black-box agent harnesses](/user-guide/agentic-chat-template) —
-  no detokenize/retokenize round-trips between rollout and training.
+  [every model and every black-box harness](/user-guide/agentic-chat-template), with no
+  detokenize and retokenize round-trip between rollout and training.
 - **Rollout Routing Replay (R3).** Expert routing recorded during rollout is
-  [replayed in the trainer's forward pass](/advanced/miles-router), eliminating the
-  routing mismatch that destabilizes large-scale MoE RL, with compute and
-  communication overlapped to minimize overhead.
-- **LoRA and multi-LoRA.** [Low-rank adapters](/advanced/lora) train frontier-scale
-  models on a fraction of the GPUs, and the same adapters load directly into SGLang
-  for rollout — no separate merge or conversion step.
+  [replayed in the trainer's forward pass](/advanced/miles-router), removing the MoE routing
+  mismatch that destabilizes large runs, with compute and communication overlapped to keep
+  the cost down.
 - **Fault tolerance.** When an SGLang engine dies, Miles
-  [recovers it and resumes the run in place](/advanced/fault-tolerance) — no
-  restart, no pause.
-- **Day-0 model support.** Day-0 enablement of frontier releases such as
-  DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling, and Nemotron — and beyond day-0, nearly
-  all frontier models (see [Supported models](#supported-models)).
+  [recovers it and resumes the run in place](/advanced/fault-tolerance): no restart, no
+  pause.
+- **Miles dashboard.** A self-hosted web UI for a run's
+  [training dynamics and compute efficiency](/user-guide/dashboard): what every GPU was
+  doing during a step, and what each trajectory contained at the token level.
 
-### Design, support & user experience
+### What Miles runs
 
-- **Coding-agent sandboxes and examples.** [Harbor](/user-guide/harbor),
-  [OpenEnv](/user-guide/openenv), and [NeMo Gym](/user-guide/nemo-gym) integrations,
-  running local CPU sandboxes or per-episode sandboxes on
-  [Daytona](https://www.daytona.io/), [E2B](https://e2b.dev/), and self-hosted
-  [AgentENV](https://github.com/kvcache-ai/AgentENV) — see
-  [Environments](/user-guide/environments) for the support matrix.
-- **Highly customizable pipeline.** Shape every workload through
-  [twenty-plus plug-points](/user-guide/customization), from reward computation to
-  the full rollout function.
-- **Megatron or FSDP.**
-  [Switch training backends](/user-guide/training-backend) without rewriting your training loop.
-- **Wide recipe support.** RL (GRPO, PPO), SFT, and on-policy distillation.
-- **Verified on multiple hardware generations.** GB300, GB200, B300, B200, H200,
-  H100, A100, and AMD MI355X / MI300X.
-- **Comprehensive CI.** Unit suites run on every pull request, and tag-triggered
-  end-to-end GPU training tests cover the supported model families on both NVIDIA
-  and AMD runners.
-- **[Miles dashboard](/user-guide/dashboard).** A self-hosted web UI for a run's
-  training dynamics and compute efficiency: what every GPU was doing during a step,
-  and what each trajectory contained at the token level.
+- **Day-0 model support.** DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling and Nemotron landed on
+  release day. Beyond day 0, nearly every frontier model runs on Miles, including Kimi-K2.6
+  and Qwen3.5. See [Supported models](#supported-models).
+- **Extensive hardware support.** NVIDIA from H100 through GB300, and AMD MI300X through
+  MI355X via ROCm. See [Supported hardware](#supported-hardware).
+- **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
+  [on-policy distillation](/advanced/on-policy-distillation).
+- **Coding-agent environments.** Connectors for
+  [Harbor, NeMo Gym, OpenEnv, Verifiers, Strands Agents and tau-bench](/user-guide/environments),
+  each plugging into the rollout layer that fits it, with task sandboxes on AgentENV,
+  Daytona, E2B or Modal.
+- **Comprehensive CI.** Unit suites run on every pull request, and tag-triggered end-to-end
+  GPU training tests cover the supported model families on both NVIDIA and AMD runners.
 
 ## Supported models
 
