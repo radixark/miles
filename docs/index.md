@@ -1,5 +1,6 @@
 ---
-title: Miles Documentation
+title: Welcome
+sidebarTitle: Overview
 description: Miles is an open-source RL framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.
 ---
 Miles is a high-performance, enterprise-ready reinforcement learning framework for

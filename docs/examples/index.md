@@ -1,5 +1,6 @@
 ---
 title: "Examples"
+sidebarTitle: "Overview"
 description: "These examples are runnable starting points for your own RL workflow."
 # Generated from examples/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
