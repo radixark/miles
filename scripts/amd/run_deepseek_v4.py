@@ -16,13 +16,12 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 1 --num-gpus-per-node 8
-       python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 4 --num-gpus-per-node 8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
@@ -236,23 +235,17 @@ def prepare_spmd(args: ScriptArgs):
     _prepare_spmd(args)
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    _prepare_cp(args)
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    if args.model_local_dir == args.model_dir:
+        return {}
 
-
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.torch_dist_name}",
-        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
-        num_nodes=args.num_nodes,
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
-        num_nodes=args.num_nodes,
-    )
+    copies = [
+        U.rsync_cmd(
+            f"{args.model_dir}/{args.torch_dist_name}", f"{args.model_local_dir}/{args.torch_dist_name}"
+        ),
+        U.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -512,11 +505,11 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
@@ -545,11 +538,6 @@ def full_train(args: ScriptArgs):
         _prepare_spmd(args)
     else:
         print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
-
-    if args.model_local_dir != args.model_dir:
-        _prepare_cp(args)
-    else:
-        print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"

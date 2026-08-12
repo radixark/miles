@@ -40,19 +40,12 @@ Tasks:
 
 Usage patterns:
 
-  1. Train on pre-staged checkpoints:
+  1. Train, copying torch_dist to node-local NVMe first when torch_dist_local differs:
        python scripts/run_inkling.py train \
            --model-name Inkling --train-mode full --task dapo_math \
            --num-nodes 16 --num-gpus-per-node 4
 
-  2. Individual steps (rsync shared -> node-local NVMe, then train):
-       python scripts/run_inkling.py prepare-cp --model-name Inkling
-       python scripts/run_inkling.py train --model-name Inkling ...
-
-  3. One-shot (prepare-cp when model_local_dir differs, then train):
-       python scripts/run_inkling.py full-train --model-name Inkling ...
-
-  4. Fully-async disaggregated training:
+  2. Fully-async disaggregated training:
        MILES_SCRIPT_NUM_NODES=12 python scripts/run_inkling.py train \
            --model-name Inkling --fully-async --rollout-num-nodes 4 \
            --num-gpus-per-node 4 --num-rollout 100
@@ -412,41 +405,26 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=_MODEL_REGISTRY[args.model_name],
         train_script="train_async.py" if args.fully_async else "train.py",
         extra_env_vars=extra_env_vars,
         megatron_path=args.megatron_path,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
 @U.dataclass_cli
 def train(args: ScriptArgs):
-    """Run training. Assumes HF checkpoint / torch_dist are already staged."""
+    """Run training; each trainer pod first copies torch_dist to node-local NVMe when the two differ."""
     _train(args)
 
 
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(path_src=args.torch_dist, path_dst=args.torch_dist_local)
-
-
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    """Copy the shared torch_dist checkpoint to node-local NVMe (torch_dist_local)."""
-    _prepare_cp(args)
-
-
-@app.command()
-@U.dataclass_cli
-def full_train(args: ScriptArgs):
-    if args.torch_dist_local != args.torch_dist:
-        _prepare_cp(args)
-    else:
-        print(f"[full_train] Skipping rsync: torch_dist_local == torch_dist ({args.torch_dist})")
-    _train(args)
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    if args.torch_dist_local == args.torch_dist:
+        return {}
+    return {"trainer": U.rsync_cmd(args.torch_dist, args.torch_dist_local)}
 
 
 if __name__ == "__main__":

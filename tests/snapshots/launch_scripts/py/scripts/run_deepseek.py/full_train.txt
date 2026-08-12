@@ -1,23 +1,104 @@
 ### 0
+mkdir -p /root/models /root/datasets
+
+### 1
+hf download deepseek-ai/DeepSeek-V3
+  --local-dir /root/models/DeepSeek-V3
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+hf download
+  --repo-type dataset zhuzilin/aime-2024
+  --local-dir /root/datasets/aime-2024
+
+### 4
+python <REPO_ROOT>/tools/fp8_cast_bf16.py
+  --input-fp8-hf-path /root/models/DeepSeek-V3
+  --output-bf16-hf-path /root/models/DeepSeek-V3-bf16/ 
+
+### 5
+[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 4
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --disable-bias-linear
+  --num-layers 61
+  --hidden-size 7168
+  --ffn-hidden-size 18432
+  --num-attention-heads 128
+  --kv-channels 128
+  --normalization RMSNorm
+  --position-embedding-type rope
+  --norm-epsilon 1e-6
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 129280
+  --multi-latent-attention
+  --q-lora-rank 1536
+  --kv-lora-rank 512
+  --qk-head-dim 128
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 128
+  --qk-layernorm
+  --rotary-scaling-factor 40
+  --rotary-base 10000
+  --mscale 1.0
+  --mscale-all-dim 1.0
+  --attention-softmax-in-fp32
+  --no-rope-fusion
+  --num-experts 256
+  --moe-layer-freq '[0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]'
+  --moe-ffn-hidden-size 2048
+  --moe-router-topk 8
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-pre-softmax
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-token-dispatcher-type alltoall
+  --moe-aux-loss-coeff 0
+  --moe-router-bias-update-rate 0
+  --moe-router-group-topk 4
+  --moe-router-num-groups 8
+  --moe-grouped-gemm
+  --moe-router-topk-scaling-factor 2.5
+  --moe-router-dtype fp32
+  --moe-permute-fusion
+  --hf-checkpoint /root/models/DeepSeek-V3-bf16
+  --save /root/models/DeepSeek-V3_torch_dist
+  --tensor-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --pipeline-model-parallel-size 8
+  --expert-model-parallel-size 4
+  --decoder-first-pipeline-num-layers 7
+  --decoder-last-pipeline-num-layers 6 
+
+### 6
 pkill -9 sglang; sleep 3; ray stop
   --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
 
-### 1
+### 7
 export PYTHONUNBUFFERED=1 && ray start
   --head
   --node-ip-address 127.0.0.1
   --num-gpus 4
   --disable-usage-stats
 
-### 2
+### 8
 [multi_node num_nodes=None] mkdir -p /root/local_data/DeepSeek-V3_torch_dist && rsync -a
   --info=progress2 /root/models/DeepSeek-V3_torch_dist/ /root/local_data/DeepSeek-V3_torch_dist && mkdir -p /root/local_data/DeepSeek-V3 && rsync -a
   --info=progress2 /root/models/DeepSeek-V3/ /root/local_data/DeepSeek-V3
 
-### 3
+### 9
 nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
 
-### 4
+### 10
 export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
@@ -143,4 +224,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --num-gpus-per-node 4
   --colocate
   --use-fault-tolerance
-  --dump-details /root/shared_data/260101-000000-000/dump_details   
+  --dump-details /root/shared_data/260101-000000-000/dump_details
+  --disable-weights-backuper   

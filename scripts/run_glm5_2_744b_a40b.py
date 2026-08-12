@@ -48,10 +48,8 @@ II. Usage for full model (>=16 nodes):
   3. Download model/data + validate checkpoint + convert to megatron (run on head node).
        `python scripts/run_glm5_2_744b_a40b.py prepare --model-name GLM-5.2 --num-nodes 32 --fp8-rollout`
 
-  4. (Optional) Copy model from shared NFS to local disk on each node.
-       python scripts/run_glm5_2_744b_a40b.py prepare-cp --model-name GLM-5.2 --num-nodes 32
-
-  5. Run training. Execute on head node; uses Ray internally for distributed training.
+  4. Run training; it first copies the model from shared NFS to each node's local disk.
+     Execute on head node; uses Ray internally for distributed training.
        python scripts/run_glm5_2_744b_a40b.py train --model-name GLM-5.2 --num-nodes 32 --fp8-rollout --enable-mtp
 """
 
@@ -219,20 +217,16 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
     )
 
 
-def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
-    torch_dist_dst = f"{args.model_local_dir}/{args.model_name}_torch_dist"
-    if not (skip_existing and Path(torch_dist_dst).exists()):
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-            path_dst=torch_dist_dst,
-        )
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
     hf_name = f"{args.model_name}_fp8" if args.fp8_rollout else args.model_name
-    hf_dst = f"{args.model_local_dir}/{hf_name}"
-    if not (skip_existing and Path(hf_dst).exists()):
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{hf_name}",
-            path_dst=hf_dst,
-        )
+    copies = [
+        U.rsync_cmd(
+            f"{args.model_dir}/{args.model_name}_torch_dist",
+            f"{args.model_local_dir}/{args.model_name}_torch_dist",
+        ),
+        U.rsync_cmd(f"{args.model_dir}/{hf_name}", f"{args.model_local_dir}/{hf_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _execute_train(args: ScriptArgs):
@@ -465,7 +459,6 @@ def _execute_train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -474,6 +467,7 @@ def _execute_train(args: ScriptArgs):
             "NVSHMEM_DISABLE_NCCL": "1",
         },
         megatron_path=args.megatron_path,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
@@ -486,7 +480,6 @@ def full_train(args: ScriptArgs):
     if args.fp8_rollout:
         _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
-    _prepare_cp(args, skip_existing=True)
     _execute_train(args)
 
 
@@ -499,13 +492,6 @@ def prepare(args: ScriptArgs):
     if args.fp8_rollout:
         _convert_to_fp8(args)
     _prepare_megatron_ckpt(args)
-
-
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    """Copy model to local storage (run on all nodes via run_spmd)."""
-    _prepare_cp(args)
 
 
 @app.command()

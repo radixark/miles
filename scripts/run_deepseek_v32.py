@@ -1,6 +1,4 @@
 from dataclasses import dataclass
-from functools import partial
-from pathlib import Path
 from typing import Literal
 
 import typer
@@ -144,15 +142,9 @@ def _prepare_megatron_ckpt(args: ScriptArgs):
         )
 
 
-def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
     if args.use_single_node:
-        return
-    torch_dist_dst = f"{args.model_local_dir}/{args.model_name}_torch_dist"
-    if not (skip_existing and Path(torch_dist_dst).exists()):
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{args.model_name}_torch_dist",
-            path_dst=torch_dist_dst,
-        )
+        return {}
 
     if args.rollout_mxfp8:
         hf_suffix = "-MXFP8"
@@ -161,12 +153,15 @@ def _prepare_cp(args: ScriptArgs, skip_existing: bool = False):
     else:
         hf_suffix = ""
     hf_name = f"{args.model_name}{hf_suffix}"
-    hf_dst = f"{args.model_local_dir}/{hf_name}"
-    if not (skip_existing and Path(hf_dst).exists()):
-        U.rsync_simple(
-            path_src=f"{args.model_dir}/{hf_name}",
-            path_dst=hf_dst,
-        )
+
+    copies = [
+        U.rsync_cmd(
+            f"{args.model_dir}/{args.model_name}_torch_dist",
+            f"{args.model_local_dir}/{args.model_name}_torch_dist",
+        ),
+        U.rsync_cmd(f"{args.model_dir}/{hf_name}", f"{args.model_local_dir}/{hf_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
@@ -381,7 +376,9 @@ matchers:
     config: "bf16"
 """.strip()
                 if "--te-precision-config-file" not in args.extra_args:
-                    misc_args += f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
+                    misc_args += (
+                        f"--te-precision-config-file {U.encode_pseudo_file(te_precision_config_text)} "
+                    )
             else:
                 if args.use_single_node:
                     sglang_world_size = 2
@@ -441,12 +438,12 @@ tis_batch_normalize: true
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**misc_env_vars},
         megatron_path=args.megatron_path,
         before_ray_job_submit=before_ray_job_submit,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
@@ -458,7 +455,8 @@ def full_train(args: ScriptArgs):
     _prepare_bf16_ckpt(args)
     _prepare_mxfp8_ckpt(args)
     _prepare_fp8_ckpt(args)
-    _execute_train(args, before_ray_job_submit=partial(_prepare_megatron_ckpt, args))
+    _prepare_megatron_ckpt(args)
+    _execute_train(args)
 
 
 @app.command()
@@ -480,15 +478,8 @@ def prepare_megatron_ckpt(args: ScriptArgs):
 
 @app.command()
 @U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    """Copy model/checkpoint to local storage (run on each node)."""
-    _prepare_cp(args)
-
-
-@app.command()
-@U.dataclass_cli
 def train(args: ScriptArgs):
-    """Run training only (assumes prepare and optional prepare-cp are done)."""
+    """Run training only (assumes prepare is done)."""
     _execute_train(args)
 
 
