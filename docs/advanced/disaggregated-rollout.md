@@ -321,6 +321,7 @@ requires a brief engine pause.
 
 ## Acknowledgment
 
-Thanks to [Nan Jiang](https://www.nanjiangwill.com/) and the Modal team for
+Thanks to [Nan Jiang](https://www.nanjiangwill.com/),
+[Jason Mancuso](https://github.com/jvmncs), and the Modal team for
 [Stitch](https://github.com/modal-projects/stitch) and for their support in
 putting this guide together.
