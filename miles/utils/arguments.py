@@ -12,6 +12,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
+from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
@@ -2122,7 +2123,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "The file will be saved to `save_debug_train_data.format(rollout_id)`."
                 ),
             )
-            parser.add_argument("--save-debug-event-data", type=str, default=None)
+            parser.add_argument(
+                "--save-debug-event-data",
+                type=str,
+                default=None,
+                help="Where the audit events of this run go, including the env report. Defaults to "
+                "<save>/events, so that a run that checkpoints also records what it ran as.",
+            )
             parser.add_argument(
                 "--dump-details",
                 type=str,
@@ -2296,8 +2303,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--env-report",
                 type=str,
-                default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
-                help="JSON string containing environment report from external launcher.",
+                default=os.environ.get(LAUNCHER_REPORT_ENV_VAR, ""),
+                help="Path to the json record the external launcher wrote about the launch that started "
+                "this process.",
             )
             parser.add_argument(
                 "--debug-deterministic-collective",
@@ -3244,6 +3252,9 @@ def miles_validate_args(args):
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
         args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
         args.save_debug_event_data = f"{args.dump_details}/events"
+
+    if args.save_debug_event_data is None and args.save is not None:
+        args.save_debug_event_data = f"{args.save}/events"
 
     if args.load_debug_rollout_data is not None:
         logger.info(

@@ -1,5 +1,6 @@
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,7 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
+from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
@@ -39,6 +41,26 @@ _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
 def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
     for name, size in _MEGATRON_PARALLEL_SIZES.items():
         setattr(args, name, size)
+
+
+# These name a dataset column, a metric or a prompt field, not a credential.
+_NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
+    {
+        "ci_metric_checker_key",
+        "eval_input_key",
+        "eval_label_key",
+        "eval_reward_key",
+        "eval_tool_key",
+        "input_key",
+        "label_key",
+        "metadata_key",
+        "opd_teacher_key",
+        "reward_key",
+        "tool_key",
+    }
+)
+_SGLANG_ARG_PREFIXES = ("sglang_", "eval_sglang_")
+_INHERITED_CREDENTIAL_PATTERN = re.compile(r"^(eval_)?(sglang|router)_(.*_)?(api_keys?|password)$")
 
 
 def make_class_with_add_arguments():
@@ -1496,3 +1518,30 @@ class TestSessionServerArguments:
 
         assert args.session_server_workers == 32
         assert args.session_server_port is None
+
+class TestSecretArgumentsAreClassified:
+    def _declared_names(self) -> set[str]:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        # The eval sglang flags default to SUPPRESS, so parsing alone would not materialise them.
+        return {action.dest for action in parser._actions}
+
+    def test_every_secret_looking_miles_flag_is_either_redacted_or_declared_harmless(self):
+        """The env report hashes args by an explicit list, so a new credential flag would leak until listed."""
+        suspicious = {
+            name
+            for name in self._declared_names()
+            if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
+        }
+
+        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+            "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
+            "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
+        )
+
+    def test_every_credential_inherited_from_sglang_and_the_router_is_redacted(self):
+        """sglang and the router contribute api keys and key passwords that land in the args dump verbatim."""
+        credentials = {name for name in self._declared_names() if _INHERITED_CREDENTIAL_PATTERN.search(name)}
+
+        assert credentials >= {"sglang_api_key", "eval_sglang_api_key", "router_api_key"}
+        assert credentials <= _SECRET_ARG_NAMES
