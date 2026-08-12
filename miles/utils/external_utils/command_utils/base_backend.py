@@ -44,6 +44,7 @@ class ExecuteTrainConfig:
     helm_values: tuple[str, ...] = ()
     force: bool = False
     ci_run: bool = False
+    external_mooncake: bool = False
 
     def create_backend(self) -> BaseCommandBackend:
         match self.cluster_backend:
