@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import get_args
 
 from miles.utils.external_utils.command_utils.common import (
+    ArgvManipulator,
     MOONCAKE_MASTER_LOG_PATH,
     MOONCAKE_MASTER_METRICS_PORT,
     MOONCAKE_MASTER_PORT,
@@ -78,7 +79,8 @@ class BaseCommandBackend(ABC):
         if not os.path.isabs(train_script):
             train_script = f"{repo_base_dir}/{train_script}"
 
-        train_backend_fsdp = "--train-backend fsdp" in train_args
+        train_argv = shlex.split(train_args)
+        train_backend_fsdp = "fsdp" in ArgvManipulator.values_of(train_argv, "--train-backend")
         assert train_backend_fsdp == (megatron_model_type is None)
 
         self._execute_train_inner(
