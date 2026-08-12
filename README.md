@@ -76,7 +76,7 @@ the largest models all live on Megatron-LM. See
   what every GPU was doing during a step, and what each trajectory contained at the token
   level.
 
-### Coverage
+### What Miles runs
 
 - **Day-0 model support.** DeepSeek-V4, Kimi-K3, GLM-5.2, Inkling and Nemotron landed on
   release day. Beyond day 0, nearly every frontier model runs on Miles, including Kimi-K2.6
