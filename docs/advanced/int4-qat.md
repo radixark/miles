@@ -11,10 +11,9 @@ This reduces the precision mismatch between training and rollout while keeping
 the rollout model compact. It does not quantize Megatron parameters, optimizer
 state, gradients, or activations to INT4, so it is not a trainer-memory feature.
 
-The current path is beta, uses the Megatron backend, and covers routed experts
-implemented by Transformer Engine `GroupedLinear`. Attention, embeddings,
-routers, shared experts, dense MLPs, and the LM head remain in their configured
-precision.
+INT4 QAT uses the Megatron backend and covers routed experts implemented by
+Transformer Engine `GroupedLinear`. Attention, embeddings, routers, shared
+experts, dense MLPs, and the LM head remain in their configured precision.
 
 ## Component roles
 
