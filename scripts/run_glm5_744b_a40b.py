@@ -149,7 +149,7 @@ def _convert_to_fp8(args: ScriptArgs):
     """Convert HF checkpoint to FP8 (block quantization). Megatron still uses bf16."""
     src = f"{args.model_dir}/{args.model_name}"
     dst = f"{args.model_dir}/{args.model_name}_fp8"
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_fp8.py "
         f"--model-dir {src} --save-dir {dst} "
         f"--strategy block --block-size 128 128"
@@ -157,8 +157,10 @@ def _convert_to_fp8(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
 
 
@@ -380,6 +382,7 @@ def _execute_train(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     if args.megatron_use_deepep:

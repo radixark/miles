@@ -32,7 +32,8 @@ hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-20
 
 ```bash
 cd /root/miles
-source scripts/models/glm4-9B.sh
+MODEL_ARGS_LINE="$(python3 scripts/model_args.py glm4-9B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/GLM-Z1-9B-0414 \
@@ -97,4 +98,4 @@ CPU Adam is not enabled in either launcher.
 ## 6. Pairs Well With
 
 - [Rollout Routing Replay (R3)](/advanced/miles-router)
-- [Low Precision RL](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)

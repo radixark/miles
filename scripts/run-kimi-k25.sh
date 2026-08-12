@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Kimi-K2.5 full-parameter GRPO — 32 nodes × 8 GPUs (H200), colocated.
-# Architecture (MoE + MLA) is shared with Kimi-K2 Thinking; we source that model script.
+# Architecture (MoE + MLA) is shared with Kimi-K2 Thinking; K2.5 keeps its own YaRN parameters.
 
 # for rerun the task
 pkill -9 sglang
@@ -16,7 +16,7 @@ pkill -9 python
 set -ex
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -27,8 +27,8 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/kimi-k2-thinking.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "kimi-k25")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/Kimi-K2.5-int4
    --ref-load $BASE_DIR/Kimi-K2.5-bf16

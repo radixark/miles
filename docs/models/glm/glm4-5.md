@@ -49,7 +49,8 @@ The bash launcher does **not** convert for you — produce `$BASE_DIR/GLM-4.5-35
 
 ```bash
 cd /root/miles
-source scripts/models/glm4.5-355B-A32B.sh
+MODEL_ARGS_LINE="$(python3 scripts/model_args.py glm4.5-355B-A32B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
@@ -136,6 +137,6 @@ CPU Adam on:
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [INT4 QAT](/advanced/int4-qat)
 - [Rollout Routing Replay (R3)](/advanced/miles-router) — opt-in via `--enable-mis` on the Python launcher.

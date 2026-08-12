@@ -4,7 +4,7 @@ name: PR Test
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review, labeled, closed]
   schedule:
     # Nightly CI on main runs every enabled tag except long and ft-long, with fast-fail disabled.
     # 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
@@ -38,7 +38,7 @@ permissions:
 concurrency:
   # PR updates supersede their previous run; distinct cron schedules and
   # manual operations must not cancel one another on the default branch.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.number || github.event.schedule || github.run_id }}
   cancel-in-progress: true
 
 # `resolve-ci-policy` passes trigger-specific facts to `ci_policy.py`, which
@@ -52,6 +52,7 @@ concurrency:
 
 jobs:
   resolve-ci-policy:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       cadence: ${{ steps.resolve.outputs.cadence }}
@@ -71,6 +72,7 @@ jobs:
         run: python -m tests.ci.ci_policy
 
   docker-paths:
+    if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.diff.outputs.changed }}
@@ -100,12 +102,12 @@ jobs:
           fi
 
   # Docker PRs: build the multi-arch image first and run every suite inside it.
-  # Always runs: with nothing to build every step is a no-op and it stays off the
-  # GPU fleet.
+  # Always runs: with nothing to build every step is a no-op on a free hosted
+  # runner; actual builds run on docker-build nodes, never the GPU-suite pool.
   docker-build:
     needs: [docker-paths]
-    if: always() && !cancelled()
-    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["h200", "2gpu"]' || '["ubuntu-latest"]') }}
+    if: always() && !cancelled() && github.event.action != 'closed'
+    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["docker-build"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 180
     outputs:
       built: ${{ steps.build.outputs.built || 'false' }}
@@ -177,17 +179,16 @@ jobs:
           echo "Resolved CI image: radixark/miles:${CI_IMAGE_TAG}"
 
   # Stage A: CPU-only fast tests (always runs on PR)
-  # Runs on GitHub-hosted ubuntu-latest (cpu_runner: true) to avoid
-  # occupying GPU-fleet runner slots.
+  # Uses the CPU-only reusable workflow on GitHub-hosted ubuntu-latest, so
+  # fast tests do not occupy GPU-fleet runner slots.
   stage-a-cpu:
     needs: [resolve-ci-policy, resolve-ci-image]
     strategy:
       fail-fast: false
       matrix:
         partition_id: [0, 1, 2, 3]
-    uses: ./.github/workflows/_run-ci.yml
+    uses: ./.github/workflows/_run-cpu-ci.yml
     with:
-      cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
@@ -199,9 +200,8 @@ jobs:
   # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
     needs: [resolve-ci-policy, resolve-ci-image]
-    uses: ./.github/workflows/_run-ci.yml
+    uses: ./.github/workflows/_run-cpu-ci.yml
     with:
-      cpu_runner: true
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}

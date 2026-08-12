@@ -15,31 +15,33 @@ turning that recipe into a running cloud sandbox:
       auto-stop+auto-delete TTL armed as a dead-man's switch: a keepalive
       thread beats the activity timer while the creating process lives, so
       a hard-killed caller's orphans are reclaimed instead of billing forever.
-  bake CLI (``python tb2_sandbox_daytona.py ...``)  optionally pre-register
-      named snapshots ``<prefix><task-id>`` as a warm cache.
+
+There is deliberately no bake step here: on this provider the image definition
+IS the cache key, so a create either hits the build cache or warms it, and
+nothing a create passes can name a pre-registered snapshot — registering one
+per task would only spend the org quota the declarative path exists to avoid.
 """
 
-import argparse
-import getpass
 import os
-import re
 import shlex
-import sys
-import threading
-import time
 from pathlib import Path
 
+import tb2_sandbox_recipe as recipe
 from tb2_sandbox_recipe import (
-    read_task_config,
+    COMMAND_TIMEOUT_S,
     resolve_docker_image,
+    sandbox_labels,
     server_cmd,
     server_layer_commands,
+    task_env_resources,
     wait_server_ready,
 )
 
 
-def snapshot_name(prefix: str, task_id: str) -> str:
-    return prefix + re.sub(r"[^a-z0-9-]", "-", task_id.lower())
+# Every knob describing ONE Daytona sandbox lives here, next to the create
+# that uses it; the backend module keeps only the fan-out knobs. Read at import:
+# a rollout worker is a fresh process per run.
+_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
 
 
 def build_task_image(task_dir: Path, docker_image: str | None = None):
@@ -60,37 +62,10 @@ def build_task_image(task_dir: Path, docker_image: str | None = None):
 def task_resources(task_dir: Path):
     from daytona import Resources
 
-    env_cfg = read_task_config(task_dir).get("environment", {})
-    return Resources(
-        cpu=max(1, int(env_cfg.get("cpus", 1))),
-        memory=max(2, int(env_cfg.get("memory_mb", 2048)) // 1024),
-        disk=max(10, int(env_cfg.get("storage_mb", 10240)) // 1024),
-    )
-
-
-def sandbox_labels(task_dir: Path) -> dict[str, str]:
-    """Labels for a per-task sandbox: what it runs, and who launched it.
-
-    The Daytona API records no creator, so in a shared org labels are the only
-    attribution. ``openenv-tbench2-task`` keys sweep/cleanup tooling to exactly
-    the sandboxes this recipe created (shared orgs run other workloads).
-    ``openenv-launcher`` is OPENENV_LAUNCHER when set — do set it on shared
-    hosts, where the unix user is a generic account — else the local unix
-    user. ``openenv-run-id`` (OPENENV_RUN_ID, optional) additionally groups
-    one run's sandboxes for targeted sweeps.
-    """
-    try:
-        user = getpass.getuser()
-    except Exception:  # no passwd entry / login env on minimal hosts
-        user = "unknown"
-    labels = {
-        "openenv-tbench2-task": task_dir.name,
-        "openenv-launcher": os.environ.get("OPENENV_LAUNCHER") or user,
-    }
-    run_id = os.environ.get("OPENENV_RUN_ID")
-    if run_id:
-        labels["openenv-run-id"] = run_id
-    return labels
+    # Daytona sizes in whole GB; the recipe's floors (2048 MB / 10240 MB)
+    # guarantee the integer division never rounds to zero.
+    cpus, memory_mb, storage_mb = task_env_resources(task_dir)
+    return Resources(cpu=cpus, memory=memory_mb // 1024, disk=storage_mb // 1024)
 
 
 # Keepalive cadence: 6 beats per 30-minute auto-stop window, and up to 3
@@ -106,32 +81,27 @@ def _start_keepalive(sandbox, task_id: str) -> None:
     Daytona's auto-stop clock counts only SDK interactions — preview-proxy
     traffic, which is ALL of an episode's I/O, does not reset it — so without
     a heartbeat any healthy episode longer than the auto-stop interval would
-    be stopped mid-run. A daemon thread has exactly the right lifetime: it
-    dies with the process, which is what turns auto-stop into a dead-man's
-    switch for orphans. The thread exits once refreshes fail persistently
-    (the normal case: the episode ended and the caller deleted the sandbox).
-    """
-
-    def _beat() -> None:
-        failures = 0
-        while failures < _KEEPALIVE_MAX_CONSECUTIVE_FAILURES:
-            time.sleep(_KEEPALIVE_INTERVAL_S)
-            try:
-                sandbox.refresh_activity()
-                failures = 0
-            except Exception:
-                failures += 1
-
-    threading.Thread(target=_beat, name=f"tb2-sandbox-keepalive-{task_id}", daemon=True).start()
+    be stopped mid-run (see recipe.start_keepalive for the dead-man's-switch
+    lifetime contract)."""
+    recipe.start_keepalive(
+        sandbox.refresh_activity,
+        f"tb2-sandbox-keepalive-{task_id}",
+        interval_s=_KEEPALIVE_INTERVAL_S,
+        max_consecutive_failures=_KEEPALIVE_MAX_CONSECUTIVE_FAILURES,
+    )
 
 
 def create_task_sandbox(
     daytona,
     task_dir: Path,
     *,
-    command_timeout_s: int = 900,
+    command_timeout_s: int = COMMAND_TIMEOUT_S,
     create_timeout_s: float = 1800.0,
-    ready_timeout_s: float = 300.0,
+    ready_timeout_s: float = _READY_TIMEOUT_S,
+    # Deliberately arguments rather than env knobs, unlike the E2B/Modal TTLs:
+    # these two are Daytona's OWN auto-stop/auto-delete intervals, and the
+    # keepalive cadence below is written against them. Retuning them means
+    # rethinking the heartbeat, not turning a dial.
     auto_stop_minutes: int = 30,
     auto_delete_minutes: int = 120,
 ):
@@ -171,7 +141,10 @@ def create_task_sandbox(
         _start_keepalive(sandbox, task_dir.name)
         return sandbox, url
     except Exception:
-        daytona.delete(sandbox)
+        try:
+            daytona.delete(sandbox)
+        except Exception:
+            pass  # cleanup must not mask the real failure; auto-stop/auto-delete reclaims it
         raise
 
 
@@ -179,33 +152,15 @@ _DEFAULT_API_KEY_FILE = "~/.config/daytona/api_key"
 
 
 def resolve_api_key() -> str:
-    """The Daytona API key: DAYTONA_API_KEY, else the key file.
-
-    The file indirection (DAYTONA_API_KEY_FILE, default
-    ``~/.config/daytona/api_key``) exists so launchers can hand rollout
-    workers a PATH instead of the secret itself: anything a launcher
-    forwards rides ray's runtime_env, which is echoed into driver logs and
-    persisted in job metadata in plaintext. Env vars the worker already has
-    (platform-injected, single-host inheritance) never pass through ray, so
-    DAYTONA_API_KEY is checked first.
-    """
-    key = os.environ.get("DAYTONA_API_KEY", "").strip()
-    if key:
-        return key
-    key_file = Path(os.environ.get("DAYTONA_API_KEY_FILE", "").strip() or _DEFAULT_API_KEY_FILE).expanduser()
-    try:
-        key = key_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        key = ""
-    if not key:
-        raise RuntimeError(f"no Daytona API key: DAYTONA_API_KEY is unset and {key_file} is missing or empty")
-    return key
+    """The Daytona API key: DAYTONA_API_KEY, else the key file (see
+    recipe.resolve_api_key for the file-indirection rationale)."""
+    return recipe.resolve_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 def make_daytona():
     """Daytona client: key from resolve_api_key(), endpoint from optional
     DAYTONA_API_URL. Public: callers driving create_task_sandbox() need a
-    client configured the same way this module's own CLI is."""
+    client configured this way."""
     from daytona import Daytona, DaytonaConfig
 
     return Daytona(
@@ -214,60 +169,3 @@ def make_daytona():
             api_url=os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api"),
         )
     )
-
-
-def bake(daytona, tasks_dir: Path, task_id: str, prefix: str, force: bool) -> None:
-    """Register the named snapshot ``<prefix><task-id>`` (optional warm cache)."""
-    from daytona import CreateSnapshotParams
-
-    task_dir = tasks_dir / task_id
-    name = snapshot_name(prefix, task_id)
-    try:
-        existing = daytona.snapshot.get(name)
-    except Exception:
-        existing = None
-    if existing is not None:
-        if not force:
-            print(f"[skip] {name} already exists (state={getattr(existing, 'state', '?')})")
-            return
-        print(f"[force] deleting existing {name}")
-        daytona.snapshot.delete(existing)
-
-    resources = task_resources(task_dir)
-    print(f"[bake] {name}  cpu={resources.cpu} mem={resources.memory}G disk={resources.disk}G")
-    daytona.snapshot.create(
-        CreateSnapshotParams(
-            name=name,
-            image=build_task_image(task_dir),
-            resources=resources,
-            entrypoint=["sleep", "infinity"],
-        ),
-        on_logs=lambda line: print(f"  | {line}", flush=True),
-        timeout=1800,
-    )
-    print(f"[done] {name}")
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--tasks-dir", required=True, help="local terminal-bench-2 checkout")
-    group = ap.add_mutually_exclusive_group(required=True)
-    group.add_argument("--tasks", help="comma-separated task_ids")
-    group.add_argument("--all", action="store_true", help="every dir with a task.toml")
-    ap.add_argument("--prefix", default="tb2-", help="snapshot name prefix (default: tb2-)")
-    ap.add_argument("--force", action="store_true", help="recreate existing snapshots")
-    args = ap.parse_args()
-
-    daytona = make_daytona()
-    tasks_dir = Path(args.tasks_dir).expanduser().resolve()
-    if args.all:
-        task_ids = sorted(p.name for p in tasks_dir.iterdir() if (p / "task.toml").is_file())
-    else:
-        task_ids = [t.strip() for t in args.tasks.split(",") if t.strip()]
-
-    for task_id in task_ids:
-        bake(daytona, tasks_dir, task_id, args.prefix, args.force)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

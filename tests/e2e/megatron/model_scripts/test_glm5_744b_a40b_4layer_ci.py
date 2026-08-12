@@ -32,17 +32,12 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=2,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_args=(
-            "--ci-test "
-            "--ci-disable-logprobs-checker "
-            "--disable-weights-backuper "
-            "--tensor-model-parallel-size 2 "
-        ),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--tensor-model-parallel-size 2 "),
     )
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)
     if args.fp8_rollout:

@@ -3,7 +3,7 @@
 Task-agnostic: the agent function (``openenv_agent_function.run``) stores the
 env-computed binary pytest reward in ``sample.metadata["reward"]``; this just
 reads it back. Wired via ``--custom-rm-path openenv_generate.reward_func`` and
-mirrors ``swe-agent/generate.py:reward_func`` so it works for both the
+mirrors ``swe-agent-harbor-docker/generate.py:reward_func`` so it works for both the
 single-sample (``async_rm``) and batched (``--custom-rm-path``) call paths.
 """
 

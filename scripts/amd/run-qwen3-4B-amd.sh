@@ -17,7 +17,7 @@ export RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_HIP_V
 export RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES=${RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES:-"1"}
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 if [[ -n "${HIP_VISIBLE_DEVICES:-}" ]]; then
    export CUDA_VISIBLE_DEVICES="${HIP_VISIBLE_DEVICES}"
@@ -30,8 +30,8 @@ if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
 fi
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/qwen3-4B.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "qwen3-4B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B
    --ref-load /root/Qwen3-4B_torch_dist

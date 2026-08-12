@@ -40,8 +40,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -59,7 +61,7 @@ def _convert_hf_to_fp8(args: ScriptArgs):
     if Path(path_output).exists():
         return
 
-    U.exec_command(
+    U.exec_command_gpu(
         "python tools/convert_hf_to_fp8.py "
         f"--model-dir {args.model_dir}/{args.model_name} "
         f"--save-dir {path_output} "
@@ -293,7 +295,6 @@ def _execute_train(args: ScriptArgs):
         "--colocate "
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
-        "--disable-weights-backuper "
         # TODO if good, also configure to other scripts
         "--router-health-success-threshold 1 "
         "--router-health-check-interval-secs 15 "
@@ -329,7 +330,7 @@ rs_veto_threshold: 1.0e-4
 tis_batch_normalize: true
 """.strip()
         misc_args += (
-            f"--custom-config-path {U.save_to_temp_file(config_text, 'yaml')} "
+            f"--custom-config-path {U.encode_pseudo_file(config_text)} "
             "--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
         )
 

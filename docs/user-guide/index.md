@@ -6,13 +6,13 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 |---|---|
 | [Core Concepts](/user-guide/concepts) | The four objects in the training loop and the four-knob invariant. |
 | [Argument Groups](/user-guide/argument-groups) | Where `MODEL_ARGS`, `PERF_ARGS`, `GRPO_ARGS`, and the other launch-script arrays belong. |
+| [Fully Async RL](/user-guide/fully-async) | Continuous generation decoupled from training: the schedule, the data buffer, async eval, and the metrics to watch. |
 | [Training Backend](/user-guide/usage) | Megatron-LM as the training backend — parallelism, checkpoints, and hooks. |
 | [Training Script Walkthrough](/user-guide/training-script-walkthrough) | The eight `XXX_ARGS` arrays in a launch script, plus the execution modes (sync/async, colocation, dynamic sampling, partial rollout, BF16+FP8). |
 | [Monitoring & Logging](/user-guide/monitoring) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |
 | [Customization](/user-guide/customization) | The 21 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
 | [Rollout Endpoints](/user-guide/rollout-endpoints) | The `/generate` endpoint and the OpenAI chat endpoint for agentic sessions. |
-| [Fully Async Rollout](/user-guide/fully-async) | Queue-backed rollout production, tuning knobs, and when to use `train_async.py`. |
-| [Agentic Chat Templates](/user-guide/agentic-chat-template) | Turning on and verifying TITO so multi-turn agentic rollout stays append-only. |
+| [Agentic Rollout (TITO)](/user-guide/agentic-chat-template) | Turning on and verifying TITO so multi-turn agentic rollout stays append-only. |
 | [CLI Reference](/user-guide/cli-reference) | Every flag Miles accepts, grouped by subsystem. |
 | [Environments](/user-guide/environments) | Supplying an environment: dataset + reward, your own env via the plug points, or an external ecosystem. |
 

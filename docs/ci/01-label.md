@@ -2,9 +2,6 @@
 title: Labels
 description: The three kinds of CI label — domain labels that gate tests, scope labels that broaden selection, and bypass-fastfail.
 ---
-
-# Labels
-
 A label is a GitHub PR label that changes what CI runs or how it fails. Three kinds:
 
 | Kind | Example | Effect |

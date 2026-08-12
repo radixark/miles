@@ -13,13 +13,13 @@ pkill -9 python
 set -ex
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 export HF_HOME=/workspace/hf_cache
 
 # Load model architecture config
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/gpt-oss-20b.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "gpt-oss-20b")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 BASE_DIR=/root/shared
 
 CKPT_ARGS=(

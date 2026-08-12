@@ -16,22 +16,26 @@ where the environment itself comes from:
 - **An external ecosystem** — adopt a prebuilt connector from the table below;
   connectors occupy the same three layers.
 
-| Integration | Plugs in at |
-|---|---|
-| [Harbor](/user-guide/harbor) | agent function |
-| [OpenEnv](/user-guide/openenv) | agent function |
-| [NeMo-Gym](/user-guide/nemo-gym) | agent function |
-| [Strands Agents](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) | generate function |
-| [τ-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) | generate function |
+| Integration | Plugs in at | Guide |
+|---|---|---|
+| [Harbor](https://github.com/harbor-framework/harbor) | agent function | [guide](/user-guide/harbor) |
+| [NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) | agent function | [guide](/user-guide/nemo-gym) |
+| [OpenEnv](https://github.com/huggingface/openenv) | agent function | [guide](/user-guide/openenv) |
+| [Strands Agents](https://strandsagents.com/) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) |
+| [Verifiers (Prime Intellect)](https://github.com/PrimeIntellect-ai/verifiers) | rollout function | [guide](/user-guide/verifiers) |
+| [τ-bench](https://github.com/sierra-research/tau-bench) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench) |
 
 Sandbox providers are a different axis: they provision the task containers
 *inside* a connector rather than occupying a rollout layer.
 
-| Sandbox provider | Used within |
-|---|---|
-| [Daytona](https://www.daytona.io/) | OpenEnv, Harbor, NeMo-Gym |
+| Sandbox provider | Used within | Guide |
+|---|---|---|
+| [AgentENV](https://github.com/kvcache-ai/AgentENV) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
+| [Daytona](https://www.daytona.io/) | OpenEnv, Harbor, NeMo Gym | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
+| [E2B](https://e2b.dev/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
+| [Modal](https://modal.com/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 
-All external ecosystem support is experimental.
+Everything above is experimental, and listed alphabetically.
 
 ## Integration shapes
 

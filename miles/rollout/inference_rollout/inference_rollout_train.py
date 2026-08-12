@@ -11,6 +11,7 @@ from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
+from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook, load_function
@@ -61,7 +62,11 @@ async def get_worker_urls(args: Namespace):
     return router_worker_base_urls(urls)
 
 
-def submit_generate_tasks(state: GenerateState, samples: list[list[Sample]]):
+def submit_generate_tasks(
+    state: GenerateState,
+    samples: list[list[Sample]],
+    sample_done_callback: Callable[[], None] | None = None,
+):
     return [
         asyncio.create_task(
             # submit a group of samples as a single task.
@@ -70,6 +75,7 @@ def submit_generate_tasks(state: GenerateState, samples: list[list[Sample]]):
                 group,
                 sampling_params=state.sampling_params.copy(),
                 evaluation=False,
+                sample_done_callback=sample_done_callback,
             )
         )
         for group in samples
@@ -92,20 +98,24 @@ async def generate_rollout_async(
     # target_data_size is the total number of valid samples to get
     target_data_size = args.rollout_batch_size
 
+    # default to group level submission for sync/one-step async rollout
+    scheduler = make_submission_scheduler(args, default="group")
+
     pendings = set()
     data = []
     all_data = []
     do_print = True
     pbar = tqdm(total=target_data_size * args.n_samples_per_prompt, desc="Rollout generation")
     while len(data) < target_data_size:
-        while len(data) + len(pendings) < target_data_size:
+        while scheduler.has_capacity(pending_groups=len(pendings), group_budget=target_data_size - len(data)):
             # get samples from the buffer and submit the generation requests.
             samples = data_source(args.over_sampling_batch_size)
-            pendings.update(submit_generate_tasks(state, samples))
+            scheduler.on_submit(samples)
+            pendings.update(submit_generate_tasks(state, samples, scheduler.sample_done_callback))
 
         # wait for the generation to finish
         logger.debug(f"[rollout] Waiting on {len(pendings)} pending tasks, data={len(data)}/{target_data_size}")
-        done, pendings = await asyncio.wait(pendings, return_when=asyncio.FIRST_COMPLETED)
+        done, pendings = await scheduler.wait_for_progress(pendings)
         logger.debug(f"[rollout] asyncio.wait returned: {len(done)} done, {len(pendings)} pending")
         for task in done:
             try:

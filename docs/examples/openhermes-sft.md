@@ -27,7 +27,8 @@ If you don't already have it:
 hf download Qwen/Qwen3-4B-Base --local-dir /root/Qwen3-4B-Base
 
 cd /root/miles
-source scripts/models/qwen3-4B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-4B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
    --hf-checkpoint /root/Qwen3-4B-Base \

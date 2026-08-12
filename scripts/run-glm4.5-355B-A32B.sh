@@ -13,7 +13,7 @@ pkill -9 python
 set -ex
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 NVLINK_COUNT=$(nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l)
 if [ "$NVLINK_COUNT" -gt 0 ]; then
@@ -24,8 +24,8 @@ fi
 echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source "${SCRIPT_DIR}/models/glm4.5-355B-A32B.sh"
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../miles/utils/external_utils/model_args_utils.py" "glm4.5-355B-A32B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint $BASE_DIR/GLM-4.5-355B-A32B
    --ref-load $BASE_DIR/GLM-4.5-355B-A32B_torch_dist/
