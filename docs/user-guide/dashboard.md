@@ -200,6 +200,10 @@ Two things here are easy to misread:
   no statistics. That is expected, not missing data.
 * The difference between rollout and train log-probs is the true-on-policy check. It should be
   near zero. A band that is consistently non-zero is worth chasing.
+* Positions the loss ignores, such as tool output in an agentic session, have no rollout
+  log-prob because the engine never generated them. Both log-prob sides read zero there, so
+  `lp_diff` is zero and `imp_ratio` is one by construction: judge train and rollout agreement
+  on the loss-covered tokens only.
 
 ## Turning it on
 
