@@ -32,7 +32,10 @@ Miles is a high-performance, enterprise-ready reinforcement learning framework f
 **large-scale model post-training**. It pairs [SGLang](https://github.com/sgl-project/sglang)
 for high-throughput rollout with [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) for
 scalable training, and ships the precision, stability and observability features an RL run
-needs at trillion-parameter scale.
+needs at trillion-parameter scale. A PyTorch FSDP2 backend is available for runs that would
+rather train the HuggingFace implementation as-is, though the recipes, the parallelism and
+the largest models all live on Megatron-LM. See
+[Training Backends](https://miles.radixark.com/docs/user-guide/training-backend).
 
 > *"A journey of a thousand miles begins with a single rollout."*
 
@@ -75,16 +78,8 @@ needs at trillion-parameter scale.
   [Harbor, NeMo Gym, OpenEnv, Verifiers, Strands Agents and tau-bench](https://miles.radixark.com/docs/user-guide/environments),
   each plugging into the rollout layer that fits it, with task sandboxes on AgentENV,
   Daytona, E2B or Modal.
-- **Highly customizable pipeline.** Shape every workload through
-  [21 plug-points](https://miles.radixark.com/docs/user-guide/customization), from reward
-  computation to the full rollout function.
-- **Megatron or FSDP.**
-  [Switch training backends](https://miles.radixark.com/docs/user-guide/training-backend)
-  without rewriting your training loop.
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
-- **Verified on many hardware generations.** NVIDIA GB300, GB200, B200, H200 and H100, and
-  AMD MI355X via ROCm.
 - **Miles dashboard.** A self-hosted web UI for a run's
   [training dynamics and compute efficiency](https://miles.radixark.com/docs/user-guide/dashboard):
   what every GPU was doing during a step, and what each trajectory contained at the token
