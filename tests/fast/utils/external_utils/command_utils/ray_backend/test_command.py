@@ -98,7 +98,9 @@ class TestStartMooncakeMaster:
         monkeypatch.setattr(command, "wait_for_server_ready", fail_wait)
 
         with pytest.raises(RuntimeError, match=r"unable to read .*mooncake\.log"):
-            command.start_mooncake_master(log_path=log_path)
+            command.start_mooncake_master(rpc_port=50061, log_path=log_path)
 
         assert len(commands) == 2
-        assert "pkill -x mooncake_master" in commands[1]
+        expected_cleanup = "pkill -f '^mooncake_master --rpc_port 50061 ' >/dev/null 2>&1 || true"
+        assert commands[0].startswith(f"{expected_cleanup}; ")
+        assert commands[1] == expected_cleanup
