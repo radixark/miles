@@ -84,7 +84,7 @@ Use this map when reading any launch script:
 
 ## Next
 
-- [Training Backend](/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Training Backends](/user-guide/training-backend) — Megatron-LM and FSDP, parallelism, checkpoints, and hooks.
 - [Argument Groups](/user-guide/argument-groups) — where each launch-script array belongs.
 - [Training Script Walkthrough](/user-guide/training-script-walkthrough) — the launch script
   group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).

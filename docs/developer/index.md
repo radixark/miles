@@ -31,9 +31,9 @@ short tour for new contributors.
 
   </Card>
 
-  <Card title="Experimental Features" icon="flask" href="/developer/experimental-features">
+  <Card title="Training Backends" icon="server" href="/user-guide/training-backend">
 
-    Opt-in backends and features (FSDP, …) that aren't production-ready yet.
+    Megatron-LM and FSDP: what each backend owns and where its code lives.
 
   </Card>
 

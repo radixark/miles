@@ -107,7 +107,7 @@ Flags not set in `EVAL_ARGS` inherit from `ROLLOUT_ARGS`.
 
 Megatron exposes TP, PP, CP, EP, and ETP, but not every product of those dimensions is
 valid or worth using for every model. Start from the recipe's tested combination and
-see [parallelism compatibility](/user-guide/usage#parallelism-compatibility) before changing
+see [parallelism compatibility](/user-guide/training-backend#parallelism-compatibility) before changing
 more than one dimension.
 
 <a id="grpo-args"></a>

@@ -182,7 +182,7 @@
        "user-guide/concepts",
        "user-guide/argument-groups",
        "user-guide/fully-async",
-       "user-guide/usage",
+       "user-guide/training-backend",
        "user-guide/training-script-walkthrough",
        "user-guide/monitoring",
        "user-guide/dashboard",
@@ -238,13 +238,6 @@
          "advanced/miles-router"
         ],
         "expanded": false
-       },
-       {
-        "group": "Backends",
-        "pages": [
-         "advanced/architecture-support"
-        ],
-        "expanded": false
        }
       ]
      }
@@ -277,7 +270,6 @@
        "developer/architecture",
        "developer/versions",
        "developer/debug",
-       "developer/experimental-features",
        {
         "group": "CI",
         "pages": [
@@ -319,6 +311,18 @@
   ]
  },
  "redirects": [
+  {
+   "source": "/user-guide/usage",
+   "destination": "/user-guide/training-backend"
+  },
+  {
+   "source": "/advanced/architecture-support",
+   "destination": "/user-guide/training-backend#going-deeper-bringing-in-a-new-architecture"
+  },
+  {
+   "source": "/developer/experimental-features",
+   "destination": "/user-guide/training-backend#fsdp"
+  },
   {
    "source": "/platforms/index",
    "destination": "/getting-started/installation",

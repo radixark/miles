@@ -56,8 +56,7 @@ needed to run RL at trillion-parameter scale.
   [twenty-plus plug-points](/user-guide/customization), from reward computation to
   the full rollout function.
 - **Megatron or FSDP.**
-  [Switch training backends](/developer/experimental-features#fsdp-backend) without
-  rewriting your training loop.
+  [Switch training backends](/user-guide/training-backend) without rewriting your training loop.
 - **Wide recipe support.** RL (GRPO, PPO), SFT, and on-policy distillation.
 - **Verified on multiple hardware generations.** GB300, GB200, B300, B200, H200,
   H100, A100, and AMD MI355X / MI300X.
@@ -110,7 +109,8 @@ and the container images for each.
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
 2. **[Quick Start](/getting-started/quick-start)** — a working training run in under an hour.
 3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
-4. **[Training backend](/user-guide/usage)** — Megatron-LM, parallelism, checkpoints, and hooks.
+4. **[Training backends](/user-guide/training-backend)** — Megatron-LM and FSDP: parallelism,
+   checkpoints, and hooks.
 5. **[Training script walkthrough](/user-guide/training-script-walkthrough)** — every
    argument group in a launch script, annotated.
 

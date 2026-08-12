@@ -477,4 +477,4 @@ training, see [INT4 QAT](/advanced/int4-qat).
   reference.
 - [Server Arguments](/user-guide/cli-reference) — the complete CLI surface.
 - [Customization](/user-guide/customization) — the twenty-plus Python extension points.
-- [Training Backends](/user-guide/usage) — Megatron vs FSDP and each one's plumbing.
+- [Training Backends](/user-guide/training-backend) — Megatron vs FSDP and each one's plumbing.

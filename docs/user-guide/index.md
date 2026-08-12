@@ -7,7 +7,7 @@ description: Concepts, launch script walkthrough, customization hooks, and a com
 | [Core Concepts](/user-guide/concepts) | The four objects in the training loop and the four-knob invariant. |
 | [Argument Groups](/user-guide/argument-groups) | Where `MODEL_ARGS`, `PERF_ARGS`, `GRPO_ARGS`, and the other launch-script arrays belong. |
 | [Fully Async RL](/user-guide/fully-async) | Continuous generation decoupled from training: the schedule, the data buffer, async eval, and the metrics to watch. |
-| [Training Backend](/user-guide/usage) | Megatron-LM as the training backend — parallelism, checkpoints, and hooks. |
+| [Training Backends](/user-guide/training-backend) | Megatron-LM and FSDP: what each one owns, how to choose, parallelism, checkpoints, and hooks. |
 | [Training Script Walkthrough](/user-guide/training-script-walkthrough) | The eight `XXX_ARGS` arrays in a launch script, plus the execution modes (sync/async, colocation, dynamic sampling, partial rollout, BF16+FP8). |
 | [Monitoring & Logging](/user-guide/monitoring) | wandb, structured logs, per-source breakdowns, profiling, router metrics. |
 | [Customization](/user-guide/customization) | The 21 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
