@@ -3,11 +3,11 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     train_backend: Literal["fsdp", "megatron"] = "fsdp"
     use_ref: bool = False
     colocate: bool = True
@@ -15,7 +15,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     num_gpus_per_node: int | None = None
     hardware: Literal["auto", "H100", "GB300"] = "auto"
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     multi_eval: bool = False
     true_on_policy: bool = False
     dynamic_sampling: bool = False
@@ -27,8 +27,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_backend == "megatron":
             self.megatron_model_type = {
                 "Qwen3-4B": "qwen3-4B",
@@ -38,6 +38,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download Qwen/{args.model_name} " f"--local-dir {args.model_dir}/{args.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -56,6 +57,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
 
     ckpt_args = (
@@ -121,7 +123,7 @@ eval:
       rm_type: ifbench
       n_samples_per_eval_prompt: 1
 """.strip()
-            eval_args += f"--eval-config {U.encode_pseudo_file(eval_config_text)} "
+            eval_args += f"--eval-config {command_utils.encode_pseudo_file(eval_config_text)} "
         else:
             eval_args += (
                 f"--eval-prompt-data aime {args.data_dir}/aime-2024/aime-2024.jsonl "
@@ -265,7 +267,6 @@ eval:
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type if args.train_backend == "megatron" else None,
         extra_env_vars=extra_env_vars,
@@ -273,7 +274,7 @@ eval:
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     """Main entry point for unified MCORE/FSDP training script.
 

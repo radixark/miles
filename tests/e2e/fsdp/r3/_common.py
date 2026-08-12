@@ -14,7 +14,7 @@ cursor, since HF's GradientCheckpointingLayer re-runs each layer's forward durin
 import os
 from dataclasses import dataclass
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
@@ -26,12 +26,14 @@ class CaseConfig:
 
 
 def prepare(case: CaseConfig) -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download {case.hf_repo} --local-dir /root/models/{case.model_name}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
 
 def execute(case: CaseConfig, wandb_file: str) -> None:
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{case.model_name} "
 
     rollout_args = (
@@ -103,7 +105,7 @@ def execute(case: CaseConfig, wandb_file: str) -> None:
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
-        f"{U.get_default_wandb_args(wandb_file)} "
+        f"{command_utils.get_default_wandb_args(wandb_file)} "
     )
 
     U.execute_train(

@@ -64,7 +64,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -72,9 +72,9 @@ FULL_MODEL_NAME = "NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16"
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "nvidia"
     model_name: str = FULL_MODEL_NAME
     megatron_model_type: str = "nemotron-3-ultra-550b-a55b"
@@ -96,8 +96,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
-        self.hardware = U.resolve_hardware(self)
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        self.hardware = command_utils.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or command_utils.NUM_GPUS_OF_HARDWARE[self.hardware]
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.megatron_model_type = f"nemotron-3-ultra-550b-a55b-{m.group(1)}layer"
         elif self.model_name != FULL_MODEL_NAME:
@@ -146,6 +146,7 @@ def _sglang_args(args: ScriptArgs) -> str:
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download {args.model_org}/{args.model_name} --local-dir {_hf_checkpoint(args)}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -154,6 +155,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     tp, pp, ep, etp = _parallelism(args)
     total_gpus = args.num_nodes * args.num_gpus_per_node
 
@@ -253,7 +255,7 @@ def _execute_train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{_sglang_args(args)} "
@@ -263,7 +265,6 @@ def _execute_train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -276,7 +277,7 @@ def _execute_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Full pipeline: download, train."""
     _prepare_download(args)
@@ -284,14 +285,14 @@ def full_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download model/data (run on head node)."""
     _prepare_download(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training only (assumes data is prepared)."""
     _execute_train(args)
