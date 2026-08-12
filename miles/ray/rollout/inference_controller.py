@@ -58,9 +58,6 @@ class InferenceController:
             context_lock=self.context_lock,
             global_health_checker_activeness=self._health_checker_activeness.get,
         )
-        if self.args.eval_num_gpus > 0:
-            self.eval_fleet = EvalFleet(self.args, srv=self.servers["eval"])
-
         # TODO: may change to InferenceController.init(engine_provider, ...) later
         provider: BaseWorkerProvider = RayWorkerProvider.create(
             pool_ids=compute_engine_pool_ids(self.args)
@@ -72,6 +69,18 @@ class InferenceController:
         await wait_session_server_ready(self.args)
 
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+
+        if self.args.eval_num_gpus > 0:
+            self.eval_fleet = await self._build_eval_fleet(srv=self.servers["eval"])
+
+    @with_lock
+    async def _build_eval_fleet(self, *, srv: RolloutServer) -> EvalFleet:
+        return EvalFleet(
+            self.args,
+            api_clients=list(srv.api_clients),
+            router_host=srv.router_ip,
+            router_port=srv.router_port,
+        )
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 

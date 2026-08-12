@@ -78,6 +78,8 @@ class _RecordingServer:
         self.update_weights = update_weights
         self.model_name = model_name
         self.calls: list[tuple] = []
+        self.router_ip: str = "10.0.0.9"
+        self.router_port: int = 31000
         self.api_clients: list = []
         self.engine_gpu_counts: list[int] = []
         self.engine_gpu_offsets: list[int] = []
@@ -140,9 +142,11 @@ class _TickingCell:
 
 
 class _RecordingEvalFleet:
-    def __init__(self, args: Namespace, *, srv):
+    def __init__(self, args: Namespace, *, api_clients: list, router_host: str, router_port: int) -> None:
         self.args = args
-        self.srv = srv
+        self.api_clients = api_clients
+        self.router_host = router_host
+        self.router_port = router_port
 
 
 def _make_controller(servers: dict) -> InferenceController:
@@ -738,9 +742,11 @@ class TestInitLifecycle:
 
     @pytest.mark.asyncio
     async def test_init_creates_the_eval_fleet_from_the_eval_server(self, monkeypatch: pytest.MonkeyPatch):
-        """The eval fleet drives the dedicated eval engines, so it must be handed that server and no other."""
+        """The eval fleet drives the dedicated eval engines, so it must be handed that server's clients and no other."""
         monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
         default, eval_srv = _RecordingServer(model_name="default"), _RecordingServer(model_name="eval")
+        eval_srv.api_clients = ["eval-client"]
+        eval_srv.router_ip, eval_srv.router_port = "10.0.0.2", 31000
         _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": default, "eval": eval_srv})
         controller = InferenceController(make_args(eval_num_gpus=2))
 
@@ -748,7 +754,8 @@ class TestInitLifecycle:
         await controller.dispose()
 
         assert isinstance(controller.eval_fleet, _RecordingEvalFleet)
-        assert controller.eval_fleet.srv is eval_srv
+        assert controller.eval_fleet.api_clients == ["eval-client"]
+        assert (controller.eval_fleet.router_host, controller.eval_fleet.router_port) == ("10.0.0.2", 31000)
         assert controller.eval_fleet.args is controller.args
 
     @pytest.mark.asyncio
@@ -820,6 +827,78 @@ class TestInitLifecycle:
         assert controller._watcher_disposers == []
         assert controller._ticker is None
         assert cell.tick_count == ticks_at_dispose
+
+
+class _LateClientServer(_RecordingServer):
+    async def wait_expected_num_cells(self) -> None:
+        await super().wait_expected_num_cells()
+        self.api_clients = ["eval-client-0"]
+
+
+class _LockRecordingServer(_RecordingServer):
+    def __init__(self, *, context_lock: ContextLock, **kwargs: Any) -> None:
+        self._context_lock = context_lock
+        self.lock_held_on_read: list[bool] = []
+        super().__init__(**kwargs)
+        self._api_clients = ["eval-client-0"]
+
+    @property
+    def api_clients(self) -> list:
+        self.lock_held_on_read.append(self._context_lock.held_in_current_context)
+        return self._api_clients
+
+    @api_clients.setter
+    def api_clients(self, value: list) -> None:
+        self._api_clients = value
+
+
+class TestEvalFleetConstruction:
+    async def test_the_eval_fleet_is_built_only_once_the_servers_report_their_cells(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Built before the cells are up, the fleet snapshots an empty client list and every eval point pins nothing."""
+        monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
+        eval_srv = _LateClientServer(model_name="eval")
+        _patch_init(
+            monkeypatch,
+            provider=_FakeWorkerProvider([]),
+            servers={"default": _RecordingServer(model_name="default"), "eval": eval_srv},
+        )
+        controller = InferenceController(make_args(eval_num_gpus=2))
+
+        await controller.init()
+        await controller.dispose()
+
+        assert eval_srv.waited_expected_num_cells == 1
+        assert controller.eval_fleet.api_clients == ["eval-client-0"]
+
+    async def test_the_eval_server_clients_are_read_under_the_controller_context_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """RolloutServer.api_clients is lock-guarded, so an unlocked read trips the lock discipline in production."""
+        monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
+        controller = InferenceController(make_args(eval_num_gpus=2))
+        eval_srv = _LockRecordingServer(context_lock=controller.context_lock, model_name="eval")
+        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"eval": eval_srv})
+
+        await controller.init()
+        await controller.dispose()
+
+        assert eval_srv.lock_held_on_read == [True]
+
+    async def test_the_eval_fleet_gets_a_copy_of_the_server_client_list(self, monkeypatch: pytest.MonkeyPatch):
+        """Sharing the list would let a later cell change rewrite the snapshot the fleet already pinned against."""
+        monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
+        eval_srv = _RecordingServer(model_name="eval")
+        eval_srv.api_clients = ["eval-client-0"]
+        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"eval": eval_srv})
+        controller = InferenceController(make_args(eval_num_gpus=2))
+
+        await controller.init()
+        await controller.dispose()
+        eval_srv.api_clients.append("late-client")
+
+        assert controller.eval_fleet.api_clients == ["eval-client-0"]
 
 
 async def _raise_async(cell: ServerCell) -> None:
