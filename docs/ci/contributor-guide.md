@@ -1,10 +1,7 @@
 ---
 title: CI Contributor Guide
-description: For community contributors — how to add a CI test and confirm it runs, how to tell an infra failure from your own, and how to report a machine issue or a flaky test.
+description: For community contributors — add a CI test and confirm it runs, tell an infra failure from your own, and report a machine issue or a flaky test.
 ---
-
-# CI Contributor Guide
-
 This guide is for contributors landing small features and fixes. It answers three things: how to add a test to CI and be sure it actually runs, how to read a red check and decide whether it's your change or the infrastructure, and how to report a machine issue or a flaky test. You never edit the CI workflow YAML to add a test — read on.
 
 ## Add a test to CI

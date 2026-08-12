@@ -8,7 +8,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
 
-register_cuda_ci(est_time=120, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_cuda_ci(est_time=190, suite="stage-c-4-gpu-h200", labels=["sglang"])
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B"
 DEFAULT_MODEL_PATH = "/root/models/Qwen3-0.6B"

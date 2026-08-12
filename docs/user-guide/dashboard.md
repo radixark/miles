@@ -1,25 +1,290 @@
 ---
 title: Miles Dashboard
-description: Design and usage of the built-in dashboard for training dynamics and compute efficiency.
+description: A self-hosted web UI for a run's training dynamics, compute efficiency, and per-token trajectories.
 ---
 
-The miles dashboard is a self-hosted web UI for inspecting a run's training dynamics and
-compute efficiency. It answers two classes of question that stdout and wandb do not cover
-well: what every GPU was doing during a given step, and what an individual trajectory
-actually contained at the token level.
+The miles dashboard is a self-hosted web UI for inspecting a run. It answers two kinds of
+question that stdout and wandb do not cover well: what every GPU was doing during a given step,
+and what an individual trajectory actually contained at the token level.
 
-It reads files from disk and never connects to the training job, so it can be pointed at a
-finished run, or tailed against a live one from a login node.
+It reads files from disk and never connects to the training job. You can point it at a finished
+run, or tail a live one from a login node. Nothing you do in the UI can affect training.
 
-## Design
+| If you are asking | Open |
+|---|---|
+| Is the run learning? Is reward moving, are responses growing? | [Metrics](#metrics) |
+| Why is a step slow? Which rank is late, are the engines starved? | [Compute Utilization](#compute-utilization) |
+| What did the model do on this batch? | [Rollouts](#rollouts) |
+| Why did this one sample fail? What did it generate, token by token? | [Sample view](#sample-view) |
 
-The dashboard draws on two independent data sources. Either one alone produces a usable
-view, which matters because they are enabled by different flags.
+## What it shows
+
+The screenshots below all come from the same run: GLM-5.2 744B on terminal-bench-2, 100 steps
+over 11 hours, 32 training GPUs and 32 engine GPUs in a disaggregated (non-colocated) layout,
+eight samples per prompt. Using one run throughout means the panels line up across figures.
+
+### Metrics
+
+![The Metrics view, rollout category](/assets/images/dashboard/metrics-rollout.png)
+
+This is the tab that tells you whether the run is learning. It shows every logged metric, with a
+wandb-style category sidebar on the left.
+
+Categories are just key prefixes. `rollout/`, `perf/`, `train/` and `eval/` appear when the run
+logs them, and are absent when it does not. The run above has no `eval` category because it ran
+no evaluations. The filter box narrows the list within a category, and every chart uses the same
+x-axis, `rollout/step`.
+
+In the screenshot, `rollout/raw_reward` climbs from about 0.3 to about 0.9 over the hundred
+steps. That is the headline for this run. `rollout/prefix_cache_hit_rate` drifting down from 0.96
+to 0.94 over the same window is the kind of second-order detail this view is good at putting
+right next to it.
+
+Metric keys from `metrics.jsonl` are served as recorded. Per-step aggregates computed from the
+dumps are namespaced under `dump/`, which is what lets this view work for runs where the
+collector was never enabled: `dump/reward_mean`, `dump/reward_std`,
+`dump/response_length_mean`, `dump/truncated_frac`, `dump/zero_std_group_frac`,
+`dump/mean_abs_lp_diff`, `dump/mean_entropy` and `dump/mixed_version_frac`.
+
+Two of those are worth calling out, because nothing else reports them per step.
+`dump/zero_std_group_frac` is the fraction of GRPO groups whose reward standard deviation
+collapsed to zero. If that fraction climbs, the run is degenerating.
+`dump/mixed_version_frac` is the fraction of samples that spanned more than one weight version,
+which is the staleness signal that matters in async runs.
+
+![The Metrics view, sglang category](/assets/images/dashboard/metrics-sglang.png)
+
+The `sglang` category behaves differently from the other three, in ways that will confuse you if
+you do not expect them.
+
+1. Its data comes from the engine scrape, not from `metrics.jsonl`.
+2. Its x-axis is wall clock, not `rollout/step`, because engines are sampled on their own
+   schedule rather than once per training step.
+3. It adds an Engines legend with one checkbox per engine. Unchecking an engine hides it
+   everywhere on the page, including from the y-axis scale. That is how you stop one outlier
+   engine from flattening every other line.
+
+The four coloured series above are this run's four inference engines. The PD-disaggregation
+charts (`sglang_num_decode_prealloc_queue_reqs` and the others like it) are flat zero because
+this run did not use prefill/decode disaggregation. They are drawn empty rather than hidden, so
+you can tell the difference between "no data" and "zero".
+
+### Compute Utilization
+
+![The Compute Utilization view](/assets/images/dashboard/compute-utilization.png)
+
+This is the most detailed view, and the one to open when a run is slower than it should be. It
+has three parts, top to bottom.
+
+**Fleet overview.** A single summary of all lanes: phase composition on top, and a utilization
+band (p10 to p90, with median and minimum) below. Read this first. Its shape does not change with
+cluster size, so it works the same on 8 GPUs as on 800.
+
+**Wait ratio per step.** One tile per training step, shaded by how much of that step went to
+`train_wait`. In the screenshot the first few steps are darker than the rest, because early steps
+wait on rollout while the pipeline fills. Scanning this strip is the fastest way to find the step
+worth zooming into.
+
+**Per-lane detail.** Below 64 GPUs you get one lane per GPU. Each lane stacks four things:
+
+* **Phase band.** Which phase that rank was in at that moment. The band is per rank rather than
+  per run, so a straggler shows up as one lane whose `actor_train` starts late, and a rank stuck
+  in `train_wait` while its peers compute is visible directly.
+* **NVML utilization and memory**, sampled once per second by default. This lets you tell a phase
+  that holds the GPU without using it apart from one that is genuinely busy.
+* **An sglang overlay**, on the same time axis as the phases. You can switch it between
+  `sglang_num_running_reqs`, `sglang_gen_throughput`, `sglang_token_usage` and
+  `sglang_cache_hit_rate`. This is what connects a rollout that ran long to what the engines were
+  doing at the time, such as concurrency collapsing or the KV cache filling up.
+* **A request lifecycle strip**, coloured by whether each request was queued, generating, or
+  waiting on a tool call. This separates slow generation from time spent outside the model.
+
+The screenshot is a disaggregated run, so the two roles look different at a glance. Lanes `g0`
+through `g24` are training GPUs: blue `actor_train` bands, and a sawtooth utilization trace that
+drops between steps. Lanes `g32` through `g56` are engine GPUs: orange `rollout` markers, the
+engine overlay on top, and a much noisier utilization trace. The green band at the right edge of
+every training lane is `save_model`, the checkpoint written at the end of the run. On a colocated
+run both patterns appear on the same lanes instead.
+
+Above 64 GPUs, one lane per GPU stops being readable, so the view shows only the fleet overview.
+You can still bring up a specific subset with the lane selection grammar (`g:`, `rank:`, `node:`,
+`every:`) or with the two quick picks, `pick: lowest util` and `pick: slowest update_weights`.
+The eight lanes in the screenshot are the evenly spaced default the view picks on its own.
+
+`gpu_processes` samples also record which PIDs hold memory on each GPU. That is how a colocated
+run shows the trainer and the engine sharing a device.
+
+This view also carries a configuration advisory panel. It compares what the engines actually did
+against what the run was configured to allow:
+
+| Trigger | Suggestion |
+|---|---|
+| Peak `sglang_num_running_reqs` stayed below 30% of `--sglang-max-running-requests` | Lower it. Under `--colocate` this also frees memory for training |
+| Mean `sglang_cache_hit_rate` below 10%, on non-colocated runs only | Raise `--sglang-mem-fraction-static` for a bigger KV cache |
+| Mean `sglang_token_usage` above 95% | KV cache is the throughput bottleneck. Add GPUs or use a smaller rollout batch |
+
+These are heuristics, not guarantees, and the thresholds will be tuned as real runs surface false
+positives and negatives. The panel is empty when no sglang series was scraped, since it has
+nothing to compare against.
+
+### Rollouts
+
+![The Rollouts view for one training step](/assets/images/dashboard/rollout-step.png)
+
+This view shows one training step at a time. You reach a step by number and walk between steps
+with Prev and Next.
+
+The header tiles summarise the batch: sample count, reward mean, truncated fraction, how many
+GRPO groups collapsed to zero reward standard deviation, mixed-version fraction, average
+staleness, and, when train dumps are present, mean absolute log-prob difference and mean entropy.
+A tile showing `—` means that column is absent from this run's dumps. It does not mean zero.
+
+The step above has 64 samples, a reward mean of 0.844, nothing truncated, and 6 of 8 groups with
+zero reward std.
+
+**Batch anatomy** is the top panel, and on an agentic run it is the one to read first. Each row
+is one sample, drawn on wall-clock time, in three colours:
+
+* orange while the model is generating. The shade changes with each weight version, so you can
+  see staleness as a colour change partway through a row.
+* green while the sample is blocked on a tool call.
+* pale grey while it is queued or retrying.
+
+A vertical marker shows when the trainer consumed the batch. You can sort by submit order,
+staleness, wall span, reward or turns. Sorting by wall span moves the long tail to one edge,
+which is usually what you opened the view to find. In the screenshot the green tool-wait segments
+dominate. That is the expected shape for a terminal-agent task, where most of the wall clock goes
+to running shell commands rather than to generating tokens.
+
+Below that is a scatter of reward against response length, with truncated samples in red, and
+then the per-sample table: sample and group index, raw and shaped reward, response length,
+truncation flag, turn and tool-call counts, and the per-token statistics when train dumps exist.
+Click any row to open the sample view. The reward axis in the screenshot only has values at 0 and
+1, because this task harness scores pass or fail with nothing in between.
+
+![The Rollouts view, Groups tab](/assets/images/dashboard/rollout-groups.png)
+
+The Groups tab re-aggregates the same step by GRPO group. Rows whose reward standard deviation
+collapsed to zero are drawn in red, because those groups contribute no gradient signal at all:
+every sample in the group got the same reward, so the advantages cancel out.
+
+Six of the eight groups here are red. Five are groups where every sample succeeded, one is a
+group where every sample failed. This is the detail behind the `6/8 zero-std groups` tile above.
+If that fraction climbs over a run, the effective batch size is shrinking.
+
+### Sample view
+
+![The sample view, conversation tab](/assets/images/dashboard/sample-conversation.png)
+
+This view shows one sample. You reach it by clicking a row in the step table. Prev and Next walk
+the other seven samples of the same GRPO group, which is the useful comparison: those samples
+share a prompt and differ only in sampling.
+
+The strip at the top uses the same three colours as the batch anatomy, for this one sample.
+Below it are two tabs.
+
+**Conversation** renders the turns as they were exchanged, with the status and reward shown as
+chips. The screenshot shows the first two exchanges of a terminal-agent episode: the system
+prompt, the task, the model's reasoning and its first shell command, the shell's reply, and the
+model's next command. Reasoning blocks are styled apart from the message body, so you can see at
+a glance whether the model is reasoning at length but rarely acting.
+
+**Tokens** shows the same sample at token granularity, with per-token log-probs, entropy, and the
+difference between rollout and train log-probs where the train dump supplies them. It loads one
+window at a time rather than the whole sequence, so a 36k-token episode like this one opens
+without reading the entire `.pt`.
+
+Two things here are easy to misread:
+
+* Training statistics only exist for positions the loss covered. Prompt positions have text but
+  no statistics. That is expected, not missing data.
+* The difference between rollout and train log-probs is the true-on-policy check. It should be
+  near zero. A band that is consistently non-zero is worth chasing.
+
+## Turning it on
+
+Add both flags to the training command. `--use-miles-dashboard` requires `--dump-details`,
+because the telemetry is written under that directory and the trajectory views read the dumps.
+
+```bash
+python3 train.py ... \
+    --dump-details /path/to/dump \
+    --use-miles-dashboard \
+    --use-rollout-entropy
+```
+
+`--use-rollout-entropy` is optional. Without it the run still records everything else, and the
+launcher warns that per-token entropy will be missing from the token view.
+
+Cadence and scope can be tuned, though the defaults suit most runs:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dashboard-flush-interval` | `5.0` | Collector disk flush cadence, in seconds |
+| `--dashboard-gpu-sample-interval` | `1.0` | NVML sampling cadence, in seconds |
+| `--dashboard-sglang-scrape-interval` | `2.0` | Engine scrape cadence, in seconds |
+| `--dashboard-sglang-scrape-mode` | `auto` | `auto` scrapes `{router}/engine_metrics`, or each engine's `/metrics` under `--use-miles-router`. `router` and `direct` force one or the other |
+| `--dashboard-sglang-metrics` | whitelist | Comma-separated override of the scraped sglang metric whitelist |
+| `--dashboard-forward-prometheus` | off | Also push dashboard gauges to the `--use-prometheus` collector for external Grafana |
+
+A curated subset of the run's arguments is persisted into `meta.json` for the dashboard header:
+the wandb identifiers, the parallelism layout, and the key sglang settings.
+
+## Viewing a run
+
+The three runtime dependencies (`fastapi`, `uvicorn`, `polars`) are already in the training
+image. To view from a machine that does not have them, install those three.
+
+```bash
+python -m miles.dashboard.serve --dump-details /path/to/dump
+```
+
+Then open `http://localhost:7788`. Any machine that can see the directory will do, whether that
+is a login node over NFS or the training node itself. For a remote run, forward the port over
+SSH:
+
+```bash
+ssh -L 7788:localhost:7788 <training-or-login-node>
+```
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dump-details` | required | The run's `--dump-details` directory |
+| `--follow` | off | Tail the telemetry streams of a still-running job |
+| `--port` | `7788` | Listen port |
+| `--host` | `0.0.0.0` | Listen address |
+| `--tensor-lru` | `2` | Rollout steps kept resident in tensor memory |
+| `--cache-dir` | `<dump>/dashboard/cache` | Summary cache directory |
+| `--use-utilization-overview` | auto | Always show the fleet overview instead of the per-rank carpet. Turns on automatically above 64 lanes |
+| `--demo` | off | Serve generated demo data, which needs a repository checkout |
+
+Two notes if you are opening someone else's run. Leave `--follow` off for a finished run: the
+static read is faster, and the follow loop has nothing to tail. And the server writes parquet
+summary caches under `--cache-dir`, which defaults to a path inside the dump directory. When you
+do not own the dump, point `--cache-dir` somewhere you can write:
+
+```bash
+python -m miles.dashboard.serve \
+    --dump-details /shared/someone-elses-run/dump_details \
+    --cache-dir ~/dash-cache --port 7803
+```
+
+## How it works
+
+The dashboard draws on two independent data sources. Either one alone produces a usable view,
+which matters because they are enabled by different flags.
+
+```
+producers (Timer sinks, rollout hooks, NVML samplers, sglang scraper)
+    -> DashboardCollector (named actor on the driver node)   -> JSONL streams
+dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl  -> written by training
+    -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
+```
 
 ### Live telemetry
 
-`--use-miles-dashboard` starts a `DashboardCollector` as a named Ray actor pinned to the
-driver node. Four kinds of producer push records to it:
+`--use-miles-dashboard` starts a `DashboardCollector` as a named Ray actor pinned to the driver
+node. Four kinds of producer push records to it:
 
 | Producer | Stream | Fields |
 |---|---|---|
@@ -32,275 +297,81 @@ driver node. Four kinds of producer push records to it:
 | Rollout manager hooks | `data_buffer` | `ts`, `length` (queued sample count) |
 | The tracking backend | `metrics` | `ts`, `step_key`, `step`, and the metric dictionary |
 
-The collector buffers these and appends them to JSONL streams under
-`{dump-details}/dashboard/` on a flush cadence. It can also forward a latest-value
-snapshot to the Prometheus collector for external Grafana.
+The collector buffers these and appends them to JSONL streams under `{dump-details}/dashboard/`
+on a flush cadence. It can also forward a latest-value snapshot to the Prometheus collector for
+external Grafana.
 
-The phase names the timeline knows how to colour are `initialize`, `rollout`,
-`eval_rollout`, `actor_train`, `train_log_probs`, `log_probs`, `ref_log_probs`,
-`data_preprocess`, `train_wait`, `update_weights`, `ref_model_update`, `save_model`,
-`sleep` and `wake_up`. Anything else the `Timer` emits still appears, in a neutral colour.
+The phase names the timeline knows how to colour are `initialize`, `rollout`, `eval_rollout`,
+`actor_train`, `train_log_probs`, `log_probs`, `ref_log_probs`, `data_preprocess`, `train_wait`,
+`update_weights`, `ref_model_update`, `save_model`, `sleep` and `wake_up`. Anything else the
+`Timer` emits still appears, in a neutral colour.
 
-The scraped sglang whitelist covers queue and throughput gauges
-(`sglang_num_running_reqs`, `sglang_num_queue_reqs`, `sglang_gen_throughput`,
-`sglang_token_usage`, `sglang_cache_hit_rate`), cumulative token and request counters,
-the latency histograms (time to first token, inter token latency, time per output token,
-end to end request latency), and the PD disaggregation queue and KV transfer families,
-which are simply absent when PD is off. Override it with
-`--dashboard-sglang-metrics` when you need something outside that set.
+The scraped sglang whitelist covers queue and throughput gauges (`sglang_num_running_reqs`,
+`sglang_num_queue_reqs`, `sglang_gen_throughput`, `sglang_token_usage`,
+`sglang_cache_hit_rate`), cumulative token and request counters, the latency histograms (time to
+first token, inter-token latency, time per output token, end-to-end request latency), and the PD
+disaggregation queue and KV transfer families, which are simply absent when PD is off. Override
+it with `--dashboard-sglang-metrics` when you need something outside that set.
 
-Three properties of this path are worth knowing because they determine what happens when
-something goes wrong:
+Three properties of this path decide what happens when something goes wrong:
 
-* **Producers are fire and forget.** Nothing on the training path waits on the collector.
-  A collector that is slow, wedged, or dead does not affect training. Overhead on the
-  training path is a few milliseconds per step.
-* **The collector class is Ray free.** `backend.py` wraps it in the named actor and spawns
-  the per-node samplers, so the collector itself only ever sees plain method calls. Every
-  behavior in it is unit testable without a cluster.
-* **Write failures are loud.** If the disk write fails, for example on a full disk or an
-  NFS hiccup, the error is logged on every flush attempt rather than silently dropping
-  telemetry.
+* **Producers are fire and forget.** Nothing on the training path waits on the collector. A
+  collector that is slow, wedged or dead does not affect training. Overhead on the training path
+  is a few milliseconds per step.
+* **The collector class is Ray-free.** `backend.py` wraps it in the named actor and spawns the
+  per-node samplers, so the collector itself only ever sees plain method calls. Every behavior in
+  it is unit-testable without a cluster.
+* **Write failures are loud.** If the disk write fails, on a full disk or an NFS hiccup, the
+  error is logged on every flush attempt rather than silently dropping telemetry.
 
 ### Training artifacts
 
-`--dump-details` writes the per-step artifacts the trajectory views read, independently of
-whether the collector is enabled:
+`--dump-details` writes the per-step artifacts the trajectory views read, whether or not the
+collector is enabled:
 
 | Path | Contents |
 |---|---|
 | `rollout_data/{rollout_id}.pt` | The full sample batch of one rollout step |
 | `train_data/{rollout_id}_{rank}.pt` | That rank's data-parallel shard, with per-token tensors and a `sample_indices` map back to `Sample.index` |
 | `dashboard_columns/` | A per-token column mirror, so the token view never has to load a whole `.pt` |
-| `trajectory/` | A raw conversation sidecar, written for session and multi turn runs |
+| `trajectory/` | A raw conversation sidecar, written for session and multi-turn runs |
 
-`DumpReader.load_joined()` reunites the rollout and train sides: every rollout sample plus,
-where a train dump exists, its per-token training row, deduplicated across tensor-parallel
-duplicate rank files.
+`DumpReader.load_joined()` reunites the rollout and train sides: every rollout sample plus, where
+a train dump exists, its per-token training row, deduplicated across tensor-parallel duplicate
+rank files.
 
 ### Read side
 
-`serve.py` loads a `MetricStore` over the JSONL streams and a `DumpReader` over the dumps,
-then wires both into a FastAPI app that serves a static single page application. The server
-is strictly read only over files on disk. Live viewing is the same application with a
-follow loop tailing the store every two seconds.
-
-```
-producers (Timer sinks, rollout hooks, NVML samplers, sglang scraper)
-    -> DashboardCollector (named actor on the driver node)   -> JSONL streams
-dump .pt + dashboard_columns/*.parquet + trajectory/*.jsonl  -> written by training
-    -> serve.py: MetricStore + DumpReader -> FastAPI -> static SPA
-```
+`serve.py` loads a `MetricStore` over the JSONL streams and a `DumpReader` over the dumps, then
+wires both into a FastAPI app that serves a static single-page application. The server is
+strictly read-only over files on disk. Live viewing is the same application with a follow loop
+tailing the store every two seconds.
 
 ### Why the storage layout looks the way it does
 
-Every stream is append only. That single constraint is what makes `follow()` a plain byte
-offset tail and makes concurrent reads from request handlers safe without locking: a reader
-may miss the newest records, but it can never see a torn one.
+Every stream is append-only. That single constraint is what makes `follow()` a plain byte-offset
+tail, and what makes concurrent reads from request handlers safe without locking: a reader may
+miss the newest records, but it can never see a torn one.
 
-The two high rate streams, `gpu_util` and `engine_series`, are held in memory as columnar
-polars frames rather than lists of dataclasses. This costs roughly 16 bytes per row instead
-of roughly 600, and allows vectorized parsing and numpy queries. Those two streams plus
-`phases` are written as hourly partition files, `{stream}/{YYYYMMDD_HH}.jsonl`, and parsed
-lazily, so opening a long run does not require reading its entire history.
+The two high-rate streams, `gpu_util` and `engine_series`, are held in memory as columnar polars
+frames rather than as lists of dataclasses. That costs about 16 bytes per row instead of about
+600, and allows vectorized parsing and numpy queries. Those two streams plus `phases` are written
+as hourly partition files, `{stream}/{YYYYMMDD_HH}.jsonl`, and parsed lazily, so opening a long
+run does not require reading its entire history.
 
 ### Reading a run that is still being written
 
-Two layers keep a live run from looking like a corrupt one. `DumpReader.rollout_ids()`
-hides dump files younger than ten seconds unless the train companion already exists, and a
-`torch.load` failure on a fresh file raises `DumpStillWriting`, which the server maps to
-HTTP 503 so the client retries. Other failures map to conventional statuses: a missing file
-or key returns 404, and a bad argument returns 400.
-
-## Collecting telemetry
-
-Add both flags to the training command. `--use-miles-dashboard` asserts that
-`--dump-details` is set, because the telemetry lives under that directory and the
-trajectory views read the dumps.
-
-```bash
-python3 train.py ... \
-    --dump-details /path/to/dump \
-    --use-miles-dashboard \
-    --use-rollout-entropy
-```
-
-`--use-rollout-entropy` is optional. Without it the run still records everything else, and
-the launcher logs a warning that per token entropy will be missing from the token view.
-
-Cadence and scope can be tuned, though the defaults are appropriate for most runs:
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `--dashboard-flush-interval` | `5.0` | Collector disk flush cadence, in seconds |
-| `--dashboard-gpu-sample-interval` | `1.0` | NVML sampling cadence, in seconds |
-| `--dashboard-sglang-scrape-interval` | `2.0` | Engine scrape cadence, in seconds |
-| `--dashboard-sglang-scrape-mode` | `auto` | `auto` scrapes `{router}/engine_metrics`, or each engine's `/metrics` under `--use-miles-router`. `router` and `direct` force one or the other |
-| `--dashboard-sglang-metrics` | whitelist | Comma separated override of the scraped sglang metric whitelist |
-| `--dashboard-forward-prometheus` | off | Also push dashboard gauges to the `--use-prometheus` collector for external Grafana |
-
-A curated subset of the run's arguments, including the wandb identifiers, the parallelism
-layout, and the key sglang settings, is persisted into `meta.json` for the dashboard header.
-
-## Viewing
-
-The three runtime dependencies (`fastapi`, `uvicorn`, `polars`) are already present in the
-training image. To view from a machine that does not have them, install those three.
-
-```bash
-python -m miles.dashboard.serve --dump-details /path/to/dump
-```
-
-Then open `http://localhost:7788`. Any machine that can see the directory will do, whether
-that is a login node over NFS or the training node itself. For a remote run, forward the
-port over SSH:
-
-```bash
-ssh -L 7788:localhost:7788 <training-or-login-node>
-```
-
-| Flag | Default | Purpose |
-|---|---|---|
-| `--dump-details` | required | The run's `--dump-details` directory |
-| `--follow` | off | Tail the telemetry streams of a still running job |
-| `--port` | `7788` | Listen port |
-| `--host` | `0.0.0.0` | Listen address |
-| `--tensor-lru` | `2` | Rollout steps kept resident in tensor memory |
-| `--cache-dir` | `<dump>/dashboard/cache` | Summary cache directory |
-| `--use-utilization-overview` | auto | Always show the fleet overview instead of the per rank carpet. Enabled automatically above 64 lanes |
-| `--demo` | off | Serve generated demo data, which needs a repository checkout |
-
-## Views
-
-### Metrics
-
-A wandb style category sidebar over every logged metric, plus an `sglang` category holding
-the scraped engine series when one is present. Hover for values and drag to zoom.
-
-Metric keys from `metrics.jsonl` are served as recorded. Per step aggregates derived from the
-dumps are namespaced under `dump/`, which is what allows this view to work for runs where the
-collector was never enabled: `dump/reward_mean`, `dump/reward_std`,
-`dump/response_length_mean`, `dump/truncated_frac`, `dump/zero_std_group_frac`,
-`dump/mean_abs_lp_diff`, `dump/mean_entropy` and `dump/mixed_version_frac`.
-
-Two of those are worth calling out because nothing else reports them per step:
-`dump/zero_std_group_frac` is the fraction of GRPO groups whose reward standard deviation
-collapsed to zero, so a degenerating run is visible as that fraction climbing, and
-`dump/mixed_version_frac` is the fraction of samples that spanned more than one weight
-version, which is the staleness signal that matters in async runs.
-
-### Compute Utilization
-
-Below 64 GPUs, one lane per GPU, and each lane stacks four things:
-
-* **Phase band.** Which of the phases above that rank was in, at that moment. Because the
-  band is per rank rather than per run, a straggler shows up as one lane whose `actor_train`
-  starts late, and a rank stuck in `train_wait` while its peers compute is visible directly.
-* **NVML utilization and memory**, sampled once per second by default, so a phase that holds
-  the GPU without using it is distinguishable from one that is genuinely busy.
-* **An sglang overlay**, selectable between `sglang_num_running_reqs`,
-  `sglang_gen_throughput`, `sglang_token_usage` and `sglang_cache_hit_rate`, drawn against
-  the same time axis as the phases. This is what connects a rollout that ran long to the
-  engine state at the time, for example concurrency collapsing or KV cache saturating.
-* **A request lifecycle strip**, coloured by whether each request was queued, generating, or
-  waiting on a tool call, which separates slow generation from time spent outside the model.
-
-Typical questions it answers: which rank is late into a weight update, whether a phase
-boundary lines up with a utilization dip, whether rollout and training actually overlap in an
-async run, and how much of a step went to `train_wait`.
-
-`gpu_processes` samples additionally record which PIDs hold memory on each GPU, which is how
-a colocated run shows the trainer and the engine sharing a device.
-
-Above 64 GPUs a per lane rendering stops being readable, so the view switches to a scale
-invariant fleet overview showing phase composition and a utilization band. Lanes are
-selected with a small grammar (`g:`, `rank:`, `node:`, `every:`) alongside outlier quick
-picks, so a specific subset can still be brought up on a large cluster.
-
-This view also carries a configuration advisory panel, which compares what the engines
-actually did against what the run was configured to allow:
-
-| Trigger | Suggestion |
-|---|---|
-| Peak `sglang_num_running_reqs` stayed below 30% of `--sglang-max-running-requests` | Lower it, and under `--colocate` note that this frees memory for training |
-| Mean `sglang_cache_hit_rate` below 10%, non colocated runs only | Raise `--sglang-mem-fraction-static` for a bigger KV cache |
-| Mean `sglang_token_usage` above 95% | Warns that KV cache is the throughput bottleneck; more GPUs or a smaller rollout batch |
-
-These are heuristics rather than a guarantee, and the thresholds are expected to be tuned as
-real runs surface false positives and negatives. The panel is empty when no sglang series was
-scraped, since it has nothing to compare against.
-
-### Rollouts
-
-One row per sample for the selected step, sortable and plottable as a scatter. The columns
-come from joining the rollout dump with the training side dump, so both what was generated
-and what the trainer computed from it are on the same row:
-
-| Group | Columns |
-|---|---|
-| Identity and shape | `sample_index`, `group_index`, `status`, `response_length`, `total_length`, `truncated`, `remove_sample` |
-| Reward | `reward`, `raw_reward`, `normalized_reward` |
-| Advantage and return | `adv_mean`, `adv_std`, `return_mean` |
-| Train versus rollout agreement | `mean_abs_lp_diff`, `max_abs_lp_diff`, `mean_imp_ratio` |
-| Entropy | `mean_entropy`, `max_entropy`, `ref_entropy_mean` |
-| Staleness | `weight_version`, `weight_version_min`, `mixed_version`, `turns` |
-| Serving efficiency | `prefix_cache_hit_rate`, `spec_accept_rate`, `non_generation_time`, `tool_calls` |
-| Provenance | `dumped_rank` |
-
-A few of these are the reason to open this view at all:
-
-* **`mean_abs_lp_diff` and `mean_imp_ratio` per sample.** The run level
-  `train_rollout_logprob_abs_diff` tells you the average drifted; these tell you whether one
-  pathological sample carried it, and clicking through shows which tokens did.
-* **`mixed_version` and `weight_version_min`.** In an async run a single sample can span more
-  than one weight version. This flags exactly which samples did, rather than reporting a mean
-  staleness that hides it.
-* **`adv_std` per group.** GRPO degenerates when every sample in a group scores the same, and
-  the group view surfaces those zero variance groups directly.
-* **`non_generation_time` and `tool_calls`.** For agentic runs, how much of a trajectory's
-  wall clock was not the model generating.
-
-An eval tab shows the same shape for eval steps.
-
-### Sample view
-
-Selecting a trajectory from the Rollouts view opens it in two tabs.
-
-`conversation` shows role tagged turns including thinking blocks and tool calls, read from
-the trajectory sidecar. This is the view for reading what the model actually produced,
-including the parts a plain text dump would flatten.
-
-`tokens` loads lazily and aligns the decoded tokens with the per token series, so a metric
-can be read against the text that produced it:
-
-| Series | What it is |
-|---|---|
-| `token_ids`, `token_text` | The tokens, decoded one at a time so the text lines up with the series |
-| `rollout_log_probs` | What the engine reported while generating |
-| `train_log_probs` | What the trainer recomputed for the same tokens |
-| `lp_diff` | Their difference, per token |
-| `imp_ratio` | `exp(lp_diff)`, the per token importance ratio |
-| `entropy`, `ref_entropy` | Policy and reference entropy, present when `--use-rollout-entropy` was set |
-| `ref_log_probs` | Reference policy log probabilities |
-| `advantages`, `returns` | What the trainer assigned to each token |
-| `loss_mask` | Which positions contributed to the loss; masked regions are dimmed rather than hidden |
-
-`lp_diff` being a first class series is the point. A run level
-`train_rollout_logprob_abs_diff` tells you the two engines disagreed on average; this shows
-where, so the answer can be specific: the divergence begins at the first tool call boundary,
-or it is one low probability token rather than spread across the response. The same holds for
-`imp_ratio`, where a single outlier token is what actually drove a clipping fraction.
-
-Token ids and text cover the whole requested slice, while the per token series cover only the
-response region, and `response_offset` marks where the response starts within the returned
-slice. Prompt positions therefore have text but no statistics, which is expected.
+Two layers keep a live run from looking like a corrupt one. `DumpReader.rollout_ids()` hides dump
+files younger than ten seconds unless the train companion already exists, and a `torch.load`
+failure on a fresh file raises `DumpStillWriting`, which the server maps to HTTP 503 so the
+client retries. Other failures map to conventional statuses: a missing file or key returns 404,
+and a bad argument returns 400.
 
 ## Runs recorded without the collector
 
-A run that set `--dump-details` but not `--use-miles-dashboard` still gets the training
-dynamics views, because those read the dumps. The timeline is the one view that is absent,
-since it has no phase or GPU telemetry to draw, and the metrics view falls back to the
-`dump/*` aggregates.
+A run that set `--dump-details` but not `--use-miles-dashboard` still gets the training dynamics
+views, because those read the dumps. Compute Utilization is the one view that is missing, since
+it has no phase or GPU telemetry to draw, and Metrics falls back to the `dump/*` aggregates.
 
 ## Development
 
@@ -314,12 +385,12 @@ python -m pytest tests/fast/dashboard/ -q
 MILES_DASHBOARD_REALDATA_DIR=/path/to/real/dump python -m pytest tests/fast/dashboard/ -q
 ```
 
-`--demo` builds its fixture with the dummy generators from the test suite, which are
-deliberately not shipped in the wheel, so it requires a repository checkout.
+`--demo` builds its fixture with the dummy generators from the test suite, which are deliberately
+not shipped in the wheel, so it needs a repository checkout.
 
 The HTTP surface the SPA consumes is available to scripts as well, with the caveat that it
 carries no compatibility guarantee. `/api/meta` describes the run, `/api/metrics` serves the
-catalog and series, `/api/advisory` returns the configuration suggestions, the
-`/api/timeline/*` family covers topology, phases, GPU samples, heatmap, fleet, outliers,
-engine series, and bubbles, and the `/api/rollout/{rollout_id}/*` family covers per step
-summaries, groups, trajectories, and per sample messages and tokens.
+catalog and series, `/api/advisory` returns the configuration suggestions, the `/api/timeline/*`
+family covers topology, phases, GPU samples, heatmap, fleet, outliers, engine series and bubbles,
+and the `/api/rollout/{rollout_id}/*` family covers per-step summaries, groups, trajectories, and
+per-sample messages and tokens.

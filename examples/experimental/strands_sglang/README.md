@@ -36,7 +36,8 @@ hf download Qwen/Qwen3-8B --local-dir /root/models/Qwen/Qwen3-8B
 
 # mcore checkpoint
 cd /root/miles
-source scripts/models/qwen3-8B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-8B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
     --hf-checkpoint /root/models/Qwen/Qwen3-8B \
@@ -49,6 +50,7 @@ Following [Retool](https://arxiv.org/abs/2504.11536), we use `dapo-math-17k` as 
 
 ```python
 from datasets import load_dataset
+
 ds = load_dataset("zhuzilin/dapo-math-17k", split="train")
 ds.to_json("/root/data/dapo-math-17k.jsonl", orient="records", lines=True)
 ```
@@ -57,6 +59,7 @@ and `aime-2024` as eval data:
 
 ```python
 from datasets import load_dataset
+
 ds = load_dataset("zhuzilin/aime-2024", split="train")
 ds.to_json("/root/data/aime-2024.jsonl", orient="records", lines=True)
 ```

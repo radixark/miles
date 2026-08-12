@@ -6,9 +6,9 @@ when touching the adapter:
     pytest examples/experimental/openenv/tests/ -q
 
 Covers the shared-server leg of the agent loop (this module's run_episode):
-its exec form, scoring path, and cleanup. The Daytona-sandbox leg's
-dispatch and sandbox-create machinery live in
-test_openenv_daytona_agent_function.py; the fakes below are shared with it.
+its exec form, scoring path, and cleanup. The sandbox leg's dispatch and
+sandbox-create machinery live in test_openenv_sandbox_common.py; the fakes
+below are shared with it.
 """
 
 import asyncio
@@ -98,7 +98,7 @@ def test_shared_leg_dispatch(monkeypatch):
     (the server resolves the workdir), scoring via the standard `evaluate`
     action — and the trial-dir purge (post_episode) runs, since the shared
     server outlives the episode."""
-    monkeypatch.setattr(oaf, "_load_tbench2", lambda: _CLASSES)
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
 
     async def spying_with_env(env_cls, env_url, body):
         return await body(env_cls())
@@ -132,7 +132,7 @@ def test_old_server_reward_is_not_trusted(monkeypatch):
                 return _FakeResult(reward=1.0, info={"tests_passed": True, "exit_code": 0})
             return await super().step(action)
 
-    monkeypatch.setattr(oaf, "_load_tbench2", lambda: {"env": _OldServerEnv, "action": _CLASSES["action"]})
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: {"env": _OldServerEnv, "action": _CLASSES["action"]})
 
     async def spying_with_env(env_cls, env_url, body):
         return await body(env_cls())

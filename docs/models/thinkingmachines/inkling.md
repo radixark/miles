@@ -3,8 +3,6 @@ title: Inkling
 description: Launch recipe for Inkling (975 B), Thinking Machines' multimodal MoE with short convolution, relative attention, and a shared-expert sink.
 ---
 
-The complete Inkling RL implementation is open at the Miles pull request: [`radixark/miles#1683`](https://github.com/radixark/miles/pull/1683).
-
 ## 1. Model Introduction
 
 [Inkling](https://huggingface.co/thinkingmachines/Inkling) is a mixture-of-experts transformer released by Thinking Machines Lab, with 975 B total parameters and 41 B active, a context window of up to 1 M tokens, and pretraining on 45 trillion tokens of text, images, audio and video. Its architecture introduces short convolution, attention with relative positional embedding, and a novel MoE design with a shared-expert sink. Miles implements Inkling as a native Megatron model: local and global relative attention, the residual ShortConv, the shared-sink router and experts, and the image and audio encoders, and the same backend drives both full-parameter and LoRA RL.
@@ -32,12 +30,12 @@ docker pull radixark/miles:inkling
 
 # Full-parameter GRPO on 16 nodes x 4 GB300, inside the container
 cd /root/miles
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling --train-mode full --task dapo_math \
    --num-nodes 16 --num-gpus-per-node 4
 
 # LoRA GRPO (rank 32, all-linear), same cluster
-python scripts/run_inkling_975b.py train \
+python scripts/run_inkling.py train \
    --model-name Inkling --train-mode lora --task dapo_math \
    --num-nodes 16 --num-gpus-per-node 4
 ```
@@ -72,12 +70,13 @@ Pass `--hf-checkpoint <path>` to the launcher when the weights are already on a 
 
 ### 4.2 HF → Megatron `torch_dist` conversion
 
-Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling-975b.sh`:
+Inkling ships in BF16, so conversion is a single distributed `torch_dist` shard (no precision cast). The model definition comes from `scripts/models/inkling.py`:
 
 ```bash
 cd /root/miles
-source scripts/models/inkling-975b.sh
-PYTHONPATH=/root/Megatron-LM torchrun \
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py inkling)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
+CONVERT_KEEP_PP1=1 PYTHONPATH=/root/Megatron-LM torchrun \
    --nproc-per-node 4 --nnodes 4 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
    --node-rank ${NODE_RANK} \
@@ -89,6 +88,8 @@ PYTHONPATH=/root/Megatron-LM torchrun \
    --hf-checkpoint /root/models/Inkling \
    --save /root/models/Inkling_torch_dist/
 ```
+
+`CONVERT_KEEP_PP1=1` keeps the conversion at PP1: without it the converter auto-bumps PP toward the rank count, which is incompatible with `--tensor-model-parallel-size 4` at 16 ranks.
 
 The saved `torch_dist` checkpoint is parallelism-agnostic: training can load it under any validated TP / PP / EP layout. Point the launcher at the result with `--torch-dist`.
 
@@ -122,7 +123,7 @@ GRPO with truncated importance sampling. The launcher defaults: global batch siz
 
 ### 5.3 Training attention backends
 
-`--inkling-attn-backend` selects the training-side attention implementation:
+The `MILES_INKLING_ATTN_BACKEND` environment variable selects the training-side attention implementation:
 
 | Backend | Role | 8K packed, rel-extent 1024, GB300 |
 |---|---|---|

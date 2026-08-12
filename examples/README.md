@@ -16,7 +16,7 @@ recipes that are not fully verified.
 - **[multi_lora](./multi_lora)**: Fully-async multi-adapter LoRA training with a slot-keyed adapter page table.
 - **[on_policy_distillation](./on_policy_distillation)**: Example implementation for on-policy distillation, extending the reinforcement learning pipeline to support teacher–student distillation directly within on-policy training.
 - **[retool_v2](./retool_v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
-- **[swe-agent](./swe-agent)**: Trains coding and terminal agents with Harbor-managed sandboxes and verifier rewards.
+- **[swe-agent-harbor-docker](./swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
 
 ### [infra_features](./infra_features)
 
@@ -39,4 +39,5 @@ Not fully verified — for experimental and development use.
 - **[reproducibility](./experimental/reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
 - **[search-r1](./experimental/search-r1)**: A minimal reproduction of Search-R1, featuring multi-turn conversation and tool-calling.
 - **[strands_sglang](./experimental/strands_sglang)**: Integration example with the Strands-Agents scaffolding framework.
+- **[swe-agent-harbor-daytona](./experimental/swe-agent-harbor-daytona)**: The `swe-agent-harbor-docker` pipeline with task sandboxes hosted on Daytona instead of local Docker.
 - **[tau-bench](./experimental/tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).

@@ -1,8 +1,10 @@
 """OpenEnv Terminal-Bench-2 (tbench2) learning launcher (GLM-4.7-Flash).
 
-Drives the OpenEnv tbench2 env via ``openenv_agent_function.run`` (shared env
-server) or ``openenv_daytona_agent_function.run`` (Daytona sandboxes;
-selected automatically when ``openenv_tb2_tasks_dir`` is set). tbench2 is
+Drives the OpenEnv tbench2 env through a per-episode sandbox agent function
+(set ``openenv_tb2_tasks_dir`` plus ``--openenv-sandbox-backend``; the registry
+in openenv_sandbox_common names the providers), or through
+``openenv_agent_function.run`` against one shared env server when neither is
+set. tbench2 is
 *multi-turn*: the adapter runs an agentic loop (reset(task_id) -> {policy emits a
 shell command -> step(exec) -> feed output back} -> evaluate) and the reward is
 the binary pytest result (1.0 all tests pass, else 0.0).
@@ -14,26 +16,29 @@ Prereqs:
     # 2. Get the TB2 task suite + build prompt-data (task_ids).
     git clone --depth 1 https://github.com/laude-institute/terminal-bench-2.git /workspace/terminal-bench-2
     python make_tbench2_data.py --tasks_dir /workspace/terminal-bench-2 --output /root/tbench2_train.jsonl
-    # 3. Serve the env. The tbench2 server supports concurrency natively via
-    #    MAX_CONCURRENT_ENVS (no wrapper needed). Choose execution mode:
-    #      TB2_MODE=docker  -> real TB2 fidelity (needs docker.sock + image pulls)
-    #      TB2_MODE=local   -> runs in-process, ignores task Dockerfiles (degraded)
+    # 3. Point the adapter at an environment. Either give every episode its own
+    #    cloud sandbox -- set OPENENV_TB2_TASKS_DIR and the backend, whose
+    #    credentials that provider then resolves itself (see the recipe README):
+    OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2 \
+        OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py
+    #    ... or serve one shared env server and leave OPENENV_TB2_TASKS_DIR
+    #    unset. It handles concurrency natively via MAX_CONCURRENT_ENVS (no
+    #    wrapper needed); TB2_MODE=docker is real TB2 fidelity (needs
+    #    docker.sock + image pulls), TB2_MODE=local ignores task Dockerfiles.
     TB2_MODE=docker TB2_TASKS_DIR=/workspace/terminal-bench-2 MAX_CONCURRENT_ENVS=32 \
         python -m tbench2_env.server.app --port 8003
-    #    ... or skip the shared server entirely: set OPENENV_TB2_TASKS_DIR
-    #    (+ the Daytona key: DAYTONA_API_KEY in the env, or a key file at
-    #    ~/.config/daytona/api_key) and the adapter runs each episode in its
-    #    own Daytona cloud sandbox (no Docker host needed).
 
-    NOTE (open decisions before a real run): docker mode wants a Docker host with
-    disk + socket; colocating heavy per-task containers on the GPU pod is risky,
-    so the env server likely runs off-pod (use --openenv-env-url / the host
-    rewrite). The binary sparse reward also needs a task subset where the base
-    policy *sometimes* succeeds (advantage variance) -- e.g. the TB2 variance
-    band -- or GRPO sees a flat signal.
+    NOTE (open decisions before a real run): the shared server wants a Docker
+    host with disk + socket, and colocating heavy per-task containers on the GPU
+    pod is risky, so it likely runs off-pod (use --openenv-env-url / the host
+    rewrite) -- per-episode sandboxes sidestep that entirely. The binary sparse
+    reward also needs a task subset where the base policy *sometimes* succeeds
+    (advantage variance) -- e.g. the TB2 variance band -- or GRPO sees a flat
+    signal.
 
 Usage:
-    python run-openenv-tbench2.py --openenv-env-url http://<env-host>:8003
+    OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py   # or daytona / modal
+    python run-openenv-tbench2.py --openenv-env-url http://<env-host>:8003  # shared server
 """
 
 import os
@@ -80,16 +85,25 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # within the limit is terminated and scored reward 0, bounding long-trajectory
     # stragglers that would otherwise stall the whole rollout batch.
     openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
-    # Daytona sandbox mode: every episode runs in its own cloud
-    # sandbox (the task's official image + env server layer; see the adapter
-    # docstring). Set to the TB2 checkout path; the adapter then ignores
-    # --openenv-env-url. Workers resolve the Daytona key from their own
-    # environment (DAYTONA_API_KEY, e.g. platform-injected) first, else from
-    # a key file (default ~/.config/daytona/api_key; this flag overrides the
-    # path). Only the file PATH is ever forwarded — a key value in ray
-    # runtime_env would be logged in plaintext.
+    # Per-episode sandbox mode: every episode runs in its own cloud sandbox
+    # (the task's official image + env server layer; see the adapter docstring).
+    # Set to the TB2 checkout path; the adapter then ignores --openenv-env-url.
+    # Whichever provider runs them, workers resolve its credential from their
+    # own environment (e.g. platform-injected) first, else from a file whose
+    # path the *_key_file flags below override. Only the file PATH is ever
+    # forwarded — a credential value in ray runtime_env would be logged in
+    # plaintext.
     openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
+    # Which per-episode sandbox provider runs the tasks_dir episodes:
+    # "agentenv" (alias for e2b — a self-hosted AgentENV deployment reached via
+    # E2B_API_URL/E2B_SANDBOX_URL), "daytona", "e2b" (E2B Cloud), or "modal".
+    # Required whenever openenv_tb2_tasks_dir is set; there is no default.
+    openenv_sandbox_backend: str = os.environ.get("OPENENV_SANDBOX_BACKEND", "")
     daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
+    e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
+    # Modal's credential is a token pair, so the file here is its config file
+    # (~/.modal.toml), forwarded by path exactly like the others' key files.
+    modal_config_file: str = os.environ.get("MODAL_CONFIG_PATH", "")
     # When set, miles dumps full per-episode agent trajectories (tokens, logprobs,
     # loss masks, reward, multi-turn messages) to <dir>/rollout_data/{rollout_id}.pt
     # for post-hoc inspection via miles.utils.debug_utils.display_debug_rollout_data.
@@ -165,7 +179,7 @@ def execute(args: ScriptArgs):
         "--sglang-router-port 31000 "
     )
 
-    agent_args = C.agent_args("glm47", daytona_sandboxes=bool(args.openenv_tb2_tasks_dir))
+    agent_args = C.agent_args("glm47", sandbox_backend=C.resolve_sandbox_backend(args))
 
     misc_args = (
         "--attention-dropout 0.0 "

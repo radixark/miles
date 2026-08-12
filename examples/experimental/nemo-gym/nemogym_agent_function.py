@@ -1,33 +1,32 @@
-"""NeMo-Gym <-> miles adapter (agent function).
+"""NeMo Gym <-> miles adapter (agent function).
 
 Targets upstream NVIDIA-NeMo/Gym's sandbox-backed ``mini_swe_agent_2`` agent,
-which requires the per-request policy endpoint override from
-https://github.com/NVIDIA-NeMo/Gym/pull/2166 (until it merges, run the
-NeMo-Gym server from the PR branch ``nblintao/Gym@mini-swe-agent-per-request-policy-url``).
+which requires the per-request policy endpoint override (upstream ``main``,
+>= ``fcca3a8``).
 
 miles calls ``run`` once per sample via
 ``--custom-agent-function-path nemogym_agent_function.run`` (with
 ``--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate``).
-Each call POSTs the task to the NeMo-Gym agent server's ``/run`` endpoint,
+Each call POSTs the task to the NeMo Gym agent server's ``/run`` endpoint,
 handing over the session's OpenAI-compatible URL as ``policy_base_url``.
-NeMo-Gym runs mini-swe-agent v2 in a ``nemo_gym.sandbox`` container (docker /
+NeMo Gym runs mini-swe-agent v2 in a ``nemo_gym.sandbox`` container (docker /
 daytona / apptainer / ecs_fargate / opensandbox providers) against that URL,
 so every model call goes through miles' session server and is recorded
 losslessly (token ids + logprobs + loss masks) — no re-tokenization.
 
-The NeMo-Gym environment grades the episode itself (SWE-bench harness); the
+The NeMo Gym environment grades the episode itself (SWE-bench harness); the
 returned dict is merged into ``sample.metadata`` so the reward hook
 (``--custom-rm-path nemogym_generate.reward_func``) can read
 ``metadata["reward"]``.
 
 Env vars:
-  NEMO_GYM_URL   base URL of the NeMo-Gym agent server
+  NEMO_GYM_URL   base URL of the NeMo Gym agent server
                  (default: http://localhost:12000).
   NEMO_GYM_RUN_TIMEOUT  hard wall-clock cap in seconds for one /run call
                  (default: 3600). SWE episodes pull per-task docker images on
                  first use, which can dominate early rollouts.
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for the session URL when
-                 the NeMo-Gym server cannot resolve the trainer's hostname
+                 the NeMo Gym server cannot resolve the trainer's hostname
                  (e.g. it runs outside the trainer's docker network).
 """
 
@@ -80,7 +79,7 @@ def _resolve_session_url(base_url: str) -> str:
 
 
 def build_responses_create_params(request_kwargs: dict[str, Any]) -> dict[str, Any]:
-    """Map miles' chat-completions sampling kwargs onto NeMo-Gym's Responses-API params.
+    """Map miles' chat-completions sampling kwargs onto NeMo Gym's Responses-API params.
 
     mini_swe_agent_2 reads sampling settings exclusively from
     ``responses_create_params`` (temperature / top_p / max_output_tokens, see
@@ -102,7 +101,7 @@ async def run(
     metadata: dict[str, Any] | None = None,
     **kwargs,
 ) -> dict[str, Any] | None:
-    """Run one task instance via the NeMo-Gym mini_swe_agent_2 server.
+    """Run one task instance via the NeMo Gym mini_swe_agent_2 server.
 
     Returns the reward dict to merge into sample metadata, or None on a
     transport failure (timeout, unreachable server). On None the recorded
@@ -133,13 +132,13 @@ async def run(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.error(f"NeMo-Gym /run timed out after {timeout_s:.0f}s")
+        logger.error(f"NeMo Gym /run timed out after {timeout_s:.0f}s")
         return None
     except asyncio.CancelledError:
-        logger.warning("NeMo-Gym /run cancelled (sibling task failure?)")
+        logger.warning("NeMo Gym /run cancelled (sibling task failure?)")
         return None
     except Exception as e:
-        logger.error(f"NeMo-Gym /run failed: {e}")
+        logger.error(f"NeMo Gym /run failed: {e}")
         return None
 
     return {

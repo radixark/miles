@@ -1,0 +1,209 @@
+### 0
+mkdir -p <SANDBOX>/models /root/datasets
+
+### 1
+hf download zai-org/GLM-5.2
+  --local-dir <SANDBOX>/models/GLM-5.2
+
+### 2
+hf download
+  --repo-type dataset zhuzilin/dapo-math-17k
+  --local-dir /root/datasets/dapo-math-17k
+
+### 3
+[multi_node num_nodes=None] PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
+  --nproc-per-node 8
+  --master-addr {{master_addr}}
+  --master-port 23456
+  --nnodes={{nnodes}}
+  --node-rank {{node_rank}} <REPO_ROOT>/tools/convert_hf_to_torch_dist.py
+  --spec miles_plugins.models.glm5.glm5 get_glm5_spec
+  --moe-layer-freq '[0]*3+[1]*75'
+  --num-experts 256
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-topk 8
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --moe-ffn-hidden-size 2048
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-topk-scaling-factor 2.5
+  --moe-aux-loss-coeff 0
+  --moe-router-dtype fp32
+  --make-vocab-size-divisible-by 16
+  --num-layers 78
+  --hidden-size 6144
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --disable-bias-linear
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --no-position-embedding
+  --normalization RMSNorm
+  --qk-layernorm
+  --multi-latent-attention
+  --q-lora-rank 2048
+  --kv-lora-rank 512
+  --qk-head-dim 192
+  --v-head-dim 256
+  --kv-channels 192
+  --qk-pos-emb-head-dim 64
+  --vocab-size 154880
+  --rotary-base 8000000
+  --enable-experimental
+  --hf-checkpoint <SANDBOX>/models/GLM-5.2
+  --save <SANDBOX>/models/GLM-5.2_torch_dist
+  --tensor-model-parallel-size 1
+  --expert-tensor-parallel-size 1
+  --pipeline-model-parallel-size 4
+  --expert-model-parallel-size 2
+  --decoder-first-pipeline-num-layers 18
+  --decoder-last-pipeline-num-layers 20 
+
+### 4
+[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2_torch_dist && rsync -a
+  --info=progress2 <SANDBOX>/models/GLM-5.2_torch_dist/ /root/models/GLM-5.2_torch_dist
+
+### 5
+[multi_node num_nodes=None] mkdir -p /root/models/GLM-5.2 && rsync -a
+  --info=progress2 <SANDBOX>/models/GLM-5.2/ /root/models/GLM-5.2
+
+### 6
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 7
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 8
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 9
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK": "256", "SGLANG_NSA_FORCE_MLA": "1", "INDEXER_ROPE_NEOX_STYLE": "0", "NVSHMEM_DISABLE_NCCL": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.glm5.glm5 get_glm5_spec
+  --moe-layer-freq '[0]*3+[1]*75'
+  --num-experts 256
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-topk 8
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --moe-ffn-hidden-size 2048
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-topk-scaling-factor 2.5
+  --moe-aux-loss-coeff 0
+  --moe-router-dtype fp32
+  --make-vocab-size-divisible-by 16
+  --num-layers 78
+  --hidden-size 6144
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --disable-bias-linear
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --no-position-embedding
+  --normalization RMSNorm
+  --qk-layernorm
+  --multi-latent-attention
+  --q-lora-rank 2048
+  --kv-lora-rank 512
+  --qk-head-dim 192
+  --v-head-dim 256
+  --kv-channels 192
+  --qk-pos-emb-head-dim 64
+  --vocab-size 154880
+  --rotary-base 8000000
+  --enable-experimental
+  --hf-checkpoint /root/models/GLM-5.2
+  --ref-load /root/models/GLM-5.2_torch_dist
+  --load /root/shared_data/260101-000000-000/checkpoints
+  --save /root/shared_data/260101-000000-000/checkpoints
+  --save-interval 20 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type deepscaler
+  --num-rollout 3000
+  --rollout-batch-size 8
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 100
+  --rollout-temperature 1
+  --global-batch-size 64 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --kl-coef 0.00
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28
+  --use-tis
+  --tis-clip-low 0.5
+  --tis-clip 2.0 
+  --use-wandb
+  --wandb-project miles-run_glm5_2_744b_a40b
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 8192
+  --data-pad-size-multiplier 1024
+  --log-probs-chunk-size 16384  
+  --rollout-num-gpus-per-engine 8
+  --sglang-mem-fraction-static 0.7
+  --sglang-ep-size 8
+  --sglang-router-policy consistent_hashing
+  --sglang-kv-cache-dtype fp8_e4m3
+  --sglang-nsa-decode-backend flashmla_kv
+  --sglang-nsa-prefill-backend flashmla_sparse
+  --sglang-attention-backend nsa
+  --sglang-page-size 64
+  --sglang-cuda-graph-max-bs 32
+  --sglang-max-running-requests 512
+  --sglang-chunked-prefill-size 16384
+  --sglang-watchdog-timeout 3600 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --allgather-cp
+  --update-weight-buffer-size 2147483648
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --colocate
+  --rematerialize-param-from-master-weight
+  --moe-enable-deepep
+  --moe-token-dispatcher-type flex   

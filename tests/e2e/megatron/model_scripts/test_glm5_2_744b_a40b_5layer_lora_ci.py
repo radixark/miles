@@ -16,10 +16,7 @@ register_cuda_ci(est_time=2400, suite="stage-c-4-gpu-h200", labels=["megatron", 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)
 _BASE_EXTRA = (
-    "--ci-test "
-    "--ci-disable-logprobs-checker "
-    "--disable-weights-backuper "
-    "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
+    "--ci-test " "--ci-disable-logprobs-checker " "--check-weight-update-skip-list fused_qkv_a_proj_with_mqa indexer. "
 )
 
 # (name, dsa_attention_backend, experts_shared_outer_loras, virtual_experts_serving)
@@ -45,7 +42,7 @@ def _args(dsa: str, shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.output_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
 
 
@@ -60,6 +57,6 @@ if __name__ == "__main__":
     for name, dsa, shared_outer, virtual_experts in _CONFIGS:
         print(f"[glm5.2-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
         execute(_args(dsa, shared_outer, virtual_experts))
         print(f"[glm5.2-lora-ci] ===== combo PASSED: {name} =====", flush=True)

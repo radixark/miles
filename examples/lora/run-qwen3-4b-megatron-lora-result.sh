@@ -17,7 +17,7 @@ set -ex
 # export SGLANG_LORA_ENABLE_FUSION=1
 
 # will prevent ray from buffering stdout/stderr
-export PYTHONBUFFERED=16
+export PYTHONUNBUFFERED=1
 # export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 # export PYTORCH_ALLOC_CONF="expandable_segments:True"
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1,2,3}
@@ -33,8 +33,8 @@ echo "HAS_NVLINK: $HAS_NVLINK (detected $NVLINK_COUNT NVLink references)"
 LR=2e-5
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-source /root/miles/scripts/models/qwen3-4B.sh
-
+MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../miles/utils/external_utils/model_args_utils.py" "qwen3-4B")" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 CKPT_ARGS=(
    --hf-checkpoint /root/Qwen3-4B
    --save /root/Qwen3-4B-lora-ckpt
@@ -138,7 +138,6 @@ MISC_ARGS=(
    --actor-num-gpus-per-node ${NUM_GPUS}
    --colocate
    --calculate-per-token-loss # +fsdp
-   --use-miles-router # +fsdp
 )
 
 # launch the master node of ray in container

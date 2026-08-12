@@ -85,7 +85,7 @@ class TITOTokenizer:
     trailing_token_ids: frozenset[int] = frozenset()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
 
-    # The family's fixed renderer contract.  DEFAULT uses the model's native
+    # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
     FIXED_TEMPLATE: FixedTemplate = FixedTemplate()
 
@@ -191,7 +191,9 @@ class TITOTokenizer:
         """Compute incremental token IDs for messages appended after the
         pretokenized prefix.
 
-        Appended roles must be listed in ``self.allowed_append_roles``.  The method validates that *new_messages* is an append-only extension of *old_messages* via ``assert_messages_append_only_with_allowed_role``.
+        Appended roles must be listed in ``self.allowed_append_roles``.  The
+        method validates that *new_messages* is an append-only extension of
+        *old_messages* via ``assert_messages_append_only_with_allowed_role``.
 
         Args:
             old_messages: Previously stored messages (prefix).
@@ -666,6 +668,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
         extra_kwargs={"drop_thinking": False},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
 
     _DEFAULT_ASSISTANT_START = "<｜Assistant｜>"
@@ -717,6 +720,43 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
         return self._encode_text(text_new[len(text_old) :])
 
 
+class InklingTITOTokenizer(TITOTokenizer):
+    """Inkling family (Inkling / Inkling-Small).
+
+    The runtime serves Inkling through sglang's token-level renderer
+    (``chat_encoding_spec == "inkling"``).  The fixed template matches its
+    empty scalar-content behavior: no empty text block, and no bare assistant
+    terminator when the turn contains no rendered blocks.  All four message-role
+    sentinels remain comparator boundaries so non-assistant mismatches are hard
+    failures after an assistant turn.
+    """
+
+    reasoning_parser = "inkling"
+    tool_call_parser = "inkling"
+
+    FIXED_TEMPLATE = FixedTemplate(template="inkling_fixed.jinja")
+
+    _DEFAULT_ASSISTANT_START = "<|message_model|>"
+
+    def __init__(
+        self,
+        tokenizer: Any,
+        chat_template_kwargs: dict[str, Any] | None = None,
+        assistant_start_str: str | None = None,
+    ):
+        super().__init__(
+            tokenizer,
+            chat_template_kwargs=chat_template_kwargs,
+            assistant_start_str=assistant_start_str or self._DEFAULT_ASSISTANT_START,
+            special_token_ids={
+                tokenizer.convert_tokens_to_ids("<|message_user|>"),
+                tokenizer.convert_tokens_to_ids("<|message_model|>"),
+                tokenizer.convert_tokens_to_ids("<|message_system|>"),
+                tokenizer.convert_tokens_to_ids("<|message_tool|>"),
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # Enum + Factory
 # ---------------------------------------------------------------------------
@@ -735,6 +775,7 @@ class TITOTokenizerType(StrEnum):
     MINIMAX_M27 = "minimax_m27"
     DEEPSEEKV32 = "deepseekv32"
     DEEPSEEKV4 = "deepseekv4"
+    INKLING = "inkling"
 
     @classmethod
     def get_tokenizer_class(cls, t: TITOTokenizerType) -> type[TITOTokenizer]:
@@ -764,6 +805,8 @@ class TITOTokenizerType(StrEnum):
                 return DeepSeekV32TITOTokenizer
             case cls.DEEPSEEKV4:
                 return DeepSeekV4TITOTokenizer
+            case cls.INKLING:
+                return InklingTITOTokenizer
             case _:
                 raise ValueError(f"Unknown TITOTokenizerType: {t!r}")
 

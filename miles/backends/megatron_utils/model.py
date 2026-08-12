@@ -57,8 +57,12 @@ from .parallel import get_packed_seq_params
 logger = logging.getLogger(__name__)
 
 
+def _has_loadable_ckpt(load_dir: str | None) -> bool:
+    """Whether ``--load`` holds anything; ``load_checkpoint`` dispatches dist vs HF itself."""
+    return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
+
+
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
-from .lora_utils import save_lora_checkpoint
 
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
@@ -146,7 +150,16 @@ def setup_model_and_optimizer(
     ):
         model = _setup_lora_model_via_bridge(args)
     else:
-        model = get_model(get_model_provider_func(args, role), ModelType.encoder_or_decoder)
+        provider_func = get_model_provider_func(args, role)
+        if (
+            is_lora_enabled(args)
+            and role == "actor"
+            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+        ):
+            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+
+            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+        model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
@@ -165,6 +178,12 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
+            if is_first_replica_megatron_main_rank():
+                logger.info(
+                    "Inkling fused qkvr detected: forcing muon_split_qkv=False " "(whole-matrix orthogonalization)."
+                )
+            config.muon_split_qkv = False
         optimizer = get_megatron_muon_optimizer(
             config=config,
             model_chunks=model,
@@ -181,6 +200,12 @@ def setup_model_and_optimizer(
             model_chunks=model,
             use_gloo_process_groups=args.enable_gloo_process_groups,
         )
+
+    if args.stream_optimizer_state_to_disk:
+        from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
+
+        setup_optimizer_state_streaming(args, optimizer)
+
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler
 
@@ -386,6 +411,7 @@ def train_one_step(
     optimizer: MegatronOptimizer | None,
     opt_param_scheduler: OptimizerParamScheduler | None,
     num_microbatches: int,
+    num_rollouts: int,
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -408,6 +434,7 @@ def train_one_step(
         optimizer: Optimizer instance.
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
+        num_rollouts: This step's rollout count (loss normalizer + LR increment).
 
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
@@ -469,6 +496,7 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -519,7 +547,14 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
+        return output_tensor, partial(
+            loss_function,
+            args,
+            batch,
+            num_microbatches,
+            apply_megatron_loss_scaling=True,
+            num_rollouts=num_rollouts,
+        )
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -545,8 +580,9 @@ def train_one_step(
         if ft_test_action_executor is not None:
             ft_test_action_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
 
+        metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced
+            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -589,7 +625,7 @@ def train_one_step(
 
             # Update learning rate.
             assert update_successful
-            opt_param_scheduler.step(increment=args.global_batch_size)
+            opt_param_scheduler.step(increment=num_rollouts)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -612,8 +648,11 @@ def train_one_step(
             witness_dump_and_clear_stale(model=model, witness_info=witness_info, optimizer=optimizer)
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
+            metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
             loss_reduced = (
-                indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
+                indep_dp_loss_reduced
+                if parallel_state.indep_dp.size > 1
+                else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
             return loss_reduced, grad_norm, outcome
 
@@ -626,6 +665,9 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
+    from .lora_utils import reduce_marked_lora_grads
+
+    reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)
 
 
@@ -636,6 +678,7 @@ def train(
     opt_param_scheduler: OptimizerParamScheduler | None,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
+    num_rollouts: Sequence[int],
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -652,10 +695,16 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        num_rollouts (Sequence[int]): Rollout count per step (total across DP).
     """
     parallel_state = get_parallel_state()
     args = get_args()
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
+
+    assert len(num_microbatches) == len(num_rollouts), (
+        f"num_microbatches and num_rollouts must have the same length, "
+        f"got {len(num_microbatches)} vs {len(num_rollouts)}"
+    )
 
     for iterator in data_iterator:
         iterator.reset()
@@ -736,6 +785,7 @@ def train(
             optimizer,
             opt_param_scheduler,
             num_microbatches[step_id],
+            num_rollouts[step_id],
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
@@ -755,6 +805,7 @@ def train(
 
             mtp_loss_scale = 1 / num_microbatches[step_id]
             tracker = MTPLossLoggingHelper.tracker
+            mtp_losses = None
             if "values" in tracker:
                 values = tracker["values"]
                 if (x := tracker.get("reduce_group")) is not None:
@@ -778,7 +829,7 @@ def train(
             role_tag = "" if role == "actor" else f"{role}-"
 
             extra_metrics = {}
-            if args.enable_mtp_training:
+            if args.enable_mtp_training and mtp_losses is not None:
                 extra_metrics["mtp_loss"] = mtp_losses
 
             if not disable_optimizer:
@@ -866,63 +917,6 @@ def save(
         enable_forward_pre_hook(model)
 
 
-def save_hf_model(args, rollout_id: int, model: Sequence[DDP]) -> None:
-    """Save Megatron model in HuggingFace format.
-
-    For LoRA models this saves both:
-    - A **merged** HF model (adapter weights folded into base) at ``{path}/``
-      so it can be loaded directly with ``AutoModelForCausalLM.from_pretrained``.
-    - An **adapter-only** HF PEFT checkpoint at ``{path}/adapter/``
-      so it can be loaded with ``PeftModel.from_pretrained``.
-
-    This function is collective — all ranks must call it.
-
-    Args:
-        args: Runtime arguments.
-        model (Sequence[DDP]): Sequence of DDP-wrapped model chunks.
-        rollout_id (int): Rollout ID for path formatting.
-    """
-    should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
-
-    try:
-        from megatron.bridge import AutoBridge
-
-        from miles.utils.megatron_bridge_utils import patch_megatron_model
-
-        path = Path(args.save_hf.format(rollout_id=rollout_id))
-
-        if should_log:
-            logger.info(f"Saving model in HuggingFace format to {path}")
-
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-
-        path.mkdir(parents=True, exist_ok=True)
-
-        with patch_megatron_model(model):
-            # For LoRA models, merge_adapter_weights=True (default) merges
-            # adapter weights into base weights for a standalone HF model.
-            bridge.save_hf_pretrained(model, path=path)
-
-        if should_log:
-            logger.info(f"Successfully saved merged HuggingFace model to {path}")
-    except Exception as e:
-        if should_log:
-            logger.error(f"Failed to save HuggingFace format: {e}")
-
-    # Additionally save adapter-only checkpoint for LoRA models
-    if is_lora_model(model):
-        try:
-            adapter_path = Path(args.save_hf.format(rollout_id=rollout_id)) / "adapter"
-            if should_log:
-                logger.info(f"Saving LoRA adapter (HF PEFT format) to {adapter_path}")
-            save_lora_checkpoint(model, args, str(adapter_path))
-            if should_log:
-                logger.info(f"Successfully saved LoRA adapter to {adapter_path}")
-        except Exception as e:
-            if should_log:
-                logger.error(f"Failed to save LoRA adapter: {e}")
-
-
 def initialize_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
@@ -939,20 +933,11 @@ def initialize_model_and_optimizer(
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
             DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
     """
-    if torch.version.hip:
-        import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
-
-        from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
-
-        filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
-        print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
-
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
 
-    multi_lora = is_multi_lora_enabled(args)
-    if multi_lora:
+    if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
         from megatron.bridge.peft.multi_lora_layers import hide_adapters
@@ -961,14 +946,38 @@ def initialize_model_and_optimizer(
     else:
         load_ctx = nullcontext()
 
-    with load_ctx:
-        iteration, _ = load_checkpoint(
-            model,
-            optimizer,
-            opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=False,
-        )
+    load_dir = getattr(args, "load", None)
+    # --load may be unset: setup_model_and_optimizer already asserted pretrained_checkpoint covers it.
+    if load_dir is None or _has_loadable_ckpt(load_dir):
+        with load_ctx:
+            iteration, _ = load_checkpoint(
+                model,
+                optimizer,
+                opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=False,
+            )
+    else:
+        if is_first_replica_megatron_main_rank():
+            logger.warning("--load %r is empty; starting from model_provider-initialized weights", load_dir)
+        iteration = 0
+
+    if (
+        is_lora_enabled(args)
+        and role == "actor"
+        and args.megatron_to_hf_mode != "bridge"
+        and getattr(args, "lora_adapter_path", None)
+        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+    ):
+        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
+            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
+
+            load_inkling_lora_adapter(model, args.lora_adapter_path)
+            if optimizer is not None:
+                # refresh the fp32 masters, or the first step() restores the
+                # pre-load init values over the adapter we just wrote
+                optimizer.reload_model_params()
+
     check_peak_gpu_memory_after_load(args)
     clear_memory()
 

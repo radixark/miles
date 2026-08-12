@@ -17,6 +17,38 @@ logger = logging.getLogger(__name__)
 MAX_ASSISTANT_ROLLBACK_STEPS = 1
 
 
+def assert_pretokenized_prefix(
+    prev: list[int],
+    all_token_ids: list[int],
+    *,
+    max_trim_tokens: int,
+    request_messages: list[dict[str, Any]],
+    assistant_message: dict[str, Any],
+) -> None:
+    """Stored token_ids must be a prefix of the new checkpoint, tolerating up
+    to *max_trim_tokens* trailing differences. Pure token-level check, shared
+    verbatim by the v1 checkpoint update and the v2 commit."""
+    if not prev:
+        return
+    check_len = len(prev) - max_trim_tokens
+    if check_len > 0 and all_token_ids[:check_len] != prev[:check_len]:
+        first_mismatch = next(
+            (i for i, (a, b) in enumerate(zip(all_token_ids[:check_len], prev[:check_len], strict=True)) if a != b),
+            min(len(all_token_ids), check_len),
+        )
+        raise TokenizationError(
+            f"pretokenized prefix mismatch: "
+            f"stored {len(prev)} tokens (checking first {check_len}, "
+            f"allowing {max_trim_tokens} trailing) are not a prefix of "
+            f"prompt_token_ids + completion_token_ids "
+            f"({len(all_token_ids)} tokens), "
+            f"first mismatch at index {first_mismatch}, "
+            f"matched {first_mismatch}/{check_len} prefix tokens\n"
+            f"request_messages={request_messages}\n"
+            f"assistant_message={assistant_message}"
+        )
+
+
 @dataclass
 class LinearTrajectory:
     """State for a linear trajectory.
@@ -114,30 +146,13 @@ class LinearTrajectory:
         Must be called under ``self.lock``.
         """
         all_token_ids = prompt_token_ids + completion_token_ids
-
-        prev = self.token_ids
-        if prev:
-            check_len = len(prev) - max_trim_tokens
-            if check_len > 0 and all_token_ids[:check_len] != prev[:check_len]:
-                first_mismatch = next(
-                    (
-                        i
-                        for i, (a, b) in enumerate(zip(all_token_ids[:check_len], prev[:check_len], strict=True))
-                        if a != b
-                    ),
-                    min(len(all_token_ids), check_len),
-                )
-                raise TokenizationError(
-                    f"pretokenized prefix mismatch: "
-                    f"stored {len(prev)} tokens (checking first {check_len}, "
-                    f"allowing {max_trim_tokens} trailing) are not a prefix of "
-                    f"prompt_token_ids + completion_token_ids "
-                    f"({len(all_token_ids)} tokens), "
-                    f"first mismatch at index {first_mismatch}, "
-                    f"matched {first_mismatch}/{check_len} prefix tokens\n"
-                    f"request_messages={request_messages}\n"
-                    f"assistant_message={assistant_message}"
-                )
+        assert_pretokenized_prefix(
+            self.token_ids,
+            all_token_ids,
+            max_trim_tokens=max_trim_tokens,
+            request_messages=request_messages,
+            assistant_message=assistant_message,
+        )
 
         self.messages = list(request_messages) + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)

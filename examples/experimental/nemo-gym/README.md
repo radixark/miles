@@ -1,16 +1,16 @@
-# SWE-agent training via NeMo-Gym
+# SWE-agent training via NeMo Gym
 
 ## Introduction
 
 This example trains a SWE agent with Miles using NVIDIA's
-[NeMo-Gym](https://github.com/NVIDIA-NeMo/Gym) as the environment ecosystem:
-NeMo-Gym's sandbox-backed `mini_swe_agent_2` agent runs the
+[NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) as the environment ecosystem:
+NeMo Gym's sandbox-backed `mini_swe_agent_2` agent runs the
 [mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) v2 harness inside
 per-task SWE-bench containers (via the `nemo_gym.sandbox` provider API) and
 grades every episode with the official SWE-bench harness; Miles owns training,
 batch orchestration, and lossless token recording.
 
-NeMo-Gym plugs in at the **agent function** layer (see the
+NeMo Gym plugs in at the **agent function** layer (see the
 [Environments guide](../../../docs/user-guide/environments.md)), the same
 shape as the Harbor and OpenEnv connectors:
 
@@ -19,7 +19,7 @@ Miles trainer ── session server (records every chat-completions turn: token
    │             ids + logprobs + loss masks, no re-tokenization)
    │  per-sample POST /run { task fields, policy_base_url = session URL }
    ▼
-NeMo-Gym responses-API agent server (mini_swe_agent_2)
+NeMo Gym responses-API agent server (mini_swe_agent_2)
    │  runs mini-swe-agent v2 against policy_base_url,
    │  per-task container via a nemo_gym.sandbox provider (docker here;
    │  daytona / apptainer / ecs_fargate / opensandbox also exist)
@@ -28,15 +28,11 @@ reward (official SWE-bench harness) ──► sample.metadata ──► reward h
 ```
 
 - `nemogym_agent_function.py` — the connector: one `/run` POST per sample.
-- `nemogym_generate.py` — reward hook (reads the NeMo-Gym grade from
+- `nemogym_generate.py` — reward hook (reads the NeMo Gym grade from
   `sample.metadata["reward"]`).
 - `eval_nemogym_via_api.py`, `tests/` — no-GPU validation tooling (below).
 
-The per-request `policy_base_url` override this example relies on is proposed
-upstream in [NVIDIA-NeMo/Gym#2166](https://github.com/NVIDIA-NeMo/Gym/pull/2166).
-Until it merges, run the NeMo-Gym server from the PR branch
-(`nblintao/Gym@mini-swe-agent-per-request-policy-url`, upstream main + that
-one commit pair); afterwards, use upstream directly.
+Run the NeMo Gym server from `main` (>= `fcca3a8`).
 
 ## Validation status
 
@@ -52,7 +48,7 @@ ones used:
 - **GPU training smoke** (`run.py` defaults, 4x H200,
   Qwen3-4B-Instruct-2507, SWE-bench Verified prompts): 3 synchronous GRPO
   steps completed twice; every episode ran mini-swe-agent v2 in a real task
-  container on the NeMo-Gym host, the SWE-bench harness executed the task's
+  container on the NeMo Gym host, the SWE-bench harness executed the task's
   full test suite (e.g. 175/175 PASS_TO_PASS on an unresolved attempt), and
   the grade flowed back into `rollout/raw_reward`.
 
@@ -62,14 +58,14 @@ Two known limitations from the smoke run:
   GRPO then has zero advantage (`rollout/zero_std` fires). That's a model
   capability floor, not a pipeline defect; expect the same until you use a
   stronger policy or an easier task pool.
-- `rollout/tito_session_mismatch_rate` reads 1.0 with this model: Qwen3
+- `rollout/tito_session_mismatch_rate/v1` reads 1.0 with this model: Qwen3
   chat templates insert an empty `<think></think>` skeleton when re-rendering
   assistant history, which the engine's actual output never contains. It is a
   soft diagnostic — training tokens and loss masks come from the engine's
   recorded token ids, which stay lossless — and is a property of the
   model-family template, not of this connector.
 
-## Setting up the NeMo-Gym server
+## Setting up the NeMo Gym server
 
 Any docker-capable host works: a CPU box next to the cluster, or a container
 beside the trainer (mount `/var/run/docker.sock` and share a docker network
@@ -77,8 +73,7 @@ with the trainer — that variant is not validated here). Set `NEMO_GYM_URL` to
 wherever the server listens.
 
 ```bash
-# Until NVIDIA-NeMo/Gym#2166 merges; afterwards clone NVIDIA-NeMo/Gym instead.
-git clone -b mini-swe-agent-per-request-policy-url https://github.com/nblintao/Gym.git
+git clone https://github.com/NVIDIA-NeMo/Gym.git
 cd Gym
 
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -130,7 +125,7 @@ python download_and_process_data.py --input princeton-nlp/SWE-bench_Verified \
 Each row keeps the full SWE-bench-format instance (`instance_id`, `repo`,
 `base_commit`, `problem_statement`, ...) in `metadata`, plus `subset` /
 `split` — the agent function forwards all of it in the `/run` body, and
-NeMo-Gym selects the per-task image from it.
+NeMo Gym selects the per-task image from it.
 
 **SWE-Gym caveat**: `--input SWE-Gym/SWE-Gym --subset gym` produces the
 training dataset this recipe ultimately targets (per-task images from
@@ -151,7 +146,7 @@ skip):
 
 ```bash
 export NEMO_GYM_URL="http://<nemo-gym-host>:12000"
-# Only if the NeMo-Gym host cannot resolve the trainer's hostname (e.g. it
+# Only if the NeMo Gym host cannot resolve the trainer's hostname (e.g. it
 # reaches the trainer over a tailnet):
 export MILES_ROUTER_EXTERNAL_HOST="<trainer host/IP reachable from that host>"
 python examples/experimental/nemo-gym/run.py
@@ -180,9 +175,9 @@ with "unrecognized arguments"), and:
 
 Per sample, `agentic_tool_call` opens a session on Miles' session server and
 hands its OpenAI-compatible URL to `nemogym_agent_function.run`, which POSTs
-the task to the NeMo-Gym server's `/run` with `policy_base_url` set to that
+the task to the NeMo Gym server's `/run` with `policy_base_url` set to that
 session URL and the sampling settings mapped onto `responses_create_params`
-(`temperature`, `top_p`, `max_output_tokens`). NeMo-Gym's mini-swe-agent v2
+(`temperature`, `top_p`, `max_output_tokens`). NeMo Gym's mini-swe-agent v2
 then talks to the policy exclusively through the session URL (litellm chat
 completions), so Miles records every turn losslessly — token ids, logprobs,
 and loss masks come from the session server, not from re-tokenizing message
@@ -219,10 +214,10 @@ on CPU-only machines, in three independent layers (all three pass as of
    otherwise.
 
 3. **API-policy scan** — a real model drives full episodes through the same
-   `policy_base_url` override the trainer uses (so this also exercises the
-   NVIDIA-NeMo/Gym#2166 field end-to-end). Start the server *without* the
-   golden override and with `policy_model_name` set to the API model name
-   (e.g. `deepseek-chat`) in `env.yaml`, then:
+   `policy_base_url` override the trainer uses (so this also exercises that
+   field end-to-end). Start the server *without* the golden override and with
+   `policy_model_name` set to the API model name (e.g. `deepseek-chat`) in
+   `env.yaml`, then:
 
    ```bash
    export DEEPSEEK_API_KEY=...   # or OPENAI_API_KEY
@@ -245,5 +240,5 @@ on CPU-only machines, in three independent layers (all three pass as of
    (server-side `eval_timeout`, default 1800s). `NEMO_GYM_RUN_TIMEOUT`
    (default 3600s) caps one episode end-to-end on the Miles side.
 4. A failed episode surfaces as `sample.metadata["eval_report"]["error"]` with
-   a traceback from the NeMo-Gym server — check there before digging into
+   a traceback from the NeMo Gym server — check there before digging into
    server logs.
