@@ -86,6 +86,36 @@ def get_env_enable_infinite_run():
     return get_bool_env_var("MILES_TEST_ENABLE_INFINITE_RUN", "false")
 
 
+class ArgvManipulator:
+    @staticmethod
+    def values_of(argv: list[str], flag: str) -> list[str]:
+        values: list[str] = []
+        for index, token in enumerate(argv):
+            if token == flag:
+                assert index + 1 < len(argv), f"{flag} is the last argument, so it names no value"
+                values.append(argv[index + 1])
+            elif token.startswith(f"{flag}="):
+                values.append(token.split("=", maxsplit=1)[1])
+        return values
+
+    @staticmethod
+    def declares(argv: list[str], flag: str) -> bool:
+        return any(token == flag or token.startswith(f"{flag}=") for token in argv)
+
+    @staticmethod
+    def with_flag(argv: list[str], flag: str, value: str) -> list[str]:
+        if ArgvManipulator.declares(argv, flag):
+            return list(argv)
+        return [*argv, flag, value]
+
+    @staticmethod
+    def replacing_value(argv: list[str], flag: str, value: str) -> list[str]:
+        assert flag in argv, f"{flag} is not among the arguments, so there is no value of it to replace"
+        rewritten = list(argv)
+        rewritten[rewritten.index(flag) + 1] = value
+        return rewritten
+
+
 MOONCAKE_MASTER_PORT = 50051
 MOONCAKE_MASTER_METRICS_PORT = 0
 MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
