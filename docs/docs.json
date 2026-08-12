@@ -33,12 +33,7 @@
     "type": "github",
     "href": "https://github.com/radixark/miles"
    }
-  ],
-  "primary": {
-   "type": "button",
-   "label": "Contact",
-   "href": "mailto:miles@radixark.ai"
-  }
+  ]
  },
  "navigation": {
   "tabs": [
