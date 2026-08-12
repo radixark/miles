@@ -161,6 +161,38 @@ class TestV1ReplayMatching:
                 message_matcher=loose_tool_call_message_matches,
             )
 
+    def test_commit_after_loose_accept_preserves_stored_spelling(self):
+        tito = _RecordingTITOTokenizer()
+        session = _session_with_one_checkpoint(tito)
+        replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
+        tokens = session.prepare_pretokenized(
+            replay, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
+        )
+        next_assistant = {"role": "assistant", "content": "done"}
+
+        session.update_pretokenized_state(replay, next_assistant, tokens, [7], 0)
+
+        assert session.messages == [USER, STORED_ASSISTANT, TOOL_RESULT, next_assistant]
+        assert session.messages[1] is STORED_ASSISTANT
+
+    def test_canonical_replay_still_strict_matches_after_loose_commit(self):
+        tito = _RecordingTITOTokenizer()
+        session = _session_with_one_checkpoint(tito)
+        replay = [USER, REPLAYED_ASSISTANT, TOOL_RESULT]
+        tokens = session.prepare_pretokenized(
+            replay, tito_tokenizer=tito, message_matcher=loose_tool_call_message_matches
+        )
+        next_assistant = {"role": "assistant", "content": "done"}
+        session.update_pretokenized_state(replay, next_assistant, tokens, [7], 0)
+
+        result = session.prepare_pretokenized(
+            [USER, STORED_ASSISTANT, TOOL_RESULT, next_assistant, {"role": "user", "content": "next"}],
+            tito_tokenizer=tito,
+        )
+
+        assert session.num_assistant == 2
+        assert result == [0, 1, 99, 7, 99]
+
 
 def _state_with_one_node() -> tuple[SessionStateV2, Any]:
     state = SessionStateV2()

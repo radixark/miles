@@ -163,7 +163,12 @@ class LinearTrajectory:
             assistant_message=assistant_message,
         )
 
-        self.messages = list(request_messages) + [assistant_message]
+        # Commit the same effective history the tokens were built from (stored
+        # spellings for the reused prefix, the replay only for the new tail):
+        # committing the raw replay would let an accepted-but-reserialized
+        # prefix rewrite stored history, so the next canonical replay could
+        # no longer match its own session.
+        self.messages = self.messages + request_messages[len(self.messages) :] + [assistant_message]
         self.trajectory_token_ids.append(all_token_ids)
         self.generated_checkpoint_message_ends.append(len(request_messages) + 1)
         self.num_assistant = len(self.generated_checkpoint_message_ends)
