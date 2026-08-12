@@ -12,9 +12,11 @@ from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 logger = logging.getLogger(__name__)
 
 
-# TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
-#  raise this limit or make it configurable and remove the restriction.
-MAX_ASSISTANT_ROLLBACK_STEPS = 1
+# Claude Code's --max-turns counts top-level turns, not every model checkpoint;
+# subagents and retries can therefore create substantially more checkpoints.
+# Keep a generous finite bound so legitimate compaction still cannot trigger an
+# unbounded rollback.
+MAX_ASSISTANT_ROLLBACK_STEPS = 256
 
 
 def assert_pretokenized_prefix(
@@ -60,8 +62,8 @@ class LinearTrajectory:
     Rollback uses ``generated_checkpoint_message_ends`` instead of inferring checkpoints from message roles.
 
     The typical message sequence is: [system?, user, assistant, tool, assistant, tool, …],
-    but the agent may retry from an earlier point (e.g. re-running a tool call),
-    in which case the session is rolled back at most one assistant step.
+    but the agent may retry from an earlier point or compact a long context, in
+    which case the session rolls back to a bounded earlier checkpoint.
 
     Concurrency contract: all mutating methods must be called under ``self.lock``.
     """
@@ -92,7 +94,8 @@ class LinearTrajectory:
         """Build the full prompt input_ids for *request_messages*.
 
         Validates that *request_messages* extends the stored history, rolling
-        back at most one assistant step on agent retries, then reuses the
+        back to a bounded earlier checkpoint on retries or context compaction,
+        then reuses the
         stored token_ids as the pretokenized prefix.  When no stored checkpoint
         is left to build on — the first turn, or a retry of the first turn that
         rolled the session back to empty — renders *request_messages* from
@@ -100,8 +103,8 @@ class LinearTrajectory:
 
         Must be called under ``self.lock``.
         """
-        # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
-        #    first turn rolls back to the empty checkpoint, clearing token_ids.
+        # 1. Detect retries or context compaction and roll back to a bounded
+        #    earlier checkpoint. Retrying the first turn clears token_ids.
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages)
 
         if not self.token_ids:
@@ -173,15 +176,10 @@ class LinearTrajectory:
         or to the empty checkpoint when the matching prefix holds no generated
         checkpoint at all.
 
-        Only a single-step rollback is allowed (controlled by
-        ``MAX_ASSISTANT_ROLLBACK_STEPS``).  Discarding exactly one generated
-        checkpoint means the agent is retrying from the preceding checkpoint —
-        the request shares the stored prefix up to that generated response and
-        then continues with whatever the agent chooses (same or different tool
-        result, additional messages, etc.).  Any request that would need to
-        discard more than one generated checkpoint (i.e. jump back across
-        multiple turns) is rejected with ``MessageValidationError`` and no
-        state is modified.
+        Rollback is bounded by ``MAX_ASSISTANT_ROLLBACK_STEPS``.  This covers a
+        nearby retry as well as a harness compacting a long context into a
+        summary.  A request that exceeds the bound is rejected with
+        ``MessageValidationError`` and no state is modified.
 
         Example — agent retries after the first tool call::
 

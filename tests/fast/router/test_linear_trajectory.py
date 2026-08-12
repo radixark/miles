@@ -517,8 +517,9 @@ class TestRollback:
         assert session.token_ids == [1, 2, 3, 10, 11]
         assert session.messages == [SYS_MSG, USER_MSG, ASSISTANT_MSG_1]
 
-    def test_multi_step_rollback_raises(self, registry: SessionRegistry):
-        """Rollback that discards >1 assistant raises MessageValidationError and leaves state unchanged."""
+    def test_configured_rollback_limit_raises(self, registry: SessionRegistry, monkeypatch):
+        """Rollback beyond the configured bound leaves state unchanged."""
+        monkeypatch.setattr("miles.rollout.session.linear_trajectory.MAX_ASSISTANT_ROLLBACK_STEPS", 1)
         sid = registry.create_session()
         session = registry.get_session(sid)
 
@@ -556,6 +557,38 @@ class TestRollback:
         assert session.trajectory_token_ids == prev_token_ids
         assert session.records == prev_records
         assert session.num_assistant == prev_num_assistant
+
+    def test_claude_code_compaction_discards_177_assistants(self, registry: SessionRegistry):
+        """Claude Code subagents can create more checkpoints than its top-level turn budget."""
+        sid = registry.create_session()
+        session = registry.get_session(sid)
+        messages = [SYS_MSG, USER_MSG]
+        checkpoint_ends = []
+        for turn in range(179):
+            messages.append({"role": "assistant", "content": f"assistant {turn}"})
+            checkpoint_ends.append(len(messages))
+            if turn < 178:
+                messages.append(
+                    {"role": "tool", "content": f'{{"turn": {turn}}}', "tool_call_id": f"call_{turn}"}
+                )
+
+        session.messages = messages
+        session.trajectory_token_ids = [[turn] for turn in range(179)]
+        session.generated_checkpoint_message_ends = checkpoint_ends
+        session.records = [MagicMock(spec=SessionRecord) for _ in range(179)]
+        session.num_assistant = 179
+
+        compacted_tool = {"role": "tool", "content": '{"compacted": true}', "tool_call_id": "compact"}
+        result = session.prepare_pretokenized(
+            messages[:5] + [compacted_tool], tito_tokenizer=registry.tito_tokenizer
+        )
+
+        assert result == [1]
+        assert session.messages == messages[:5]
+        assert session.trajectory_token_ids == [[0], [1]]
+        assert session.generated_checkpoint_message_ends == [3, 5]
+        assert len(session.records) == 2
+        assert session.num_assistant == 2
 
     def test_rollback_then_continue_full_trajectory(self, registry: SessionRegistry):
         """Rollback and then complete a full new trajectory from the checkpoint."""
@@ -700,8 +733,9 @@ class TestRollback:
         assert session.token_ids == [1, 2, 99]
         assert session.messages == [USER_MSG, ASSISTANT_MSG_FINAL]
 
-    def test_rollback_to_empty_beyond_one_assistant_raises(self, registry: SessionRegistry):
+    def test_configured_rollback_to_empty_limit_raises(self, registry: SessionRegistry, monkeypatch):
         """Resetting to empty is still bounded by MAX_ASSISTANT_ROLLBACK_STEPS."""
+        monkeypatch.setattr("miles.rollout.session.linear_trajectory.MAX_ASSISTANT_ROLLBACK_STEPS", 1)
         sid = registry.create_session()
         session = registry.get_session(sid)
 
@@ -712,7 +746,7 @@ class TestRollback:
         session.update_pretokenized_state(turn2, ASSISTANT_MSG_2, [1, 2, 10, 20], [30], max_trim_tokens=0)
         assert session.num_assistant == 2
 
-        # Discarding both assistants exceeds the single-step budget.
+        # Discarding both assistants exceeds the configured budget.
         with pytest.raises(MessageValidationError, match="exceeds max_assistant_rollback_steps"):
             session.prepare_pretokenized(turn1, tito_tokenizer=registry.tito_tokenizer)
 
