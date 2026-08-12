@@ -32,13 +32,9 @@ AGENTIC_ARGS=(
 )
 ```
 
-A bare `--use-session-server`, or `--use-session-server v1`, selects the linear
-v1 server. Use `--use-session-server v2` when one session must retain multiple
-trajectory branches.
-
 <Warning>
 
-**Do not apply the chat template to prompt data.** Do not pass
+**Do not apply the chat template to prompt data manually.** Do not pass
 `--apply-chat-template`: `Sample.prompt` must remain a `messages` list. The
 session server renders the first turn and incrementally appends later turns with
 the selected `--tito-model` implementation.
@@ -85,52 +81,8 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 
-## Leave token ownership to Miles
 
-Send the full `messages` history on every turn. On the first request, the
-session server renders the selected template into `input_ids`. After a
-successful completion, it checkpoints those prompt IDs together with the output
-token IDs and logprobs returned by SGLang.
-
-On later requests, the server reuses the deepest applicable checkpoint,
-tokenizes only the appended suffix, and sends the joined `input_ids` to SGLang.
-During collection, Miles aligns the turn outputs against the accumulated TITO
-sequence, trims model-specific boundary tokens, and builds the training sample.
-
-<Warning>
-
-**Do not send TITO control fields.** The session server replaces client
-`input_ids` and forces `logprobs=True`, `return_meta_info=True`, and the response
-metadata needed for TITO. Do not set `logprob_start_len=0`; scoring the entire
-prompt defeats prefix caching and hurts performance.
-
-</Warning>
-
-## Choose the session behavior
-
-History handling depends on the selected server version:
-
-- **v1 is linear.** Each request must extend the previous messages at the tail.
-  Retrying the latest turn may roll back one assistant checkpoint, including to
-  an empty session when retrying the first turn. Earlier divergence or a larger
-  rollback is rejected.
-- **v2 is an append-only tree.** A request attaches to the deepest checkpoint
-  whose complete message path prefixes the request. Any unmatched suffix creates
-  a branch, and existing branches are never deleted. A path whose last generation
-  ended with `finish_reason=length` cannot be extended.
-- **Appended roles follow the template.** After a checkpoint, the selected
-  model's fixed template determines which roles may be appended.
-
-The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
-for each selected tree leaf. Consequently, v2 rejects `--group-rm`,
-`--partial-rollout`, and `--recompute-logprobs-via-prefill`. Both versions reject
-`--pause-generation-mode=abort`.
-
-Set `--max-seq-len` to cap the combined prompt, model output, and environment
-response tokens in each assembled sample. Miles also includes this value in the
-metadata passed to your agent so an external environment can stop early.
-
-## Optional teardown hook
+### Optional teardown hook
 
 The module named by `--custom-agent-function-path` may expose an `abort` function
 alongside the agent entry point:
@@ -148,7 +100,51 @@ timeout. The hook is optional; modules without it continue to work.
 See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for an implementation that flushes the Harbor agent server.
 
-## Pick your `--tito-model`
+## TITO
+
+### Leave token ownership to Miles
+
+Send the full `messages` history on every turn. On the first request, the
+session server renders the selected template into `input_ids`. After a
+successful completion, it checkpoints those prompt IDs together with the output
+token IDs and logprobs returned by SGLang.
+
+On later requests, the server reuses the deepest applicable checkpoint,
+tokenizes only the appended suffix, and sends the joined `input_ids` to SGLang.
+During collection, Miles aligns the turn outputs against the accumulated TITO
+sequence, trims model-specific boundary tokens, and builds the training sample.
+
+<Warning>
+
+**Do not set TITO control fields.** The session server replaces client
+`input_ids` and forces `logprobs=True`, `return_meta_info=True`, and the response
+metadata needed for TITO. Do not set `logprob_start_len=0`; scoring the entire
+prompt defeats prefix caching and hurts performance.
+
+</Warning>
+
+### Choose the session behavior
+
+History handling depends on the selected server version:
+
+- **v1 is linear.** Each request must extend the previous messages at the tail.
+  Retrying the latest turn may roll back one assistant checkpoint, including to
+  an empty session when retrying the first turn. Earlier divergence or a larger
+  rollback is rejected.
+- **v2 (Experimental) is an append-only tree.** A request attaches to the deepest checkpoint
+  whose complete message path prefixes the request. Any unmatched suffix creates
+  a branch, and existing branches are never deleted. A path whose last generation
+  ended with `finish_reason=length` cannot be extended.
+
+The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
+for each selected tree leaf. Both versions reject `--pause-generation-mode=abort` 
+and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
+
+Set `--max-seq-len` to cap the context length. Miles also includes this value in the
+metadata passed to your agent so an external environment can stop early.
+
+
+### Pick your `--tito-model`
 
 There is no auto-detection. Pick the family matching your model. Each named
 family resolves a maintainer-verified `FIXED_TEMPLATE` registration from
@@ -176,7 +172,7 @@ but treat it as best-effort until it passes the checks below.
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
 
-## Verify a new model family
+### Verify a new model TITO
 
 To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
 [`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
@@ -193,17 +189,6 @@ python scripts/tools/verify_session_tito_tokenizer.py \
     --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> \
     --rollout-num-gpus-per-engine 1
 ```
-
-## Troubleshooting
-
-| Symptom | Check |
-|---|---|
-| Backend response lacks `meta_info.output_token_logprobs` | Use the supported SGLang build. Miles already forces `logprobs=True` and `return_meta_info=True`. |
-| Prefix-cache hit rate drops to zero | Remove `logprob_start_len=0`. |
-| v1 rejects changed history | Keep messages append-only or use v2 when the session must preserve multiple lineages. |
-| v2 creates an unexpected branch | Replay every message in the intended parent path exactly. |
-| Appended-role validation fails | Select the matching `--tito-model` and use only roles supported by its fixed template. |
-| The agent hits the wrong URL | Use the supplied `base_url`; it already contains `/sessions/<id>`. |
 
 ## Complete example
 
