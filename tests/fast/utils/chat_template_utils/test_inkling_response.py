@@ -1,6 +1,6 @@
 import json
 
-from miles.utils.chat_template_utils.inkling_response import InklingResponseParser
+from miles.utils.chat_template_utils.inkling_parser import InklingResponseParser
 from miles.utils.chat_template_utils.tito_tokenizer import InklingTITOTokenizer
 
 
