@@ -148,14 +148,17 @@ stated cannot be checked by the person reading it, so the tile shows `25.3% of 9
 rather than `25.3%`.
 
 `perf/mfu_peak_tflops` comes from a small device table in `miles/utils/device_flops.py`, keyed
-on a substring of `torch.cuda.get_device_name()`, and `--mfu-peak-tflops` overrides it for a
+on the words of `torch.cuda.get_device_name()`, and `--mfu-peak-tflops` overrides it for a
 device the table does not know or to report against a different precision's peak. The table
 holds **dense** BF16 figures. Vendor datasheets headline the 2:4-sparsity number, which is
 exactly twice the dense one, so extending the table from the headline would halve every MFU
 reported: an H100 SXM is 989 TFLOP/s dense and 1979 with sparsity, and every published number
-this would be compared against uses dense. When neither the table nor the override yields a
-peak, both keys are simply not logged, so a run with an unrecognised device shows no tile at
-all rather than a percentage against an assumed denominator.
+this would be compared against uses dense. A board variant gets its own row only when it
+clocks differently from its family's flagship, which today means H100 PCIe at 756 against the
+SXM's 989; H100 NVL and H200 NVL match their SXM siblings and resolve through the family row.
+When neither the table nor the override yields a peak, both keys are simply not logged, so a
+run with an unrecognised device shows no tile at all rather than a percentage against an
+assumed denominator.
 
 #### Reading the number
 

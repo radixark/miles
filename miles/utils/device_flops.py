@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
 from functools import cache
 
 _PEAK_BF16_TFLOPS: dict[str, float] = {
     "A100": 312.0,
     "H100": 989.0,
+    "H100 PCIE": 756.0,
     "H200": 989.0,
+    "GH200": 989.0,
     "B200": 2250.0,
     "B300": 2250.0,
     "GB200": 2500.0,
@@ -15,10 +18,14 @@ _PEAK_BF16_TFLOPS: dict[str, float] = {
 _MATCH_ORDER: tuple[str, ...] = tuple(sorted(_PEAK_BF16_TFLOPS, key=len, reverse=True))
 
 
+def _words(device_name: str) -> str:
+    return f" {re.sub(r'[^A-Za-z0-9]+', ' ', device_name).upper().strip()} "
+
+
 def peak_bf16_tflops(device_name: str) -> float | None:
-    name = device_name.upper()
+    name = _words(device_name)
     for key in _MATCH_ORDER:
-        if key in name:
+        if f" {key} " in name:
             return _PEAK_BF16_TFLOPS[key]
     return None
 
