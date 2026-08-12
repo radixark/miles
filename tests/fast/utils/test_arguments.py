@@ -11,6 +11,8 @@ import pytest
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
+    _compute_custom_inference_engine_provider_path,
+    _compute_rollout_external,
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
@@ -27,7 +29,7 @@ from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
-PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
+PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
@@ -108,6 +110,177 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestRolloutExternalDerivation:
+    def test_static_addrs_imply_external_rollout(self):
+        """Giving engine addresses is the whole point of external mode, so no separate flag is needed."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=["host1:8000"], custom_inference_engine_provider_path=None
+        )
+
+        assert _compute_rollout_external(args) is True
+
+    def test_a_custom_provider_path_implies_external_rollout(self):
+        """A user-supplied provider means miles must not launch engines of its own."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=None, custom_inference_engine_provider_path="my_pkg.my_provider"
+        )
+
+        assert _compute_rollout_external(args) is True
+
+    def test_without_either_arg_rollout_stays_internal(self):
+        """The default run keeps launching its own engines."""
+        args = SimpleNamespace(rollout_external_engine_addrs=None, custom_inference_engine_provider_path=None)
+
+        assert _compute_rollout_external(args) is False
+
+    def test_the_standalone_external_flag_no_longer_exists(self):
+        """--rollout-external was replaced by derivation, so the parser must not define it anymore."""
+        with patch.object(sys, "argv", ["test"] + REQUIRED_ARGS):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+
+        option_strings = {s for action in parser._actions for s in action.option_strings}
+        assert "--rollout-external" not in option_strings
+        assert "--rollout-external-engine-addrs" in option_strings
+        assert "--custom-inference-engine-provider-path" in option_strings
+
+
+class TestEngineProviderPathAutofill:
+    def test_a_user_given_path_is_never_overwritten(self):
+        """The custom hook is the escape hatch, so validation must not replace it with a builtin."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=["host1:8000"],
+            custom_inference_engine_provider_path="my_pkg.my_provider",
+        )
+
+        assert _compute_custom_inference_engine_provider_path(args) == "my_pkg.my_provider"
+
+    def test_static_addrs_fill_in_the_discovery_provider(self):
+        """Static addresses mean the built-in discovery provider, chosen once in arg validation."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=["host1:8000"], custom_inference_engine_provider_path=None
+        )
+
+        assert _compute_custom_inference_engine_provider_path(args) == (
+            "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+        )
+
+    def test_an_internal_run_fills_in_the_backend_provider(self):
+        """Without external args the backend keeps announcing the engines it launches itself."""
+        args = SimpleNamespace(rollout_external_engine_addrs=None, custom_inference_engine_provider_path=None)
+
+        assert _compute_custom_inference_engine_provider_path(args) == (
+            "miles.ray.specs.inference.backend_inference_engine_provider"
+        )
+
+
+EXTERNAL_ARGS = [
+    "--rollout-external-engine-addrs",
+    "host1:8000",
+    "--rollout-num-gpus",
+    "1",
+    "--rollout-num-gpus-per-engine",
+    "1",
+    "--num-rollout",
+    "1",
+]
+
+
+class TestExternalRolloutValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_static_addrs_derive_both_external_and_the_discovery_provider(self):
+        """The helpers are unit tested in isolation, so only the real chain proves the order they run in."""
+        args = self._parse(EXTERNAL_ARGS)
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is True
+        assert args.custom_inference_engine_provider_path == (
+            "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+        )
+
+    def test_an_internal_run_derives_the_backend_provider(self):
+        """Every existing run takes this path, and it must reach the provider the backend announces."""
+        args = self._parse(["--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is False
+        assert args.custom_inference_engine_provider_path == (
+            "miles.ray.specs.inference.backend_inference_engine_provider"
+        )
+
+    def test_a_custom_provider_path_alone_is_external_and_is_kept(self):
+        """A user-supplied provider means miles launches no engines, and its path must survive autofill."""
+        args = self._parse(
+            ["--custom-inference-engine-provider-path", "my_pkg.my_provider", "--num-rollout", "1"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is True
+        assert args.custom_inference_engine_provider_path == "my_pkg.my_provider"
+
+    def test_static_addrs_do_not_overrule_a_custom_provider_path(self):
+        """Both args together are how a custom provider reads the address book miles parsed."""
+        args = self._parse(EXTERNAL_ARGS + ["--custom-inference-engine-provider-path", "my_pkg.my_provider"])
+
+        miles_validate_args(args)
+
+        assert args.custom_inference_engine_provider_path == "my_pkg.my_provider"
+
+    @pytest.mark.parametrize(
+        "extra, message",
+        [
+            (["--prefill-num-servers", "1"], "prefill_num_servers cannot be set"),
+            (["--eval-num-gpus", "1"], "eval_num_gpus cannot be set"),
+        ],
+    )
+    def test_an_arg_that_declares_a_second_topology_is_rejected(self, extra, message):
+        """Two topologies would size the placement group, the router and the weight-update group
+        against different fleets."""
+        args = self._parse(EXTERNAL_ARGS + extra)
+
+        with pytest.raises(AssertionError, match=message):
+            miles_validate_args(args)
+
+    def test_an_sglang_config_is_rejected_with_external_engines(self, tmp_path):
+        """The external topology comes from discovery, so a declared one could only disagree with it."""
+        config = tmp_path / "sglang.yaml"
+        config.write_text("sglang:\n  - name: default\n    server_groups:\n      - num_gpus: 1\n")
+        args = self._parse(EXTERNAL_ARGS + ["--sglang-config", str(config)])
+
+        with pytest.raises(AssertionError, match="sglang_config cannot be set"):
+            miles_validate_args(args)
+
+    def test_the_external_pd_router_flag_is_rejected_on_an_internal_run(self):
+        """An internal run reads PD off its own config, so the flag could only contradict it."""
+        args = self._parse(["--rollout-external-router-pd", "--num-rollout", "1"])
+
+        with pytest.raises(AssertionError, match="rollout-external-router-pd"):
+            miles_validate_args(args)
+
+    def test_the_external_pd_router_flag_is_accepted_with_external_engines(self):
+        """This is the only channel external PD has, so the guard must not close it."""
+        args = self._parse(EXTERNAL_ARGS + ["--rollout-external-router-pd"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external_router_pd is True
+
+    def test_the_same_args_stay_legal_on_an_internal_run(self):
+        """The guards are about the combination, so each half alone must keep working."""
+        args = self._parse(["--prefill-num-servers", "1", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is False
 
 
 class TestMaybeApplyDumperOverrides:

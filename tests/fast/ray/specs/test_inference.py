@@ -109,6 +109,46 @@ class TestComputeSpecRouterLaunchCommand:
         with pytest.raises(AssertionError, match="miles router does not support PD"):
             spec.launch_command(_make_router_ctx())
 
+    def test_the_external_pd_flag_launches_a_pd_router_in_front_of_regular_groups(self):
+        """External PD is discovered after the router is already up, so this flag is the only thing
+        that can put the router in PD mode; a router built without it misroutes every request while
+        discovery still reports a healthy prefill/decode fleet."""
+        args = make_args(
+            use_miles_router=False,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            rollout_external=True,
+            rollout_external_router_pd=True,
+        )
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx()))
+
+        assert parse_router_args_argv(argv[3:]).pd_disaggregation is True
+
+    def test_without_the_external_pd_flag_a_regular_model_keeps_a_regular_router(self):
+        """Every internal run takes this path, and the new flag defaults to off."""
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx()))
+
+        assert parse_router_args_argv(argv[3:]).pd_disaggregation is False
+
+    def test_the_external_pd_flag_is_rejected_by_the_miles_router(self):
+        """The miles router cannot serve PD at all, so the external flag must hit the same guard."""
+        args = make_args(
+            use_miles_router=True,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            rollout_external=True,
+            rollout_external_router_pd=True,
+        )
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        with pytest.raises(AssertionError, match="miles router does not support PD"):
+            spec.launch_command(_make_router_ctx())
+
     def test_sgl_router_launches_the_native_cli(self):
         """The sgl router runs as the upstream CLI with the addresses from the launch context."""
         args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
@@ -435,6 +475,23 @@ class TestSpecsInferenceEngine:
             rollout_num_gpus=8,
             colocate=True,
             debug_train_only=True,
+        )
+
+        assert specs_inference_engine(args) == []
+
+    def test_external_rollout_produces_no_engine_spec(self, tmp_path):
+        """Externally launched engines are the operator's to run, so miles must not spec its own."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
+            )
+        )
+        args = make_args(
+            sglang_config=str(config_path),
+            rollout_num_gpus=8,
+            rollout_external=True,
+            rollout_external_engine_addrs=["host1:8000"],
         )
 
         assert specs_inference_engine(args) == []
@@ -1140,6 +1197,24 @@ class TestSpecInferenceController:
         spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
 
         assert capability.requested_pool_ids == [[]]
+
+    def test_the_provider_factory_path_is_loaded_unconditionally(self, tmp_path):
+        """Provider selection lives in arg validation, so the spec must run whatever path args carry."""
+        args = self._args(
+            tmp_path,
+            rollout_external=True,
+            rollout_external_engine_addrs=["host1:8000"],
+            custom_inference_engine_provider_path=f"{__name__}._fake_engine_provider_factory",
+        )
+        capability = FakeBackendCapability(cells_provider=None, static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert kwargs["engine_provider"] == ("custom-provider", args, capability)
+
+
+def _fake_engine_provider_factory(args, *, capability):
+    return ("custom-provider", args, capability)
 
 
 class TestTheEngineEnvironment:

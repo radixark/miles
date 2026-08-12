@@ -81,6 +81,9 @@ def _resolve_rollout_functions(args) -> None:
         "--eval-num-gpus and a CheckpointEvalFn --eval-function-path each select an eval "
         "backend; the fleet would boot and then hand the work to the other one."
     )
+    assert not (
+        args.eval_num_gpus > 0 and _compute_rollout_external(args)
+    ), "eval_num_gpus cannot be set with external rollout engines."
     args.eval_uses_snapshots = args.eval_num_gpus > 0 or checkpoint_backend
 
 
@@ -852,17 +855,38 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
-                "--rollout-external",
-                action="store_true",
-                default=False,
-                help="Use external SGLang instances instead of launching them inside the framework.",
-            )
-            parser.add_argument(
                 "--rollout-external-engine-addrs",
                 type=str,
                 default=None,
                 nargs="+",
-                help="Address and ports of the external engines.",
+                help=(
+                    "Static addresses of externally launched SGLang engines, one per engine cell "
+                    "(the node-0 engine url for multi-node engines). Each entry is host:port or "
+                    "http://host:port. Setting this implies external rollout: Miles launches no "
+                    "engines and discovers the topology from each engine's /server_info."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-external-router-pd",
+                action="store_true",
+                default=False,
+                help=(
+                    "Launch the router in PD-disaggregation mode for external rollout engines. "
+                    "Internally launched engines infer this from the sglang config, but the router "
+                    "starts before external engines are discovered, so a PD external fleet must "
+                    "declare it here."
+                ),
+            )
+            parser.add_argument(
+                "--custom-inference-engine-provider-path",
+                type=str,
+                default=None,
+                help=(
+                    "Import path of a callable(args, *, capability) returning the BaseWorkerProvider "
+                    "that reports the inference engine cells. Setting this implies external rollout. "
+                    "When unset it is filled in automatically: the static discovery provider with "
+                    "--rollout-external-engine-addrs, the backend's own provider otherwise."
+                ),
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
@@ -2645,10 +2669,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 args_partial, _ = parser.parse_known_args()
             except SystemExit:
                 return parser
-            for path in [
-                resolve_rollout_function_paths(args_partial)[0],
-                args_partial.custom_generate_function_path,
-            ]:
+            paths = [args_partial.custom_inference_engine_provider_path]
+            if not use_legacy_rollout_v1():
+                paths = [
+                    resolve_rollout_function_paths(args_partial)[0],
+                    args_partial.custom_generate_function_path,
+                    *paths,
+                ]
+            for path in paths:
                 try:
                     fn = load_function(path)
                 except (ModuleNotFoundError, ValueError):
@@ -2697,8 +2725,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        if not use_legacy_rollout_v1():
-            parser = add_user_provided_function_arguments(parser)
+        parser = add_user_provided_function_arguments(parser)
 
         reset_arg(
             parser,
@@ -2838,6 +2865,22 @@ def _resolve_eval_datasets(args) -> list[EvalDatasetConfig]:
         args.eval_prompt_data = None
 
     return eval_datasets
+
+
+def _compute_rollout_external(args: argparse.Namespace) -> bool:
+    return args.rollout_external_engine_addrs is not None or args.custom_inference_engine_provider_path is not None
+
+
+_BACKEND_ENGINE_PROVIDER_PATH = "miles.ray.specs.inference.backend_inference_engine_provider"
+_STATIC_EXTERNAL_ENGINE_PROVIDER_PATH = "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+
+
+def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> str:
+    if (path := args.custom_inference_engine_provider_path) is not None:
+        return path
+    if args.rollout_external_engine_addrs is not None:
+        return _STATIC_EXTERNAL_ENGINE_PROVIDER_PATH
+    return _BACKEND_ENGINE_PROVIDER_PATH
 
 
 _FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
@@ -3564,6 +3607,9 @@ def miles_validate_args(args):
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
 
+    args.rollout_external = _compute_rollout_external(args)
+    args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
+
     if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
         if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
             logger.info(
@@ -3596,11 +3642,15 @@ def miles_validate_args(args):
 
     assert not (
         args.prefill_num_servers is not None and args.rollout_external
-    ), "prefill_num_servers cannot be set when rollout_external is set."
+    ), "prefill_num_servers cannot be set with external rollout engines; use --rollout-external-router-pd."
 
     assert not (
-        getattr(args, "sglang_config", None) is not None and args.rollout_external
-    ), "sglang_config cannot be set when rollout_external is set."
+        args.sglang_config is not None and args.rollout_external
+    ), "sglang_config cannot be set with external rollout engines; the topology comes from discovery."
+
+    assert not (
+        args.rollout_external_router_pd and not args.rollout_external
+    ), "--rollout-external-router-pd only applies to external rollout engines; internally launched engines infer PD from the sglang config."
 
     assert not (
         getattr(args, "sglang_config", None) is not None and getattr(args, "prefill_num_servers", None) is not None
