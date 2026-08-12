@@ -109,6 +109,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    backend = args.create_backend()
     print(
         f"running {args.model_name} {args.train_mode}/{args.task} on "
         f"{args.num_nodes} nodes (colocate) x {args.num_gpus_per_node} GPUs"
@@ -234,9 +235,8 @@ def _train(args: ScriptArgs):
         f"{args.extra_args} "
     )
 
-    U.execute_train(
+    backend.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=_MODEL_REGISTRY[args.model_name],
         train_script="train.py",
@@ -252,7 +252,9 @@ def train(args: ScriptArgs):
 
 
 def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(path_src=args.torch_dist, path_dst=args.torch_dist_local)
+    args.create_backend().exec_command_multi_node(
+        U.rsync_cmd(path_src=args.torch_dist, path_dst=args.torch_dist_local)
+    )
 
 
 @app.command()
