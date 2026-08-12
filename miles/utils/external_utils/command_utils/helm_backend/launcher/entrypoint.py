@@ -10,6 +10,7 @@ import yaml
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.arguments import parse_args
+from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.command_utils.base_backend import (
     CLUSTER_BACKEND_FLAG,
     ExecuteTrainConfig,
@@ -19,6 +20,10 @@ from miles.utils.external_utils.command_utils.common import ArgvManipulator, cha
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import CI_LABEL, Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_record import (
+    LaunchRecord,
+    installed_launch_record_file,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import farewell, with_observability
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
@@ -40,6 +45,7 @@ from miles.utils.workers.types import ClusterBackend
 logger = logging.getLogger(__name__)
 
 _RUN_UUID_FLAG = "--run-uuid"
+_ENV_REPORT_FLAG = "--env-report"
 _WANDB_RUN_ID_FLAG = "--wandb-run-id"
 _RUN_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
 
@@ -83,6 +89,13 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         prepare_cmd=request.prepare_cmd,
     )
     values_path = RunFiles.new_values_file(run_directory=run_directory)
+    record = LaunchRecord.compute(plan=plan, values_file=values_path)
+    record_path = RunFiles.new_record_file(run_directory=run_directory)
+    plan = plan.model_copy(
+        update={
+            "launch_record": _compute_pod_record_file(installed_manifest=installed_manifest, record_path=record_path),
+        }
+    )
     _write_helm_values(values_path, build_values(specs, plan).as_values())
     values_files: list[str | Path] = [*config.helm_values, values_path]
 
@@ -97,6 +110,9 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             values_files=values_files,
             skip_upgrade_check=config.skip_upgrade_check,
         )
+
+    record.write(path=record_path)
+    logger.info(f"What this launch launched is recorded under {record_path}")
 
     Helm.upgrade(
         release=release,
@@ -131,12 +147,17 @@ def _compute_train_argv(
     request: ExecuteTrainRequest, *, run_id: str, release: str, namespace: str, env: dict[str, str]
 ) -> tuple[list[str], Any]:
     argv = [*shlex.split(shell_safe_model_args(request.megatron_model_type)), *shlex.split(request.train_args)]
+    assert not ArgvManipulator.declares(argv, _ENV_REPORT_FLAG), (
+        f"{_ENV_REPORT_FLAG} is what this launcher tells the pods about the launch that installed them, and an "
+        f"argument of that name outranks it, so the pods would report a launch that never happened; drop it"
+    )
     argv = ArgvManipulator.with_flag(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
     # TODO: generate different run_uuid even for same run_id, but at the same time allow helm upgrading
     argv = ArgvManipulator.with_flag(argv, _RUN_UUID_FLAG, derive_run_uuid(run_id))
 
     with override_argv(argv), override_env(env):
         args = parse_args()
+    assert LAUNCHER_REPORT_ENV_VAR not in args.train_env_vars
 
     # TODO: remove after args refactor handles wandb ids
     if args.use_wandb and args.wandb_run_id is None:
@@ -153,6 +174,12 @@ def _generate_wandb_run_id() -> str:
     from wandb.sdk.lib.runid import generate_id
 
     return generate_id()
+
+
+def _compute_pod_record_file(*, installed_manifest: Manifest | None, record_path: Path) -> str | None:
+    if installed_manifest is None:
+        return str(record_path)
+    return installed_launch_record_file(manifest=installed_manifest, container=naming.ORCHESTRATOR_COMPONENT)
 
 
 def _compute_state_file(*, installed_manifest: Manifest | None, run_directory: Path, release: str) -> Path:

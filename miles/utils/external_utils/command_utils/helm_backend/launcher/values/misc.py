@@ -51,6 +51,7 @@ class LaunchPlan(FrozenStrictBaseModel):
     orchestrator_command: list[str]
     worker_argv: list[str]
     env: dict[str, str] = {}
+    launch_record: str | None = None
     colocate: bool = False
     mooncake_plan: MooncakePlan | None = None
     prepare_cmd: dict[str, str] = {}
