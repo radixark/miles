@@ -13,8 +13,8 @@ description: Concepts, launch scripts, customization hooks, and a complete CLI r
 | [Customization](/user-guide/customization) | The 21 `--*-path` plug-points for custom Python — rollout, reward, filters, loss, hooks. |
 | [Rollout Endpoints](/user-guide/rollout-endpoints) | The `/generate` endpoint and the OpenAI chat endpoint for agentic sessions. |
 | [Agentic Rollout (TITO)](/user-guide/agentic-chat-template) | Turning on and verifying TITO so multi-turn agentic rollout stays append-only. |
+| [Agentic Environments](/user-guide/environments) | Supplying an environment: dataset + reward, your own env via the plug points, or an external ecosystem. |
 | [CLI Reference](/user-guide/cli-reference) | Every flag Miles accepts, grouped by subsystem. |
-| [Environments](/user-guide/environments) | Supplying an environment: dataset + reward, your own env via the plug points, or an external ecosystem. |
 
 ## Which pages do I actually need?
 

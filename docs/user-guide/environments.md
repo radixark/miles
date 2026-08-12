@@ -1,5 +1,5 @@
 ---
-title: Environments
+title: Agentic Environments
 description: How Miles trains on RL environments — datasets with rewards, self-wired environments, and optional external ecosystems.
 ---
 

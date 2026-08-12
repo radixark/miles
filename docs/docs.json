@@ -194,17 +194,17 @@
        "user-guide/customization",
        "user-guide/rollout-endpoints",
        "user-guide/agentic-chat-template",
+       {
+        "group": "Agentic Environments",
+        "root": "user-guide/environments",
+        "pages": [
+         "user-guide/harbor",
+         "user-guide/openenv",
+         "user-guide/nemo-gym",
+         "user-guide/verifiers"
+        ]
+       },
        "user-guide/cli-reference"
-      ]
-     },
-     {
-      "group": "Environments",
-      "root": "user-guide/environments",
-      "pages": [
-       "user-guide/harbor",
-       "user-guide/openenv",
-       "user-guide/nemo-gym",
-       "user-guide/verifiers"
       ]
      }
     ]
