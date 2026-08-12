@@ -8,29 +8,29 @@ from pydantic.alias_generators import to_camel
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
-_DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
 _DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
-_PORT_NAME_MAX = 15
-_Port = Annotated[int, Field(ge=1, le=65535)]
 _OPTIONAL_DNS_LABEL = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
+_DNS_SUBDOMAIN = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
 _OPTIONAL_DNS_SUBDOMAIN = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
 _ENV_KEYS = {"propertyNames": {"pattern": "^[ -<>-~]+$", "not": {"const": "PYTHONPATH"}}}
 
-_OBJECT_NAME_MAX = 63
 _POOL_NAME_MAX = 40
+_OBJECT_NAME_MAX = 63
+_PORT_NAME_MAX = 15
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
 
-_Resources = dict[str, Any]
-
 _PoolName = Annotated[str, Field(min_length=1, max_length=_POOL_NAME_MAX, pattern=_DNS_LABEL)]
 _ObjectName = Annotated[str, Field(min_length=1, max_length=_OBJECT_NAME_MAX, pattern=_DNS_LABEL)]
+_Port = Annotated[int, Field(ge=1, le=65535)]
 _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _OptionalAbsolutePath = Annotated[str, Field(pattern="^(/.*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _RelativePath = Annotated[str, Field(pattern="^([^/].*)?$", json_schema_extra=_NO_PARENT_TRAVERSAL)]
 _EnvVars = Annotated[dict[str, str], Field(json_schema_extra=_ENV_KEYS)]
+
+_Resources = dict[str, Any]
 
 
 class ValuesModel(FrozenStrictBaseModel):
@@ -61,6 +61,7 @@ class PoolEntry(ValuesModel):
 class ObjectNames(ValuesModel):
     orchestrator: _ObjectName
     mooncake_master: _ObjectName
+    colocate_pairing: _ObjectName
     uninstall: _ObjectName
     uninstall_manifest: _ObjectName
 

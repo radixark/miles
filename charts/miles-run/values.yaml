@@ -30,6 +30,7 @@ run:
   objectNames:
     orchestrator: miles-run-orchestrator
     mooncakeMaster: miles-run-mooncake-master
+    colocatePairing: miles-run-colocate-pairing
     uninstall: miles-run-uninstall
     uninstallManifest: miles-run-uninstall-manifest
   orchestrator:
