@@ -24,7 +24,7 @@ hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 bash scripts/run-qwen3-4B.sh
 ```
 
-Dataset is [DAPO-Math-17k](https://huggingface.co/datasets/BytedTsinghua-SIA/DAPO-Math-17K) at `/root/dapo-math-17k/dapo-math-17k.jsonl`. See the [Qwen3 Dense](/models/qwen/qwen3) page for the full walkthrough, weight conversion, and variants.
+Dataset is [DAPO-Math-17k](https://huggingface.co/datasets/zhuzilin/dapo-math-17k) at `/root/dapo-math-17k/dapo-math-17k.jsonl`. See the [Qwen3 Dense](/models/qwen/qwen3) page for the full walkthrough, weight conversion, and variants.
 
 ## Which variant do I pick?
 

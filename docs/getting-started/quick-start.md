@@ -49,7 +49,7 @@ Three downloads:
 # The model you will train
 hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
 # Training prompts: 17k math problems with checkable answers
-hf download --repo-type dataset BytedTsinghua-SIA/DAPO-Math-17K --local-dir /root/dapo-math-17k
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
 # Eval benchmark: harder problems, evaluated on but never trained on
 hf download --repo-type dataset zhuzilin/aime-2024 --local-dir /root/aime-2024
 ```

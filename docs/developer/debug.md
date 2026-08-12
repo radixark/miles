@@ -1,6 +1,6 @@
 ---
 title: Debugging
-description: Useful tips for debugging.
+description: Split a misbehaving run into rollout and training halves, then debug the side that is actually wrong.
 ---
 When a Miles run misbehaves, the first question is always: **rollout or training?** The
 flags on this page exist to answer it by cutting the loop into pieces you can run one at a

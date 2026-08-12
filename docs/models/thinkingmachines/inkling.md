@@ -3,8 +3,6 @@ title: Inkling
 description: Launch recipe for Inkling (975 B), Thinking Machines' multimodal MoE with short convolution, relative attention, and a shared-expert sink.
 ---
 
-The complete Inkling RL implementation is open at the Miles pull request: [`radixark/miles#1683`](https://github.com/radixark/miles/pull/1683).
-
 ## 1. Model Introduction
 
 [Inkling](https://huggingface.co/thinkingmachines/Inkling) is a mixture-of-experts transformer released by Thinking Machines Lab, with 975 B total parameters and 41 B active, a context window of up to 1 M tokens, and pretraining on 45 trillion tokens of text, images, audio and video. Its architecture introduces short convolution, attention with relative positional embedding, and a novel MoE design with a shared-expert sink. Miles implements Inkling as a native Megatron model: local and global relative attention, the residual ShortConv, the shared-sink router and experts, and the image and audio encoders, and the same backend drives both full-parameter and LoRA RL.

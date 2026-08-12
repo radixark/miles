@@ -37,6 +37,6 @@ See the [DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash) page for the V4 
 
 ## Pairs well with
 
-- [FP8 & Low Precision](/advanced/fp8-low-precision) — both generations ship FP8 checkpoints and optional low-precision rollout.
+- [Low Precision RL](/advanced/low-precision) — both generations ship FP8 checkpoints and optional low-precision rollout.
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer) — amortize weight sync across ranks.
 - [Fault Tolerance](/advanced/fault-tolerance) — node failures are inevitable at 8-node scale and above.
