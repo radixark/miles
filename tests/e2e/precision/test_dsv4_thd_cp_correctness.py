@@ -17,7 +17,7 @@ import torch
 import torch.distributed as dist
 import torch.distributed.nn  # cp_utils reaches for this submodule without importing it
 
-from tests.ci.ci_register import register_rocm_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 from miles_plugins.models.deepseek_v4.ops.cp_utils import all_gather_cp
 from miles_plugins.models.deepseek_v4.ops.thd_utils import (
@@ -29,7 +29,7 @@ from miles_plugins.models.deepseek_v4.ops.thd_utils import (
     exchange_cp_boundary_hidden,
 )
 
-# ROCm only: the thd path has not been validated on CUDA yet.
+register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["precision", "megatron"])
 register_rocm_ci(est_time=60, suite="stage-c-4-gpu-mi350", labels=["precision"])
 
 SEGMENTS = [1500, 2093, 500, 3]  # neither ratio divides these; the last is shorter than both
