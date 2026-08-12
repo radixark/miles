@@ -1,5 +1,10 @@
 # Fully Asynchronous Rollout Example
 
+> **Read the docs first:** [Fully Async RL](https://miles.radixark.com/docs/user-guide/fully-async)
+> covers the schedule, the data buffer, the three evaluation modes, and every `--fully-async`
+> argument. The [example walkthrough](https://miles.radixark.com/docs/examples/fully-async)
+> annotates the launcher below, with tuning knobs, metrics to watch, and known limitations.
+
 This example shows a simple way to make rollout generation **fully asynchronous**: a single global worker is created once and then keeps running in the background, continuously pulling prompts and launching generation tasks. Training only needs to fetch already finished results. This removes the per‑step wait that happens in the normal synchronous style.
 
 The implementation lives in the core library at `miles/rollout/fully_async_rollout.py` (`FullyAsyncRolloutFn`, a class-based rollout function that owns a persistent background worker). It requires `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`.
@@ -19,11 +24,7 @@ You should see log lines like:
 Started fully-async rollout worker
 ```
 
-## See also
-* [Fully Async Rollout](/user-guide/fully-async) — the schedule, the data buffer, the three
-  evaluation modes, and every `--fully-async` argument.
-* [Fully Async example walkthrough](/examples/fully-async) — annotated launcher, tuning knobs,
-  metrics to watch, and known limitations.
-* [`examples/experimental/openenv/glm52_tbench2`](../../experimental/openenv/glm52_tbench2) —
-  the same flag on a frontier-scale agentic workload: GLM-5.2 744B-A40B on terminal-bench-2,
-  16 GB300 nodes split 8 training / 8 inference, one Daytona sandbox per episode.
+## At a larger scale
+[`examples/experimental/openenv/glm52_tbench2`](../../experimental/openenv/glm52_tbench2) runs
+the same flag on a frontier-scale agentic workload: GLM-5.2 744B-A40B on terminal-bench-2,
+16 GB300 nodes split 8 training / 8 inference, one Daytona sandbox per episode.
