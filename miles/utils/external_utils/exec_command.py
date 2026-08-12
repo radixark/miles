@@ -5,7 +5,6 @@ import subprocess
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.misc import get_current_node_ip
 
 logger = logging.getLogger(__name__)
@@ -20,7 +19,6 @@ def exec_command_cpu(cmd: str, capture_output: bool = False) -> str | None:
 
 
 def _exec_command(cmd: str, capture_output: bool = False) -> str | None:
-    configure_logger_raw("launcher")
     logger.info(f"EXEC: {cmd}")
 
     try:
