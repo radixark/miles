@@ -8,11 +8,17 @@ from miles.utils.external_utils.command_utils.base_backend import (
     resolve_extra_env_vars,
 )
 from miles.utils.external_utils.command_utils.common import (
+    MOONCAKE_BACKEND_NAME,
+    OBJECT_STORE_BACKEND_FLAG,
+    ArgvManipulator,
     _pythonpath_with_sources,
     get_bool_env_var,
     run_shell_command,
 )
-from miles.utils.external_utils.command_utils.ray_backend.command import exec_command_all_ray_nodes
+from miles.utils.external_utils.command_utils.ray_backend.command import (
+    exec_command_all_ray_nodes,
+    start_mooncake_master,
+)
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 
 
@@ -20,6 +26,7 @@ class RayCommandBackend(BaseCommandBackend):
     def _execute_train_inner(self, request: ExecuteTrainRequest) -> None:
         external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+        mooncake_master_port = self._resolve_owned_mooncake_master_port(request.train_args)
 
         self._clean_up_previous_run(external_ray=external_ray)
 
@@ -29,6 +36,11 @@ class RayCommandBackend(BaseCommandBackend):
                 f"export PYTHONUNBUFFERED=1 && "
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
             )
+
+        if MOONCAKE_BACKEND_NAME in ArgvManipulator.values_of(
+            shlex.split(request.train_args), OBJECT_STORE_BACKEND_FLAG
+        ):
+            start_mooncake_master()
 
         for cmd in request.prepare_cmd.values():
             self.exec_command_multi_node(cmd)
