@@ -3,7 +3,7 @@
 Example scripts for running P2P (RDMA) and broadcast (NCCL) weight transfer between
 Megatron training and sglang rollout engines.
 
-See [docs/en/advanced/p2p-weight-transfer.md](../../docs/en/advanced/p2p-weight-transfer.md)
+See [docs/advanced/p2p-weight-transfer.md](../../../docs/advanced/p2p-weight-transfer.md)
 for full documentation, architecture details, and profiling results.
 
 ## Quick Start
