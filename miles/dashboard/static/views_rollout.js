@@ -1,6 +1,6 @@
 import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
-import { el, fmtNum } from "./app.js";
+import { el, fmtNum, statBox } from "./app.js";
 import { drawChart } from "./charts.js";
 
 const DEFAULT_COLUMNS = [
@@ -58,10 +58,6 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
   };
   render();
   return wrap;
-}
-
-function statBox(label, value) {
-  return el("div", { class: "stat" }, [el("div", { class: "v" }, [fmtNum(value)]), el("div", { class: "k" }, [label])]);
 }
 
 export async function renderRollout(view, meta, route) {

@@ -28,13 +28,20 @@ from pathlib import Path
 
 import tb2_sandbox_recipe as recipe
 from tb2_sandbox_recipe import (
-    read_task_config,
+    COMMAND_TIMEOUT_S,
     resolve_docker_image,
     sandbox_labels,
     server_cmd,
     server_layer_commands,
+    task_env_resources,
     wait_server_ready,
 )
+
+
+# Every knob describing ONE Daytona sandbox lives here, next to the create
+# that uses it; the backend module keeps only the fan-out knobs. Read at import:
+# a rollout worker is a fresh process per run.
+_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
 
 
 def build_task_image(task_dir: Path, docker_image: str | None = None):
@@ -55,12 +62,10 @@ def build_task_image(task_dir: Path, docker_image: str | None = None):
 def task_resources(task_dir: Path):
     from daytona import Resources
 
-    env_cfg = read_task_config(task_dir).get("environment", {})
-    return Resources(
-        cpu=max(1, int(env_cfg.get("cpus", 1))),
-        memory=max(2, int(env_cfg.get("memory_mb", 2048)) // 1024),
-        disk=max(10, int(env_cfg.get("storage_mb", 10240)) // 1024),
-    )
+    # Daytona sizes in whole GB; the recipe's floors (2048 MB / 10240 MB)
+    # guarantee the integer division never rounds to zero.
+    cpus, memory_mb, storage_mb = task_env_resources(task_dir)
+    return Resources(cpu=cpus, memory=memory_mb // 1024, disk=storage_mb // 1024)
 
 
 # Keepalive cadence: 6 beats per 30-minute auto-stop window, and up to 3
@@ -90,9 +95,13 @@ def create_task_sandbox(
     daytona,
     task_dir: Path,
     *,
-    command_timeout_s: int = 900,
+    command_timeout_s: int = COMMAND_TIMEOUT_S,
     create_timeout_s: float = 1800.0,
-    ready_timeout_s: float = 300.0,
+    ready_timeout_s: float = _READY_TIMEOUT_S,
+    # Deliberately arguments rather than env knobs, unlike the E2B/Modal TTLs:
+    # these two are Daytona's OWN auto-stop/auto-delete intervals, and the
+    # keepalive cadence below is written against them. Retuning them means
+    # rethinking the heartbeat, not turning a dial.
     auto_stop_minutes: int = 30,
     auto_delete_minutes: int = 120,
 ):
@@ -132,7 +141,10 @@ def create_task_sandbox(
         _start_keepalive(sandbox, task_dir.name)
         return sandbox, url
     except Exception:
-        daytona.delete(sandbox)
+        try:
+            daytona.delete(sandbox)
+        except Exception:
+            pass  # cleanup must not mask the real failure; auto-stop/auto-delete reclaims it
         raise
 
 

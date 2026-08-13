@@ -1,0 +1,140 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 4
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1", "INDEXER_ROPE_NEOX_STYLE": "0", "SGLANG_NSA_FORCE_MLA": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.glm5.glm5 get_glm5_spec
+  --moe-layer-freq '[0]*3+[1]*2'
+  --num-experts 256
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-topk 8
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --moe-ffn-hidden-size 2048
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-topk-scaling-factor 2.5
+  --moe-aux-loss-coeff 0
+  --moe-router-dtype fp32
+  --make-vocab-size-divisible-by 16
+  --num-layers 5
+  --hidden-size 6144
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --disable-bias-linear
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --position-embedding-type rope
+  --no-position-embedding
+  --normalization RMSNorm
+  --qk-layernorm
+  --multi-latent-attention
+  --q-lora-rank 2048
+  --kv-lora-rank 512
+  --qk-head-dim 192
+  --v-head-dim 256
+  --kv-channels 192
+  --qk-pos-emb-head-dim 64
+  --vocab-size 154880
+  --rotary-base 8000000
+  --enable-experimental
+  --hf-checkpoint /root/models/GLM-5.2_5layer
+  --megatron-to-hf-mode bridge
+  --dsa-attention-backend tilelang 
+  --lora-rank 16
+  --lora-alpha 32
+  --lora-dropout 0.0
+  --target-modules "q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj,q_a_proj,kv_a_proj_with_mqa,q_b_proj,kv_b_proj"
+  --experts-shared-outer-loras
+  --no-gradient-accumulation-fusion
+  --lora-base-cpu-backup 
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type math
+  --num-rollout 1
+  --rollout-batch-size 4
+  --n-samples-per-prompt 4
+  --rollout-max-response-len 512
+  --rollout-temperature 1.0
+  --global-batch-size 16
+  --prompt-data /root/datasets/gsm8k/train.parquet
+  --input-key messages  
+  --optimizer adam
+  --lr 1e-5
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --kl-coef 0.00
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-rollout-routing-replay 
+  --use-wandb
+  --wandb-project miles-run_glm5_2_744b_a40b_lora
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 4
+  --expert-tensor-parallel-size 1
+  --qkv-format thd
+  --micro-batch-size 1 
+  --rollout-num-gpus-per-engine 2
+  --sglang-mem-fraction-static 0.5
+  --sglang-enable-dp-attention
+  --sglang-ep-size 2
+  --sglang-dp-size 2
+  --sglang-moe-dense-tp-size 1
+  --sglang-enable-dp-lm-head
+  --sglang-attention-backend nsa
+  --sglang-nsa-decode-backend flashmla_sparse
+  --sglang-nsa-prefill-backend flashmla_sparse
+  --sglang-page-size 64
+  --sglang-cuda-graph-max-bs 64
+  --sglang-max-running-requests 512
+  --sglang-chunked-prefill-size 4096
+  --sglang-watchdog-timeout 3600
+  --sglang-moe-runner-backend triton
+  --sglang-disable-shared-experts-fusion
+  --sglang-max-lora-rank 16
+  --sglang-lora-backend triton 
+  --save-interval 1
+  --save /personal/checkpoints/260101-000000-000 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend flash
+  --calculate-per-token-loss
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 4
+  --num-gpus-per-node 4
+  --colocate   

@@ -8,7 +8,7 @@ Kimi-K2.5 is a MoE + MLA model (61 layers, 384 experts) shipped as an INT4
 weights for the SGLang rollout while Megatron loads a BF16 reference via the
 HF<->Megatron bridge (`--megatron-to-hf-mode bridge`), so there is no offline
 `torch_dist` conversion step. The architecture is shared with Kimi-K2-Thinking,
-whose Megatron MODEL_ARGS we reuse (`scripts/models/kimi-k2-thinking.sh`).
+while `scripts/models/kimi-k25.py` preserves K2.5's YaRN parameters.
 
 =====================
 
@@ -48,6 +48,8 @@ INT4_GROUP_SIZE = 32
 # Megatron bridge identifier consumed by megatron_to_hf dispatch ("kimi_k25" in model_name).
 BRIDGE_MODEL_NAME = "kimi_k25"
 
+_CUDA_GRAPH_BS = " ".join(str(bs) for bs in [1, 2, 4, 8, *range(16, 129, 8)])
+
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
@@ -55,7 +57,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_org: str = "moonshotai"
     model_name: str = "Kimi-K2.5"
-    megatron_model_type: str = "kimi-k2-thinking"
+    megatron_model_type: str = "kimi-k25"
     num_gpus_per_node: int = 8
     enable_eval: bool = False
     num_rollout: int = 3000
@@ -68,7 +70,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.model_name == "Kimi-K2.5":
             self.model_org = "moonshotai"
-            self.megatron_model_type = "kimi-k2-thinking"
+            self.megatron_model_type = "kimi-k25"
         elif self.model_name == "Kimi-K2.5-2layer":
             self.model_org = "CharyZeng"
             self.megatron_model_type = "kimi-k25_2layer"
@@ -84,8 +86,10 @@ def _bf16_ref_dir(args: ScriptArgs) -> str:
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     if args.enable_eval:
         U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
@@ -93,7 +97,7 @@ def _prepare_download(args: ScriptArgs):
 
 def _convert_to_bf16(args: ScriptArgs):
     """Dequantize the INT4 checkpoint to a BF16 reference for the Megatron bridge."""
-    U.exec_command(
+    U.exec_command_gpu(
         f"python {U.repo_base_dir}/tools/convert_kimi_int4_to_bf16.py "
         f"--model-dir {args.model_dir}/{args.model_name} "
         f"--output-dir {_bf16_ref_dir(args)} "
@@ -196,6 +200,7 @@ def _execute_train(args: ScriptArgs):
         "--sglang-mem-fraction-static 0.7 "
         f"--sglang-ep-size {args.num_gpus_per_node} "
         "--sglang-server-concurrency 1024 "
+        f"--sglang-cuda-graph-bs {_CUDA_GRAPH_BS} "
         "--use-rollout-routing-replay "
     )
 

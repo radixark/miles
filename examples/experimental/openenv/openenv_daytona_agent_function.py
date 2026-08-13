@@ -36,21 +36,23 @@ Env vars (the agent-loop ones in ``openenv_agent_function`` apply too):
                      logged in plaintext. Point it at a file every node can
                      read: a dotfile, K8s Secret mount, or shared-FS path.
   OPENENV_DAYTONA_CREATE_CONCURRENCY  max in-flight sandbox creates (default 4).
-  OPENENV_DAYTONA_READY_TIMEOUT_S     server-ready wait per sandbox (default 300).
-  TB2_COMMAND_TIMEOUT_S        per-exec timeout inside the sandbox (default 900).
+  OPENENV_DAYTONA_CREATE_MAX_RETRIES  how many throttled creates to retry (default 8).
+
+Everything describing ONE sandbox — the ready deadline, and the auto-stop /
+auto-delete backstop — is documented and read in ``tb2_sandbox_daytona``, and
+the per-exec timeout inside it (TB2_COMMAND_TIMEOUT_S) in
+``tb2_sandbox_recipe``, next to the code each one steers.
 """
 
 import logging
-import os
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-import openenv_agent_function as oaf
 import openenv_sandbox_common as common
 import tb2_sandbox_daytona
 
 logger = logging.getLogger(__name__)
+
 
 # Each episode materializes the per-task image declaratively from the Image
 # definition, read off the local TB2 checkout (OPENENV_TB2_TASKS_DIR); repeat
@@ -63,19 +65,9 @@ logger = logging.getLogger(__name__)
 # older install outright, and the shared agent loop's harness-marker guard
 # backstops it per episode.
 #
-# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests).
-# A rollout fans out many episodes at once; cap in-flight creates process-wide
-# and retry throttled ones with jittered exponential backoff.
-_CREATE_CONCURRENCY = int(os.getenv("OPENENV_DAYTONA_CREATE_CONCURRENCY", "4"))
-_CREATE_MAX_RETRIES = int(os.getenv("OPENENV_DAYTONA_CREATE_MAX_RETRIES", "8"))
-_CREATE_BACKOFF_BASE_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_BASE_S", "2.0"))
-_CREATE_BACKOFF_CAP_S = float(os.getenv("OPENENV_DAYTONA_CREATE_BACKOFF_CAP_S", "30.0"))
-_READY_TIMEOUT_S = float(os.getenv("OPENENV_DAYTONA_READY_TIMEOUT_S", "300"))
-_COMMAND_TIMEOUT_S = int(os.getenv("TB2_COMMAND_TIMEOUT_S", "900"))
-
-_get_create_sem = common.lazy_semaphore(_CREATE_CONCURRENCY)
-
-
+# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests);
+# the shared backend caps in-flight creates process-wide and retries throttled ones
+# with jittered exponential backoff (knobs: OPENENV_DAYTONA_CREATE_*).
 def _is_throttle_error(exc: BaseException) -> bool:
     """True when a sandbox create failed only because Daytona rate-limited it.
 
@@ -93,86 +85,24 @@ def _is_throttle_error(exc: BaseException) -> bool:
             return True
     except ImportError:  # pragma: no cover - only without the daytona SDK
         pass
-    s = str(exc).lower()
-    return "throttler" in s or "too many requests" in s or "429" in s
+    return common.throttle_text(exc, "throttler")
 
 
-def _start_declarative(task_id: str, tasks_dir: str) -> tuple[Any, str]:
+def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:
     daytona = tb2_sandbox_daytona.make_daytona()
-    sandbox, url = tb2_sandbox_daytona.create_task_sandbox(
-        daytona,
-        Path(tasks_dir) / task_id,
-        command_timeout_s=_COMMAND_TIMEOUT_S,
-        ready_timeout_s=_READY_TIMEOUT_S,
-    )
+    sandbox, url = tb2_sandbox_daytona.create_task_sandbox(daytona, Path(tasks_dir) / task_id)
     return (lambda: daytona.delete(sandbox)), url
 
 
-async def _start_task_sandbox(task_id: str) -> tuple[Any, str]:
-    """Create one sandbox for *task_id* with the env server running.
+BACKEND = common.SandboxBackend(
+    provider="Daytona",
+    start_sandbox=_start_sandbox,
+    is_throttle=_is_throttle_error,
+    logger=logger,
+    **common.backend_knobs("DAYTONA"),
+)
 
-    Returns (close_fn, base_url); close_fn deletes the sandbox. The
-    orchestration — cancel-safe create, process-wide throttling, backoff on
-    Daytona rate limits — is the provider-blind skeleton in
-    ``openenv_sandbox_common``; this leg contributes only its start hook and
-    throttle classifier.
-    """
-    return await common.start_task_sandbox(
-        task_id,
-        os.getenv("OPENENV_TB2_TASKS_DIR", "").strip(),
-        start_fn=lambda tid, tdir: _start_declarative(tid, tdir),
-        is_throttle=_is_throttle_error,
-        sem=_get_create_sem(),
-        max_retries=_CREATE_MAX_RETRIES,
-        backoff_base_s=_CREATE_BACKOFF_BASE_S,
-        backoff_cap_s=_CREATE_BACKOFF_CAP_S,
-        logger=logger,
-        provider="Daytona",
-    )
-
-
-@asynccontextmanager
-async def _episode_env(env_cls: Any, metadata: dict[str, Any]):
-    """Yield a connected env client on a fresh sandbox; delete it after."""
-    async with common.episode_env(env_cls, metadata, start=_start_task_sandbox, logger=logger) as env:
-        yield env
-
-
-async def _sandbox_run_body(env_cls: Any, metadata: dict[str, Any], body: Any) -> Any:
-    """Run *body* on a fresh sandbox for the episode's task."""
-    async with _episode_env(env_cls, metadata) as env:
-        return await body(env)
-
-
-async def run_episode(
-    policy: Any,
-    model_name: str,
-    messages: list[dict[str, str]],
-    request_kwargs: dict[str, Any],
-    metadata: dict[str, Any],
-) -> tuple[float | None, dict[str, Any]]:
-    """One episode in its own Daytona sandbox, with the caller's own
-    policy. Direct-drive entry, same contract as openenv_agent_function's.
-
-    No post-episode hygiene: the sandbox is deleted when the episode ends.
-    """
-    return await oaf._multi_turn(
-        oaf._load_tbench2(),
-        policy,
-        model_name,
-        messages,
-        request_kwargs,
-        metadata,
-        run_body=_sandbox_run_body,
-    )
-
-
-async def run(
-    base_url: str,
-    prompt: Any,
-    request_kwargs: dict[str, Any] | None = None,
-    metadata: dict[str, Any] | None = None,
-    **kwargs,
-) -> dict[str, Any] | None:
-    """Run one OpenEnv tbench2 episode in its own Daytona sandbox."""
-    return await oaf._run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)
+# Module-level entry points: `--custom-agent-function-path` resolves a module
+# attribute, and the sibling tools reach run_episode the same way.
+run_episode = BACKEND.run_episode
+run = BACKEND.run

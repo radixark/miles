@@ -71,13 +71,20 @@ class _FakeTemplateCls:
 
     def __init__(self):
         self.commands = []
+        self.steps = []  # ordered build steps, to prove set_user precedes them
 
     def from_image(self, base):
         self.base = base
         return self
 
+    def set_user(self, user):
+        self.user = user
+        self.steps.append(("set_user", user))
+        return self
+
     def run_cmd(self, cmd):
         self.commands.append(cmd)
+        self.steps.append(("run_cmd", cmd))
         return self
 
     @staticmethod
@@ -120,6 +127,28 @@ def test_ensure_template_builds_with_recipe_and_resources(monkeypatch, fake_e2b)
     assert kwargs["api_key"].startswith("e2b_")
 
 
+def test_ensure_template_builds_as_root(monkeypatch, fake_e2b):
+    """E2B runs build commands as a NON-root user by default, which fails every
+    layer of the recipe (apt-get exits 100, /opt is not writable) — observed on
+    E2B Cloud, invisible on a self-hosted AgentENV that builds as root. The user
+    must be set BEFORE the first command, since set_user only affects what
+    follows it."""
+    _patch_recipe(monkeypatch, commands=("apt-get install -y curl", "mkdir -p /opt/envserver"))
+    sandbox.ensure_task_template(Path("/tasks/t"))
+    ((template, _, _),) = _FakeTemplateCls.builds
+    assert template.user == "root"
+    assert template.steps[0] == ("set_user", "root")
+
+
+def test_template_alias_tracks_the_build_user(monkeypatch, fake_e2b):
+    """The user is part of the baked artifact, so changing it must re-bake
+    rather than serve a template built by whoever built it first."""
+    _patch_recipe(monkeypatch)
+    before = sandbox.template_alias(Path("/tasks/t"))
+    monkeypatch.setattr(sandbox, "_BUILD_USER", "someone-else")
+    assert sandbox.template_alias(Path("/tasks/t")) != before
+
+
 def test_ensure_template_force_rebuilds_skipping_cache(monkeypatch, fake_e2b):
     _patch_recipe(monkeypatch)
     _FakeTemplateCls.exists = True  # force must rebuild anyway
@@ -143,7 +172,8 @@ def test_ensure_template_enforces_build_wall_clock(monkeypatch, fake_e2b):
 class _FakeSandbox:
     def __init__(self):
         self.killed = False
-        self.commands = type("C", (), {"run": staticmethod(lambda *a, **k: None)})()
+        self.ran = []
+        self.commands = type("C", (), {"run": lambda _self, *a, **k: self.ran.append((a, k))})()
 
     def get_host(self, port):
         return f"{port}-id.example.test"
@@ -167,6 +197,27 @@ def test_create_task_sandbox_kills_on_partial_failure(monkeypatch, fake_e2b):
     with pytest.raises(TimeoutError):
         sandbox.create_task_sandbox(Path("/tasks/t"), ready_timeout_s=0.01)
     assert created.killed
+
+
+def test_create_runs_the_env_server_as_root(monkeypatch, fake_e2b):
+    """The env server executes the agent's commands, so the user it runs as IS
+    the task environment's user. E2B defaults to a non-root user; a TB2 task
+    image expects root (its own tests apt-install), so the server must be
+    started as root or the agent silently loses privileges it should have."""
+    created = _FakeSandbox()
+    fake_e2b.Sandbox = type("S", (), {"create": staticmethod(lambda **k: created)})
+    monkeypatch.setattr(sandbox, "ensure_task_template", lambda task_dir: "tb2-t-abc")
+    monkeypatch.setattr(sandbox, "sandbox_labels", lambda task_dir: {})
+    monkeypatch.setattr(sandbox, "server_cmd", lambda *a, **k: "serve")
+    monkeypatch.setattr(sandbox, "wait_server_ready", lambda url, timeout_s: None)
+    monkeypatch.setattr(sandbox, "_start_keepalive", lambda sb, task_id: None)
+
+    sandbox.create_task_sandbox(Path("/tasks/t"))
+
+    ((args, kwargs),) = created.ran
+    assert kwargs["user"] == "root"
+    assert kwargs["background"] is True
+    assert "serve" in args[0]
 
 
 def test_build_lock_is_per_alias():

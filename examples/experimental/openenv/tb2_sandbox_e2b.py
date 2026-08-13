@@ -13,8 +13,8 @@ server speaking the E2B API:
     server and this module needs no code changes; AgentENV currently accepts
     any non-empty API key.
 
-Unlike Daytona's declarative per-episode image build, E2B separates the two
-halves of a create:
+Where a provider that builds declaratively does it all in the create, E2B
+separates the two halves:
 
   ``ensure_task_template(...)``  build the per-task template once, under a
       deterministic alias derived from the task id AND a digest of the recipe
@@ -35,7 +35,6 @@ offline unit tests and non-sandbox launches must not require the SDK.
 """
 
 import argparse
-import concurrent.futures
 import hashlib
 import os
 import re
@@ -46,29 +45,43 @@ from pathlib import Path
 
 import tb2_sandbox_recipe as recipe
 from tb2_sandbox_recipe import (
-    read_task_config,
     resolve_docker_image,
+    run_with_deadline,
     sandbox_labels,
     server_cmd,
     server_layer_commands,
+    task_env_resources,
     wait_server_ready,
 )
+
+
+# The user every build command and the env server run as. The TB2 task images
+# are built for a root agent (their solutions and tests apt-install freely), so
+# anything less would change the task environment, not just the build.
+#
+# The BUILD is where this is load-bearing: E2B Cloud runs template-build
+# commands as a non-root user, which fails every layer of the recipe. At
+# RUNTIME both endpoints already default to root (measured), so passing it to
+# the server exec pins the task environment's user rather than fixing a
+# failure — a provider default that changed would otherwise change what the
+# agent may do, silently.
+_BUILD_USER = "root"
 
 
 def template_alias(task_dir: Path) -> str:
     """Deterministic template alias: ``tb2-<task-id>-<recipe digest>``.
 
-    The digest covers the base image, every build command (which embed the
-    tbench2_env source, deterministically tarred — see ``_dir_tar_b64``), and
-    the build resources (E2B sizes sandboxes at template-build time), so the
-    alias changes exactly when the baked artifact would: recipe edits,
-    env-package changes, or a task.toml resource bump re-bake; identical
-    inputs reuse the existing template.
+    The digest covers the base image, the build user, every build command (which
+    embed the tbench2_env source, deterministically tarred — see
+    ``_dir_tar_b64``), and the build resources (E2B sizes sandboxes at
+    template-build time), so the alias changes exactly when the baked artifact
+    would: recipe edits, env-package changes, or a task.toml resource bump
+    re-bake; identical inputs reuse the existing template.
     """
     task_dir = Path(task_dir)
     base = resolve_docker_image(task_dir, None)
     resources = task_build_resources(task_dir)
-    inputs = [base, *server_layer_commands(task_dir), repr(sorted(resources.items()))]
+    inputs = [base, _BUILD_USER, *server_layer_commands(task_dir), repr(sorted(resources.items()))]
     digest = hashlib.sha256("\n".join(inputs).encode()).hexdigest()[:10]
     slug = re.sub(r"[^a-z0-9-]", "-", task_dir.name.lower())
     return f"tb2-{slug}-{digest}"
@@ -80,11 +93,8 @@ def task_build_resources(task_dir: Path) -> dict[str, int]:
     E2B sizes sandboxes at template-build time (warm starts inherit the
     template's spec), so the task's requirements go here, not on create.
     """
-    env_cfg = read_task_config(task_dir).get("environment", {})
-    return {
-        "cpu_count": max(1, int(env_cfg.get("cpus", 1))),
-        "memory_mb": max(2048, int(env_cfg.get("memory_mb", 2048))),
-    }
+    cpus, memory_mb, _storage_mb = task_env_resources(task_dir)
+    return {"cpu_count": cpus, "memory_mb": memory_mb}
 
 
 def _connection_opts() -> dict:
@@ -125,7 +135,7 @@ def ensure_task_template(
     # In-function import, deliberately: the e2b SDK is an optional dependency
     # of this recipe (the launcher preflights it), so importing the module
     # must not require it — the offline tests import this file with a fake
-    # `e2b` in sys.modules, and the Daytona leg defers its SDK the same way.
+    # `e2b` in sys.modules, and the sibling backends defer their SDKs the same way.
     from e2b import Template
 
     task_dir = Path(task_dir)
@@ -134,7 +144,11 @@ def ensure_task_template(
         if not force and Template.alias_exists(alias, **_connection_opts()):
             return alias
         base = resolve_docker_image(task_dir, None)
-        template = Template().from_image(base)
+        # set_user before the first command: E2B runs template-build commands as
+        # a NON-root user by default, which fails every layer of the recipe
+        # (apt-get exits 100, /opt is not writable). A self-hosted AgentENV
+        # builds as root and so never showed this.
+        template = Template().from_image(base).set_user(_BUILD_USER)
         for command in server_layer_commands(task_dir):
             template = template.run_cmd(command)
 
@@ -148,13 +162,7 @@ def ensure_task_template(
                 **_connection_opts(),
             )
 
-        # Not a `with` block: its __exit__ joins the worker, which would wait
-        # out the very build the timeout is meant to abandon.
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        try:
-            pool.submit(_build).result(timeout=build_timeout_s)
-        finally:
-            pool.shutdown(wait=False)
+        run_with_deadline(_build, build_timeout_s)
     return alias
 
 
@@ -178,6 +186,7 @@ def base_url(sandbox) -> str:
 # switch for orphans. 6 beats per window; up to 3 consecutive failed beats
 # (API blips) tolerated before the thread concludes the sandbox is gone.
 _SANDBOX_TTL_S = int(os.getenv("OPENENV_E2B_SANDBOX_TTL_S", "1800"))
+_READY_TIMEOUT_S = float(os.getenv("OPENENV_E2B_READY_TIMEOUT_S", "300"))
 _KEEPALIVE_INTERVAL_S = _SANDBOX_TTL_S / 6.0
 _KEEPALIVE_MAX_CONSECUTIVE_FAILURES = 3
 
@@ -202,9 +211,8 @@ def _start_keepalive(sandbox, task_id: str) -> None:
 def create_task_sandbox(
     task_dir: Path,
     *,
-    command_timeout_s: int = 900,
-    ready_timeout_s: float = 300.0,
-    ttl_s: int | None = None,
+    command_timeout_s: int = recipe.COMMAND_TIMEOUT_S,
+    ready_timeout_s: float = _READY_TIMEOUT_S,
 ):
     """Create ONE per-episode sandbox for *task_dir* from its template.
 
@@ -221,24 +229,35 @@ def create_task_sandbox(
     task_dir = Path(task_dir)
     opts = _connection_opts()
     alias = ensure_task_template(task_dir)
+    # The TTL is deliberately not a parameter: the keepalive thread re-arms
+    # _SANDBOX_TTL_S, so a different value passed here would be silently
+    # overwritten at the first beat.
     sandbox = Sandbox.create(
         template=alias,
-        timeout=ttl_s if ttl_s is not None else _SANDBOX_TTL_S,
+        timeout=_SANDBOX_TTL_S,
         metadata=sandbox_labels(task_dir),
         **opts,
     )
     try:
         cmd = server_cmd(command_timeout_s, default_task_id=task_dir.name)
+        # user: the env server executes the agent's commands, so the user it
+        # runs as IS the task environment's user. E2B defaults to a non-root
+        # user; a TB2 task image expects root (its own tests apt-install), so
+        # anything else would silently change what the agent can do.
         sandbox.commands.run(
             f"bash -c {shlex.quote(cmd)} > /tmp/openenv-server.log 2>&1",
             background=True,
+            user=_BUILD_USER,
         )
         url = base_url(sandbox)
         wait_server_ready(url, timeout_s=ready_timeout_s)
         _start_keepalive(sandbox, task_dir.name)
         return sandbox, url
     except Exception:
-        sandbox.kill(**opts)
+        try:
+            sandbox.kill(**opts)
+        except Exception:
+            pass  # cleanup must not mask the real failure; the TTL reclaims it
         raise
 
 

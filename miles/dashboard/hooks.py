@@ -314,10 +314,7 @@ def register_router(args) -> None:
     # a None ip here is a wiring-order bug, not runtime flakiness: fail loud
     assert args.sglang_router_ip is not None, "register_router must run after start_rollout_servers"
     try:
-        handle.set_router.remote(
-            f"http://{args.sglang_router_ip}:{args.sglang_router_port}",
-            use_miles_router=args.use_miles_router,
-        )
+        handle.set_router.remote(f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
     except Exception:
         _warner.warn("dashboard router registration failed; engine metrics will be missing")
 

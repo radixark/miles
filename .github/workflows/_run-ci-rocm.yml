@@ -15,10 +15,6 @@ on:
         # source of the image name, so a dated tag can't rot here.
         type: string
         required: true
-      checkout_ref:
-        description: Git ref to test. PR callers pass the merge ref explicitly.
-        type: string
-        required: true
       skip_dependency_install:
         # Default true: the ROCm image ships SGLang / Megatron-LM baked in.
         # Pass false to fetch and install refs (PR body ci-megatron-pr: /
@@ -71,7 +67,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.checkout_ref }}
           persist-credentials: false
 
       - name: Cleanup Ray processes

@@ -113,16 +113,19 @@ def _compute_metrics_from_samples(args, samples):
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
     tito_vals = [v for v in tito_vals if v is not None]
     if tito_vals:
-        log_dict["tito_session_mismatch_rate"] = np.mean([len(v) > 0 for v in tito_vals]).item()
+        session_server_version = "v1" if args.use_session_server is True else args.use_session_server
+        assert session_server_version in ("v1", "v2"), "TITO metrics require session server v1 or v2"
+        metric_prefix = f"tito_session_mismatch_rate/{session_server_version}"
+        log_dict[metric_prefix] = np.mean([len(v) > 0 for v in tito_vals]).item()
         for mtype in ("special_token_count", "special_token_type", "non_assistant_text", "assistant_text"):
-            log_dict[f"tito_session_mismatch_rate/{mtype}"] = np.mean(
+            log_dict[f"{metric_prefix}/{mtype}"] = np.mean(
                 [any(m.get("type") == mtype for m in v) for v in tito_vals]
             ).item()
         if args.ci_test:
             for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
-                rate = log_dict.get(f"tito_session_mismatch_rate/{strict_type}", 0)
+                rate = log_dict.get(f"{metric_prefix}/{strict_type}", 0)
                 assert rate == 0, (
-                    f"tito_session_mismatch_rate/{strict_type}={rate:.4f} must be 0 — "
+                    f"{metric_prefix}/{strict_type}={rate:.4f} must be 0 — "
                     "this indicates a bug in the TITO algorithm or chat template. "
                     "Please check your tito model and chat template."
                 )

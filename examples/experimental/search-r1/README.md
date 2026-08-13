@@ -51,7 +51,8 @@ hf download Qwen/Qwen2.5-3B --local-dir /root/Qwen2.5-3B
 
 # mcore checkpoint
 cd /root/miles
-source scripts/models/qwen2.5-3B.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen2.5-3B)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
     ${MODEL_ARGS[@]} \
     --hf-checkpoint /root/Qwen2.5-3B \
@@ -70,17 +71,14 @@ SEARCH_R1_CONFIGS = {
     "max_turns": 2,
     "topk": 3,
     "search_concurrency": 256,
-
     # ============== Search Backend Selection ==============
     "search_backend": "local",  # Options: "local" or "google"
-
     # ============== Local Search Configuration ==============
     # (Only used when search_backend="local")
     "local": {
         "search_url": "http://127.0.0.1:8000/retrieve",  # URL of your local retrieval server
         "proxy": None,
     },
-
     # ============== Google Search Configuration ==============
     # (Only used when search_backend="google")
     "google": {
@@ -88,10 +86,8 @@ SEARCH_R1_CONFIGS = {
         "snippet_only": True,
         "proxy": None,
     },
-
     # ============== Log Probability Collection ==============
     "return_logprob": True,  # Set to True to collect log probabilities (required for TIS)
-
     # ============== Reward Model Configuration ==============
     "format_score": 0.2,
 }

@@ -27,8 +27,7 @@ This page has two passes.
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
-See [Training Script Walkthrough: Colocation](/user-guide/training-script-walkthrough#colocation-share-gpus-or-dont)
-for what `--colocate` flips on under the hood.
+See [Training Backends](/user-guide/training-backend) for what `--colocate` flips on under the hood.
 
 ### Batch sizing
 
@@ -229,7 +228,7 @@ Sections mirror the launch-script argument groups.
 | `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
 | `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
-| `--attn-implementation` | enum | `flash_attention_2` | FSDP only: `flash_attention_2`, `sdpa`, `eager`. |
+| `--attn-implementation` | str | `flash_attention_2` | FSDP only: passed to `transformers`, e.g. `flash_attention_2`, `flash_attention_3`, `sdpa`, `eager`. |
 
 ### RL algorithm
 

@@ -2,7 +2,7 @@
 per-episode sandboxes as the env. No GPU, no miles training pipeline.
 
 This reuses the exact agent-env loop miles runs during training
-(``openenv_agent_function._multi_turn``: reset -> {policy emits a shell command
+(``openenv_agent_function.multi_turn``: reset -> {policy emits a shell command
 -> exec -> feed output back} -> canonical tests/test.sh -> binary reward) but
 swaps miles' session-server policy for a plain API client. The machine running
 this only orchestrates; the policy runs in the cloud (e.g. DeepSeek) and each
@@ -22,18 +22,19 @@ Env vars:
   DEEPSEEK_API_KEY / POLICY_API_KEY   policy API key (required)
   POLICY_BASE_URL   OpenAI-compatible root (default https://api.deepseek.com)
   POLICY_MODEL      default deepseek-v4-flash
-  OPENENV_TB2_TASKS_DIR  per-episode sandbox mode (TB2 checkout path); with
-                    provider credentials go with it (Daytona: DAYTONA_API_KEY
-                    or ~/.config/daytona/api_key; e2b/agentenv likewise).
-  OPENENV_SANDBOX_BACKEND             required with the above: daytona / e2b /
-                    agentenv (an alias for e2b).
-                    Otherwise OPENENV_ENV_URL is used.
+  OPENENV_SANDBOX_BACKEND   per-episode sandbox mode: agentenv (an alias for
+                    e2b) / daytona / e2b / modal. Left unset, OPENENV_ENV_URL
+                    (one shared env server) is used instead.
+  OPENENV_TB2_TASKS_DIR     required with the above: the TB2 checkout to build
+                    task images from. Each backend then resolves its OWN
+                    credential exactly as it does under training -- from the
+                    environment, else its key file -- so nothing is passed
+                    through here; see the recipe README for each provider's.
   OPENENV_MAX_TURNS, OPENENV_MAX_ROLLOUT_TIME_SECONDS, ...   as in the adapter.
 
 Usage:
-  # DAYTONA_API_KEY may be omitted if ~/.config/daytona/api_key is provisioned
-  DEEPSEEK_API_KEY=sk-... DAYTONA_API_KEY=dtn_... \
-  OPENENV_TB2_TASKS_DIR=/path/to/terminal-bench-2 \
+  DEEPSEEK_API_KEY=sk-... \
+  OPENENV_SANDBOX_BACKEND=e2b OPENENV_TB2_TASKS_DIR=/path/to/terminal-bench-2 \
   python eval_tbench2_via_api.py --tasks chess-best-move --concurrency 2
   # or from make_tbench2_data.py output:
   python eval_tbench2_via_api.py --data /root/tbench2_train.jsonl
@@ -49,6 +50,7 @@ from openai import AsyncOpenAI
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import openenv_agent_function as oaf  # noqa: E402
+import openenv_sandbox_common as sandbox_common  # noqa: E402
 
 
 def _load_rows(args: argparse.Namespace) -> list[dict]:
@@ -110,18 +112,11 @@ async def main() -> None:
     rows = _load_rows(args)
     tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
     if tasks_dir:
-        import openenv_sandbox_common as sandbox_common
-
         try:
             backend = sandbox_common.resolve_backend(os.getenv("OPENENV_SANDBOX_BACKEND"))
+            run_episode = sandbox_common.load_backend(backend).run_episode
         except ValueError as e:
             sys.exit(str(e))
-        if backend == "e2b":
-            import openenv_e2b_agent_function as sandbox_leg
-        else:
-            import openenv_daytona_agent_function as sandbox_leg
-
-        run_episode = sandbox_leg.run_episode
         env_desc = f"{backend} sandboxes (tasks_dir={tasks_dir})"
     else:
         run_episode = oaf.run_episode

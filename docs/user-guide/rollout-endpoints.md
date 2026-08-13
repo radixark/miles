@@ -33,7 +33,7 @@ Key modules:
 |---|---|
 | `miles/rollout/base_types.py` | `GenerateFnInput` / `GenerateFnOutput` |
 | `miles/rollout/inference_rollout/inference_rollout_common.py` | Builds a `GenerateState` and calls the generate function |
-| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent`) |
+| `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` | Enables the new path (see `examples/swe-agent-harbor-docker`) |
 
 ### Generate function basics
 
@@ -162,7 +162,7 @@ Generator entry point:
 
 Example:
 
-- [`examples/swe-agent`](https://github.com/radixark/miles/tree/main/examples/swe-agent):
+- [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker):
   multi-turn agentic SWE agent on the session-server TITO path, with ready-to-run launchers.
 
 Wire-up (as used by the swe-agent example):
@@ -201,7 +201,7 @@ async def abort(args) -> None:
 
 Miles calls it during **oversampling abort**. When dynamic sampling has collected
 enough groups, the rollout aborts in-flight SGLang generation (see
-[Partial rollout](/user-guide/training-script-walkthrough#partial-rollout-reclaim-aborted-work)).
+[Async / partial rollout](/user-guide/cli-reference#async--partial-rollout)).
 An external agent loop doesn't observe that abort on its own — it keeps issuing
 fresh completion requests until it hits its own `max_seq_len` or timeout. If your
 agent drives an external backend (e.g. a sandbox/agent server), define `abort` to
@@ -214,7 +214,7 @@ The hook is **entirely optional and safe to omit**:
 - It only fires when `--custom-agent-function-path` is set, so non-agentic runs
   never invoke it.
 
-See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent/swe_agent_function.py)
+See [`swe_agent_function.abort`](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/swe_agent_function.py)
 for a reference implementation that flushes the Harbor agent server.
 
 ### Customizing the wrapper
@@ -266,4 +266,5 @@ inherited across turns. Each request is tokenized independently.
 - [Customization](/user-guide/customization): the full catalog of `--*-path` hooks.
 - [Agentic Rollout (TITO)](/user-guide/agentic-chat-template): verifying that a template is
   append-only across turns.
-- [Multi-agent example](/examples/multi-agent): full agentic walkthrough.
+- [Multi-agent example](https://github.com/radixark/miles/tree/main/examples/experimental/multi_agent):
+  full agentic walkthrough.

@@ -76,7 +76,7 @@ export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=agentenv python ../openenv/run-openenv-tbench2.py
 ```
 
-From here the e2b leg behaves as that recipe describes it, with each episode
+From here the e2b backend behaves as that recipe describes it, with each episode
 running in a microVM instead of a cloud sandbox: the same per-task templates,
 the same pre-baking step, the same GPU-free sanity checks. One caveat is
 specific to baking against a self-hosted server: the CLI builds tasks one

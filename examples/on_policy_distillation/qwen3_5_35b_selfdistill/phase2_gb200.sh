@@ -25,7 +25,7 @@
 # teacher == student -> opd_reverse_kl ~= 0 (inert).
 # =============================================================================
 set -ex
-export PYTHONUNBUFFERED=16
+export PYTHONUNBUFFERED=1
 
 MODE=${MODE:-pure}
 # GB200 tiling: this cluster is 4 GPUs/node, so world=8 = 2 nodes x 4 GPUs.
@@ -39,7 +39,7 @@ DATA_DIR=${DATA_DIR:-/node_public/maocheng-qwen35/data}
 OUTPUT_DIR=${OUTPUT_DIR:-/node_public/maocheng-qwen35/ckpt-opd-${MODE}}
 TEACHER_LOAD=${TEACHER_LOAD:-/node_public/maocheng-qwen35/ckpt-teacher}   # parent dir!
 EXAMPLE_DIR=${EXAMPLE_DIR:-$(cd "$(dirname "$0")" && pwd)}
-MILES_DIR=${MILES_DIR:-/workspace/miles}
+MILES_DIR=${MILES_DIR:-"$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." &>/dev/null && pwd)"}
 RAY_ADDRESS=${RAY_ADDRESS:-http://127.0.0.1:8265}
 OPD_KL_COEF=${OPD_KL_COEF:-0.2}
 mkdir -p "${OUTPUT_DIR}"
@@ -101,7 +101,7 @@ PERF_ARGS=(
    --recompute-granularity full --recompute-method uniform --recompute-num-layers 1
    --use-dynamic-batch-size --max-tokens-per-gpu 16384 --log-probs-chunk-size 4096
 )
-# Blackwell (GB200 sm100 / B300 sm103) backends, per scripts/run_qwen3_5_35b_a3b_mtp_cp2_ep8.py:
+# Blackwell (GB200 sm100 / B300 sm103) backends, per scripts/run_qwen3_5_35b_a3b_mtp.py:
 # - moe-runner-backend flashinfer_cutlass: the default triton fused-MoE mis-shards
 #   routed experts on the megatron->sglang weight sync (w13 reshape 64 vs 2048).
 # - attention-backend trtllm_mha: FA3 is SM<=90 only; flashinfer/fa3 don't fit here.
@@ -131,7 +131,7 @@ RUNTIME_ENV_JSON="{\"env_vars\": {\"PYTHONPATH\": \"${MILES_DIR}:/root/Megatron-
 cd "${MILES_DIR}"
 ray job submit --address="${RAY_ADDRESS}" --submission-id qwen3.5-opd-${MODE} --no-wait \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- python3 ${MILES_DIR}/train.py \
+   -- python3 "${MILES_DIR}/train.py" \
    --actor-num-nodes ${ACTOR_NUM_NODES} --actor-num-gpus-per-node ${GPUS_PER_NODE} --num-gpus-per-node ${GPUS_PER_NODE} --colocate \
    ${MODEL_ARGS[@]} ${CKPT_ARGS[@]} ${OPD_ARGS[@]} ${ROLLOUT_ARGS[@]} ${OPTIMIZER_ARGS[@]} ${GRPO_ARGS[@]} \
    ${WANDB_ARGS[@]} ${PERF_ARGS[@]} ${EVAL_ARGS[@]} ${SGLANG_ARGS[@]} ${MISC_ARGS[@]} ${RM_ARGS[@]}

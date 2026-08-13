@@ -1,0 +1,116 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --group-query-attention
+  --num-attention-heads 16
+  --num-query-groups 8
+  --kv-channels 256
+  --num-layers 30
+  --hidden-size 2816
+  --ffn-hidden-size 2112
+  --normalization RMSNorm
+  --norm-epsilon 1e-06
+  --position-embedding-type rope
+  --rotary-base 1000000
+  --vocab-size 262144
+  --make-vocab-size-divisible-by 128
+  --max-position-embeddings 262144
+  --num-experts 128
+  --moe-router-topk 8
+  --moe-ffn-hidden-size 704
+  --moe-router-score-function softmax
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-router-num-groups 1
+  --moe-router-group-topk 1
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-bias-update-rate 0
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/gemma-4-26B-A4B-it
+  --ref-load /root/models/gemma-4-26B-A4B-it
+  --megatron-to-hf-mode bridge
+  --load /root/shared_data/260101-000000-000/checkpoints
+  --save /root/shared_data/260101-000000-000/checkpoints
+  --save-interval 2 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --balance-data
+  --rm-type gemma_math
+  --num-rollout 3000
+  --rollout-batch-size 32
+  --n-samples-per-prompt 8
+  --rollout-max-response-len 256
+  --rollout-temperature 1
+  --global-batch-size 256 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --advantage-estimator grpo
+  --use-kl-loss
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_gemma_4_26b_a4b
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 1024  
+  --rollout-num-gpus-per-engine 4
+  --sglang-mem-fraction-static 0.55
+  --sglang-attention-backend triton
+  --sglang-moe-runner-backend triton
+  --sglang-disable-custom-all-reduce
+  --sglang-disable-cuda-graph
+  --sglang-disable-overlap-schedule
+  --sglang-disable-radix-cache
+  --no-offload-train
+  --no-offload-rollout
+  --use-rollout-routing-replay 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --no-gradient-accumulation-fusion
+  --no-check-for-nan-in-loss-and-grad
+  --attention-softmax-in-fp32
+  --attention-backend unfused
+  --qkv-format bshd
+  --colocate
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8   

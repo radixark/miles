@@ -1,4 +1,4 @@
-"""Offline unit tests for the NeMo-Gym adapter (no network, no GPU).
+"""Offline unit tests for the NeMo Gym adapter (no network, no GPU).
 
 Not collected by the repo-level pytest run (testpaths = ./tests); run manually
 when touching the adapter:
