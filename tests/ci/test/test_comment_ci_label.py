@@ -122,12 +122,18 @@ def pull(
 def policy(
     *,
     permissions=("write", "admin"),
+    user_ids=(),
+    labels=("run-ci-short", "bypass-fastfail"),
     clear_permissions=("write", "admin"),
     rerun_permissions=("write", "admin"),
 ):
     return {
+        "add_label_access": {
+            "repository_permissions": frozenset(permissions),
+            "user_ids": frozenset(user_ids),
+        },
         "clear_permissions": frozenset(clear_permissions),
-        "labels": {"run-ci-short": frozenset(permissions)},
+        "labels": frozenset(labels),
         "rerun_permissions": frozenset(rerun_permissions),
     }
 
@@ -176,12 +182,16 @@ def workflow_run(
     ],
 )
 def test_command_parser_rejects_non_exact_commands(body):
-    with pytest.raises(HANDLER.CommentLabelError, match="only /run-ci-<key>"):
+    with pytest.raises(HANDLER.CommentLabelError, match="one exact /<label>"):
         HANDLER.parse_command(body)
 
 
 def test_command_parser_accepts_one_exact_command_with_outer_whitespace():
     assert HANDLER.parse_command(" \n/run-ci-a_B.c-d\t") == "run-ci-a_B.c-d"
+
+
+def test_command_parser_accepts_exact_bypass_fastfail_command():
+    assert HANDLER.parse_command("/bypass-fastfail") == "bypass-fastfail"
 
 
 def test_command_parser_accepts_exact_clear_command_with_outer_whitespace():
@@ -195,58 +205,76 @@ def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        ('{"version":1,"version":1,"labels":{}}', "duplicate JSON key"),
-        ('{"version":NaN,"labels":{}}', "non-standard JSON number"),
+        ('{"version":1,"version":1,"labels":[]}', "duplicate JSON key"),
+        ('{"version":NaN,"labels":[]}', "non-standard JSON number"),
         (
-            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
-            '"labels":{"run-ci-short":[true]}}',
-            "only write or admin",
+            '{"version":1,"add_label_access":{"repository_permissions":[true],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
+            "repository_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
-            '"labels":{"run-ci-short":["read"]}}',
-            "only write or admin",
+            '{"version":1,"add_label_access":{"repository_permissions":["read"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
+            "repository_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
-            '"labels":{"run-ci-short":["write","write"]}}',
-            "duplicate permissions",
+            '{"version":1,"add_label_access":{"repository_permissions":["write","write"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
+            "repository_permissions contains duplicate permissions",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
-            '"labels":{"nightly":["write"]}}',
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[true]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
+            "user_ids must contain only positive integers",
+        ),
+        (
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[123,123]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
+            "user_ids contains duplicate user IDs",
+        ),
+        (
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],"labels":["unsafe label"]}',
             "invalid exact CI label",
         ),
         (
-            '{"version":1,"clear_permissions":[true],"rerun_permissions":["write"],'
-            '"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],'
+            '"labels":["run-ci-short","run-ci-short"]}',
+            "labels contains duplicate labels",
+        ),
+        (
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":[true],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
             "clear_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["read"],"rerun_permissions":["write"],'
-            '"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["read"],"rerun_permissions":["write"],"labels":["run-ci-short"]}',
             "clear_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write","write"],'
-            '"rerun_permissions":["write"],"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["write","write"],"rerun_permissions":["write"],'
+            '"labels":["run-ci-short"]}',
             "clear_permissions contains duplicate permissions",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["read"],'
-            '"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["read"],"labels":["run-ci-short"]}',
             "rerun_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],'
-            '"rerun_permissions":["write","write"],'
-            '"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write","write"],'
+            '"labels":["run-ci-short"]}',
             "rerun_permissions contains duplicate permissions",
         ),
-        ('{"version":1,"labels":{"run-ci-short":["write"]}}', "only version"),
+        ('{"version":1,"labels":["run-ci-short"]}', "only version"),
         (
-            '{"version":1,"clear_permissions":["write"],'
-            '"rerun_permissions":["write"],"labels":{"run-ci-short":["write"]},'
+            '{"version":1,"add_label_access":{"repository_permissions":["write"],"user_ids":[]},'
+            '"clear_permissions":["write"],"rerun_permissions":["write"],'
+            '"labels":["run-ci-short"],'
             '"roles":{}}',
             "only version",
         ),
@@ -259,10 +287,16 @@ def test_policy_parser_rejects_ambiguous_or_expanded_schema(tmp_path, text, mess
         HANDLER.load_policy(path)
 
 
-def test_checked_in_policy_is_exact_and_requires_write_permission():
+def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     loaded = HANDLER.load_policy(POLICY_PATH)
-    assert set(loaded["labels"]) == {f"run-ci-{key}" for key in KNOWN_LABELS} | {"run-ci-image"}
-    assert set(loaded["labels"].values()) == {WRITE_PERMISSIONS}
+    assert loaded["labels"] == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
+        "bypass-fastfail",
+        "run-ci-image",
+    }
+    assert loaded["add_label_access"] == {
+        "repository_permissions": WRITE_PERMISSIONS,
+        "user_ids": frozenset(),
+    }
     assert loaded["clear_permissions"] == WRITE_PERMISSIONS
     assert loaded["rerun_permissions"] == WRITE_PERMISSIONS
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in loaded["labels"])
@@ -300,8 +334,55 @@ def test_maintain_role_is_allowed_by_legacy_write_permission():
     assert api.add_calls == [(123, "run-ci-short")]
 
 
+def test_add_label_access_user_id_can_add_label_without_repository_write():
+    api = FakeAPI(pull(), permission="read")
+
+    result = HANDLER.process_event(event(), policy(user_ids=(ACTOR_ID,)), api)
+
+    assert result["decision"] == "ALLOW_ADDED"
+    assert api.permission_calls == []
+    assert api.add_calls == [(123, "run-ci-short")]
+
+
+def test_add_label_access_user_id_can_add_bypass_fastfail():
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.process_event(
+        event(body="/bypass-fastfail"),
+        policy(user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    assert result["label"] == "bypass-fastfail"
+    assert api.permission_calls == []
+    assert api.add_calls == [(123, "bypass-fastfail")]
+
+
+def test_add_label_access_user_id_preflight_does_not_require_repository_permission():
+    api = FakeAPI(pull(), permission="none")
+
+    assert HANDLER.authorize_policy(event(), policy(user_ids=(ACTOR_ID,)), api) == (
+        123,
+        ACTOR_ID,
+        "run-ci-short",
+    )
+    assert api.calls == []
+
+
+@pytest.mark.parametrize("body", ["/clear-labels", "/rerun-failed-ci"])
+def test_add_label_access_user_id_cannot_clear_or_rerun(body):
+    api = FakeAPI(pull(labels=("run-ci-short",)), permission="read")
+
+    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+        HANDLER.process_event(event(body=body), policy(user_ids=(ACTOR_ID,)), api)
+
+    assert api.add_calls == []
+    assert api.remove_calls == []
+    assert api.rerun_calls == []
+
+
 @pytest.mark.parametrize(("permission", "allowed"), [("write", False), ("admin", True)])
-def test_exact_label_policy_can_require_admin(permission, allowed):
+def test_add_label_access_group_can_require_admin(permission, allowed):
     api = FakeAPI(pull(), permission=permission)
 
     if allowed:
@@ -422,6 +503,24 @@ def test_repository_writer_can_add_a_label_to_a_fork_pr(permission):
     result = HANDLER.process_event(event(actor_id=2), policy(), api)
 
     assert result["decision"] == "ALLOW_ADDED"
+    assert api.add_calls == [(123, "run-ci-short")]
+
+
+def test_add_label_access_user_id_can_add_a_label_to_a_fork_pr():
+    api = FakeAPI(
+        pull(head_repository_id=999),
+        permission="none",
+        permission_actor_id=2,
+    )
+
+    result = HANDLER.process_event(
+        event(actor_id=2),
+        policy(user_ids=(2,)),
+        api,
+    )
+
+    assert result["decision"] == "ALLOW_ADDED"
+    assert api.permission_calls == []
     assert api.add_calls == [(123, "run-ci-short")]
 
 
@@ -1098,6 +1197,7 @@ def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
     ("body", "capability"),
     [
         ("/run-ci-short", "issues"),
+        ("/bypass-fastfail", "issues"),
         ("/clear-labels", "issues"),
         ("/rerun-failed-ci", "actions"),
     ],
@@ -1123,6 +1223,7 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
     assert "vars.CI_LABEL_APP_ENABLED == 'true'" in workflow
+    assert "contains(github.event.comment.body, '/bypass-fastfail')" in workflow
     assert "contains(github.event.comment.body, '/clear-labels')" in workflow
     assert "contains(github.event.comment.body, '/rerun-failed-ci')" in workflow
     assert "permissions:\n  contents: read" in workflow

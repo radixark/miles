@@ -1,27 +1,32 @@
 {
   "version": 1,
+  "add_label_access": {
+    "repository_permissions": ["write", "admin"],
+    "user_ids": []
+  },
   "clear_permissions": ["write", "admin"],
   "rerun_permissions": ["write", "admin"],
-  "labels": {
-    "run-ci-amd": ["write", "admin"],
-    "run-ci-ckpt": ["write", "admin"],
-    "run-ci-eval": ["write", "admin"],
-    "run-ci-fsdp": ["write", "admin"],
-    "run-ci-ft-long": ["write", "admin"],
-    "run-ci-ft-short": ["write", "admin"],
-    "run-ci-fully-async": ["write", "admin"],
-    "run-ci-image": ["write", "admin"],
-    "run-ci-long": ["write", "admin"],
-    "run-ci-lora": ["write", "admin"],
-    "run-ci-megatron": ["write", "admin"],
-    "run-ci-miles-plugin": ["write", "admin"],
-    "run-ci-model-scripts": ["write", "admin"],
-    "run-ci-mooncake": ["write", "admin"],
-    "run-ci-precision": ["write", "admin"],
-    "run-ci-qwen35": ["write", "admin"],
-    "run-ci-replay": ["write", "admin"],
-    "run-ci-sglang": ["write", "admin"],
-    "run-ci-short": ["write", "admin"],
-    "run-ci-weight-update": ["write", "admin"]
-  }
+  "labels": [
+    "bypass-fastfail",
+    "run-ci-amd",
+    "run-ci-ckpt",
+    "run-ci-eval",
+    "run-ci-fsdp",
+    "run-ci-ft-long",
+    "run-ci-ft-short",
+    "run-ci-fully-async",
+    "run-ci-image",
+    "run-ci-long",
+    "run-ci-lora",
+    "run-ci-megatron",
+    "run-ci-miles-plugin",
+    "run-ci-model-scripts",
+    "run-ci-mooncake",
+    "run-ci-precision",
+    "run-ci-qwen35",
+    "run-ci-replay",
+    "run-ci-sglang",
+    "run-ci-short",
+    "run-ci-weight-update"
+  ]
 }

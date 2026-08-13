@@ -37,13 +37,19 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 ## Manage CI from PR comments
 
-After the comment gateway is enabled, post `/run-ci-<key>` as the entire comment on an open PR to append the matching `run-ci-<key>` label. For example, `/run-ci-short` requests only `run-ci-short`. The command permits leading and trailing whitespace only; it cannot include arguments, prose, a second command, or any other label. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
+After the comment gateway is enabled, post `/<label>` as the entire comment on an open PR to append that exact label. The label must be a supported `run-ci-*` label or `bypass-fastfail` and must be listed in `.github/workflows/policies/ci-label-access.json`; for example, `/run-ci-short` appends only `run-ci-short`, while `/bypass-fastfail` appends only `bypass-fastfail`.
 
-`.github/workflows/policies/ci-label-access.json` is an exact, default-deny ACL: each label maps to the live repository permission values allowed to request it. Adding a `KNOWN_LABELS` entry does not expose it through comments; an exact policy entry is also required.
+The command permits leading and trailing whitespace only; it cannot include arguments, prose, or a second command. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
-The initial v1 policy exposes every current domain label and `run-ci-image` to callers whose live legacy permission on `radixark/miles` is `write` or `admin`. Its `clear_permissions` and `rerun_permissions` entries grant the same callers `/clear-labels` and `/rerun-failed-ci`. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access. The same permission check applies to same-repository and fork PRs; the policy has no static user-ID allowlist or separate fork gate.
+`.github/workflows/policies/ci-label-access.json` is an exact, default-deny ACL. Its `labels` array controls which exact labels can be added through comments; adding a `KNOWN_LABELS` entry does not expose it automatically.
 
-The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, `bypass-fastfail`, or an arbitrary label.
+The `add_label_access` group controls every command that adds a label. A caller belongs to this group when either their live legacy permission on `radixark/miles` appears in `repository_permissions` or their stable numeric GitHub user ID appears in `user_ids`.
+
+The initial policy accepts `write` and `admin` and starts with no explicit user IDs. Workflow owners can grant a contributor label-command access by adding only that numeric ID to the JSON policy, without granting repository write access. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access.
+
+`clear_permissions` and `rerun_permissions` separately restrict `/clear-labels` and `/rerun-failed-ci` to live `write` or `admin` permission. Membership in `add_label_access.user_ids` does not grant either operation.
+
+The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
 
 Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
 
@@ -62,7 +68,7 @@ The workflow is disabled by default. Workflow owners may set the repository vari
    Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
    Finally, create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.
 
-The handler checks the caller's live repository permission before minting the App token and again before label mutation begins. Rerun requests for one PR are serialized; before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
+The handler evaluates the caller against the checked-in access policy before minting the App token and again before label mutation begins. An explicit `add_label_access.user_ids` match uses the numeric comment-author identity bound to the event; otherwise the handler checks the caller's live repository permission. Rerun requests for one PR are serialized; before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
 
 The handler runs only fixed, reviewed code from the default branch and never checks out or executes PR code, dependencies, artifacts, or configuration. Initial authorization, PR, policy, or run-state errors fail before any mutation. A recheck error before a later rerun request stops that request, while any earlier accepted reruns remain applied.
 
@@ -128,4 +134,4 @@ Like the scope labels, `bypass-fastfail` is a workflow-only input and is not in 
 
 ## Labels double as fork-PR CI approval
 
-GitHub holds a first-time contributor's fork-PR CI at "Approve and run" after every push. Any maintainer-applied `run-ci*` label is already that human decision, so the `Approve Trusted CI` workflow (on `pull_request_target`) auto-approves the held runs while such a label is present. Removing the labels restores manual approval; the friction ends permanently once the contributor's first PR merges.
+GitHub holds a first-time contributor's fork-PR CI at "Approve and run" after every push. Any maintainer-applied or comment-gateway-authorized `run-ci*` label is already that human decision, so the `Approve Trusted CI` workflow (on `pull_request_target`) auto-approves the held runs while such a label is present. Removing the labels restores manual approval; the friction ends permanently once the contributor's first PR merges.

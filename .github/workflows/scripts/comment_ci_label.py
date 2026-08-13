@@ -19,8 +19,8 @@ RERUN_WORKFLOWS = (
     ("pr-test.yml", ".github/workflows/pr-test.yml"),
     ("pr-test-rocm.yml", ".github/workflows/pr-test-rocm.yml"),
 )
-COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*)")
-LABEL_PATTERN = re.compile(r"run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*")
+COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
+LABEL_PATTERN = re.compile(r"(?:run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
 
@@ -64,25 +64,53 @@ def _validate_permissions(name, values):
     return frozenset(values)
 
 
+def _validate_user_ids(name, values):
+    if not isinstance(values, list):
+        raise CommentLabelError(f"{name} must be an array")
+    if any(type(value) is not int or value <= 0 for value in values):
+        raise CommentLabelError(f"{name} must contain only positive integers")
+    if len(set(values)) != len(values):
+        raise CommentLabelError(f"{name} contains duplicate user IDs")
+    return frozenset(values)
+
+
 def load_policy(path):
     raw = load_json(path)
-    expected_keys = {"version", "labels", "clear_permissions", "rerun_permissions"}
+    expected_keys = {"version", "add_label_access", "labels", "clear_permissions", "rerun_permissions"}
     if not isinstance(raw, dict) or set(raw) != expected_keys:
-        raise CommentLabelError("policy must contain only version, labels, clear_permissions, and rerun_permissions")
+        raise CommentLabelError(
+            "policy must contain only version, add_label_access, labels, clear_permissions, and rerun_permissions"
+        )
     if type(raw["version"]) is not int or raw["version"] != 1:
         raise CommentLabelError("policy version must be 1")
-    if not isinstance(raw["labels"], dict) or not raw["labels"]:
-        raise CommentLabelError("policy labels must be a non-empty object")
-
-    labels = {}
-    for label, permissions in raw["labels"].items():
-        if not isinstance(label, str) or LABEL_PATTERN.fullmatch(label) is None:
+    add_label_access = raw["add_label_access"]
+    if not isinstance(add_label_access, dict) or set(add_label_access) != {
+        "repository_permissions",
+        "user_ids",
+    }:
+        raise CommentLabelError("add_label_access must contain only repository_permissions and user_ids")
+    if not isinstance(raw["labels"], list) or not raw["labels"]:
+        raise CommentLabelError("policy labels must be a non-empty array")
+    for label in raw["labels"]:
+        if (
+            not isinstance(label, str)
+            or LABEL_PATTERN.fullmatch(label) is None
+            or label in {CLEAR_COMMAND, RERUN_COMMAND}
+        ):
             raise CommentLabelError(f"invalid exact CI label: {label!r}")
-        labels[label] = _validate_permissions(f"labels.{label}", permissions)
+    if len(set(raw["labels"])) != len(raw["labels"]):
+        raise CommentLabelError("policy labels contains duplicate labels")
 
     return {
+        "add_label_access": {
+            "repository_permissions": _validate_permissions(
+                "add_label_access.repository_permissions",
+                add_label_access["repository_permissions"],
+            ),
+            "user_ids": _validate_user_ids("add_label_access.user_ids", add_label_access["user_ids"]),
+        },
         "clear_permissions": _validate_permissions("clear_permissions", raw["clear_permissions"]),
-        "labels": labels,
+        "labels": frozenset(raw["labels"]),
         "rerun_permissions": _validate_permissions("rerun_permissions", raw["rerun_permissions"]),
     }
 
@@ -97,7 +125,7 @@ def parse_command(body):
         return RERUN_COMMAND
     match = COMMAND_PATTERN.fullmatch(command)
     if match is None:
-        raise CommentLabelError("comment must contain only /run-ci-<key>, /clear-labels, or /rerun-failed-ci")
+        raise CommentLabelError("comment must contain one exact /<label>, /clear-labels, or /rerun-failed-ci command")
     return match.group(1)
 
 
@@ -310,13 +338,16 @@ def resolve_policy(event, policy):
     pull_number, actor_id, actor_login, target = parse_event(event)
     if target == CLEAR_COMMAND:
         allowed_permissions = policy["clear_permissions"]
+        allowed_user_ids = frozenset()
     elif target == RERUN_COMMAND:
         allowed_permissions = policy["rerun_permissions"]
+        allowed_user_ids = frozenset()
     else:
-        allowed_permissions = policy["labels"].get(target)
-        if allowed_permissions is None:
+        if target not in policy["labels"]:
             raise CommentLabelError("requested label is not exposed by policy")
-    return pull_number, actor_id, actor_login, target, allowed_permissions
+        allowed_permissions = policy["add_label_access"]["repository_permissions"]
+        allowed_user_ids = policy["add_label_access"]["user_ids"]
+    return pull_number, actor_id, actor_login, target, allowed_permissions, allowed_user_ids
 
 
 def require_permission(api, actor_id, actor_login, allowed_permissions):
@@ -334,6 +365,12 @@ def require_permission(api, actor_id, actor_login, allowed_permissions):
         raise CommentLabelError("GitHub API returned an invalid repository permission")
     if permission not in allowed_permissions:
         raise CommentLabelError("comment author is not authorized for the requested operation")
+
+
+def require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids):
+    if actor_id in allowed_user_ids:
+        return
+    require_permission(api, actor_id, actor_login, allowed_permissions)
 
 
 def _is_ci_control_label(label):
@@ -511,7 +548,14 @@ def _rerun_failed_ci(
 
 
 def process_event(event, policy, api):
-    pull_number, actor_id, actor_login, target, allowed_permissions = resolve_policy(event, policy)
+    (
+        pull_number,
+        actor_id,
+        actor_login,
+        target,
+        allowed_permissions,
+        allowed_user_ids,
+    ) = resolve_policy(event, policy)
 
     pull = api.get_pull(pull_number)
     (
@@ -535,7 +579,7 @@ def process_event(event, policy, api):
             head_ref,
         )
 
-    require_permission(api, actor_id, actor_login, allowed_permissions)
+    require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids)
 
     if target == CLEAR_COMMAND:
         labels_to_remove = sorted(label for label in current_labels if _is_ci_control_label(label))
@@ -581,8 +625,15 @@ def process_event(event, policy, api):
 
 
 def authorize_policy(event, policy, api):
-    pull_number, actor_id, actor_login, target, allowed_permissions = resolve_policy(event, policy)
-    require_permission(api, actor_id, actor_login, allowed_permissions)
+    (
+        pull_number,
+        actor_id,
+        actor_login,
+        target,
+        allowed_permissions,
+        allowed_user_ids,
+    ) = resolve_policy(event, policy)
+    require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids)
     return pull_number, actor_id, target
 
 
