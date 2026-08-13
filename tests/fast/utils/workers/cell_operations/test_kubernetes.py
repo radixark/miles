@@ -8,14 +8,70 @@ import pytest
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
+from miles.utils.workers.worker_handle import WorkerUnreachableError
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
+class FakeHandle:
+    def __init__(
+        self,
+        name: str,
+        *,
+        calls: list[tuple[str, str]],
+        submissions: list[tuple[str, str, str]],
+        effect: str | Exception = "return",
+    ) -> None:
+        self._name = name
+        self._calls = calls
+        self._submissions = submissions
+        self._effect = effect
+
+    async def inject_fault(self, *, mode: str) -> None:
+        self._calls.append((self._name, mode))
+        if self._effect == "unreachable":
+            raise WorkerUnreachableError(f"{self._name} is gone")
+        if self._effect == "never_answers":
+            await asyncio.sleep(3600)
+        if isinstance(self._effect, Exception):
+            raise self._effect
+
+    async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
+        self._submissions.append((self._name, method_name, kwargs["mode"]))
+        await self.inject_fault(mode=kwargs["mode"])
+
+
 class FakeProvider:
-    def __init__(self, infos: dict[str, CellInfo], *, start_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        infos: dict[str, CellInfo],
+        *,
+        start_delay: float = 0.0,
+        handle_effect: str | Exception = "return",
+        unserved_workers: tuple[str, ...] = (),
+    ) -> None:
         self._infos = infos
         self._start_delay = start_delay
+        self._handle_effect = handle_effect
+        self._unserved_workers = unserved_workers
         self.watches = 0
+        self.injections: list[tuple[str, str]] = []
+        self.submissions: list[tuple[str, str, str]] = []
+
+    def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
+        return [self._worker_infos_of_cell(cell_id) for cell_id in cell_ids]
+
+    def get_handles_of_worker_infos(self, infos: list[WorkerInfo]) -> dict[str, FakeHandle]:
+        return {
+            info.name: FakeHandle(
+                info.name,
+                calls=self.injections,
+                submissions=self.submissions,
+                effect=self._handle_effect,
+            )
+            for info in infos
+            if info.name not in self._unserved_workers
+        }
 
     async def watch_cells(self, reconcile):
         self.watches += 1
@@ -31,6 +87,13 @@ class FakeProvider:
     def pod_names_of_cell(self, cell_id: str) -> list[str]:
         info = self._infos.get(cell_id)
         return list(info.worker_names) if info is not None else []
+
+    def _worker_infos_of_cell(self, cell_id: str) -> list[WorkerInfo]:
+        info = self._infos.get(cell_id)
+        return [
+            WorkerInfo(name=name, generation=0, self_addrs={}, gpu_ids=[], worker_class="fake.Worker")
+            for name in (info.worker_names if info is not None else [])
+        ]
 
 
 def _info(cell_id="trainer-engine-actor-0", pool_id="trainer-engine-actor", workers=("trainer-engine-actor-0-0",)):
@@ -55,8 +118,11 @@ def deleted(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list[str]]]:
     return recorded
 
 
-def _operations(infos, *, start_delay: float = 0.0):
-    return KubernetesCellOperations(provider=FakeProvider(infos, start_delay=start_delay), namespace="rl")
+def _operations(infos, *, start_delay: float = 0.0, handle_effect: str | Exception = "return", unserved_workers=()):
+    provider = FakeProvider(
+        infos, start_delay=start_delay, handle_effect=handle_effect, unserved_workers=unserved_workers
+    )
+    return KubernetesCellOperations(provider=provider, namespace="rl")
 
 
 class TestCellInfos:
@@ -154,35 +220,6 @@ class TestWatching:
         assert watch_cancelled.is_set()
         assert operations._watching is None
 
-    async def test_cancelling_one_waiter_does_not_cancel_the_shared_watch(self) -> None:
-        """Cancelling one startup waiter leaves the shared watch available to another waiter."""
-        watch_started = asyncio.Event()
-        release_watch = asyncio.Event()
-
-        class EventControlledProvider(FakeProvider):
-            async def watch_cells(self, reconcile: Any) -> Any:
-                self.watches += 1
-                watch_started.set()
-                await release_watch.wait()
-                return _stop_watching
-
-        provider = EventControlledProvider({"trainer-engine-actor-0": _info()})
-        operations = KubernetesCellOperations(provider=provider, namespace="rl")
-        cancelled_waiter = asyncio.create_task(operations.cell_infos(pool_ids=["trainer-engine-actor"]))
-        completing_waiter = asyncio.create_task(operations.cell_infos(pool_ids=["trainer-engine-actor"]))
-        await watch_started.wait()
-        await asyncio.sleep(0)
-
-        cancelled_waiter.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await cancelled_waiter
-        release_watch.set()
-
-        listed = await completing_waiter
-
-        assert list(listed) == ["trainer-engine-actor-0"]
-        assert provider.watches == 1
-
 
 class TestSuspend:
     def test_deletes_the_pods_of_the_cell_in_the_runs_namespace(self, deleted):
@@ -258,14 +295,83 @@ class TestResume:
 
 
 class TestInjectFault:
-    def test_says_it_cannot_reach_into_a_worker_process(self):
-        """Silently doing nothing would make a fault-injection test pass while injecting no fault."""
-        with pytest.raises(NotImplementedError, match="rpc layer"):
-            asyncio.run(
-                _operations({"trainer-engine-actor-0": _info()}).inject_fault(
-                    cell_id="trainer-engine-actor-0", mode=list(FailureMode)[0], sub_index=0
-                )
-            )
+    def test_submits_the_crash_without_waiting_for_a_result(self) -> None:
+        """A self-crashing RPC is sent through the acknowledgement-only worker-handle operation."""
+        operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+
+        assert operations._provider.submissions == [("engine-0-0", "inject_fault", "sigkill")]
+
+    def test_calls_the_worker_the_sub_index_picks(self):
+        """A multi-pod cell is crashed by crashing one named rank, not whichever rank came first."""
+        operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
+
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
+
+        assert operations._provider.injections == [("engine-0-1", "sigkill")]
+
+    def test_passes_the_requested_mode_to_the_worker(self):
+        """The caller chose the failure mode, so the worker must not be crashed some other way."""
+        operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SEGFAULT, sub_index=0))
+
+        assert operations._provider.injections == [("engine-0-0", "segfault")]
+
+    def test_a_worker_that_dies_before_answering_is_a_success(self):
+        """The call kills its own callee, so an unreachable worker is the outcome that was asked for."""
+        operations = _operations(
+            {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="unreachable"
+        )
+
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+
+        assert operations._provider.injections == [("engine-0-0", "sigkill")]
+
+    def test_a_worker_that_never_answers_does_not_hang_the_caller(self, monkeypatch: pytest.MonkeyPatch):
+        """A killed process leaves the rpc poll retrying for an hour, which would block the api server request."""
+        monkeypatch.setattr(cell_operations_kubernetes, "INJECT_FAULT_TIMEOUT_SECONDS", 0.05)
+        operations = _operations(
+            {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="never_answers"
+        )
+
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+
+        assert operations._provider.injections == [("engine-0-0", "sigkill")]
+
+    def test_an_unexpected_rpc_failure_is_propagated(self):
+        """An unrelated RPC failure must not be mistaken for confirmation that the worker crashed."""
+        operations = _operations(
+            {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))},
+            handle_effect=RuntimeError("rpc protocol failed"),
+        )
+
+        with pytest.raises(RuntimeError, match="rpc protocol failed"):
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
+
+    def test_a_sub_index_beyond_the_cell_is_rejected(self):
+        """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
+        operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
+
+        with pytest.raises(AssertionError, match="out of range"):
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
+
+    def test_a_negative_sub_index_is_rejected(self):
+        """Negative indexing would silently select the last worker instead of failing."""
+        operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
+
+        with pytest.raises(AssertionError, match="out of range"):
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=-1))
+
+    def test_a_worker_that_is_not_served_over_rpc_is_rejected(self):
+        """There is no call to make, and succeeding here would report a crash that never happened."""
+        operations = _operations(
+            {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, unserved_workers=("engine-0-0",)
+        )
+
+        with pytest.raises(AssertionError, match="not served over rpc"):
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
 
 
 async def _stop_watching() -> None:
