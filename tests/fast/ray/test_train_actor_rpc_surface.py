@@ -10,7 +10,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray.specs.train import TRAINER_CONCURRENCY_GROUPS
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.object_store import StoreObjectRef
+from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, declared_concurrency_groups
 
 DRIVEN_METHODS = (
@@ -70,7 +70,7 @@ class TestWhatATrainStepSendsAndReturns:
     def test_the_rollout_data_reference_crosses_as_a_store_reference(self):
         """The reference has to arrive as the model the object store redeems, not as a plain mapping."""
         spec = collect_rpc_method_specs(TrainRayActor)["train"]
-        ref = StoreObjectRef(payload={"key": "miles-object-store/7"})
+        ref = _MooncakeStoreObjectRef(payload={"key": "miles-object-store/7"})
 
         query = spec.serializer.encode_query(dict(rollout_id=1, rollout_data_ref=ref))
         decoded = spec.serializer.decode_query(query)
@@ -80,7 +80,7 @@ class TestWhatATrainStepSendsAndReturns:
     def test_a_sharded_rollout_reference_crosses_as_a_list(self):
         """With --delay-split-train-data-by-dp off, each dp rank is handed its own shard."""
         spec = collect_rpc_method_specs(TrainRayActor)["train"]
-        refs = [StoreObjectRef(payload={"key": f"miles-object-store/{index}"}) for index in range(2)]
+        refs = [_MooncakeStoreObjectRef(payload={"key": f"miles-object-store/{index}"}) for index in range(2)]
 
         decoded = spec.serializer.decode_query(spec.serializer.encode_query(dict(rollout_id=1, rollout_data_ref=refs)))
 
@@ -90,7 +90,7 @@ class TestWhatATrainStepSendsAndReturns:
         """The critic ships its values by reference, and the actor step reads them back from it."""
         spec = collect_rpc_method_specs(TrainRayActor)["train"]
         output = TrainStepOutput(
-            outcome=TrainStepOutcome.NORMAL, values=StoreObjectRef(payload={"key": "miles-object-store/9"})
+            outcome=TrainStepOutcome.NORMAL, values=_MooncakeStoreObjectRef(payload={"key": "miles-object-store/9"})
         )
 
         restored = spec.serializer.decode_result(spec.serializer.encode_result(output))
@@ -100,11 +100,13 @@ class TestWhatATrainStepSendsAndReturns:
     def test_the_critic_output_can_be_handed_back_as_external_data(self):
         """The actor step is called with what the critic step returned, one payload per worker."""
         spec = collect_rpc_method_specs(TrainRayActor)["train"]
-        output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=StoreObjectRef(payload={"key": "k"}))
+        output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=_MooncakeStoreObjectRef(payload={"key": "k"}))
 
         decoded = spec.serializer.decode_query(
             spec.serializer.encode_query(
-                dict(rollout_id=1, rollout_data_ref=StoreObjectRef(payload={"key": "d"}), external_data=output)
+                dict(
+                    rollout_id=1, rollout_data_ref=_MooncakeStoreObjectRef(payload={"key": "d"}), external_data=output
+                )
             )
         )
 

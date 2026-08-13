@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import ray
 import torch
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
@@ -273,7 +274,7 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     worker._active_model_tag = "actor"
     worker._switch_model = Mock()
     worker._set_replay_stage = Mock()
-    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker._compute_log_prob = Mock(return_value={"log_probs": [object()]})
     worker.rollout_data_postprocess = None
     worker.prof = Mock()
     worker._ft_test_action_executor = None
@@ -331,9 +332,9 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "total_lengths": [1] * sum(num_microbatches),
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
+    assert worker._compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
     actor_module.compute_advantages_and_returns.assert_called_once_with(worker.args, rollout_data)
     train_call = actor_module.train.call_args
     assert train_call.args[6] is rollout_data["num_rollouts"]
@@ -347,15 +348,15 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
 def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwards(actor_module, monkeypatch):
     worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
     worker.weights_backuper.backup_tags = {"ref", "teacher"}
-    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
+    worker._compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
         f"{store_prefix}log_probs": [object()]
     }
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
+    assert [call.kwargs["store_prefix"] for call in worker._compute_log_prob.call_args_list] == ["ref_", "teacher_"]
     actor_module.train.assert_called_once()
 
 
@@ -419,9 +420,9 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
         data_key: [expected_top_indices],
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     fill_replay_data.assert_called_once()
     replay.pop_backward.assert_called_once()
     assert queued_top_indices == []
@@ -433,9 +434,9 @@ def test_skip_actor_forward_only_rejects_multiple_optimizer_steps(actor_module, 
     rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
 
     with pytest.raises(AssertionError, match="requires 1 optimizer step"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
 
@@ -447,23 +448,29 @@ def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, 
     rollout_data["log_probs"] = [object()]
 
     with pytest.raises(AssertionError, match="without actor log probs"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
 
 
+_OBJECT_REF_ID_BYTES = 28
+
+
 class _FakeRay:
+    """A store ref is typed as holding a real ObjectRef, so the stand-in hands out real ones."""
+
     def __init__(self) -> None:
-        self._objects: list[Any] = []
+        self._objects: dict[bytes, Any] = {}
 
-    def put(self, value: Any) -> int:
-        self._objects.append(value)
-        return len(self._objects) - 1
+    def put(self, value: Any) -> ray.ObjectRef:
+        key = len(self._objects).to_bytes(_OBJECT_REF_ID_BYTES, "little")
+        self._objects[key] = value
+        return ray.ObjectRef(key)
 
-    def get(self, ref: int) -> Any:
-        return self._objects[ref]
+    def get(self, ref: ray.ObjectRef) -> Any:
+        return self._objects[ref.binary()]
 
 
 @contextmanager
@@ -472,9 +479,8 @@ def _noop_timer(_name: str) -> Iterator[None]:
 
 
 def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPatch, fake_ray: _FakeRay) -> None:
-    monkeypatch.setattr(actor_module, "ray", fake_ray)
     monkeypatch.setattr(object_store, "ray", fake_ray)
-    monkeypatch.setattr(object_store, "_INSTANCE", object_store.RayObjectStore())
+    monkeypatch.setattr(object_store, "_INSTANCE", object_store.RayObjectStore(frees_objects=False))
     monkeypatch.setattr(actor_module, "all_replay_managers", [])
     monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args, **_kwargs: (object(), [1]))
     monkeypatch.setattr(actor_module, "compute_advantages_and_returns", lambda *_args, **_kwargs: None)
@@ -710,7 +716,6 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     """Rebuilding the independent-DP groups invalidates the trainer side, so the next update reconnects."""
     worker = _weight_update_worker(actor_module, monkeypatch)
     updater = worker.weight_updater
-    worker._indep_dp_store_addr = "10.0.0.1:1234"
     monkeypatch.setattr(actor_module, "reconfigure_indep_dp_group", Mock())
     monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace())
     monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
@@ -719,7 +724,7 @@ def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
     snapshot = {"cell-0": "hash-a"}
 
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
-    worker.reconfigure_indep_dp(object())
+    worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
     worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
 
     assert len(updater.connect_calls) == 2
