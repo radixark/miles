@@ -332,6 +332,21 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
     }
 
 
+def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwards(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
+    worker.weights_backuper.backup_tags = {"ref", "teacher"}
+    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
+        f"{store_prefix}log_probs": [object()]
+    }
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
+    actor_module.train.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("manager_cls", "rollout_flag", "data_key"),
     [

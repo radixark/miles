@@ -3521,8 +3521,6 @@ def validate_skip_actor_forward_only(args) -> None:
                 args.custom_megatron_before_train_step_hook_path is not None,
             ),
             ("--custom-model-provider-path", args.custom_model_provider_path is not None),
-            ("--dumper-enable", args.dumper_enable),
-            ("--dumper-fwd-only", args.dumper_fwd_only is not None),
             (
                 "--dumper-source-patcher-config-train",
                 args.dumper_source_patcher_config_train is not None,

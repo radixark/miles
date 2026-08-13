@@ -928,6 +928,17 @@ class TestValidateSkipActorForwardOnly:
     @pytest.mark.parametrize(
         "overrides",
         [
+            {"dumper_enable": True},
+            {"dumper_fwd_only": ["enable=true"]},
+            {"dumper_enable": True, "dumper_fwd_only": ["enable=false"]},
+        ],
+    )
+    def test_dumper_configuration_passes(self, overrides):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
             {"train_backend": "fsdp"},
             {"loss_type": "custom_loss"},
             {"compute_advantages_and_returns": False},
@@ -948,8 +959,6 @@ class TestValidateSkipActorForwardOnly:
             {"custom_megatron_before_log_prob_hook_path": "pkg.hook"},
             {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
             {"custom_model_provider_path": "pkg.model_provider"},
-            {"dumper_enable": True},
-            {"dumper_fwd_only": []},
             {"dumper_source_patcher_config_train": "patcher.yaml"},
             {"dump_details": "/tmp/details"},
             {"save_debug_train_data": "train-{rollout_id}.pt"},
