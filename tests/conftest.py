@@ -8,13 +8,6 @@ from tests.fast.fixtures.rollout_fixtures import rollout_env
 _ = rollout_env, generation_env
 
 
-@pytest.fixture(autouse=True)
-def enable_experimental_rollout_refactor():
-    os.environ["MILES_EXPERIMENTAL_ROLLOUT_REFACTOR"] = "1"
-    yield
-    os.environ.pop("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", None)
-
-
 @pytest.fixture(scope="session")
 def ray_local_mode():
     """Session-scoped Ray init. On CI ``RAY_ADDRESS`` points at an existing

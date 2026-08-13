@@ -158,7 +158,6 @@ def execute(args: ScriptArgs):
         megatron_path=args.megatron_path,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "PYTHONPATH": args.megatron_path,
         },
     )

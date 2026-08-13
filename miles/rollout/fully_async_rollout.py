@@ -6,8 +6,8 @@ data buffer (see ``fully_async_data_buffer.py``). Rollout production and trainin
 consumption run in parallel, so per-iteration wall time moves from
 ``rollout_time + train_time`` toward ``max(rollout_time, train_time)``.
 
-Selected by ``train_async.py --fully-async``, which also requires the class-based
-rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
+Selected by ``train_async.py --fully-async``, which requires the class-based
+rollout API (the default; incompatible with ``MILES_USE_LEGACY_ROLLOUT_V1=1``).
 
 Evaluation targets whatever ``GenerateState`` ``RolloutManager`` passes via
 ``RolloutFnEvalInput.generate_state`` (see ``miles/rollout/checkpoint_eval.py``

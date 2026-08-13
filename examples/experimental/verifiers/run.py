@@ -88,9 +88,9 @@ def execute(args: ScriptArgs):
     # function plug-point selects the adapter, which resolves as a bare module
     # because PYTHONPATH carries this directory into the rollout actor.
     rollout_fn = (
-        "verifiers_rollout.VerifiersRolloutFn"
-        if os.environ.get("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR") == "1"
-        else "verifiers_rollout.generate_rollout"
+        "verifiers_rollout.generate_rollout"
+        if os.environ.get("MILES_USE_LEGACY_ROLLOUT_V1") == "1"
+        else "verifiers_rollout.VerifiersRolloutFn"
     )
     rollout_args = (
         f"--rollout-function-path {rollout_fn} "

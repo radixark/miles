@@ -124,7 +124,6 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
         before_ray_job_submit=U.start_mooncake_master,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

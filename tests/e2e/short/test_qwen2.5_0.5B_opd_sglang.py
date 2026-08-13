@@ -201,6 +201,8 @@ def execute():
             num_gpus_per_node=NUM_TRAIN_GPUS,
             megatron_model_type=MODEL_TYPE,
             before_ray_job_submit=launch_teacher,
+            # student-side top-k OPD needs opd_student_top_logprobs, produced only by v1
+            extra_env_vars={"MILES_USE_LEGACY_ROLLOUT_V1": "1"},
         )
     finally:
         if teacher_process:

@@ -394,8 +394,6 @@ def _train(args: ScriptArgs):
         "NCCL_NVLS_ENABLE": "0",
         "NCCL_RAS_ENABLE": "0",
     }
-    if args.fully_async:
-        extra_env_vars["MILES_EXPERIMENTAL_ROLLOUT_REFACTOR"] = "1"
 
     train_args = (
         f"{ckpt_args} "
