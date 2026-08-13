@@ -4,6 +4,7 @@ import abc
 import asyncio
 import logging
 import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,9 @@ class WorkerUnreachableError(Exception):
 class BaseWorkerHandle(abc.ABC):
     @abc.abstractmethod
     async def wait_ready(self, *, timeout: float) -> None: ...
+
+    async def submit_without_result(self, method_name: str, /, **kwargs: Any) -> None:
+        raise NotImplementedError(f"{type(self).__name__} cannot submit a call it will never get an answer to")
 
     async def wait_dead(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
