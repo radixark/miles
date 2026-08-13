@@ -12,13 +12,16 @@ from tests.fast.utils.workers.worker_provider.kubernetes.core.test_pod_view impo
 
 from miles.ray import placement_group
 from miles.ray.placement_group import create_rollout_components
+from miles.ray.rollout.eval_fleet import EvalFleetInfo
 from miles.ray.specs import inference as specs_inference
 from miles.ray.specs import rollout as specs_rollout
 from miles.ray.specs import train as specs_train
 from miles.ray.specs.train import POOL_CATEGORY_TRAINER_ENGINE
 from miles.ray.train.cell import TrainerCell
 from miles.utils import http_utils
+from miles.utils.data import RolloutDataPack
 from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.object_store import StoreObjectRef
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import PodListPage
@@ -30,7 +33,7 @@ from miles.utils.workers.worker_provider.kubernetes.core.provider import Kuberne
 from miles.utils.workers.worker_provider.kubernetes.helm import env, naming
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
-from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
+from miles.utils.workers.worker_spec import HostAndPort, PortInfo, SchedulingSpec, ServeWorkerSpec
 
 NAMESPACE = "rl"
 _RELEASE = "miles-run-260805"
@@ -55,11 +58,16 @@ class FakeTrainWorker:
         return None
 
 
+def _data_pack(rollout_id: int) -> RolloutDataPack:
+    return RolloutDataPack(sample_indices=[rollout_id], data_ref=StoreObjectRef(payload=f"ref-{rollout_id}"))
+
+
 class FakeRolloutExecutor:
     def __init__(self) -> None:
         self.initialized = False
         self.loaded: list[int | None] = []
         self.train_parallel_config: dict[str, Any] | None = None
+        self.eval_fleet_info: EvalFleetInfo | None = None
 
     async def init(self) -> None:
         self.initialized = True
@@ -67,8 +75,8 @@ class FakeRolloutExecutor:
     def dispose(self) -> None:
         return None
 
-    async def get(self, rollout_id: int) -> dict[str, Any]:
-        return {"sample_indices": [rollout_id], "data_ref": f"ref-{rollout_id}"}
+    async def get(self, rollout_id: int) -> RolloutDataPack:
+        return _data_pack(rollout_id)
 
     async def eval(self, rollout_id: int) -> None:
         return None
@@ -85,11 +93,15 @@ class FakeRolloutExecutor:
     def set_train_parallel_config(self, config: dict[str, Any]) -> None:
         self.train_parallel_config = config
 
+    async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:
+        self.eval_fleet_info = eval_fleet_info
+
 
 class FakeInferenceController:
-    def __init__(self) -> None:
+    def __init__(self, eval_fleet_info: EvalFleetInfo | None = None) -> None:
         self.initialized = False
         self.prepared: list[int] = []
+        self._eval_fleet_info = eval_fleet_info
 
     async def init(self) -> None:
         self.initialized = True
@@ -115,18 +127,21 @@ class FakeInferenceController:
     async def get_cell_statuses(self) -> dict[str, CellStatus]:
         return {}
 
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self._eval_fleet_info
+
 
 class FakeTrainerController:
     def __init__(self) -> None:
         self.initialized = False
-        self.trained: list[tuple[int, dict[str, Any]]] = []
+        self.trained: list[tuple[int, RolloutDataPack]] = []
 
     async def init(self, args: Pickled) -> list[Any]:
         self.initialized = args
         return [5]
 
     async def train(
-        self, rollout_id: int, rollout_data_pack: dict[str, Any], external_data: list[Any] | None = None
+        self, rollout_id: int, rollout_data_pack: RolloutDataPack, external_data: list[Any] | None = None
     ) -> list[Any]:
         self.trained.append((rollout_id, rollout_data_pack))
         return []
@@ -409,7 +424,8 @@ class TestKubernetesDriverAssembly:
         handle, rollout_data = asyncio.run(scenario())
 
         assert isinstance(handle, RpcWorkerHandle)
-        assert rollout_data == {"sample_indices": [3], "data_ref": "ref-3"}
+        assert rollout_data == _data_pack(3)
+        assert isinstance(rollout_data.data_ref, StoreObjectRef)
         assert executor.train_parallel_config == {"dp_size": 4}
         assert executor.loaded == [11]
         assert set(transport.hosts_called) == {host}
@@ -418,7 +434,10 @@ class TestKubernetesDriverAssembly:
         """create_rollout_components is the driver's door into rollout, so it too must open over rpc."""
         capability = install(monkeypatch, pods=cell_pods(2))
 
-        controller = FakeInferenceController()
+        eval_fleet_info = EvalFleetInfo(
+            router=HostAndPort(host="10.0.0.9", port=31000), num_gpus=2, num_gpus_per_engine=1
+        )
+        controller = FakeInferenceController(eval_fleet_info)
         executor = FakeRolloutExecutor()
         executor_host = STATIC_HOSTS[specs_rollout.ROLLOUT_EXECUTOR_POOL_ID]
         controller_host = STATIC_HOSTS[specs_inference.INFERENCE_CONTROLLER_POOL_ID]
@@ -451,6 +470,8 @@ class TestKubernetesDriverAssembly:
         assert executor.initialized
         assert result.num_rollout_per_epoch == 7
         assert args.num_rollout == 21
+        # The fleet is only knowable through a call, and it must arrive at the executor intact.
+        assert executor.eval_fleet_info == eval_fleet_info
 
     def test_the_trainer_controller_answers_over_rpc_with_no_actor_behind_it(self, monkeypatch: pytest.MonkeyPatch):
         """Under Kubernetes the trainer controller is a pod the driver addresses, not an object it builds."""
@@ -467,13 +488,13 @@ class TestKubernetesDriverAssembly:
                 await app.router.lifespan_context(app).__aenter__()
                 handle = specs_train.create_trainer_controller_handle(capability=capability, role="actor")
                 assert await handle.init(Namespace(num_rollout=7)) == [5]
-                await handle.train(rollout_id=3, rollout_data_pack={"sample_indices": [0], "data_ref": "ref-3"})
+                await handle.train(rollout_id=3, rollout_data_pack=_data_pack(3))
                 return handle, await handle.get_train_parallel_config()
 
         handle, parallel_config = asyncio.run(scenario())
 
         assert isinstance(handle, RpcWorkerHandle)
         assert controller.initialized.num_rollout == 7
-        assert controller.trained == [(3, {"sample_indices": [0], "data_ref": "ref-3"})]
+        assert controller.trained == [(3, _data_pack(3))]
         assert parallel_config == {"dp_size": 2}
         assert set(transport.hosts_called) == {host}

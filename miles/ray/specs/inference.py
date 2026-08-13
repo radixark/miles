@@ -76,6 +76,10 @@ def create_inference_controller_handle(*, capability: BackendCapability) -> Base
     return provider.get_handle(worker_name)
 
 
+def compute_inference_controller_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
+    return capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
+
+
 def session_server_worker_name(cell_index: int) -> str:
     return compute_worker_name(pool_id=SESSION_SERVER_POOL_ID, cell_index=cell_index)
 

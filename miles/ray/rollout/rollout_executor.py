@@ -6,7 +6,7 @@ from typing import Any
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.debug_data import RolloutDataInjectionUtil, load_debug_rollout_data, save_debug_rollout_data
-from miles.ray.rollout.eval_fleet import EvalFleet
+from miles.ray.rollout.eval_fleet import EvalFleetInfo, RolloutExecutorEvalFleet
 from miles.ray.rollout.metrics import log_eval_rollout_data, log_eval_skip, log_rollout_data
 from miles.ray.rollout.rollout_data_conversion import postprocess_rollout_data
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
@@ -56,6 +56,7 @@ class RolloutExecutor:
         args,
         router_providers: Sequence[BaseWorkerProvider],
         session_server_provider: BaseWorkerProvider | None,
+        inference_controller_provider: BaseWorkerProvider,
     ):
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
@@ -66,6 +67,7 @@ class RolloutExecutor:
         self._rollouts_since_weight_version_publish = 0
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
+        self._inference_controller_provider = inference_controller_provider
 
     async def init(self) -> None:
         args = self.args
@@ -112,7 +114,7 @@ class RolloutExecutor:
 
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
-        self._eval_fleet: EvalFleet | None = None
+        self._eval_fleet: RolloutExecutorEvalFleet | None = None
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -301,5 +303,11 @@ class RolloutExecutor:
     def set_train_parallel_config(self, config: dict[str, Any]) -> None:
         self.train_parallel_config = config
 
-    def set_eval_fleet(self, eval_fleet: "EvalFleet | None"):
-        self._eval_fleet = eval_fleet
+    async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:
+        if eval_fleet_info is None:
+            self._eval_fleet = None
+            return
+
+        self._eval_fleet = RolloutExecutorEvalFleet(
+            self.args, info=eval_fleet_info, inference_controller_provider=self._inference_controller_provider
+        )

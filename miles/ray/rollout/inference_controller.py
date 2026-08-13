@@ -9,7 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.eval_fleet import EvalFleet
+from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
@@ -55,7 +55,7 @@ class InferenceController:
         self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self.eval_fleet: EvalFleet | None = None
+        self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
@@ -76,24 +76,15 @@ class InferenceController:
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
+        if self.args.eval_num_gpus > 0:
+            self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
+
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
 
         dashboard_hooks.register_router(self.args)
 
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
-
-        if self.args.eval_num_gpus > 0:
-            self.eval_fleet = await self._build_eval_fleet(srv=self.servers["eval"])
-
-    @with_lock
-    async def _build_eval_fleet(self, *, srv: RolloutServer) -> EvalFleet:
-        return EvalFleet(
-            self.args,
-            api_clients=list(srv.api_clients),
-            router_host=srv.router_ip,
-            router_port=srv.router_port,
-        )
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -231,6 +222,20 @@ class InferenceController:
         await RayWorkerManager.get_handle().inject_fault.remote(
             cell_id, mode=mode.value, worker_in_cell_index=sub_index
         )
+
+
+    # -------------------------- eval fleet -----------------------------
+
+    @lock_exempt
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self._eval_fleet.info if self._eval_fleet is not None else None
+
+    @lock_exempt
+    async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
+        assert (
+            self._eval_fleet is not None
+        ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
+        return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
 
     # -------------------------- misc APIs -----------------------------
 
