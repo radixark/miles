@@ -115,3 +115,38 @@ class TestTrainParallelConfigWiring:
         )
 
         assert rollout_executor.received_config is train_parallel_config
+
+
+class TestInitRunsExactlyOnce:
+    def test_init_rebinds_reporting_after_distributed_rank_is_final(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The reporter must receive the rank and world size discovered by process-group initialization."""
+        args = SimpleNamespace(
+            debug_deterministic_collective=False,
+            distributed_backend="nccl",
+            distributed_timeout_minutes=1,
+            fsdp_cpu_offload=False,
+        )
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+        actor._init_once = InitOnce("TrainRayActor")
+        actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        rebound: list[object] = []
+        monkeypatch.setattr(train_actor.torch.cuda, "set_device", lambda _device: None)
+        monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
+        monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 3)
+        monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 8)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "rebind_env_reporting", rebound.append)
+        monkeypatch.setattr(train_actor.torch.version, "hip", "test")
+
+        actor._init_common(args=args, role="actor")
+
+        assert (args.rank, args.world_size) == (3, 8)
+        assert rebound == [args]
+
+    def test_a_second_init_is_refused(self):
+        """A worker that already initialized is a stale process; reusing it must fail loudly, not train on."""
+        actor = TrainRayActor.__new__(TrainRayActor)
+        actor._init_called = True
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            actor.init(args=None, role="actor")
