@@ -451,6 +451,60 @@ class TestRayWorkerProviderRpcHandles:
         assert handle.get_worker_infos.calls == ["trainer-engine-actor-0"]
 
 
+@dataclass
+class _ActorHandleMethod:
+    generation_of_worker: int
+    requested: list[tuple[str, int]] = field(default_factory=list)
+
+    def remote(self, worker_name: str, *, expected_generation: int) -> Any:
+        self.requested.append((worker_name, expected_generation))
+        assert expected_generation == self.generation_of_worker, f"generation {self.generation_of_worker}"
+        return f"actor-of-{worker_name}"
+
+
+@dataclass
+class _RayCommManagerHandle:
+    get_worker_infos: _ServingWorkerInfosMethod
+    get_actor_handle: _ActorHandleMethod
+
+
+def _ray_comm_worker_info(*, generation: int) -> WorkerInfo:
+    return WorkerInfo(
+        name="trainer-engine-actor-0-0",
+        generation=generation,
+        self_addrs={"master": HostAndPort(host="10.0.0.7", port=20000)},
+        gpu_ids=[],
+        worker_class=None,
+    )
+
+
+class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
+    def test_a_handle_of_the_described_generation_is_built(self, monkeypatch: pytest.MonkeyPatch):
+        """The ordinary path: the cell did not move between the two calls the resolution takes."""
+        handle = _RayCommManagerHandle(
+            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_ray_comm_worker_info(generation=3)]]),
+            get_actor_handle=_ActorHandleMethod(generation_of_worker=3),
+        )
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
+        monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda ref: ref)
+
+        provider.get_handle("trainer-engine-actor-0-0")
+
+        assert handle.get_actor_handle.requested == [("trainer-engine-actor-0-0", 3)]
+
+    def test_a_cell_restarted_between_the_two_calls_is_refused(self, monkeypatch: pytest.MonkeyPatch):
+        """Pairing an old cell's addresses with a new cell's actors sends new ranks to a dead rendezvous."""
+        handle = _RayCommManagerHandle(
+            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_ray_comm_worker_info(generation=3)]]),
+            get_actor_handle=_ActorHandleMethod(generation_of_worker=4),
+        )
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
+        monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda ref: ref)
+
+        with pytest.raises(AssertionError):
+            provider.get_handle("trainer-engine-actor-0-0")
+
+
 class TestRayWorkerProviderWatchCellsStop:
     async def test_stopping_cancels_an_in_flight_reconcile(self):
         """Stopping must not hang waiting for a reconcile that is still running."""
