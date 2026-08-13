@@ -1,8 +1,21 @@
+import json
 import os
+import shlex
+import textwrap
+from dataclasses import dataclass
+from typing import Any
 
+import yaml
 from tests.ci.ci_register import register_cuda_ci
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    InfraValues,
+    SharedStorage,
+)
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
+from miles.utils.workers.types import ClusterBackend
 
 register_cuda_ci(est_time=700, suite="stage-c-4-gpu-h200", labels=["short"])
 
@@ -10,8 +23,19 @@ MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_TRAIN_GPUS = 2
 NUM_ENGINES = 2
-ENGINE_PORTS = [32001, 32002]
-ENGINE_HOST = "127.0.0.1"
+GPUS_PER_ENGINE = 1
+
+RAY_ENGINE_HOST = "127.0.0.1"
+RAY_ENGINE_PORTS = [32001, 32002]
+
+ENGINE_OBJECT_NAME = "external-sglang"
+ENGINE_PORT = 30000
+ENGINE_CONTAINER_NAME = "sglang"
+ENGINE_HEALTH_PATH = "/health_generate"
+SHARED_STORAGE_VOLUME = "shared-storage"
+
+
+# ===== Entry points =====
 
 
 def compute_train_and_engine_devices(visible_devices: str | None) -> tuple[list[str], list[str]]:
@@ -33,26 +57,47 @@ def prepare():
     U.convert_checkpoint(model_name=MODEL_NAME, megatron_model_type=MODEL_TYPE, num_gpus_per_node=NUM_TRAIN_GPUS)
 
 
-def _external_engines_launch_cmd(engine_devices: list[str]) -> str:
-    launches = " ".join(
-        f"CUDA_VISIBLE_DEVICES={device} nohup python3 -m sglang.launch_server "
-        f"--model-path /root/models/{MODEL_NAME} --host 0.0.0.0 --port {port} "
-        f"--tp 1 --mem-fraction-static 0.7 --trust-remote-code "
-        f"> /tmp/miles_external_engine_{port}.log 2>&1 &"
-        for device, port in zip(engine_devices, ENGINE_PORTS, strict=True)
-    )
-    probes = " && ".join(f"curl -sf http://{ENGINE_HOST}:{port}/server_info >/dev/null" for port in ENGINE_PORTS)
-    wait = (
-        f"ok=0; for _ in $(seq 1 120); do {probes} && ok=1 && break; sleep 5; done; "
-        f"[ \"$ok\" -eq 1 ] || {{ echo 'external sglang engines failed to start' >&2; "
-        f"tail -n 100 /tmp/miles_external_engine_*.log >&2; exit 1; }}"
-    )
-    return f"{launches} {wait}"
-
-
 def execute():
     U = command_utils.default_config().create_backend()
-    _train_devices, engine_devices = compute_train_and_engine_devices(os.environ.get("CUDA_VISIBLE_DEVICES"))
+    engines = _external_engines(U.config)
+
+    U.execute_train(
+        train_args=_train_args(engines.addrs, object_store_args=_object_store_args(U.config)),
+        num_gpus_per_node=NUM_TRAIN_GPUS,
+        megatron_model_type=MODEL_TYPE,
+        prepare_cmd=engines.prepare_cmd,
+        extra_manifests=engines.extra_manifests,
+        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+    )
+
+
+@dataclass(frozen=True)
+class _ExternalEngines:
+    addrs: list[str]
+    prepare_cmd: dict[str, str]
+    extra_manifests: list[str]
+
+
+def _external_engines(config: command_utils.ExecuteTrainConfig) -> _ExternalEngines:
+    match config.cluster_backend:
+        case ClusterBackend.RAY:
+            return _engines_started_beside_trainer()
+        case ClusterBackend.KUBERNETES:
+            return _engines_installed_beside_run(config.helm_values)
+
+
+def _object_store_args(config: command_utils.ExecuteTrainConfig) -> str:
+    match config.cluster_backend:
+        case ClusterBackend.RAY:
+            return ""
+        case ClusterBackend.KUBERNETES:
+            return command_utils.get_mooncake_object_store_args()
+
+
+# ===== Training arguments =====
+
+
+def _train_args(engine_addrs: list[str], *, object_store_args: str) -> str:
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist/ "
 
     rollout_args = (
@@ -104,9 +149,9 @@ def execute():
 
     external_args = (
         "--rollout-external-engine-addrs "
-        + " ".join(f"{ENGINE_HOST}:{port}" for port in ENGINE_PORTS)
-        + " --rollout-num-gpus 2 "
-        + "--rollout-num-gpus-per-engine 1 "
+        + " ".join(engine_addrs)
+        + f" --rollout-num-gpus {NUM_ENGINES * GPUS_PER_ENGINE} "
+        + f"--rollout-num-gpus-per-engine {GPUS_PER_ENGINE} "
     )
 
     ci_args = "--ci-test "
@@ -122,8 +167,9 @@ def execute():
         "--megatron-to-hf-mode bridge "
     )
 
-    train_args = (
+    return (
         f"{ckpt_args} "
+        f"{object_store_args} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
@@ -134,13 +180,169 @@ def execute():
         f"{misc_args} "
     )
 
-    U.execute_train(
-        train_args=train_args,
-        num_gpus_per_node=NUM_TRAIN_GPUS,
-        megatron_model_type=MODEL_TYPE,
-        prepare_cmd={"trainer": _external_engines_launch_cmd(engine_devices)},
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
+
+# ===== Engines the run talks to but does not launch =====
+
+
+def _engines_started_beside_trainer() -> _ExternalEngines:
+    _train_devices, engine_devices = compute_train_and_engine_devices(os.environ.get("CUDA_VISIBLE_DEVICES"))
+    return _ExternalEngines(
+        addrs=[f"{RAY_ENGINE_HOST}:{port}" for port in RAY_ENGINE_PORTS],
+        prepare_cmd={"trainer": _ray_engines_launch_cmd(engine_devices)},
+        extra_manifests=[],
     )
+
+
+def _engines_installed_beside_run(helm_values: tuple[str, ...]) -> _ExternalEngines:
+    return _ExternalEngines(
+        addrs=[f"{ENGINE_OBJECT_NAME}-{index}.{ENGINE_OBJECT_NAME}:{ENGINE_PORT}" for index in range(NUM_ENGINES)],
+        prepare_cmd={},
+        extra_manifests=[_engine_manifests(_infra_values(helm_values))],
+    )
+
+
+def _ray_engines_launch_cmd(engine_devices: list[str]) -> str:
+    launches = " ".join(
+        f"(CUDA_VISIBLE_DEVICES={device} setsid {shlex.join(_engine_argv(port))} "
+        f"> /tmp/miles_external_engine_{port}.log 2>&1 &);"
+        for device, port in zip(engine_devices, RAY_ENGINE_PORTS, strict=True)
+    )
+    probes = " && ".join(
+        f"curl -sf http://{RAY_ENGINE_HOST}:{port}/server_info >/dev/null" for port in RAY_ENGINE_PORTS
+    )
+    wait = (
+        f"ok=0; for _ in $(seq 1 120); do {probes} && ok=1 && break; sleep 5; done; "
+        f"[ \"$ok\" -eq 1 ] || {{ echo 'external sglang engines failed to start' >&2; "
+        f"tail -n 100 /tmp/miles_external_engine_*.log >&2; exit 1; }}"
+    )
+    return f"{launches} {wait}"
+
+
+def _engine_argv(port: int) -> list[str]:
+    return [
+        "python3",
+        "-m",
+        "sglang.launch_server",
+        "--model-path",
+        f"/root/models/{MODEL_NAME}",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        str(port),
+        "--tp",
+        str(GPUS_PER_ENGINE),
+        "--mem-fraction-static",
+        "0.7",
+        "--trust-remote-code",
+    ]
+
+
+# ===== Kubernetes manifests for those engines =====
+
+
+def _engine_manifests(infra: InfraValues) -> str:
+    scheduling = infra.scheduling
+    volume = _shared_storage_volume(infra.shared_storage)
+
+    pod_fields: dict[str, Any] = {
+        "imagePullSecrets": [dict(name=secret) for secret in infra.image.pull_secrets or []],
+        "nodeSelector": scheduling.node_selector if scheduling is not None else None,
+        "tolerations": scheduling.tolerations if scheduling is not None else None,
+        "affinity": scheduling.affinity if scheduling is not None else None,
+        "volumes": [volume] if volume is not None else None,
+    }
+    container_fields: dict[str, Any] = {
+        "imagePullPolicy": infra.image.pull_policy,
+        "env": [dict(name=name, value=value) for name, value in sorted((infra.env or {}).items())],
+        "volumeMounts": (
+            [dict(name=SHARED_STORAGE_VOLUME, mountPath=infra.shared_storage.mount_path)]
+            if volume is not None
+            else None
+        ),
+    }
+
+    return f"""\
+apiVersion: v1
+kind: Service
+metadata:
+  name: {ENGINE_OBJECT_NAME}
+spec:
+  clusterIP: "None"
+  selector:
+    app: {ENGINE_OBJECT_NAME}
+  ports:
+    - name: http
+      port: {ENGINE_PORT}
+      targetPort: {ENGINE_PORT}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {ENGINE_OBJECT_NAME}
+spec:
+  replicas: {NUM_ENGINES}
+  serviceName: {ENGINE_OBJECT_NAME}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: {ENGINE_OBJECT_NAME}
+  template:
+    metadata:
+      labels:
+        app: {ENGINE_OBJECT_NAME}
+    spec:
+{_yaml_block(pod_fields, indent=6)}\
+      containers:
+        - name: {ENGINE_CONTAINER_NAME}
+          image: {infra.image.repository}:{infra.image.tag}
+          command: {json.dumps(_engine_argv(ENGINE_PORT))}
+          ports:
+            - name: http
+              containerPort: {ENGINE_PORT}
+          resources:
+            limits:
+              nvidia.com/gpu: {GPUS_PER_ENGINE}
+          readinessProbe:
+            httpGet:
+              path: {ENGINE_HEALTH_PATH}
+              port: {ENGINE_PORT}
+            periodSeconds: 10
+            failureThreshold: 60
+{_yaml_block(container_fields, indent=10)}"""
+
+
+def _yaml_block(fields: dict[str, Any], *, indent: int) -> str:
+    present = {key: value for key, value in fields.items() if value}
+    if not present:
+        return ""
+
+    return textwrap.indent(yaml.safe_dump(present, sort_keys=False), " " * indent)
+
+
+def _shared_storage_volume(shared_storage: SharedStorage) -> dict[str, Any] | None:
+    match shared_storage.type:
+        case "hostPath":
+            return dict(name=SHARED_STORAGE_VOLUME, hostPath=dict(path=shared_storage.host_path, type="Directory"))
+        case "pvc":
+            return dict(
+                name=SHARED_STORAGE_VOLUME,
+                persistentVolumeClaim=dict(claimName=shared_storage.pvc_claim_name),
+            )
+        case "none":
+            return None
+
+
+def _infra_values(helm_values: tuple[str, ...]) -> InfraValues:
+    infra = InfraInfo.load(chart_dir(repo_base_dir=repo_base_dir), list(helm_values))
+
+    repos = infra.paths.repos if infra.paths is not None else None
+    sglang_checkout = repos.sglang if repos is not None else None
+    assert not sglang_checkout, (
+        f"infra.paths.repos.sglang is {sglang_checkout!r}, so the run's own pods import that checkout while these "
+        f"engine pods would still serve the sglang built into the image, and the two backends would no longer "
+        f"test one sglang; clear the override for this run, or teach this manifest to mount it too"
+    )
+    return infra
 
 
 if __name__ == "__main__":

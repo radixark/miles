@@ -1,13 +1,7 @@
-import importlib.util
-from pathlib import Path
-
 import pytest
+from tests.fast.e2e.external_rollout_script import load_external_rollout_script
 
-_E2E_PATH = Path(__file__).parents[3] / "tests/e2e/short/test_qwen2.5_0.5B_external_rollout.py"
-_spec = importlib.util.spec_from_file_location("external_rollout_e2e", _E2E_PATH)
-_module = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_module)
-compute_train_and_engine_devices = _module.compute_train_and_engine_devices
+compute_train_and_engine_devices = load_external_rollout_script().compute_train_and_engine_devices
 
 
 class TestComputeTrainAndEngineDevices:
