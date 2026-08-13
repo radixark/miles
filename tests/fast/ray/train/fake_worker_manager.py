@@ -71,7 +71,11 @@ class FakeWorkerManager:
             for worker_index, handle in enumerate(self._handles[cell_id])
         ]
 
-    def _get_actor_handle(self, worker_name: str):
+    def _get_actor_handle(self, worker_name: str, *, expected_generation: int):
+        generation = 1 + len(self.started_cell_ids)
+        assert (
+            generation == expected_generation
+        ), f"{worker_name} is generation {generation}, not {expected_generation}"
         cell_id, _, worker_index = worker_name.rpartition("-")
         return self._handles[cell_id][int(worker_index)]
 
