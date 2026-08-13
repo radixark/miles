@@ -24,10 +24,10 @@ class SimpleProcessIdentity(_ProcessIdentityBase):
 
 class TrainerControllerProcessIdentity(_ProcessIdentityBase):
     component: Literal["trainer_controller"] = "trainer_controller"
-    role: Literal["actor", "critic"]
+    trainer_id: str
 
     def to_name(self) -> str:
-        return f"{self.component}_{self.role}"
+        return f"{self.component}_{self.trainer_id}"
 
 
 class TrainProcessIdentity(_ProcessIdentityBase):

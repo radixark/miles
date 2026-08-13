@@ -5,20 +5,22 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
-from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
+from miles.backends.megatron_utils.megatron_config import compute_trainer_args
 from miles.ray.specs import train as train_specs
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
     TRAINER_METHOD_CONCURRENCY_GROUPS,
     compute_actor_args,
+    compute_trainer_configs,
     compute_trainer_controller_pool_id,
     compute_trainer_pool_id,
-    spec_trainer_controller_actor,
-    spec_trainer_controller_critic,
     specs_trainer,
+    specs_trainer_controller,
     trainer_controller_cell_id,
     trainer_controller_worker_name,
 )
@@ -214,6 +216,34 @@ class TestScheduling:
 
         assert spec.scheduling.num_cpus_per_worker == 0.4
         assert spec.scheduling.num_cpus_per_worker == spec.scheduling.num_gpus_per_worker
+
+    def test_a_policy_parallelism_override_reshapes_only_its_own_cells(self, tmp_path, monkeypatch):
+        """The cell count is computed from that trainer's own args, so an override must reshape only its pool."""
+        monkeypatch.setattr(
+            "miles.ray.specs.train.compute_megatron_world_size_except_dp",
+            lambda args: args.tensor_model_parallel_size,
+        )
+        args = _make_args(
+            indep_dp=True,
+            actor_num_gpus_per_node=8,
+            tensor_model_parallel_size=1,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "a", "overrides": {"tensor_model_parallel_size": 2}}, {"model_id": "b"}]
+            ),
+        )
+
+        spec_a, spec_b = specs_trainer(args)
+
+        assert (spec_a.scheduling.num_cells, spec_b.scheduling.num_cells) == (4, 8)
+
+    def test_a_critic_is_sized_by_the_critic_node_counts(self):
+        """The critic reads critic_num_*, so sizing it by the actor's counts would reserve the wrong pool."""
+        _actor_spec, critic_spec = specs_trainer(
+            _make_args(use_critic=True, actor_num_gpus_per_node=8, critic_num_nodes=1, critic_num_gpus_per_node=2)
+        )
+
+        assert critic_spec.scheduling.num_workers_per_cell == 2
+        assert critic_spec.scheduling.num_gpus_per_node == 2
 
 
 class TestConstructorArguments:
@@ -564,12 +594,12 @@ def _controller_providers() -> FakeBackendCapability:
 class TestSpecTrainerController:
     def test_one_controller_per_trainer_role(self):
         """Each controller owns exactly one trainer pool, so a critic run needs a second one."""
-        assert spec_trainer_controller_actor(_make_args()).name == "trainer-controller-actor"
-        assert spec_trainer_controller_critic(_make_args(use_critic=True)).name == "trainer-controller-critic"
+        assert specs_trainer_controller(_make_args())[0].name == "trainer-controller-actor"
+        assert specs_trainer_controller(_make_args(use_critic=True))[1].name == "trainer-controller-critic"
 
     def test_it_is_a_gpuless_worker_on_both_backends(self):
         """A gpu request would reserve a whole trainer slot for a process that only sends rpcs."""
-        spec = spec_trainer_controller_actor(_make_args())
+        spec = specs_trainer_controller(_make_args())[0]
 
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
         assert spec.scheduling.num_gpus_per_worker == 0
@@ -577,7 +607,7 @@ class TestSpecTrainerController:
 
     def test_the_worker_class_is_the_controller_itself(self):
         """The spec names the class a pod or actor constructs, so it must be the real implementation."""
-        spec = spec_trainer_controller_actor(_make_args())
+        spec = specs_trainer_controller(_make_args())[0]
 
         assert spec.worker_class == TRAINER_CONTROLLER_WORKER_CLASS
 
@@ -588,7 +618,7 @@ class TestSpecTrainerController:
 
     def test_it_renders_into_static_workers_with_its_rpc_port(self):
         """The release has to contain the controller pod, or the address book would point at nothing."""
-        spec = spec_trainer_controller_actor(_make_args())
+        spec = specs_trainer_controller(_make_args())[0]
 
         values = build_values([spec], _controller_layout()).as_values()
 
@@ -606,7 +636,7 @@ class TestSpecTrainerController:
         capability = _controller_providers()
 
         args = _make_args(use_critic=True)
-        specs = [spec_trainer_controller_actor(args), spec_trainer_controller_critic(args)]
+        specs = specs_trainer_controller(args)
         kwargs = [spec.ctor_kwargs(_controller_context(capability)) for spec in specs]
 
         assert capability.requested_pool_ids == [["trainer-engine-actor"], ["trainer-engine-critic"]]
@@ -617,7 +647,7 @@ class TestSpecTrainerController:
         capability = _controller_providers()
 
         args = _make_args(use_critic=True)
-        actor_spec, critic_spec = spec_trainer_controller_actor(args), spec_trainer_controller_critic(args)
+        actor_spec, critic_spec = specs_trainer_controller(args)[0], specs_trainer_controller(args)[1]
         actor_kwargs = actor_spec.ctor_kwargs(_controller_context(capability))
         critic_kwargs = critic_spec.ctor_kwargs(_controller_context(capability))
 
@@ -629,21 +659,35 @@ class TestSpecTrainerController:
         """These are functions of args, so the worker can answer them from the argv it parses itself."""
         capability = _controller_providers()
 
-        spec = spec_trainer_controller_actor(_make_args(kl_coef=0.1, use_opd=True, opd_type="megatron"))
+        spec = specs_trainer_controller(_make_args(kl_coef=0.1, use_opd=True, opd_type="megatron"))[0]
         kwargs = spec.ctor_kwargs(_controller_context(capability))
 
-        assert (kwargs["role"], kwargs["with_ref"], kwargs["with_opd_teacher"]) == ("actor", True, True)
+        assert (kwargs["trainer_id"], kwargs["with_ref"], kwargs["with_opd_teacher"]) == ("actor", True, True)
+
+    def test_a_policy_that_switches_off_its_kl_loss_gets_no_reference_cells(self, tmp_path):
+        """with_ref is read off that trainer's own args, so one policy may need reference cells while another does not."""
+        args = _make_args(
+            use_kl_loss=True,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "a", "overrides": {"use_kl_loss": False}}, {"model_id": "b"}]
+            ),
+        )
+
+        spec_a, spec_b = specs_trainer_controller(args)
+
+        assert spec_a.ctor_kwargs(_controller_context(_controller_providers()))["with_ref"] is False
+        assert spec_b.ctor_kwargs(_controller_context(_controller_providers()))["with_ref"] is True
 
     def test_the_critic_controller_gets_no_reference_or_teacher_cells(self):
         """A critic controller must not hand its cells the actor's KL and OPD settings."""
-        spec = spec_trainer_controller_critic(_make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True))
+        spec = specs_trainer_controller(_make_args(use_critic=True, kl_coef=0.1, use_kl_loss=True, use_opd=True))[1]
         critic_kwargs = spec.ctor_kwargs(_controller_context(_controller_providers()))
 
         assert (critic_kwargs["with_ref"], critic_kwargs["with_opd_teacher"]) == (False, False)
 
     def test_no_args_are_frozen_into_the_controller_at_spec_time(self):
         """The spec is built before the driver finishes deriving args, so a captured copy would be stale."""
-        actor_kwargs = spec_trainer_controller_actor(_make_args()).ctor_kwargs(
+        actor_kwargs = specs_trainer_controller(_make_args())[0].ctor_kwargs(
             _controller_context(_controller_providers())
         )
 
@@ -652,3 +696,59 @@ class TestSpecTrainerController:
     def test_the_controller_pool_name_encodes_the_role(self):
         """The two controllers of a critic run must not collide in the address book."""
         assert compute_trainer_controller_pool_id("critic") == "trainer-controller-critic"
+
+
+class TestTrainerConfigs:
+    def test_a_single_policy_run_names_its_trainers_actor_and_critic(self):
+        """Every existing pool name, worker name and checkpoint path is written against these two ids."""
+        configs = compute_trainer_configs(_make_args(use_critic=True))
+
+        assert [config.trainer_id for config in configs] == ["actor", "critic"]
+        assert [config.model_id for config in configs] == [None, None]
+        assert [config.role for config in configs] == ["actor", "critic"]
+
+    def test_the_critic_of_a_configured_policy_is_a_trainer_of_that_policy(self, tmp_path):
+        """A critic left without a model id would be built from raw args, ignoring the policy overlay."""
+        args = _make_args(
+            use_critic=True,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha", "overrides": {"lr": 5e-7}}]
+            ),
+        )
+
+        configs = compute_trainer_configs(args)
+
+        assert [(config.trainer_id, config.role, config.model_id) for config in configs] == [
+            ("alpha-actor", "actor", "alpha"),
+            ("alpha-critic", "critic", "alpha"),
+        ]
+
+    def test_the_critic_args_stack_the_policy_overlay_and_the_critic_neutralization(self, tmp_path):
+        """The two transforms are not exclusive: the critic of a policy needs that policy's overlay too."""
+        args = _make_args(
+            use_critic=True,
+            kl_coef=0.1,
+            use_opd=True,
+            critic_lr=2e-6,
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha", "overrides": {"eps_clip": 0.3, "lr": 5e-7}}]
+            ),
+        )
+
+        critic_args = compute_trainer_args(args, compute_trainer_configs(args)[1])
+
+        assert (critic_args.eps_clip, critic_args.kl_coef, critic_args.use_opd) == (0.3, 0, False)
+        assert critic_args.lr == 2e-6
+
+    def test_the_critic_pool_of_a_configured_policy_is_named_after_its_trainer_id(self, tmp_path):
+        """The critic pool must not collide with the policy's own pool nor with a plain 'critic' pool."""
+        args = _make_args(use_critic=True, megatron_config=write_megatron_config(tmp_path, "alpha"))
+
+        assert [spec.name for spec in specs_trainer(args)] == [
+            "trainer-engine-alpha-actor",
+            "trainer-engine-alpha-critic",
+        ]
+        assert [spec.name for spec in specs_trainer_controller(args)] == [
+            "trainer-controller-alpha-actor",
+            "trainer-controller-alpha-critic",
+        ]

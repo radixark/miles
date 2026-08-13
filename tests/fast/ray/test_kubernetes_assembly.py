@@ -243,6 +243,7 @@ def rollout_executor_args() -> SimpleNamespace:
         use_kl_loss=False,
         use_opd=False,
         opd_type="megatron",
+        megatron_config=None,
     )
 
 
@@ -271,7 +272,7 @@ def install(monkeypatch: pytest.MonkeyPatch, *, pods: list[Pod], workers_per_pod
         trainer_spec(num_workers_per_cell=len(pods) * workers_per_pod, num_gpus_per_node=workers_per_pod),
         specs_rollout.spec_rollout_executor(rollout_executor_args()),
         specs_inference.spec_inference_controller(rollout_executor_args()),
-        specs_train.spec_trainer_controller_actor(rollout_executor_args()),
+        *specs_train.specs_trainer_controller(rollout_executor_args()),
     ]
     return compute_helm_backend_capability(specs=specs)
 
@@ -488,7 +489,7 @@ class TestKubernetesDriverAssembly:
             async with httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 await app.router.lifespan_context(app).__aenter__()
-                handle = specs_train.create_trainer_controller_handle(capability=capability, role="actor")
+                handle = specs_train.create_trainer_controller_handle(capability=capability, trainer_id="actor")
                 assert await handle.init(Namespace(num_rollout=7)) == [5]
                 await handle.train(rollout_id=3, rollout_data_pack=_data_pack(3))
                 return handle, await handle.get_train_parallel_config()

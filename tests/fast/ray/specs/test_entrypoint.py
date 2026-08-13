@@ -94,7 +94,14 @@ class TestComputeSpecs:
         """Dropping the router must not drop the training side, and the session server survives with no cells."""
         specs = {spec.name: spec for spec in _debug_train_only_specs(tmp_path)}
 
-        assert list(specs) == ["session-server", "trainer-actor"]
+        assert list(specs) == [
+            "rollout-executor",
+            "multi-lora-controller",
+            "inference-controller",
+            "session-server",
+            "trainer-controller-actor",
+            "trainer-engine-actor",
+        ]
         assert specs["session-server"].scheduling.num_cells == 0
 
 

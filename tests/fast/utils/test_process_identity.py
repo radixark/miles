@@ -27,7 +27,7 @@ class TestProcessIdentityToName:
         assert source.to_name() == "critic_cell0_rank2"
 
     def test_trainer_controller(self) -> None:
-        assert TrainerControllerProcessIdentity(role="actor").to_name() == "trainer_controller_actor"
+        assert TrainerControllerProcessIdentity(trainer_id="actor").to_name() == "trainer_controller_actor"
 
     def test_inference_controller(self) -> None:
         assert SimpleProcessIdentity(component="inference_controller").to_name() == "inference_controller"
@@ -45,9 +45,9 @@ class TestProcessIdentityToName:
 
 
 class TestControllerIdentityRoundtrip:
-    def test_trainer_controller_keeps_its_role(self) -> None:
-        """Two trainer controllers share a component, so only the role tells their events apart."""
-        source = TrainerControllerProcessIdentity(role="critic")
+    def test_trainer_controller_keeps_its_trainer_id(self) -> None:
+        """Two trainer controllers share a component, so only the trainer id tells their events apart."""
+        source = TrainerControllerProcessIdentity(trainer_id="critic")
         assert TrainerControllerProcessIdentity.model_validate_json(source.model_dump_json()) == source
 
 

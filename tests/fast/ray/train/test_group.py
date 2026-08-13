@@ -72,6 +72,7 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
+        trainer_id="actor",
         role="actor",
         with_ref=with_ref,
         with_opd_teacher=with_opd_teacher,
@@ -156,6 +157,21 @@ class TestIndepDPStore:
 
 
 class TestInit:
+    def test_the_controller_watches_the_pool_of_its_trainer_id(self):
+        """A policy's controller owns the pool named after its trainer id, which the role no longer determines."""
+        group = TrainerController(
+            deployment_identity=make_deployment_identity(),
+            trainer_id="alpha-actor",
+            role="actor",
+            with_ref=False,
+            with_opd_teacher=False,
+            cell_provider=make_provider(),
+            cell_operations=AsyncMock(),
+            inference_controller=None,
+        )
+
+        assert group._pool_id == "trainer-engine-alpha-actor"
+
     def test_creates_correct_number_of_cells(self):
         group = _make_controller(num_cells=3)
 
