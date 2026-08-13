@@ -57,6 +57,8 @@ run:
         memory: 16Gi
       limits: {}
 
+extraManifests: []
+
 commandJob:
   enabled: false
   name: ""

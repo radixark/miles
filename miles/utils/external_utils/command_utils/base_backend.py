@@ -67,6 +67,7 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
     megatron_path: str
     before_ray_job_submit: Callable[[], None] | None
     prepare_cmd: dict[str, str]
+    extra_manifests: list[str]
 
 
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
@@ -92,6 +93,7 @@ class BaseCommandBackend(ABC):
         extra_env_vars: dict[str, str] | None = None,
         megatron_path: str = "/root/Megatron-LM",
         prepare_cmd: dict[str, str] | None = None,
+        extra_manifests: list[str] | None = None,
     ) -> None:
         prepare_cmd = prepare_cmd if prepare_cmd is not None else {}
         assert set(prepare_cmd) <= _PREPARE_CMD_ROLES, (
@@ -118,6 +120,7 @@ class BaseCommandBackend(ABC):
                 megatron_path=megatron_path,
                 before_ray_job_submit=before_ray_job_submit,
                 prepare_cmd=prepare_cmd,
+                extra_manifests=extra_manifests if extra_manifests is not None else [],
             )
         )
 

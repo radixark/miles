@@ -241,10 +241,16 @@ def _launch(
     monkeypatch.setattr(Helm, "build_dependencies", staticmethod(lambda chart: None))
     rendered = rendered if rendered is not None else _RENDERED
     monkeypatch.setattr(
-        Helm, "get_manifest", staticmethod(lambda release, namespace: Manifest.parse(rendered) if installed else None)
+        Helm,
+        "get_manifest",
+        staticmethod(lambda release, namespace: Manifest.parse(rendered, namespace=namespace) if installed else None),
     )
     proposed = _RENDERED_WITH_ANOTHER_KEY if proposed_differs else rendered
-    monkeypatch.setattr(Helm, "render_upgrade", staticmethod(lambda **kwargs: Manifest.parse(proposed)))
+    monkeypatch.setattr(
+        Helm,
+        "render_upgrade",
+        staticmethod(lambda **kwargs: Manifest.parse(proposed, namespace=kwargs["namespace"])),
+    )
     monkeypatch.setattr(Helm, "upgrade", staticmethod(lambda **kwargs: recorded.upgraded.append(kwargs["release"])))
     monkeypatch.setattr(Manifest, "state_file", lambda self, container: tmp_path / "attached.state")
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
@@ -317,4 +323,5 @@ def _train_request() -> ExecuteTrainRequest:
         megatron_path="/root/Megatron-LM",
         before_ray_job_submit=None,
         prepare_cmd={},
+        extra_manifests=[],
     )

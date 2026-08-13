@@ -84,6 +84,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         colocate=bool(args.colocate),
         mooncake_plan=MooncakeInfo.plan_of_args(args),
         prepare_cmd=request.prepare_cmd,
+        extra_manifests=request.extra_manifests,
     )
     values_path = RunFiles.new_values_file(run_directory=run_directory)
     record = LaunchRecord.compute(plan=plan, values_file=values_path)

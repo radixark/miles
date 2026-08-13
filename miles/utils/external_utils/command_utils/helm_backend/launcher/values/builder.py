@@ -27,7 +27,7 @@ _COLOCATE_PAIRING_COMPONENT = "colocate-pairing"
 
 
 def build_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> MilesRunChartValues:
-    return MilesRunChartValues(run=_build_run_values(specs, plan))
+    return MilesRunChartValues(run=_build_run_values(specs, plan), extra_manifests=plan.extra_manifests or None)
 
 
 def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValues:
