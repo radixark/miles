@@ -66,3 +66,13 @@ class TestConfigureMasterAddrAndPort:
 
         assert os.environ["MASTER_ADDR"] == "10.0.0.2"
         assert os.environ["MASTER_PORT"] == "20002"
+
+
+class TestInitRunsExactlyOnce:
+    def test_a_second_init_is_refused(self):
+        """A worker that already initialized is a stale process; reusing it must fail loudly, not train on."""
+        actor = TrainRayActor.__new__(TrainRayActor)
+        actor._init_called = True
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            actor.init(args=None, role="actor")
