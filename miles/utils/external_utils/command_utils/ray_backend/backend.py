@@ -22,6 +22,10 @@ from miles.utils.external_utils.ray_job import run_ray_job
 
 class RayCommandBackend(BaseCommandBackend):
     def _execute_train_inner(self, request: ExecuteTrainRequest) -> None:
+        assert not request.extra_manifests, (
+            "extra_manifests are objects a helm release installs beside the run, and a ray launch installs no "
+            "release; launch onto kubernetes, or start what they describe yourself"
+        )
         external_ray = get_bool_env_var("MILES_SCRIPT_EXTERNAL_RAY")
         master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
         mooncake_master_port = (

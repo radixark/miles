@@ -72,6 +72,7 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
     before_ray_job_submit: Callable[[], None] | None
     job_lifetime: Literal["independent", "launcher"] = "independent"
     prepare_cmd: dict[str, str]
+    extra_manifests: list[str]
 
 
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
@@ -98,6 +99,7 @@ class BaseCommandBackend(ABC):
         megatron_path: str = "/root/Megatron-LM",
         job_lifetime: Literal["independent", "launcher"] = "independent",
         prepare_cmd: dict[str, str] | None = None,
+        extra_manifests: list[str] | None = None,
     ) -> None:
         assert job_lifetime in ("independent", "launcher")
         extra_env_vars = extra_env_vars if extra_env_vars is not None else {}
@@ -132,6 +134,7 @@ class BaseCommandBackend(ABC):
                 before_ray_job_submit=before_ray_job_submit,
                 job_lifetime=job_lifetime,
                 prepare_cmd=prepare_cmd,
+                extra_manifests=extra_manifests if extra_manifests is not None else [],
             )
         )
 
