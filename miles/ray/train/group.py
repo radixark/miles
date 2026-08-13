@@ -9,6 +9,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_pool_id
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.utils import object_store
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -314,6 +315,7 @@ class TrainerController:
         """
         self.args = args
         configure_logger(args, source=TrainerControllerProcessIdentity(role=self._role))
+        object_store.init_instance(args, contribute_segment=False)
 
         if self._expected_num_cells > 1:
             self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
@@ -418,7 +420,7 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def offload_grad_buffer(self):
+    async def offload_grad_buffer(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("offload_grad_buffer")
 
@@ -429,13 +431,13 @@ class TrainerController:
         assert cell.is_alive, "the Tinker trainer cell is unavailable"
         return await cell.execute(fn_name, **kwargs)
 
-    async def forward_backward(self, batch_id: int, data_ref) -> list:
+    async def forward_backward(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_backward", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
         return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
 
-    async def forward_only(self, batch_id: int, data_ref) -> list:
+    async def forward_only(self, batch_id: int, data_ref: object_store.StoreObjectRef) -> list:
         return await self._execute_slots("forward_only", batch_id=batch_id, rollout_data_ref=data_ref)
 
     async def load_slot(

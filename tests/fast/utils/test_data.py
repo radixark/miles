@@ -8,7 +8,13 @@ import pytest
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import object_store
 from miles.utils.data import Dataset, RolloutDataPack, remove_rollout_data_refs, remove_train_output_refs
-from miles.utils.object_store import BaseObjectStore, ObjectStoreGetResult, StoreObjectRef, ValueSpec
+from miles.utils.object_store import (
+    BaseObjectStore,
+    ObjectStoreGetResult,
+    StoreObjectRef,
+    ValueSpec,
+    _MooncakeStoreObjectRef,
+)
 
 
 class _RecordingProcessor:
@@ -63,7 +69,7 @@ def test_mixed_dataset_uses_processor_only_for_structured_prompts(tmp_path) -> N
 
 
 def _ref(payload: Any) -> StoreObjectRef:
-    return StoreObjectRef(payload=payload)
+    return _MooncakeStoreObjectRef(payload=payload)
 
 
 class _RecordingStore(BaseObjectStore):
