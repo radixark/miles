@@ -106,5 +106,6 @@ jobs:
       - name: Run tests
         shell: bash
         env:
+          HF_HUB_DISABLE_XET: "1"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: ${{ inputs.execute_command }}
