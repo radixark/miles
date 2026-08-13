@@ -17,6 +17,8 @@ from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import wait_http_ok
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
+from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -37,6 +39,9 @@ class EvalFleetPin:
     skip_reason: str | None
 
 
+UNREACHABLE_CONTROLLER_ERRORS = (WorkerUnreachableError, ServerRestartedError, TimeoutError)
+
+
 class RolloutExecutorEvalFleet:
     """The executor's side of the fleet: one state to generate against, pinned over rpc."""
 
@@ -49,8 +54,14 @@ class RolloutExecutorEvalFleet:
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
-        inference_controller = self._inference_controller_provider.get_handle(inference_controller_worker_name())
-        pin = await inference_controller.pin_eval_fleet(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
+        try:
+            inference_controller = self._inference_controller_provider.get_handle(inference_controller_worker_name())
+            pin = await inference_controller.pin_eval_fleet(
+                checkpoint_dir=checkpoint_dir, weight_version=weight_version
+            )
+        except UNREACHABLE_CONTROLLER_ERRORS as e:
+            logger.warning(f"Eval fleet controller could not be reached: {e!r}")
+            raise EvalSkip("controller_unreachable") from e
 
         if (skip_reason := pin.skip_reason) is not None:
             raise EvalSkip(skip_reason)
