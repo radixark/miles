@@ -76,6 +76,7 @@ def _request(namespace: str, run_id: str) -> ExecuteTrainRequest:
         megatron_path="/root/Megatron-LM",
         before_ray_job_submit=None,
         prepare_cmd={},
+        extra_manifests=[],
     )
 
 
@@ -120,6 +121,7 @@ def _compute_train_argv(monkeypatch: pytest.MonkeyPatch, train_args: str) -> tup
         megatron_path="/root/Megatron-LM",
         before_ray_job_submit=None,
         prepare_cmd={},
+        extra_manifests=[],
     )
     return entrypoint._compute_train_argv(request, run_id="260101-000000-000", release="r", namespace="rl", env={})
 

@@ -28,6 +28,12 @@
     "run": {
       "$ref": "#/definitions/RunValues"
     },
+    "extraManifests": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "commandJob": {
       "$ref": "#/definitions/CommandJobValues"
     }
