@@ -4,6 +4,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -12,6 +13,7 @@ REPOSITORY = "radixark/miles"
 REPOSITORY_ID = 1072725553
 COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*)")
 LABEL_PATTERN = re.compile(r"run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*")
+POLICY_PERMISSIONS = frozenset({"write", "admin"})
 
 
 class CommentLabelError(Exception):
@@ -43,35 +45,32 @@ def load_json(path):
         raise CommentLabelError(f"cannot read JSON from {path}: {error}") from error
 
 
-def _validate_actor_ids(name, values):
+def _validate_permissions(name, values):
     if not isinstance(values, list) or not values:
         raise CommentLabelError(f"{name} must be a non-empty array")
-    if any(type(value) is not int or value <= 0 for value in values):
-        raise CommentLabelError(f"{name} must contain positive integer user IDs")
+    if any(type(value) is not str or value not in POLICY_PERMISSIONS for value in values):
+        raise CommentLabelError(f"{name} must contain only write or admin")
     if len(set(values)) != len(values):
-        raise CommentLabelError(f"{name} contains duplicate user IDs")
+        raise CommentLabelError(f"{name} contains duplicate permissions")
     return frozenset(values)
 
 
 def load_policy(path):
     raw = load_json(path)
-    if not isinstance(raw, dict) or set(raw) != {"version", "labels", "fork_actor_ids"}:
-        raise CommentLabelError("policy must contain only version, labels, and fork_actor_ids")
+    if not isinstance(raw, dict) or set(raw) != {"version", "labels"}:
+        raise CommentLabelError("policy must contain only version and labels")
     if type(raw["version"]) is not int or raw["version"] != 1:
         raise CommentLabelError("policy version must be 1")
     if not isinstance(raw["labels"], dict) or not raw["labels"]:
         raise CommentLabelError("policy labels must be a non-empty object")
 
     labels = {}
-    for label, actor_ids in raw["labels"].items():
+    for label, permissions in raw["labels"].items():
         if not isinstance(label, str) or LABEL_PATTERN.fullmatch(label) is None:
             raise CommentLabelError(f"invalid exact CI label: {label!r}")
-        labels[label] = _validate_actor_ids(f"labels.{label}", actor_ids)
+        labels[label] = _validate_permissions(f"labels.{label}", permissions)
 
-    return {
-        "labels": labels,
-        "fork_actor_ids": _validate_actor_ids("fork_actor_ids", raw["fork_actor_ids"]),
-    }
+    return {"labels": labels}
 
 
 def parse_command(body):
@@ -110,18 +109,21 @@ def parse_event(event):
     if comment["user"].get("type") != "User":
         raise CommentLabelError("comment author must be a human GitHub user")
     actor_id = _positive_int(comment["user"].get("id"), "comment author ID")
+    actor_login = comment["user"].get("login")
+    if not isinstance(actor_login, str) or not actor_login:
+        raise CommentLabelError("comment author login is missing")
 
     sender = event.get("sender")
     if not isinstance(sender, dict) or sender.get("id") != actor_id:
         raise CommentLabelError("event sender does not match the comment author")
 
-    return pull_number, actor_id, parse_command(comment.get("body"))
+    return pull_number, actor_id, actor_login, parse_command(comment.get("body"))
 
 
 class GitHubAPI:
     def __init__(self, token):
         if not token:
-            raise CommentLabelError("GitHub App token is missing")
+            raise CommentLabelError("GitHub API token is missing")
         self.token = token
 
     def _request(self, path, *, method="GET", payload=None):
@@ -154,6 +156,10 @@ class GitHubAPI:
     def get_pull(self, pull_number):
         return self._request(f"/repos/{REPOSITORY}/pulls/{pull_number}")
 
+    def get_permission(self, actor_login):
+        encoded_login = urllib.parse.quote(actor_login, safe="")
+        return self._request(f"/repos/{REPOSITORY}/collaborators/{encoded_login}/permission")
+
     def add_label(self, pull_number, label):
         return self._request(
             f"/repos/{REPOSITORY}/issues/{pull_number}/labels",
@@ -179,7 +185,7 @@ def _validate_live_pull(pull, pull_number):
     head_repository = head.get("repo") if isinstance(head, dict) else None
     if not isinstance(head_repository, dict):
         raise CommentLabelError("pull request head repository is missing")
-    head_repository_id = _positive_int(head_repository.get("id"), "pull request head repository ID")
+    _positive_int(head_repository.get("id"), "pull request head repository ID")
 
     labels = pull.get("labels")
     if not isinstance(labels, list) or any(not isinstance(item, dict) for item in labels):
@@ -191,16 +197,40 @@ def _validate_live_pull(pull, pull_number):
             raise CommentLabelError("pull request label name is invalid")
         names.append(name)
 
-    return head_repository_id != REPOSITORY_ID, frozenset(names)
+    return frozenset(names)
+
+
+def resolve_policy(event, policy):
+    pull_number, actor_id, actor_login, label = parse_event(event)
+    allowed_permissions = policy["labels"].get(label)
+    if allowed_permissions is None:
+        raise CommentLabelError("requested label is not exposed by policy")
+    return pull_number, actor_id, actor_login, label, allowed_permissions
+
+
+def require_permission(api, actor_id, actor_login, allowed_permissions):
+    permission_result = api.get_permission(actor_login)
+    if not isinstance(permission_result, dict):
+        raise CommentLabelError("GitHub API returned an invalid repository permission")
+    permission_user = permission_result.get("user")
+    permission_user_id = permission_user.get("id") if isinstance(permission_user, dict) else None
+    if type(permission_user_id) is not int or permission_user_id <= 0:
+        raise CommentLabelError("GitHub API returned an invalid repository permission identity")
+    if permission_user_id != actor_id:
+        raise CommentLabelError("repository permission identity does not match the comment author")
+    permission = permission_result.get("permission")
+    if not isinstance(permission, str):
+        raise CommentLabelError("GitHub API returned an invalid repository permission")
+    if permission not in allowed_permissions:
+        raise CommentLabelError("comment author is not authorized for the requested label")
 
 
 def process_event(event, policy, api):
-    pull_number, actor_id, label = authorize_policy(event, policy)
+    pull_number, actor_id, actor_login, label, allowed_permissions = resolve_policy(event, policy)
 
     pull = api.get_pull(pull_number)
-    is_fork, current_labels = _validate_live_pull(pull, pull_number)
-    if is_fork and actor_id not in policy["fork_actor_ids"]:
-        raise CommentLabelError("fork pull requests require a workflow owner")
+    current_labels = _validate_live_pull(pull, pull_number)
+    require_permission(api, actor_id, actor_login, allowed_permissions)
 
     if label in current_labels:
         decision = "ALLOW_ALREADY_PRESENT"
@@ -220,13 +250,9 @@ def process_event(event, policy, api):
     }
 
 
-def authorize_policy(event, policy):
-    pull_number, actor_id, label = parse_event(event)
-    allowed_actor_ids = policy["labels"].get(label)
-    if allowed_actor_ids is None:
-        raise CommentLabelError("requested label is not exposed by policy")
-    if actor_id not in allowed_actor_ids:
-        raise CommentLabelError("comment author is not authorized for the requested label")
+def authorize_policy(event, policy, api):
+    pull_number, actor_id, actor_login, label, allowed_permissions = resolve_policy(event, policy)
+    require_permission(api, actor_id, actor_login, allowed_permissions)
     return pull_number, actor_id, label
 
 
@@ -234,8 +260,9 @@ def main():
     try:
         event = load_json(os.environ["GITHUB_EVENT_PATH"])
         policy = load_policy(os.environ["CI_LABEL_POLICY_PATH"])
+        api = GitHubAPI(os.environ["CI_LABEL_API_TOKEN"])
         if os.environ.get("CI_LABEL_PREFLIGHT") == "true":
-            pull_number, actor_id, label = authorize_policy(event, policy)
+            pull_number, actor_id, label = authorize_policy(event, policy, api)
             print(
                 json.dumps(
                     {"actor_id": actor_id, "label": label, "pull_number": pull_number},
@@ -244,7 +271,7 @@ def main():
                 )
             )
             return 0
-        result = process_event(event, policy, GitHubAPI(os.environ["CI_LABEL_APP_TOKEN"]))
+        result = process_event(event, policy, api)
     except CommentLabelError as error:
         print(f"::error::{error}")
         return 1

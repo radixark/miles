@@ -28,8 +28,9 @@ jobs:
             .github/workflows/policies/ci-label-access.json
           sparse-checkout-cone-mode: false
 
-      - name: Validate the command and local access policy
+      - name: Validate the command and live repository permission
         env:
+          CI_LABEL_API_TOKEN: ${{ github.token }}
           CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
           CI_LABEL_PREFLIGHT: "true"
         run: python3 .github/workflows/scripts/comment_ci_label.py
@@ -45,6 +46,6 @@ jobs:
 
       - name: Authorize and add the exact label
         env:
-          CI_LABEL_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          CI_LABEL_API_TOKEN: ${{ steps.app-token.outputs.token }}
           CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
         run: python3 .github/workflows/scripts/comment_ci_label.py
