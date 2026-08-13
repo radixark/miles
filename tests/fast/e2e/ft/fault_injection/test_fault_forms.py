@@ -17,11 +17,11 @@ def test_ray_draws_the_in_process_kills_for_a_trainer_cell() -> None:
     assert [form.name for form in forms] == [f"inject_fault:{one.value}" for one in fault_forms.FAILURE_MODES]
 
 
-def test_ray_draws_the_same_kills_for_a_rollout_cell() -> None:
-    """On ray an engine is supervised by an actor that can be asked to die, exactly like a trainer cell."""
+def test_ray_draws_a_sigkill_only_for_a_rollout_cell() -> None:
+    """The engine is a subprocess, and exit, segfault and deadlock are faults only its own code can commit."""
     forms = api_server_fault_forms()["rollout"]
 
-    assert [form.name for form in forms] == [f"inject_fault:{one.value}" for one in fault_forms.FAILURE_MODES]
+    assert [form.name for form in forms] == [f"inject_fault:{FailureMode.SIGKILL.value}"]
 
 
 def test_kubernetes_draws_the_kills_plus_pod_deletion_for_a_trainer_cell() -> None:
