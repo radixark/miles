@@ -1,0 +1,134 @@
+# NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
+# WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
+
+import contextlib
+from collections.abc import Iterator
+from pathlib import Path
+
+from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
+from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import API_SERVER_PORT, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
+from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_injections
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
+from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_every_rollout_injection_recovered
+
+from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.comparisons.dumps import (
+    INPUT_TENSORS_ALLOW_FAILED_PATTERN,
+    INPUT_TENSORS_SKIP_PATTERN,
+    compare_dumps,
+)
+from miles.utils.test_utils.comparisons.inference_engine_checksums import (
+    assert_engine_weights_moved,
+    compare_inference_engine_checksums,
+)
+from miles.utils.test_utils.comparisons.metrics import assert_metrics_classified, compare_metrics
+from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, assert_reconfigure_events
+
+TEST_NAME: str = "rollout_deterministic"
+NUM_ROLLOUTS: int = 8
+COMPARED_METRIC_PREFIXES: tuple[str, ...] = ("train/", "rollout/")
+UNCOMPARED_METRIC_PREFIXES: tuple[str, ...] = ("perf/",)
+SEED: int = 42
+CRASH_INTERVAL_SECONDS: float = 120.0
+INJECTOR_STOP_TIMEOUT_SECONDS: float = 5.0
+HEALTH_CHECK_INTERVAL_SECONDS: float = 5.0
+DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"}
+
+
+COLOCATED_MEM_FRACTION_STATIC: float = 0.4
+DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"}
+
+
+def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> str:
+    assert mode.has_real_rollout, f"{TEST_NAME} needs engines to crash, but mode {mode.model_name} has none"
+    assert tuple(mode.ft_components) == ("rollout",), (
+        f"{TEST_NAME} injects into rollout cells only, so the mode must enable ft on rollout alone, "
+        f"got ft_components={mode.ft_components}"
+    )
+
+    args = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_ROLLOUTS, enable_dumper=enable_dumper)
+    args += get_ft_args(mode)
+    args += f"--api-server-port {API_SERVER_PORT} --mini-ft-controller-enable "
+    args += "--debug-deterministic-collective "
+    args += "--sglang-disable-radix-cache "
+    if mode.colocate:
+        args += f"--sglang-mem-fraction-static {COLOCATED_MEM_FRACTION_STATIC} "
+    args += f"--rollout-health-check-interval {HEALTH_CHECK_INTERVAL_SECONDS} "
+    args += get_train_env_vars_arg(
+        mode,
+        deterministic=True,
+        extra_env_vars=DETERMINISTIC_INFERENCE_ENV_VARS,
+    )
+    return args
+
+
+@contextlib.contextmanager
+def _inject_rollout_faults(
+    mode: FTTestMode, dump_dir: str, config: command_utils.ExecuteTrainConfig
+) -> Iterator[None]:
+    base_url: str = f"http://{config.create_backend().api_server_host()}:{API_SERVER_PORT}"
+    print(f"Injecting into {ROLLOUT_CELL_TYPE} cells only, mean interval {CRASH_INTERVAL_SECONDS:.1f}s, seed {SEED}")
+
+    injector = spawn_fault_injector(
+        base_url=base_url,
+        seed=SEED,
+        mean_interval_seconds_of_cell_type={ROLLOUT_CELL_TYPE: CRASH_INTERVAL_SECONDS},
+        cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
+    )
+    try:
+        yield
+    finally:
+        injector.stop_and_join(timeout_seconds=INJECTOR_STOP_TIMEOUT_SECONDS)
+
+    assert_min_soak_injections(
+        compute_num_injections(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
+        context=f"{TEST_NAME} rollout cells",
+    )
+    assert_every_rollout_injection_recovered(injector)
+
+
+def _compare(dump_dir: str, mode: FTTestMode) -> None:
+    baseline_dir: str = f"{dump_dir}/baseline"
+    target_dir: str = f"{dump_dir}/target"
+
+    for side_dir in (baseline_dir, target_dir):
+        assert_reconfigure_events(Path(f"{side_dir}/events"), expected=[])
+
+    assert_metrics_classified(baseline_dir, compared=COMPARED_METRIC_PREFIXES, ignored=UNCOMPARED_METRIC_PREFIXES)
+    compare_metrics(
+        baseline_dir=baseline_dir,
+        target_dir=target_dir,
+        rtol=0.0,
+        atol=0.0,
+        key_prefixes=list(COMPARED_METRIC_PREFIXES),
+        exclude_keys=[],
+    )
+
+    compare_dumps(
+        baseline_dir=baseline_dir,
+        target_dir=target_dir,
+        diff_thresholds=[(".*", "rel <= 0")],
+        allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
+        allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
+    )
+
+    compare_inference_engine_checksums(baseline_dir=baseline_dir, target_dir=target_dir)
+
+    for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
+        assert_engine_weights_moved(side=side, dump_dir=side_dir)
+
+    print("Rollout ft deterministic comparison test PASSED")
+
+
+app, run_ci = create_comparison_app_and_run_ci(
+    test_name=TEST_NAME,
+    build_baseline_args=_build_args,
+    build_target_args=_build_args,
+    compare_fn=_compare,
+    target_side_context=_inject_rollout_faults,
+)
+
+if __name__ == "__main__":
+    app()
