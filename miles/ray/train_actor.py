@@ -19,6 +19,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+from miles.utils.workers.rpc.common.wire_types import Pickled
 
 if TYPE_CHECKING:
     from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -73,7 +74,7 @@ class TrainRayActor(NodeProbeMixin):
         os.environ["MASTER_PORT"] = str(master_port)
 
     # TODO mv the args into ctor
-    def init(self, args, role, with_ref=False, with_opd_teacher=False):
+    def init(self, args: Pickled, role, with_ref=False, with_opd_teacher=False):
         assert (
             not self._init_called
         ), "init already ran in this worker process, so this is a stale worker being reused as a fresh one"
