@@ -21,7 +21,6 @@ from miles.utils.workers.backend_capability.base import BackendCapability, Defer
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
-from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.rpc.common.metadata import declared_concurrency_groups
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -110,16 +109,7 @@ class RayWorkerManager:
 
     def get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
         cell = self._find_cell(cell_id)
-        return [
-            WorkerInfo(
-                name=actor.name,
-                generation=actor.generation,
-                self_addrs=actor.self_addrs or {},
-                gpu_ids=actor.gpu_ids,
-                handle=RayWorkerHandle(actor.actor_handle),
-            )
-            for actor in (cell.actors if cell.actors is not None else [])
-        ]
+        return [self._compute_worker_info(actor) for actor in (cell.actors if cell.actors is not None else [])]
 
     def get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
@@ -127,6 +117,18 @@ class RayWorkerManager:
         assert not unknown, f"{unknown=} {sorted(self._pools)=}"
         infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
         return {info.cell_id: info for info in infos}
+
+    def get_actor_handle(self, worker_name: str) -> ray.actor.ActorHandle:
+        return self._find_actor(worker_name).actor_handle
+
+    def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
+        return WorkerInfo(
+            name=actor.name,
+            generation=actor.generation,
+            self_addrs=actor.self_addrs or {},
+            gpu_ids=actor.gpu_ids,
+            worker_class=None,
+        )
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
         matches = [a for c in self._all_cells() if c.alive for a in c.actors if a.name == worker_name]
