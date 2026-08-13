@@ -281,6 +281,7 @@ class SGLangEngine(RayActor):
                 "miles.rdt.ray_context",
                 placement_group=placement_group,
                 ray_runtime_env=dict(ray.get_runtime_context().runtime_env),
+                ray_namespace=ray.get_runtime_context().namespace,
             )
         self.process = launch_server_process(server_args)
 
