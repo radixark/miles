@@ -339,6 +339,30 @@ class TestSessionServerV2Validation:
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
 
 
+class TestSessionMessageMatcherArgument:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_strict(self):
+        assert self._parse([]).session_message_matcher == "strict"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "strict",
+            "loose_tool_call",
+            "role_content_only",
+            "not_installed.matchers.same_message",
+        ],
+    )
+    def test_preserves_selector_without_importing(self, selector):
+        args = self._parse(["--session-message-matcher", selector])
+
+        assert args.session_message_matcher == selector
+
+
 class TestSessionServerPauseGenerationMode:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

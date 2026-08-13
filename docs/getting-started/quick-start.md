@@ -163,8 +163,10 @@ size 256.
   and training. Sharing GPUs also makes the weight sync local — each rank gathers
   its shards over NCCL and hands them to its engine through IPC, no network
   involved. Disaggregated runs choose a transport with
-  `--update-weight-transfer-mode`: `broadcast` (the default, over NCCL) or `p2p`
-  (point-to-point RDMA via Mooncake; incompatible with `--colocate`).
+  `--update-weight-transfer-mode`: `broadcast` (the default, over NCCL),
+  [`p2p`](/advanced/p2p-weight-transfer) (point-to-point RDMA via Mooncake), or
+  [`disk-delta`](/advanced/disaggregated-rollout) (versioned deltas through
+  shared storage). `p2p` and `disk-delta` are incompatible with `--colocate`.
 - **The reward function.** `--rm-type deepscaler` — a rule-based verifier, no
   learned reward model.
 - **KL regularization.** The frozen reference model can add a KL term to the loss;

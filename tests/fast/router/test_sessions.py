@@ -15,7 +15,7 @@ import requests
 from fastapi.responses import JSONResponse
 
 from miles.rollout.session.server import SessionServer
-from miles.utils.chat_template_utils import message_matches
+from miles.utils.chat_template_utils import strict_message_matches
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
@@ -437,12 +437,12 @@ class TestChatFakeStreaming:
         assert len(records) == 2
 
     def test_streaming_client_rebuilt_tool_calls_match_stored(self, router_env):
-        """Rebuilt tool_calls must match the stored assistant under message_matches.
+        """Rebuilt tool_calls must match the stored assistant under strict_message_matches.
 
         The stored message keeps SGLang's wire shape (tool_calls carry
         ``index``); a protocol-faithful streaming client drops that
         streaming-only key when rebuilding.  The server's own comparison
-        (``message_matches``) must treat the two as equal — dict equality is
+        (``strict_message_matches``) must treat the two as equal — dict equality is
         deliberately NOT the contract."""
         session_id = _create_session(router_env.url)
         url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
@@ -487,7 +487,7 @@ class TestChatFakeStreaming:
         # Mock fidelity guard: the stored wire shape carries index, the rebuilt drops it.
         assert all("index" in tool_call for tool_call in stored_message["tool_calls"])
         assert all("index" not in tool_call for tool_call in rebuilt_message["tool_calls"])
-        assert message_matches(stored_message, rebuilt_message)
+        assert strict_message_matches(stored_message, rebuilt_message)
         # Template-relevant substance survives the round-trip exactly.
         assert [tool_call["function"] for tool_call in rebuilt_message["tool_calls"]] == [
             tool_call["function"] for tool_call in stored_message["tool_calls"]

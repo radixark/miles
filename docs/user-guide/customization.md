@@ -14,6 +14,7 @@ and the default it replaces.
 | | `--custom-generate-function-path` | A single sample's generation |
 | | `--data-source-path` | How prompts are loaded |
 | | `--eval-function-path` | The eval rollout |
+| **Session** | `--session-message-matcher` | Prefix-replay equivalence |
 | **Reward** | `--custom-rm-path` | Reward computation |
 | | `--custom-reward-post-process-path` | Reward normalization |
 | **Filtering** | `--dynamic-sampling-filter-path` | Per-group filter (DAPO) |
@@ -82,6 +83,21 @@ class CustomDataSource(DataSource):
 
 Same signature as `--rollout-function-path`. Defaults to whatever rollout function is
 configured.
+
+---
+
+## Session
+
+### `--session-message-matcher`
+
+Some harnesses do not replay history verbatim — they reserialize tool-call arguments or drop `reasoning_content` — and the default `strict` matcher counts that as divergence (v1 rollback, v2 branching). This flag loosens what "the same message" means during replay: choose a looser built-in selector (see [Agentic Rollout (TITO)](/user-guide/agentic-chat-template#choose-replay-matching)) or supply your own matcher via a trusted dotted import path:
+
+```python
+def matcher(stored_message: dict[str, Any], replayed_message: dict[str, Any]) -> bool:
+    ...
+```
+
+`stored_message` is the authoritative stored message; return `True` to accept the replayed message as the same history at that position. Keep the matcher a fast, synchronous, side-effect-free equivalence check — exceptions or non-`bool` results return HTTP 500, and startup fails if the path does not resolve.
 
 ---
 
