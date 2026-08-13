@@ -92,7 +92,7 @@ class RpcWorkerHandle(BaseWorkerHandle):
                 f"{self._worker_cls_name} rpc server not ready within {timeout}s: {e!r}"
             ) from e
 
-    async def _probe_is_dead(self) -> bool:
+    async def probe_is_dead(self) -> bool:
         try:
             await self._transport.request(
                 "GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS, response_model=HealthResponse
