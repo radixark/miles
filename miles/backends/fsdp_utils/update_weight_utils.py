@@ -71,9 +71,10 @@ class UpdateWeight(abc.ABC):
         self.weight_version += 1
 
         if dist.get_rank() == 0:
-            futures = [engine.pause_generation.remote() for engine in self.rollout_engines]
-            futures.extend([engine.flush_cache.remote() for engine in self.rollout_engines])
-            ray.get(futures)
+            mode = self.args.pause_generation_mode
+            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+            if mode != "in_place":
+                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
             ray.get([engine.begin_weight_update.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
