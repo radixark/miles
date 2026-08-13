@@ -44,6 +44,4 @@ def test_a_debug_rollout_mode_cannot_be_run_fully_async() -> None:
 def test_a_colocated_mode_cannot_be_run_fully_async() -> None:
     """train_async.py rejects colocation, so the soak must fail before it burns a cluster."""
     with pytest.raises(AssertionError, match="colocated"):
-        assert_mode_supports_fully_async(
-            MODES["kill_rollout__dp2_cp2__colocate"], mode="kill_rollout__dp2_cp2__colocate"
-        )
+        assert_mode_supports_fully_async(MODES["kill_rollout__dp4__colocate"], mode="kill_rollout__dp4__colocate")

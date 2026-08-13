@@ -19,7 +19,7 @@ register_cuda_ci(
     ),
 )
 
-_MODE: str = "kill_rollout__dp2_cp2__colocate"
+_MODE: str = "kill_rollout__dp4__colocate"
 
 if __name__ == "__main__":
     run_ci(_MODE)

@@ -24,9 +24,16 @@ def _mode(
 
 
 class TestTotalNodeGpus:
+    def test_rollout_only_colocated_mode_uses_plain_four_way_data_parallelism(self) -> None:
+        """Rollout-only FT must not add context parallelism to the four-GPU trainer."""
+        mode = MODES["kill_rollout__dp4__colocate"]
+
+        assert mode.num_cells == 4
+        assert mode.parallel_args == ""
+
     def test_colocated_mode_counts_shared_gpus_once(self) -> None:
         """The registered colocated mode reserves only the trainer's gpus, not trainer plus rollout."""
-        mode = MODES["kill_rollout__dp2_cp2__colocate"]
+        mode = MODES["kill_rollout__dp4__colocate"]
 
         assert mode.colocate
         assert mode.total_rollout_gpus == 4
