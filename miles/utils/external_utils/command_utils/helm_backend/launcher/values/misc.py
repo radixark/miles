@@ -55,6 +55,7 @@ class LaunchPlan(FrozenStrictBaseModel):
     colocate: bool = False
     mooncake_plan: MooncakePlan | None = None
     prepare_cmd: dict[str, str] = {}
+    extra_manifests: list[str] = []
 
 
 class MooncakeInfo:
