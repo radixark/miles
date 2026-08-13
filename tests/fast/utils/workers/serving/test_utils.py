@@ -1,8 +1,12 @@
 import os
+import socket
 import sys
+from typing import Any
+
 import pytest
 
 from miles.utils.function_registry import function_registry
+from miles.utils.workers.serving import utils as serving_utils
 from miles.utils.workers.serving.utils import compute_serve_worker_spec, override_argv, override_env, split_worker_argv
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
 
@@ -93,3 +97,41 @@ class TestOverrideArgv:
                 raise RuntimeError("boom")
 
         assert sys.argv is original_argv
+
+
+class TestCreateServerSocket:
+    def test_dual_stack_listener_accepts_ipv4_and_ipv6_when_ipv6_sockets_default_to_v6_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicitly dual-stack listener accepts both address families despite a v6-only default."""
+        real_socket = socket.socket
+
+        def create_v6_only_socket(*args: Any, **kwargs: Any) -> socket.socket:
+            server_socket = real_socket(*args, **kwargs)
+            if server_socket.family == socket.AF_INET6:
+                server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            return server_socket
+
+        monkeypatch.setattr(serving_utils.socket, "socket", create_v6_only_socket)
+        monkeypatch.setattr(serving_utils.socket, "has_dualstack_ipv6", lambda: True)
+
+        with serving_utils.create_server_socket(port=0) as server_socket:
+            port = server_socket.getsockname()[1]
+
+            assert server_socket.family == socket.AF_INET6
+            assert server_socket.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                pass
+            with socket.create_connection(("::1", port), timeout=1):
+                pass
+
+    def test_ipv4_listener_remains_reachable_without_dual_stack_support(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A host without dual-stack IPv6 still accepts worker RPC calls over IPv4."""
+        monkeypatch.setattr(serving_utils.socket, "has_dualstack_ipv6", lambda: False)
+
+        with serving_utils.create_server_socket(port=0) as server_socket:
+            port = server_socket.getsockname()[1]
+
+            assert server_socket.family == socket.AF_INET
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                pass
