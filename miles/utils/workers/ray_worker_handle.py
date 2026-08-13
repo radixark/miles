@@ -40,7 +40,7 @@ class RayWorkerHandle(BaseWorkerHandle):
         except (TimeoutError, asyncio.TimeoutError) as e:
             raise WorkerUnreachableError(f"Worker not ready within {timeout}s") from e
 
-    async def _probe_is_dead(self) -> bool:
+    async def probe_is_dead(self) -> bool:
         try:
             await asyncio.wait_for(
                 self._actor_handle.__ray_ready__.remote(), timeout=_WAIT_DEAD_PROBE_INTERVAL_SECONDS

@@ -11,6 +11,8 @@ _ASYNC_METHOD_FREE_PORT_BLOCK = "_get_free_port_block"
 _ASYNC_METHOD_IS_PORT_AVAILABLE = "_is_port_available"
 _ASYNC_METHOD_TO_LOCAL_GPU_IDS = "_to_local_gpu_ids"
 
+READINESS_METHOD = "__ray_ready__"
+
 EVENT_CREATE = "create"
 EVENT_KILL = "kill"
 
@@ -69,6 +71,10 @@ class FakeRayActorHandle:
             raise AttributeError(name)
         return FakeRayActorMethod(handle=self, method=name)
 
+    @property
+    def __ray_ready__(self) -> FakeRayActorMethod:
+        return FakeRayActorMethod(handle=self, method=READINESS_METHOD)
+
 
 @dataclass(kw_only=True)
 class FakeRayRemoteClass:
@@ -98,12 +104,13 @@ class FakeRayModule:
             return FakeRayRemoteClass(cluster=self.cluster, actor_class=actor_class)
         return lambda cls: FakeRayRemoteClass(cluster=self.cluster, actor_class=cls, actor_options=decorator_options)
 
-    def method(self, *, concurrency_group: str):
-        def annotate(func: Any) -> Any:
-            func.__ray_concurrency_group__ = concurrency_group
-            return func
+    def method(self, **decorator_options: Any):
+        def _decorator(fn: Any) -> Any:
+            for name, value in decorator_options.items():
+                setattr(fn, f"__ray_{name}__", value)
+            return fn
 
-        return annotate
+        return _decorator
 
     def get(self, ref: FakeRayObjectRef, timeout: float | None = None) -> Any:
         self.cluster.resolved_refs.append(ref.method)
