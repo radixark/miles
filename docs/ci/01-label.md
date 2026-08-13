@@ -35,22 +35,26 @@ Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` va
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
-## 通过 PR 评论添加 CI label
+## Add CI labels from PR comments
 
-启用 comment gateway 后，在 open PR 下单独评论 `/run-ci-<key>`，等价于追加同名的 `run-ci-<key>` label。例如，`/run-ci-short` 只会请求 `run-ci-short`。命令只允许首尾 whitespace，不能携带参数、正文、第二条命令或任意其他 label；已有 label 会作为成功的 no-op，不会产生新的 `labeled` event 或 rerun。
+After the comment gateway is enabled, post `/run-ci-<key>` as the entire comment on an open PR to append the matching `run-ci-<key>` label. For example, `/run-ci-short` requests only `run-ci-short`. The command permits leading and trailing whitespace only; it cannot include arguments, prose, a second command, or any other label. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
-`.github/workflows/policies/ci-label-access.json` 是默认拒绝的精确 ACL：每个 label 映射到允许使用它的 GitHub numeric user ID。新增 `KNOWN_LABELS` 不会自动开放评论权限，必须另行添加精确 policy entry。v1 初始 policy 开放所有当前 domain label 和 `run-ci-image`，但只授权当前 workflow owner：`yushengsu-thu`（`11704492`）、`guapisolo`（`48857426`）和 `yueming-yuan`（`112649537`）。fork PR 还要求调用者出现在 `fork_actor_ids` 中；初始同样只有这三人。
+`.github/workflows/policies/ci-label-access.json` is an exact, default-deny ACL: each label maps to the GitHub numeric user IDs allowed to request it. Adding a `KNOWN_LABELS` entry does not expose it through comments; an exact policy entry is also required.
 
-gateway 只管理通过评论委托添加 label 的路径，不限制用户原有的 GitHub UI/API label 权限。它只追加 label，不移除 label，也不提供 `/run-ci-all`、`nightly`、`bypass-fastfail` 或通用 `/label` 命令。成功添加的 label 会跨后续 push 保留，撤销授权需要人工移除 label。
+The initial v1 policy exposes every current domain label and `run-ci-image`, but authorizes only the current workflow owners: `yushengsu-thu` (`11704492`), `guapisolo` (`48857426`), and `yueming-yuan` (`112649537`). A fork PR additionally requires the caller to appear in `fork_actor_ids`, which initially contains the same three users.
 
-workflow 默认关闭。workflow owner 完成以下步骤后才能设置 repository variable `CI_LABEL_APP_ENABLED=true`：
+The gateway controls only the delegated comment path for adding labels; it does not restrict users' existing GitHub UI/API label permissions. It only appends labels, never removes them, and does not expose `/run-ci-all`, `nightly`, `bypass-fastfail`, or a generic `/label` command. A successfully added label persists across later pushes; revoking authorization requires manually removing the label.
 
-1. 创建并仅在 `radixark/miles` 安装 GitHub App，授予 `Pull requests: read` 和 `Issues: write`；不授予 `Actions` 或 `Contents: write`。
-2. 将 App client ID 存为 repository variable `CI_LABEL_APP_CLIENT_ID`，将 private key 存为 repository secret `CI_LABEL_APP_PRIVATE_KEY`。
-3. 保护 `.github/workflows/comment-ci-label.yml`、handler 和 policy 的最终 bytes：要求 code-owner review，并启用 stale-review dismissal 或 last-push approval；显式接受仍可 bypass 的管理员作为外部信任根。
-4. 在目标仓库对比人工添加与 App 添加同一测试 label，确认两者都触发预期的 CUDA、ROCm 和 held-run approval consumer，然后移除测试 label。
+The workflow is disabled by default. Workflow owners may set the repository variable `CI_LABEL_APP_ENABLED=true` only after completing these steps:
 
-handler 只运行默认分支的固定代码，不 checkout 或执行 PR 代码、依赖、artifact 或配置。未授权、未知、格式错误、关闭 PR、删除 fork、身份不一致、policy 错误，以及读取 PR 时的 GitHub API 错误都会在 label mutation 前失败。如果追加 label 的 POST 已发出但响应超时、损坏或无法确认，GitHub 可能已经完成变更；handler 不自动重试或 rollback，操作者必须先查看 PR 的当前 label 再决定是否重试。
+1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read` and `Issues: write`; do not grant `Actions` or `Contents: write`.
+2. Store the App client ID in the repository variable `CI_LABEL_APP_CLIENT_ID` and its private key in the repository secret `CI_LABEL_APP_PRIVATE_KEY`.
+3. Protect the final bytes of `.github/workflows/comment-ci-label.yml`, the handler, and the policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
+4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers, then remove the test label.
+
+The handler runs only fixed, reviewed code from the default branch. It never checks out or executes PR code, dependencies, artifacts, or configuration. Unauthorized, unknown, or malformed requests; closed PRs; deleted forks; identity mismatches; policy errors; and GitHub API errors while reading PR state all fail before any request to add a label is sent.
+
+If the additive label `POST` was sent but its response timed out, was malformed, or could not be confirmed, GitHub may already have applied the change. The handler does not retry or roll it back automatically; inspect the PR's current labels before deciding whether to retry.
 
 ## Cadence eligibility
 
