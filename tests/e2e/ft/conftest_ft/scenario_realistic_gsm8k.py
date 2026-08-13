@@ -9,22 +9,26 @@ from typing import Annotated
 import typer
 
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
-    API_SERVER_PORT,
-    spawn_fault_injector,
+from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import API_SERVER_PORT, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
+    compute_mean_interval_seconds_of_cell_type,
+    create_cell_fault_forms,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ACTOR_CELL_TYPE, create_cell_fault_forms
+from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
 from tests.fast.cluster_backends import create_backend_for_run
 
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
-from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
 
 TEST_NAME: str = "realistic_gsm8k"
 
-DEFAULT_CRASH_INTERVAL_SECONDS: float = 600.0
+_FT_COMPONENTS: tuple[str, ...] = ("train", "rollout")
+DEFAULT_SEED: int = 42
+DEFAULT_NUM_ROLLOUT: int = 250
+DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 600.0
+DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 1200.0
 
 _MODEL_NAME: str = "Qwen2.5-0.5B-Instruct"
 _MODEL_TYPE: str = "qwen2.5-0.5B"
@@ -34,21 +38,29 @@ _TRAIN_GPUS: int = 4
 _ROLLOUT_GPUS: int = 4
 # Must stay identical to the threshold asserted by the no-fault baseline
 # tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py: fault recovery must not cost accuracy.
-_DEFAULT_METRIC_THRESHOLD: float = 0.55
+DEFAULT_METRIC_THRESHOLD: float = 0.55
 
 
 @app.command(name="run")
 def run_ci(
-    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = 42,
-    num_rollout: Annotated[int, typer.Option(help="Number of rollouts")] = 250,
-    crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between injections")
-    ] = DEFAULT_CRASH_INTERVAL_SECONDS,
-    metric_threshold: Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")] = _DEFAULT_METRIC_THRESHOLD,
+    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = DEFAULT_SEED,
+    num_rollout: Annotated[int, typer.Option(help="Number of rollouts")] = DEFAULT_NUM_ROLLOUT,
+    trainer_crash_interval_seconds: Annotated[
+        float, typer.Option(help="Mean seconds between trainer cell injections")
+    ] = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: Annotated[
+        float, typer.Option(help="Mean seconds between rollout engine injections")
+    ] = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    metric_threshold: Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")] = DEFAULT_METRIC_THRESHOLD,
 ) -> None:
     config = command_utils.default_config()
     U = create_backend_for_run(config)
-    print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection interval: {crash_interval_seconds:.1f}s")
+    mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
+        _FT_COMPONENTS,
+        trainer_crash_interval_seconds=trainer_crash_interval_seconds,
+        rollout_crash_interval_seconds=rollout_crash_interval_seconds,
+    )
+    print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
 
     _prepare_gsm8k(U)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
@@ -68,8 +80,7 @@ def run_ci(
     injector = spawn_fault_injector(
         base_url=base_url,
         seed=seed,
-        mean_interval_seconds=crash_interval_seconds,
-        cell_type=ACTOR_CELL_TYPE,
+        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
     )
 
@@ -89,10 +100,7 @@ def run_ci(
     finally:
         injector.stop_and_join()
 
-    assert_soak_reconfigure_events(
-        Path(dump_dir) / "events",
-        num_successful_injections=injector.num_successful_injections,
-    )
+    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / "events", context=TEST_NAME)
 
     print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
 
@@ -167,7 +175,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
 
     fault_tolerance_args = (
         "--use-fault-tolerance "
-        "--ft-components train "
+        f"--ft-components {' '.join(_FT_COMPONENTS)} "
         f"--api-server-port {API_SERVER_PORT} "
         "--mini-ft-controller-enable "
     )
