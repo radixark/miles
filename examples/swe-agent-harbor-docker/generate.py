@@ -44,15 +44,10 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
 
 
 def _collect_values(all_metrics: list[dict], key: str) -> list[float]:
-    """Values the agents actually reported for ``key``, skipping the ones that did not.
+    """Values agents reported for ``key``; agents that omit it are skipped.
 
-    Agent harnesses report different key sets: one that measures per-turn timing
-    and tool-call counts fills every key, while another may only report the
-    wall-clock totals. Substituting 0 for a key an agent never reports turns
-    "nobody measured this" into "this agent made zero tool calls", which is
-    indistinguishable on a dashboard from a real measurement. It also drags the
-    mean of a mixed batch toward zero. Callers already skip empty lists, so
-    unreported keys are left out of the log entirely.
+    Defaulting to 0 would log a fake measurement and drag the batch mean down.
+    Callers skip empty lists, so an unreported key stays out of the log.
     """
     return [value for metrics in all_metrics if (value := metrics.get(key)) is not None]
 
