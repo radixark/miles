@@ -218,6 +218,7 @@ class WorkbenchResources(ValuesModel):
 class MilesRunChartValues(ValuesModel):
     infra: InfraValues | None = None
     run: RunValues | None = None
+    extra_manifests: list[str] | None = None
     command_job: CommandJobValues | None = None
 
 

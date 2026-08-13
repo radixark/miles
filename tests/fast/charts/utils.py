@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 import yaml
 
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import ObjectIdentity
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHARTS_DIR = REPO_ROOT / "charts"
 CHART_DIR = CHARTS_DIR / "miles-workbench"
@@ -121,6 +123,23 @@ def render_run_error(*args: str) -> str:
     result = run_helm_template_run(*args)
     assert result.returncode != 0, result.stdout
     return result.stderr
+
+
+def extra_manifests_args(*manifests: str) -> tuple[str, ...]:
+    return ("--set-json", f"extraManifests={json.dumps(list(manifests))}")
+
+
+def objects_added_by(*manifests: str) -> list[dict[str, Any]]:
+    def identity(obj: dict[str, Any]) -> ObjectIdentity:
+        return ObjectIdentity(
+            api_version=obj.get("apiVersion", ""),
+            kind=obj["kind"],
+            namespace=obj["metadata"].get("namespace", NAMESPACE),
+            name=obj["metadata"]["name"],
+        )
+
+    installed_anyway = {identity(obj) for obj in render_run()}
+    return [obj for obj in render_run(*extra_manifests_args(*manifests)) if identity(obj) not in installed_anyway]
 
 
 def named_object(objects: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
