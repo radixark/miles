@@ -130,3 +130,19 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
 
 def _inject_fault_forms(*, base_url: str, failure_modes: list[FailureMode]) -> list[BaseFaultForm]:
     return [InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in failure_modes]
+
+
+CELL_TYPE_OF_FT_COMPONENT: dict[str, str] = {"train": ACTOR_CELL_TYPE, "rollout": ROLLOUT_CELL_TYPE}
+
+
+def compute_mean_interval_seconds_of_cell_type(
+    ft_components: tuple[str, ...], *, trainer_crash_interval_seconds: float, rollout_crash_interval_seconds: float
+) -> dict[str, float]:
+    interval_seconds_of_component: dict[str, float] = {
+        "train": trainer_crash_interval_seconds,
+        "rollout": rollout_crash_interval_seconds,
+    }
+
+    return {
+        CELL_TYPE_OF_FT_COMPONENT[component]: interval_seconds_of_component[component] for component in ft_components
+    }
