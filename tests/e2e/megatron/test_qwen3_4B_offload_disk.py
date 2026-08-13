@@ -21,7 +21,7 @@ NUM_GPUS = 4
 OFFLOAD_DIR = "/root/train_offload_disk"
 
 register_cuda_ci(
-    est_time=600,
+    est_time=400,
     suite="stage-c-4-gpu-h200",
     labels=["megatron"],
 )

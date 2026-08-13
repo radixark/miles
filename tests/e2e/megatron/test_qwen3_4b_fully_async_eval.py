@@ -23,7 +23,7 @@ from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
-register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["megatron", "eval", "fully-async"])
+register_cuda_ci(est_time=1700, suite="stage-c-8-gpu-h200", labels=["megatron", "eval", "fully-async"])
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")

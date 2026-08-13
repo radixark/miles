@@ -18,7 +18,7 @@ import miles.utils.external_utils.command_utils as U
 
 
 register_cuda_ci(
-    est_time=900,
+    est_time=700,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
 )

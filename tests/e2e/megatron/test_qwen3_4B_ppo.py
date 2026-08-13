@@ -6,7 +6,7 @@ import miles.utils.external_utils.command_utils as U
 
 # FIXME: fix this
 register_cuda_ci(
-    est_time=1500,
+    est_time=900,
     suite="stage-c-4-gpu-h200",
     labels=["megatron"],
 )

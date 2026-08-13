@@ -8,7 +8,7 @@ MODEL_TYPE = "qwen3-4B"
 NUM_GPUS = 8
 
 register_cuda_ci(
-    est_time=600,
+    est_time=400,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "weight-update"],
 )
