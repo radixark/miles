@@ -1,3 +1,4 @@
+import pickle
 import shutil
 import socket
 import subprocess
@@ -8,6 +9,7 @@ from typing import Any
 
 import pytest
 import torch
+from pydantic import TypeAdapter, ValidationError
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
 from miles.utils import object_store
@@ -220,7 +222,7 @@ class TestFieldSchemasForValue:
 class TestSingletonContract:
     def test_double_init_rejected(self):
         """Calling init_instance twice in one process asserts."""
-        args = Namespace(object_store_backend="ray")
+        args = Namespace(object_store_backend="ray", worker_comm_backend="ray")
         object_store.init_instance(args)
         with pytest.raises(AssertionError):
             object_store.init_instance(args)
@@ -243,6 +245,22 @@ class TestObjectStoreGetResult:
         assert released == [{"a": 1}]
 
 
+class TestStoreObjectRefWireValidation:
+    def test_a_wire_reference_without_a_backend_tag_is_rejected(self) -> None:
+        """A wire reference without a backend discriminator is rejected."""
+        adapter = TypeAdapter(object_store.StoreObjectRef)
+
+        with pytest.raises(ValidationError):
+            adapter.validate_json('{"payload": "opaque-reference"}')
+
+    def test_a_corrupt_encoded_ray_reference_is_rejected_at_the_wire_boundary(self) -> None:
+        """A Ray reference with corrupt cloudpickle data is rejected during wire validation."""
+        adapter = TypeAdapter(object_store.StoreObjectRef)
+
+        with pytest.raises(pickle.UnpicklingError):
+            adapter.validate_json('{"backend": "ray", "payload": "bm90IGEgcGlja2xl"}')
+
+
 class TestRayObjectStore:
     @pytest.fixture(scope="class", autouse=True)
     def _ray_minicluster(self, ray_local_mode):
@@ -250,7 +268,7 @@ class TestRayObjectStore:
 
     def test_roundtrip_and_noop_remove(self):
         """RayObjectStore puts/gets a rollout dict and remove is a no-op."""
-        args = Namespace(object_store_backend="ray")
+        args = Namespace(object_store_backend="ray", worker_comm_backend="ray")
         store = object_store.init_instance(args)
         assert isinstance(store, object_store.RayObjectStore)
 
