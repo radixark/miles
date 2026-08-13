@@ -2537,6 +2537,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "the pretokenized prefix in multi-turn agentic sessions.",
             )
             parser.add_argument(
+                "--session-message-matcher",
+                type=str,
+                default="strict",
+                help=(
+                    "Process-wide session history matcher: strict (default), "
+                    "loose_tool_call, role_content_only, or a trusted dotted import "
+                    "path. role_content_only is a high-risk opt-in that can collapse "
+                    "different tool-call lineages and does not reconcile call IDs."
+                ),
+            )
+            parser.add_argument(
                 "--session-sample-picker-path",
                 type=str,
                 default="miles.rollout.session.v2.picker_hub.drop_retries",

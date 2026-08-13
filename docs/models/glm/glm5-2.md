@@ -146,4 +146,4 @@ The launcher exposes these as flags:
 - [Low Precision RL](/advanced/low-precision) — opt-in via `--fp8-rollout`.
 - [Speculative Decoding](/advanced/speculative-decoding) — opt-in via `--enable-mtp`.
 - [LoRA](/advanced/lora) — via `scripts/run_glm5_2_744b_a40b_lora.py`.
-- [Fully Async Rollout](/examples/fully-async) — the terminal-bench-2 agentic example (§4.2) runs fully async.
+- [Fully Async Rollout](/examples/infra-features/fully-async) — the terminal-bench-2 agentic example (§4.2) runs fully async.

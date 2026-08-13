@@ -6,7 +6,6 @@ These examples are runnable starting points for your own RL workflow. A few are 
 
 End-to-end training workflows — the place to start.
 
-- **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
 - **[geo3k_vlm](./geo3k_vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
   - **[multi_turn](./geo3k_vlm/multi_turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
 - **[lora](./lora)**: LoRA fine-tuning with the Megatron backend.
@@ -22,6 +21,7 @@ End-to-end training workflows — the place to start.
 Runtime and infrastructure plumbing rather than training recipes — how miles moves
 data and weights around.
 
+- **[fully_async](./infra_features/fully_async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
 - **[low_precision](./infra_features/low_precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
 - **[p2p_weight_transfer](./infra_features/p2p_weight_transfer)**: Point-to-point weight transfer between training and rollout engines.
 - **[random_async](./infra_features/random_async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
