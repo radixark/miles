@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
+
+logger = logging.getLogger(__name__)
+
+INJECT_FAULT_TIMEOUT_SECONDS = 60.0
 
 
 class KubernetesCellOperations(BaseCellOperations):
@@ -34,7 +40,20 @@ class KubernetesCellOperations(BaseCellOperations):
         )
 
     async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
-        raise NotImplementedError("fault injection reaches into a worker process, which needs the rpc layer")
+        await self._ensure_watching()
+
+        (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])
+        assert (
+            0 <= sub_index < len(infos)
+        ), f"sub_index {sub_index} is out of range for cell {cell_id}, which has {len(infos)} workers"
+
+        worker_name = infos[sub_index].name
+        handles = self._provider.get_handles_of_worker_infos(infos)
+        assert (
+            worker_name in handles
+        ), f"{worker_name} is not served over rpc, so no call can reach the process to crash it"
+
+        await _inject_fault_over_rpc(handle=handles[worker_name], mode=mode, worker_name=worker_name)
 
     async def _ensure_watching(self) -> None:
         if self._watching is None:
@@ -44,6 +63,13 @@ class KubernetesCellOperations(BaseCellOperations):
         except BaseException:
             self._watching = None
             raise
+
+
+async def _inject_fault_over_rpc(*, handle: BaseWorkerHandle, mode: FailureMode, worker_name: str) -> None:
+    try:
+        await asyncio.wait_for(handle.inject_fault(mode=mode.value), timeout=INJECT_FAULT_TIMEOUT_SECONDS)
+    except (WorkerUnreachableError, TimeoutError, asyncio.TimeoutError):
+        logger.info("Injecting %s into %s left it unreachable, which is what was asked for", mode.value, worker_name)
 
 
 async def _ignore_cell(cell_id: str, info: CellInfo | None) -> None:
