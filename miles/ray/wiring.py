@@ -4,7 +4,7 @@ from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
 
 def launch_worker_manager(args):
@@ -27,4 +27,4 @@ def _launch_ray_worker_manager(args):
     specs = compute_specs(args)
     # TODO: pass in specs instead of args
     pgs = create_placement_groups(args)
-    return RayWorkerManager.launch(args, specs, pgs)
+    return RayWorkerManager.launch(args, specs, pgs, comm_backend=WorkerCommBackend(args.worker_comm_backend))
