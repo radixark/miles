@@ -677,6 +677,17 @@ class TestUpdatableModelSelection:
             await controller.start_update_weights()
 
     @pytest.mark.asyncio
+    async def test_the_ambiguity_points_at_the_way_out_of_it(self):
+        """Naming a model id is the supported way to update one of several trainable models."""
+        controller = self._controller(
+            _RecordingServer(model_name="a", update_weights=True),
+            _RecordingServer(model_name="b", update_weights=True),
+        )
+
+        with pytest.raises(ValueError, match="Pass model_id to update exactly one of them"):
+            await controller.start_update_weights()
+
+    @pytest.mark.asyncio
     async def test_the_weight_checker_skips_the_frozen_models(self):
         """reset_tensors on a model nobody will rewrite scrambles it for the rest of the run."""
         actor = _RecordingServer(model_name="actor", update_weights=True)
@@ -705,6 +716,87 @@ class TestUpdatableModelSelection:
         assert actor.check_weights_kwargs == [
             dict(action="compare", allow_quant_error=True, selector="first", skip_list=["lm_head"])
         ]
+
+
+class TestGetServersOfModelId:
+    @staticmethod
+    def _controller(*servers: _RecordingServer) -> InferenceController:
+        return _make_controller({srv.model_name: srv for srv in servers})
+
+    @pytest.mark.asyncio
+    async def test_a_named_policy_scopes_the_update_to_its_own_server(self):
+        """Several policies train at once, so the ambiguity a single-policy run never hits is the normal case."""
+        alpha = _RecordingServer(model_name="alpha", update_weights=True)
+        alpha.api_clients = ["alpha-client"]
+        beta = _RecordingServer(model_name="beta", update_weights=True)
+        beta.api_clients = ["beta-client"]
+
+        updatable = await self._controller(alpha, beta).start_update_weights(model_id="beta")
+
+        assert updatable.rollout_engines == ["beta-client"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_model_id_is_refused(self):
+        """Guessing a server here would push one policy's weights into another policy's engines."""
+        controller = self._controller(
+            _RecordingServer(model_name="alpha", update_weights=True),
+            _RecordingServer(model_name="beta", update_weights=True),
+        )
+
+        with pytest.raises(AssertionError, match=r"No server for model_id 'nope'.*\['alpha', 'beta'\]"):
+            await controller.start_update_weights(model_id="nope")
+
+    @pytest.mark.asyncio
+    async def test_a_frozen_server_named_explicitly_is_refused(self):
+        """A reference model is frozen on purpose; overwriting it destroys the baseline the KL term uses."""
+        controller = self._controller(
+            _RecordingServer(model_name="alpha", update_weights=True),
+            _RecordingServer(model_name="ref", update_weights=False),
+        )
+
+        with pytest.raises(AssertionError, match="Server for model_id 'ref' is frozen"):
+            await controller.start_update_weights(model_id="ref")
+
+    @pytest.mark.asyncio
+    async def test_the_weight_checker_compares_only_the_named_policys_engines(self):
+        """A checksum taken against the other policy's engines would report a mismatch on every step."""
+        alpha = _RecordingServer(model_name="alpha", update_weights=True)
+        beta = _RecordingServer(model_name="beta", update_weights=True)
+
+        assert await self._controller(alpha, beta).check_weights(action="checksum", model_id="alpha") == ["alpha"]
+        assert beta.calls == []
+
+
+class TestEnsureCellsReady:
+    @staticmethod
+    def _controller() -> InferenceController:
+        """One policy is serving, the other still has a cell coming up."""
+        ready = _FakeUpdatableCell("hash-a")
+        pending = _FakeUpdatableCell("hash-b")
+        pending.is_pending_weights_or_serving = False
+        return _make_controller(
+            {
+                "alpha": _RecordingServer({"alpha-0": ready}, model_name="alpha", update_weights=True),
+                "beta": _RecordingServer({"beta-0": pending}, model_name="beta", update_weights=False),
+            }
+        )
+
+    @pytest.mark.asyncio
+    async def test_only_the_cells_of_the_named_policy_are_waited_for(self, monkeypatch):
+        """One policy must not be blocked from updating by another policy's cells still coming up."""
+        monkeypatch.setattr(inference_controller_module, "CELLS_READY_TIMEOUT_SECONDS", 0)
+
+        updatable = await self._controller().start_update_weights(model_id="alpha")
+
+        assert updatable.snapshot_cell_id_to_hashes == {"alpha-0": "hash-a"}
+
+    @pytest.mark.asyncio
+    async def test_an_unscoped_update_still_waits_for_every_cell_of_the_run(self, monkeypatch):
+        """The scope is what makes the wait short, so the unscoped path must keep covering all engines."""
+        monkeypatch.setattr(inference_controller_module, "CELLS_READY_TIMEOUT_SECONDS", 0)
+
+        with pytest.raises(TimeoutError, match="waiting for 1/2 cells"):
+            await self._controller().start_update_weights()
 
 
 class TestMemoryLifecycleFanOut:

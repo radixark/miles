@@ -56,6 +56,7 @@ def _make_mock_args(
         actor_num_gpus_per_node=num_cells * gpus_per_cell,
         object_store_backend="ray",
         worker_comm_backend="ray",
+        trainer_model_id=None,
     )
 
 
@@ -1166,7 +1167,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
 
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
 
-        inference_ctl.check_weights.assert_awaited_once_with(action="checksum")
+        inference_ctl.check_weights.assert_awaited_once_with(action="checksum", model_id=None)
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
         assert logged == dict(rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])
@@ -1197,7 +1198,7 @@ class TestCellStatusesUnderConcurrentReconcile:
 class TestUpdateWeightsReturnsTheVersion:
     def _make_group(self, *, per_worker_versions: list[int | None]) -> TrainerController:
         group = TrainerController.__new__(TrainerController)
-        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False)
+        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
         group._inference_controller = AsyncMock()
         group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
         group._maybe_log_inference_engine_weight_checksums = AsyncMock()
@@ -1214,6 +1215,42 @@ class TestUpdateWeightsReturnsTheVersion:
         group = self._make_group(per_worker_versions=[None])
 
         assert await group.update_weights() is None
+
+
+class TestUpdateWeightsScopedToItsPolicy:
+    def _make_group(self, *, trainer_model_id: str | None) -> TrainerController:
+        group = TrainerController.__new__(TrainerController)
+        group.args = SimpleNamespace(
+            debug_train_only=False, debug_rollout_only=False, trainer_model_id=trainer_model_id
+        )
+        group._inference_controller = AsyncMock()
+        group._inference_controller.check_weights = AsyncMock(return_value=[])
+        group._execute_first_alive = AsyncMock(return_value=[11])
+        return group
+
+    async def test_the_controller_updates_only_the_engines_of_its_own_policy(self):
+        """Without the scope, one policy's trainer broadcasts its weights into another policy's engines."""
+        group = self._make_group(trainer_model_id="alpha")
+
+        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
+            "miles.ray.train.group.get_event_logger"
+        ):
+            await group.update_weights(rollout_id=3)
+
+        group._inference_controller.start_update_weights.assert_awaited_once_with(model_id="alpha")
+        group._inference_controller.check_weights.assert_awaited_once_with(action="checksum", model_id="alpha")
+
+    async def test_a_single_policy_run_still_asks_for_every_engine(self):
+        """The scope is derived from the trainer's own args, so a run without a policy id keeps the old surface."""
+        group = self._make_group(trainer_model_id=None)
+
+        with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
+            "miles.ray.train.group.get_event_logger"
+        ):
+            await group.update_weights(rollout_id=3)
+
+        group._inference_controller.start_update_weights.assert_awaited_once_with(model_id=None)
+        group._inference_controller.check_weights.assert_awaited_once_with(action="checksum", model_id=None)
 
 
 class TestInitForwardsModelFlags:
@@ -1283,7 +1320,7 @@ class _RecordingInferenceController:
         self._info = info
         self.ended_with: list[dict[str, str]] = []
 
-    async def start_update_weights(self) -> SimpleNamespace:
+    async def start_update_weights(self, model_id: str | None = None) -> SimpleNamespace:
         return self._info
 
     async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]) -> None:
