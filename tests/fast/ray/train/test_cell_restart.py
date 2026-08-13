@@ -28,7 +28,7 @@ class _HangingKillSelfHandle(BaseWorkerHandle):
     async def wait_dead(self, *, timeout: float) -> None:
         self.wait_dead_call_count += 1
 
-    async def _probe_is_dead(self) -> bool:
+    async def probe_is_dead(self) -> bool:
         raise NotImplementedError
 
 
