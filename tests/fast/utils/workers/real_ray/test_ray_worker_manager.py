@@ -334,7 +334,9 @@ class TestWorkerInfosOnRealRay:
         )
         records = probe.wait_for_records(4)
 
-        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-1"))
+        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        (infos,) = provider.get_worker_infos(cell_ids=["engine-1"])
+        handles = provider.get_handles_of_worker_infos(infos)
 
         assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
         assert [info.generation for info in infos] == [1, 1]
@@ -342,7 +344,7 @@ class TestWorkerInfosOnRealRay:
         for worker_in_cell_index, info in enumerate(infos):
             recorded = records[f"1-{worker_in_cell_index}"]["context"]["self_addrs"]["primary"]
             assert {"host": info.self_addrs["primary"].host, "port": info.self_addrs["primary"].port} == recorded
-            node_ip = await info.handle._get_node_ip()
+            node_ip = await handles[info.name]._get_node_ip()
             assert info.self_addrs["primary"].host.strip("[]") == node_ip
 
 
@@ -352,22 +354,24 @@ class TestWorkerDeathOnRealRay:
         probe = worker_probe_factory()
         manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
         probe.wait_for_records(2)
-        infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-0"))
+        provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
+        (infos,) = provider.get_worker_infos(cell_ids=["engine-0"])
+        handles = [provider.get_handle(info.name) for info in infos]
 
         # The babysit thread may reach os._exit before this reply is sent, so losing the reply is
         # the death under test arriving early rather than a failure; the loop below still has to
         # observe it, so nothing is taken on faith here.
         try:
-            await infos[0].handle.kill_subprocess()
+            await handles[0].kill_subprocess()
         except WorkerUnreachableError:
             pass
 
         deadline = time.monotonic() + 60
         while True:
             try:
-                await asyncio.wait_for(infos[0].handle._get_node_ip(), timeout=5)
+                await asyncio.wait_for(handles[0]._get_node_ip(), timeout=5)
             except (WorkerUnreachableError, asyncio.TimeoutError):
                 break
             assert time.monotonic() < deadline, "the actor of a dead command is still alive"
             await asyncio.sleep(0.5)
-        assert await asyncio.wait_for(infos[1].handle._get_node_ip(), timeout=30)
+        assert await asyncio.wait_for(handles[1]._get_node_ip(), timeout=30)
