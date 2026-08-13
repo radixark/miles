@@ -50,9 +50,11 @@ class TrainerCell:
 
         (worker_infos,) = provider.get_worker_infos(cell_ids=[cell_id])
         self._master_addr: HostAndPort = worker_infos[0].self_addrs[MASTER_PORT_NAME]
+        worker_handles = provider.get_handles_of_worker_infos(worker_infos)
+        assert len(worker_handles) == len(worker_infos), f"cell {cell_id} holds workers that cannot be called"
 
         # NOTE: do *NOT* directly modify `self._state`, but instead use `self._change_state`
-        self._state: CellState = StateAllocatedUninitialized(worker_handles=[info.handle for info in worker_infos])
+        self._state: CellState = StateAllocatedUninitialized(worker_handles=list(worker_handles.values()))
 
     # ------------------------ API ------------------------
 

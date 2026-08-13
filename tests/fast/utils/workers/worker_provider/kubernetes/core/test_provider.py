@@ -485,6 +485,18 @@ def _worker_infos(provider, cell_id="engine-0"):
     return asyncio.run(scenario())
 
 
+def _worker_handle(provider, cell_id="engine-0"):
+    async def scenario():
+        stop = await _watch(provider, [])
+        try:
+            (infos,) = provider.get_worker_infos(cell_ids=[cell_id])
+            return provider.get_handles_of_worker_infos(infos)[infos[0].name]
+        finally:
+            await stop()
+
+    return asyncio.run(scenario())
+
+
 class TestGetWorkerInfos:
     def test_orders_the_workers_by_the_rank_label(self):
         """A trainer cell reads rank 0 as its master, so an arbitrary pod order would misconfigure it."""
@@ -523,7 +535,7 @@ class TestGetWorkerInfos:
         """A trainer cell drives its ranks through these handles, so they must talk to the right pod."""
         api = FakePodApi(pods=[make_pod(name="engine-0-0", pod_ip="10.1.2.3")])
 
-        handle = _worker_infos(_trainer_provider(api))[0].handle
+        handle = _worker_handle(_trainer_provider(api))
 
         assert isinstance(handle, RpcWorkerHandle)
         assert handle._transport._server_url == "http://10.1.2.3:8000"
@@ -532,7 +544,7 @@ class TestGetWorkerInfos:
         """A typo would otherwise become a 404 at call time, deep inside a training step."""
         api = FakePodApi(pods=[make_pod(name="engine-0-0")])
 
-        handle = _worker_infos(_trainer_provider(api))[0].handle
+        handle = _worker_handle(_trainer_provider(api))
 
         assert callable(handle.init)
         with pytest.raises(AttributeError):
