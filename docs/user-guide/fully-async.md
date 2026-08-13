@@ -125,7 +125,7 @@ replaceable component with three methods:
 |---|---|---|
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
 | `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
-| `get_metrics()` | The trainer, once per step | Report what the buffer did since the previous step |
+| `get_metrics(trainer_model_id)` | The trainer, once per step | Report what the buffer did since the previous step. The trainer model id is always passed, and is `None` in a run of one policy |
 
 Those three methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
