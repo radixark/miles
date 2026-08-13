@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 import miles.utils.workers.worker_provider.ray as ray_worker_provider_mod
-from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -93,14 +93,6 @@ class _FakeRayModule:
         return [ref.infos for ref in refs]
 
 
-class _FakeWorkerHandle(BaseWorkerHandle):
-    async def wait_ready(self, *, timeout: float) -> None:
-        return None
-
-    async def wait_dead(self, *, timeout: float) -> None:
-        return None
-
-
 def _worker_infos(cell_id: str, *, count: int) -> list[WorkerInfo]:
     return [
         WorkerInfo(
@@ -108,7 +100,6 @@ def _worker_infos(cell_id: str, *, count: int) -> list[WorkerInfo]:
             generation=1,
             self_addrs={"primary": HostAndPort(host="10.0.0.7", port=15000 + worker_index)},
             gpu_ids=[worker_index],
-            handle=_FakeWorkerHandle(),
         )
         for worker_index in range(count)
     ]
@@ -398,6 +389,66 @@ class TestRayWorkerProviderWatchCellsPolling:
             await _wait_until(lambda: reconciler.calls == [("cell-a", info)])
         finally:
             await stop()
+
+
+class _RpcDemoWorker:
+    def report(self) -> str:
+        return "ok"
+
+
+_RPC_DEMO_WORKER_PATH = f"{__name__}._RpcDemoWorker"
+
+
+@dataclass
+class _ServingWorkerInfosMethod:
+    answers: list[list[WorkerInfo]]
+    calls: list[str] = field(default_factory=list)
+
+    def remote(self, cell_id: str) -> Any:
+        self.calls.append(cell_id)
+        return self.answers[min(len(self.calls) - 1, len(self.answers) - 1)]
+
+
+@dataclass
+class _ServingManagerHandle:
+    get_worker_infos: _ServingWorkerInfosMethod
+
+
+def _served_worker_info(*, generation: int, port: int = 15000) -> WorkerInfo:
+    return WorkerInfo(
+        name="trainer-engine-actor-0-0",
+        generation=generation,
+        self_addrs={"rpc": HostAndPort(host="10.0.0.7", port=port)},
+        gpu_ids=[],
+        worker_class=_RPC_DEMO_WORKER_PATH,
+    )
+
+
+class TestRayWorkerProviderRpcHandles:
+    def test_a_served_worker_is_called_over_its_own_server(self, monkeypatch: pytest.MonkeyPatch):
+        """Under rpc the launcher answers with the class, and the caller is what builds the client."""
+        handle = _ServingManagerHandle(
+            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_served_worker_info(generation=0)]])
+        )
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
+        monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda refs: refs)
+
+        built = provider.get_handle("trainer-engine-actor-0-0")
+
+        assert isinstance(built, RpcWorkerHandle)
+        assert built._transport._server_url == "http://10.0.0.7:15000"
+
+    def test_the_worker_of_the_named_cell_is_asked_for(self, monkeypatch: pytest.MonkeyPatch):
+        """A lookup that derived another cell would hand back a handle to somebody else's worker."""
+        handle = _ServingManagerHandle(
+            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_served_worker_info(generation=0)]])
+        )
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
+        monkeypatch.setattr(ray_worker_provider_mod.ray, "get", lambda refs: refs)
+
+        provider.get_handle("trainer-engine-actor-0-0")
+
+        assert handle.get_worker_infos.calls == ["trainer-engine-actor-0"]
 
 
 class TestRayWorkerProviderWatchCellsStop:
