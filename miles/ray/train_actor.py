@@ -47,6 +47,7 @@ class TrainRayActor(NodeProbeMixin):
     ):
         self.args = args
 
+        self._init_called = False
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
@@ -73,6 +74,11 @@ class TrainRayActor(NodeProbeMixin):
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
+        assert (
+            not self._init_called
+        ), "init already ran in this worker process, so this is a stale worker being reused as a fresh one"
+        self._init_called = True
+
         self.args = args
         self.role = role
         self.with_ref = with_ref

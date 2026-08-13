@@ -115,3 +115,13 @@ class TestTrainParallelConfigWiring:
         )
 
         assert rollout_executor.received_config is train_parallel_config
+
+
+class TestInitRunsExactlyOnce:
+    def test_a_second_init_is_refused(self):
+        """A worker that already initialized is a stale process; reusing it must fail loudly, not train on."""
+        actor = TrainRayActor.__new__(TrainRayActor)
+        actor._init_called = True
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            actor.init(args=None, role="actor")
