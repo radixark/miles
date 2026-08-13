@@ -2,9 +2,15 @@ import ast
 from pathlib import Path
 
 import pytest
+from tests.fast.source_scan import (
+    FRAMEWORK_ROOT,
+    REPO_ROOT,
+    framework_modules,
+    imported_modules,
+    parse_module,
+    python_modules,
+)
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-FRAMEWORK_ROOT = REPO_ROOT / "miles"
 REPLACEABLE_PACKAGE = "miles.utils.external_utils"
 
 _TOOLING_DIRS = (
@@ -57,22 +63,7 @@ UPPER_LAYER_EXEMPTIONS = {
 
 
 def _framework_modules() -> list[Path]:
-    return sorted(
-        path
-        for path in FRAMEWORK_ROOT.rglob("*.py")
-        if not any(path.is_relative_to(directory) for directory in _TOOLING_DIRS) and "__pycache__" not in path.parts
-    )
-
-
-def _imported_modules(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(), filename=str(path))
-    imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            imported.add(node.module)
-    return imported
+    return framework_modules(exclude_dirs=_TOOLING_DIRS)
 
 
 def _layered_modules() -> list[Path]:
@@ -89,11 +80,11 @@ def _exempted_files(exemption: str) -> list[Path]:
     target = REPO_ROOT / exemption
     if not target.is_dir():
         return [target]
-    return sorted(path for path in target.rglob("*.py") if "__pycache__" not in path.parts)
+    return python_modules(roots=[target])
 
 
 def _upper_layer_imports(path: Path) -> list[str]:
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = parse_module(path)
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -110,7 +101,7 @@ def _is_upper_layer_module(module: str) -> bool:
 
 
 def _calls_of(path: Path, name: str) -> list[ast.Call]:
-    tree = ast.parse(path.read_text(), filename=str(path))
+    tree = parse_module(path)
     return [
         node
         for node in ast.walk(tree)
@@ -157,7 +148,7 @@ class TestImportDirection:
         offenders = [
             f"{path.relative_to(REPO_ROOT)} imports {module}"
             for path in _framework_modules()
-            for module in _imported_modules(path)
+            for module in imported_modules(path)
             if module == REPLACEABLE_PACKAGE or module.startswith(f"{REPLACEABLE_PACKAGE}.")
         ]
 
@@ -175,14 +166,14 @@ class TestImportDirection:
             / "entrypoint.py"
         )
 
-        assert any(module.startswith("miles.utils.workers") for module in _imported_modules(launcher))
+        assert any(module.startswith("miles.utils.workers") for module in imported_modules(launcher))
 
 
 class TestLaunchScriptContract:
     @pytest.mark.parametrize("script", sorted((REPO_ROOT / "scripts").glob("run_*.py")), ids=lambda path: path.name)
     def test_a_train_subcommand_only_trains(self, script):
         """The Kubernetes backend runs this subcommand in a pod, where preparation has already happened."""
-        tree = ast.parse(script.read_text(), filename=str(script))
+        tree = parse_module(script)
         train = next(
             (node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == TRAIN_ONLY_SUBCOMMAND),
             None,
