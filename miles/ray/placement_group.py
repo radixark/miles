@@ -6,6 +6,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.backends.megatron_utils.megatron_config import compute_trainer_args
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
@@ -13,14 +14,7 @@ from miles.ray.specs.inference import (
     create_inference_controller_handle,
 )
 from miles.ray.specs.rollout import create_rollout_executor_handle
-from miles.ray.specs.train import (
-    ACTOR_ROLE,
-    CRITIC_ROLE,
-    compute_actor_args,
-    compute_critic_args,
-    compute_trainer_configs,
-    create_trainer_controller_handle,
-)
+from miles.ray.specs.train import ACTOR_ROLE, CRITIC_ROLE, compute_trainer_configs, create_trainer_controller_handle
 from miles.ray.wiring import get_backend_capability
 from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -138,31 +132,55 @@ def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     return ans
 
 
+class TrainerInfo(NamedTuple):
+    handle: BaseWorkerHandle
+    restored_rollout_id: int
+    start_rollout_id: int
+
+
+# TODO: move (when reorganizing files)
+async def create_training_model(args, *, trainer_id: str) -> TrainerInfo:
+    handle = create_trainer_controller_handle(capability=get_backend_capability(args), trainer_id=trainer_id)
+    restored_rollout_ids = await handle.init(args)
+    assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
+    [restored_rollout_id] = set(restored_rollout_ids)
+    start_rollout_id = x if (x := args.start_rollout_id) is not None else restored_rollout_id
+    return TrainerInfo(handle=handle, restored_rollout_id=restored_rollout_id, start_rollout_id=start_rollout_id)
+
+
 # TODO: move (when reorganizing files)
 async def create_training_models(
     args, rollout_executor: BaseWorkerHandle
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
-    capability = get_backend_capability(args)
+    trainer_configs = compute_trainer_configs(args)
+    [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
+    actor_info = await create_training_model(
+        compute_trainer_args(args, actor_config), trainer_id=actor_config.trainer_id
+    )
 
-    actor_model = create_trainer_controller_handle(capability=capability, trainer_id=ACTOR_ROLE)
-    actor_start_rollout_ids = await actor_model.init(compute_actor_args(args))
-
+    critic_configs = [config for config in trainer_configs if config.role == CRITIC_ROLE]
+    critic_info = None
     if args.use_critic:
-        critic_model = create_trainer_controller_handle(capability=capability, trainer_id=CRITIC_ROLE)
-        critic_start_rollout_ids = await critic_model.init(compute_critic_args(args))
+        [critic_config] = critic_configs
+        critic_info = await create_training_model(
+            compute_trainer_args(args, critic_config), trainer_id=critic_config.trainer_id
+        )
+        assert critic_info.restored_rollout_id == actor_info.restored_rollout_id, (
+            f"the actor restored to rollout {actor_info.restored_rollout_id} but its critic to "
+            f"{critic_info.restored_rollout_id}"
+        )
     else:
-        critic_model = None
+        assert (
+            not critic_configs
+        ), f"a run without --use-critic needs no critic, but the trainer configs are {trainer_configs}"
 
-    start_rollout_ids = (critic_start_rollout_ids if args.use_critic else []) + actor_start_rollout_ids
-
-    assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
-        args.start_rollout_id = start_rollout_ids[0]
+        args.start_rollout_id = actor_info.start_rollout_id
 
-    await rollout_executor.set_train_parallel_config(await actor_model.get_train_parallel_config())
+    await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
     await rollout_executor.load(args.start_rollout_id - 1)
 
-    return actor_model, critic_model
+    return actor_info.handle, critic_info.handle if critic_info is not None else None
 
 
 # TODO: move (when reorganizing files)

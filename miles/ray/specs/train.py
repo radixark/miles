@@ -150,16 +150,6 @@ def compute_trainer_num_cells(args, *, role: str) -> int:
     return (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
 
 
-def compute_actor_args(args):
-    [actor_config] = [config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]
-    return compute_trainer_args(args, actor_config)
-
-
-def compute_critic_args(args):
-    [critic_config] = [config for config in resolve_megatron_config(args).trainers if config.role == CRITIC_ROLE]
-    return compute_trainer_args(args, critic_config)
-
-
 def _compute_spec_trainer(
     args,
     *,
