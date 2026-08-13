@@ -22,6 +22,7 @@ from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.rpc.common.metadata import declared_concurrency_groups
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
@@ -395,7 +396,8 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
 
     def _compute_actor_class(self) -> type:
         actor_class = bootstrapped_worker_class(self.spec.worker_class)
-        if (method_groups := self.spec.method_concurrency_groups) is None:
+        method_groups = self._compute_method_concurrency_groups(actor_class)
+        if not method_groups:
             return actor_class
         return type(
             f"{actor_class.__name__}WithConcurrencyGroups",
@@ -405,6 +407,11 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
                 for name, group in method_groups.items()
             },
         )
+
+    def _compute_method_concurrency_groups(self, actor_class: type) -> dict[str, str]:
+        if self.spec.concurrency_groups is None:
+            return {}
+        return {**declared_concurrency_groups(actor_class), **(self.spec.method_concurrency_groups or {})}
 
     async def post_setup(self) -> None:
         pass
