@@ -47,7 +47,11 @@ class RayWorkerProvider(BaseWorkerProvider):
     def _build_handle_of_worker_info(self, info: WorkerInfo) -> BaseWorkerHandle:
         if info.worker_class is not None:
             return build_rpc_handle_of_worker_info(info)
-        return RayWorkerHandle(ray.get(self._worker_manager_handle.get_actor_handle.remote(info.name)))
+        return RayWorkerHandle(
+            ray.get(
+                self._worker_manager_handle.get_actor_handle.remote(info.name, expected_generation=info.generation)
+            )
+        )
 
     def _watched_pool_ids(self) -> list[str]:
         assert self._pool_ids is not None, "this provider was built without the pool_ids it is meant to observe"
