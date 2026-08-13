@@ -337,7 +337,7 @@ async def register_engines(servers, *, provider: BaseWorkerProvider) -> None:
         )
         if fingerprint == _engines_fingerprint:
             return
-        engines = await _compute_engine_infos(cells, worker_infos_per_cell)
+        engines = await _compute_engine_infos(cells, worker_infos_per_cell, provider=provider)
         handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=engines))
         _engines_fingerprint = fingerprint
     except Exception:
@@ -382,12 +382,17 @@ async def _no_gpu_uuids(info) -> list[str | None]:
     return [None] * len(info.gpu_ids)
 
 
-async def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
+async def _compute_engine_infos(cells, worker_infos_per_cell, *, provider: BaseWorkerProvider) -> list[EngineInfo]:
     flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
+    handles = provider.get_handles_of_worker_infos(flat_infos)
     probed_uuids = iter(
         await asyncio.gather(
             *[
-                info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) if info.handle is not None else _no_gpu_uuids(info)
+                (
+                    handle._get_gpu_uuids(gpu_ids=info.gpu_ids)
+                    if (handle := handles.get(info.name)) is not None
+                    else _no_gpu_uuids(info)
+                )
                 for info in flat_infos
             ]
         )

@@ -373,7 +373,7 @@ class TestStaticInferenceEngineWorkerProvider:
         ((worker_info,),) = provider.get_worker_infos(cell_ids=[info.cell_id])
 
         assert worker_info.name == info.worker_names[0]
-        assert worker_info.handle is None
+        assert worker_info.worker_class is None
         assert worker_info.self_addrs["primary"].port == 8000
 
     async def test_an_ipv6_engine_address_stays_bracketed(self, monkeypatch):
