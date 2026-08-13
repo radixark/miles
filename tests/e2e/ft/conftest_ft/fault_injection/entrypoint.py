@@ -18,22 +18,20 @@ class FaultInjectorHandle:
         *,
         base_url: str,
         seed: int,
-        mean_interval_seconds: float,
-        cell_type: str | None,
+        mean_interval_seconds_of_cell_type: dict[str, float],
         cell_fault_forms: CellFaultForms,
     ) -> None:
         self.event_log = EventLog()
         self._base_url = base_url
-        self._cell_type = cell_type
+        self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=run_fault_injection_loop,
             kwargs={
                 "base_url": base_url,
                 "seed": seed,
-                "mean_interval_seconds": mean_interval_seconds,
+                "mean_interval_seconds_of_cell_type": mean_interval_seconds_of_cell_type,
                 "stop_event": self._stop_event,
-                "cell_type": cell_type,
                 "event_log": self.event_log,
                 "cell_fault_forms": cell_fault_forms,
             },
@@ -58,7 +56,7 @@ class FaultInjectorHandle:
         self._observe_final_snapshot()
 
     def _observe_final_snapshot(self) -> None:
-        cells = list_cells(base_url=self._base_url, cell_type=self._cell_type)
+        cells = list_cells(base_url=self._base_url, cell_types=self._cell_types)
         if cells is None:
             return
         self.event_log.observe(cells)
@@ -68,15 +66,13 @@ def spawn_fault_injector(
     *,
     base_url: str,
     seed: int,
-    mean_interval_seconds: float,
-    cell_type: str | None,
+    mean_interval_seconds_of_cell_type: dict[str, float],
     cell_fault_forms: CellFaultForms,
 ) -> FaultInjectorHandle:
     handle = FaultInjectorHandle(
         base_url=base_url,
         seed=seed,
-        mean_interval_seconds=mean_interval_seconds,
-        cell_type=cell_type,
+        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=cell_fault_forms,
     )
     handle.start()

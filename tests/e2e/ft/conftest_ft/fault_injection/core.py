@@ -29,21 +29,23 @@ def run_fault_injection_loop(
     *,
     base_url: str,
     seed: int,
-    mean_interval_seconds: float,
+    mean_interval_seconds_of_cell_type: dict[str, float],
     stop_event: threading.Event,
-    cell_type: str | None,
     event_log: EventLog,
     cell_fault_forms: CellFaultForms,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
-    next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
+    next_injection_time_of_cell_type: dict[str, float] = {
+        cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
+        for cell_type, mean_interval_seconds in sorted(mean_interval_seconds_of_cell_type.items())
+    }
 
     while not stop_event.is_set():
         if stop_event.wait(timeout=poll_interval_seconds):
             break
 
-        cells = list_cells(base_url=base_url, cell_type=cell_type)
+        cells = list_cells(base_url=base_url, cell_types=set(mean_interval_seconds_of_cell_type))
         if cells is None:
             continue
 
@@ -54,7 +56,9 @@ def run_fault_injection_loop(
         if stop_event.is_set():
             break
 
-        if time.monotonic() < next_injection_time:
+        now: float = time.monotonic()
+        due_types = sorted(kind for kind, due_at in next_injection_time_of_cell_type.items() if now >= due_at)
+        if not due_types:
             continue
 
         # Keep >=1 cell of each kind genuinely alive: if a prior injection has not recovered yet, wait
@@ -79,18 +83,19 @@ def run_fault_injection_loop(
             },
         )
 
-        spare_types = sorted(kind for kind, kind_cells in live_replicas_of_type.items() if len(kind_cells) > 1)
+        spare_types = [kind for kind in due_types if len(live_replicas_of_type.get(kind, [])) > 1]
         if not spare_types:
             logger.info(
-                "Deferring injection: no cell kind has a spare working replica (%s)",
+                "Deferring injection: no due cell kind has a spare working replica (due %s, alive %s)",
+                due_types,
                 {kind: len(kind_cells) for kind, kind_cells in sorted(live_replicas_of_type.items())},
             )
             continue
 
-        target = rng.choice(victims_of_type[rng.choice(spare_types)])
+        cell_type = rng.choice(spare_types)
+        target = rng.choice(victims_of_type[cell_type])
         cell_name = target["metadata"]["name"]
-        target_type = cell_type_of(target)
-        form = _draw_form(cell_fault_forms[target_type], events=event_log.events, cell_type=target_type, rng=rng)
+        form = _draw_form(cell_fault_forms[cell_type], events=event_log.events, cell_type=cell_type, rng=rng)
         try:
             form.inject(target, rng)
         except Exception:
@@ -99,7 +104,9 @@ def run_fault_injection_loop(
             continue
 
         event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=True)
-        next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
+        next_injection_time_of_cell_type[cell_type] = _compute_next_injection_time(
+            rng, mean_interval_seconds_of_cell_type[cell_type]
+        )
         logger.info("Injected fault %s into %s", form.name, cell_name)
 
 
@@ -117,15 +124,11 @@ def _draw_form(
     return rng.choice(unproven or forms)
 
 
-def list_cells(*, base_url: str, cell_type: str | None) -> list[dict] | None:
+def list_cells(*, base_url: str, cell_types: set[str]) -> list[dict] | None:
     try:
         resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
         resp.raise_for_status()
-        return [c for c in resp.json()["items"] if _matches_cell_type(c, cell_type)]
+        return [c for c in resp.json()["items"] if cell_type_of(c) in cell_types]
     except Exception:
         logger.info("Failed to list cells from api server", exc_info=True)
         return None
-
-
-def _matches_cell_type(cell: dict, cell_type: str | None) -> bool:
-    return cell_type is None or cell_type_of(cell) == cell_type

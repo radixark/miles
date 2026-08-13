@@ -15,7 +15,7 @@
 | `scenario_trainer_deterministic` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
 | `scenario_trainer_with_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2` |
 | `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_rollout__dp2_cp2__colocate` |
-| `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train.py`, no modes |
+| `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train_rollout.py`, no modes |
 
 - **Forced absences**: `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` is multi-node with no CI lane; `kill_rollout__dp2_cp2__colocate` only fits `scenario_random_crash`, the one scenario that crashes engines; `kill_train__dp2_cp2` supersedes `kill_train__dp2_cp2__moe_5layer` in `scenario_trainer_with_failure`. `scenario_trainer_with_failure` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` is an authorized skip. Every other absence is an unclaimed cell, not a decision — adding an entry file is all it takes.
 
@@ -307,8 +307,9 @@ Faults are random, so neither an exact sequence nor the end-state membership is 
 
 ```
 Type: soak (no baseline run; reference = the baseline test's wandb curves)
-Entry: test_realistic_gsm8k__kill_train.py, no mode variants
-CLI: --seed (42), --num-rollout (250), --crash-interval-seconds (600), --metric-threshold (0.55);
+Entry: test_realistic_gsm8k__kill_train_rollout.py, no mode variants
+CLI: --seed (42), --num-rollout (250), --trainer-crash-interval-seconds (600),
+     --rollout-crash-interval-seconds (1200), --metric-threshold (0.55);
      no --mode
 
 Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of
