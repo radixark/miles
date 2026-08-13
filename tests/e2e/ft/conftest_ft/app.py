@@ -1,5 +1,6 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import contextlib
 import os
 import shutil
 from collections.abc import Callable
@@ -13,8 +14,13 @@ from tests.e2e.ft.conftest_ft.cli_options import DumpDirOption, EnableDumperOpti
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
+from miles.utils.external_utils import command_utils
+
 
 BuildArgsFn = Callable[[FTTestMode, str, bool], str]
+TargetSideContextFn = Callable[
+    [FTTestMode, str, command_utils.ExecuteTrainConfig], contextlib.AbstractContextManager[None]
+]
 
 
 def resolve_dump_dir(test_name: str) -> str:
@@ -38,6 +44,7 @@ def run_pipeline(
     phases: list[str] | None,
     mode: str,
     enable_dumper: bool = True,
+    target_side_context: TargetSideContextFn | None = None,
 ) -> None:
     """Full pipeline (prepare + every phase's baseline/target + compare) for one mode."""
     effective_phases: list[str] = phases or [""]
@@ -49,19 +56,21 @@ def run_pipeline(
 
     try:
         for phase in effective_phases:
-            baseline_dump = f"{dump_dir}/{_dump_subdir('baseline', phase)}"
-            run_training(
-                train_args=build_baseline_args(ft_mode, baseline_dump, enable_dumper),
-                mode=ft_mode,
-                dump_dir=baseline_dump,
-            )
-
-            target_dump = f"{dump_dir}/{_dump_subdir('target', phase)}"
-            run_training(
-                train_args=build_target_args(ft_mode, target_dump, enable_dumper),
-                mode=ft_mode,
-                dump_dir=target_dump,
-            )
+            for side, build_args in (("baseline", build_baseline_args), ("target", build_target_args)):
+                side_dump = f"{dump_dir}/{_dump_subdir(side, phase)}"
+                config = command_utils.default_config()
+                context = (
+                    target_side_context(ft_mode, side_dump, config)
+                    if side == "target" and target_side_context is not None
+                    else contextlib.nullcontext()
+                )
+                with context:
+                    run_training(
+                        train_args=build_args(ft_mode, side_dump, enable_dumper),
+                        mode=ft_mode,
+                        dump_dir=side_dump,
+                        config=config,
+                    )
 
         if enable_dumper:
             compare_fn(dump_dir, ft_mode)
@@ -76,6 +85,7 @@ def create_comparison_app_and_run_ci(
     build_target_args: BuildArgsFn,
     compare_fn: Callable[[str, FTTestMode], None],
     phases: list[str] | None = None,
+    target_side_context: TargetSideContextFn | None = None,
 ) -> tuple[typer.Typer, Callable[[str], None]]:
     """Build, from one wiring, the manual typer app and a run_ci(mode) one-shot runner.
 
@@ -104,7 +114,15 @@ def create_comparison_app_and_run_ci(
         full_dump_dir = f"{dump_dir}/{sub}"
         args = build_fn(ft_mode, full_dump_dir, enable_dumper)
         prepare(ft_mode)
-        run_training(train_args=args, mode=ft_mode, dump_dir=full_dump_dir)
+
+        config = command_utils.default_config()
+        context = (
+            target_side_context(ft_mode, full_dump_dir, config)
+            if side == "target" and target_side_context is not None
+            else contextlib.nullcontext()
+        )
+        with context:
+            run_training(train_args=args, mode=ft_mode, dump_dir=full_dump_dir, config=config)
 
     @app.command()
     def baseline(
@@ -149,6 +167,7 @@ def create_comparison_app_and_run_ci(
             phases=phases,
             mode=mode,
             enable_dumper=enable_dumper,
+            target_side_context=target_side_context,
         )
 
     @app.command()
@@ -175,6 +194,7 @@ def create_comparison_app_and_run_ci(
             compare_fn=compare_fn,
             phases=phases,
             mode=mode,
+            target_side_context=target_side_context,
         )
 
     return app, run_ci
