@@ -218,9 +218,7 @@ class TestExternalRolloutValidation:
 
     def test_a_custom_provider_path_alone_is_external_and_is_kept(self):
         """A user-supplied provider means miles launches no engines, and its path must survive autofill."""
-        args = self._parse(
-            ["--custom-inference-engine-provider-path", "my_pkg.my_provider", "--num-rollout", "1"]
-        )
+        args = self._parse(["--custom-inference-engine-provider-path", "my_pkg.my_provider", "--num-rollout", "1"])
 
         miles_validate_args(args)
 
@@ -1692,6 +1690,7 @@ class TestSessionServerArguments:
         assert args.session_server_workers == 32
         assert args.session_server_port is None
 
+
 class TestSecretArgumentsAreClassified:
     def _declared_names(self) -> set[str]:
         parser = argparse.ArgumentParser()
@@ -1718,3 +1717,13 @@ class TestSecretArgumentsAreClassified:
 
         assert credentials >= {"sglang_api_key", "eval_sglang_api_key", "router_api_key"}
         assert credentials <= _SECRET_ARG_NAMES
+
+
+def test_a_run_without_a_policy_id_still_carries_the_attribute():
+    """megatron declares no --trainer-model-id, so every log point relies on miles defaulting the attribute."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(REQUIRED_ARGS)
+
+    assert args.trainer_model_id is None

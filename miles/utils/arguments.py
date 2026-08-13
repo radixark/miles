@@ -2745,6 +2745,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             default=None,
             help="Path to the YAML config for custom function arguments, or an inline `base64:<payload>`.",
         )
+        parser.set_defaults(trainer_model_id=None)
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
         return parser

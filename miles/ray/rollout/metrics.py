@@ -12,6 +12,7 @@ from miles.utils.metric_utils import (
     compute_statistics,
     dict_add_prefix,
     has_repetition,
+    namespace_metrics,
 )
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import AdapterRef, Sample
@@ -69,7 +70,9 @@ def log_eval_skip(rollout_id, args, reason: str):
     tracking.log(args, log_dict, step_key="eval/step")
 
 
-def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+def log_rollout_data(
+    rollout_id, args, samples, rollout_extra_metrics, rollout_time, trainer_model_id: str | None = None
+):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
@@ -87,9 +90,13 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
             "passrate/",
         )
     logger.info(f"perf {rollout_id}: {log_dict}")
-    step = compute_rollout_step(args, rollout_id)
-    log_dict["rollout/step"] = step
-    tracking.log(args, log_dict, step_key="rollout/step")
+    log_dict, step_key = namespace_metrics(
+        log_dict,
+        trainer_model_id=trainer_model_id,
+        step_name="rollout/step",
+        step=compute_rollout_step(args, rollout_id),
+    )
+    tracking.log(args, log_dict, step_key=step_key)
 
 
 def _compute_metrics_from_samples(args, samples):
