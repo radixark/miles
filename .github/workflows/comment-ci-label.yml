@@ -1,0 +1,50 @@
+name: Comment CI label
+run-name: Comment CI label by ${{ github.event.comment.user.login }}
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  add-label:
+    if: >-
+      vars.CI_LABEL_APP_ENABLED == 'true' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.type == 'User' &&
+      contains(github.event.comment.body, '/run-ci-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted handler and policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/comment_ci_label.py
+            .github/workflows/policies/ci-label-access.json
+          sparse-checkout-cone-mode: false
+
+      - name: Validate the command and local access policy
+        env:
+          CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
+          CI_LABEL_PREFLIGHT: "true"
+        run: python3 .github/workflows/scripts/comment_ci_label.py
+
+      - name: Mint the repository-scoped App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_LABEL_APP_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: read
+
+      - name: Authorize and add the exact label
+        env:
+          CI_LABEL_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
+        run: python3 .github/workflows/scripts/comment_ci_label.py

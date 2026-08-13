@@ -35,6 +35,23 @@ Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` va
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
+## 通过 PR 评论添加 CI label
+
+启用 comment gateway 后，在 open PR 下单独评论 `/run-ci-<key>`，等价于追加同名的 `run-ci-<key>` label。例如，`/run-ci-short` 只会请求 `run-ci-short`。命令只允许首尾 whitespace，不能携带参数、正文、第二条命令或任意其他 label；已有 label 会作为成功的 no-op，不会产生新的 `labeled` event 或 rerun。
+
+`.github/workflows/policies/ci-label-access.json` 是默认拒绝的精确 ACL：每个 label 映射到允许使用它的 GitHub numeric user ID。新增 `KNOWN_LABELS` 不会自动开放评论权限，必须另行添加精确 policy entry。v1 初始 policy 开放所有当前 domain label 和 `run-ci-image`，但只授权当前 workflow owner：`yushengsu-thu`（`11704492`）、`guapisolo`（`48857426`）和 `yueming-yuan`（`112649537`）。fork PR 还要求调用者出现在 `fork_actor_ids` 中；初始同样只有这三人。
+
+gateway 只管理通过评论委托添加 label 的路径，不限制用户原有的 GitHub UI/API label 权限。它只追加 label，不移除 label，也不提供 `/run-ci-all`、`nightly`、`bypass-fastfail` 或通用 `/label` 命令。成功添加的 label 会跨后续 push 保留，撤销授权需要人工移除 label。
+
+workflow 默认关闭。workflow owner 完成以下步骤后才能设置 repository variable `CI_LABEL_APP_ENABLED=true`：
+
+1. 创建并仅在 `radixark/miles` 安装 GitHub App，授予 `Pull requests: read` 和 `Issues: write`；不授予 `Actions` 或 `Contents: write`。
+2. 将 App client ID 存为 repository variable `CI_LABEL_APP_CLIENT_ID`，将 private key 存为 repository secret `CI_LABEL_APP_PRIVATE_KEY`。
+3. 保护 `.github/workflows/comment-ci-label.yml`、handler 和 policy 的最终 bytes：要求 code-owner review，并启用 stale-review dismissal 或 last-push approval；显式接受仍可 bypass 的管理员作为外部信任根。
+4. 在目标仓库对比人工添加与 App 添加同一测试 label，确认两者都触发预期的 CUDA、ROCm 和 held-run approval consumer，然后移除测试 label。
+
+handler 只运行默认分支的固定代码，不 checkout 或执行 PR 代码、依赖、artifact 或配置。未授权、未知、格式错误、关闭 PR、删除 fork、身份不一致、policy 错误，以及读取 PR 时的 GitHub API 错误都会在 label mutation 前失败。如果追加 label 的 POST 已发出但响应超时、损坏或无法确认，GitHub 可能已经完成变更；handler 不自动重试或 rollback，操作者必须先查看 PR 的当前 label 再决定是否重试。
+
 ## Cadence eligibility
 
 There are four CI cadences: `regular`, the ordinary mode; `nightly`, which admits `nightly=True` tests and broadens scope; `weekly`, which admits those tests and selects every enabled tag; and `release`, an explicit called-workflow cadence with weekly's selection but no rolling performance-baseline writes. Nightly, weekly, and release all bypass fast-fail.
