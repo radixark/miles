@@ -10,6 +10,7 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles, make_provider
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
+from miles.utils import object_store
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
@@ -53,6 +54,8 @@ def _make_mock_args(
         context_parallel_size=gpus_per_cell,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells * gpus_per_cell,
+        object_store_backend="ray",
+        worker_comm_backend="ray",
     )
 
 
@@ -179,6 +182,14 @@ class TestInit:
         group = _make_controller(num_cells=1)
 
         assert len(group._cells) == 1
+
+    async def test_init_gives_the_controller_process_an_object_store(self):
+        """The controller frees a failed attempt's outputs itself, which needs a store in its own process."""
+        group = _make_controller(num_cells=1)
+
+        await _init_controller(group)
+
+        assert object_store.get_instance() is not None
 
     async def test_init_marks_all_cells_alive(self):
         group = _make_controller(num_cells=3)
@@ -1278,5 +1289,3 @@ class TestUpdateWeightsReachesTheWorker:
             [update_call] = [c for c in ray.get(handle.get_calls.remote()) if c[0] == "update_weights"]
             assert update_call[2]["info"].snapshot_cell_id_to_hashes == {"trainer-actor-0": "workers-hash-9"}
         assert inference_controller.ended_with == [{"trainer-actor-0": "workers-hash-9"}]
-
-
