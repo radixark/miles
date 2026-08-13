@@ -242,6 +242,15 @@ class TestWeightVersions:
         s.reset_for_retry()
         assert s.weight_versions == []
 
+    def test_reset_for_retry_clears_the_policy_the_last_generation_stamped(self):
+        """The policy id marks what a generation produced, so a retry must earn it again instead of inheriting it."""
+        s = _make_sample([1, 2], [3, 4])
+        s.trainer_model_id = "solver"
+
+        s.reset_for_retry()
+
+        assert s.trainer_model_id is None
+
     def test_validate_accepts_contiguous_spans(self):
         """validate passes for ordered non-overlapping spans within the token range."""
         s = _make_sample([1, 2], [3, 4, 5])
