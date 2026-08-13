@@ -128,6 +128,9 @@ class Sample:
     # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
     routing_key: str | None = None
 
+    # Which policy model this sample trains and generates on; None when the run trains one policy
+    trainer_model_id: str | None = None
+
     non_generation_time: float = 0.0  # time spent in non-generation steps
 
     @dataclass
@@ -331,6 +334,7 @@ class Sample:
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
+        self.trainer_model_id = None
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()
         self.prefix_cache_info = Sample.PrefixCacheInfo()

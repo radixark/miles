@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections import defaultdict
 from collections.abc import Sequence
 from typing import Any
 
@@ -62,9 +63,10 @@ class RolloutExecutor:
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
         self.args = args
-        # set by the training actor after each weight update
-        self.weight_version: int | None = None
-        self._rollouts_since_weight_version_publish = 0
+        # set by the training actor after each weight update, keyed by trainer model id (None for one policy)
+        self._weight_versions_of_model_id: dict[str | None, int] = {}
+        self._rollouts_since_publish_of_model_id: dict[str | None, int] = defaultdict(int)
+        self._train_parallel_configs_of_model_id: dict[str | None, dict[str, Any]] = {}
         self._router_providers = router_providers
         self._session_server_provider = session_server_provider
         self._inference_controller_provider = inference_controller_provider
@@ -131,24 +133,28 @@ class RolloutExecutor:
 
     # -------------------------- data generation -----------------------------
 
-    async def get(self, rollout_id: int) -> RolloutDataPack:
+    async def get(self, rollout_id: int, trainer_model_id: str | None = None) -> RolloutDataPack:
         start_time = time.time()
         self.rollout_id = rollout_id
-        self._rollouts_since_weight_version_publish += 1
+        self._rollouts_since_publish_of_model_id[trainer_model_id] += 1
         assert_weight_version_is_published(
-            self.args, rollouts_since_publish=self._rollouts_since_weight_version_publish
+            self.args, rollouts_since_publish=self._rollouts_since_publish_of_model_id[trainer_model_id]
         )
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
-        with timer("rollout"):
+        with timer("rollout" if trainer_model_id is None else f"{trainer_model_id}/rollout"):
             try:
-                data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+                data, metadata, metrics = await self._get_rollout_data(
+                    rollout_id=rollout_id, trainer_model_id=trainer_model_id
+                )
             except EmptyBatchTimeoutError as e:
                 assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
                 logger.warning(f"Rollout {rollout_id} produced no trainable group before the empty-wait timeout: {e}")
                 return RolloutDataPack(empty_batch_timeout=True)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
-        log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+        log_rollout_data(
+            rollout_id, self.args, data, metrics, time.time() - start_time, trainer_model_id=trainer_model_id
+        )
         data = convert_samples_to_train_data(
             self.args,
             data,
@@ -160,7 +166,9 @@ class RolloutExecutor:
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
-            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
+            data_ref = split_train_data_by_dp(
+                self.args, data, self._train_parallel_configs_of_model_id[trainer_model_id]
+            )
         return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
@@ -234,7 +242,7 @@ class RolloutExecutor:
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
 
-    async def _get_rollout_data(self, rollout_id):
+    async def _get_rollout_data(self, rollout_id, trainer_model_id: str | None = None):
         if self.args.load_debug_rollout_data is not None:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
@@ -243,7 +251,11 @@ class RolloutExecutor:
                 data = await asyncio.to_thread(
                     call_rollout_function,
                     self.generate_rollout,
-                    RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
+                    RolloutFnTrainInput(
+                        rollout_id=rollout_id,
+                        weight_version=self._weight_versions_of_model_id.get(trainer_model_id),
+                        trainer_model_id=trainer_model_id,
+                    ),
                 )
             else:
                 data = await asyncio.to_thread(
@@ -252,7 +264,7 @@ class RolloutExecutor:
             metrics = data.metrics
             data = data.samples
             data, metadata = postprocess_rollout_data(
-                self.args, data, train_parallel_config=self.train_parallel_config
+                self.args, data, train_parallel_config=self._train_parallel_configs_of_model_id[trainer_model_id]
             )
             assert_samples_weight_version_sane(self.args, samples=data)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
@@ -291,17 +303,18 @@ class RolloutExecutor:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    def set_weight_version(self, weight_version: int) -> None:
+    def set_weight_version(self, weight_version: int, trainer_model_id: str | None = None) -> None:
         # warning instead of assert when use indep_dp ft
-        if self.weight_version is not None and weight_version < self.weight_version:
-            message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
+        previous = self._weight_versions_of_model_id.get(trainer_model_id)
+        if previous is not None and weight_version < previous:
+            message = f"Engine weight version went backwards: {previous} -> {weight_version}"
             assert self.args.indep_dp, message
             logger.warning(message)
-        self.weight_version = weight_version
-        self._rollouts_since_weight_version_publish = 0
+        self._weight_versions_of_model_id[trainer_model_id] = weight_version
+        self._rollouts_since_publish_of_model_id[trainer_model_id] = 0
 
-    def set_train_parallel_config(self, config: dict[str, Any]) -> None:
-        self.train_parallel_config = config
+    def set_train_parallel_config(self, config: dict[str, Any], trainer_model_id: str | None = None) -> None:
+        self._train_parallel_configs_of_model_id[trainer_model_id] = config
 
     async def set_eval_fleet_info(self, eval_fleet_info: EvalFleetInfo | None) -> None:
         if eval_fleet_info is None:

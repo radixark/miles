@@ -249,7 +249,7 @@ class TestUpdateWeights:
         actor_model = MagicMock()
         actor_model.update_weights = AsyncMock(return_value=weight_version)
         rollout_executor = MagicMock()
-        rollout_executor.set_weight_version.remote = AsyncMock()
+        rollout_executor.set_weight_version = AsyncMock()
         return actor_model, rollout_executor
 
     async def test_the_executor_is_told_which_version_the_engines_now_serve(self):
@@ -261,7 +261,17 @@ class TestUpdateWeights:
         await update_weights(actor_model, rollout_executor, rollout_id=3)
 
         actor_model.update_weights.assert_awaited_once_with(rollout_id=3)
-        rollout_executor.set_weight_version.remote.assert_awaited_once_with(7)
+        rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
+
+    async def test_the_published_version_names_the_policy_it_belongs_to(self):
+        """A version published under the wrong policy judges another policy's samples against these weights."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+
+        await update_weights(actor_model, rollout_executor, rollout_id=3, trainer_model_id="alpha")
+
+        rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id="alpha")
 
     async def test_a_trainer_that_skipped_the_broadcast_publishes_nothing(self):
         """--debug-skip-weight-update leaves the engines on their old weights, so the version must not move."""
@@ -271,7 +281,7 @@ class TestUpdateWeights:
 
         await update_weights(actor_model, rollout_executor)
 
-        rollout_executor.set_weight_version.remote.assert_not_awaited()
+        rollout_executor.set_weight_version.assert_not_awaited()
 
 
 class TestCreateTrainingModels:
