@@ -1727,3 +1727,14 @@ def test_a_run_without_a_policy_id_still_carries_the_attribute():
     args = parser.parse_args(REQUIRED_ARGS)
 
     assert args.trainer_model_id is None
+
+
+def test_the_megatron_config_flag_defaults_to_none(tmp_path):
+    """Without the flag a run is single policy, and the flag takes a path the whole run can read."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    assert parser.parse_args(REQUIRED_ARGS).megatron_config is None
+    assert parser.parse_args(["--megatron-config", str(tmp_path / "x.yaml")] + REQUIRED_ARGS).megatron_config == str(
+        tmp_path / "x.yaml"
+    )

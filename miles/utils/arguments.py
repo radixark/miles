@@ -2745,6 +2745,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             default=None,
             help="Path to the YAML config for custom function arguments, or an inline `base64:<payload>`.",
         )
+        reset_arg(
+            parser,
+            "--megatron-config",
+            type=str,
+            default=None,
+            help=(
+                "Path to a YAML config naming every trainer (or an inline `base64:<payload>`), "
+                "symmetric to --sglang-config. Format: "
+                "`trainers: [{model_id: ..., role: ..., trainer_id: ..., overrides: {lr: ...}}]`. "
+                "Each `model_id` is the policy model id: it is what a custom rollout function writes into "
+                "Sample.trainer_model_id, and it must match a --sglang-config model with update_weights: true. "
+                "Each `role` defaults to 'actor', and each `trainer_id` addresses one trainer controller and "
+                "its engine pool, defaulting to `<model_id>-<role>`. "
+                "Each `overrides` mapping overrides the base CLI arguments for that trainer only. Omitting the flag "
+                "is a single policy run. Several policies require train_multi_policy.py."
+            ),
+        )
         parser.set_defaults(trainer_model_id=None)
         reset_arg(parser, "--padded-vocab-size", type=int, default=None)
 
