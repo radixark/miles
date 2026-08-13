@@ -6,6 +6,7 @@ from typing import Any
 from miles.utils.workers.naming import compute_cell_id, parse_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
+from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
@@ -44,8 +45,12 @@ class BaseWorkerProvider(abc.ABC):
         pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
         cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
         (infos,) = self.get_worker_infos(cell_ids=[cell_id])
-        matches = [info for info in infos if info.name == worker_name]
-        assert len(matches) == 1, f"{worker_name=} matched {[info.name for info in matches]}"
-        handle = matches[0].handle
-        assert handle is not None, f"pool {pool_id} has no worker class, so its rpc methods are unknown"
-        return handle
+        handles = self.get_handles_of_worker_infos(infos)
+        assert worker_name in handles, f"{worker_name=} is not one of {sorted(handles)}"
+        return handles[worker_name]
+
+    def get_handles_of_worker_infos(self, infos: list[WorkerInfo]) -> dict[str, BaseWorkerHandle]:
+        return {info.name: handle for info in infos if (handle := self._build_handle_of_worker_info(info)) is not None}
+
+    def _build_handle_of_worker_info(self, info: WorkerInfo) -> BaseWorkerHandle | None:
+        return build_rpc_handle_of_worker_info(info) if info.worker_class is not None else None
