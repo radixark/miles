@@ -5,12 +5,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray import wiring
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
 
 
 class TestLaunchWorkerManager:
@@ -56,6 +55,29 @@ class TestGetBackendCapability:
 
         assert placement_group.create_placement_groups is not None
         assert "create_placement_groups" not in vars(wiring)
+
+
+class TestTheWireTheWorkerManagerIsLaunchedWith:
+    @pytest.mark.parametrize("resolved", ["ray", "rpc"])
+    def test_the_resolved_wire_reaches_the_worker_manager(
+        self, monkeypatch: pytest.MonkeyPatch, resolved: str
+    ) -> None:
+        """The flag only means anything if the wire validation resolved reaches the manager it starts."""
+        from miles.ray import placement_group
+
+        launched: list[WorkerCommBackend] = []
+        monkeypatch.setattr(wiring, "compute_specs", lambda args: [])
+        monkeypatch.setattr(placement_group, "create_placement_groups", lambda args: {})
+        monkeypatch.setattr(
+            wiring.RayWorkerManager,
+            "launch",
+            staticmethod(lambda args, specs, pgs, *, comm_backend: launched.append(comm_backend)),
+        )
+
+        args = SimpleNamespace(cluster_backend=ClusterBackend.RAY.value, worker_comm_backend=resolved)
+        wiring._launch_ray_worker_manager(args)
+
+        assert launched == [WorkerCommBackend(resolved)]
 
 
 @dataclass

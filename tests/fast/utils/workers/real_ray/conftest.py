@@ -16,7 +16,14 @@ import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
 
 from miles.utils.workers.ray_worker_manager import _ACTOR_NAME, RayWorkerManager
-from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
+from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_spec import (
+    BaseWorkerSpec,
+    CommandWorkerSpec,
+    LaunchCommandContext,
+    PortInfo,
+    SchedulingSpec,
+)
 
 PLACEMENT_GROUP_READY_TIMEOUT = 120.0
 
@@ -186,9 +193,16 @@ def manager_factory(ray_local_mode) -> Callable[..., ray.actor.ActorHandle]:
     """Launches the manager the way production does: the fixed-name ray actor that owns its workers."""
     handles: list[ray.actor.ActorHandle] = []
 
-    def _launch(specs: list[CommandWorkerSpec], pgs: dict[str, Any] | None = None) -> ray.actor.ActorHandle:
+    def _launch(
+        specs: list[BaseWorkerSpec],
+        pgs: dict[str, Any] | None = None,
+        comm_backend: WorkerCommBackend = WorkerCommBackend.RAY,
+    ) -> ray.actor.ActorHandle:
         handle = RayWorkerManager.launch(
-            worker_manager_args(env_report_interval_seconds=0.0), specs, pgs if pgs is not None else {}
+            worker_manager_args(env_report_interval_seconds=0.0),
+            specs,
+            pgs if pgs is not None else {},
+            comm_backend=comm_backend,
         )
         handles.append(handle)
         return handle
@@ -248,7 +262,10 @@ def cell_stoppable_manager_factory(ray_local_mode) -> Callable[..., ray.actor.Ac
         handles.append(handle)
         ray.get(
             handle.init.remote(
-                worker_manager_args(env_report_interval_seconds=0.0), specs, pgs if pgs is not None else {}
+                worker_manager_args(env_report_interval_seconds=0.0),
+                specs,
+                pgs if pgs is not None else {},
+                comm_backend=WorkerCommBackend.RAY,
             )
         )
         return handle

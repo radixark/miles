@@ -5,6 +5,7 @@ import functools
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import ray
@@ -22,9 +23,12 @@ from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.rpc.common.metadata import declared_concurrency_groups
+from miles.utils.workers.serving.serve_actor import ServeActor
+from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
     BaseWorkerSpec,
     CommandWorkerSpec,
     HostAndPort,
@@ -51,18 +55,23 @@ class RayWorkerManager:
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+    def launch(
+        args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+    ):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(args, specs, pgs))
+        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
         return obj
 
     @staticmethod
     def get_handle() -> ray.actor.ActorHandle:
         return ray.get_actor(_ACTOR_NAME)
 
-    async def init(self, args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+    async def init(
+        self, args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+    ):
         configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
 
+        self.comm_backend = comm_backend
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
@@ -122,12 +131,13 @@ class RayWorkerManager:
         return self._find_actor(worker_name).actor_handle
 
     def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
+        served_over_rpc = isinstance(actor.spec, ServeWorkerSpec) and self.comm_backend == WorkerCommBackend.RPC
         return WorkerInfo(
             name=actor.name,
             generation=actor.generation,
             self_addrs=actor.self_addrs or {},
             gpu_ids=actor.gpu_ids,
-            worker_class=None,
+            worker_class=actor.spec.worker_class if served_over_rpc else None,
         )
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
@@ -168,6 +178,17 @@ class _PoolManager:
 SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
 
 
+def _actor_manager_cls(spec: BaseWorkerSpec, *, comm_backend: WorkerCommBackend) -> type[_BaseActorManager]:
+    match spec, comm_backend:
+        case CommandWorkerSpec(), _:
+            return _CommandActorManager
+        case ServeWorkerSpec(), WorkerCommBackend.RPC:
+            return _ServeActorRpcCommManager
+        case ServeWorkerSpec(), WorkerCommBackend.RAY:
+            return _ServeActorRayCommManager
+    raise AssertionError(f"{spec.name} is neither served nor launched as a command")
+
+
 @dataclass(kw_only=True)
 class _CellManager(Generic[SpecT]):
     manager: RayWorkerManager
@@ -180,7 +201,7 @@ class _CellManager(Generic[SpecT]):
         assert self.actors is None
         self.generation += 1
         scheduling = self.spec.scheduling
-        actor_manager_cls = _ServeActorManager if isinstance(self.spec, ServeWorkerSpec) else _CommandActorManager
+        actor_manager_cls = _actor_manager_cls(self.spec, comm_backend=self.manager.comm_backend)
         self.actors = [
             actor_manager_cls(
                 manager=self.manager,
@@ -384,7 +405,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
 
 @dataclass
-class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
+class _ServeActorRayCommManager(_BaseActorManager[ServeWorkerSpec]):
     def _compute_remote_options(self) -> dict:
         groups = self.spec.concurrency_groups
         return {} if groups is None else dict(concurrency_groups=groups)
@@ -425,6 +446,29 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
         return method(self, *args, **kwargs)
 
     return ray.method(concurrency_group=group)(routed)
+
+
+@dataclass
+class _ServeActorRpcCommManager(_BaseActorManager[ServeWorkerSpec]):
+    async def launch_actor(self) -> None:
+        self.actor_handle = self._create_actor(
+            ServeActor,
+            build_worker=partial(
+                _build_serve_worker,
+                worker_class_path=self.spec.worker_class,
+                ctor_kwargs=self.spec.ctor_kwargs,
+                context=self.launch_context,
+            ),
+        )
+
+    async def post_setup(self) -> None:
+        await self.actor_handle.start_rpc_server.remote(port=self.self_addrs[RPC_PORT_NAME].port)
+
+
+def _build_serve_worker(
+    *, worker_class_path: str, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
+) -> Any:
+    return bootstrapped_worker_class(worker_class_path)(ctor_kwargs=ctor_kwargs, context=context)
 
 
 @functools.cache
