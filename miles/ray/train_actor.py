@@ -19,6 +19,7 @@ from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
+from miles.utils.workers.rpc.common.metadata import rpc
 from miles.utils.workers.rpc.common.wire_types import Pickled
 
 if TYPE_CHECKING:
@@ -135,12 +136,15 @@ class TrainRayActor(NodeProbeMixin):
 
         self._heartbeat.bump()
 
+    @rpc(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:
         return self._heartbeat.status()
 
+    @rpc(concurrency_group="fault_injector")
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
 
+    @rpc(concurrency_group="kill_self")
     def kill_self(self) -> None:
         os._exit(1)
 
