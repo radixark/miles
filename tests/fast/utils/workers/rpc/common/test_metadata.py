@@ -68,6 +68,14 @@ class _GoodWorker:
 
 
 class TestCollectSpecs:
+    def test_mutating_collected_specs_does_not_poison_the_cache(self) -> None:
+        """Mutating one collected mapping leaves later collections complete."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        specs.clear()
+
+        collected_again = collect_rpc_method_specs(_GoodWorker)
+        assert set(collected_again) == {"demo_default_arg", "demo_async_model", "demo_grouped"}
+
     def test_collects_public_methods_only(self):
         """Public methods are collected; underscore-prefixed ones are skipped."""
         specs = collect_rpc_method_specs(_GoodWorker)
