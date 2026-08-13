@@ -148,7 +148,7 @@ Whether a replayed message counts as "the same" as the stored one is decided by
 [Choose replay matching](#choose-replay-matching).
 
 The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
-for each selected tree leaf. Both versions reject `--pause-generation-mode=abort` 
+for each selected tree leaf. Both versions reject `--pause-generation-mode=abort`
 and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
 
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
