@@ -330,10 +330,7 @@ def run_gate_hook(
                 trusted=result.trusted,
                 values=values,
             )
-            logger.info(
-                f"[CI Gate][baseline] {filename}: wrote baseline "
-                f"(trusted={result.trusted}, {len(values)} value(s))"
-            )
+            logger.info(f"[CI Gate][baseline] {filename}: wrote baseline")
         else:
             line = _shadow_verdict_line(filename, result)
             logger.info(line)

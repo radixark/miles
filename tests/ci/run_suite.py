@@ -71,11 +71,7 @@ def filter_tests(
     if suite not in valid_suites:
         raise ValueError(f"Unknown suite {suite} for backend {hw.name}")
 
-    ci_tests = [
-        t
-        for t in ci_tests
-        if t.backend == hw and t.suite == suite and (not t.nightly or admit_nightly_tests)
-    ]
+    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or admit_nightly_tests)]
 
     label_set: set[str] = labels or set()
     ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
