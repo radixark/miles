@@ -1518,6 +1518,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "If not set, we will use the logprobs from the actor model."
                 ),
             )
+            parser.add_argument(
+                "--skip-actor-forward-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip the standalone Megatron actor forward-only pass. With --use-rollout-logprobs, "
+                    "those log-probs remain the old-policy baseline; otherwise detached training log-probs "
+                    "are reused and the actor importance log-ratio is exactly 0. This requires a single "
+                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted."
+                ),
+            )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
             parser.add_argument(
                 "--use-tis",
@@ -2507,7 +2518,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 const=True,
                 default=False,
                 help="Start a standalone session server for TITO/session support. "
-                "Requires --hf-checkpoint and --chat-template-path to also be set. "
+                "Requires --hf-checkpoint. A named --tito-model resolves its registered template; "
+                "--tito-model=default uses the checkpoint-native or explicit --chat-template-path template. "
                 "Bare flag (or 'v1') selects the append-only linear v1 server; "
                 "'--use-session-server v2' selects the tree-serving v2 "
                 "(multi-lineage trajectories, always-branch).",
@@ -2535,6 +2547,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="TITO tokenizer type for pretokenized prefix reuse. "
                 "Controls how token IDs are computed for messages appended after "
                 "the pretokenized prefix in multi-turn agentic sessions.",
+            )
+            parser.add_argument(
+                "--session-message-matcher",
+                type=str,
+                default="strict",
+                help=(
+                    "Process-wide session history matcher: strict (default), "
+                    "loose_tool_call, role_content_only, or a trusted dotted import "
+                    "path. role_content_only is a high-risk opt-in that can collapse "
+                    "different tool-call lineages and does not reconcile call IDs."
+                ),
             )
             parser.add_argument(
                 "--session-sample-picker-path",
@@ -3114,7 +3137,7 @@ def miles_validate_args(args):
             args.custom_tis_function_path is not None
         ), "custom_tis_function_path must be set when get_mismatch_metrics is set"
 
-        if args.use_rollout_logprobs:
+        if args.use_rollout_logprobs and not args.skip_actor_forward_only:
             logger.info(
                 "get_mismatch_metrics is set; For metrics calculation, the log probs will still be recomputed by training engine. One more forward pass will be applied."
             )
@@ -3482,7 +3505,75 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
+    if args.skip_actor_forward_only:
+        validate_skip_actor_forward_only(args)
+
     _maybe_apply_dumper_overrides(args)
+
+
+def validate_skip_actor_forward_only(args) -> None:
+    option = "--skip-actor-forward-only"
+    assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
+    assert args.loss_type == "policy_loss", f"{option} only supports --loss-type policy_loss"
+    assert args.compute_advantages_and_returns, f"{option} requires actor advantage computation"
+
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--keep-old-actor", args.keep_old_actor),
+            ("--kl-coef", args.kl_coef != 0),
+            ("--use-opd", args.use_opd),
+            ("--hidden-dropout", args.hidden_dropout != 0),
+            ("--attention-dropout", args.attention_dropout != 0),
+            ("--lora-dropout", args.lora_dropout != 0),
+            ("--moe-input-jitter-eps", args.moe_input_jitter_eps not in (None, 0)),
+            ("--moe-router-force-load-balancing", args.moe_router_force_load_balancing),
+            ("--moe-router-force-biased", args.moe_router_force_biased is not None),
+            (
+                "--moe-router-load-balancing-type sinkhorn",
+                "sinkhorn" in args.moe_router_load_balancing_type,
+            ),
+            ("--use-rollout-entropy", args.use_rollout_entropy),
+            ("--true-on-policy-mode", args.true_on_policy_mode),
+            ("--log-correct-samples", args.log_correct_samples),
+            ("--rollout-data-postprocess-path", args.rollout_data_postprocess_path is not None),
+            (
+                "--custom-megatron-before-log-prob-hook-path",
+                args.custom_megatron_before_log_prob_hook_path is not None,
+            ),
+            (
+                "--custom-megatron-before-train-step-hook-path",
+                args.custom_megatron_before_train_step_hook_path is not None,
+            ),
+            ("--custom-model-provider-path", args.custom_model_provider_path is not None),
+            (
+                "--dumper-source-patcher-config-train",
+                args.dumper_source_patcher_config_train is not None,
+            ),
+            ("--save-debug-train-data", args.save_debug_train_data is not None and args.dump_details is None),
+            (
+                "--use-routing-replay",
+                args.use_routing_replay and not args.use_rollout_routing_replay,
+            ),
+            (
+                "--use-indexer-replay",
+                args.use_indexer_replay and not args.use_rollout_indexer_replay,
+            ),
+        )
+        if enabled
+    ]
+    assert not incompatible_options, f"{option} is incompatible with: {', '.join(incompatible_options)}"
+
+    assert args.num_steps_per_rollout in (None, 1), (
+        f"{option} requires exactly one optimizer step per rollout; "
+        f"got --num-steps-per-rollout {args.num_steps_per_rollout}"
+    )
+    if not args.use_dynamic_global_batch_size and not args.multi_lora:
+        samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
+        assert args.global_batch_size == samples_per_rollout, (
+            f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
+            f"got --global-batch-size {args.global_batch_size}"
+        )
 
 
 def validate_async_off_policy_correction(args) -> None:

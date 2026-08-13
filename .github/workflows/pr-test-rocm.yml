@@ -7,7 +7,8 @@ name: PR Test (ROCm)
 #
 # Test selection is explicit rather than inherited from the CUDA suites. The
 # shared CI policy selects matching register_rocm_ci() labels for PR/nightly
-# runs; manual dispatch keeps the full regular MI300X suite.
+# runs and the full label scope for weekly; manual dispatch keeps the full
+# regular MI300X suite.
 #
 # The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
@@ -24,8 +25,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
-    # Same nightly cadence as pr-test.yml; ci_policy.py maps this exact cron.
-    - cron: '0 15 * * *'
+    # Same UTC nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
+    - cron: '0 15 * * 0-5'
+    - cron: '0 15 * * 6'
   workflow_dispatch:
     inputs:
       ci_image_tag:
@@ -88,6 +90,7 @@ jobs:
     # shard's failure does not cancel the other mid-run.
     strategy:
       fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci-rocm.yml

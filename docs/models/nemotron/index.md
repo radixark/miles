@@ -1,5 +1,6 @@
 ---
 title: Nemotron
+sidebarTitle: Overview
 description: Miles recipes for NVIDIA's Nemotron-3 family — Mamba+Attention(+MoE) hybrids loaded via Megatron AutoBridge.
 ---
 Miles supports NVIDIA's Nemotron-3 line: a Mamba + Attention hybrid that, in the Super tier, adds MoE and ships natively in FP8. All three variants load via the Megatron AutoBridge path, so there is no offline HF → `torch_dist` conversion step.

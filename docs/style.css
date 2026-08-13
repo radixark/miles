@@ -17,18 +17,22 @@ html.dark {
 
 /* =============================================
    Links — internal orange, external lighter + ↗
+   Scoped to the prose container: an unscoped `a` rule is unlayered and
+   beats Mintlify's layered Tailwind colors everywhere, repainting the
+   sidebar, tabs, and on-page TOC orange and erasing the active-page
+   highlight.
    ============================================= */
-a {
+.mdx-content a {
   color: #d55816;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 
-a:hover {
+.mdx-content a:hover {
   text-decoration-thickness: 2px;
 }
 
-a[href^="http"]:not([href*="radixark.com"])::after {
+.mdx-content a[href^="http"]:not([href*="radixark.com"])::after {
   content: "↗";
   margin-left: 0.15em;
   font-size: 0.7em;

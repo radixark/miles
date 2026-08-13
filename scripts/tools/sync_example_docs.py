@@ -101,8 +101,13 @@ VOID_TAGS = {"br", "hr", "img", "input"}
 
 # - **[fully_async](./fully_async)**: Demonstrates fully asynchronous rollout generation.
 INDEX_BULLET = re.compile(r"^\s*[-*]\s+\*\*\[([^\]]+)\]\(([^)]+)\)\*\*:\s*(.+?)\s*$")
-# ## [Infra Features](./infra_features) — a group root registered as a section heading.
+# ## [Infra Features](./infra_features) — a section directory registered as a heading link.
 INDEX_HEADING = re.compile(r"^#{2,}\s+\[([^\]]+)\]\(([^)]+)\)\s*$")
+
+# Directories rendered as label-only sidebar sections. Their own README becomes the
+# section's first row, labeled "Overview" — never a group `root`, which would make the
+# header itself navigate (banned by pre-commit; see docs/README.md).
+SECTION_DIRS = ("infra_features",)
 MD_LINK = re.compile(r"(!?)\[([^\]]*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
 IMG_LINK = re.compile(r"!\[([^\]]*)\]\(\s*([^)\s]+)(\s+\"[^\"]*\")?\s*\)")
 # Link text may carry one nested image ([![badge](img)](target)), which MD_LINK would
@@ -153,7 +158,7 @@ def parse_index(index_readme):
 
     Returns (descriptions, registered): one-line descriptions keyed by directory in
     bullet order, and the set of every directory the index mentions — as a bullet or,
-    for a group root like infra_features, as a section-heading link.
+    for a section directory like infra_features, as a section-heading link.
     """
     descriptions, registered = {}, set()
     for line in index_readme.read_text().splitlines():
@@ -359,9 +364,14 @@ def convert(readme_text, rel_dir, mirrored, broken):
 
 def render_page(title, description, rel_dir, body):
     source = f"{repo_dir_of(rel_dir)}/README.md"
+    # Tab and section landing pages keep their full title (h1 / SEO) but show a short,
+    # uniform "Overview" label in the sidebar (see the convention in docs/README.md).
+    landing = rel_dir == "" or rel_dir in SECTION_DIRS
+    sidebar = 'sidebarTitle: "Overview"\n' if landing else ""
     return (
         "---\n"
         f"title: {json.dumps(title, ensure_ascii=False)}\n"
+        f"{sidebar}"
         f"description: {json.dumps(description, ensure_ascii=False)}\n"
         f"# Generated from {source} by scripts/tools/sync_example_docs.py. Edit that README, not this file.\n"
         "---\n"
@@ -427,6 +437,9 @@ def build_navigation(pages, bullet_order):
     Sidebar order follows the bullet order in examples/README.md — the index README owns
     ordering along with titles and descriptions. Directories without a bullet sort last,
     alphabetically.
+
+    Emits the tab's `pages` list directly: the index page first, then label-only
+    sections whose landing page is their first row — no group `root` (see docs/README.md).
     """
     rank = {rel_dir: i for i, rel_dir in enumerate(bullet_order)}
     recipes, infra = [], []
@@ -435,13 +448,13 @@ def build_navigation(pages, bullet_order):
             continue
         page = f"examples/{slug_for(rel_dir)}"
         (infra if rel_dir.startswith("infra_features") else recipes).append(page)
-    group = {"group": "Examples", "root": "examples/index", "pages": []}
-    group["pages"].append({"group": "Recipes", "pages": recipes, "expanded": True})
+    entries = ["examples/index"]
+    entries.append({"group": "Recipes", "pages": recipes})
     if infra:
         infra_root = "examples/infra-features"
         children = [p for p in infra if p != infra_root]
-        group["pages"].append({"group": "Infra Features", "root": infra_root, "pages": children, "expanded": False})
-    return group
+        entries.append({"group": "Infra Features", "pages": [infra_root] + children})
+    return entries
 
 
 def examples_tab(config):
@@ -472,7 +485,8 @@ def main():
     except SyncError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    tab["groups"] = [build_navigation(pages, bullet_order)]
+    tab.pop("groups", None)
+    tab["pages"] = build_navigation(pages, bullet_order)
     docs_json_text = render_docs_json(config)
 
     existing = {p for p in OUT_DIR.rglob("*.md")} if OUT_DIR.exists() else set()

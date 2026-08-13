@@ -137,7 +137,7 @@ into a hard failure. If KL is non-zero:
 * **KL below `1e-4`.** Kernel-level jitter, acceptable.
 * **KL above 1.** A configuration error; re-check parallelism and precision.
 * **About 0.8 per token on an instruct model.** Almost always a chat-template mismatch. Run
-  the [chat template verifier](/user-guide/agentic-chat-template).
+  the [chat template verifier](/user-guide/agentic-rollout).
 
 ### Is `grad_norm` reasonable?
 

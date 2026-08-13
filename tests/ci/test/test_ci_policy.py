@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from tests.ci.ci_policy import NIGHTLY_CADENCE, REGULAR_CADENCE, resolve_policy, resolve_workflow_inputs
+from tests.ci.ci_policy import (
+    NIGHTLY_CADENCE,
+    REGULAR_CADENCE,
+    WEEKLY_CADENCE,
+    resolve_policy,
+    resolve_workflow_inputs,
+)
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
@@ -42,7 +48,8 @@ register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
             ("run-ci-megatron", "nightly", "run-ci-megatron", "run-ci-a_B.c-d"),
             True,
         ),
-        ("schedule", "0 15 * * *", "not JSON", NIGHTLY_CADENCE, (), True),
+        ("schedule", "0 15 * * 0-5", "not JSON", NIGHTLY_CADENCE, (), True),
+        ("schedule", "0 15 * * 6", "not JSON", WEEKLY_CADENCE, (), True),
         ("workflow_dispatch", "", "not JSON", REGULAR_CADENCE, (), False),
     ],
 )
@@ -79,11 +86,21 @@ def test_unknown_trigger_is_rejected():
 
 def test_nightly_label_and_nightly_schedule_share_the_same_run_policy():
     labeled = resolve_workflow_inputs("pull_request", "", '["nightly"]')
-    scheduled = resolve_workflow_inputs("schedule", "0 15 * * *", "not JSON")
+    scheduled = resolve_workflow_inputs("schedule", "0 15 * * 0-5", "not JSON")
 
     assert resolve_policy(labeled.cadence, set(labeled.raw_labels)) == resolve_policy(
         scheduled.cadence, set(scheduled.raw_labels)
     )
+
+
+def test_weekly_schedule_resolves_to_independent_full_policy():
+    scheduled = resolve_workflow_inputs("schedule", "0 15 * * 6", "not JSON")
+    policy = resolve_policy(scheduled.cadence, set(scheduled.raw_labels))
+
+    assert policy.cadence == WEEKLY_CADENCE
+    assert policy.admit_nightly_tests is True
+    assert policy.bypass_fastfail is True
+    assert policy.write_baseline is True
 
 
 @pytest.mark.parametrize(

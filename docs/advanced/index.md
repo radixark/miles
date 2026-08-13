@@ -1,5 +1,6 @@
 ---
 title: Advanced Features
+sidebarTitle: Overview
 description: Systems-level features for large-scale and long-running RL.
 ---
 This section covers the Miles features that the Core-features section of the

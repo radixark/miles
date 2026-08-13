@@ -3,7 +3,7 @@ title: "Random fully-async example"
 description: "Dataset-free stress test of the async rollout ↔ trainer loop."
 # Generated from examples/infra_features/random_async/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
-Minimal sibling of `examples/fully_async/`. Exercises the entire async
+Minimal sibling of `examples/infra_features/fully_async/`. Exercises the entire async
 rollout ↔ trainer loop **without any real dataset, real reward model, or
 meaningful generation** — useful as an agent infrastructure stress test 
 for bigger agentic workloads.

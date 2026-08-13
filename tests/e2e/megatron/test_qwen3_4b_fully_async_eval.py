@@ -92,7 +92,7 @@ def execute(eval_mode: str):
     if eval_mode == "fleet":
         eval_args += "--eval-num-gpus 1 --eval-num-gpus-per-engine 1 "
     elif eval_mode == "external":
-        eval_args += "--eval-function-path examples.fully_async.external_eval_fn.ExternalSglangEvalFn "
+        eval_args += "--eval-function-path examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn "
         eval_env = {"MILES_EXTERNAL_EVAL_GPUS": str(NUM_GPUS - 1)}
 
     perf_args = (
@@ -118,6 +118,7 @@ def execute(eval_mode: str):
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
         "--use-tis "
+        "--skip-actor-forward-only "
     )
 
     optimizer_args = (

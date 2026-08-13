@@ -42,6 +42,7 @@ def _args() -> ScriptArgs:
             "--ci-test "
             "--ci-disable-logprobs-checker "
             "--use-rollout-indexer-replay "
+            "--skip-actor-forward-only "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM
             "--sglang-max-total-tokens 1900000 "

@@ -299,7 +299,7 @@ def get_env_enable_infinite_run():
 
 
 MOONCAKE_MASTER_PORT = 50051
-MOONCAKE_MASTER_METRICS_PORT = 50052
+MOONCAKE_MASTER_METRICS_PORT = 0
 MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
 
 

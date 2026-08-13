@@ -17,6 +17,7 @@ from miles.utils.arguments import (
     miles_validate_args,
     resolve_rollout_function_paths,
     validate_async_off_policy_correction,
+    validate_skip_actor_forward_only,
 )
 from miles.utils.misc import function_registry
 
@@ -337,6 +338,30 @@ class TestSessionServerV2Validation:
             miles_validate_args(args)
 
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
+
+
+class TestSessionMessageMatcherArgument:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_strict(self):
+        assert self._parse([]).session_message_matcher == "strict"
+
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "strict",
+            "loose_tool_call",
+            "role_content_only",
+            "not_installed.matchers.same_message",
+        ],
+    )
+    def test_preserves_selector_without_importing(self, selector):
+        args = self._parse(["--session-message-matcher", selector])
+
+        assert args.session_message_matcher == selector
 
 
 class TestSessionServerPauseGenerationMode:
@@ -842,3 +867,182 @@ class TestValidateRematerializeParamFromMasterWeight:
         )
         with pytest.raises(AssertionError, match="Megatron"):
             _validate_rematerialize_param_from_master_weight(args)
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected"),
+    [
+        ([], False),
+        (["--skip-actor-forward-only"], True),
+    ],
+)
+def test_skip_actor_forward_only_flag_is_parsed(extra_args, expected):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(extra_args + REQUIRED_ARGS)
+
+    assert args.skip_actor_forward_only is expected
+
+
+def test_skip_actor_forward_only_is_gated_during_miles_validation():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--skip-actor-forward-only", "--global-batch-size", "32", "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+    vars(args).update(
+        hidden_dropout=0.0,
+        attention_dropout=0.0,
+        lora_dropout=0.0,
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        moe_router_load_balancing_type="aux_loss",
+    )
+
+    with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
+        miles_validate_args(args)
+
+
+def _make_skip_actor_forward_only_args(**overrides) -> SimpleNamespace:
+    defaults = dict(
+        compute_advantages_and_returns=True,
+        custom_megatron_before_log_prob_hook_path=None,
+        custom_megatron_before_train_step_hook_path=None,
+        custom_model_provider_path=None,
+        dumper_enable=False,
+        dumper_fwd_only=None,
+        dumper_source_patcher_config_train=None,
+        dump_details=None,
+        get_mismatch_metrics=False,
+        global_batch_size=64,
+        hidden_dropout=0.0,
+        attention_dropout=0.0,
+        keep_old_actor=False,
+        kl_coef=0.0,
+        lora_dropout=0.0,
+        log_correct_samples=False,
+        loss_type="policy_loss",
+        moe_input_jitter_eps=None,
+        moe_router_force_biased=None,
+        moe_router_force_load_balancing=False,
+        moe_router_load_balancing_type="aux_loss",
+        multi_lora=False,
+        n_samples_per_prompt=8,
+        num_steps_per_rollout=None,
+        rollout_batch_size=8,
+        rollout_data_postprocess_path=None,
+        save_debug_train_data=None,
+        train_backend="megatron",
+        true_on_policy_mode=False,
+        use_dynamic_global_batch_size=False,
+        use_indexer_replay=False,
+        use_opd=False,
+        use_rollout_entropy=False,
+        use_rollout_indexer_replay=False,
+        use_rollout_logprobs=False,
+        use_rollout_routing_replay=False,
+        use_routing_replay=False,
+        use_tis=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+class TestValidateSkipActorForwardOnly:
+    def test_valid_single_step_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args())
+
+    def test_zero_moe_input_jitter_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(moe_input_jitter_eps=0.0))
+
+    def test_tis_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_tis=True))
+
+    def test_rollout_logprobs_configuration_passes(self):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(use_rollout_logprobs=True))
+
+    def test_rollout_logprobs_with_mismatch_metrics_passes(self):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                get_mismatch_metrics=True,
+                use_rollout_logprobs=True,
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"dumper_enable": True},
+            {"dumper_fwd_only": ["enable=true"]},
+            {"dumper_enable": True, "dumper_fwd_only": ["enable=false"]},
+            {"dump_details": "/tmp/details"},
+            {
+                "dump_details": "/tmp/details",
+                "save_debug_train_data": "/tmp/details/train_data/{rollout_id}_{rank}.pt",
+            },
+        ],
+    )
+    def test_dumper_configuration_passes(self, overrides):
+        validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"train_backend": "fsdp"},
+            {"loss_type": "custom_loss"},
+            {"compute_advantages_and_returns": False},
+            {"keep_old_actor": True},
+            {"kl_coef": 0.1},
+            {"use_opd": True},
+            {"hidden_dropout": 0.1},
+            {"attention_dropout": 0.1},
+            {"lora_dropout": 0.1},
+            {"moe_input_jitter_eps": 0.1},
+            {"moe_router_force_load_balancing": True},
+            {"moe_router_force_biased": 0.0},
+            {"moe_router_load_balancing_type": ["sinkhorn"]},
+            {"use_rollout_entropy": True},
+            {"true_on_policy_mode": True},
+            {"log_correct_samples": True},
+            {"rollout_data_postprocess_path": "pkg.hook"},
+            {"custom_megatron_before_log_prob_hook_path": "pkg.hook"},
+            {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
+            {"custom_model_provider_path": "pkg.model_provider"},
+            {"dumper_source_patcher_config_train": "patcher.yaml"},
+            {"save_debug_train_data": "train-{rollout_id}.pt"},
+            {"use_routing_replay": True},
+            {"use_indexer_replay": True},
+            {"num_steps_per_rollout": 2},
+            {"global_batch_size": 32},
+        ],
+    )
+    def test_incompatible_configuration_is_rejected(self, overrides):
+        with pytest.raises(AssertionError, match="--skip-actor-forward-only"):
+            validate_skip_actor_forward_only(_make_skip_actor_forward_only_args(**overrides))
+
+    @pytest.mark.parametrize(
+        ("base_flag", "rollout_flag"),
+        [
+            ("use_routing_replay", "use_rollout_routing_replay"),
+            ("use_indexer_replay", "use_rollout_indexer_replay"),
+        ],
+    )
+    def test_rollout_replay_is_compatible(self, base_flag, rollout_flag):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                **{
+                    base_flag: True,
+                    rollout_flag: True,
+                }
+            )
+        )
+
+    def test_dynamic_global_batch_size_defers_step_count_to_runtime(self):
+        validate_skip_actor_forward_only(
+            _make_skip_actor_forward_only_args(
+                global_batch_size=32,
+                use_dynamic_global_batch_size=True,
+            )
+        )

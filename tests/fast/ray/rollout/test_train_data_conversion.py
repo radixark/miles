@@ -336,7 +336,7 @@ class TestPostProcessRewards:
 
         assert processed == pytest.approx([-(2**-0.5), 2**-0.5, 2**-0.5], abs=1e-5)
 
-    def test_grpo_uses_most_trainable_sibling_reward_for_rollout(self):
+    def test_grpo_rejects_different_sibling_rewards(self):
         args = make_args(
             advantage_estimator="grpo",
             rewards_normalization=True,
@@ -350,12 +350,13 @@ class TestPostProcessRewards:
             make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 1, 0]),
         ]
 
-        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        with pytest.raises(
+            ValueError,
+            match=r"all samples in rollout 11 must share one reward; rows \[1, 2\] have rewards \[2.0, 6.0\]",
+        ):
+            _post_process_rewards(args, samples, custom_reward_post_process_func=None)
 
-        assert raw == [0.0, 2.0, 6.0]
-        assert processed == pytest.approx([-3.0, 3.0, 3.0])
-
-    def test_grpo_mainstream_count_matches_final_training_mask(self):
+    def test_grpo_shared_reward_ignores_final_training_mask(self):
         args = make_args(
             advantage_estimator="grpo",
             rewards_normalization=True,
@@ -368,7 +369,7 @@ class TestPostProcessRewards:
                 group_index=0,
                 index=0,
                 rollout_id=10,
-                reward=100.0,
+                reward=2.0,
                 response_length=8,
                 remove_sample=True,
             ),
@@ -384,26 +385,28 @@ class TestPostProcessRewards:
             custom_reward_post_process_func=None,
         )
 
-        assert train_data["raw_reward"] == [100.0, 2.0, 6.0]
+        assert train_data["raw_reward"] == [2.0, 2.0, 6.0]
         assert train_data["rewards"] == pytest.approx([-2.0, -2.0, 2.0])
         assert train_data["loss_masks"] == [[0] * 8, [1] * 4, [1, 1, 0, 0]]
 
-    def test_grpo_mainstream_ties_use_first_sibling(self):
+    def test_grpo_shared_reward_uses_selected_reward_key(self):
         args = make_args(
             advantage_estimator="grpo",
             rewards_normalization=True,
             grpo_std_normalization=False,
+            reward_key="score",
             n_samples_per_prompt=2,
             rollout_batch_size=1,
         )
         samples = [
-            make_sample(group_index=0, index=0, rollout_id=10, reward=2.0, loss_mask=[0, 0, 0, 0]),
-            make_sample(group_index=0, index=0, rollout_id=10, reward=8.0, loss_mask=[0, 0, 0, 0]),
-            make_sample(group_index=0, index=1, rollout_id=11, reward=6.0, loss_mask=[1, 1, 1, 1]),
+            make_sample(group_index=0, index=0, rollout_id=10, reward={"score": 2.0, "detail": "first"}),
+            make_sample(group_index=0, index=0, rollout_id=10, reward={"score": 2.0, "detail": "second"}),
+            make_sample(group_index=0, index=1, rollout_id=11, reward={"score": 6.0}),
         ]
 
-        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
 
+        assert raw == [2.0, 2.0, 6.0]
         assert processed == pytest.approx([-2.0, -2.0, 2.0])
 
     def test_prompt_group_sizes_override_reused_group_index(self):

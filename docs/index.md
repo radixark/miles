@@ -1,5 +1,6 @@
 ---
-title: Miles Documentation
+title: Welcome
+sidebarTitle: Overview
 description: Miles is an open-source RL framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.
 ---
 Miles is a high-performance, enterprise-ready reinforcement learning framework for
@@ -35,7 +36,7 @@ the largest models all live on Megatron-LM. See
 ### Correctness and resilience
 
 - **Token-in-token-out (TITO).** Supported for
-  [every model and every black-box harness](/user-guide/agentic-chat-template), with no
+  [every model and every black-box harness](/user-guide/agentic-rollout), with no
   detokenize and retokenize round-trip between rollout and training.
 - **Rollout Routing Replay (R3).** Expert routing recorded during rollout is
   [replayed in the trainer's forward pass](/advanced/miles-router), removing the MoE routing

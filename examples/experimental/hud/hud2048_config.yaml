@@ -1,0 +1,47 @@
+# HUD 2048 (v6 browser starter). Sizing comes from measurements on this task;
+# the numbers and their reasons are annotated where they are set.
+#
+# The env package: `hud init v6browser --preset browser` (no API key; public
+# starter with 2048 + a todo app in real Chromium). Point hud_env_dir at it;
+# the snapshot is built cloud-side by Daytona from its Dockerfile.hud on first
+# use and rebuilt automatically whenever the package's content hash changes --
+# which also means a laptop and a training node each build their own unless
+# the directory content is byte-identical (mind stray __pycache__).
+#
+# That package needs one edit before it is trainable (README has the sed): run
+# the browser in --kiosk on a 1280x1200 desktop. As scaffolded, the browser's
+# chrome costs twice -- it crops the 4x4 board out of the viewport, and it
+# gives the policy a sidebar to click, which takes keyboard focus away from the
+# game so arrow keys do nothing. A capable model reasons its way out (zoom,
+# click the page); a small one cannot, and with every episode then scoring zero
+# there is no reward spread for RL to learn the escape from either.
+hud_env_dir: /root/v6browser
+hud_snapshot_name: miles-hud-v6browser
+
+# Turns are the expensive axis -- every turn re-prefills the whole screenshot
+# history through the vision encoder -- while keys within one press() call are
+# nearly free. Vision tokens go with screenshot *area*, so width is the lever:
+# at 512 a frame of this desktop costs ~240 of them, at 640 ~380, and the
+# difference compounds over 24 turns. 512 still resolves the tiles.
+hud_max_steps: 24
+hud_shot_width: 512
+# Room for a short thought plus a complete tool call. Too tight and a turn is
+# cut mid-JSON, which the harness answers by rewriting that turn's recorded
+# arguments -- ending the stitch early (see rollout.py) and wasting the turns
+# after it.
+hud_max_tokens_per_turn: 512
+
+# One episode = one Daytona sandbox; the gate caps them process-wide,
+# independent of rollout batch geometry. The timeout bounds an episode wedged
+# on a dead sandbox or a stalled engine -- at batch granularity one wedged
+# episode otherwise stalls the whole step.
+hud_max_sandboxes: 32
+hud_episode_timeout_s: 1800
+
+# Reward = which task template to train on. Of the starter's three 2048
+# graders, reach_score is the only always-informative one: reach_tile is a
+# step function that goes flat when a population converges on one tile
+# (zeroing GRPO's within-group variance), and near_win is binary. Its target
+# is retuned to 1024 via make_hud_data --args-json: a strong episode on this
+# move budget scores ~900, which keeps the best episodes inside the linear
+# part instead of all clipping at 1.0.

@@ -278,13 +278,13 @@ def run_gate_hook(
     *,
     store,
     registry: CIRegistry,
-    nightly: bool,
+    write_baseline: bool,
     provenance: RunProvenance,
     now_iso: str | None = None,
 ) -> None:
     """Evaluate the history gate for one passed CUDA test and act on the verdict.
 
-    NIGHTLY-marked run -> persist the run as a trusted/untrusted baseline via
+    BASELINE-WRITING run -> persist the run as a trusted/untrusted baseline via
     `store.write_run`, one `metric_values` row per coordinate (specs sharing a
     coordinate collapse to one row); a file that declares no gate writes
     nothing at all. ORDINARY PR run -> never write; log a shadow verdict and
@@ -297,12 +297,12 @@ def run_gate_hook(
     try:
         result = evaluate_gate(filename, merged_record_path, store, registry=registry)
 
-        if nightly:
+        if write_baseline:
             if not result.metrics:
                 # Every spec yields at least one per-coordinate result, so an
                 # empty list means the file declares no gate: an empty runs row
                 # is nothing a baseline can use, so write nothing.
-                logger.info(f"[CI Gate][nightly] {filename}: no gate declared; skipping write")
+                logger.info(f"[CI Gate][baseline] {filename}: no gate declared; skipping write")
                 return
             identity = RunIdentity(
                 test_path=result.test_path,
@@ -330,9 +330,7 @@ def run_gate_hook(
                 trusted=result.trusted,
                 values=values,
             )
-            logger.info(
-                f"[CI Gate][nightly] {filename}: wrote baseline " f"(trusted={result.trusted}, {len(values)} value(s))"
-            )
+            logger.info(f"[CI Gate][baseline] {filename}: wrote baseline")
         else:
             line = _shadow_verdict_line(filename, result)
             logger.info(line)
@@ -388,7 +386,7 @@ def run_unittest_files(
     max_attempts: int = 2,
     retry_wait_seconds: int = 60,
     gate_store=None,
-    gate_nightly: bool = False,
+    gate_write_baseline: bool = False,
     gate_provenance: RunProvenance | None = None,
 ):
     """
@@ -405,8 +403,8 @@ def run_unittest_files(
         retry_wait_seconds: Seconds to wait between retries (default: 60).
         gate_store: Metric-history store for the regression gate, or None to skip
                     the gate hook entirely. Built by `build_store_from_env`.
-        gate_nightly: True when this run writes trusted baselines (nightly);
-                    False for an ordinary PR run, which only logs a shadow verdict.
+        gate_write_baseline: True when this run writes a baseline; False for
+                    a non-baseline-writing run, which only logs a shadow verdict.
         gate_provenance: RunProvenance for the gate write; defaults to
                     `gate_provenance_from_env()` when None.
     """
@@ -602,7 +600,7 @@ def run_unittest_files(
                 passing_record_path,
                 store=gate_store,
                 registry=file,
-                nightly=gate_nightly,
+                write_baseline=gate_write_baseline,
                 provenance=gate_provenance or gate_provenance_from_env(),
             )
 

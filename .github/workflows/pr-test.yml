@@ -6,9 +6,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled, closed]
   schedule:
-    # Nightly CI on main runs every enabled tag except long and ft-long, with fast-fail disabled.
-    # 15:00 UTC = 08:00 PDT / 07:00 PST (cron is UTC, no DST).
-    - cron: '0 15 * * *'
+    # All scheduled runs use UTC. Saturday's weekly full CI replaces nightly.
+    - cron: '0 15 * * 0-5'
+    - cron: '0 15 * * 6'
   workflow_dispatch:
     inputs:
       infinite_run:
@@ -46,9 +46,9 @@ concurrency:
 # `run_suite.py` consumes that shared policy; GPU jobs consume the shared
 # bypass output for their cross-stage gate.
 #
-# Trigger type is not policy: the current nightly cron is mapped by its exact
-# expression, while workflow_dispatch remains a regular manual operation with
-# no implicit domain scope.
+# Trigger type is not policy: each scheduled cron maps to an explicit cadence,
+# while workflow_dispatch remains a regular manual operation with no implicit
+# domain scope.
 
 jobs:
   resolve-ci-policy:
@@ -239,6 +239,7 @@ jobs:
         (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
     strategy:
       fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
@@ -262,6 +263,7 @@ jobs:
         (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
     strategy:
       fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
@@ -285,6 +287,7 @@ jobs:
         (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
     strategy:
       fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 3 }}
       matrix:
         partition_id: [0, 1, 2]
     uses: ./.github/workflows/_run-ci.yml
@@ -308,6 +311,7 @@ jobs:
         (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
     strategy:
       fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci.yml
