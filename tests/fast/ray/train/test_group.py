@@ -53,6 +53,8 @@ def _make_mock_args(
         context_parallel_size=gpus_per_cell,
         actor_num_nodes=1,
         actor_num_gpus_per_node=num_cells * gpus_per_cell,
+        object_store_backend="ray",
+        worker_comm_backend="ray",
     )
 
 
@@ -179,6 +181,14 @@ class TestInit:
         group = _make_controller(num_cells=1)
 
         assert len(group._cells) == 1
+
+    async def test_init_gives_the_controller_process_an_object_store(self):
+        """The controller frees a failed attempt's outputs itself, which needs a store in its own process."""
+        group = _make_controller(num_cells=1)
+
+        await _init_controller(group)
+
+        assert object_store.get_instance() is not None
 
     async def test_init_marks_all_cells_alive(self):
         group = _make_controller(num_cells=3)
