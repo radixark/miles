@@ -11,6 +11,8 @@ from pathlib import Path
 API_ROOT = "https://api.github.com"
 REPOSITORY = "radixark/miles"
 REPOSITORY_ID = 1072725553
+CLEAR_COMMAND = "clear-labels"
+CLEAR_EXACT_LABELS = frozenset({"nightly", "bypass-fastfail"})
 COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*)")
 LABEL_PATTERN = re.compile(r"run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
@@ -57,8 +59,9 @@ def _validate_permissions(name, values):
 
 def load_policy(path):
     raw = load_json(path)
-    if not isinstance(raw, dict) or set(raw) != {"version", "labels"}:
-        raise CommentLabelError("policy must contain only version and labels")
+    expected_keys = {"version", "labels", "clear_permissions"}
+    if not isinstance(raw, dict) or set(raw) != expected_keys:
+        raise CommentLabelError("policy must contain only version, labels, and clear_permissions")
     if type(raw["version"]) is not int or raw["version"] != 1:
         raise CommentLabelError("policy version must be 1")
     if not isinstance(raw["labels"], dict) or not raw["labels"]:
@@ -70,15 +73,21 @@ def load_policy(path):
             raise CommentLabelError(f"invalid exact CI label: {label!r}")
         labels[label] = _validate_permissions(f"labels.{label}", permissions)
 
-    return {"labels": labels}
+    return {
+        "clear_permissions": _validate_permissions("clear_permissions", raw["clear_permissions"]),
+        "labels": labels,
+    }
 
 
 def parse_command(body):
     if not isinstance(body, str):
         raise CommentLabelError("comment body must be a string")
-    match = COMMAND_PATTERN.fullmatch(body.strip())
+    command = body.strip()
+    if command == f"/{CLEAR_COMMAND}":
+        return CLEAR_COMMAND
+    match = COMMAND_PATTERN.fullmatch(command)
     if match is None:
-        raise CommentLabelError("comment must contain only /run-ci-<key>")
+        raise CommentLabelError("comment must contain only /run-ci-<key> or /clear-labels")
     return match.group(1)
 
 
@@ -167,6 +176,13 @@ class GitHubAPI:
             payload={"labels": [label]},
         )
 
+    def remove_label(self, pull_number, label):
+        encoded_label = urllib.parse.quote(label, safe="")
+        return self._request(
+            f"/repos/{REPOSITORY}/issues/{pull_number}/labels/{encoded_label}",
+            method="DELETE",
+        )
+
 
 def _validate_live_pull(pull, pull_number):
     if not isinstance(pull, dict) or pull.get("number") != pull_number:
@@ -201,11 +217,14 @@ def _validate_live_pull(pull, pull_number):
 
 
 def resolve_policy(event, policy):
-    pull_number, actor_id, actor_login, label = parse_event(event)
-    allowed_permissions = policy["labels"].get(label)
-    if allowed_permissions is None:
-        raise CommentLabelError("requested label is not exposed by policy")
-    return pull_number, actor_id, actor_login, label, allowed_permissions
+    pull_number, actor_id, actor_login, target = parse_event(event)
+    if target == CLEAR_COMMAND:
+        allowed_permissions = policy["clear_permissions"]
+    else:
+        allowed_permissions = policy["labels"].get(target)
+        if allowed_permissions is None:
+            raise CommentLabelError("requested label is not exposed by policy")
+    return pull_number, actor_id, actor_login, target, allowed_permissions
 
 
 def require_permission(api, actor_id, actor_login, allowed_permissions):
@@ -222,16 +241,45 @@ def require_permission(api, actor_id, actor_login, allowed_permissions):
     if not isinstance(permission, str):
         raise CommentLabelError("GitHub API returned an invalid repository permission")
     if permission not in allowed_permissions:
-        raise CommentLabelError("comment author is not authorized for the requested label")
+        raise CommentLabelError("comment author is not authorized for the requested operation")
+
+
+def _is_ci_control_label(label):
+    return label.startswith("run-ci") or label in CLEAR_EXACT_LABELS
 
 
 def process_event(event, policy, api):
-    pull_number, actor_id, actor_login, label, allowed_permissions = resolve_policy(event, policy)
+    pull_number, actor_id, actor_login, target, allowed_permissions = resolve_policy(event, policy)
 
     pull = api.get_pull(pull_number)
     current_labels = _validate_live_pull(pull, pull_number)
     require_permission(api, actor_id, actor_login, allowed_permissions)
 
+    if target == CLEAR_COMMAND:
+        labels_to_remove = sorted(label for label in current_labels if _is_ci_control_label(label))
+        remaining_labels = current_labels
+        for label in labels_to_remove:
+            try:
+                result = api.remove_label(pull_number, label)
+            except CommentLabelError as error:
+                raise CommentLabelError(f"could not remove CI label {label}: {error}") from error
+            if (
+                not isinstance(result, list)
+                or any(not isinstance(item, dict) or not isinstance(item.get("name"), str) for item in result)
+                or label in {item["name"] for item in result}
+            ):
+                raise CommentLabelError(f"GitHub API did not confirm removal of {label}")
+            remaining_labels = frozenset(item["name"] for item in result)
+        if any(_is_ci_control_label(label) for label in remaining_labels):
+            raise CommentLabelError("GitHub API did not confirm that all CI labels were removed")
+        return {
+            "actor_id": actor_id,
+            "decision": "ALLOW_CLEARED" if labels_to_remove else "ALLOW_ALREADY_CLEAR",
+            "labels": labels_to_remove,
+            "pull_number": pull_number,
+        }
+
+    label = target
     if label in current_labels:
         decision = "ALLOW_ALREADY_PRESENT"
     else:
@@ -251,9 +299,9 @@ def process_event(event, policy, api):
 
 
 def authorize_policy(event, policy, api):
-    pull_number, actor_id, actor_login, label, allowed_permissions = resolve_policy(event, policy)
+    pull_number, actor_id, actor_login, target, allowed_permissions = resolve_policy(event, policy)
     require_permission(api, actor_id, actor_login, allowed_permissions)
-    return pull_number, actor_id, label
+    return pull_number, actor_id, target
 
 
 def main():
@@ -262,10 +310,15 @@ def main():
         policy = load_policy(os.environ["CI_LABEL_POLICY_PATH"])
         api = GitHubAPI(os.environ["CI_LABEL_API_TOKEN"])
         if os.environ.get("CI_LABEL_PREFLIGHT") == "true":
-            pull_number, actor_id, label = authorize_policy(event, policy, api)
+            pull_number, actor_id, target = authorize_policy(event, policy, api)
+            authorization = {"actor_id": actor_id, "pull_number": pull_number}
+            if target == CLEAR_COMMAND:
+                authorization["command"] = f"/{target}"
+            else:
+                authorization["label"] = target
             print(
                 json.dumps(
-                    {"actor_id": actor_id, "label": label, "pull_number": pull_number},
+                    authorization,
                     sort_keys=True,
                     separators=(",", ":"),
                 )

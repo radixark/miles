@@ -38,6 +38,7 @@ class FakeAPI:
         self.get_calls = []
         self.permission_calls = []
         self.add_calls = []
+        self.remove_calls = []
 
     def get_pull(self, pull_number):
         self.calls.append(("get_pull", pull_number))
@@ -53,6 +54,12 @@ class FakeAPI:
         self.calls.append(("add_label", pull_number, label))
         self.add_calls.append((pull_number, label))
         return [*self.pull["labels"], {"name": label}]
+
+    def remove_label(self, pull_number, label):
+        self.calls.append(("remove_label", pull_number, label))
+        self.remove_calls.append((pull_number, label))
+        self.pull["labels"] = [item for item in self.pull["labels"] if item["name"] != label]
+        return self.pull["labels"]
 
 
 def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
@@ -78,8 +85,11 @@ def pull(*, head_repository_id=HANDLER.REPOSITORY_ID, state="open", labels=()):
     }
 
 
-def policy(*, permissions=("write", "admin")):
-    return {"labels": {"run-ci-short": frozenset(permissions)}}
+def policy(*, permissions=("write", "admin"), clear_permissions=("write", "admin")):
+    return {
+        "clear_permissions": frozenset(clear_permissions),
+        "labels": {"run-ci-short": frozenset(permissions)},
+    }
 
 
 @pytest.mark.parametrize(
@@ -91,6 +101,10 @@ def policy(*, permissions=("write", "admin")):
         "/run-ci-",
         "/run-ci-/unsafe",
         "/rerun-failed-ci",
+        "/clear-labels extra",
+        "/clear-labels\n/run-ci-short",
+        "please /clear-labels",
+        "/Clear-labels",
     ],
 )
 def test_command_parser_rejects_non_exact_commands(body):
@@ -102,16 +116,48 @@ def test_command_parser_accepts_one_exact_command_with_outer_whitespace():
     assert HANDLER.parse_command(" \n/run-ci-a_B.c-d\t") == "run-ci-a_B.c-d"
 
 
+def test_command_parser_accepts_exact_clear_command_with_outer_whitespace():
+    assert HANDLER.parse_command(" \n/clear-labels\t") == HANDLER.CLEAR_COMMAND
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
         ('{"version":1,"version":1,"labels":{}}', "duplicate JSON key"),
         ('{"version":NaN,"labels":{}}', "non-standard JSON number"),
-        ('{"version":1,"labels":{"run-ci-short":[true]}}', "only write or admin"),
-        ('{"version":1,"labels":{"run-ci-short":["read"]}}', "only write or admin"),
-        ('{"version":1,"labels":{"run-ci-short":["write","write"]}}', "duplicate permissions"),
-        ('{"version":1,"labels":{"nightly":["write"]}}', "invalid exact CI label"),
-        ('{"version":1,"labels":{"run-ci-short":["write"]},"roles":{}}', "only version"),
+        (
+            '{"version":1,"clear_permissions":["write"],"labels":{"run-ci-short":[true]}}',
+            "only write or admin",
+        ),
+        (
+            '{"version":1,"clear_permissions":["write"],"labels":{"run-ci-short":["read"]}}',
+            "only write or admin",
+        ),
+        (
+            '{"version":1,"clear_permissions":["write"],' '"labels":{"run-ci-short":["write","write"]}}',
+            "duplicate permissions",
+        ),
+        (
+            '{"version":1,"clear_permissions":["write"],"labels":{"nightly":["write"]}}',
+            "invalid exact CI label",
+        ),
+        (
+            '{"version":1,"clear_permissions":[true],"labels":{"run-ci-short":["write"]}}',
+            "clear_permissions must contain only write or admin",
+        ),
+        (
+            '{"version":1,"clear_permissions":["read"],"labels":{"run-ci-short":["write"]}}',
+            "clear_permissions must contain only write or admin",
+        ),
+        (
+            '{"version":1,"clear_permissions":["write","write"],' '"labels":{"run-ci-short":["write"]}}',
+            "clear_permissions contains duplicate permissions",
+        ),
+        ('{"version":1,"labels":{"run-ci-short":["write"]}}', "only version"),
+        (
+            '{"version":1,"clear_permissions":["write"],' '"labels":{"run-ci-short":["write"]},"roles":{}}',
+            "only version",
+        ),
     ],
 )
 def test_policy_parser_rejects_ambiguous_or_expanded_schema(tmp_path, text, message):
@@ -125,6 +171,7 @@ def test_checked_in_policy_is_exact_and_requires_write_permission():
     loaded = HANDLER.load_policy(POLICY_PATH)
     assert set(loaded["labels"]) == {f"run-ci-{key}" for key in KNOWN_LABELS} | {"run-ci-image"}
     assert set(loaded["labels"].values()) == {WRITE_PERMISSIONS}
+    assert loaded["clear_permissions"] == WRITE_PERMISSIONS
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in loaded["labels"])
 
 
@@ -180,6 +227,54 @@ def test_existing_label_is_an_authorized_no_op():
     assert api.add_calls == []
 
 
+@pytest.mark.parametrize("permission", ["write", "admin"])
+def test_repository_writer_clears_only_ci_control_labels(permission):
+    api = FakeAPI(
+        pull(
+            labels=(
+                "run-ci-short",
+                "run-ci",
+                "run-ci-all",
+                "run-ci-historical",
+                "nightly",
+                "bypass-fastfail",
+                "documentation",
+                "bug",
+            )
+        ),
+        permission=permission,
+    )
+
+    result = HANDLER.process_event(event(body="/clear-labels"), policy(), api)
+
+    removed = [
+        "bypass-fastfail",
+        "nightly",
+        "run-ci",
+        "run-ci-all",
+        "run-ci-historical",
+        "run-ci-short",
+    ]
+    assert result == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_CLEARED",
+        "labels": removed,
+        "pull_number": 123,
+    }
+    assert api.remove_calls == [(123, label) for label in removed]
+    assert api.pull["labels"] == [{"name": "documentation"}, {"name": "bug"}]
+
+
+def test_clear_is_an_authorized_no_op_when_no_ci_control_label_exists():
+    api = FakeAPI(pull(labels=("documentation", "bug")))
+
+    result = HANDLER.process_event(event(body="/clear-labels"), policy(), api)
+
+    assert result["decision"] == "ALLOW_ALREADY_CLEAR"
+    assert result["labels"] == []
+    assert api.remove_calls == []
+
+
 def test_unknown_request_does_not_call_github_api():
     api = FakeAPI(pull())
     with pytest.raises(HANDLER.CommentLabelError, match="not exposed"):
@@ -203,6 +298,30 @@ def test_preflight_checks_permission_without_reading_pull_request():
     assert api.calls == [("get_permission", "actor")]
 
 
+def test_clear_preflight_uses_its_own_permission_policy_without_reading_pull_request():
+    api = FakeAPI(pull(), permission="admin")
+
+    assert HANDLER.authorize_policy(
+        event(body="/clear-labels"),
+        policy(clear_permissions=("admin",)),
+        api,
+    ) == (123, ACTOR_ID, HANDLER.CLEAR_COMMAND)
+    assert api.calls == [("get_permission", "actor")]
+
+
+def test_clear_requires_its_exact_live_permission_policy():
+    api = FakeAPI(pull(labels=("run-ci-short",)), permission="write")
+
+    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+        HANDLER.process_event(
+            event(body="/clear-labels"),
+            policy(clear_permissions=("admin",)),
+            api,
+        )
+
+    assert api.remove_calls == []
+
+
 @pytest.mark.parametrize("permission", ["write", "admin"])
 def test_repository_writer_can_add_a_label_to_a_fork_pr(permission):
     api = FakeAPI(pull(head_repository_id=999), permission=permission, permission_actor_id=2)
@@ -211,6 +330,19 @@ def test_repository_writer_can_add_a_label_to_a_fork_pr(permission):
 
     assert result["decision"] == "ALLOW_ADDED"
     assert api.add_calls == [(123, "run-ci-short")]
+
+
+def test_repository_writer_can_clear_ci_labels_from_a_fork_pr():
+    api = FakeAPI(
+        pull(head_repository_id=999, labels=("run-ci-short", "documentation")),
+        permission_actor_id=2,
+    )
+
+    result = HANDLER.process_event(event(body="/clear-labels", actor_id=2), policy(), api)
+
+    assert result["decision"] == "ALLOW_CLEARED"
+    assert api.remove_calls == [(123, "run-ci-short")]
+    assert api.pull["labels"] == [{"name": "documentation"}]
 
 
 @pytest.mark.parametrize(
@@ -307,6 +439,35 @@ def test_github_api_uses_only_fixed_repository_and_additive_endpoint(monkeypatch
     assert timeout == 15
 
 
+def test_remove_label_uses_encoded_name_in_a_fixed_repository_path(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    HANDLER.GitHubAPI("secret-token").remove_label(123, "run-ci-a/b ?#%")
+
+    request, timeout = requests[0]
+    assert request.full_url == (
+        "https://api.github.com/repos/radixark/miles/issues/123/labels/" "run-ci-a%2Fb%20%3F%23%25"
+    )
+    assert request.method == "DELETE"
+    assert request.data is None
+    assert timeout == 15
+
+
 def test_permission_lookup_encodes_the_login_in_a_fixed_repository_path(monkeypatch):
     requests = []
 
@@ -381,6 +542,7 @@ def test_permission_api_invalid_json_is_not_retried(monkeypatch):
     assert attempts == 1
 
 
+@pytest.mark.parametrize("operation", ["add", "remove"])
 @pytest.mark.parametrize(
     ("exception", "message"),
     [
@@ -388,7 +550,7 @@ def test_permission_api_invalid_json_is_not_retried(monkeypatch):
         (TimeoutError(), "timed out"),
     ],
 )
-def test_label_api_failure_is_not_retried(monkeypatch, exception, message):
+def test_label_mutation_api_failure_is_not_retried(monkeypatch, operation, exception, message):
     attempts = []
 
     def urlopen(_request, *, timeout):
@@ -397,7 +559,11 @@ def test_label_api_failure_is_not_retried(monkeypatch, exception, message):
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
     with pytest.raises(HANDLER.CommentLabelError, match=message):
-        HANDLER.GitHubAPI("secret-token").add_label(123, "run-ci-short")
+        api = HANDLER.GitHubAPI("secret-token")
+        if operation == "add":
+            api.add_label(123, "run-ci-short")
+        else:
+            api.remove_label(123, "run-ci-short")
     assert attempts == [15]
 
 
@@ -408,10 +574,50 @@ def test_unconfirmed_mutation_response_fails_without_rollback():
         HANDLER.process_event(event(), policy(), api)
 
 
+def test_unconfirmed_label_removal_fails_without_rollback():
+    api = FakeAPI(pull(labels=("run-ci-short", "documentation")))
+    api.remove_label = lambda _pull_number, _label: [
+        {"name": "run-ci-short"},
+        {"name": "documentation"},
+    ]
+
+    with pytest.raises(HANDLER.CommentLabelError, match="did not confirm removal"):
+        HANDLER.process_event(event(body="/clear-labels"), policy(), api)
+
+
+def test_clear_stops_after_partial_failure_without_retry_or_rollback():
+    api = FakeAPI(pull(labels=("run-ci-a", "run-ci-b", "documentation")))
+
+    def remove_label(pull_number, label):
+        api.calls.append(("remove_label", pull_number, label))
+        api.remove_calls.append((pull_number, label))
+        if label == "run-ci-b":
+            raise HANDLER.CommentLabelError("GitHub API request timed out")
+        api.pull["labels"] = [item for item in api.pull["labels"] if item["name"] != label]
+        return api.pull["labels"]
+
+    api.remove_label = remove_label
+
+    with pytest.raises(HANDLER.CommentLabelError, match="could not remove CI label run-ci-b"):
+        HANDLER.process_event(event(body="/clear-labels"), policy(), api)
+
+    assert api.remove_calls == [(123, "run-ci-a"), (123, "run-ci-b")]
+    assert api.pull["labels"] == [{"name": "run-ci-b"}, {"name": "documentation"}]
+
+
+def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
+    api = FakeAPI(pull(labels=("run-ci-short",)))
+    api.remove_label = lambda _pull_number, _label: [{"name": "nightly"}]
+
+    with pytest.raises(HANDLER.CommentLabelError, match="all CI labels were removed"):
+        HANDLER.process_event(event(body="/clear-labels"), policy(), api)
+
+
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
     assert "vars.CI_LABEL_APP_ENABLED == 'true'" in workflow
+    assert "contains(github.event.comment.body, '/clear-labels')" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow

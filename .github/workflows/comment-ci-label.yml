@@ -14,7 +14,8 @@ jobs:
       vars.CI_LABEL_APP_ENABLED == 'true' &&
       github.event.issue.pull_request != null &&
       github.event.comment.user.type == 'User' &&
-      contains(github.event.comment.body, '/run-ci-')
+      (contains(github.event.comment.body, '/run-ci-') ||
+       contains(github.event.comment.body, '/clear-labels'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -44,7 +45,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: read
 
-      - name: Authorize and add the exact label
+      - name: Authorize and mutate CI labels
         env:
           CI_LABEL_API_TOKEN: ${{ steps.app-token.outputs.token }}
           CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
