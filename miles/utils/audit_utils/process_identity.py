@@ -32,11 +32,12 @@ class TrainerControllerProcessIdentity(_ProcessIdentityBase):
 
 class TrainProcessIdentity(_ProcessIdentityBase):
     component: Literal["actor", "critic"]
+    model_id: str | None = None
     cell_index: NonNegativeInt
     rank_within_cell: NonNegativeInt
 
     def to_name(self) -> str:
-        return f"{self.component}_cell{self.cell_index}_rank{self.rank_within_cell}"
+        return f"{f'{x}_' if (x := self.model_id) else ''}{self.component}_cell{self.cell_index}_rank{self.rank_within_cell}"
 
 
 ProcessIdentity = Annotated[

@@ -64,7 +64,13 @@ class TrainRayActor(NodeProbeMixin):
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
 
         configure_logger(
-            args, source=TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank)
+            args,
+            source=TrainProcessIdentity(
+                component=role,
+                model_id=args.trainer_model_id,
+                cell_index=cell_index,
+                rank_within_cell=rank,
+            ),
         )
 
         object_store.init_instance(args)
