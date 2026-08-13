@@ -16,12 +16,14 @@ _SAFE_RUN_CI_LABEL = re.compile(r"^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 REGULAR_CADENCE = "regular"
 NIGHTLY_CADENCE = "nightly"
-CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE})
+WEEKLY_CADENCE = "weekly"
+CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE, WEEKLY_CADENCE})
 
 # A scheduled trigger has no policy by itself. Each configured cron must map
 # explicitly so a future cadence cannot silently inherit nightly behavior.
 SCHEDULE_POLICIES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "0 15 * * *": (NIGHTLY_CADENCE, ()),
+    "0 15 * * 0-5": (NIGHTLY_CADENCE, ()),
+    "0 15 * * 6": (WEEKLY_CADENCE, ()),
 }
 
 
@@ -29,11 +31,9 @@ SCHEDULE_POLICIES: dict[str, tuple[str, tuple[str, ...]]] = {
 class RunPolicy:
     cadence: str
     include_labels: frozenset[str]
+    admit_nightly_tests: bool
     bypass_fastfail: bool
-
-    @property
-    def is_nightly(self) -> bool:
-        return self.cadence == NIGHTLY_CADENCE
+    write_baseline: bool
 
 
 @dataclass(frozen=True)
@@ -80,10 +80,12 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     Broad scopes are large include sets:
 
     - `run-ci-all` includes every registered label.
+    - Weekly cadence includes every registered label.
     - Nightly cadence excludes `long` and `ft-long`.
     - `run-ci-image` excludes `long`, `ft-short`, and `ft-long`.
 
-    Branch order encodes the precedence `run-ci-all` > nightly > `run-ci-image`.
+    Branch order encodes the precedence `run-ci-all` > weekly > nightly >
+    `run-ci-image`.
 
     Explicitly requested `run-ci-<x>` labels are unioned in last, so an
     explicit request always wins over a scope subtraction. A subtraction is
@@ -96,7 +98,7 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         raise ValueError("The nightly workflow label requires cadence='nightly'")
 
     requested = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
-    if "run-ci-all" in raw_labels:
+    if "run-ci-all" in raw_labels or cadence == WEEKLY_CADENCE:
         scope = set(KNOWN_LABELS)
     elif cadence == NIGHTLY_CADENCE:
         scope = set(KNOWN_LABELS) - {"long", "ft-long"}
@@ -107,7 +109,9 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     return RunPolicy(
         cadence=cadence,
         include_labels=frozenset(scope | requested),
-        bypass_fastfail=cadence == NIGHTLY_CADENCE or "bypass-fastfail" in raw_labels,
+        admit_nightly_tests=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
+        bypass_fastfail=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE} or "bypass-fastfail" in raw_labels,
+        write_baseline=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
     )
 
 

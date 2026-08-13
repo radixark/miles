@@ -151,7 +151,7 @@ class SessionCoreV2(SessionCore):
             )
 
             request_messages = request_body.get("messages", [])
-            position_for_request(session, request_messages)
+            position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
             prompt_token_ids = prepare_pretokenized(
                 session,
                 request_messages,

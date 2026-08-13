@@ -6,7 +6,7 @@ A *stage* is one CI job in a Miles CI workflow. A *suite* is the `suite=` value 
 
 ## Suite → stage mapping
 
-The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular and nightly runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi300x` has its matching job in `pr-test-rocm.yml`, while the MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
+The canonical suite list is `CI_SUITES` in `tests/ci/run_suite.py`, grouped by hardware backend (CPU / CUDA / ROCm). Cadence does not change this inventory: regular, nightly, and weekly runs use the same stages. Every CPU and CUDA entry has one matching job in `pr-test.yml`; `stage-c-4-gpu-mi300x` has its matching job in `pr-test-rocm.yml`, while the MI350 suites are owned by the external nightly described below. A test picks its stage purely by `suite=`; the stage job runs `run_suite.py --suite <name>`, which collects exactly the tests carrying that suite.
 
 The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
@@ -33,21 +33,21 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 
 ## What each stage does
 
-**Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. The ROCm resolver uses only its dispatch input, defaults to its dated `rocm/sgl-dev` tag, and uses that same default for PR and nightly runs. Distinct from this, the **`run-ci-image` label** selects the image scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
+**Image resolution (`resolve-ci-image`).** In `pr-test.yml`, a small `ubuntu-latest` job reads `ci-image-tag:` from the PR description (or the `ci_image_tag` dispatch input), defaults to `dev`, validates it is a bare tag, and outputs `radixark/miles:<tag>`. The ROCm resolver uses only its dispatch input, defaults to its dated `rocm/sgl-dev` tag, and uses that same default for PR, nightly, and weekly runs. Distinct from this, the **`run-ci-image` label** selects the image scope — every enabled tag except `long`, `ft-short`, and `ft-long` — which validates an image bump without selecting those domains implicitly.
 
 **Policy resolution (`resolve-ci-policy`).**
 
 - `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
 - Each Miles PR workflow passes trigger facts to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`.
 - A PR `nightly` label maps to nightly cadence.
-- A scheduled run maps its exact `github.event.schedule` cron: the current `0 15 * * *` entry maps to nightly, an unknown cron fails, and a future weekly entry must add its own mapping.
+- A scheduled run maps its exact UTC `github.event.schedule` cron: `0 15 * * 0-5` maps to nightly and `0 15 * * 6` maps to weekly; an unknown cron fails.
 - A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI300X run.
 
-A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. Regular cadence admits only regular registrations. Both cadences use the same stage inventory.
+A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. A **weekly** policy selects every enabled tag, including `long` and `ft-long`, admits both registration types, and disables fast-fail. Regular cadence admits only regular registrations. All three cadences use the same stage inventory.
 
-`run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see [Labels](/ci/01-label) for the subtraction semantics).
+`run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > weekly > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see [Labels](/ci/01-label) for the subtraction semantics).
 
-**Dependencies / gating.** In `pr-test.yml`, both CPU stages require both resolvers. Its GPU stages also require both resolvers and, by default, a successful `stage-a-cpu`, so a CPU-test failure short-circuits the expensive NVIDIA fleet. Resolved nightly cadence and the `bypass-fastfail` PR label relax only the `stage-a-cpu` failure gate and make each suite continue after a test failure; neither bypasses resolver failure.
+**Dependencies / gating.** In `pr-test.yml`, both CPU stages require both resolvers. Its GPU stages also require both resolvers and, by default, a successful `stage-a-cpu`, so a CPU-test failure short-circuits the expensive NVIDIA fleet. Resolved nightly or weekly cadence and the `bypass-fastfail` PR label relax only the `stage-a-cpu` failure gate and make each suite continue after a test failure; none bypasses resolver failure.
 
 **Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
 
@@ -61,11 +61,13 @@ Both workflows receive `execute_command`; CUDA callers additionally pass `runs_o
 
 **Sharding.** A stage with a `partition_id` matrix splits its tests across N shards; `run_suite.py` balances the shards by each test's `est_time`. Each shard is an independent job instance running the same `execute_command` with a different `--auto-partition-id`.
 
-## ROCm PR/nightly mirror
+Weekly runs keep the same shards but set each GPU matrix's `max-parallel` to one, so each stage occupies at most one matching runner. Stages remain independent: `stage-b-2-gpu-h200` and `stage-c-2-gpu-h200` may each occupy one 2-GPU runner at the same time. PR and nightly runs retain their existing matrix parallelism.
 
-`pr-test-rocm.yml` has `pull_request`, exact nightly cron, and `workflow_dispatch` entry points. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi300x` through `_run-ci-rocm.yml` on two 4-GPU MI300X runners, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
+## ROCm PR/nightly/weekly mirror
 
-Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` run; CUDA registrations are not inherited. PR and nightly runs consume the shared cadence and label policy: `run-ci-amd` selects the full MI300X set, other `run-ci-*` labels can select matching subsets, and nightly cadence admits regular plus nightly-only registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
+`pr-test-rocm.yml` has `pull_request`, exact nightly and weekly crons, and `workflow_dispatch` entry points. PR runs use the same low-trust merge-commit model as `pr-test.yml`. It runs `stage-c-4-gpu-mi300x` through `_run-ci-rocm.yml` on two 4-GPU MI300X runners, resolves `rocm/sgl-dev:<tag>`, and splits tests into two `est_time`-balanced shards. Weekly limits that matrix to one runner at a time. It runs no CPU tests. SGLang and Megatron-LM come from the image, so manual dispatch exposes no dependency-ref inputs.
+
+Only tests registered with `register_rocm_ci(suite="stage-c-4-gpu-mi300x", ...)` run; CUDA registrations are not inherited. PR, nightly, and weekly runs consume the shared cadence and label policy: `run-ci-amd` selects the full MI300X set, other `run-ci-*` labels can select matching subsets, nightly admits regular plus `nightly=True` registrations, and weekly selects all enabled registrations. Manual dispatch adds `--match-all-labels` and runs the full regular suite.
 
 Fork PRs use GitHub's standard `pull_request` protections: checkout tests the merge commit, repository secrets are withheld, and held runs follow the shared maintainer approval flow described in [`01-label.md`](01-label.md).
 

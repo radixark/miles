@@ -381,6 +381,7 @@ class SessionCore:
                 request_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
+                message_matcher=self.registry.message_matcher,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))

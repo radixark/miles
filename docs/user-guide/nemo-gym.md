@@ -16,7 +16,7 @@ function POSTs the task to a NeMo Gym agent server's `/run` endpoint with
 `policy_base_url` set to the session's OpenAI-compatible URL. NeMo Gym runs
 its agent harness (mini-swe-agent v2 in `mini_swe_agent_2`) against that URL,
 so Miles' session server records every turn losslessly (token ids, logprobs,
-loss masks — see [Rollout Endpoints](/user-guide/rollout-endpoints)); NeMo Gym
+loss masks — see [Agentic Rollout (TITO)](/user-guide/agentic-rollout)); NeMo Gym
 grades the episode itself and the grade enters training through a custom
 reward hook reading `sample.metadata["reward"]`.
 
@@ -41,6 +41,7 @@ In short:
 --custom-agent-function-path nemogym_agent_function.run
 --custom-rm-path nemogym_generate.reward_func
 --use-session-server
+--tito-model qwen3
 ```
 
 The recipe is validated end-to-end: golden and API-policy scans on a real

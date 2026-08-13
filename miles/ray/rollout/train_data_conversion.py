@@ -204,17 +204,13 @@ def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes:
     return [list(range(len(samples)))]
 
 
-def _trainable_token_count(sample: Sample) -> int:
-    return 0 if sample.remove_sample else sample.effective_response_length
-
-
 def _normalize_rewards_by_rollout(
     args: Any,
     samples: list[Sample],
     raw_rewards: list[float],
     prompt_group_sizes: list[int] | None,
 ) -> list[float]:
-    """Normalize one mainstream reward per rollout, then broadcast it to siblings."""
+    """Normalize one shared reward per rollout, then broadcast it to siblings."""
     if not samples:
         return []
 
@@ -231,23 +227,25 @@ def _normalize_rewards_by_rollout(
                 rollout_key = ("row", segment_index)
             segments_by_rollout_key.setdefault(rollout_key, []).append(segment_index)
 
-        rollout_segment_groups = list(segments_by_rollout_key.values())
-        # Assume the first sample with the most trainable tokens best represents
-        # the rollout when sibling rewards differ.
-        mainstream_segments = [
-            max(rollout_segments, key=lambda segment_index: _trainable_token_count(samples[segment_index]))
-            for rollout_segments in rollout_segment_groups
-        ]
-        rollout_rewards = torch.tensor(
-            [raw_rewards[segment_index] for segment_index in mainstream_segments], dtype=torch.float
-        )
+        rollout_segment_groups = list(segments_by_rollout_key.items())
+        shared_rewards: list[float] = []
+        for rollout_key, rollout_segments in rollout_segment_groups:
+            sibling_rewards = [raw_rewards[segment_index] for segment_index in rollout_segments]
+            if any(reward != sibling_rewards[0] for reward in sibling_rewards[1:]):
+                raise ValueError(
+                    f"all samples in rollout {rollout_key!r} must share one reward; "
+                    f"rows {rollout_segments} have rewards {sibling_rewards}"
+                )
+            shared_rewards.append(sibling_rewards[0])
+
+        rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
         normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
         if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
             rollout_std = rollout_rewards.std()
             if rollout_std > 0:
                 normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
 
-        for rollout_segments, normalized_reward in zip(
+        for (_, rollout_segments), normalized_reward in zip(
             rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
         ):
             for segment_index in rollout_segments:

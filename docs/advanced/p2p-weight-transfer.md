@@ -64,7 +64,7 @@ P2P weight transfer relies on a unified weight name mapping interface between Me
 | `Glm4MoeForCausalLM` | GLM4-MoE | GLM-4.5-Air |
 | `Glm4MoeLiteForCausalLM` | GLM4-MoE | GLM-4.7-9B-Flash |
 | `DeepseekV3ForCausalLM` | DeepSeek V3p2 | GLM-5 (744B-A40B) |
-| `DeepseekV3ForCausalLM` | DeepSeek V3 | Kimi-K2 (1T) \* |
+| `DeepseekV3ForCausalLM` | DeepSeek V3 | Kimi-K2 (1T) \*, Kimi-K2.6 (1T) |
 
 > **Note:** All the above models are tested on H100-80GB clusters.
 >

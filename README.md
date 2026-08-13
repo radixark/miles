@@ -63,7 +63,7 @@ the largest models all live on Megatron-LM. See
 ### Correctness and resilience
 
 - **Token-in-token-out (TITO).** Supported for
-  [every model and every black-box harness](https://miles.radixark.com/docs/user-guide/agentic-chat-template),
+  [every model and every black-box harness](https://miles.radixark.com/docs/user-guide/agentic-rollout),
   with no detokenize and retokenize round-trip between rollout and training.
 - **Rollout Routing Replay (R3).** Expert routing recorded during rollout is
   [replayed in the trainer's forward pass](https://miles.radixark.com/docs/advanced/miles-router),

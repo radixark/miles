@@ -96,7 +96,7 @@ def execute(args: ScriptArgs):
     if args.eval_backend == "fleet":
         eval_args += "--eval-num-gpus 1 --eval-num-gpus-per-engine 1 "
     else:
-        eval_args += "--eval-function-path examples.fully_async.external_eval_fn.ExternalSglangEvalFn "
+        eval_args += "--eval-function-path examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn "
         # The fn launches its own sglang server on the last GPU, outside the Ray split.
         eval_env = {"MILES_EXTERNAL_EVAL_GPUS": str(args.num_gpus_per_node - 1)}
 
