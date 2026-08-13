@@ -1,0 +1,26 @@
+# Files to ship in the miles-rl distribution beyond the Python sources that
+# setup.py's `packages=` already covers.
+
+# Files setup.py reads at build time. Without these in the sdist, building a
+# wheel from the sdist -- what `pip install --no-binary` and any environment
+# the wheel does not cover fall back to -- dies before it starts:
+# requirements.txt feeds install_requires, README.md feeds long_description,
+# and LICENSE is resolved by license_files.
+include README.md LICENSE requirements.txt
+
+# Non-Python data files inside the bundled third_party/* sources -- JSON GEMM
+# and MoE configs, kernel templates, headers. `find_namespace_packages` picks
+# up the packages but not these, and without them the bundled sglang and
+# Megatron-LM fail at runtime looking for their config tables.
+recursive-include third_party/sglang/python/sglang *.json *.txt *.md *.cu *.cuh *.h *.cpp *.hpp *.yaml *.yml *.j2 *.template
+recursive-include third_party/Megatron-LM/megatron *.json *.txt *.md *.cu *.cuh *.h *.cpp *.hpp *.yaml *.yml *.j2 *.template
+recursive-include third_party/Megatron-LM/miles_megatron_plugins *.json *.yaml *.yml *.txt
+
+# miles' own non-Python assets.
+recursive-include miles *.json *.yaml *.yml *.txt
+recursive-include miles_plugins *.json *.yaml *.yml *.txt
+
+# Test trees inside the bundled sources are never imported at runtime and only
+# bloat the distribution.
+prune third_party/sglang/python/sglang/test
+prune third_party/Megatron-LM/megatron/core/datasets/tests

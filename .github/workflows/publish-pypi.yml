@@ -1,0 +1,244 @@
+name: Publish miles-rl to PyPI
+
+# Builds the `miles-rl` distribution -- miles plus the patched sglang and
+# Megatron-LM sources bundled from the third_party/* submodules -- and uploads
+# it to https://pypi.org/project/miles-rl/.
+#
+# Authentication is PyPI Trusted Publishing (OIDC): PyPI is configured to trust
+# this workflow file in this repository, so there is no API token in the repo
+# secrets. See https://docs.pypi.org/trusted-publishers/.
+#
+# To cut a release: bump `version=` in setup.py (PyPI rejects re-uploads of an
+# existing version), merge, then run this workflow with dry_run=false.
+#
+# Pull requests that touch the packaging files run the build half only, so a
+# broken wheel is caught before it can reach PyPI.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/publish-pypi.yml'
+      - '.gitmodules'
+      - 'MANIFEST.in'
+      - 'requirements.txt'
+      - 'setup.py'
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and verify only; skip the PyPI upload. Leave on until you mean to cut a release.'
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-pypi-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required by pypa/gh-action-pypi-publish for OIDC Trusted Publishing.
+      id-token: write
+      contents: read
+    env:
+      # A pull_request run has no inputs, so it is always a dry run.
+      DRY_RUN: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run }}
+      # Emit a pure `py3-none-any` wheel rather than the platform-tagged wheel
+      # setup.py builds by default. The distribution is pure Python.
+      MILES_PURE_WHEEL: '1'
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Read distribution name and version from setup.py
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          name=$(python -c "import re,pathlib; print(re.search(r'\n    name=\"([^\"]+)\"', pathlib.Path('setup.py').read_text()).group(1))")
+          version=$(python -c "import re,pathlib; print(re.search(r'\n    version=\"([^\"]+)\"', pathlib.Path('setup.py').read_text()).group(1))")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building $name==$version"
+
+      - name: Build wheel and sdist
+        run: python -m build --wheel --sdist
+
+      - name: Verify the wheel is pure and actually bundles the submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [ ${#wheels[@]} -ne 1 ]; then
+            echo "::error::expected exactly one wheel in dist/, found ${#wheels[@]}"
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          ls -lh dist/
+
+          # A platform-tagged wheel here means MILES_PURE_WHEEL did not take
+          # effect, and the release would install on only one interpreter.
+          case "$wheel" in
+            *-py3-none-any.whl) ;;
+            *) echo "::error::wheel $wheel is not tagged py3-none-any"; exit 1 ;;
+          esac
+
+          # setup.py silently skips bundling when the submodules are missing.
+          # That is correct for `pip install -e .` in the Docker image but would
+          # publish a hollow release, so fail loudly here instead.
+          python - "$wheel" <<'PY'
+          import sys, zipfile
+
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          required = {
+              "miles/": "miles",
+              "miles_plugins/": "miles_plugins",
+              "sglang/": "bundled sglang",
+              "megatron/": "bundled Megatron-LM",
+              "miles_megatron_plugins/": "bundled miles_megatron_plugins",
+          }
+          missing = [label for prefix, label in required.items()
+                     if not any(n.startswith(prefix) for n in names)]
+          if missing:
+              sys.exit(f"wheel is missing: {', '.join(missing)}")
+          print(f"OK: wheel carries all expected top-level packages ({len(names)} files)")
+          PY
+
+      - name: Rebuild the wheel from the sdist
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `python -m build --wheel --sdist` builds both from the source tree,
+          # so it cannot tell whether the sdist is self-contained. Anyone who
+          # installs with --no-binary, or on a platform the wheel does not
+          # cover, builds from the sdist instead -- and setup.py reads
+          # requirements.txt and README.md at build time, so an sdist missing
+          # either fails before it starts. Prove it round-trips.
+          workdir=$(mktemp -d)
+          tar xzf dist/*.tar.gz -C "$workdir"
+          src=$(find "$workdir" -mindepth 1 -maxdepth 1 -type d)
+          ( cd "$src" && python -m build --wheel --outdir "$workdir/out" )
+          echo "--- wheel rebuilt from the sdist ---"
+          ls -lh "$workdir/out"
+          python - "$workdir/out" <<'PY'
+          import pathlib, sys, zipfile
+
+          wheels = list(pathlib.Path(sys.argv[1]).glob("*.whl"))
+          if len(wheels) != 1:
+              sys.exit(f"expected one wheel rebuilt from the sdist, got {wheels}")
+          names = zipfile.ZipFile(wheels[0]).namelist()
+          missing = [p for p in ("miles/", "sglang/", "megatron/", "miles_megatron_plugins/")
+                     if not any(n.startswith(p) for n in names)]
+          if missing:
+              sys.exit(f"sdist-built wheel is missing: {missing}")
+          print(f"OK: sdist round-trips to a complete wheel ({len(names)} files)")
+          PY
+
+      - name: Refuse to upload a version that already exists on PyPI
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NAME: ${{ steps.cfg.outputs.name }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+        run: |
+          set -euo pipefail
+          # PyPI versions are immutable; fail with a clear message rather than
+          # letting the upload return an opaque 400.
+          code=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/${NAME}/${VERSION}/json")
+          if [ "$code" = "200" ]; then
+            echo "::error::${NAME}==${VERSION} already exists on PyPI. Bump the version in setup.py and re-run."
+            exit 1
+          fi
+          echo "${NAME}==${VERSION} is not on PyPI yet (HTTP ${code})."
+
+      - name: Publish to PyPI via Trusted Publishing
+        if: ${{ env.DRY_RUN != 'true' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: false
+          verbose: true
+
+      - name: Wait for the PyPI index to list the new version
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NAME: ${{ steps.cfg.outputs.name }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+        run: |
+          set -euo pipefail
+          # PyPI's index is eventually consistent; poll for up to 5 minutes so
+          # the smoke install below does not race the CDN.
+          for i in $(seq 1 30); do
+            if curl -fs "https://pypi.org/simple/${NAME}/" | grep -q "${VERSION}"; then
+              echo "Index lists ${NAME}==${VERSION} after ${i} polls."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::PyPI index still missing ${NAME}==${VERSION} after 5 minutes"
+          exit 1
+
+      - name: Smoke install from PyPI
+        if: ${{ env.DRY_RUN != 'true' }}
+        shell: bash
+        env:
+          NAME: ${{ steps.cfg.outputs.name }}
+          VERSION: ${{ steps.cfg.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/smoke
+          # --no-deps: this checks that the published artifact is fetchable and
+          # lays its packages down correctly. Resolving the full dependency set
+          # would drag the GPU stack onto a CPU runner without testing anything
+          # about this wheel.
+          /tmp/smoke/bin/pip install --no-deps "${NAME}==${VERSION}"
+          /tmp/smoke/bin/pip show "${NAME}"
+          # Run from outside the checkout: the repo root holds miles/ and
+          # miles_plugins/, and cwd precedes site-packages on sys.path, so
+          # staying here would resolve them from source and prove nothing.
+          cd /tmp
+          /tmp/smoke/bin/python - <<'PY'
+          import importlib.util, sys
+
+          # find_spec locates the package without executing its __init__, which
+          # would need numpy/torch that --no-deps deliberately did not install.
+          wanted = [
+              "miles",
+              "miles_plugins",
+              "miles_megatron_plugins.true_on_policy.contracts",
+              "sglang",
+              "megatron.core",
+              "megatron.training",
+          ]
+          bad = []
+          for name in wanted:
+              spec = importlib.util.find_spec(name)
+              if spec is None:
+                  bad.append(f"{name}: not found")
+                  continue
+              where = spec.origin or str(list(spec.submodule_search_locations))
+              print(f"  {name:50} -> {where}")
+              # Guard against resolving something other than the wheel we just
+              # installed (a stray copy on sys.path would hide a broken build).
+              if "site-packages" not in where:
+                  bad.append(f"{name}: resolved outside site-packages ({where})")
+          if bad:
+              sys.exit("smoke install failed:\n  " + "\n  ".join(bad))
+          print("OK: pip install from PyPI yields miles, sglang and megatron.")
+          PY
