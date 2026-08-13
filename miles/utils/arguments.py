@@ -3525,7 +3525,6 @@ def validate_skip_actor_forward_only(args) -> None:
                 "--dumper-source-patcher-config-train",
                 args.dumper_source_patcher_config_train is not None,
             ),
-            ("--dump-details", args.dump_details is not None),
             ("--save-debug-train-data", args.save_debug_train_data is not None and args.dump_details is None),
             (
                 "--use-routing-replay",

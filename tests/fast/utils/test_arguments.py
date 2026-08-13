@@ -931,6 +931,11 @@ class TestValidateSkipActorForwardOnly:
             {"dumper_enable": True},
             {"dumper_fwd_only": ["enable=true"]},
             {"dumper_enable": True, "dumper_fwd_only": ["enable=false"]},
+            {"dump_details": "/tmp/details"},
+            {
+                "dump_details": "/tmp/details",
+                "save_debug_train_data": "/tmp/details/train_data/{rollout_id}_{rank}.pt",
+            },
         ],
     )
     def test_dumper_configuration_passes(self, overrides):
@@ -960,7 +965,6 @@ class TestValidateSkipActorForwardOnly:
             {"custom_megatron_before_train_step_hook_path": "pkg.hook"},
             {"custom_model_provider_path": "pkg.model_provider"},
             {"dumper_source_patcher_config_train": "patcher.yaml"},
-            {"dump_details": "/tmp/details"},
             {"save_debug_train_data": "train-{rollout_id}.pt"},
             {"use_routing_replay": True},
             {"use_indexer_replay": True},
