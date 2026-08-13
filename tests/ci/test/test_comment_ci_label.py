@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import urllib.error
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,8 @@ def load_module(name, path):
 
 HANDLER = load_module("comment_ci_label", HANDLER_PATH)
 ACTOR_ID = 1234
+HEAD_SHA = "a" * 40
+HEAD_REF = "feature/test"
 WRITE_PERMISSIONS = frozenset({"write", "admin"})
 
 
@@ -39,6 +42,11 @@ class FakeAPI:
         self.permission_calls = []
         self.add_calls = []
         self.remove_calls = []
+        self.workflow_runs = {workflow_file: [] for workflow_file, _ in HANDLER.RERUN_WORKFLOWS}
+        self.list_run_calls = []
+        self.rerun_calls = []
+        self.list_pull_calls = []
+        self.head_pulls = [pull]
 
     def get_pull(self, pull_number):
         self.calls.append(("get_pull", pull_number))
@@ -61,6 +69,20 @@ class FakeAPI:
         self.pull["labels"] = [item for item in self.pull["labels"] if item["name"] != label]
         return self.pull["labels"]
 
+    def list_workflow_runs(self, workflow_file, head_sha):
+        self.calls.append(("list_workflow_runs", workflow_file, head_sha))
+        self.list_run_calls.append((workflow_file, head_sha))
+        return self.workflow_runs[workflow_file]
+
+    def rerun_failed_jobs(self, run_id):
+        self.calls.append(("rerun_failed_jobs", run_id))
+        self.rerun_calls.append(run_id)
+
+    def list_pulls_for_head(self, owner_login, head_ref):
+        self.calls.append(("list_pulls_for_head", owner_login, head_ref))
+        self.list_pull_calls.append((owner_login, head_ref))
+        return self.head_pulls
+
 
 def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
     return {
@@ -75,20 +97,65 @@ def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
     }
 
 
-def pull(*, head_repository_id=HANDLER.REPOSITORY_ID, state="open", labels=()):
+def pull(
+    *,
+    head_repository_id=HANDLER.REPOSITORY_ID,
+    head_sha=HEAD_SHA,
+    head_ref=HEAD_REF,
+    state="open",
+    labels=(),
+):
+    head_owner = "radixark" if head_repository_id == HANDLER.REPOSITORY_ID else "fork-owner"
     return {
         "number": 123,
         "state": state,
         "base": {"repo": {"id": HANDLER.REPOSITORY_ID, "full_name": HANDLER.REPOSITORY}},
-        "head": {"repo": {"id": head_repository_id}},
+        "head": {
+            "ref": head_ref,
+            "sha": head_sha,
+            "repo": {"id": head_repository_id, "owner": {"login": head_owner}},
+        },
         "labels": [{"name": label} for label in labels],
     }
 
 
-def policy(*, permissions=("write", "admin"), clear_permissions=("write", "admin")):
+def policy(
+    *,
+    permissions=("write", "admin"),
+    clear_permissions=("write", "admin"),
+    rerun_permissions=("write", "admin"),
+):
     return {
         "clear_permissions": frozenset(clear_permissions),
         "labels": {"run-ci-short": frozenset(permissions)},
+        "rerun_permissions": frozenset(rerun_permissions),
+    }
+
+
+def workflow_run(
+    workflow_path,
+    *,
+    run_id=10,
+    run_number=10,
+    status="completed",
+    conclusion="failure",
+    head_sha=HEAD_SHA,
+    head_repository_id=HANDLER.REPOSITORY_ID,
+    head_ref=HEAD_REF,
+    pull_number=123,
+    pull_requests=None,
+):
+    return {
+        "conclusion": conclusion,
+        "event": "pull_request",
+        "head_repository": {"id": head_repository_id},
+        "head_branch": head_ref,
+        "head_sha": head_sha,
+        "id": run_id,
+        "path": workflow_path,
+        "pull_requests": ([{"number": pull_number}] if pull_requests is None else pull_requests),
+        "run_number": run_number,
+        "status": status,
     }
 
 
@@ -100,7 +167,8 @@ def policy(*, permissions=("write", "admin"), clear_permissions=("write", "admin
         "please /run-ci-short",
         "/run-ci-",
         "/run-ci-/unsafe",
-        "/rerun-failed-ci",
+        "/rerun-failed-ci extra",
+        "/rerun-failed-ci\n/run-ci-short",
         "/clear-labels extra",
         "/clear-labels\n/run-ci-short",
         "please /clear-labels",
@@ -120,42 +188,66 @@ def test_command_parser_accepts_exact_clear_command_with_outer_whitespace():
     assert HANDLER.parse_command(" \n/clear-labels\t") == HANDLER.CLEAR_COMMAND
 
 
+def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
+    assert HANDLER.parse_command(" \n/rerun-failed-ci\t") == HANDLER.RERUN_COMMAND
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [
         ('{"version":1,"version":1,"labels":{}}', "duplicate JSON key"),
         ('{"version":NaN,"labels":{}}', "non-standard JSON number"),
         (
-            '{"version":1,"clear_permissions":["write"],"labels":{"run-ci-short":[true]}}',
+            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
+            '"labels":{"run-ci-short":[true]}}',
             "only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],"labels":{"run-ci-short":["read"]}}',
+            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
+            '"labels":{"run-ci-short":["read"]}}',
             "only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],' '"labels":{"run-ci-short":["write","write"]}}',
+            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
+            '"labels":{"run-ci-short":["write","write"]}}',
             "duplicate permissions",
         ),
         (
-            '{"version":1,"clear_permissions":["write"],"labels":{"nightly":["write"]}}',
+            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["write"],'
+            '"labels":{"nightly":["write"]}}',
             "invalid exact CI label",
         ),
         (
-            '{"version":1,"clear_permissions":[true],"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"clear_permissions":[true],"rerun_permissions":["write"],'
+            '"labels":{"run-ci-short":["write"]}}',
             "clear_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["read"],"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"clear_permissions":["read"],"rerun_permissions":["write"],'
+            '"labels":{"run-ci-short":["write"]}}',
             "clear_permissions must contain only write or admin",
         ),
         (
-            '{"version":1,"clear_permissions":["write","write"],' '"labels":{"run-ci-short":["write"]}}',
+            '{"version":1,"clear_permissions":["write","write"],'
+            '"rerun_permissions":["write"],"labels":{"run-ci-short":["write"]}}',
             "clear_permissions contains duplicate permissions",
+        ),
+        (
+            '{"version":1,"clear_permissions":["write"],"rerun_permissions":["read"],'
+            '"labels":{"run-ci-short":["write"]}}',
+            "rerun_permissions must contain only write or admin",
+        ),
+        (
+            '{"version":1,"clear_permissions":["write"],'
+            '"rerun_permissions":["write","write"],'
+            '"labels":{"run-ci-short":["write"]}}',
+            "rerun_permissions contains duplicate permissions",
         ),
         ('{"version":1,"labels":{"run-ci-short":["write"]}}', "only version"),
         (
-            '{"version":1,"clear_permissions":["write"],' '"labels":{"run-ci-short":["write"]},"roles":{}}',
+            '{"version":1,"clear_permissions":["write"],'
+            '"rerun_permissions":["write"],"labels":{"run-ci-short":["write"]},'
+            '"roles":{}}',
             "only version",
         ),
     ],
@@ -172,6 +264,7 @@ def test_checked_in_policy_is_exact_and_requires_write_permission():
     assert set(loaded["labels"]) == {f"run-ci-{key}" for key in KNOWN_LABELS} | {"run-ci-image"}
     assert set(loaded["labels"].values()) == {WRITE_PERMISSIONS}
     assert loaded["clear_permissions"] == WRITE_PERMISSIONS
+    assert loaded["rerun_permissions"] == WRITE_PERMISSIONS
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in loaded["labels"])
 
 
@@ -345,6 +438,219 @@ def test_repository_writer_can_clear_ci_labels_from_a_fork_pr():
     assert api.pull["labels"] == [{"name": "documentation"}]
 
 
+@pytest.mark.parametrize("permission", ["write", "admin"])
+def test_repository_writer_reruns_latest_failed_pr_ci(permission):
+    api = FakeAPI(pull(), permission=permission)
+    expected_ids = []
+    for index, (workflow_file, workflow_path) in enumerate(HANDLER.RERUN_WORKFLOWS):
+        old_id = 100 + index
+        latest_id = 200 + index
+        api.workflow_runs[workflow_file] = [
+            workflow_run(workflow_path, run_id=old_id, run_number=1),
+            workflow_run(workflow_path, run_id=latest_id, run_number=2),
+        ]
+        expected_ids.append(latest_id)
+
+    result = HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert result == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_RERUN_REQUESTED",
+        "head_sha": HEAD_SHA,
+        "pull_number": 123,
+        "workflow_run_ids": expected_ids,
+    }
+    expected_list_calls = [(workflow_file, HEAD_SHA) for workflow_file, _ in HANDLER.RERUN_WORKFLOWS]
+    assert api.list_run_calls == expected_list_calls + expected_list_calls
+    assert api.rerun_calls == expected_ids
+    assert api.permission_calls == ["actor"] * len(expected_ids)
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion"),
+    [
+        ("queued", None),
+        ("in_progress", None),
+        ("completed", "success"),
+        ("completed", "skipped"),
+        ("completed", "cancelled"),
+        ("completed", "timed_out"),
+    ],
+)
+def test_newer_non_failure_run_does_not_revive_an_older_failure(status, conclusion):
+    api = FakeAPI(pull())
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [
+        workflow_run(workflow_path, run_id=10, run_number=1),
+        workflow_run(
+            workflow_path,
+            run_id=20,
+            run_number=2,
+            status=status,
+            conclusion=conclusion,
+        ),
+    ]
+
+    result = HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert result["decision"] == "ALLOW_NO_FAILED_RUNS"
+    assert result["workflow_run_ids"] == []
+    assert api.rerun_calls == []
+
+
+def test_rerun_ignores_same_sha_run_not_associated_with_this_pr():
+    api = FakeAPI(pull())
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path, pull_number=456)]
+
+    result = HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert result["decision"] == "ALLOW_NO_FAILED_RUNS"
+    assert api.rerun_calls == []
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"path": ".github/workflows/docker-pr-tag-cleanup.yml"}, "unexpected path"),
+        ({"event": "pull_request_target"}, "unexpected event or SHA"),
+        ({"head_sha": "b" * 40}, "unexpected event or SHA"),
+        ({"head_branch": "other/ref"}, "unexpected head ref"),
+        ({"head_repository": {"id": 999}}, "unexpected repository"),
+        ({"pull_requests": None}, "invalid workflow-run pull requests"),
+    ],
+)
+def test_rerun_fails_closed_on_mismatched_run_identity(change, message):
+    api = FakeAPI(pull())
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [{**workflow_run(workflow_path), **change}]
+
+    with pytest.raises(HANDLER.CommentLabelError, match=message):
+        HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert api.rerun_calls == []
+
+
+def test_rerun_requires_its_exact_live_permission_policy():
+    api = FakeAPI(pull(), permission="write")
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
+
+    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+        HANDLER.process_event(
+            event(body="/rerun-failed-ci"),
+            policy(rerun_permissions=("admin",)),
+            api,
+        )
+
+    assert api.rerun_calls == []
+
+
+def test_rerun_preflight_uses_its_own_policy_without_reading_pull_request():
+    api = FakeAPI(pull(), permission="admin")
+
+    assert HANDLER.authorize_policy(
+        event(body="/rerun-failed-ci"),
+        policy(rerun_permissions=("admin",)),
+        api,
+    ) == (123, ACTOR_ID, HANDLER.RERUN_COMMAND)
+    assert api.calls == [("get_permission", "actor")]
+
+
+def test_repository_writer_can_rerun_failed_ci_for_a_fork_pr():
+    api = FakeAPI(pull(head_repository_id=999), permission_actor_id=2)
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path, head_repository_id=999, pull_requests=[])]
+
+    result = HANDLER.process_event(event(body="/rerun-failed-ci", actor_id=2), policy(), api)
+
+    assert result["decision"] == "ALLOW_RERUN_REQUESTED"
+    assert api.rerun_calls == [10]
+    assert api.list_pull_calls == [("fork-owner", HEAD_REF), ("fork-owner", HEAD_REF)]
+
+
+@pytest.mark.parametrize("head_pulls", [[], [pull(head_repository_id=999)] * 2])
+def test_fork_rerun_requires_one_unique_head_pull(head_pulls):
+    api = FakeAPI(pull(head_repository_id=999))
+    api.head_pulls = head_pulls
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path, head_repository_id=999, pull_requests=[])]
+
+    with pytest.raises(HANDLER.CommentLabelError, match="exactly one pull request"):
+        HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert api.rerun_calls == []
+
+
+def test_fork_rerun_rejects_mismatched_unique_head_pull():
+    api = FakeAPI(pull(head_repository_id=999))
+    api.head_pulls = [pull(head_repository_id=999, head_sha="b" * 40)]
+
+    with pytest.raises(HANDLER.CommentLabelError, match="identity does not match"):
+        HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert api.rerun_calls == []
+
+
+def test_rerun_stops_if_pr_head_changes_before_post():
+    api = FakeAPI(pull())
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
+    pulls = iter([pull(), pull(head_sha="b" * 40)])
+
+    def get_pull(pull_number):
+        api.get_calls.append(pull_number)
+        return next(pulls)
+
+    api.get_pull = get_pull
+
+    with pytest.raises(HANDLER.CommentLabelError, match="head changed"):
+        HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert api.rerun_calls == []
+
+
+def test_rerun_stops_if_latest_run_state_changes_before_post():
+    api = FakeAPI(pull())
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    calls = 0
+
+    def list_workflow_runs(requested_workflow, head_sha):
+        nonlocal calls
+        assert head_sha == HEAD_SHA
+        if requested_workflow != workflow_file:
+            return []
+        calls += 1
+        if calls == 1:
+            return [workflow_run(workflow_path)]
+        return [workflow_run(workflow_path, status="queued", conclusion=None)]
+
+    api.list_workflow_runs = list_workflow_runs
+
+    with pytest.raises(HANDLER.CommentLabelError, match="state changed"):
+        HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert api.rerun_calls == []
+
+
+def test_rerun_stops_after_partial_failure_without_retry_or_rollback():
+    api = FakeAPI(pull())
+    for index, (workflow_file, workflow_path) in enumerate(HANDLER.RERUN_WORKFLOWS[:2]):
+        api.workflow_runs[workflow_file] = [workflow_run(workflow_path, run_id=(index + 1) * 10)]
+
+    def rerun_failed_jobs(run_id):
+        api.rerun_calls.append(run_id)
+        if run_id == 20:
+            raise HANDLER.CommentLabelError("GitHub API request timed out")
+
+    api.rerun_failed_jobs = rerun_failed_jobs
+
+    with pytest.raises(HANDLER.CommentLabelError, match="workflow run 20"):
+        HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
+
+    assert api.rerun_calls == [10, 20]
+
+
 @pytest.mark.parametrize(
     ("bad_event", "message"),
     [
@@ -466,6 +772,181 @@ def test_remove_label_uses_encoded_name_in_a_fixed_repository_path(monkeypatch):
     assert request.method == "DELETE"
     assert request.data is None
     assert timeout == 15
+
+
+def test_list_workflow_runs_uses_fixed_filters_and_complete_pagination(monkeypatch):
+    requests = []
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        page = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)["page"][0]
+        if page == "1":
+            return Response({"total_count": 101, "workflow_runs": list(range(100))})
+        return Response({"total_count": 101, "workflow_runs": [100]})
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    runs = HANDLER.GitHubAPI("secret-token").list_workflow_runs("pr-test.yml", HEAD_SHA)
+
+    assert runs == list(range(101))
+    assert len(requests) == 2
+    for index, (request, timeout) in enumerate(requests, start=1):
+        parsed = urllib.parse.urlparse(request.full_url)
+        assert parsed.path == "/repos/radixark/miles/actions/workflows/pr-test.yml/runs"
+        assert urllib.parse.parse_qs(parsed.query) == {
+            "event": ["pull_request"],
+            "head_sha": [HEAD_SHA],
+            "page": [str(index)],
+            "per_page": ["100"],
+        }
+        assert request.method == "GET"
+        assert timeout == 15
+
+
+@pytest.mark.parametrize(
+    ("pages", "message"),
+    [
+        ([{"total_count": True, "workflow_runs": []}], "invalid workflow-run count"),
+        ([{"total_count": 1001, "workflow_runs": []}], "invalid workflow-run count"),
+        ([{"total_count": 1, "workflow_runs": []}], "incomplete workflow-run listing"),
+        (
+            [
+                {"total_count": 101, "workflow_runs": list(range(100))},
+                {"total_count": 102, "workflow_runs": [100]},
+            ],
+            "count changed",
+        ),
+    ],
+)
+def test_list_workflow_runs_fails_closed_on_invalid_pagination(monkeypatch, pages, message):
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    page_iterator = iter(pages)
+    monkeypatch.setattr(
+        HANDLER.urllib.request,
+        "urlopen",
+        lambda _request, timeout: Response(next(page_iterator)),
+    )
+
+    with pytest.raises(HANDLER.CommentLabelError, match=message):
+        HANDLER.GitHubAPI("secret-token").list_workflow_runs("pr-test.yml", HEAD_SHA)
+
+
+def test_list_pulls_for_head_uses_encoded_all_state_query(monkeypatch):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"[]"
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    assert HANDLER.GitHubAPI("secret-token").list_pulls_for_head("fork-owner", "feature/a b") == []
+
+    request, timeout = requests[0]
+    parsed = urllib.parse.urlparse(request.full_url)
+    assert parsed.path == "/repos/radixark/miles/pulls"
+    assert urllib.parse.parse_qs(parsed.query) == {
+        "head": ["fork-owner:feature/a b"],
+        "page": ["1"],
+        "per_page": ["100"],
+        "state": ["all"],
+    }
+    assert request.method == "GET"
+    assert timeout == 15
+
+
+def test_rerun_failed_jobs_uses_exact_endpoint_and_accepts_empty_201(monkeypatch):
+    requests = []
+
+    class Response:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b""
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    HANDLER.GitHubAPI("secret-token").rerun_failed_jobs(987)
+
+    request, timeout = requests[0]
+    assert request.full_url == ("https://api.github.com/repos/radixark/miles/actions/runs/987/rerun-failed-jobs")
+    assert request.method == "POST"
+    assert request.data is None
+    assert timeout == 15
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [(202, b"", "expected 201"), (201, b"{}", "unexpected response body")],
+)
+def test_rerun_failed_jobs_rejects_unconfirmed_response_without_retry(monkeypatch, status, body, message):
+    attempts = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return body
+
+    response = Response()
+    response.status = status
+
+    def urlopen(_request, *, timeout):
+        nonlocal attempts
+        attempts += 1
+        assert timeout == 15
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentLabelError, match=message):
+        HANDLER.GitHubAPI("secret-token").rerun_failed_jobs(987)
+    assert attempts == 1
 
 
 def test_permission_lookup_encodes_the_login_in_a_fixed_repository_path(monkeypatch):
@@ -613,26 +1094,71 @@ def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
         HANDLER.process_event(event(body="/clear-labels"), policy(), api)
 
 
+@pytest.mark.parametrize(
+    ("body", "capability"),
+    [
+        ("/run-ci-short", "issues"),
+        ("/clear-labels", "issues"),
+        ("/rerun-failed-ci", "actions"),
+    ],
+)
+def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, capability):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=body))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_LABEL_POLICY_PATH", "policy.json")
+    monkeypatch.setenv("CI_LABEL_API_TOKEN", "token")
+    monkeypatch.setenv("CI_LABEL_PREFLIGHT", "true")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert HANDLER.main() == 0
+    assert output_path.read_text() == f"capability={capability}\n"
+    assert api.calls == [("get_permission", "actor")]
+
+
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
     assert "vars.CI_LABEL_APP_ENABLED == 'true'" in workflow
     assert "contains(github.event.comment.body, '/clear-labels')" in workflow
+    assert "contains(github.event.comment.body, '/rerun-failed-ci')" in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    assert "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" in workflow
+    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 2
     assert "client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}" in workflow
     assert "private-key: ${{ secrets.CI_LABEL_APP_PRIVATE_KEY }}" in workflow
     assert "permission-issues: write" in workflow
+    assert workflow.count("permission-actions: write") == 1
     assert "permission-pull-requests: read" in workflow
     assert "CI_LABEL_API_TOKEN: ${{ github.token }}" in workflow
-    assert "CI_LABEL_API_TOKEN: ${{ steps.app-token.outputs.token }}" in workflow
+    assert "CI_LABEL_API_TOKEN: ${{ steps.label-token.outputs.token }}" in workflow
+    assert "CI_LABEL_API_TOKEN: ${{ steps.rerun-token.outputs.token }}" in workflow
     assert "CI_LABEL_APP_TOKEN" not in workflow
     assert workflow.index("CI_LABEL_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
+    assert "steps.authorize.outputs.capability != 'issues'" in workflow
+    assert "steps.authorize.outputs.capability != 'actions'" in workflow
+    assert "capability: ${{ steps.authorize.outputs.capability }}" in workflow
+    assert "needs: handle-command" in workflow
+    assert "if: needs.handle-command.outputs.capability == 'actions'" in workflow
+    assert "group: comment-ci-rerun-${{ github.event.issue.number }}" in workflow
+    assert "cancel-in-progress: false" in workflow
+    label_token = workflow.split("- name: Mint the label-scoped App token", 1)[1].split(
+        "- name: Authorize and mutate CI labels", 1
+    )[0]
+    rerun_token = workflow.split("- name: Mint the rerun-scoped App token", 1)[1].split(
+        "- name: Authorize and rerun failed CI", 1
+    )[0]
+    assert "permission-issues: write" in label_token
+    assert "permission-actions: write" not in label_token
+    assert "permission-actions: write" in rerun_token
+    assert "permission-issues: write" not in rerun_token
     assert "pull_request_target" not in workflow
     assert "github.event.pull_request.head" not in workflow
     assert "pip install" not in workflow
     assert "contents: write" not in workflow
-    assert "actions: write" not in workflow
+    assert "\n  actions: write" not in workflow

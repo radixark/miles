@@ -35,30 +35,40 @@ Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` va
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
-## Manage CI labels from PR comments
+## Manage CI from PR comments
 
 After the comment gateway is enabled, post `/run-ci-<key>` as the entire comment on an open PR to append the matching `run-ci-<key>` label. For example, `/run-ci-short` requests only `run-ci-short`. The command permits leading and trailing whitespace only; it cannot include arguments, prose, a second command, or any other label. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
 `.github/workflows/policies/ci-label-access.json` is an exact, default-deny ACL: each label maps to the live repository permission values allowed to request it. Adding a `KNOWN_LABELS` entry does not expose it through comments; an exact policy entry is also required.
 
-The initial v1 policy exposes every current domain label and `run-ci-image` to callers whose live legacy permission on `radixark/miles` is `write` or `admin`. Its `clear_permissions` entry grants the same callers `/clear-labels`. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access. The same permission check applies to same-repository and fork PRs; the policy has no static user-ID allowlist or separate fork gate.
+The initial v1 policy exposes every current domain label and `run-ci-image` to callers whose live legacy permission on `radixark/miles` is `write` or `admin`. Its `clear_permissions` and `rerun_permissions` entries grant the same callers `/clear-labels` and `/rerun-failed-ci`. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access. The same permission check applies to same-repository and fork PRs; the policy has no static user-ID allowlist or separate fork gate.
 
 The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, `bypass-fastfail`, or an arbitrary label.
 
 Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
 
+Post `/rerun-failed-ci` as the entire comment to request failed-job reruns for the current open PR head. The handler considers only the latest run of each allowlisted PR workflow: `pre-commit.yml`, `pr-test.yml`, and `pr-test-rocm.yml`. A latest run is rerun only when it belongs to this PR and exact head SHA and has completed with conclusion `failure`.
+
+Successful, skipped, cancelled, queued, or in-progress runs are not rerun, and a newer run prevents an older failure of the same workflow from being revived. The command does not touch CodeQL, `pull_request_target`, cleanup, scheduled, manually dispatched, or other control-plane workflows.
+
+GitHub can omit `pull_requests` from fork workflow-run payloads. For a fork, the handler therefore also requires an all-state lookup by exact head owner and ref to identify only the current open PR, then binds each run to the same head ref, SHA, and repository ID. An absent, reused, or otherwise ambiguous fork head fails without a rerun.
+
 The workflow is disabled by default. Workflow owners may set the repository variable `CI_LABEL_APP_ENABLED=true` only after completing these steps:
 
-1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read` and `Issues: write`; do not grant `Actions` or `Contents: write`.
+1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read`, `Issues: write`, and `Actions: write`; do not grant `Contents: write`. Each request mints only one capability-specific token: label commands request `Issues: write`, while rerun commands request `Actions: write`.
 2. Store the App client ID in the repository variable `CI_LABEL_APP_CLIENT_ID` and its private key in the repository secret `CI_LABEL_APP_PRIVATE_KEY`.
 3. Protect the final bytes of `.github/workflows/comment-ci-label.yml`, the handler, and the policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
-4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers. Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
+4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers.
+   Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
+   Finally, create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.
 
-The handler checks the caller's live repository permission before minting the App token and checks it again immediately before mutation. Each lookup is a point-in-time result, so a small revocation race remains between the second check and the first label mutation request.
+The handler checks the caller's live repository permission before minting the App token and again before label mutation begins. Rerun requests for one PR are serialized; before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
 
-The handler runs only fixed, reviewed code from the default branch and never checks out or executes PR code, dependencies, artifacts, or configuration. Requests detected as unauthorized, unknown, or malformed; closed PRs; deleted forks; identity mismatches; policy errors; and GitHub API errors while reading PR state all fail before any label mutation request is sent.
+The handler runs only fixed, reviewed code from the default branch and never checks out or executes PR code, dependencies, artifacts, or configuration. Initial authorization, PR, policy, or run-state errors fail before any mutation. A recheck error before a later rerun request stops that request, while any earlier accepted reruns remain applied.
 
-If the additive label `POST` or a label `DELETE` was sent but its response timed out, was malformed, or could not be confirmed, GitHub may already have applied the change. `/clear-labels` uses one `DELETE` per matching label and is not atomic: if a later deletion fails, earlier deletions remain applied. The handler does not retry or roll back automatically; inspect the PR's current labels before deciding whether to retry.
+If the additive label `POST`, a label `DELETE`, or a failed-job rerun `POST` was sent but its response timed out, was malformed, or could not be confirmed, GitHub may already have applied the change. `/clear-labels` and `/rerun-failed-ci` can issue multiple requests and are not atomic: if a later request fails, earlier changes remain applied. The handler does not retry or roll back automatically; inspect the PR's current labels or Actions runs before deciding whether to retry.
+
+GitHub reruns failed jobs and their dependent jobs with the original run's `GITHUB_SHA`, `GITHUB_REF`, event payload, and triggering actor privileges. A rerun therefore does not inherit the commenter's or App token's privileges; consumers of the original event payload do not see labels changed afterward. GitHub permits reruns for up to 30 days after the original run and limits a workflow run to 50 attempts.
 
 ## Cadence eligibility
 

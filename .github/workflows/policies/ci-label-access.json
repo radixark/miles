@@ -1,6 +1,7 @@
 {
   "version": 1,
   "clear_permissions": ["write", "admin"],
+  "rerun_permissions": ["write", "admin"],
   "labels": {
     "run-ci-amd": ["write", "admin"],
     "run-ci-ckpt": ["write", "admin"],

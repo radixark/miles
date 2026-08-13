@@ -1,5 +1,5 @@
-name: Comment CI label
-run-name: Comment CI label by ${{ github.event.comment.user.login }}
+name: Comment CI command
+run-name: Comment CI command by ${{ github.event.comment.user.login }}
 
 on:
   issue_comment:
@@ -9,13 +9,16 @@ permissions:
   contents: read
 
 jobs:
-  add-label:
+  handle-command:
     if: >-
       vars.CI_LABEL_APP_ENABLED == 'true' &&
       github.event.issue.pull_request != null &&
       github.event.comment.user.type == 'User' &&
       (contains(github.event.comment.body, '/run-ci-') ||
-       contains(github.event.comment.body, '/clear-labels'))
+       contains(github.event.comment.body, '/clear-labels') ||
+       contains(github.event.comment.body, '/rerun-failed-ci'))
+    outputs:
+      capability: ${{ steps.authorize.outputs.capability }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -30,14 +33,22 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Validate the command and live repository permission
+        id: authorize
         env:
           CI_LABEL_API_TOKEN: ${{ github.token }}
           CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
           CI_LABEL_PREFLIGHT: "true"
         run: python3 .github/workflows/scripts/comment_ci_label.py
 
-      - name: Mint the repository-scoped App token
-        id: app-token
+      - name: Reject an unknown capability
+        if: >-
+          steps.authorize.outputs.capability != 'issues' &&
+          steps.authorize.outputs.capability != 'actions'
+        run: exit 1
+
+      - name: Mint the label-scoped App token
+        if: steps.authorize.outputs.capability == 'issues'
+        id: label-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}
@@ -46,7 +57,42 @@ jobs:
           permission-pull-requests: read
 
       - name: Authorize and mutate CI labels
+        if: steps.authorize.outputs.capability == 'issues'
         env:
-          CI_LABEL_API_TOKEN: ${{ steps.app-token.outputs.token }}
+          CI_LABEL_API_TOKEN: ${{ steps.label-token.outputs.token }}
+          CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
+        run: python3 .github/workflows/scripts/comment_ci_label.py
+
+  rerun-failed-ci:
+    needs: handle-command
+    if: needs.handle-command.outputs.capability == 'actions'
+    concurrency:
+      group: comment-ci-rerun-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted handler and policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/comment_ci_label.py
+            .github/workflows/policies/ci-label-access.json
+          sparse-checkout-cone-mode: false
+
+      - name: Mint the rerun-scoped App token
+        id: rerun-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_LABEL_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-pull-requests: read
+
+      - name: Authorize and rerun failed CI
+        env:
+          CI_LABEL_API_TOKEN: ${{ steps.rerun-token.outputs.token }}
           CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
         run: python3 .github/workflows/scripts/comment_ci_label.py
