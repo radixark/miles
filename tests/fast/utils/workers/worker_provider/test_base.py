@@ -13,7 +13,7 @@ class _Handle(BaseWorkerHandle):
 
     async def wait_ready(self, *, timeout: float) -> None: ...
 
-    async def _probe_is_dead(self) -> bool:
+    async def probe_is_dead(self) -> bool:
         return False
 
 

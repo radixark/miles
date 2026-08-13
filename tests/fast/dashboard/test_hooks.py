@@ -145,13 +145,16 @@ class FakeWorkerHandle(BaseWorkerHandle):
     async def wait_ready(self, *, timeout):
         return None
 
-    async def _probe_is_dead(self):
+    async def probe_is_dead(self):
         return True
 
 
 class UuidWorkerHandle(BaseWorkerHandle):
     def __init__(self, uuid_by_gpu_id: dict[int, str]):
         self._uuid_by_gpu_id = uuid_by_gpu_id
+
+    async def probe_is_dead(self) -> bool:
+        raise AssertionError("registering engines must not probe a worker for death")
 
     async def _get_gpu_uuids(self, *, gpu_ids):
         return [self._uuid_by_gpu_id[gpu_id] for gpu_id in gpu_ids]
@@ -168,6 +171,9 @@ class GatedWorkerHandle(BaseWorkerHandle):
         self._uuid = uuid
         self._signal = signal
         self._wait_for = wait_for
+
+    async def probe_is_dead(self) -> bool:
+        raise AssertionError("registering engines must not probe a worker for death")
 
     async def _get_gpu_uuids(self, *, gpu_ids):
         if self._signal is not None:
@@ -186,6 +192,9 @@ class GatedWorkerHandle(BaseWorkerHandle):
 class FlakyWorkerHandle(BaseWorkerHandle):
     def __init__(self):
         self.fail = True
+
+    async def probe_is_dead(self) -> bool:
+        raise AssertionError("registering engines must not probe a worker for death")
 
     async def _get_gpu_uuids(self, *, gpu_ids):
         if self.fail:

@@ -134,4 +134,4 @@ class TestWhenTheLauncherStopsTheCell:
         await rpc_pool.manager.stop_cells.remote([CELL_ID])
         await rpc_handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_SECONDS)
 
-        assert await rpc_handle._probe_is_dead() is True
+        assert await rpc_handle.probe_is_dead() is True
