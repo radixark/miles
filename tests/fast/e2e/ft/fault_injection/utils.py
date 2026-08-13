@@ -137,3 +137,7 @@ class StubFaultForm(fault_forms.BaseFaultForm):
 
 def fixed_fault_forms(forms: list[fault_forms.BaseFaultForm]) -> fault_forms.CellFaultForms:
     return {fault_forms.ACTOR_CELL_TYPE: forms, fault_forms.ROLLOUT_CELL_TYPE: forms}
+
+
+def intervals(cell_types: tuple[str, ...], mean_interval_seconds: float) -> dict[str, float]:
+    return {cell_type: mean_interval_seconds for cell_type in cell_types}

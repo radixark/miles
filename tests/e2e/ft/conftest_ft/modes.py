@@ -35,6 +35,10 @@ class FTTestMode:
     num_steps: int = 10
 
     def __post_init__(self) -> None:
+        assert "rollout" not in self.ft_components or self.has_real_rollout, (
+            f"Mode declares ft components {self.ft_components} but has no real rollout engines, so a rollout "
+            f"injection would have nothing to crash and the soak would silently prove nothing about rollout ft"
+        )
         assert not self.colocate or self.total_rollout_gpus <= self.train_gpus_per_node, (
             f"Colocated mode oversubscribes its node: {self.total_rollout_gpus} rollout gpus "
             f"do not fit in {self.train_gpus_per_node} train gpus"
