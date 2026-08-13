@@ -635,6 +635,12 @@ class TestMultiPolicyIds:
 
         assert _model_args(_make_args(path), model_id="b").trainer_model_id == "b"
 
+    def test_each_trainer_carries_its_trainer_id_into_the_worker(self, tmp_path):
+        """The worker must derive its cell id from the trainer-specific pool that launched it."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "alpha-actor"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="a").trainer_id == "alpha-actor"
+
 
 class TestSynthesizedCriticTrainer:
     def test_arguments_that_do_not_carry_use_critic_yet_still_resolve(self):
