@@ -16,6 +16,7 @@ On-policy distillation (OPD) trains a student model on its own rollouts while us
 | `--opd-reward-weight-mode` | Weighting scheme for top-k rewards: `student_p`, `teacher_p`, or `none`. |
 | `--opd-teacher-urls` | Optional multi-teacher routing map (`NAME=URL` pairs, SGLang mode only). Routes each sample to a teacher by `sample.metadata[--opd-teacher-key]`; reserved name `default` is the fallback. Unset = single teacher at `--rm-url`. |
 | `--opd-teacher-key` | Metadata key holding the teacher name for routing (default: `opd_teacher`). |
+| `--opd-privileged-context-key` | Metadata key holding teacher-only context (SGLang mode). Appended to the last user message of the teacher's prompt; the student never sees it. Unset = disabled. |
 | `--opd-teacher-load` | Path to teacher Megatron checkpoint. **Required** when `--opd-type=megatron`, **must not be set** when `--opd-type=sglang`. |
 | `--opd-teacher-ckpt-step` | Optional checkpoint step for teacher model. |
 
@@ -111,6 +112,73 @@ when the routing map is set):
 > an sglang router) at replicas; `--opd-teacher-urls` is for *different*
 > teachers, not load balancing.
 
+### Privileged Context (SGLang mode only)
+
+`--opd-privileged-context-key` lets the teacher see information the student does
+not, following [Self-Distilled Reasoner: On-Policy Self-Distillation for Large
+Language Models](https://arxiv.org/abs/2601.18734). The student generates from the public prompt as usual; the teacher then
+scores *that same response* on a prompt carrying private context: a hint, a
+reference solution, a grader's correction. The resulting log-probs are a sharper
+target than the teacher could produce unaided, while the student keeps learning
+a policy it can run without the extra context at inference time.
+
+The metadata value is a plain string appended verbatim to the end of the last
+user message, so the wording of the hint lives in your dataset rather than
+hard-coded in miles.
+
+This works across all three forms `sample.prompt` can take (see
+`miles/utils/data.py`): a **message list**, a **template-rendered string** (with
+`--apply-chat-template`), or a **raw untemplated string** (without it, from a
+plain-text prompt column). For a message list, miles appends to the last message
+and renders. For a raw string there is no template structure, so the context goes
+on the end. For a rendered string, it derives that template's closing
+sequence, e.g. `<|im_end|>\n<|im_start|>assistant\n` for ChatML,
+`<end_of_turn>\n<start_of_turn>model\n` for Gemma, by rendering a probe message
+and splitting on it, then splices the context in just before it. Nothing is
+hard-coded per model, and probed through the same helper that rendered the prompt
+so DeepSeek and Inkling checkpoints (which use different renderers) agree. Which
+form a string is in is verified rather than inferred: a prompt ending in that
+sequence is spliced whatever `--apply-chat-template` says, and with the flag on a
+prompt that does not end in it raises rather than being mangled. The message-list and
+rendered routes produce byte-identical text.
+
+**How it works**:
+1. Rollout is untouched: the student sees only the public prompt.
+2. At scoring time, `sample.metadata[--opd-privileged-context-key]` is inserted at
+   the end of the teacher's last user message, and the student's response tokens
+   are appended verbatim.
+3. The teacher scores that sequence. Because the response stays at the tail,
+   the usual response-span extraction is unchanged.
+4. When rendering from messages, the result is checked to confirm the context
+   survived the template, since Gemma-2 applies `content | trim` and can drop it.
+
+Samples without the metadata key are scored normally, so one dataset can mix
+privileged and plain examples.
+
+The reverse-KL estimate is aligned by *response position*, and the response
+tokens are identical on both sides, so only the teacher's conditioning prefix
+differs. Under top-k, the student is still re-scored on the prompt it actually saw;
+only the teacher reads the privileged context.
+
+**Configuration** (on top of the SGLang-mode flags above):
+```bash
+--opd-privileged-context-key opd_privileged_context
+```
+
+> **Notes**: The teacher prompt is longer than the student's, so a
+> near-context-limit sample can overflow `--rollout-max-context-len`. Such a sample
+> is scored without privileged context rather than raising, since an exception there
+> would kill the run, and the count of samples actually scored with context is logged.
+> The rendered path assumes the prompt ends in a user turn; a conversation ending in
+> another role renders the same way under ChatML and the context is appended to that
+> final turn. The metadata value must
+> be a non-empty string. If the configured key matches no samples, a warning is
+> logged with the observed count rather than the run silently degrading to ordinary
+> self-distillation. A chat template that rewrites message content (rather
+> than only wrapping it) cannot be spliced safely; with
+> `--apply-chat-template` on that raises on the first privileged sample, not at
+> startup.
+
 ### Megatron Mode (`--opd-type megatron`)
 
 The teacher model is loaded directly into Megatron via `--opd-teacher-load`. Teacher log-probs are computed during the training forward pass.
@@ -163,6 +231,17 @@ bash examples/on_policy_distillation/run-qwen3-8B-opd.sh
 # 1. Convert both student and teacher models to Megatron format
 # 2. Run
 bash examples/on_policy_distillation/run-qwen3-8B-opd-megatron.sh
+```
+
+### Privileged-Context Self-Distillation
+
+Same prerequisites as the SGLang teacher above, minus the 32B download, since the
+teacher server runs the same Qwen3-8B checkpoint the student starts from. The
+script derives its own privileged dataset from `dapo-math-17k` by attaching each
+problem's verified answer as teacher-only metadata.
+
+```bash
+bash examples/on_policy_distillation/run-qwen3-8b-opsd.sh
 ```
 
 ## Preliminary Results
