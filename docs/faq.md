@@ -72,9 +72,11 @@ invariant is:
 
 <Accordion title="Does Miles do data packing / varlen?">
 
-Yes, always. Variable-length samples are packed into the same micro-batch and the loss
-is corrected per-sample (or per-token if you set `--calculate-per-token-loss`). You
-never need to pad manually.
+Yes. Sequences are varlen end to end — you never pad manually. With
+`--use-dynamic-batch-size` (recommended), variable-length samples are also packed
+into token-budgeted micro-batches capped by `--max-tokens-per-gpu`; without it,
+each micro-batch holds a fixed `--micro-batch-size` number of samples. The loss is
+corrected per sample (or per token with `--calculate-per-token-loss`).
 
 </Accordion>
 
@@ -102,7 +104,7 @@ them explicitly with `--rollout-stop` or `--rollout-stop-token-ids`.
 
 <Accordion title={<>SGLang error: <code>illegal memory access</code>.</>}>
 
-Per the [SGLang FAQ](https://docs.sglang.io/references/faq.html), this is usually OOM
+Per the [SGLang FAQ](https://docs.sglang.io/docs/references/faq), this is usually OOM
 masquerading. Lower `--sglang-mem-fraction-static`.
 
 </Accordion>
@@ -134,6 +136,6 @@ then go investigate the data + model alignment that caused it.
 
 </AccordionGroup>
 
-Still stuck? Drop a thread in the Miles channel of the [SGLang Slack](https://slack.sglang.ai)
+Still stuck? Drop a thread in the `#miles` channel of the [SGLang Slack](https://slack.sglang.ai)
 or open an issue on [GitHub](https://github.com/radixark/miles/issues).
 
