@@ -85,7 +85,7 @@ python -c "import miles; print('Miles import OK')"
 nvidia-smi
 ```
 
-If either command fails, see [Debugging](/developer/debug) or the [FAQ](/faq).
+If either command fails, see [Debugging](/developer/debug).
 
 ## Hardware requirements
 
