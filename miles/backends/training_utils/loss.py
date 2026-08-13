@@ -66,15 +66,15 @@ def compute_advantages_and_returns(
     if log_probs is None and values is None:
         if not (allow_missing_log_probs and get_parallel_state().is_pp_last_stage):
             return
-    else:
-        # This is the authoritative persistence boundary: scores produced before
-        # the policy update are fixed training data and must not retain a graph.
-        _detach_rollout_tensor_list(rollout_data, "log_probs")
-        _detach_rollout_tensor_list(rollout_data, "rollout_log_probs")
-        _detach_rollout_tensor_list(rollout_data, "ref_log_probs")
-        _detach_rollout_tensor_list(rollout_data, "teacher_log_probs")
-        log_probs = rollout_data.get(log_probs_key)
-        ref_log_probs = rollout_data.get("ref_log_probs")
+
+    # This is the authoritative persistence boundary: scores produced before
+    # the policy update are fixed training data and must not retain a graph.
+    _detach_rollout_tensor_list(rollout_data, "log_probs")
+    _detach_rollout_tensor_list(rollout_data, "rollout_log_probs")
+    _detach_rollout_tensor_list(rollout_data, "ref_log_probs")
+    _detach_rollout_tensor_list(rollout_data, "teacher_log_probs")
+    log_probs = rollout_data.get(log_probs_key)
+    ref_log_probs = rollout_data.get("ref_log_probs")
 
     if log_probs is None and values is None:
         local_masks = get_local_response_loss_masks(

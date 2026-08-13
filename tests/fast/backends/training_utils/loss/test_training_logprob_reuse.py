@@ -244,6 +244,26 @@ def test_skip_actor_forward_only_synthesizes_zero_kl_only_on_the_last_pipeline_s
             assert torch.equal(actual, expected)
 
 
+def test_skip_actor_forward_only_detaches_fixed_scores_without_precomputed_log_probs():
+    parallel_state = make_parallel_state()
+    parallel_state.is_pp_last_stage = True
+    args = make_args(kl_coef=0.0, skip_actor_forward_only=True, true_on_policy_mode=False)
+    inputs = make_inputs(seed=17, batch_size=1, prompt_lens=[4], response_lens=[3], vocab_size=16, args=args)
+    rollout_data = make_rollout_data(inputs)
+    reference_source = torch.tensor([0.2, 0.4, 0.6], requires_grad=True)
+    teacher_source = torch.tensor([0.1, 0.3, 0.5], requires_grad=True)
+    rollout_data["ref_log_probs"] = [reference_source.sin()]
+    rollout_data["teacher_log_probs"] = [teacher_source.cos()]
+    del rollout_data["log_probs"]
+    del rollout_data["values"]
+
+    compute_advantages_and_returns(args, rollout_data)
+
+    for key in ("ref_log_probs", "teacher_log_probs"):
+        assert rollout_data[key][0].grad_fn is None
+        assert rollout_data[key][0].requires_grad is False
+
+
 @pytest.mark.parametrize("skip_actor_forward_only", [False, True])
 def test_loss_dispatcher_uses_args_without_extra_policy_kwargs(monkeypatch, skip_actor_forward_only):
     make_parallel_state()
