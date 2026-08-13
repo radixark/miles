@@ -72,11 +72,13 @@ invariant is:
 
 <Accordion title="Does Miles do data packing / varlen?">
 
-Yes. Sequences are varlen end to end — you never pad manually. With
-`--use-dynamic-batch-size` (recommended), variable-length samples are also packed
-into token-budgeted micro-batches capped by `--max-tokens-per-gpu`; without it,
-each micro-batch holds a fixed `--micro-batch-size` number of samples. The loss is
-corrected per sample (or per token with `--calculate-per-token-loss`).
+Yes. In the default `--qkv-format thd`, the samples in a micro-batch are
+concatenated with `cu_seqlens` rather than padded, and Megatron always runs with
+variable sequence lengths — you never pad manually. `--use-dynamic-batch-size`
+(recommended) decides how many samples share a micro-batch from the
+`--max-tokens-per-gpu` token budget, balancing micro-batches by sequence length;
+without it, each micro-batch holds a fixed `--micro-batch-size` number of samples.
+The loss is corrected per sample (or per token with `--calculate-per-token-loss`).
 
 </Accordion>
 
