@@ -68,10 +68,20 @@ class TestRolloutExecutorSpec:
 
         kwargs = spec_rollout_executor(_args(use_session_server=True)).ctor_kwargs(context)
 
-        assert sorted(kwargs) == ["args", "router_providers", "session_server_provider"]
+        assert sorted(kwargs) == [
+            "args",
+            "inference_controller_provider",
+            "router_providers",
+            "session_server_provider",
+        ]
         assert kwargs["router_providers"] == [capability.static_provider]
         assert kwargs["session_server_provider"] is capability.static_provider
-        assert capability.requested_static_pool_ids == ["inference-router-0", "session-server"]
+        assert kwargs["inference_controller_provider"] is capability.static_provider
+        assert capability.requested_static_pool_ids == [
+            "inference-router-0",
+            "session-server",
+            "inference-controller",
+        ]
 
     def test_a_run_without_session_servers_is_given_no_session_provider(self):
         """Nothing is deployed to wait for, and a provider would make the executor wait for it anyway."""
@@ -81,6 +91,16 @@ class TestRolloutExecutorSpec:
         kwargs = spec_rollout_executor(_args(use_session_server=False)).ctor_kwargs(context)
 
         assert kwargs["session_server_provider"] is None
+
+    def test_the_executor_is_given_the_way_to_reach_the_inference_controller(self):
+        """Pinning the eval fleet is a call on the controller, so the executor must be able to address it."""
+        capability = FakeBackendCapability(static_provider=object())
+        context = WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+        kwargs = spec_rollout_executor(_args()).ctor_kwargs(context)
+
+        assert kwargs["inference_controller_provider"] is capability.static_provider
+        assert "inference-controller" in capability.requested_static_pool_ids
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the executor up by name, so these names are part of the release's contract."""

@@ -7,6 +7,8 @@ import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.ray.placement_group import create_rollout_components
+from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.asyncio
 
@@ -32,13 +34,8 @@ def fake_components():
     controller_handle = MagicMock(name="inference_controller")
     controller_handle.check_weights = AsyncMock()
     controller_handle.offload = AsyncMock()
-    controller_handle.eval_fleet = None
-    eval_fleet = object()
-
-    async def _init():
-        controller_handle.eval_fleet = eval_fleet
-
-    controller_handle.init = AsyncMock(side_effect=_init)
+    controller_handle.init = AsyncMock(return_value=None)
+    controller_handle.get_eval_fleet_info = AsyncMock(return_value=None)
 
     async def resolve_router_addrs(args, *, router_providers) -> dict:
         args.sglang_router_ip = "10.0.0.1"
@@ -53,9 +50,9 @@ def fake_components():
         events.append("session_servers_ready")
 
     executor_handle = MagicMock(name="rollout_executor")
-    executor_handle.set_eval_fleet.remote = AsyncMock()
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
+    executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
 
     capability = FakeBackendCapability(static_provider=object())
 
@@ -73,7 +70,6 @@ def fake_components():
             executor_handle=executor_handle,
             capability=capability,
             events=events,
-            eval_fleet=eval_fleet,
         )
 
 
@@ -134,6 +130,25 @@ class TestCreateRolloutComponents:
         assert num_rollout_per_epoch is None
         assert args.num_rollout == 3
 
+    async def test_the_eval_fleet_reaches_the_executor_through_an_rpc_call(self, fake_components):
+        """The controller is a worker: its fleet is only knowable by calling it, never by reading it."""
+        args = _make_args(num_rollout=1, eval_num_gpus=2)
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        fake_components.controller_handle.get_eval_fleet_info = AsyncMock(return_value=info)
+
+        await create_rollout_components(args)
+
+        fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
+
+    async def test_a_run_without_an_eval_fleet_wires_nothing_up(self, fake_components):
+        """The controller answers that it deploys no fleet, and the executor is left alone."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        fake_components.controller_handle.get_eval_fleet_info.assert_awaited_once_with()
+        fake_components.executor_handle.set_eval_fleet_info.assert_not_awaited()
+
     async def test_a_train_only_run_resolves_no_inference_addresses(self, fake_components):
         """--debug-train-only deploys no routers or session servers, so nothing can be waited on."""
         args = _make_args(num_rollout=1, debug_train_only=True)
@@ -146,10 +161,16 @@ class TestCreateRolloutComponents:
     async def test_the_executor_is_handed_the_fleet_the_controller_just_built(self, fake_components):
         """Checkpoint eval pins snapshots to these engines, so publishing a pre-init fleet evaluates nothing."""
         args = _make_args(num_rollout=1)
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+
+        async def _publish_fleet_on_init():
+            fake_components.controller_handle.get_eval_fleet_info = AsyncMock(return_value=info)
+
+        fake_components.controller_handle.init = AsyncMock(side_effect=_publish_fleet_on_init)
 
         await create_rollout_components(args)
 
-        fake_components.executor_handle.set_eval_fleet.remote.assert_awaited_once_with(fake_components.eval_fleet)
+        fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
 
 
 class TestCreatePlacementGroups:
