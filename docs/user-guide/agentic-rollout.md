@@ -143,6 +143,10 @@ History handling depends on the selected server version:
   a branch, and existing branches are never deleted. A path whose last generation
   ended with `finish_reason=length` cannot be extended.
 
+Whether a replayed message counts as "the same" as the stored one is decided by
+`--session-message-matcher` (default `strict`); see
+[Choose replay matching](#choose-replay-matching).
+
 The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
 for each selected tree leaf. Both versions reject `--pause-generation-mode=abort` 
 and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
@@ -150,6 +154,25 @@ and `--partial-rollout`, and use in-place weight update as instead to avoid harn
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.
 
+### Choose replay matching
+
+Some agent harnesses do not replay model messages verbatim: they may reserialize tool-call arguments, replace empty `arguments` with `"{}"`, or omit `reasoning_content` on the next request. Under the default matcher those replays count as divergence — v1 rolls back (or rejects), v2 branches a new lineage.
+
+`--session-message-matcher` is process-wide and defaults to `strict`. It accepts a built-in selector or a trusted dotted import path.
+
+| Selector | Behavior |
+|---|---|
+| `strict` | Preserves the existing comparison of `role`, `content`, `reasoning_content`, and `tool_calls`, including empty-value and tool-call `index` normalization. |
+| `loose_tool_call` | Accepts everything `strict` accepts, plus equivalent JSON-object representations of `tool_calls[].function.arguments`. Call IDs, types, function names, order, unknown fields, and `reasoning_content` still have to match. |
+| `role_content_only` | Compares only normalized `role` and `content`. **High risk:** different tool-call or reasoning histories can collapse into one session lineage. |
+| dotted import path | Loads a trusted synchronous custom matcher; see [Customization](/user-guide/customization#session-message-matcher). |
+
+The matcher only decides whether the message a client replays and the message stored at the same position in the session count as the same one.
+
+- On a mismatch, the existing paths apply: v1 rolls back (or rejects), v2 branches.
+- On a match, the stored messages and token snapshot stay authoritative inside the reusable prefix; only the suffix beyond it is tokenized anew from the client input.
+
+Miles does not reconcile tool-call IDs across that boundary: deployments choosing `role_content_only` must themselves keep a stored call ID `A` followed by a replayed tool result referencing `B` protocol-compatible.
 
 ### Pick your `--tito-model`
 

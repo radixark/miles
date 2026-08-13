@@ -118,7 +118,7 @@ configured.
 
 ### `--session-message-matcher`
 
-Some harnesses do not replay history verbatim — they reserialize tool-call arguments or drop `reasoning_content` — and the default `strict` matcher counts that as divergence (v1 rollback, v2 branching). This flag loosens what "the same message" means during replay: choose a looser built-in selector (see [Agentic Rollout (TITO)](/user-guide/agentic-chat-template#choose-replay-matching)) or supply your own matcher via a trusted dotted import path:
+Some harnesses do not replay history verbatim — they reserialize tool-call arguments or drop `reasoning_content` — and the default `strict` matcher counts that as divergence (v1 rollback, v2 branching). This flag loosens what "the same message" means during replay: choose a looser built-in selector (see [Agentic Rollout (TITO)](/user-guide/agentic-rollout#choose-replay-matching)) or supply your own matcher via a trusted dotted import path:
 
 ```python
 def matcher(stored_message: dict[str, Any], replayed_message: dict[str, Any]) -> bool:

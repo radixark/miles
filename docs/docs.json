@@ -344,6 +344,10 @@
    "destination": "/user-guide/generate-endpoint"
   },
   {
+   "source": "/user-guide/agentic-chat-template",
+   "destination": "/user-guide/agentic-rollout"
+  },
+  {
    "source": "/user-guide/usage",
    "destination": "/user-guide/training-backend"
   },
