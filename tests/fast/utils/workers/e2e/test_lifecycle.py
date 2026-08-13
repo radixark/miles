@@ -75,13 +75,13 @@ class TestRestartDetection:
     async def test_unpinned_handle_mid_call_restart_reports_unknown_call(self, spawn, make_handle, tag):
         """A call whose server was replaced mid-flight fails loudly instead of hanging."""
         server = spawn()
-        handle = make_handle(server, call_timeout_seconds=30.0)
+        handle = make_handle(server, call_timeout_seconds=2 * READY_TIMEOUT_SECONDS)
 
         pending = asyncio.create_task(handle.demo_block_async(tag=tag))
         await asyncio.sleep(0.5)
 
         server.stop()
-        spawn(port=server.port)
+        await asyncio.to_thread(spawn, port=server.port)
 
         with pytest.raises(RpcProtocolError):
             await pending

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +19,12 @@ from tests.fast.utils.workers.fake_ray import EVENT_KILL, FakeRayCluster
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager as rwm
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, bootstrapped_worker_class
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, _build_serve_worker, bootstrapped_worker_class
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
+from miles.utils.workers.serving.serve_actor import ServeActor
+from miles.utils.workers.types import WorkerCommBackend
+from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
 
 pytestmark = pytest.mark.asyncio
@@ -158,9 +163,9 @@ def _make_pgs(num_slots: int = 8) -> dict[str, PlacementGroupInfo]:
     }
 
 
-async def _launch(specs, pgs=None) -> RayWorkerManager:
+async def _launch(specs, pgs=None, comm_backend: WorkerCommBackend = WorkerCommBackend.RAY) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {})
+    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=comm_backend)
     return manager
 
 
@@ -532,3 +537,129 @@ class TestTheBootstrappedClass:
         assert completed.returncode == 0, completed.stderr.decode()
         rebuilt = json.loads(completed.stdout.decode().strip().splitlines()[-1])
         assert rebuilt == dict(rank=1, role="actor", rebuilt=True, name="DemoServeWorker")
+
+
+class DemoRpcServeWorker:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+    def echo(self, *, value: int) -> int:
+        return value
+
+
+_RPC_WORKER_CLASS_PATH = f"{DemoRpcServeWorker.__module__}.{DemoRpcServeWorker.__qualname__}"
+
+
+async def _launch_rpc(spec: ServeWorkerSpec) -> RayWorkerManager:
+    return await _launch([spec], comm_backend=WorkerCommBackend.RPC)
+
+
+class TestServeWorkersUnderRpcComm:
+    async def test_the_actor_is_a_serve_actor_rather_than_the_worker_itself(self, fake_ray_cluster: FakeRayCluster):
+        """The worker still lives in the actor process, but the actor is the one running the rpc server."""
+        await _launch_rpc(_make_spec())
+
+        assert _actor_classes(fake_ray_cluster) == [ServeActor]
+
+    async def test_the_worker_recipe_is_handed_to_the_serve_actor(self, fake_ray_cluster: FakeRayCluster):
+        """Evaluating the recipe here would build the worker in the launcher instead of on its gpu."""
+        probe = _CtorKwargsProbe()
+        await _launch_rpc(_make_spec(ctor_kwargs=probe))
+
+        (ctor_kwargs,) = fake_ray_cluster.ctor_kwargs
+        assert list(ctor_kwargs) == ["build_worker"]
+        assert probe.contexts == []
+
+    async def test_the_recipe_builds_the_declared_worker_when_the_actor_runs_it(self):
+        """What ships must rebuild the very class the spec names, with the rank's own identity."""
+        probe = _CtorKwargsProbe()
+
+        worker = cloudpickle.loads(
+            cloudpickle.dumps(
+                partial(
+                    _build_serve_worker,
+                    worker_class_path=_WORKER_CLASS_PATH,
+                    ctor_kwargs=probe,
+                    context=_launch_context(worker_in_cell_index=1),
+                )
+            )
+        )()
+
+        assert isinstance(worker, DemoServeWorker) and worker.kwargs == dict(rank=1, role="actor")
+
+    async def test_the_server_starts_on_the_allocated_rpc_port(self, fake_ray_cluster: FakeRayCluster):
+        """The port is only known after allocation, so the server can only be told about it afterwards."""
+        manager = await _launch_rpc(_make_spec())
+
+        (call,) = fake_ray_cluster.calls_of("start_rpc_server")
+        assert call.kwargs == dict(port=manager.get_addrs()["trainer"][0]["rpc"].port)
+
+    async def test_the_server_starts_after_the_port_is_allocated(self, fake_ray_cluster: FakeRayCluster):
+        """Starting first would bind a port nobody advertised, or none at all."""
+        await _launch_rpc(_make_spec())
+
+        assert fake_ray_cluster.last_event_index("_get_free_port_block") < fake_ray_cluster.first_event_index(
+            "start_rpc_server"
+        )
+
+    async def test_every_worker_of_a_cell_serves_its_own_port(self, fake_ray_cluster: FakeRayCluster):
+        """Two workers on one node would otherwise be handed the same port and one would fail to bind."""
+        await _launch_rpc(_make_spec(num_workers_per_cell=2))
+
+        ports = [call.kwargs["port"] for call in fake_ray_cluster.calls_of("start_rpc_server")]
+        assert len(set(ports)) == 2
+
+    async def test_ray_concurrency_groups_are_not_declared(self, fake_ray_cluster: FakeRayCluster):
+        """Under rpc the groups are the server's, and ray would schedule methods the actor does not have."""
+        await _launch_rpc(_make_spec(concurrency_groups={"heartbeat_status": 1, "default": 1}))
+
+        assert "concurrency_groups" not in _options(fake_ray_cluster)[0]
+
+    async def test_no_server_is_started_under_ray_communication(self, fake_ray_cluster: FakeRayCluster):
+        """The two modes coexist, so the ray mode must keep launching the worker as the actor itself."""
+        await _launch([_make_spec()])
+
+        assert fake_ray_cluster.calls_of("start_rpc_server") == []
+
+
+class TestTheHandleAWorkerIsCalledThrough:
+    async def test_ray_communication_still_answers_with_a_ray_handle(self, fake_ray_cluster: FakeRayCluster):
+        """Nothing about the existing mode changes while both are supported."""
+        manager = await _launch([_make_spec()])
+
+        (info,) = manager.get_worker_infos("trainer-0")
+        assert info.worker_class is None
+
+    async def test_rpc_communication_answers_with_the_class_to_build_a_client_for(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """An rpc handle holds pydantic validators that no cluster can ship, so it is built by its caller."""
+        manager = await _launch_rpc(_make_spec())
+
+        (info,) = manager.get_worker_infos("trainer-0")
+        assert info.worker_class == _WORKER_CLASS_PATH
+
+    async def test_the_provider_turns_that_answer_into_an_rpc_handle(self, fake_ray_cluster: FakeRayCluster):
+        """The driver ends up calling the worker over http, which is the whole point of the mode."""
+        manager = await _launch_rpc(_make_spec(worker_class=_RPC_WORKER_CLASS_PATH))
+
+        (info,) = manager.get_worker_infos("trainer-0")
+        handle = build_rpc_handle_of_worker_info(info)
+
+        assert isinstance(handle, RpcWorkerHandle)
+
+    async def test_the_handle_points_at_the_address_the_launcher_advertised(self, fake_ray_cluster: FakeRayCluster):
+        """A handle aimed anywhere else silently drives another worker on the same node."""
+        manager = await _launch_rpc(_make_spec(worker_class=_RPC_WORKER_CLASS_PATH))
+
+        (info,) = manager.get_worker_infos("trainer-0")
+        handle = build_rpc_handle_of_worker_info(info)
+
+        assert handle._transport._server_url == info.self_addrs["rpc"].addr
+
+    async def test_a_worker_that_is_not_served_names_no_class_to_call_it_by(self, fake_ray_cluster: FakeRayCluster):
+        """Command workers are called as the actors they are, and an rpc client for them cannot be built."""
+        manager = await _launch([_make_spec()])
+
+        (info,) = manager.get_worker_infos("trainer-0")
+        assert info.worker_class is None
