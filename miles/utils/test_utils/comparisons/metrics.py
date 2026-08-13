@@ -51,6 +51,26 @@ def compare_metrics(
     print(f"MetricEvent comparison passed: {len(baseline_events)} steps compared")
 
 
+def read_metric_series(dump_dir: str, *, key: str) -> list[tuple[int, float]]:
+    events = _keep_only_final_attempt(_read_metric_events(Path(dump_dir)))
+    return [
+        (event.rollout_id, float(value))
+        for event in events
+        if isinstance(value := event.metrics.get(key), (int, float)) and not isinstance(value, bool)
+    ]
+
+
+def assert_metrics_classified(dump_dir: str, *, compared: tuple[str, ...], ignored: tuple[str, ...]) -> None:
+    keys = {key for event in _keep_only_final_attempt(_read_metric_events(Path(dump_dir))) for key in event.metrics}
+    unclassified: list[str] = sorted(key for key in keys if not key.startswith(compared + ignored))
+
+    assert not unclassified, (
+        f"metrics {unclassified} belong to no namespace this comparison has classified, so they would be dropped "
+        f"from one that claims to cover everything; add them to the compared prefixes {list(compared)}, or to the "
+        f"ignored ones {list(ignored)} with a reason they cannot match"
+    )
+
+
 def read_rollout_completion_times(dump_dir: str) -> list[tuple[int, datetime]]:
     events = _keep_only_final_attempt(_read_metric_events(Path(dump_dir)))
     return sorted(

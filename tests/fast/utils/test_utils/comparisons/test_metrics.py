@@ -10,9 +10,14 @@ from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.comparisons.metrics import (
     _check_events_line_up,
     _check_single_metric,
+    _check_step_metrics,
     _keep_only_final_attempt,
+    assert_metrics_classified,
+    read_metric_series,
     read_rollout_completion_times,
 )
+
+_KEY: str = "train/grad_norm"
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _FIXED_SOURCE = SimpleProcessIdentity(component="main")
@@ -90,6 +95,51 @@ class TestCheckSingleMetric:
         assert len(issues) == 1
         assert "train/loss" in issues[0]
         assert "rel_diff" in issues[0]
+
+
+class TestCheckStepMetrics:
+    def test_matching_selected_keys_report_nothing(self) -> None:
+        """Both sides carrying the same selected keys with the same values is the passing case."""
+        baseline = _metric_event(rollout_id=0, attempt=0, metrics={"train/loss": 1.0})
+        target = _metric_event(rollout_id=0, attempt=0, metrics={"train/loss": 1.0})
+
+        assert _check_step_metrics(0, baseline, target, ["train/"], 0.1, atol=0.0) == []
+
+    def test_a_key_only_the_baseline_has_is_reported(self) -> None:
+        """A metric the target stopped producing must not vanish from the comparison."""
+        baseline = _metric_event(rollout_id=0, attempt=0, metrics={"train/loss": 1.0})
+        target = _metric_event(rollout_id=0, attempt=0, metrics={})
+
+        issues = _check_step_metrics(0, baseline, target, ["train/"], 0.1, atol=0.0)
+
+        assert len(issues) == 1
+        assert "present in baseline but missing in target" in issues[0]
+
+    def test_a_key_only_the_target_has_is_reported(self) -> None:
+        """Regression: a metric the target alone produces used to pass unnoticed."""
+        baseline = _metric_event(rollout_id=0, attempt=0, metrics={})
+        target = _metric_event(rollout_id=0, attempt=0, metrics={"train/loss": 1.0})
+
+        issues = _check_step_metrics(0, baseline, target, ["train/"], 0.1, atol=0.0)
+
+        assert len(issues) == 1
+        assert "present in target but missing in baseline" in issues[0]
+
+    def test_a_target_only_key_outside_the_prefixes_is_ignored(self) -> None:
+        """Only the namespaces this comparison claims to cover are compared."""
+        baseline = _metric_event(rollout_id=0, attempt=0, metrics={})
+        target = _metric_event(rollout_id=0, attempt=0, metrics={"perf/step_time": 1.0})
+
+        assert _check_step_metrics(0, baseline, target, ["train/"], 0.1, atol=0.0) == []
+
+    def test_an_excluded_target_only_key_is_ignored(self) -> None:
+        """An explicitly excluded key stays excluded whichever side carries it."""
+        baseline = _metric_event(rollout_id=0, attempt=0, metrics={})
+        target = _metric_event(rollout_id=0, attempt=0, metrics={"train/loss": 1.0})
+
+        issues = _check_step_metrics(0, baseline, target, ["train/"], 0.1, atol=0.0, exclude_keys=["train/loss"])
+
+        assert issues == []
 
     def test_nan_detected(self) -> None:
         """A NaN on either side produces a 'NaN detected' issue."""
@@ -174,3 +224,92 @@ class TestReadRolloutCompletionTimes:
             (20, datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)),
             (10, datetime(2026, 1, 1, 0, 0, 3, tzinfo=timezone.utc)),
         ]
+
+
+class TestReadMetricSeries:
+    def test_only_numeric_values_from_the_final_attempt_are_returned(self, dump_dir: str) -> None:
+        """Only numeric final-attempt values survive, with integers normalized to floats."""
+        _write_metric_events(
+            dump_dir,
+            [
+                _metric_event(rollout_id=0, attempt=0, metrics={_KEY: 99.0}),
+                _metric_event(rollout_id=0, attempt=1, metrics={_KEY: 1}),
+                _metric_event(rollout_id=0, attempt=1, metrics={_KEY: 2.5}),
+                _metric_event(rollout_id=1, attempt=0, metrics={_KEY: True}),
+                _metric_event(rollout_id=2, attempt=0, metrics={"train/loss": 3.0}),
+                _metric_event(rollout_id=3, attempt=0, metrics={_KEY: "4.0"}),
+            ],
+        )
+
+        assert read_metric_series(dump_dir, key=_KEY) == [(0, 1.0), (0, 2.5)]
+
+    def test_only_numeric_values_from_final_attempts_form_the_series(self, dump_dir: str) -> None:
+        """Retries and nonnumeric payloads must not contaminate a numeric comparison series."""
+        _write_metric_events(
+            dump_dir,
+            [
+                _metric_event(rollout_id=0, attempt=0, metrics={_KEY: 1.0}),
+                _metric_event(rollout_id=0, attempt=1, metrics={_KEY: 2}),
+                _metric_event(rollout_id=1, attempt=0, metrics={_KEY: True}),
+                _metric_event(rollout_id=2, attempt=0, metrics={_KEY: "unknown"}),
+            ],
+        )
+
+        assert read_metric_series(dump_dir, key=_KEY) == [(0, 2.0)]
+
+
+class TestAssertEveryMetricIsClassified:
+    def test_unknown_final_attempt_namespaces_are_reported(self, dump_dir: str) -> None:
+        """Sorted unknown final-attempt keys are reported while superseded unknown keys are ignored."""
+        _write_metric_events(
+            dump_dir,
+            [
+                _metric_event(rollout_id=0, attempt=0, metrics={"stale/unknown": 1.0}),
+                _metric_event(
+                    rollout_id=0,
+                    attempt=1,
+                    metrics={"train/loss": 1.0, "perf/throughput": 2.0, "zeta/value": 3.0, "alpha/value": 4.0},
+                ),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"metrics \['alpha/value', 'zeta/value'\]"):
+            assert_metrics_classified(dump_dir, compared=("train/",), ignored=("perf/",))
+
+    def test_compared_and_ignored_final_attempt_namespaces_are_accepted(self, dump_dir: str) -> None:
+        """Final-attempt keys covered by either compared or ignored prefixes are accepted."""
+        _write_metric_events(
+            dump_dir,
+            [
+                _metric_event(rollout_id=0, attempt=0, metrics={"stale/unknown": 1.0}),
+                _metric_event(
+                    rollout_id=0,
+                    attempt=1,
+                    metrics={"train/loss": 1.0, "perf/throughput": 2.0},
+                ),
+            ],
+        )
+
+        assert_metrics_classified(dump_dir, compared=("train/",), ignored=("perf/",))
+
+
+class TestAssertMetricsClassified:
+    def test_an_unclassified_namespace_fails_closed(self, dump_dir: str) -> None:
+        """A newly logged namespace cannot silently escape a comparison that claims complete coverage."""
+        _write_metric_events(dump_dir, [_metric_event(rollout_id=0, attempt=0, metrics={_KEY: 0.5})])
+
+        with pytest.raises(AssertionError, match="belong to no namespace"):
+            assert_metrics_classified(dump_dir, compared=("rollout/",), ignored=("perf/",))
+
+
+@pytest.fixture
+def dump_dir(tmp_path) -> str:
+    return str(tmp_path / "run")
+
+
+def _write_metric_events(dump_dir: str, events: list[MetricEvent]) -> None:
+    event_logger = EventLogger(log_dir=Path(dump_dir) / "events", source=_FIXED_SOURCE, file_name="main.jsonl")
+    for event in events:
+        partial = event.model_dump(exclude={"timestamp", "source", "type"})
+        event_logger.log(MetricEvent, partial, print_log=False)
+    event_logger.close()
