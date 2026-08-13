@@ -61,10 +61,14 @@ def run_helm_lint(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def documents_of(manifest: str) -> list[dict[str, Any]]:
+    return [document for document in yaml.safe_load_all(manifest) if document is not None]
+
+
 def render(*args: str) -> list[dict[str, Any]]:
     result = run_helm_template(*args)
     assert result.returncode == 0, result.stderr
-    return [document for document in yaml.safe_load_all(result.stdout) if document is not None]
+    return documents_of(result.stdout)
 
 
 def render_error(*args: str) -> str:
@@ -116,7 +120,7 @@ def with_object_names(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def render_run(*args: str) -> list[dict[str, Any]]:
     result = run_helm_template_run(*args)
     assert result.returncode == 0, result.stderr
-    return [document for document in yaml.safe_load_all(result.stdout) if document is not None]
+    return documents_of(result.stdout)
 
 
 def render_run_error(*args: str) -> str:
