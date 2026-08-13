@@ -1,0 +1,95 @@
+# RL on AgentENV sandboxes
+
+[AgentENV](https://github.com/kvcache-ai/AgentENV) is a self-hosted platform
+for running agent environments at scale on Firecracker microVMs, built by the
+Kimi K3 team: snapshot-backed sandboxes boot or resume in well under a second,
+per-task OCI images load on demand, and its native API **is** the E2B API — so
+Miles drives it through the standard `e2b` SDK with no AgentENV-specific code.
+
+AgentENV plugs in wherever E2B does. This page covers what is specific to
+AgentENV — deploying a server and pointing the SDK at it — then trains
+Terminal-Bench-2 GRPO through the [OpenEnv](../openenv/README.md) recipe on
+AgentENV sandboxes.
+
+## 1. Deploy an AgentENV server
+
+Requirements: a Linux host with `/dev/kvm` (bare metal, or a VM with nested
+virtualization) and kernel 6.8+. We validated on an AWS `m7i.metal-24xl`
+running Ubuntu 22.04 with the 6.8 HWE kernel.
+
+```bash
+# ublk is in linux-modules-extra on stock cloud kernels
+sudo apt-get install -y linux-modules-extra-$(uname -r) && sudo modprobe ublk_drv
+
+# host prerequisites + server container (Ubuntu 24.04 hosts can use the
+# native install script instead; see the AgentENV README)
+curl -fsSL https://raw.githubusercontent.com/kvcache-ai/AgentENV/main/scripts/docker-setup.sh | sudo bash
+docker run -d --name aenv --privileged -v /dev:/dev -p 8000:8000 -p 80:8000 \
+  -e AENV_SANDBOX_PROXY_DOMAINS=<ip-with-dashes>.sslip.io \
+  ghcr.io/kvcache-ai/aenv-server:latest
+curl -sf http://127.0.0.1:8000/health
+```
+
+Three parts of that command are not defaults. They exist because a training
+run reaches the env server inside each episode's microVM over one path only:
+the per-sandbox URL AgentENV's gateway routes. Get these wrong and no episode
+can connect.
+
+* **`AENV_SANDBOX_PROXY_DOMAINS` turns those URLs on.** It is what makes the
+  SDK's `get_host(port)` return a routable host, shaped
+  `{port}-{sandboxID}.{domain}`.
+* **The domain has to wildcard-resolve to the server**, because every sandbox
+  id is new. [sslip.io](https://sslip.io) gives you that with no DNS setup of
+  your own — `203-0-113-10.sslip.io` resolves to 203.0.113.10 — and a
+  wildcard record on a domain you own does the same.
+* **Publish port 80 too** (`-p 80:8000`): those URLs carry no port, so they
+  arrive on 80. Fronting the server with a proxy on 80/443 works instead, as
+  long as it forwards WebSocket — episode I/O runs over `/ws`, and only the
+  health check is plain HTTP.
+
+AgentENV does not enforce API keys yet — run it only on a trusted network.
+Multi-node deployment (gateway + scheduler) is
+documented in the [AgentENV docs](https://kvcache-ai.github.io/AgentENV/).
+
+## 2. Point the E2B SDK at it
+
+```bash
+pip install e2b
+export E2B_API_URL=http://<server>:8000       # control plane
+export E2B_SANDBOX_URL=http://<server>:8000   # data plane (envd proxy)
+# plain-HTTP deployments only; the default is https
+export OPENENV_E2B_URL_SCHEME=http
+# required, but any well-formed key passes: AgentENV does not check it, while
+# recent SDKs do validate the format client-side
+export E2B_API_KEY=e2b_0000000000000000000000000000000000000000
+```
+
+## 3. Train
+
+One AgentENV microVM per episode, on the
+[OpenEnv tbench2 recipe](../openenv/README.md)'s training pipeline unchanged.
+Follow that recipe's [prompt-data preparation and tbench2_env
+install](../openenv/README.md), then select the backend at launch:
+
+```bash
+export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
+OPENENV_SANDBOX_BACKEND=agentenv python ../openenv/run-openenv-tbench2.py
+```
+
+From here the e2b backend behaves as that recipe describes it, with each episode
+running in a microVM instead of a cloud sandbox: the same per-task templates,
+the same pre-baking step, the same GPU-free sanity checks. One caveat is
+specific to baking against a self-hosted server: the CLI builds tasks one
+after another, so `--all` over the full suite is a long single run — give it
+its own session, or bake in chunks with `--tasks`.
+
+We validated this path with a sustained GRPO run on 8×H200 (GLM-4.7-Flash,
+TP=4/EP=2) over the full task set: 55 rollouts, ~3,400 episodes, each in a
+fresh microVM warm-started from its pre-baked template, scored by the task's
+own tests, with every rollout's weights serving the next. One
+`m7i.metal-24xl` server sustained 64 concurrent microVMs throughout; episode
+failures (WebSocket drops with the host at saturation) stayed near one
+percent, each bounded to its own episode by the adapter's abort handling.
+Size from there: ~64 concurrent episodes saturate one such host, and
+`OPENENV_E2B_CREATE_CONCURRENCY` (default 4) paces creation bursts — we ran
+it at 16.

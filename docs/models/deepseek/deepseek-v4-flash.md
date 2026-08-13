@@ -88,7 +88,8 @@ python tools/fp8_cast_bf16.py \
    --input-fp8-hf-path /root/models/DeepSeek-V4-Flash-FP8 \
    --output-bf16-hf-path /root/models/DeepSeek-V4-Flash-FP8-bf16/
 
-source scripts/models/deepseek-v4-flash.sh
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py deepseek-v4-flash)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun \
    --nproc-per-node 4 --nnodes 8 \
    --master-addr ${MASTER_ADDR} --master-port 12345 \
@@ -189,5 +190,5 @@ The `--low-memory-resume` flag (off by default) puts optimizer states on CPU dur
 
 ## 6. Pairs Well With
 
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [Architecture Support](/advanced/architecture-support) — the V4 plugin lives under `miles_plugins/models/deepseek_v4/`.

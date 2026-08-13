@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docker/Dockerfile'
+      - 'docker/install-kube-tools.sh'
       - 'docker/verify_transformer_engine.py'
       - 'requirements.txt'
 
@@ -162,7 +163,10 @@ jobs:
     if: |
       always() &&
       (github.event_name != 'schedule' || needs.check-upstream.outputs.should_build == 'true')
-    runs-on: ["h200", "2gpu"]
+    # The build itself never touches a GPU (buildx sandboxes RUN steps); docker-build
+    # nodes are CI machines carrying a second runner instance dedicated to builds, so
+    # image builds stop competing for GPU-suite runner slots.
+    runs-on: ["docker-build"]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -176,8 +180,11 @@ jobs:
 
       - name: Install Python + dependencies
         run: |
-          apt-get update && apt-get install -y python3 python3-pip
-          pip3 install --break-system-packages typer
+          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=600 update
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
+          fi
+          pip3 install --break-system-packages --ignore-installed typer
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3

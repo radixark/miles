@@ -469,14 +469,14 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
     assert len(dispatcher.pending) == 0
 
 
-# ---------------- example fn (examples/fully_async/external_eval_fn.py) ----------------
+# ------- example fn (examples/infra_features/fully_async/external_eval_fn.py) -------
 
 
 @pytest.fixture
 def external_fn_env(monkeypatch):
     import importlib
 
-    mod = importlib.import_module("examples.fully_async.external_eval_fn")
+    mod = importlib.import_module("examples.infra_features.fully_async.external_eval_fn")
     calls = []
 
     server = SimpleNamespace(loaded_version=None)

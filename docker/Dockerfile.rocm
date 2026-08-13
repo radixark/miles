@@ -41,6 +41,8 @@ ARG TRANSFORMER_ENGINE_REPO=https://github.com/ROCm/TransformerEngine.git
 ARG TRANSFORMER_ENGINE_BRANCH=v2.8_rocm
 ARG MOONCAKE_VERSION=0.3.12.post1
 
+ARG TARGETARCH
+
 # ======================================== Setup ================================================
 WORKDIR /root/
 
@@ -172,14 +174,17 @@ RUN pip install "typer==0.25.1" "click==8.2.1"
 # Pin numpy 1.x for Megatron compatibility.
 RUN pip install "numpy<2"
 
+COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
+RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
+
 # ====================================== Install main package ===================================
 
 RUN git clone https://github.com/radixark/miles.git /root/miles && \
     cd /root/miles && \
     git checkout ${MILES_COMMIT} && \
     git apply --3way --unidiff-zero /tmp/amd_patch/miles.patch && \
-    mkdir -p miles/backends/experimental/fsdp_utils/sglang_attn_bridge && \
-    cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/experimental/fsdp_utils/sglang_attn_bridge/ && \
+    mkdir -p miles/backends/fsdp_utils/sglang_attn_bridge && \
+    cp -r /tmp/amd_patch/sglang_attn_bridge/. miles/backends/fsdp_utils/sglang_attn_bridge/ && \
     pip install -e . --no-deps
 
 # ====================================== Install sgl-model-gateway ============================================

@@ -1,12 +1,17 @@
+import logging
 from typing import Any
 
 import torch
 
 from miles.utils import object_store
+from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
+from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
+
+logger = logging.getLogger(__name__)
 
 ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
@@ -27,6 +32,8 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "truncated": ValueSpec(codec="ndarray", dtype="int64"),
     "round_number": ValueSpec(codec="ndarray", dtype="int64"),
     "sample_indices": ValueSpec(codec="ndarray", dtype="int64"),
+    "rollout_ids": ValueSpec(codec="ndarray", dtype="int64"),
+    "rollout_mask_sums": ValueSpec(codec="ndarray", dtype="int64"),
     "multimodal_train_inputs": ValueSpec(codec="ragged_tensor_dict"),
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
@@ -34,6 +41,9 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),
+    "num_microbatches": ValueSpec(codec="auto"),
+    "micro_batch_indices": ValueSpec(codec="auto"),
+    "num_rollouts": ValueSpec(codec="auto"),
 }
 
 
@@ -69,6 +79,7 @@ def convert_samples_to_train_data(
         "raw_reward": raw_rewards,
         "truncated": [1 if sample.status == Sample.Status.TRUNCATED else 0 for sample in samples],
         "sample_indices": [sample.index for sample in samples],
+        "rollout_ids": [s.rollout_id if s.rollout_id is not None else s.index for s in samples],
     }
 
     # loss mask
@@ -86,6 +97,8 @@ def convert_samples_to_train_data(
             sample.loss_mask = [0] * sample.response_length
         loss_masks.append(sample.loss_mask)
     train_data["loss_masks"] = loss_masks
+
+    train_data["rollout_mask_sums"] = _compute_rollout_mask_sums(train_data["rollout_ids"], loss_masks)
 
     # overwriting the raw reward
     if samples[0].metadata and "raw_reward" in samples[0].metadata:
@@ -146,6 +159,101 @@ def convert_samples_to_train_data(
     return train_data
 
 
+def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
+    """Whole-rollout loss-mask total per sample: every sibling of one rollout carries
+    the sum over all of that rollout's samples, so the loss reducer reconstructs one
+    token-weighted mean per rollout even when siblings land in different micro-batches."""
+    totals: dict[int, int] = {}
+    for rid, mask in zip(rollout_ids, loss_masks, strict=True):
+        totals[rid] = totals.get(rid, 0) + sum(mask)
+    return [totals[rid] for rid in rollout_ids]
+
+
+def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
+    """Return the flattened row indices for each prompt reward group."""
+    # Multi-LoRA records explicit prompt boundaries before flattening.
+    if prompt_group_sizes is not None:
+        assert sum(prompt_group_sizes) == len(
+            samples
+        ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(samples)} rewards"
+        groups: list[list[int]] = []
+        start = 0
+        for size in prompt_group_sizes:
+            end = start + size
+            if size > 0:
+                groups.append(list(range(start, end)))
+            start = end
+        return groups
+
+    # Standard rollout samples carry their prompt identity in `group_index`.
+    group_indices = [sample.group_index for sample in samples]
+    if all(group_index is not None for group_index in group_indices):
+        segments_by_group_index: dict[int, list[int]] = {}
+        for segment_index, group_index in enumerate(group_indices):
+            segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
+        return list(segments_by_group_index.values())
+
+    # Legacy fixed-fanout batches store each prompt's segments contiguously.
+    expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
+    if len(samples) == expected_samples:
+        return [
+            list(range(start, start + args.n_samples_per_prompt))
+            for start in range(0, len(samples), args.n_samples_per_prompt)
+        ]
+    # Without prompt identities or a complete fixed layout, use one reward group.
+    return [list(range(len(samples)))]
+
+
+def _normalize_rewards_by_rollout(
+    args: Any,
+    samples: list[Sample],
+    raw_rewards: list[float],
+    prompt_group_sizes: list[int] | None,
+) -> list[float]:
+    """Normalize one shared reward per rollout, then broadcast it to siblings."""
+    if not samples:
+        return []
+
+    normalized_rewards = torch.empty(len(raw_rewards), dtype=torch.float)
+    for prompt_segments in _reward_group_segments(args, samples, prompt_group_sizes):
+        segments_by_rollout_key: dict[int | tuple[str, int], list[int]] = {}
+        for segment_index in prompt_segments:
+            sample = samples[segment_index]
+            if sample.rollout_id is not None:
+                rollout_key = sample.rollout_id
+            elif sample.index is not None:
+                rollout_key = sample.index
+            else:
+                rollout_key = ("row", segment_index)
+            segments_by_rollout_key.setdefault(rollout_key, []).append(segment_index)
+
+        rollout_segment_groups = list(segments_by_rollout_key.items())
+        shared_rewards: list[float] = []
+        for rollout_key, rollout_segments in rollout_segment_groups:
+            sibling_rewards = [raw_rewards[segment_index] for segment_index in rollout_segments]
+            if any(reward != sibling_rewards[0] for reward in sibling_rewards[1:]):
+                raise ValueError(
+                    f"all samples in rollout {rollout_key!r} must share one reward; "
+                    f"rows {rollout_segments} have rewards {sibling_rewards}"
+                )
+            shared_rewards.append(sibling_rewards[0])
+
+        rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
+        normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
+        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
+            rollout_std = rollout_rewards.std()
+            if rollout_std > 0:
+                normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
+
+        for (_, rollout_segments), normalized_reward in zip(
+            rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
+        ):
+            for segment_index in rollout_segments:
+                normalized_rewards[segment_index] = normalized_reward
+
+    return normalized_rewards.tolist()
+
+
 def _post_process_rewards(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -157,47 +265,66 @@ def _post_process_rewards(
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        # group norm
-        rewards = torch.tensor(raw_rewards, dtype=torch.float)
-        if prompt_group_sizes is not None:
-            # Multi-LoRA: groups may have heterogeneous sizes (per-adapter
-            # n_samples_per_prompt), so normalize within explicit boundaries.
-            assert sum(prompt_group_sizes) == len(
-                raw_rewards
-            ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(raw_rewards)} rewards"
-            normalized_groups = []
-            for group_rewards in rewards.split(prompt_group_sizes):
-                centered = group_rewards - group_rewards.mean()
-                if (
-                    args.advantage_estimator in ["grpo", "gspo"]
-                    and args.grpo_std_normalization
-                    and group_rewards.numel() > 1
-                ):
-                    centered = centered / (group_rewards.std() + 1e-6)
-                normalized_groups.append(centered)
-            return raw_rewards, torch.cat(normalized_groups).tolist()
-        if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
-            rewards = rewards.reshape(-1, args.n_samples_per_prompt)
-        else:
-            # when samples count are not equal in each group
-            rewards = rewards.view(-1, rewards.shape[-1])
-        mean = rewards.mean(dim=-1, keepdim=True)
-        rewards = rewards - mean
-
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization:
-            std = rewards.std(dim=-1, keepdim=True)
-            rewards = rewards / (std + 1e-6)
-
-        return raw_rewards, rewards.flatten().tolist()
+        normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
+        return raw_rewards, normalized_rewards
 
     return raw_rewards, raw_rewards
 
 
-def split_train_data_by_dp(args, data, dp_size):
-    """Split the train data by data parallel size."""
-    rollout_data_list = split_train_data_by_dp_raw(args, data, dp_size=dp_size)
+def split_train_data_by_dp(args, data: dict[str, Any], train_parallel_config: dict | None):
+    """Split the train data across DP ranks and put the shards into the object store.
+
+    When the training backend can consume a rollout-side schedule, the shards
+    also carry the precomputed micro-batch layout; otherwise this falls back to
+    the legacy split (the training side schedules locally)."""
+    if can_schedule_on_rollout_side(args, data, train_parallel_config):
+        shards = split_train_data_by_dp_scheduled_raw(args, data, train_parallel_config=train_parallel_config)
+    else:
+        shards = split_train_data_by_dp_raw(args, data, dp_size=train_parallel_config["dp_size"])
     store = object_store.get_instance()
-    return [store.put(value=rollout_data, value_spec=ROLLOUT_DATA_VALUE_SPEC) for rollout_data in rollout_data_list]
+    return [store.put(value=shard, value_spec=ROLLOUT_DATA_VALUE_SPEC) for shard in shards]
+
+
+def can_schedule_on_rollout_side(args, data: dict[str, Any], train_parallel_config: dict | None) -> bool:
+    """Whether the rollout side can precompute the full DP/mbs schedule."""
+    if not has_full_schedule_config(train_parallel_config):
+        return False
+    if is_multi_lora_enabled(args):
+        return False
+    if "multimodal_train_inputs" in data:
+        return False
+    if "rollout_ids" not in data:
+        return False
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    return len(set(data["rollout_ids"])) >= global_batch_size
+
+
+def split_train_data_by_dp_scheduled_raw(
+    args, data: dict[str, Any], *, train_parallel_config: dict
+) -> list[dict[str, Any]]:
+    """DP split with the micro-batch schedule precomputed on the rollout side."""
+    total_lengths = [len(t) for t in data["tokens"]]
+    data["total_lengths"] = total_lengths
+
+    global_batch_size = data.get("dynamic_global_batch_size", args.global_batch_size)
+    partitions, micro_batch_indices, num_microbatches, num_rollouts = build_dp_schedule(
+        args,
+        train_parallel_config,
+        total_lengths,
+        global_batch_size=global_batch_size,
+        rollout_indices=data["rollout_ids"],
+    )
+    logger.info(
+        f"Rollout-side DP schedule: num_samples={len(total_lengths)}, "
+        f"num_rollouts={num_rollouts}, num_microbatches={num_microbatches}"
+    )
+
+    shards = _package_shards(args, data, partitions)
+    for rank, shard in enumerate(shards):
+        shard["num_microbatches"] = num_microbatches
+        shard["micro_batch_indices"] = micro_batch_indices[rank]
+        shard["num_rollouts"] = num_rollouts
+    return shards
 
 
 def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> list[dict[str, Any]]:
@@ -216,9 +343,14 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
     if adapter_slots is not None:
         partitions = [sorted(p, key=lambda i: adapter_slots[i]) for p in partitions]
 
+    return _package_shards(args, data, partitions)
+
+
+def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, Any]]:
+    """Package one rollout_data shard per DP rank from precomputed partitions."""
     shards = []
 
-    for i in range(dp_size):
+    for i in range(len(partitions)):
         rollout_data = {}
         partition = partitions[i]
         rollout_data["partition"] = partition
@@ -231,6 +363,8 @@ def split_train_data_by_dp_raw(args, data: dict[str, Any], *, dp_size: int) -> l
             "loss_masks",
             "round_number",
             "sample_indices",
+            "rollout_ids",
+            "rollout_mask_sums",
             "rollout_log_probs",
             "rollout_routed_experts",
             "rollout_indexer_topk",

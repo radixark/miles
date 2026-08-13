@@ -204,6 +204,8 @@ def dump_dummy_telemetry(
                     "perf/step_time": 95.0 - step,
                     "perf/wait_time_ratio": 0.4 - 0.1 * step,
                     "rollout/rewards_mean": 0.4 + 0.05 * step,
+                    "perf/actor_train_mfu": 0.38 - 0.02 * step,
+                    "perf/mfu_peak_tflops": 989.0,
                 },
             )
         )

@@ -1,3 +1,4 @@
+# FIXME
 """End-to-end test for MTP-only gradient verification.
 
 This test verifies that when MTP training is enabled and all outputs are truncated
@@ -24,8 +25,8 @@ NUM_GPUS = 4
 
 def prepare():
     """Download model and convert checkpoint with MTP layers."""
-    U.exec_command("mkdir -p /root/models /root/datasets")
-    U.exec_command(f"hf download XiaomiMiMo/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
+    U.exec_command_cpu(f"hf download XiaomiMiMo/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
 
     # Convert checkpoint with MTP layers enabled
@@ -119,6 +120,7 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {NUM_GPUS} "
         "--colocate "
+        "--rematerialize-param-from-master-weight "
     )
 
     train_args = (

@@ -1,0 +1,835 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+ray status 2>/dev/null || true
+
+### 3
+sleep 5
+
+### 4
+ray status 2>/dev/null || true
+
+### 5
+sleep 5
+
+### 6
+ray status 2>/dev/null || true
+
+### 7
+sleep 5
+
+### 8
+ray status 2>/dev/null || true
+
+### 9
+sleep 5
+
+### 10
+ray status 2>/dev/null || true
+
+### 11
+sleep 5
+
+### 12
+ray status 2>/dev/null || true
+
+### 13
+sleep 5
+
+### 14
+ray status 2>/dev/null || true
+
+### 15
+sleep 5
+
+### 16
+ray status 2>/dev/null || true
+
+### 17
+sleep 5
+
+### 18
+ray status 2>/dev/null || true
+
+### 19
+sleep 5
+
+### 20
+ray status 2>/dev/null || true
+
+### 21
+sleep 5
+
+### 22
+ray status 2>/dev/null || true
+
+### 23
+sleep 5
+
+### 24
+ray status 2>/dev/null || true
+
+### 25
+sleep 5
+
+### 26
+ray status 2>/dev/null || true
+
+### 27
+sleep 5
+
+### 28
+ray status 2>/dev/null || true
+
+### 29
+sleep 5
+
+### 30
+ray status 2>/dev/null || true
+
+### 31
+sleep 5
+
+### 32
+ray status 2>/dev/null || true
+
+### 33
+sleep 5
+
+### 34
+ray status 2>/dev/null || true
+
+### 35
+sleep 5
+
+### 36
+ray status 2>/dev/null || true
+
+### 37
+sleep 5
+
+### 38
+ray status 2>/dev/null || true
+
+### 39
+sleep 5
+
+### 40
+ray status 2>/dev/null || true
+
+### 41
+sleep 5
+
+### 42
+ray status 2>/dev/null || true
+
+### 43
+sleep 5
+
+### 44
+ray status 2>/dev/null || true
+
+### 45
+sleep 5
+
+### 46
+ray status 2>/dev/null || true
+
+### 47
+sleep 5
+
+### 48
+ray status 2>/dev/null || true
+
+### 49
+sleep 5
+
+### 50
+ray status 2>/dev/null || true
+
+### 51
+sleep 5
+
+### 52
+ray status 2>/dev/null || true
+
+### 53
+sleep 5
+
+### 54
+ray status 2>/dev/null || true
+
+### 55
+sleep 5
+
+### 56
+ray status 2>/dev/null || true
+
+### 57
+sleep 5
+
+### 58
+ray status 2>/dev/null || true
+
+### 59
+sleep 5
+
+### 60
+ray status 2>/dev/null || true
+
+### 61
+sleep 5
+
+### 62
+ray status 2>/dev/null || true
+
+### 63
+sleep 5
+
+### 64
+ray status 2>/dev/null || true
+
+### 65
+sleep 5
+
+### 66
+ray status 2>/dev/null || true
+
+### 67
+sleep 5
+
+### 68
+ray status 2>/dev/null || true
+
+### 69
+sleep 5
+
+### 70
+ray status 2>/dev/null || true
+
+### 71
+sleep 5
+
+### 72
+ray status 2>/dev/null || true
+
+### 73
+sleep 5
+
+### 74
+ray status 2>/dev/null || true
+
+### 75
+sleep 5
+
+### 76
+ray status 2>/dev/null || true
+
+### 77
+sleep 5
+
+### 78
+ray status 2>/dev/null || true
+
+### 79
+sleep 5
+
+### 80
+ray status 2>/dev/null || true
+
+### 81
+sleep 5
+
+### 82
+ray status 2>/dev/null || true
+
+### 83
+sleep 5
+
+### 84
+ray status 2>/dev/null || true
+
+### 85
+sleep 5
+
+### 86
+ray status 2>/dev/null || true
+
+### 87
+sleep 5
+
+### 88
+ray status 2>/dev/null || true
+
+### 89
+sleep 5
+
+### 90
+ray status 2>/dev/null || true
+
+### 91
+sleep 5
+
+### 92
+ray status 2>/dev/null || true
+
+### 93
+sleep 5
+
+### 94
+ray status 2>/dev/null || true
+
+### 95
+sleep 5
+
+### 96
+ray status 2>/dev/null || true
+
+### 97
+sleep 5
+
+### 98
+ray status 2>/dev/null || true
+
+### 99
+sleep 5
+
+### 100
+ray status 2>/dev/null || true
+
+### 101
+sleep 5
+
+### 102
+ray status 2>/dev/null || true
+
+### 103
+sleep 5
+
+### 104
+ray status 2>/dev/null || true
+
+### 105
+sleep 5
+
+### 106
+ray status 2>/dev/null || true
+
+### 107
+sleep 5
+
+### 108
+ray status 2>/dev/null || true
+
+### 109
+sleep 5
+
+### 110
+ray status 2>/dev/null || true
+
+### 111
+sleep 5
+
+### 112
+ray status 2>/dev/null || true
+
+### 113
+sleep 5
+
+### 114
+ray status 2>/dev/null || true
+
+### 115
+sleep 5
+
+### 116
+ray status 2>/dev/null || true
+
+### 117
+sleep 5
+
+### 118
+ray status 2>/dev/null || true
+
+### 119
+sleep 5
+
+### 120
+ray status 2>/dev/null || true
+
+### 121
+sleep 5
+
+### 122
+ray status 2>/dev/null || true
+
+### 123
+sleep 5
+
+### 124
+ray status 2>/dev/null || true
+
+### 125
+sleep 5
+
+### 126
+ray status 2>/dev/null || true
+
+### 127
+sleep 5
+
+### 128
+ray status 2>/dev/null || true
+
+### 129
+sleep 5
+
+### 130
+ray status 2>/dev/null || true
+
+### 131
+sleep 5
+
+### 132
+ray status 2>/dev/null || true
+
+### 133
+sleep 5
+
+### 134
+ray status 2>/dev/null || true
+
+### 135
+sleep 5
+
+### 136
+ray status 2>/dev/null || true
+
+### 137
+sleep 5
+
+### 138
+ray status 2>/dev/null || true
+
+### 139
+sleep 5
+
+### 140
+ray status 2>/dev/null || true
+
+### 141
+sleep 5
+
+### 142
+ray status 2>/dev/null || true
+
+### 143
+sleep 5
+
+### 144
+ray status 2>/dev/null || true
+
+### 145
+sleep 5
+
+### 146
+ray status 2>/dev/null || true
+
+### 147
+sleep 5
+
+### 148
+ray status 2>/dev/null || true
+
+### 149
+sleep 5
+
+### 150
+ray status 2>/dev/null || true
+
+### 151
+sleep 5
+
+### 152
+ray status 2>/dev/null || true
+
+### 153
+sleep 5
+
+### 154
+ray status 2>/dev/null || true
+
+### 155
+sleep 5
+
+### 156
+ray status 2>/dev/null || true
+
+### 157
+sleep 5
+
+### 158
+ray status 2>/dev/null || true
+
+### 159
+sleep 5
+
+### 160
+ray status 2>/dev/null || true
+
+### 161
+sleep 5
+
+### 162
+ray status 2>/dev/null || true
+
+### 163
+sleep 5
+
+### 164
+ray status 2>/dev/null || true
+
+### 165
+sleep 5
+
+### 166
+ray status 2>/dev/null || true
+
+### 167
+sleep 5
+
+### 168
+ray status 2>/dev/null || true
+
+### 169
+sleep 5
+
+### 170
+ray status 2>/dev/null || true
+
+### 171
+sleep 5
+
+### 172
+ray status 2>/dev/null || true
+
+### 173
+sleep 5
+
+### 174
+ray status 2>/dev/null || true
+
+### 175
+sleep 5
+
+### 176
+ray status 2>/dev/null || true
+
+### 177
+sleep 5
+
+### 178
+ray status 2>/dev/null || true
+
+### 179
+sleep 5
+
+### 180
+ray status 2>/dev/null || true
+
+### 181
+sleep 5
+
+### 182
+ray status 2>/dev/null || true
+
+### 183
+sleep 5
+
+### 184
+ray status 2>/dev/null || true
+
+### 185
+sleep 5
+
+### 186
+ray status 2>/dev/null || true
+
+### 187
+sleep 5
+
+### 188
+ray status 2>/dev/null || true
+
+### 189
+sleep 5
+
+### 190
+ray status 2>/dev/null || true
+
+### 191
+sleep 5
+
+### 192
+ray status 2>/dev/null || true
+
+### 193
+sleep 5
+
+### 194
+ray status 2>/dev/null || true
+
+### 195
+sleep 5
+
+### 196
+ray status 2>/dev/null || true
+
+### 197
+sleep 5
+
+### 198
+ray status 2>/dev/null || true
+
+### 199
+sleep 5
+
+### 200
+ray status 2>/dev/null || true
+
+### 201
+sleep 5
+
+### 202
+ray status 2>/dev/null || true
+
+### 203
+sleep 5
+
+### 204
+ray status 2>/dev/null || true
+
+### 205
+sleep 5
+
+### 206
+ray status 2>/dev/null || true
+
+### 207
+sleep 5
+
+### 208
+ray status 2>/dev/null || true
+
+### 209
+sleep 5
+
+### 210
+ray status 2>/dev/null || true
+
+### 211
+sleep 5
+
+### 212
+ray status 2>/dev/null || true
+
+### 213
+sleep 5
+
+### 214
+ray status 2>/dev/null || true
+
+### 215
+sleep 5
+
+### 216
+ray status 2>/dev/null || true
+
+### 217
+sleep 5
+
+### 218
+ray status 2>/dev/null || true
+
+### 219
+sleep 5
+
+### 220
+ray status 2>/dev/null || true
+
+### 221
+sleep 5
+
+### 222
+ray status 2>/dev/null || true
+
+### 223
+sleep 5
+
+### 224
+ray status 2>/dev/null || true
+
+### 225
+sleep 5
+
+### 226
+ray status 2>/dev/null || true
+
+### 227
+sleep 5
+
+### 228
+ray status 2>/dev/null || true
+
+### 229
+sleep 5
+
+### 230
+ray status 2>/dev/null || true
+
+### 231
+sleep 5
+
+### 232
+ray status 2>/dev/null || true
+
+### 233
+sleep 5
+
+### 234
+ray status 2>/dev/null || true
+
+### 235
+sleep 5
+
+### 236
+ray status 2>/dev/null || true
+
+### 237
+sleep 5
+
+### 238
+ray status 2>/dev/null || true
+
+### 239
+sleep 5
+
+### 240
+ray status 2>/dev/null || true
+
+### 241
+sleep 5
+
+### 242
+ray status
+
+### 243
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 244
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --disable-bias-linear
+  --group-query-attention
+  --num-attention-heads 32
+  --num-query-groups 2
+  --kv-channels 128
+  --num-layers 88
+  --hidden-size 4096
+  --ffn-hidden-size 2688
+  --normalization RMSNorm
+  --position-embedding-type none
+  --vocab-size 131072
+  --make-vocab-size-divisible-by 128
+  --untie-embeddings-and-output-weights
+  --num-experts 512
+  --moe-router-topk 22
+  --moe-ffn-hidden-size 2688
+  --moe-shared-expert-intermediate-size 5376
+  --moe-latent-size 1024
+  --moe-router-score-function sigmoid
+  --moe-router-enable-expert-bias
+  --moe-grouped-gemm
+  --moe-router-dtype fp32
+  --moe-router-num-groups 1
+  --moe-router-group-topk 1
+  --moe-router-topk-scaling-factor 5.0
+  --moe-router-pre-softmax
+  --moe-router-load-balancing-type seq_aux_loss
+  --moe-router-bias-update-rate 0
+  --moe-aux-loss-coeff 0
+  --hf-checkpoint /root/models/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+  --ref-load /root/models/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
+  --save /root/shared_data/checkpoints
+  --save-interval 20
+  --megatron-to-hf-mode bridge 
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type deepscaler
+  --num-rollout 10
+  --rollout-batch-size 32
+  --n-samples-per-prompt 4
+  --rollout-max-response-len 1024
+  --rollout-temperature 1
+  --global-batch-size 128
+  --balance-data 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98
+  --optimizer-cpu-offload
+  --overlap-cpu-optimizer-d2h-h2d
+  --use-precision-aware-optimizer 
+  --advantage-estimator grpo
+  --use-kl-loss
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_nemotron_3_super_120b_a12b
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 4
+  --sequence-parallel
+  --pipeline-model-parallel-size 2
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 1024
+  --log-probs-chunk-size 128 
+  --rollout-num-gpus-per-engine 8
+  --sglang-mem-fraction-static 0.7
+  --use-rollout-routing-replay 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --attention-softmax-in-fp32
+  --attention-backend auto
+  --colocate
+  --actor-num-nodes 2
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --rollout-num-gpus 16   

@@ -60,6 +60,8 @@ class RolloutManager:
 
         self.pg = pg
         self.args = args
+        # set by the training actor after each weight update
+        self.weight_version: int | None = None
         # TODO make args immutable
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
@@ -156,7 +158,7 @@ class RolloutManager:
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
-            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config["dp_size"])
+            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
@@ -238,7 +240,9 @@ class RolloutManager:
         else:
             if self.use_experimental_refactor:
                 data = await asyncio.to_thread(
-                    call_rollout_function, self.generate_rollout, RolloutFnTrainInput(rollout_id=rollout_id)
+                    call_rollout_function,
+                    self.generate_rollout,
+                    RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
                 )
             else:
                 data = await asyncio.to_thread(
@@ -371,6 +375,14 @@ class RolloutManager:
         return await srv.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
+
+    def set_weight_version(self, weight_version: int):
+        # warning instead of assert when use indep_dp ft
+        if self.weight_version is not None and weight_version < self.weight_version:
+            message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
+            assert self.args.indep_dp, message
+            logger.warning(message)
+        self.weight_version = weight_version
 
     def set_train_parallel_config(self, config: dict):
         self.train_parallel_config = config

@@ -24,7 +24,11 @@ from miles.rollout.session.errors import (
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import encode_samples
-from miles.rollout.session.samples.merge import compute_samples_from_openai_records, truncate_samples_by_total_tokens
+from miles.rollout.session.samples.merge import (
+    compute_samples_from_openai_records,
+    merge_samples_with_addition_r3,
+    truncate_samples_by_total_tokens,
+)
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
@@ -51,6 +55,15 @@ class ProxyRequest:
 def _render_json(payload) -> bytes:
     """Encode like Starlette's JSONResponse (compact, non-ASCII preserved)."""
     return json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+
+
+def _lcp_len(a: list[int], b: list[int]) -> int:
+    """Length of the longest common prefix of two token-ID lists."""
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return n
 
 
 def _samples_response(payload: bytes) -> Response:
@@ -142,14 +155,124 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
+def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
+    """Parse and normalize a chat request body — the session-independent half
+    of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
+    ``(request_body, client_stream, tito_tokenizer)``; the tokenizer may be a
+    request-scoped clone.
+    """
+    try:
+        request_body = json.loads(body) if body else {}
+    except json.JSONDecodeError as e:
+        raise MessageValidationError(f"invalid JSON body: {e}") from e
+
+    # Fake streaming: the backend must stay non-streaming (TITO needs the
+    # complete message + meta_info, and sglang rejects return_meta_info
+    # with stream=true), so pop the client's intent here and honor it
+    # when rendering the client response.
+    client_stream = bool(request_body.pop("stream", False))
+    request_body.pop("stream_options", None)
+
+    # TITO token tracking needs Miles-owned input_ids plus SGLang output
+    # metadata: logprobs=True populates meta_info.output_token_logprobs and
+    # return_meta_info wraps it in choice.meta_info. Hardcoded (not
+    # setdefault) so agent-side overrides cannot break token accumulation.
+    request_body["logprobs"] = True
+    request_body["return_meta_info"] = True
+    if getattr(args, "use_rollout_routing_replay", False):
+        request_body["return_routed_experts"] = True
+    if getattr(args, "use_rollout_indexer_replay", False):
+        request_body["return_indexer_topk"] = True
+    # Must be False so stop-token text is trimmed from assistant content;
+    # token IDs still come from logprobs below.
+    request_body["no_stop_trim"] = False
+    # Serve the adapter being trained instead of the base weights.
+    if is_lora_enabled(args):
+        request_body["lora_path"] = LORA_ADAPTER_NAME
+    # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
+    # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
+    request_ctk = request_body.get("chat_template_kwargs")
+    if request_ctk is not None and not isinstance(request_ctk, dict):
+        raise MessageValidationError("chat_template_kwargs must be an object")
+    if request_ctk:
+        try:
+            tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
+        except ValueError as e:
+            raise MessageValidationError(str(e)) from e
+    if tito_tokenizer.chat_template_kwargs:
+        request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
+    else:
+        request_body.pop("chat_template_kwargs", None)
+    return request_body, client_stream, tito_tokenizer
+
+
+def extract_completion(result: dict) -> tuple:
+    """Decode and validate the backend chat response — shared verbatim by the
+    v1 and v2 cores. Returns ``(response, choice, assistant_message,
+    completion_token_ids)``; malformed upstream payloads raise
+    ``UpstreamResponseError``.
+    """
+    response = json.loads(result["response_body"])
+    choice = response.get("choices", [{}])[0]
+
+    meta_info = choice.get("meta_info")
+    if not isinstance(meta_info, dict) or "output_token_logprobs" not in meta_info:
+        raise UpstreamResponseError("meta_info and output_token_logprobs must be in choice (requires logprobs=True)")
+    assistant_message = choice.get("message") or {}
+    if assistant_message.get("content") is None:
+        raise UpstreamResponseError(
+            "assistant message content is None, when tool call parser failed SGLang should still return "
+            "an empty content rather than None. Please check your modified SGLang version."
+        )
+
+    output_token_logprobs = meta_info["output_token_logprobs"]
+    completion_tokens = meta_info["completion_tokens"]
+
+    actual_output_logprobs_len = len(output_token_logprobs)
+    if actual_output_logprobs_len != completion_tokens:
+        raise UpstreamResponseError(
+            "invalid chat completion response: "
+            f"len(output_token_logprobs)={actual_output_logprobs_len} "
+            f"!= completion_tokens={completion_tokens}. "
+            f"Please check whether you use the correct SGLang branch which has fix the tokenizer batch decode issue."
+        )
+
+    completion_token_ids = [t[1] for t in output_token_logprobs]
+    return response, choice, assistant_message, completion_token_ids
+
+
 class SessionCore:
     """HTTP session operations over one ``SessionRegistry``."""
 
-    def __init__(self, backend, registry: SessionRegistry, args, session_server_instance_id=None):
+    def __init__(
+        self, backend, registry: SessionRegistry, args, session_server_instance_id=None, *, use_addition_r3=False
+    ):
         self.backend = backend
         self.registry = registry
         self.args = args
         self.instance_id = session_server_instance_id
+        # Derived from pause_generation_mode at server bootstrap; session code
+        # must depend on this capability, never on the weight-update mode.
+        self.use_addition_r3 = use_addition_r3
+
+    def _maybe_request_addition_r3(
+        self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
+    ) -> None:
+        """Ask SGLang to return only the R3 rows the session has not retained.
+
+        ``checkpoint_token_ids`` is the stored snapshot this request builds on
+        (v1: the post-rollback checkpoint; v2: the positioned attach node). The
+        checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
+        so every persisted patch starts exactly where the previous one ended.
+        """
+        if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
+            return
+        previous_rows = max(0, len(checkpoint_token_ids) - 1)
+        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
+        assert (
+            stable_prefix_tokens >= previous_rows
+        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+        request_body["routed_experts_start_len"] = previous_rows
 
     async def health(self) -> Response:
         body = {"status": "ok"}
@@ -202,12 +325,16 @@ class SessionCore:
                 tokenizer,
                 accumulated_token_ids=metadata.get("accumulated_token_ids"),
                 max_trim_tokens=metadata.get("max_trim_tokens", 0),
+                use_addition_r3=self.use_addition_r3,
             )
             if max_seq_len is not None:
                 samples = truncate_samples_by_total_tokens(samples, max_seq_len, tokenizer)
             if not samples:
                 return _samples_response(encode_samples([], metadata, empty_reason="all_truncated"))
-            samples = [merge_samples(samples, tokenizer)]
+            if self.use_addition_r3:
+                samples = [merge_samples_with_addition_r3(self.args, samples, session.records, tokenizer)]
+            else:
+                samples = [merge_samples(samples, tokenizer)]
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
         return _samples_response(encode_samples(samples, metadata))
@@ -232,8 +359,8 @@ class SessionCore:
 
         Flow: prepare pretokenized input_ids (lock held briefly) → proxy to
         backend (NO lock) → validate response → update trajectory checkpoint and
-        append record (lock held briefly). The lock is NOT held during the slow
-        proxy call so DELETE/other ops are not blocked if the agent disconnects.
+        append record (lock held briefly). The lock is NOT held during the long
+        inference call so DELETE/other ops are not blocked if the agent disconnects.
         """
         request_timestamp = time.time()
         session = self.registry.get_session(session_id)
@@ -245,59 +372,23 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            try:
-                request_body = json.loads(body) if body else {}
-            except json.JSONDecodeError as e:
-                raise MessageValidationError(f"invalid JSON body: {e}") from e
-
-            # Fake streaming: the backend must stay non-streaming (TITO needs the
-            # complete message + meta_info, and sglang rejects return_meta_info
-            # with stream=true), so pop the client's intent here and honor it
-            # when rendering the client response.
-            client_stream = bool(request_body.pop("stream", False))
-            request_body.pop("stream_options", None)
-
-            # TITO token tracking needs Miles-owned input_ids plus SGLang output
-            # metadata: logprobs=True populates meta_info.output_token_logprobs and
-            # return_meta_info wraps it in choice.meta_info. Hardcoded (not
-            # setdefault) so agent-side overrides cannot break token accumulation.
-            request_body["logprobs"] = True
-            request_body["return_meta_info"] = True
-            if getattr(self.args, "use_rollout_routing_replay", False):
-                request_body["return_routed_experts"] = True
-            if getattr(self.args, "use_rollout_indexer_replay", False):
-                request_body["return_indexer_topk"] = True
-            # Must be False so stop-token text is trimmed from assistant content;
-            # token IDs still come from logprobs below.
-            request_body["no_stop_trim"] = False
-            # Without this the engine serves the base weights, so the adapter being
-            # trained would never shape the trajectories it is scored on.
-            if is_lora_enabled(self.args):
-                request_body["lora_path"] = LORA_ADAPTER_NAME
-            # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
-            # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
-            request_ctk = request_body.get("chat_template_kwargs")
-            if request_ctk is not None and not isinstance(request_ctk, dict):
-                raise MessageValidationError("chat_template_kwargs must be an object")
-            tito_tokenizer = self.registry.tito_tokenizer
-            if request_ctk:
-                try:
-                    tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
-                except ValueError as e:
-                    raise MessageValidationError(str(e)) from e
-            if tito_tokenizer.chat_template_kwargs:
-                request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
-            else:
-                request_body.pop("chat_template_kwargs", None)
+            request_body, client_stream, tito_tokenizer = prepare_chat_request(
+                body, self.args, self.registry.tito_tokenizer
+            )
 
             request_messages = request_body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
+                message_matcher=self.registry.message_matcher,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
+
+            # prepare_pretokenized applied any retry rollback, so token_ids is
+            # the checkpoint this request builds on.
+            self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
             expected_num_assistant = session.num_assistant
@@ -314,34 +405,7 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response = json.loads(result["response_body"])
-        choice = response.get("choices", [{}])[0]
-
-        meta_info = choice.get("meta_info")
-        if not isinstance(meta_info, dict) or "output_token_logprobs" not in meta_info:
-            raise UpstreamResponseError(
-                "meta_info and output_token_logprobs must be in choice (requires logprobs=True)"
-            )
-        assistant_message = choice.get("message") or {}
-        if assistant_message.get("content") is None:
-            raise UpstreamResponseError(
-                "assistant message content is None, when tool call parser failed SGLang should still return "
-                "an empty content rather than None. Please check your modified SGLang version."
-            )
-
-        output_token_logprobs = meta_info["output_token_logprobs"]
-        completion_tokens = meta_info["completion_tokens"]
-
-        actual_output_logprobs_len = len(output_token_logprobs)
-        if actual_output_logprobs_len != completion_tokens:
-            raise UpstreamResponseError(
-                "invalid chat completion response: "
-                f"len(output_token_logprobs)={actual_output_logprobs_len} "
-                f"!= completion_tokens={completion_tokens}. "
-                f"Please check whether you use the correct SGLang branch which has fix the tokenizer batch decode issue."
-            )
-
-        completion_token_ids = [t[1] for t in output_token_logprobs]
+        response, _, assistant_message, completion_token_ids = extract_completion(result)
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:

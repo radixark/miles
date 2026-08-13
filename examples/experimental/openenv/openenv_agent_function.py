@@ -34,13 +34,14 @@ WORKDIR resolved server-side, verifier assets withheld. The adapter verifies
 the contract on every episode rather than trusting the deployment: an
 ``evaluate`` reply without the canonical-harness marker is treated as no
 verdict and the episode is dropped with a warning (see the guard in
-_multi_turn).
+multi_turn).
 
-Daytona-sandbox variant: ``openenv_daytona_agent_function`` (sibling module)
-is a drop-in ``--custom-agent-function-path`` alternative that runs every
-episode in its own Daytona cloud sandbox. It reuses this module's
-agent loop and training wrapper, supplying only its own run_episode (see the
-episode-wiring note below); its env vars are documented there.
+Per-episode sandbox variants: one sibling module per provider
+(``openenv_{daytona,e2b,modal}_agent_function``), each a drop-in
+``--custom-agent-function-path`` alternative that runs every episode in its
+own cloud sandbox. They reuse this module's agent loop and training wrapper,
+supplying only their own run_episode (see the episode-wiring note below);
+their env vars are documented there.
 """
 
 import asyncio
@@ -78,7 +79,7 @@ _FENCE_RE = re.compile(r"```(?:python|py|bash|sh)?\s*\n?(.*?)```", re.DOTALL | r
 _OBS_CHAR_CAP = 4000
 
 # The system prompt that teaches a policy this adapter's agent contract, i.e.
-# what _multi_turn parses: exactly one shell command per turn in a single
+# what multi_turn parses: exactly one shell command per turn in a single
 # ```bash block, TASK_COMPLETE (no code block) to stop. It lives here, next to
 # that parsing logic; make_tbench2_data.py (training prompt data) and
 # eval_tbench2_via_api.py (API-policy eval) import it so all consumers stay on
@@ -98,7 +99,7 @@ TB2_AGENT_SYSTEM_PROMPT = (
 # default 900). The default clears the server's default budget with margin;
 # raise it (and OPENENV_MAX_ROLLOUT_TIME_SECONDS) for tasks declaring larger
 # verifier budgets.
-_MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
+MESSAGE_TIMEOUT_S = float(os.getenv("OPENENV_MESSAGE_TIMEOUT_S", "1200"))
 
 # Hard wall-clock cap for one episode. The per-message timeout above bounds a
 # single env op, and OPENENV_MAX_TURNS bounds the turn count, but neither bounds
@@ -161,7 +162,7 @@ def _obs_info(result: Any) -> dict:
 
 
 # Lazy import so the file loads without the env client present at import time.
-def _load_tbench2() -> dict[str, Any]:
+def load_tbench2() -> dict[str, Any]:
     from tbench2_env import Tbench2Action, Tbench2Env
 
     return {"env": Tbench2Env, "action": Tbench2Action}
@@ -171,16 +172,16 @@ _DEFAULT_ENV_URL = "http://localhost:8003"
 
 
 # --- Episode wiring -------------------------------------------------------------
-# The agent loop (_multi_turn) is shared; everything that differs between the
+# The agent loop (multi_turn) is shared; everything that differs between the
 # episode legs enters it as two keyword parameters, filled in only by each
 # module's run_episode():
 #
 #   run_body(env_cls, metadata, body)   how an env comes into being — connect to
 #                       the shared server (_shared_run_body below, capacity-
-#                       retried) vs create a Daytona sandbox
-#                       (openenv_daytona_agent_function).
+#                       retried) vs create a per-episode sandbox (the sandbox
+#                       backend modules).
 #   post_episode(env, action_cls)       optional hygiene hook (a long-lived
-#                       shared server accumulates trial dirs; a Daytona
+#                       shared server accumulates trial dirs; a per-episode
 #                       sandbox lives only for its episode and needs nothing).
 #
 # Every agent-function module exposes the same two entries: run() for miles
@@ -231,7 +232,7 @@ async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> A
     deadline = asyncio.get_event_loop().time() + _CAPACITY_MAX_WAIT_S
     while True:
         try:
-            async with env_cls(base_url=env_url, message_timeout_s=_MESSAGE_TIMEOUT_S) as env:
+            async with env_cls(base_url=env_url, message_timeout_s=MESSAGE_TIMEOUT_S) as env:
                 return await body(env)
         except Exception as e:
             if _is_retryable_env_error(e) and asyncio.get_event_loop().time() < deadline:
@@ -240,7 +241,7 @@ async def _with_env(env_cls: Any, env_url: str, body: Callable[[Any], Any]) -> A
             raise
 
 
-async def _multi_turn(
+async def multi_turn(
     classes: dict[str, Any],
     policy: AsyncOpenAI,
     model_name: str,
@@ -382,8 +383,8 @@ async def run_episode(
     ``(reward, agent_metrics)``; wall-clock caps and failure semantics are the
     caller's. miles goes through run() instead.
     """
-    return await _multi_turn(
-        _load_tbench2(),
+    return await multi_turn(
+        load_tbench2(),
         policy,
         model_name,
         messages,
@@ -394,7 +395,7 @@ async def run_episode(
     )
 
 
-async def _run_for_training(
+async def run_for_training(
     base_url: str,
     prompt: Any,
     request_kwargs: dict[str, Any] | None,
@@ -441,7 +442,7 @@ async def _run_for_training(
         await policy.close()
 
     # No canonical verdict (infra/harness failure or a non-canonical server,
-    # not a legitimate task failure -- see the guard in _multi_turn). Drop the
+    # not a legitimate task failure -- see the guard in multi_turn). Drop the
     # sample: returning it as reward 0.0 would inject a false negative into
     # training.
     if reward is None:
@@ -469,4 +470,4 @@ async def run(
     **kwargs,
 ) -> dict[str, Any] | None:
     """Run one OpenEnv tbench2 episode via the trained policy (shared env server)."""
-    return await _run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)
+    return await run_for_training(base_url, prompt, request_kwargs, metadata, run_episode)

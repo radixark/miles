@@ -4,6 +4,7 @@ This file is in preview, and will be further refined and optimized.
 
 import re
 from dataclasses import dataclass
+from functools import partial
 from typing import Literal
 
 import typer
@@ -36,8 +37,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
-    U.exec_command(f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(
+        f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
+    )
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -101,7 +104,7 @@ def _prepare_cp(args: ScriptArgs):
     )
 
 
-def _execute_train(args: ScriptArgs):
+def _execute_train(args: ScriptArgs, before_ray_job_submit=None):
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
         f"--hf-checkpoint {args.model_local_dir}/{args.model_name} "
@@ -207,7 +210,7 @@ def _execute_train(args: ScriptArgs):
 
     grpo_args = (
         "--advantage-estimator grpo "
-        # TODO run-deepseek-r1.sh enables use-kl-loss but w/ coef 0. can we just disable it like this?
+        # coef is 0 anyway, so the reference model is not loaded at all
         # "--use-kl-loss "
         "--kl-loss-coef 0.00 "
         "--kl-loss-type low_var_kl "
@@ -279,7 +282,6 @@ def _execute_train(args: ScriptArgs):
         "--colocate "
         "--use-fault-tolerance "
         f"--dump-details {args.output_dir}/{args.run_id}/dump_details "
-        "--disable-weights-backuper "
     )
 
     train_args = (
@@ -303,6 +305,7 @@ def _execute_train(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**sglang_extra_env_vars},
         megatron_path=args.megatron_path,
+        before_ray_job_submit=before_ray_job_submit,
     )
 
 
@@ -311,9 +314,12 @@ def _execute_train(args: ScriptArgs):
 def train(args: ScriptArgs):
     _prepare_download(args)
     _prepare_bf16_ckpt(args)
+    _execute_train(args, before_ray_job_submit=partial(_prepare_ray_dependent, args))
+
+
+def _prepare_ray_dependent(args: ScriptArgs):
     _prepare_megatron_ckpt(args)
     _prepare_cp(args)
-    _execute_train(args)
 
 
 @app.callback()

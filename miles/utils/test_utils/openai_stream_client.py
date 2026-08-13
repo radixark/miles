@@ -7,7 +7,7 @@ tool_calls merge by ``index``) and therefore works for both the session
 server's single-chunk fake streaming and a real multi-chunk stream.
 
 The rebuilt assistant message must survive the session server's
-``message_matches`` prefix check on the next turn, so tool_call fragments
+``strict_message_matches`` prefix check on the next turn, so tool_call fragments
 keep every upstream key except the streaming-only ``index``.
 """
 

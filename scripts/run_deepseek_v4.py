@@ -217,12 +217,12 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
-    U.exec_command(f"mkdir -p {args.model_dir} {args.data_dir}")
+    U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
     if args.hf_checkpoint is None:
         dest = f"{args.model_dir}/{args.model_name}"
-        U.exec_command(f"hf download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
+        U.exec_command_cpu(f"hf download {args.model_org}/{args.model_name} " f"--local-dir {dest}")
     _ensure_4layer_model_type(args)
     _download_dataset(args)
 
@@ -260,7 +260,7 @@ def _prepare_mxfp8(args: ScriptArgs):
     if not args.rollout_mxfp8:
         return
     assert _is_blackwell(args), "rollout_mxfp8 requires Blackwell (B200/B300/GB200/GB300)"
-    U.exec_command(
+    U.exec_command_gpu(
         f"python tools/convert_hf_to_mxfp8.py "
         f"--model-dir {args.model_dir}/{args.bf16_name} "
         f"--save-dir {args.model_dir}/{args.mxfp8_name} "
@@ -641,7 +641,7 @@ def _train(args: ScriptArgs):
         misc_args += "--transformer-impl transformer_engine " "--bf16 " "--fp8-format e4m3 " "--fp8-recipe blockwise "
 
     if (args.train_fp8 or args.train_mxfp8) and "--te-precision-config-file" not in args.extra_args:
-        misc_args += f"--te-precision-config-file " f"{U.save_to_temp_file(_DSV4_TE_PRECISION_CONFIG, 'yaml')} "
+        misc_args += f"--te-precision-config-file " f"{U.encode_pseudo_file(_DSV4_TE_PRECISION_CONFIG)} "
 
     train_args = (
         f"{ckpt_args} "

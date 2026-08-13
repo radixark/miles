@@ -1,19 +1,5 @@
 ---
 title: Blog
-description: Engineering posts and release notes from the Miles team.
+description: Miles engineering write-ups on RL systems, post-training recipes, and performance results, published on the LMSYS blog.
 ---
-<CardGroup cols={2}>
-
-  <Card title="Introducing Miles" icon="bullhorn" href="/blog/introducing-miles">
-
-    Why we built Miles, what it means for production-scale RL post-training, and what
-    we shipped on day one.
-
-  </Card>
-
-</CardGroup>
-
-## Subscribe
-
-* GitHub releases: [radixark/miles/releases](https://github.com/radixark/miles/releases)
-* Twitter/X: [@radixark](https://twitter.com/radixark)
+Check out Miles blog posts on the [LMSYS blog](https://www.lmsys.org/blog).

@@ -61,12 +61,10 @@ P2P weight transfer relies on a unified weight name mapping interface between Me
 | `Qwen2ForCausalLM` | Qwen2 (dense) | Qwen2.5-0.5B, Qwen2.5-7B |
 | `Qwen3ForCausalLM` | Qwen3 (dense) | Qwen3-4B, Qwen3-8B |
 | `Qwen3MoeForCausalLM` | Qwen3-MoE | Qwen3-30B-A3B, Qwen3-235B-A22B |
-| `Glm4ForCausalLM` | GLM4 (dense) | GLM-Z1-9B-0414 |
 | `Glm4MoeForCausalLM` | GLM4-MoE | GLM-4.5-Air |
 | `Glm4MoeLiteForCausalLM` | GLM4-MoE | GLM-4.7-9B-Flash |
-| `DeepseekV2ForCausalLM` | DeepSeek V2 | Moonlight-16B-A3B |
 | `DeepseekV3ForCausalLM` | DeepSeek V3p2 | GLM-5 (744B-A40B) |
-| `DeepseekV3ForCausalLM` | DeepSeek V3 | Kimi-K2 (1T) \* |
+| `DeepseekV3ForCausalLM` | DeepSeek V3 | Kimi-K2 (1T) \*, Kimi-K2.6 (1T) |
 
 > **Note:** All the above models are tested on H100-80GB clusters.
 >
@@ -81,8 +79,6 @@ All models below have been validated with `--check-weight-update-equal` in P2P m
 | Model | sglang Model Class | Nodes |
 |---|---|---|
 | Qwen3-4B | `Qwen3ForCausalLM` | 1 |
-| GLM-Z1-9B-0414 | `Glm4ForCausalLM` | 1 |
-| Moonlight-16B-A3B | `DeepseekV2ForCausalLM` | 2 |
 | GLM-4.7-9B-Flash | `Glm4MoeLiteForCausalLM` | 2 |
 | GLM-5_4layer | `DeepseekV3ForCausalLM` | 2 |
 | Qwen3-30B-A3B | `Qwen3MoeForCausalLM` | 4 |
@@ -112,8 +108,6 @@ Models marked with ★ are MoE architectures, where P2P benefits are most pronou
 
 | Model Family | Model Name | Total Param | sglang Model Class | Train Config | Inference Config | NCCL (ms) | RDMA (ms) | Delta |
 |---|---|---|---|---|---|---|---|---|
-| GLM4 | GLM-Z1-9B-0414 | 9B | `Glm4ForCausalLM` | TP=2, PP=1, CP=2, EP=1, ETP=1, 1 node | TP=4, EP=1, 1 node | 694.6 | 707.1 | +1.8% |
-| DeepSeek-V2 ★ | Moonlight-16B-A3B | 16B(3B) | `DeepseekV2ForCausalLM` | TP=2, PP=1, CP=1, EP=8, ETP=1, 1 node | TP=8, EP=8, 1 node | 1,482.0 | 1,073.3 | **−27.6%** |
 | GLM4-MoE ★ | GLM-4.7-9B-Flash | 30B(3B) | `Glm4MoeLiteForCausalLM` | TP=4, PP=1, CP=1, EP=8, ETP=1, 1 node | TP=4, EP=4, 1 node | 2,508.6 | 4,229.0 | +68.6% |
 | DeepSeek-V3 ★ | GLM-5_4layer | 4-layer | `DeepseekV3ForCausalLM` | TP=4, PP=1, CP=1, EP=8, ETP=1, 1 node | TP=8, EP=8, 1 node | 732.2 | 1,260.8 | +72.2% |
 | Qwen3-MoE ★ | Qwen3-30B-A3B | 30B(3B) | `Qwen3MoeForCausalLM` | TP=4, PP=1, CP=1, EP=8, ETP=1, 2 nodes | TP=8, EP=8, 2 nodes | 2,670.0 | 2,160.2 | **−19.1%** |

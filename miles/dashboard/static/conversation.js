@@ -2,17 +2,24 @@ import { el, fmtNum } from "./app.js";
 
 const CLOSED_BY_DEFAULT = new Set(["system", "tool"]);
 
-// row: one trajectory-sidecar entry {status, reward, messages: [...]}
-// (OpenAI message shape: role/content plus optional reasoning_content,
-// tool_calls, name)
-export function renderConversation(row) {
+// sample outcome (status + reward) from the trajectory sidecar. Lives outside
+// the conversation pane so the tabbed sample view can hoist it above the tab
+// bar: the outcome describes the sample, not one rendering of it, so it has to
+// survive a switch to the Tokens tab.
+export function renderSampleChips(row) {
   const chips = [el("span", { class: "chip" }, [row.status])];
   if (row.reward !== null && row.reward !== undefined) {
     chips.push(el("span", { class: "chip" }, [`reward ${fmtNum(row.reward)}`]));
   }
+  return el("div", { class: "controls" }, chips);
+}
+
+// row: one trajectory-sidecar entry {status, reward, messages: [...]}
+// (OpenAI message shape: role/content plus optional reasoning_content,
+// tool_calls, name)
+export function renderConversation(row) {
   return el("div", { class: "panel" }, [
     el("h3", {}, ["Conversation"]),
-    el("div", { class: "controls" }, chips),
     ...row.messages.map(messageCard),
   ]);
 }

@@ -41,7 +41,10 @@ class SessionServer:
         # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
         self.app.router.on_shutdown.append(self.client.aclose)
 
-        setup_session_routes(self.app, self, args)
+        # `in_place` weight updates keep the active request and its KV-backed
+        # prefix, so the session may request only additional R3 rows.
+        self.use_addition_r3 = getattr(args, "pause_generation_mode", None) == "in_place"
+        setup_session_routes(self.app, self, args, use_addition_r3=self.use_addition_r3)
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"

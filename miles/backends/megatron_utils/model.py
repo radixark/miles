@@ -411,6 +411,7 @@ def train_one_step(
     optimizer: MegatronOptimizer | None,
     opt_param_scheduler: OptimizerParamScheduler | None,
     num_microbatches: int,
+    num_rollouts: int,
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -433,6 +434,7 @@ def train_one_step(
         optimizer: Optimizer instance.
         opt_param_scheduler: LR/WD scheduler.
         num_microbatches: Number of microbatches to process.
+        num_rollouts: This step's rollout count (loss normalizer + LR increment).
 
     Returns:
         Tuple of (reduced loss dict, gradient norm, step outcome).
@@ -494,6 +496,7 @@ def train_one_step(
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
+                "rollout_mask_sums",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
@@ -544,7 +547,14 @@ def train_one_step(
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
 
-        return output_tensor, partial(loss_function, args, batch, num_microbatches, apply_megatron_loss_scaling=True)
+        return output_tensor, partial(
+            loss_function,
+            args,
+            batch,
+            num_microbatches,
+            apply_megatron_loss_scaling=True,
+            num_rollouts=num_rollouts,
+        )
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
@@ -570,8 +580,9 @@ def train_one_step(
         if ft_test_action_executor is not None:
             ft_test_action_executor.maybe_crash(rollout_id=rollout_id, attempt=attempt)
 
+        metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
         ok, indep_dp_loss_reduced = allreduce_grads_and_losses_across_replicas(
-            args, model, parallel_state, losses_reduced=losses_reduced
+            args, model, parallel_state, losses_reduced=losses_reduced, num_rollouts=metric_num_rollouts
         )
         if not ok:
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
@@ -614,7 +625,7 @@ def train_one_step(
 
             # Update learning rate.
             assert update_successful
-            opt_param_scheduler.step(increment=args.global_batch_size)
+            opt_param_scheduler.step(increment=num_rollouts)
 
     # release grad (multi-LoRA retains accumulated grads; stepped slots were
     # zeroed selectively inside step_adapter_slots)
@@ -637,8 +648,11 @@ def train_one_step(
             witness_dump_and_clear_stale(model=model, witness_info=witness_info, optimizer=optimizer)
 
         if mpu.is_pipeline_last_stage(ignore_virtual=True):
+            metric_num_rollouts = None if args.calculate_per_token_loss else num_rollouts
             loss_reduced = (
-                indep_dp_loss_reduced if parallel_state.indep_dp.size > 1 else aggregate_train_losses(losses_reduced)
+                indep_dp_loss_reduced
+                if parallel_state.indep_dp.size > 1
+                else aggregate_train_losses(losses_reduced, metric_num_rollouts)
             )
             return loss_reduced, grad_norm, outcome
 
@@ -664,6 +678,7 @@ def train(
     opt_param_scheduler: OptimizerParamScheduler | None,
     data_iterator: Sequence[DataIterator],
     num_microbatches: Sequence[int],
+    num_rollouts: Sequence[int],
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
@@ -680,10 +695,16 @@ def train(
         opt_param_scheduler (OptimizerParamScheduler): LR/WD scheduler.
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
+        num_rollouts (Sequence[int]): Rollout count per step (total across DP).
     """
     parallel_state = get_parallel_state()
     args = get_args()
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
+
+    assert len(num_microbatches) == len(num_rollouts), (
+        f"num_microbatches and num_rollouts must have the same length, "
+        f"got {len(num_microbatches)} vs {len(num_rollouts)}"
+    )
 
     for iterator in data_iterator:
         iterator.reset()
@@ -764,6 +785,7 @@ def train(
             optimizer,
             opt_param_scheduler,
             num_microbatches[step_id],
+            num_rollouts[step_id],
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
@@ -783,6 +805,7 @@ def train(
 
             mtp_loss_scale = 1 / num_microbatches[step_id]
             tracker = MTPLossLoggingHelper.tracker
+            mtp_losses = None
             if "values" in tracker:
                 values = tracker["values"]
                 if (x := tracker.get("reduce_group")) is not None:
@@ -806,7 +829,7 @@ def train(
             role_tag = "" if role == "actor" else f"{role}-"
 
             extra_metrics = {}
-            if args.enable_mtp_training:
+            if args.enable_mtp_training and mtp_losses is not None:
                 extra_metrics["mtp_loss"] = mtp_losses
 
             if not disable_optimizer:
@@ -910,14 +933,6 @@ def initialize_model_and_optimizer(
         tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
             DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
     """
-    if torch.version.hip:
-        import megatron.core.dist_checkpointing.strategies.filesystem_async as filesystem_async_module
-
-        from miles.utils.rocm_checkpoint_writer import ROCmFileSystemWriterAsync
-
-        filesystem_async_module.FileSystemWriterAsync = ROCmFileSystemWriterAsync
-        print("[ROCm] Applied FileSystemWriterAsync patch for HIP compatibility")
-
     model, optimizer, opt_param_scheduler = setup_model_and_optimizer(args, role)
     model[0].role = role
     clear_memory()
