@@ -18,6 +18,8 @@ from miles.rollout.base_types import (
     RolloutFnTrainOutput,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn
+from miles.utils.data import RolloutDataPack
+from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.types import WeightVersionSpan, WeightVersionsPerCall
 from miles.utils.weight_version import max_rollouts_without_published_weight_version
 
@@ -208,15 +210,35 @@ class TestGenerate:
         assert len(captured) == 1
         assert isinstance(captured[0], RolloutFnTrainInput)
         assert captured[0].rollout_id == 42
-        assert set(result) == {"sample_indices", "data_ref"}
-        data_refs = result["data_ref"]
+        assert result.empty_batch_timeout is False
+        data_refs = result.data_ref
         assert len(data_refs) == 2
-        partitions = ray.get([box.inner for box in data_refs])
+        partitions = ray.get([ref.payload for ref in data_refs])
         for partition in partitions:
             assert "tokens" in partition
             assert "rewards" in partition
             assert "loss_masks" in partition
             assert len(partition["tokens"]) == 4
+
+    async def test_an_empty_batch_timeout_is_reported_as_a_field_rather_than_an_exception(
+        self, ray_local_mode, patch_low_level
+    ):
+        """Under rpc a remote exception arrives as RpcWorkerCallError, so the multi-LoRA driver reads a field."""
+        args = _make_test_args()
+        args.global_batch_size = 8
+        args.multi_lora = True
+
+        executor = await _make_executor(args)
+        executor.set_train_parallel_config({"dp_size": 2})
+
+        def timing_out_rollout_fn(input):
+            raise EmptyBatchTimeoutError("no trainable group arrived")
+
+        executor.generate_rollout = timing_out_rollout_fn
+
+        result = await executor.get(rollout_id=11)
+
+        assert result == RolloutDataPack(sample_indices=None, data_ref=None, empty_batch_timeout=True)
 
     async def test_rejects_samples_generated_under_the_default_weight_version(self, ray_local_mode, patch_low_level):
         """A batch carrying the sglang never-updated version must fail get(), not reach training."""
