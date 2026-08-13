@@ -1,6 +1,6 @@
 import random
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state, views
 from tests.fast.e2e.ft.fault_injection.utils import (
@@ -9,7 +9,9 @@ from tests.fast.e2e.ft.fault_injection.utils import (
     api_server_fault_forms,
     cell,
     fixed_fault_forms,
+    intervals,
     mock_response,
+    patched_requests,
     staged,
     typed_cell,
 )
@@ -39,9 +41,8 @@ def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-6,
+            mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-6),
             stop_event=stop_event,
-            cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
@@ -79,9 +80,8 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-6,
+            mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-6),
             stop_event=stop_event,
-            cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
@@ -90,7 +90,7 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
     assert len(injected) >= 2, f"expected a second injection after recovery, got {injected}"
 
 
-def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> list[str]:
+def _run_typed_injection_loop(cells: list[dict], *, cell_types: tuple[str, ...]) -> list[str]:
     injected: list[str] = []
     stop_event = threading.Event()
     polls = {"n": 0}
@@ -111,9 +111,8 @@ def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> li
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-6,
+            mean_interval_seconds_of_cell_type=intervals(cell_types, 1e-6),
             stop_event=stop_event,
-            cell_type=cell_type,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
@@ -141,9 +140,8 @@ def test_a_stop_that_arrives_while_listing_buys_no_further_injection() -> None:
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-9,
+            mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-9),
             stop_event=stop_event,
-            cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
@@ -161,7 +159,7 @@ def test_injection_can_be_restricted_to_one_kind_of_cell() -> None:
             typed_cell("rollout-engine-0", "rollout"),
             typed_cell("rollout-engine-1", "rollout"),
         ],
-        cell_type="rollout",
+        cell_types=("rollout",),
     )
 
     assert injected
@@ -176,14 +174,14 @@ def test_the_live_replica_count_only_considers_the_targeted_kind() -> None:
             typed_cell("actor-1", "actor"),
             typed_cell("rollout-engine-0", "rollout"),
         ],
-        cell_type="rollout",
+        cell_types=("rollout",),
     )
 
     assert injected == []
 
 
-def test_an_untyped_run_sees_every_cell() -> None:
-    """A mixed-ft soak declares no cell type, and must be able to crash either kind."""
+def test_a_mixed_run_sees_every_targeted_kind() -> None:
+    """A mixed-ft soak schedules both kinds, and must be able to crash either one."""
     injected = _run_typed_injection_loop(
         [
             typed_cell("actor-0", "actor"),
@@ -191,13 +189,13 @@ def test_an_untyped_run_sees_every_cell() -> None:
             typed_cell("rollout-engine-0", "rollout"),
             typed_cell("rollout-engine-1", "rollout"),
         ],
-        cell_type=None,
+        cell_types=("actor", "rollout"),
     )
 
     assert injected
 
 
-def test_an_untyped_run_still_keeps_one_replica_of_each_kind() -> None:
+def test_a_mixed_run_still_keeps_one_replica_of_each_kind() -> None:
     """Counting kinds together would let the trainer cells license killing the last engine."""
     injected = _run_typed_injection_loop(
         [
@@ -205,7 +203,7 @@ def test_an_untyped_run_still_keeps_one_replica_of_each_kind() -> None:
             typed_cell("actor-1", "actor"),
             typed_cell("rollout-engine-0", "rollout"),
         ],
-        cell_type=None,
+        cell_types=("actor", "rollout"),
     )
 
     assert all(name.startswith("actor-") for name in injected), injected
@@ -243,9 +241,8 @@ class TestFaultInjectionLoopErrorHandling:
             core.run_fault_injection_loop(
                 base_url="http://control",
                 seed=0,
-                mean_interval_seconds=1e-12,
+                mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-12),
                 stop_event=stop_event,
-                cell_type=None,
                 event_log=log,
                 cell_fault_forms=api_server_fault_forms(),
                 poll_interval_seconds=1e-6,
@@ -289,9 +286,8 @@ class TestFaultInjectionLoopErrorHandling:
             core.run_fault_injection_loop(
                 base_url="http://control",
                 seed=0,
-                mean_interval_seconds=1e-6,
+                mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-6),
                 stop_event=stop_event,
-                cell_type=None,
                 event_log=log,
                 cell_fault_forms=api_server_fault_forms(),
                 poll_interval_seconds=1e-6,
@@ -301,16 +297,16 @@ class TestFaultInjectionLoopErrorHandling:
         assert views.compute_num_injections(log.events, cell_type="rollout") == 1
 
 
-class TestUntypedInjectionSelection:
-    def test_untyped_run_injects_rollout_when_only_rollout_has_a_spare(self) -> None:
-        """The mirror of the trainer case: untyped selection must not be hard-coded to actor cells."""
+class TestMixedInjectionSelection:
+    def test_mixed_run_injects_rollout_when_only_rollout_has_a_spare(self) -> None:
+        """The mirror of the trainer case: mixed selection must not be hard-coded to actor cells."""
         injected = _run_typed_injection_loop(
             [
                 typed_cell("actor-0", "actor"),
                 typed_cell("rollout-engine-0", "rollout"),
                 typed_cell("rollout-engine-1", "rollout"),
             ],
-            cell_type=None,
+            cell_types=("actor", "rollout"),
         )
 
         assert injected
@@ -334,9 +330,8 @@ def test_the_loop_injects_through_the_forms_of_the_cell_it_picked() -> None:
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-12,
+            mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-12),
             stop_event=stop_event,
-            cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=fixed_fault_forms(
                 [
@@ -371,9 +366,8 @@ def test_the_loop_draws_a_form_that_has_never_worked_before_repeating_a_proven_o
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-12,
+            mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-12),
             stop_event=stop_event,
-            cell_type=None,
             event_log=log,
             cell_fault_forms=fixed_fault_forms(
                 [StubFaultForm(name, lambda cell, rng, n=name: drawn.append(n)) for name in ("a", "b", "c")]
@@ -401,9 +395,8 @@ def test_a_form_that_always_refuses_keeps_being_drawn_so_the_soak_can_see_it() -
         core.run_fault_injection_loop(
             base_url="http://control",
             seed=0,
-            mean_interval_seconds=1e-12,
+            mean_interval_seconds_of_cell_type=intervals(("actor", "rollout"), 1e-12),
             stop_event=stop_event,
-            cell_type=None,
             event_log=log,
             cell_fault_forms=fixed_fault_forms(
                 [StubFaultForm("works", _do_nothing), StubFaultForm("broken", _always_refuse)]
@@ -430,7 +423,7 @@ class TestRolloutSpareReadiness:
                 typed_cell("rollout-engine-0", "rollout"),
                 typed_cell("rollout-engine-1", "rollout", serving=False),
             ],
-            cell_type="rollout",
+            cell_types=("rollout",),
         )
 
         assert injected == []
@@ -439,7 +432,7 @@ class TestRolloutSpareReadiness:
         """The readiness rule must not block the case it was never meant to block."""
         injected = _run_typed_injection_loop(
             [typed_cell("rollout-engine-0", "rollout"), typed_cell("rollout-engine-1", "rollout")],
-            cell_type="rollout",
+            cell_types=("rollout",),
         )
 
         assert injected
@@ -456,7 +449,7 @@ class TestRolloutSpareReadiness:
                 typed_cell("rollout-engine-1", "rollout"),
                 typed_cell("rollout-engine-2", "rollout", serving=False),
             ],
-            cell_type="rollout",
+            cell_types=("rollout",),
         )
 
         assert injected

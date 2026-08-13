@@ -23,6 +23,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
     ACTOR_CELL_TYPE,
     ROLLOUT_CELL_TYPE,
+    compute_mean_interval_seconds_of_cell_type,
     create_cell_fault_forms,
 )
 from tests.e2e.ft.conftest_ft.fault_injection.views import (
@@ -47,17 +48,23 @@ app: typer.Typer = typer.Typer()
 
 TEST_NAME: str = "random_crash"
 
-DEFAULT_CRASH_INTERVAL_SECONDS: float = 120.0
+DEFAULT_SEED: int = 42
+DEFAULT_NUM_STEPS: int = 30
+DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 120.0
+DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 240.0
 
 
 @app.command(name="run")
 def run_ci(
     mode: Annotated[str, typer.Option(help="Test mode variant")],
-    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = 42,
-    num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = 30,
-    crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between injections, shared out across the mode's ft components")
-    ] = DEFAULT_CRASH_INTERVAL_SECONDS,
+    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = DEFAULT_SEED,
+    num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = DEFAULT_NUM_STEPS,
+    trainer_crash_interval_seconds: Annotated[
+        float, typer.Option(help="Mean seconds between trainer cell injections")
+    ] = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: Annotated[
+        float, typer.Option(help="Mean seconds between rollout engine injections")
+    ] = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -72,8 +79,12 @@ def run_ci(
     config = command_utils.default_config()
     dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
     print(f"Dump directory: {dump_dir}")
-    mean_interval: float = crash_interval_seconds / len(ft_mode.ft_components)
-    print(f"Seed: {seed}, Steps: {num_steps}, Mean injection interval: {mean_interval:.1f}s")
+    mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
+        ft_mode.ft_components,
+        trainer_crash_interval_seconds=trainer_crash_interval_seconds,
+        rollout_crash_interval_seconds=rollout_crash_interval_seconds,
+    )
+    print(f"Seed: {seed}, Steps: {num_steps}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
 
     prepare(ft_mode, config=config)
@@ -92,8 +103,7 @@ def run_ci(
     injector = spawn_fault_injector(
         base_url=base_url,
         seed=seed,
-        mean_interval_seconds=mean_interval,
-        cell_type=compute_injected_cell_type(ft_mode),
+        mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
     )
 
@@ -102,36 +112,29 @@ def run_ci(
     finally:
         injector.stop_and_join()
 
-    assert_healing(ft_mode, injector=injector, dump_dir=dump_dir)
+    assert_healing(
+        ft_mode.ft_components, injector=injector, event_dir=Path(dump_dir) / "events", context=f"{TEST_NAME} {mode}"
+    )
 
     print(f"Random failure soak test PASSED (mode={mode}, seed={seed}, steps={num_steps})")
 
 
-def compute_injected_cell_type(ft_mode: FTTestMode) -> str | None:
-    match tuple(sorted(ft_mode.ft_components)):
-        case ("train",):
-            return ACTOR_CELL_TYPE
-        case ("rollout",):
-            return ROLLOUT_CELL_TYPE
-        case _:
-            return None
-
-
-def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_dir: str) -> None:
+def assert_healing(
+    ft_components: tuple[str, ...], *, injector: FaultInjectorHandle, event_dir: Path, context: str
+) -> None:
     events = injector.event_log.events
-    event_dir = Path(dump_dir) / "events"
 
     _assert_drawn_fault_forms_worked(injector)
 
-    if "train" in ft_mode.ft_components:
+    if "train" in ft_components:
         assert_soak_reconfigure_events(
             event_dir, num_successful_injections=compute_num_injections(events, cell_type=ACTOR_CELL_TYPE)
         )
         assert_trainer_injections_healed(injector, event_dir=event_dir)
 
-    if "rollout" in ft_mode.ft_components:
+    if "rollout" in ft_components:
         assert_min_soak_injections(
-            compute_num_injections(events, cell_type=ROLLOUT_CELL_TYPE), context=f"{TEST_NAME} rollout cells"
+            compute_num_injections(events, cell_type=ROLLOUT_CELL_TYPE), context=f"{context} rollout cells"
         )
         assert_every_rollout_injection_recovered(injector)
 
