@@ -25,7 +25,7 @@ from miles.utils.megatron_args_utils import compute_megatron_world_size_except_d
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, WorkerCommBackend, resolve_worker_comm_backend
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Which backend provides the worker processes: "
                     "`ray` launches them from the driver, `kubernetes` expects the platform to have "
                     "created them already and observes them by their pod labels."
+                ),
+            )
+            parser.add_argument(
+                "--worker-comm-backend",
+                type=str,
+                default=None,
+                choices=tuple(backend.value for backend in WorkerCommBackend),
+                help=(
+                    "How the driver calls its workers: `ray` sends actor calls, `rpc` calls the http server "
+                    "every worker serves. Unset picks the default of the cluster backend, today `ray` under "
+                    "`--cluster-backend ray` and `rpc` under `--cluster-backend kubernetes`."
                 ),
             )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -3609,6 +3620,10 @@ def miles_validate_args(args):
 
     args.rollout_external = _compute_rollout_external(args)
     args.custom_inference_engine_provider_path = _compute_custom_inference_engine_provider_path(args)
+
+    args.worker_comm_backend = resolve_worker_comm_backend(
+        cluster_backend=ClusterBackend(args.cluster_backend), requested=args.worker_comm_backend
+    ).value
 
     if ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES:
         if ObjectStoreBackend(args.object_store_backend) != ObjectStoreBackend.MOONCAKE:
