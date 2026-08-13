@@ -13,6 +13,7 @@ from tests.ci.ci_utils import (
     run_unittest_files,
 )
 from tests.ci.labels import KNOWN_LABELS
+from tests.ci.runtime_estimate.runtime_history import build_runtime_store_from_env
 
 HW_MAPPING = {
     "cpu": HWBackend.CPU,
@@ -220,6 +221,7 @@ def run_a_suite(args):
     # also supplies the baseline-writing signal. Provenance comes from the GitHub env.
     gate_store = build_store_from_env()
     gate_provenance = gate_provenance_from_env()
+    runtime_store = build_runtime_store_from_env(hw)
 
     # The gate collects only when a record directory exists. CI does not set
     # MILES_CI_GATE_RECORD_DIR, so allocate a job-local one whenever a store is
@@ -238,6 +240,7 @@ def run_a_suite(args):
         gate_store=gate_store,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        runtime_store=runtime_store,
     )
 
 

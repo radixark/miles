@@ -1,0 +1,95 @@
+# doc-dev: docs/ci/04-runtime-est-time.md
+name: Update CI runtime estimates
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report proposed changes without opening or updating a pull request
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ci-runtime-est-time
+  cancel-in-progress: false
+
+jobs:
+  calibrate:
+    # Enable the bot only after provisioning the runtime-history schema and
+    # allowing Actions to create pull requests in repository settings.
+    if: github.event_name == 'workflow_dispatch' || vars.CI_RUNTIME_EST_TIME_BOT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the PostgreSQL driver
+        run: python3 -m pip install --disable-pip-version-check "psycopg[binary]==3.3.4"
+
+      - name: Calibrate estimates
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          REPORT_FILE: ${{ runner.temp }}/ci-runtime-est-time.md
+        run: |
+          if [[ "$DRY_RUN" == "true" ]]; then
+            python3 -m tests.ci.runtime_estimate.update_est_time --dry-run --report-file "$REPORT_FILE"
+          else
+            python3 -m tests.ci.runtime_estimate.update_est_time --report-file "$REPORT_FILE"
+          fi
+          cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Detect source changes
+        id: diff
+        run: |
+          if git diff --quiet -- tests/e2e; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --check
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish pull request
+        if: steps.diff.outputs.changed == 'true' && (github.event_name != 'workflow_dispatch' || inputs.dry_run == false)
+        env:
+          BRANCH: jiajun/ci-est-time-update
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPORT_FILE: ${{ runner.temp }}/ci-runtime-est-time.md
+        run: |
+          git config user.name "miles-ci-bot"
+          git config user.email "miles-ci-bot@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add tests/e2e
+          git commit -m "ci: update e2e runtime estimates"
+
+          gh auth setup-git
+          if git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" >/dev/null; then
+            git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            git push --force-with-lease origin "HEAD:refs/heads/$BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$BRANCH"
+          fi
+
+          pr_number="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$pr_number" ]]; then
+            gh pr edit "$pr_number" --body-file "$REPORT_FILE"
+          else
+            gh pr create \
+              --base "$DEFAULT_BRANCH" \
+              --head "$BRANCH" \
+              --title "ci: update e2e runtime estimates" \
+              --body-file "$REPORT_FILE"
+          fi

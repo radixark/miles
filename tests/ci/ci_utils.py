@@ -20,6 +20,7 @@ from tests.ci.metric_history import (
     RunProvenance,
 )
 from tests.ci.metric_history.gate import evaluate_gate
+from tests.ci.runtime_estimate.runtime_history import RuntimeAttempt, RuntimeProvenance, runtime_provenance_from_env
 
 # Env var the training process reads to find the per-attempt record directory; kept
 # in sync with miles.utils.tracking_utils.ci_history.RECORD_DIR_ENV.
@@ -388,6 +389,8 @@ def run_unittest_files(
     gate_store=None,
     gate_write_baseline: bool = False,
     gate_provenance: RunProvenance | None = None,
+    runtime_store=None,
+    runtime_provenance: RuntimeProvenance | None = None,
 ):
     """
     Run a list of test files.
@@ -407,12 +410,16 @@ def run_unittest_files(
                     a non-baseline-writing run, which only logs a shadow verdict.
         gate_provenance: RunProvenance for the gate write; defaults to
                     `gate_provenance_from_env()` when None.
+        runtime_store: Runtime-history store, or None to skip attempt recording.
+        runtime_provenance: RuntimeProvenance for the batch write; defaults to
+                    `runtime_provenance_from_env()` when None.
     """
     tic = time.perf_counter()
     success = True
     passed_tests = []
     failed_tests = []
     retried_tests = []  # Track which tests were retried
+    runtime_attempts: list[RuntimeAttempt] = []
 
     for i, file in enumerate(files):
         if isinstance(file, CIRegistry):
@@ -583,6 +590,23 @@ def run_unittest_files(
                         timeout_after=attempt_timeout_after,
                         retry_of=(current_attempt - 1) if current_attempt >= 2 else None,
                     )
+                    if (
+                        runtime_store is not None
+                        and isinstance(file, CIRegistry)
+                        and file.backend == HWBackend.CUDA
+                        and filename.startswith("tests/e2e/")
+                    ):
+                        runtime_attempts.append(
+                            RuntimeAttempt(
+                                test_path=filename,
+                                backend=file.backend.name,
+                                suite=file.suite,
+                                test_attempt=current_attempt,
+                                status=attempt_status,
+                                elapsed_seconds=attempt_elapsed,
+                                estimated_seconds=estimated_time,
+                            )
+                        )
 
         # Gate hook (CUDA path only): only run_unittest_files dispatches CUDA
         # suites; CPU suites go through pytest in run_a_suite and never reach
@@ -646,5 +670,12 @@ def run_unittest_files(
         if failed_after_retry:
             summary += f"- Still failed: {', '.join(failed_after_retry)}\n"
         write_github_step_summary(summary)
+
+    if runtime_store is not None and runtime_attempts:
+        try:
+            provenance = runtime_provenance or runtime_provenance_from_env()
+            runtime_store.write_attempts(provenance, runtime_attempts)
+        except Exception as e:  # noqa: BLE001 -- runtime history must not affect test results
+            logger.warning("[CI Runtime] history write failed: %s: %s", type(e).__name__, e)
 
     return 0 if success else -1
