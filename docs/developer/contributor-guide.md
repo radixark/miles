@@ -162,7 +162,7 @@ register_cuda_ci(
 ```
 
 `register_cpu_ci`, `register_cuda_ci` and `register_rocm_ci` share that signature, plus
-`nightly=True` (nightly-cadence only) and `disabled="<reason + issue link>"` (reported as
+`nightly=True` (nightly and weekly cadence only) and `disabled="<reason + issue link>"` (reported as
 skipped rather than deleted). The calls are parsed from the AST, so they must be
 top-level, literal, and unaliased.
 

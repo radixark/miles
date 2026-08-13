@@ -22,7 +22,7 @@
 Caveats:
 
 * Do not add store writes here. Persistence is the caller's job --
-  :func:`tests.ci.ci_utils.run_gate_hook` writes rows on nightly-marked runs --
+  :func:`tests.ci.ci_utils.run_gate_hook` writes rows on baseline-writing runs --
   and the gate itself stays read-only.
 """
 

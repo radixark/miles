@@ -3,8 +3,9 @@
 Covers the AST-collection behavior of the suite-as-runner-class refactor:
 `labels` is optional (default None ≡ []); a non-empty list of canonical
 domain labels gates the test on the resolved domain scope, while None / [] /
-omitted means always-on within an eligible cadence; `nightly=True` makes a
-registration nightly-only; `num_gpus` is gone; `labels` must be passed by
+omitted means always-on within an eligible cadence; `nightly=True` excludes a
+registration from regular cadence while nightly and weekly admit it;
+`num_gpus` is gone; `labels` must be passed by
 keyword (not as a positional third argument).
 """
 

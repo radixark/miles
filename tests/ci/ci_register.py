@@ -64,8 +64,8 @@ def register_cpu_ci(
     every cadence that admits it. A non-empty `labels` list gates the test on
     the resolved domain scope; a PR can include `<x>` with `run-ci-<x>`, while
     broad scopes include many domain labels at once. `nightly=True` adds a
-    cadence gate: regular runs exclude the test, while nightly runs include it
-    alongside regular registrations.
+    cadence gate: regular runs exclude the test, while nightly and weekly runs
+    include it alongside regular registrations.
     """
     return None
 
