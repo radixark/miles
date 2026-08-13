@@ -4,7 +4,6 @@ import logging
 import os
 import random
 import shutil
-from argparse import Namespace
 from contextlib import ExitStack, nullcontext
 from typing import TYPE_CHECKING
 
@@ -38,6 +37,7 @@ from miles.utils.tracking_utils.structured_log import with_logs
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.types import RolloutBatch
 from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
@@ -96,7 +96,7 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Namespace,
+        args: Pickled,
         role: str,
         *,
         with_ref: bool = False,

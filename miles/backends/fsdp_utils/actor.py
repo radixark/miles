@@ -1,7 +1,6 @@
 import logging
 import os
 import random
-from argparse import Namespace
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
@@ -34,6 +33,7 @@ from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
 from miles.utils.tracking_utils.tracking import init_tracking
+from miles.utils.workers.rpc.common.wire_types import Pickled
 
 from . import checkpoint
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
@@ -62,7 +62,7 @@ class FSDPTrainRayActor(TrainRayActor):
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
         self,
-        args: Namespace,
+        args: Pickled,
         role: str,
         *,
         with_ref: bool = False,

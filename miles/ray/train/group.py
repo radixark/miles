@@ -30,7 +30,7 @@ from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadli
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
-from miles.utils.workers.rpc.common.wire_types import WireNamespace
+from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -301,7 +301,7 @@ class TrainerController:
 
     # ------------------------ API :: others ------------------------
 
-    async def init(self, args: WireNamespace) -> list[Any]:
+    async def init(self, args: Pickled) -> list[Any]:
         """
         Observe the controller's cells, then allocate GPU resources and initialize
         model, optimzier, local ckpt, etc.
