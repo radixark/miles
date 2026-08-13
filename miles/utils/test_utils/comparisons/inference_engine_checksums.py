@@ -4,7 +4,6 @@ from miles.utils.audit_utils.event_analyzer.rules import inference_engine_weight
 from miles.utils.audit_utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts
 from miles.utils.audit_utils.event_logger.logger import read_events
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
 
 def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> None:
@@ -45,6 +44,25 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     print(f"Engine weight checksum comparison passed: {len(baseline_by_model_and_rollout)} rollout(s) compared")
 
 
+def assert_engine_weights_moved(*, side: str, dump_dir: str) -> None:
+    by_model_and_rollout = _checksums_by_model_and_rollout_id(_read_inference_engine_checksum_events(Path(dump_dir)))
+    assert len(by_model_and_rollout) > 1, (
+        f"{side}: engine weight checksums cover {sorted(by_model_and_rollout)}, so there is no pair to compare "
+        f"and nothing proves the run pushed an update at all"
+    )
+
+    distinct: set[tuple[tuple[str, str], ...]] = {tuple(sorted(one.items())) for one in by_model_and_rollout.values()}
+    assert len(distinct) > 1, (
+        f"{side}: every one of {len(by_model_and_rollout)} rollouts pushed byte-identical engine weights, so the "
+        f"optimizer moved nothing and a bitwise comparison against another such run would prove nothing"
+    )
+
+    print(
+        f"{side}: engine weights moved across {len(by_model_and_rollout)} rollout(s), "
+        f"{len(distinct)} distinct checksum(s)"
+    )
+
+
 def _checksums_by_model_and_rollout_id(
     events: list[InferenceEngineWeightChecksumEvent],
 ) -> dict[tuple[str | None, int], dict[str, str]]:
@@ -52,16 +70,11 @@ def _checksums_by_model_and_rollout_id(
     for event in events:
         if event.rollout_id is None:
             continue
-        key = (_compute_model_id(event), event.rollout_id)
+        key = (event.trainer_model_id, event.rollout_id)
         assert key not in by_model_and_rollout, f"Duplicate InferenceEngineWeightChecksumEvent for {key}"
         assert event.engine_checksums, f"No engine checksums for {key}"
         by_model_and_rollout[key] = event.engine_checksums[0]
     return by_model_and_rollout
-
-
-def _compute_model_id(event: InferenceEngineWeightChecksumEvent) -> str | None:
-    source = event.source
-    return source.model_id if isinstance(source, TrainerControllerProcessIdentity) else None
 
 
 def _read_inference_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
