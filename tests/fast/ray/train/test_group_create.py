@@ -71,6 +71,7 @@ async def _create_controller(*, num_cells: int) -> TrainerController:
     train_conftest.fake_worker_manager.num_cells = num_cells
     controller = TrainerController(
         _make_args(num_cells=num_cells),
+        trainer_id="actor",
         role="actor",
         with_ref=False,
         inference_controller=None,

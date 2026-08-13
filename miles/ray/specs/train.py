@@ -4,6 +4,7 @@ from pathlib import Path
 from miles.backends.megatron_utils.megatron_config import (
     ACTOR_ROLE,
     CRITIC_ROLE,
+    MegatronTrainerConfig,
     compute_trainer_args,
     resolve_megatron_config,
 )
@@ -41,51 +42,53 @@ _TRAINER_ACTOR_CLASSES = {
 _NUM_GPUS_PER_TRAINER_WORKER = 0.4
 
 
-def spec_trainer_controller_actor(args) -> ServeWorkerSpec:
-    return _compute_spec_trainer_controller(
-        role="actor",
-        with_ref=args.kl_coef != 0 or args.use_kl_loss,
-        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
-        drives_inference=True,
-    )
+def specs_trainer_controller(args) -> list[ServeWorkerSpec]:
+    specs = []
+    for config in compute_trainer_configs(args):
+        trainer_args = compute_trainer_args(args, config)
+        specs.append(
+            _compute_spec_trainer_controller(
+                config=config,
+                with_ref=(config.role != CRITIC_ROLE) and (trainer_args.kl_coef != 0 or trainer_args.use_kl_loss),
+                with_opd_teacher=(config.role != CRITIC_ROLE)
+                and trainer_args.use_opd
+                and trainer_args.opd_type == "megatron",
+            )
+        )
+    return specs
 
 
-def spec_trainer_controller_critic(args) -> ServeWorkerSpec:
-    return _compute_spec_trainer_controller(
-        role="critic",
-        with_ref=False,
-        with_opd_teacher=False,
-        drives_inference=False,
-    )
+def compute_trainer_configs(args) -> list[MegatronTrainerConfig]:
+    return resolve_megatron_config(args).trainers
 
 
-def create_trainer_controller_handle(*, capability: BackendCapability, role: str) -> BaseWorkerHandle:
-    worker_name = trainer_controller_worker_name(role)
-    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(role))
+def create_trainer_controller_handle(*, capability: BackendCapability, trainer_id: str) -> BaseWorkerHandle:
+    worker_name = trainer_controller_worker_name(trainer_id)
+    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(trainer_id))
     return provider.get_handle(worker_name)
 
 
-def compute_trainer_controller_pool_id(role: str) -> str:
-    return f"trainer-controller-{role}"
+def compute_trainer_controller_pool_id(trainer_id: str) -> str:
+    return f"trainer-controller-{trainer_id}"
 
 
-def trainer_controller_worker_name(role: str) -> str:
-    return compute_worker_name(pool_id=compute_trainer_controller_pool_id(role))
+def trainer_controller_worker_name(trainer_id: str) -> str:
+    return compute_worker_name(pool_id=compute_trainer_controller_pool_id(trainer_id))
 
 
-def trainer_controller_cell_id(role: str) -> str:
-    return compute_cell_id(pool_id=compute_trainer_controller_pool_id(role), cell_index=0)
+def trainer_controller_cell_id(trainer_id: str) -> str:
+    return compute_cell_id(pool_id=compute_trainer_controller_pool_id(trainer_id), cell_index=0)
 
 
 def _compute_spec_trainer_controller(
     *,
-    role: str,
+    config: MegatronTrainerConfig,
     with_ref: bool,
     with_opd_teacher: bool,
-    drives_inference: bool,
 ) -> ServeWorkerSpec:
+    trainer_id = config.trainer_id
     return ServeWorkerSpec(
-        name=compute_trainer_controller_pool_id(role),
+        name=compute_trainer_controller_pool_id(trainer_id),
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -96,47 +99,45 @@ def _compute_spec_trainer_controller(
         ),
         worker_class=TRAINER_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
-            role=role,
+            trainer_id=trainer_id,
+            role=config.role,
             with_ref=with_ref,
             with_opd_teacher=with_opd_teacher,
-            cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(role)]),
+            cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(trainer_id)]),
             cell_operations=ctx.capability.cell_operations(),
             inference_controller=(
-                create_inference_controller_handle(capability=ctx.capability) if drives_inference else None
+                None if config.role == CRITIC_ROLE else create_inference_controller_handle(capability=ctx.capability)
             ),
         ),
     )
 
 
 def specs_trainer(args) -> list[ServeWorkerSpec]:
-    specs = [
-        _compute_spec_trainer(
-            compute_actor_args(args),
-            role="actor",
-            num_nodes=args.actor_num_nodes,
-            num_gpus_per_node=args.actor_num_gpus_per_node,
-        )
-    ]
-    if args.use_critic:
+    specs = []
+    for config in compute_trainer_configs(args):
+        if config.role == CRITIC_ROLE:
+            num_nodes, num_gpus_per_node = args.critic_num_nodes, args.critic_num_gpus_per_node
+        else:
+            num_nodes, num_gpus_per_node = args.actor_num_nodes, args.actor_num_gpus_per_node
         specs.append(
             _compute_spec_trainer(
-                compute_critic_args(args),
-                role="critic",
-                num_nodes=args.critic_num_nodes,
-                num_gpus_per_node=args.critic_num_gpus_per_node,
+                compute_trainer_args(args, config),
+                config=config,
+                num_nodes=num_nodes,
+                num_gpus_per_node=num_gpus_per_node,
             )
         )
     return specs
 
 
-def compute_trainer_pool_id(role: str) -> str:
-    return f"trainer-engine-{role}"
+def compute_trainer_pool_id(trainer_id: str) -> str:
+    return f"trainer-engine-{trainer_id}"
 
 
 def compute_trainer_num_cells(args, *, role: str) -> int:
     num_nodes, num_gpus_per_node = (
         (args.actor_num_nodes, args.actor_num_gpus_per_node)
-        if role == "actor"
+        if role == ACTOR_ROLE
         else (args.critic_num_nodes, args.critic_num_gpus_per_node)
     )
     total_gpus = num_nodes * num_gpus_per_node
@@ -156,12 +157,13 @@ def compute_critic_args(args):
 def _compute_spec_trainer(
     args,
     *,
-    role: str,
+    config: MegatronTrainerConfig,
     num_nodes: int,
     num_gpus_per_node: int,
 ) -> ServeWorkerSpec:
+    trainer_id = config.trainer_id
     total_gpus = num_nodes * num_gpus_per_node
-    num_cells = compute_trainer_num_cells(args, role=role)
+    num_cells = compute_trainer_num_cells(args, role=config.role)
     assert total_gpus % num_cells == 0, f"{total_gpus=} must be divisible by {num_cells=}"
     gpus_per_cell = total_gpus // num_cells
 
@@ -172,7 +174,7 @@ def _compute_spec_trainer(
     )
 
     return ServeWorkerSpec(
-        name=compute_trainer_pool_id(role),
+        name=compute_trainer_pool_id(trainer_id),
         category=POOL_CATEGORY_TRAINER_ENGINE,
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
         env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
@@ -190,12 +192,12 @@ def _compute_spec_trainer(
             args=args,
             world_size=gpus_per_cell,
             rank=ctx.worker_in_cell_index,
-            role=role,
+            role=config.role,
             cell_index=ctx.cell_index,
         ),
         concurrency_groups=TRAINER_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
         method_concurrency_groups=TRAINER_METHOD_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
-        meta=lambda ctx: dict(role=role, cell_index=ctx.cell_index),
+        meta=lambda ctx: dict(role=config.role, cell_index=ctx.cell_index),
     )
 
 

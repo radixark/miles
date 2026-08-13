@@ -64,23 +64,25 @@ def _patch_train_controller_handles(monkeypatch) -> list:
     monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: FakeBackendCapability())
 
     class _Handle:
-        def __init__(self, role):
-            self.role = role
+        def __init__(self, trainer_id):
+            self.trainer_id = trainer_id
             self.inited_with = None
             self.calls = calls
             handles.append(self)
 
         async def init(self, args):
-            calls.append((self.role, "init"))
+            calls.append((self.trainer_id, "init"))
             self.inited_with = args
             return [0]
 
         async def get_train_parallel_config(self):
-            calls.append((self.role, "get_train_parallel_config"))
-            return {"dp_size": 2 if self.role == "actor" else 99}
+            calls.append((self.trainer_id, "get_train_parallel_config"))
+            return {"dp_size": 2 if self.trainer_id == "actor" else 99}
 
     monkeypatch.setattr(
-        placement_group_module, "create_trainer_controller_handle", lambda *, capability, role: _Handle(role)
+        placement_group_module,
+        "create_trainer_controller_handle",
+        lambda *, capability, trainer_id: _Handle(trainer_id),
     )
     return handles
 
@@ -123,7 +125,7 @@ async def test_a_critic_run_inits_one_controller_per_role(monkeypatch):
         rollout_executor=_RecordingRolloutExecutor(),
     )
 
-    assert [handle.role for handle in handles] == ["actor", "critic"]
+    assert [handle.trainer_id for handle in handles] == ["actor", "critic"]
     assert all(handle.inited_with is not None for handle in handles)
 
 
@@ -182,7 +184,7 @@ async def test_a_run_without_a_critic_starts_only_the_actor_controller(monkeypat
         rollout_executor=_RecordingRolloutExecutor(),
     )
 
-    assert [handle.role for handle in handles] == ["actor"]
+    assert [handle.trainer_id for handle in handles] == ["actor"]
 
 
 async def test_train_parallel_config_travels_from_trainer_to_rollout_executor(monkeypatch):
