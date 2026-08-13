@@ -21,7 +21,7 @@ from miles.ray.train.cell import TrainerCell
 from miles.utils import http_utils
 from miles.utils.data import RolloutDataPack
 from miles.utils.ft_utils.api_server.models import CellStatus
-from miles.utils.object_store import StoreObjectRef
+from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import PodListPage
@@ -59,7 +59,7 @@ class FakeTrainWorker:
 
 
 def _data_pack(rollout_id: int) -> RolloutDataPack:
-    return RolloutDataPack(sample_indices=[rollout_id], data_ref=StoreObjectRef(payload=f"ref-{rollout_id}"))
+    return RolloutDataPack(sample_indices=[rollout_id], data_ref=_MooncakeStoreObjectRef(payload=f"ref-{rollout_id}"))
 
 
 class FakeRolloutExecutor:
@@ -331,7 +331,8 @@ class TestKubernetesDriverAssembly:
 
         assert [info.name for info in infos] == [f"{POOL}-0-{index}" for index in range(3)]
         assert [info.self_addrs["rpc"].host for info in infos] == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
-        assert all(isinstance(info.handle, RpcWorkerHandle) for info in infos)
+        handles = provider.get_handles_of_worker_infos(infos)
+        assert all(isinstance(handles[info.name], RpcWorkerHandle) for info in infos)
 
     def test_one_pod_serving_several_ranks_yields_one_worker_per_rank(self, monkeypatch):
         """A trainer pod supervises one process per gpu, and a cell that saw one of them would hang the collective."""
@@ -351,7 +352,8 @@ class TestKubernetesDriverAssembly:
             ("10.0.0.1", 8000),
             ("10.0.0.1", 8001),
         ]
-        assert [info.handle._transport._server_url for info in infos] == [
+        handles = provider.get_handles_of_worker_infos(infos)
+        assert [handles[info.name]._transport._server_url for info in infos] == [
             "http://10.0.0.1:8000",
             "http://10.0.0.1:8001",
         ]
@@ -425,7 +427,7 @@ class TestKubernetesDriverAssembly:
 
         assert isinstance(handle, RpcWorkerHandle)
         assert rollout_data == _data_pack(3)
-        assert isinstance(rollout_data.data_ref, StoreObjectRef)
+        assert isinstance(rollout_data.data_ref, _MooncakeStoreObjectRef)
         assert executor.train_parallel_config == {"dp_size": 4}
         assert executor.loaded == [11]
         assert set(transport.hosts_called) == {host}
