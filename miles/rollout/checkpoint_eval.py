@@ -10,7 +10,7 @@ logs the result at the snapshot's step, and reclaims the directory afterwards. R
 ``EvalSkip(reason)`` to skip a point with attribution instead of counting as a crash.
 
 Requires ``train_async.py`` and a snapshot source (``--eval-hf-dir`` or ``--save-hf``).
-``examples/fully_async/external_eval_fn.py`` is a working implementation.
+``examples/infra_features/fully_async/external_eval_fn.py`` is a working implementation.
 """
 
 import abc

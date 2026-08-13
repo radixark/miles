@@ -259,7 +259,6 @@
        {
         "group": "Recipes",
         "pages": [
-         "examples/fully-async",
          "examples/geo3k-vlm",
          "examples/geo3k-vlm/multi-turn",
          "examples/multi-lora",
@@ -275,6 +274,7 @@
         "group": "Infra Features",
         "root": "examples/infra-features",
         "pages": [
+         "examples/infra-features/fully-async",
          "examples/infra-features/low-precision",
          "examples/infra-features/p2p-weight-transfer",
          "examples/infra-features/random-async",
