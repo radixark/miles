@@ -182,6 +182,24 @@ but treat it as best-effort until it passes the checks below.
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
 
+### Verify a new model TITO
+
+To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
+[`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
+then run both checks. Either failure blocks support.
+
+```bash
+# CPU / fast: rendered token sequences remain append-only
+python scripts/tools/verify_chat_template.py \
+    --model <hf-id> --tito-model <family>
+
+# GPU / end to end: the invariant holds under real model inference
+python scripts/tools/verify_session_tito_tokenizer.py \
+    --hf-checkpoint <hf-id> --tito-model <family> \
+    --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> \
+    --rollout-num-gpus-per-engine 1
+```
+
 ### Choose replay matching
 
 Some agent harnesses do not replay model messages verbatim: they may reserialize tool-call arguments, replace empty `arguments` with `"{}"`, or omit `reasoning_content` on the next request. Under the default matcher those replays count as divergence — v1 rolls back (or rejects), v2 branches a new lineage.
@@ -201,24 +219,6 @@ The matcher only decides whether the message a client replays and the message st
 - On a match, the stored messages and token snapshot stay authoritative inside the reusable prefix; only the suffix beyond it is tokenized anew from the client input.
 
 Miles does not reconcile tool-call IDs across that boundary: deployments choosing `role_content_only` must themselves keep a stored call ID `A` followed by a replayed tool result referencing `B` protocol-compatible.
-
-### Verify a new model TITO
-
-To add a named family, register its `TITOTokenizer` and `FIXED_TEMPLATE` in
-[`tito_tokenizer.py`](https://github.com/radixark/miles/blob/main/miles/utils/chat_template_utils/tito_tokenizer.py),
-then run both checks. Either failure blocks support.
-
-```bash
-# CPU / fast: rendered token sequences remain append-only
-python scripts/tools/verify_chat_template.py \
-    --model <hf-id> --tito-model <family>
-
-# GPU / end to end: the invariant holds under real model inference
-python scripts/tools/verify_session_tito_tokenizer.py \
-    --hf-checkpoint <hf-id> --tito-model <family> \
-    --sglang-reasoning-parser <rp> --sglang-tool-call-parser <tcp> \
-    --rollout-num-gpus-per-engine 1
-```
 
 ## Example
 
