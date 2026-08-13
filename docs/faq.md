@@ -10,7 +10,8 @@ Almost always a checkpoint-loading issue. Megatron requires a directory that con
 `latest_checkpointed_iteration.txt`. Verify:
 
 * `--load` (and/or `--ref-load`) point to a directory with that file.
-* If you want a specific iteration, use `--ckpt-step <N>`.
+* If you want a specific iteration, edit `latest_checkpointed_iteration.txt` to that
+  iteration number (for the reference model there is `--ref-ckpt-step <N>`).
 
 </Accordion>
 
@@ -84,9 +85,9 @@ The loss is corrected per sample (or per token with `--calculate-per-token-loss`
 
 <Accordion title={<>SGLang gives <code>Max retries exceeded with url: /get_model_info</code>.</>}>
 
-Multiple SGLang servers are colliding on the same node. Reduce the number of SGLang
-instances per node — e.g. set `--rollout-num-gpus-per-engine 8` so there's exactly
-one server per host.
+Too many SGLang servers are starting on the same node, and engine startup outruns
+the health-check timeout. Reduce the number of SGLang instances per node — e.g. set
+`--rollout-num-gpus-per-engine 8` so there's exactly one server per host.
 </Accordion>
 
 <Accordion title="Gradient norm is huge and training crashes.">
