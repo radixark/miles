@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from miles.utils.workers.serving import serve_inner
+from miles.utils.workers.serving import utils as serving_utils
 from miles.utils.workers.serving.serve_inner import _rpc_port_of, parse_own_args
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec
 
@@ -70,7 +71,7 @@ class TestParseOwnArgs:
 def _served(monkeypatch: pytest.MonkeyPatch, *, has_dualstack_ipv6: bool) -> dict[str, Any]:
     served: dict[str, Any] = {}
     monkeypatch.setattr(serve_inner.sys, "argv", ["serve_inner", "--specs", SPECS_PATH, "--pool-id", POOL_ID])
-    monkeypatch.setattr(serve_inner.socket, "has_dualstack_ipv6", lambda: has_dualstack_ipv6)
+    monkeypatch.setattr(serving_utils.socket, "has_dualstack_ipv6", lambda: has_dualstack_ipv6)
     monkeypatch.setattr(serve_inner, "compute_serve_worker_spec", lambda **kwargs: SimpleNamespace(worker_class="w"))
     monkeypatch.setattr(serve_inner, "create_worker", lambda spec, **kwargs: object())
     monkeypatch.setattr(serve_inner, "create_rpc_app", lambda worker: "app")
@@ -92,7 +93,7 @@ def _served(monkeypatch: pytest.MonkeyPatch, *, has_dualstack_ipv6: bool) -> dic
         served["config"] = config
         return SimpleNamespace(run=lambda *, sockets: served.update(sockets=sockets))
 
-    monkeypatch.setattr(serve_inner.socket, "create_server", create_server)
+    monkeypatch.setattr(serving_utils.socket, "create_server", create_server)
     monkeypatch.setattr(serve_inner.uvicorn, "Config", lambda app: served.update(app=app) or "config")
     monkeypatch.setattr(serve_inner.uvicorn, "Server", create_uvicorn_server)
 
@@ -107,19 +108,19 @@ class TestTheAddressAWorkerIsServedOn:
         """The cell view publishes the pod ip, and on an ipv6-only cluster that is an ipv6 address."""
         served = _served(monkeypatch, has_dualstack_ipv6=True)
 
-        assert served["host"] == serve_inner.IPV6_WILDCARD_HOST
+        assert served["host"] == serving_utils.IPV6_WILDCARD_HOST
         assert served["socket_kwargs"] == {"family": socket.AF_INET6, "dualstack_ipv6": True}
 
     def test_binds_the_ipv4_wildcard_where_ipv6_is_unavailable(self, monkeypatch):
         """Asking for the dual-stack wildcard where there is no ipv6 stack leaves the worker unserved."""
         served = _served(monkeypatch, has_dualstack_ipv6=False)
 
-        assert served["host"] == serve_inner.IPV4_WILDCARD_HOST
+        assert served["host"] == serving_utils.IPV4_WILDCARD_HOST
         assert served["socket_kwargs"] == {"family": socket.AF_INET}
 
     def test_the_dual_stack_wildcard_is_the_unspecified_ipv6_address(self):
         """Only the unspecified address accepts the ipv4-mapped connections an ipv4 client makes."""
-        assert (serve_inner.IPV6_WILDCARD_HOST, serve_inner.IPV4_WILDCARD_HOST) == ("::", "0.0.0.0")
+        assert (serving_utils.IPV6_WILDCARD_HOST, serving_utils.IPV4_WILDCARD_HOST) == ("::", "0.0.0.0")
 
     def test_serves_the_rpc_port_the_spec_declares_whichever_wildcard_it_binds(self, monkeypatch):
         """The address a client dials is the published pod ip and this port, so the port may not move."""
@@ -127,49 +128,11 @@ class TestTheAddressAWorkerIsServedOn:
         ipv4 = _served(monkeypatch, has_dualstack_ipv6=False)
 
         assert dual_stack["port"] == 8123
-        assert dual_stack["sockets"][0].address == (serve_inner.IPV6_WILDCARD_HOST, 8123)
+        assert dual_stack["sockets"][0].address == (serving_utils.IPV6_WILDCARD_HOST, 8123)
         assert dual_stack["socket_closed"] is True
         assert ipv4["port"] == 8123
-        assert ipv4["sockets"][0].address == (serve_inner.IPV4_WILDCARD_HOST, 8123)
+        assert ipv4["sockets"][0].address == (serving_utils.IPV4_WILDCARD_HOST, 8123)
         assert ipv4["socket_closed"] is True
-
-
-class TestCreateServerSocket:
-    def test_dual_stack_listener_accepts_ipv4_and_ipv6_when_ipv6_sockets_default_to_v6_only(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An explicitly dual-stack listener accepts both address families despite a v6-only default."""
-        real_socket = socket.socket
-
-        def create_v6_only_socket(*args: Any, **kwargs: Any) -> socket.socket:
-            server_socket = real_socket(*args, **kwargs)
-            if server_socket.family == socket.AF_INET6:
-                server_socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-            return server_socket
-
-        monkeypatch.setattr(serve_inner.socket, "socket", create_v6_only_socket)
-        monkeypatch.setattr(serve_inner.socket, "has_dualstack_ipv6", lambda: True)
-
-        with serve_inner._create_server_socket(port=0) as server_socket:
-            port = server_socket.getsockname()[1]
-
-            assert server_socket.family == socket.AF_INET6
-            assert server_socket.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 0
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                pass
-            with socket.create_connection(("::1", port), timeout=1):
-                pass
-
-    def test_ipv4_listener_remains_reachable_without_dual_stack_support(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A host without dual-stack IPv6 still accepts worker RPC calls over IPv4."""
-        monkeypatch.setattr(serve_inner.socket, "has_dualstack_ipv6", lambda: False)
-
-        with serve_inner._create_server_socket(port=0) as server_socket:
-            port = server_socket.getsockname()[1]
-
-            assert server_socket.family == socket.AF_INET
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                pass
 
 
 class TestRpcPortOf:
