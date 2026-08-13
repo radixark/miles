@@ -124,4 +124,4 @@ class TestInitRunsExactlyOnce:
         actor._init_called = True
 
         with pytest.raises(AssertionError, match="stale worker"):
-            actor.init(args=None, role="actor")
+            actor._init_common(None, "actor")

@@ -23,6 +23,7 @@ from miles.ray.specs.train import (
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
+from miles.utils.workers.rpc.common.metadata import _find_rpc_config
 from miles.utils.workers.worker_spec import WorkerCtorContext
 
 
@@ -270,6 +271,36 @@ class TestConcurrencyGroups:
         (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
         assert set(spec.method_concurrency_groups.values()) <= set(TRAINER_CONCURRENCY_GROUPS)
+
+    def test_the_isolated_methods_are_annotated_on_the_actor(self):
+        """Dropping an @rpc concurrency group would silently queue that call behind a train step."""
+        declared = declared_concurrency_groups(TrainRayActor)
+
+        assert {name: declared.get(name) for name in ("get_heartbeat_status", "inject_fault", "kill_self")} == {
+            "get_heartbeat_status": "heartbeat_status",
+            "inject_fault": "fault_injector",
+            "kill_self": "kill_self",
+        }
+
+    def test_every_annotated_group_is_declared(self):
+        """Ray rejects an actor whose method names a concurrency group the class never declares."""
+        annotated_groups: set[str] = set(declared_concurrency_groups(TrainRayActor).values())
+
+        assert annotated_groups
+        assert annotated_groups <= set(TRAINER_CONCURRENCY_GROUPS)
+
+    def test_the_same_methods_are_isolated_under_rpc_communication(self):
+        """The rpc server has its own group per method, and an unannotated one queues behind a train step."""
+        groups = {
+            name: _find_rpc_config(getattr(TrainRayActor, name)).concurrency_group
+            for name in ("get_heartbeat_status", "inject_fault", "kill_self")
+        }
+
+        assert groups == {
+            "get_heartbeat_status": "heartbeat_status",
+            "inject_fault": "fault_injector",
+            "kill_self": "kill_self",
+        }
 
 
 class TestEnvironmentVariables:
