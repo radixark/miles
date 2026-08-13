@@ -27,12 +27,14 @@ from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.data import RolloutDataPack
 from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
+from miles.utils.multi_lora import EmptyBatchTimeoutError
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 from miles.utils.weight_version import assert_samples_weight_version_sane, assert_weight_version_is_published
@@ -127,7 +129,7 @@ class RolloutExecutor:
 
     # -------------------------- data generation -----------------------------
 
-    async def get(self, rollout_id: int) -> dict[str, Any]:
+    async def get(self, rollout_id: int) -> RolloutDataPack:
         start_time = time.time()
         self.rollout_id = rollout_id
         self._rollouts_since_weight_version_publish += 1
@@ -137,7 +139,12 @@ class RolloutExecutor:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
-            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+            try:
+                data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+            except EmptyBatchTimeoutError as e:
+                assert self.args.multi_lora, "only the multi-LoRA rollout waits for a non-empty batch"
+                logger.warning(f"Rollout {rollout_id} produced no trainable group before the empty-wait timeout: {e}")
+                return RolloutDataPack(empty_batch_timeout=True)
         save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
         data = convert_samples_to_train_data(
@@ -152,7 +159,7 @@ class RolloutExecutor:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        return dict(sample_indices=sample_indices, data_ref=data_ref)
+        return RolloutDataPack(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
         self,

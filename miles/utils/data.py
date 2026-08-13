@@ -11,6 +11,7 @@ import numpy as np
 
 from miles.ray.rollout.train_data_conversion import split_train_data_by_dp_raw
 from miles.utils import object_store
+from miles.utils.pydantic_utils import StrictBaseModel
 from .audit_utils.witness.allocator import WitnessInfo
 
 if TYPE_CHECKING:
@@ -319,10 +320,21 @@ def process_rollout_data(
     return process_rollout_data_shard(args, rollout_data), get_result
 
 
-def remove_rollout_data_refs(args, rollout_data_pack: dict) -> None:
+class RolloutDataPack(StrictBaseModel):
+    sample_indices: list[int] | None = None
+    data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None = None
+    empty_batch_timeout: bool = False
+
+    @property
+    def data_refs(self) -> list[object_store.StoreObjectRef]:
+        if (ref := self.data_ref) is None:
+            return []
+        return ref if isinstance(ref, list) else [ref]
+
+
+def remove_rollout_data_refs(args, rollout_data_pack: RolloutDataPack) -> None:
     store = object_store.get_instance()
-    data_ref = rollout_data_pack["data_ref"]
-    for ref in data_ref if isinstance(data_ref, list) else [data_ref]:
+    for ref in rollout_data_pack.data_refs:
         store.remove(ref)
 
 
