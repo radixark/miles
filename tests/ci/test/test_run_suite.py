@@ -273,34 +273,67 @@ class TestWorkflowScopeSeam:
             assert "--event-name" not in cmd
             assert "--continue-on-error" not in cmd
 
-    def test_both_cpu_stages_require_both_resolvers(self):
+    def test_cpu_stages_only_require_policy(self):
         workflow = self._workflow()
         stage_a = workflow.split("  stage-a-cpu:", 1)[1].split("  stage-b-cpu:", 1)[0]
         stage_b = workflow.split("  stage-b-cpu:", 1)[1].split("  stage-b-2-gpu-h200:", 1)[0]
 
-        expected = "needs: [resolve-ci-policy, resolve-ci-image]"
+        expected = "needs: [resolve-ci-policy]"
         assert expected in stage_a
         assert expected in stage_b
+        assert "resolve-ci-image" not in stage_a
+        assert "resolve-ci-image" not in stage_b
 
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
         assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
+        assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
         assert "cpu_runner" not in workflow
 
         gpu_workflow = self._reusable_workflow("_run-ci.yml")
         cpu_workflow = self._reusable_workflow("_run-cpu-ci.yml")
+        docker_workflow = self._reusable_workflow("_build-pr-ci-image.yml")
         job_id_pattern = r"^  ([A-Za-z_][A-Za-z0-9_-]*):$"
         gpu_jobs = re.findall(job_id_pattern, gpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         cpu_jobs = re.findall(job_id_pattern, cpu_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
+        docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["run"]
         assert cpu_jobs == ["run-cpu"]
+        assert docker_jobs == ["docker-paths", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
         assert "cpu_runner" not in cpu_workflow
 
+    def test_docker_build_waits_for_cpu_gate_and_preserves_bypass(self):
+        workflow = self._workflow()
+        caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+
+        assert "needs: [resolve-ci-policy, stage-a-cpu]" in caller
+        assert "always() && !cancelled()" in caller
+        assert "github.event.action != 'closed'" in caller
+        assert "needs.resolve-ci-policy.result == 'success'" in caller
+        assert "needs.stage-a-cpu.result == 'success'" in caller
+        assert "needs.stage-a-cpu.result == 'failure'" in caller
+        assert "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'" in caller
+        assert "stage-b-cpu" not in caller
+        assert "uses: ./.github/workflows/_build-pr-ci-image.yml" in caller
+        assert "secrets: inherit" in caller
+
+    def test_docker_build_body_lives_in_reusable_workflow(self):
+        workflow = self._workflow()
+        reusable = self._reusable_workflow("_build-pr-ci-image.yml")
+
+        assert "  docker-paths:" not in workflow
+        assert "value: ${{ jobs.docker-build.outputs.built }}" in reusable
+        assert "needs: [docker-paths]" in reusable
+        assert "if ! CHANGED_PATHS=$(git diff --name-only HEAD^1 HEAD); then" in reusable
+        assert "::error::Failed to determine docker-relevant changes." in reusable
+        assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
+        assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
+
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
         assert "uses: actions/checkout@v4" in policy_block
         assert "persist-credentials: false" in policy_block
         assert "run: python -m tests.ci.ci_policy" in policy_block
@@ -312,7 +345,7 @@ class TestWorkflowScopeSeam:
 
     def test_policy_job_passes_trigger_facts(self):
         workflow = self._workflow()
-        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
+        policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("  docker-build:", 1)[0]
         assert "EVENT_NAME: ${{ github.event_name }}" in policy_block
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
@@ -353,10 +386,11 @@ class TestWorkflowScopeSeam:
 
     def test_gpu_gates_consume_shared_bypass_output(self):
         workflow = self._workflow()
+        gpu_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
-        assert workflow.count(bypass_gate) == 5
-        assert workflow.count("needs.resolve-ci-policy.result == 'success'") == 5
-        assert workflow.count("needs.resolve-ci-image.result == 'success'") == 5
+        assert gpu_stages.count(bypass_gate) == 5
+        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 5
+        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 5
 
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
@@ -373,9 +407,13 @@ class TestWorkflowScopeSeam:
             in workflow
         )
 
-        for job_name in ("resolve-ci-policy", "docker-paths", "docker-build"):
-            job_header = workflow.split(f"  {job_name}:", 1)[1].split("    runs-on:", 1)[0]
-            assert "github.event.action != 'closed'" in job_header
+        policy_header = workflow.split("  resolve-ci-policy:", 1)[1].split("    runs-on:", 1)[0]
+        docker_caller = workflow.split("  docker-build:", 1)[1].split("  resolve-ci-image:", 1)[0]
+        reusable = self._reusable_workflow("_build-pr-ci-image.yml")
+
+        assert "github.event.action != 'closed'" in policy_header
+        assert "github.event.action != 'closed'" in docker_caller
+        assert reusable.count("github.event.action != 'closed'") == 2
 
 
 class TestRocmWorkflowScopeSeam:

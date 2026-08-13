@@ -102,91 +102,21 @@ jobs:
           CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
         run: python -m tests.ci.ci_policy
 
-  docker-paths:
-    if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    outputs:
-      changed: ${{ steps.diff.outputs.changed }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - id: diff
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-        run: |
-          # Cron and manual runs have no PR diff and never build a PR image.
-          if [ -z "$BASE_SHA" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Compare the PR merge commit with its current base (HEAD^1) rather than
-          # the recorded base.sha, which can lag main and pull in unrelated changes.
-          # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
-          if git diff --name-only HEAD^1 HEAD \
-              | grep -qE '^(docker/(Dockerfile|build\.py|install-kube-tools\.sh|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  # Docker PRs: build the multi-arch image first and run every suite inside it.
-  # Always runs: with nothing to build every step is a no-op on a free hosted
-  # runner; actual builds run on docker-build nodes, never the GPU-suite pool.
+  # Resolve and build a PR image only after the fast CPU gate completes.
+  # Nightly, weekly, and bypass-fastfail preserve their cross-stage exception.
   docker-build:
-    needs: [docker-paths]
-    if: always() && !cancelled() && github.event.action != 'closed'
-    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["docker-build"]' || '["ubuntu-latest"]') }}
-    timeout-minutes: 180
-    outputs:
-      built: ${{ steps.build.outputs.built || 'false' }}
-    env:
-      # Forks cannot push to the registry, so they keep the released image.
-      BUILD: ${{ needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
-    steps:
-      - name: Checkout repository
-        if: env.BUILD == 'true'
-        uses: actions/checkout@v4
-      - name: Set up Docker Buildx
-        if: env.BUILD == 'true'
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
-      - name: Install Python + dependencies
-        if: env.BUILD == 'true'
-        run: |
-          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
-            apt-get -o DPkg::Lock::Timeout=600 update
-            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
-          fi
-          # Older pip (<23) lacks --break-system-packages; newer PEP 668
-          # systems require it. Probe instead of assuming either.
-          PIP_BSP=""
-          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
-          pip3 install $PIP_BSP --ignore-installed typer
-      - name: Login to Docker Hub
-        if: env.BUILD == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - name: Build and push PR tag
-        id: build
-        if: env.BUILD == 'true'
-        run: |
-          python3 docker/build.py --variant cu13 --image-tag custom \
-            --custom-tag pr-${{ github.event.pull_request.number }} --push
-          echo "built=true" >> "$GITHUB_OUTPUT"
-      - name: Nothing to build
-        if: env.BUILD != 'true'
-        run: echo "No docker-relevant changes; suites use the released image."
+    needs: [resolve-ci-policy, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      github.event.action != 'closed' &&
+      needs.resolve-ci-policy.result == 'success' &&
+      (needs.stage-a-cpu.result == 'success' ||
+         (needs.stage-a-cpu.result == 'failure' && needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'))
+    uses: ./.github/workflows/_build-pr-ci-image.yml
+    secrets: inherit
 
-  # No `if:` guard: a real build failure must stop the suites rather than run them
-  # against a stale image.
+  # No if guard: a detector or build failure must stop the suites rather than
+  # run them against a stale image.
   resolve-ci-image:
     needs: [docker-build]
     runs-on: ubuntu-latest
@@ -222,7 +152,7 @@ jobs:
   # Uses the CPU-only reusable workflow on GitHub-hosted ubuntu-latest, so
   # fast tests do not occupy GPU-fleet runner slots.
   stage-a-cpu:
-    needs: [resolve-ci-policy, resolve-ci-image]
+    needs: [resolve-ci-policy]
     strategy:
       fail-fast: false
       matrix:
@@ -240,7 +170,7 @@ jobs:
   # Stage B: CPU-only bucket for slower CPU tests that don't fit stage-a-cpu's
   # fast budget. Always runs on PR; an empty suite still exits 0 in run_suite.py.
   stage-b-cpu:
-    needs: [resolve-ci-policy, resolve-ci-image]
+    needs: [resolve-ci-policy]
     uses: ./.github/workflows/_run-cpu-ci.yml
     with:
       ref: ${{ inputs.ref || '' }}

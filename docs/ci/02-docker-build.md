@@ -54,19 +54,22 @@ The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `de
 
 A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`.
 
-## PR build check (in `pr-test.yml`)
+## PR build check (`_build-pr-ci-image.yml`)
 
-Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
+Same-repository PRs that change Docker inputs are build-tested before merge; fork PRs cannot push a PR-scoped image and use normal image resolution. `docker-build.yml` only runs after a push to `main`, so without the PR check same-repository breakage lands on `main` first.
 
-When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
+After `stage-a-cpu` succeeds, `pr-test.yml` calls `_build-pr-ci-image.yml`; resolved nightly, weekly, or release cadence and `bypass-fastfail` retain the explicit exception that calls it after an actual CPU-gate failure. The reusable workflow owns `docker-paths` and `docker-build`, while `pr-test.yml` owns the CPU gate and image resolution.
+
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt`, the reusable workflow builds before image resolution and the GPU matrix:
 
 | Job | What it does |
 | --- | --- |
-| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64`, then pushes one multi-arch PR-scoped `radixark/miles:pr-<num>` tag (same-repo PRs; fork PRs skip it and test on `dev`) |
-| `resolve-ci-image` | waits for the build and resolves the CI image to `pr-<num>`, so **every GPU suite runs inside the freshly built image**; a failed build stops the matrix instead of testing the stale image. The fresh build outranks a `ci-image-tag:` PR-body directive — the directive applies only when no PR image was built (non-docker or fork PRs) |
+| `docker-paths` (`_build-pr-ci-image.yml`) | detects whether the PR changes an input to the CUDA PR image |
+| `docker-build` (`_build-pr-ci-image.yml`) | builds `cu13` for `linux/amd64` and `linux/arm64`, then pushes one multi-arch PR-scoped `radixark/miles:pr-<num>` tag (same-repository PRs; fork PRs skip the build and use normal image resolution) |
+| `resolve-ci-image` (`pr-test.yml`) | waits for the reusable call and resolves the CI image to `pr-<num>`, so **every GPU suite runs inside the freshly built image**; a detector or build failure stops the GPU chain instead of testing the stale image. The fresh build outranks a `ci-image-tag:` PR-body directive — the directive applies only when no PR image was built (non-docker or fork PRs) |
 | `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the `pr-<num>` tag when the PR closes; the tag stays available for re-runs while the PR is open |
 
-Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` skips, and the matrix runs on `dev` as before.
+Non-docker PRs run both CPU stages without waiting for image preparation. After the `stage-a-cpu` gate, `docker-paths` reports no change, `docker-build` is a hosted-runner no-op, and the GPU matrix uses normal image resolution: a valid `ci-image-tag:` directive when present, otherwise `dev`.
 
 ## Rolling Docker build (`docker-build.yml`)
 
