@@ -24,7 +24,7 @@ class _RecordingModelCls:
 def _actor(attn_implementation, model_cls):
     actor = object.__new__(FSDPTrainRayActor)
     actor.args = SimpleNamespace(attn_implementation=attn_implementation)
-    actor.get_model_cls = lambda: model_cls
+    actor._get_model_cls = lambda: model_cls
     return actor
 
 
