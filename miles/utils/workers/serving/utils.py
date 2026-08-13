@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 from miles.utils.function_registry import load_function
 from miles.utils.workers.worker_spec import ServeWorkerSpec
+
+IPV4_WILDCARD_HOST = "0.0.0.0"
+IPV6_WILDCARD_HOST = "::"
+
+
+def create_server_socket(*, port: int) -> socket.socket:
+    if socket.has_dualstack_ipv6():
+        return socket.create_server(
+            (IPV6_WILDCARD_HOST, port),
+            family=socket.AF_INET6,
+            dualstack_ipv6=True,
+        )
+    return socket.create_server((IPV4_WILDCARD_HOST, port), family=socket.AF_INET)
 
 
 @contextmanager
