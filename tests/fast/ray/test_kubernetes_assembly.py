@@ -23,7 +23,7 @@ from miles.utils.workers.cell_operations import kubernetes as cell_operations_ku
 from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import PodListPage
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
-from miles.utils.workers.rpc.common.wire_types import WireNamespace
+from miles.utils.workers.rpc.common.wire_types import Pickled
 from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_provider.kubernetes.core import provider as core_provider
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesWorkerProvider
@@ -121,7 +121,7 @@ class FakeTrainerController:
         self.initialized = False
         self.trained: list[tuple[int, dict[str, Any]]] = []
 
-    async def init(self, args: WireNamespace) -> list[Any]:
+    async def init(self, args: Pickled) -> list[Any]:
         self.initialized = args
         return [5]
 
