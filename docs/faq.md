@@ -107,7 +107,7 @@ them explicitly with `--rollout-stop` or `--rollout-stop-token-ids`.
 
 <Accordion title={<>SGLang error: <code>illegal memory access</code>.</>}>
 
-Per the [SGLang FAQ](https://docs.sglang.io/docs/references/faq), this is usually OOM
+Per the [SGLang FAQ](https://docs.sglang.io/references/faq.html), this is usually OOM
 masquerading. Lower `--sglang-mem-fraction-static`.
 
 </Accordion>
@@ -139,6 +139,6 @@ then go investigate the data + model alignment that caused it.
 
 </AccordionGroup>
 
-Still stuck? Drop a thread in the `#miles` channel of the [SGLang Slack](https://slack.sglang.ai)
+Still stuck? Drop a thread in the Miles channel of the [SGLang Slack](https://slack.sglang.ai)
 or open an issue on [GitHub](https://github.com/radixark/miles/issues).
 
