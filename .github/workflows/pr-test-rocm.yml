@@ -25,10 +25,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
-    # Same nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
+    # Same UTC nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
     - cron: '0 15 * * 0-5'
-    - cron: '0 8 * * 6'
-      timezone: 'America/Los_Angeles'
+    - cron: '0 15 * * 6'
   workflow_dispatch:
     inputs:
       ci_image_tag:

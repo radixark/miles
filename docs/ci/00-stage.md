@@ -40,7 +40,7 @@ In `pr-test.yml`, `tier a` (CPU fast) gates the NVIDIA GPU fleet after both reso
 - `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
 - Each Miles PR workflow passes trigger facts to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, and `bypass_fastfail` outputs. That module owns trigger adaptation and the shared `resolve_policy` consumed by `run_suite.py`.
 - A PR `nightly` label maps to nightly cadence.
-- A scheduled run maps its exact `github.event.schedule` cron: `0 15 * * 0-5` maps to nightly and `0 8 * * 6` maps to weekly; an unknown cron fails.
+- A scheduled run maps its exact UTC `github.event.schedule` cron: `0 15 * * 0-5` maps to nightly and `0 15 * * 6` maps to weekly; an unknown cron fails.
 - A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI300X run.
 
 A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. A **weekly** policy selects every enabled tag, including `long` and `ft-long`, admits both registration types, and disables fast-fail. Regular cadence admits only regular registrations. All three cadences use the same stage inventory.

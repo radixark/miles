@@ -317,9 +317,11 @@ class TestWorkflowScopeSeam:
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
         assert configured == set(SCHEDULE_POLICIES)
 
-    def test_weekly_schedule_uses_pacific_time(self):
+    def test_scheduled_runs_use_utc_1500(self):
         workflow = self._workflow()
-        assert "    - cron: '0 8 * * 6'\n      timezone: 'America/Los_Angeles'" in workflow
+        assert "    - cron: '0 15 * * 0-5'" in workflow
+        assert "    - cron: '0 15 * * 6'" in workflow
+        assert "timezone:" not in workflow
 
     def test_weekly_serializes_each_gpu_matrix(self):
         workflow = self._workflow()
@@ -333,8 +335,7 @@ class TestWorkflowScopeSeam:
             block = workflow.split(f"  {job}:", 1)[1]
             block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
             expected = (
-                "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' "
-                f"&& 1 || {default} }}}}"
+                "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' " f"&& 1 || {default} }}}}"
             )
             assert expected in block
 
@@ -379,7 +380,9 @@ class TestRocmWorkflowScopeSeam:
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
         assert configured == set(SCHEDULE_POLICIES)
-        assert "    - cron: '0 8 * * 6'\n      timezone: 'America/Los_Angeles'" in workflow
+        assert "    - cron: '0 15 * * 0-5'" in workflow
+        assert "    - cron: '0 15 * * 6'" in workflow
+        assert "timezone:" not in workflow
 
         policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]
         assert "allow_self_hosted" not in policy_block
@@ -573,9 +576,7 @@ class TestRunSuitePolicyIntegration:
             return 0
 
         monkeypatch.setattr(run_suite_module, "run_unittest_files", fake_run_unittest_files)
-        result = run_suite_module.run_a_suite(
-            _run_args(hw="cuda", suite="stage-c-8-gpu-h100", cadence=WEEKLY_CADENCE)
-        )
+        result = run_suite_module.run_a_suite(_run_args(hw="cuda", suite="stage-c-8-gpu-h100", cadence=WEEKLY_CADENCE))
         assert result == 0
         assert _names(captured["tests"]) == {"tests/e2e/test_weekly.py"}
         assert captured["continue_on_error"] is True

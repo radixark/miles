@@ -49,7 +49,7 @@ register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
             True,
         ),
         ("schedule", "0 15 * * 0-5", "not JSON", NIGHTLY_CADENCE, (), True),
-        ("schedule", "0 8 * * 6", "not JSON", WEEKLY_CADENCE, (), True),
+        ("schedule", "0 15 * * 6", "not JSON", WEEKLY_CADENCE, (), True),
         ("workflow_dispatch", "", "not JSON", REGULAR_CADENCE, (), False),
     ],
 )
@@ -94,7 +94,7 @@ def test_nightly_label_and_nightly_schedule_share_the_same_run_policy():
 
 
 def test_weekly_schedule_resolves_to_independent_full_policy():
-    scheduled = resolve_workflow_inputs("schedule", "0 8 * * 6", "not JSON")
+    scheduled = resolve_workflow_inputs("schedule", "0 15 * * 6", "not JSON")
     policy = resolve_policy(scheduled.cadence, set(scheduled.raw_labels))
 
     assert policy.cadence == WEEKLY_CADENCE

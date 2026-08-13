@@ -52,7 +52,7 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts to `tests
 
 Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > weekly > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; regular cadence still does not admit `nightly=True` registrations.
 
-The generic triggers carry no policy. Nightly is identified by the exact cron `0 15 * * 0-5`; weekly is identified by `0 8 * * 6` with `America/Los_Angeles` scheduling. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels, so it receives only the ordinary always-on scope; its existing operation inputs do not imply all, nightly, or weekly.
+The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 15 * * 0-5`, and weekly by `0 15 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels, so it receives only the ordinary always-on scope; its existing operation inputs do not imply all, nightly, or weekly.
 
 A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
 

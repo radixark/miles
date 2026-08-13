@@ -23,7 +23,7 @@ CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE, WEEKLY_CADENCE})
 # explicitly so a future cadence cannot silently inherit nightly behavior.
 SCHEDULE_POLICIES: dict[str, tuple[str, tuple[str, ...]]] = {
     "0 15 * * 0-5": (NIGHTLY_CADENCE, ()),
-    "0 8 * * 6": (WEEKLY_CADENCE, ()),
+    "0 15 * * 6": (WEEKLY_CADENCE, ()),
 }
 
 
