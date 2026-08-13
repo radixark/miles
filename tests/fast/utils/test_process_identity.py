@@ -33,6 +33,11 @@ class TestProcessIdentityToName:
         """A generic trainer id must survive validation, or a multi policy worker cannot configure its logger."""
         assert TrainerControllerProcessIdentity(trainer_id="alpha-actor").to_name() == "trainer_controller_alpha-actor"
 
+    def test_a_policy_worker_names_the_policy_it_serves(self) -> None:
+        """Two policies write to the same log directory, so their file names must differ."""
+        source = TrainProcessIdentity(component="actor", model_id="alpha", cell_index=1, rank_within_cell=3)
+        assert source.to_name() == "alpha_actor_cell1_rank3"
+
     def test_inference_controller(self) -> None:
         assert SimpleProcessIdentity(component="inference_controller").to_name() == "inference_controller"
 

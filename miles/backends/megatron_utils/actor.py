@@ -112,7 +112,7 @@ class MegatronTrainRayActor(TrainRayActor):
             indep_dp_info=indep_dp_info,
         )
 
-        trainer_pool_id = compute_trainer_pool_id(role)
+        trainer_pool_id = compute_trainer_pool_id(args.trainer_id)
         self._ft_test_action_executor = FTTestActionActorExecutor.from_args(
             args,
             cell_id=compute_cell_id(pool_id=trainer_pool_id, cell_index=indep_dp_info.cell_index),
