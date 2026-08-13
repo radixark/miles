@@ -33,6 +33,8 @@ class RolloutFnBaseInput:
 class RolloutFnTrainInput(RolloutFnBaseInput):
     # engine weight version, None before the first weight update
     weight_version: int | None = None
+    # which policy model asked for this rollout; None when the run trains one policy
+    trainer_model_id: str | None = None
 
     @property
     def evaluation(self):
