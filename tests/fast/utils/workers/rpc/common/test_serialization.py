@@ -506,6 +506,12 @@ class TestRejectedPayloads:
         with pytest.raises((TypeError, PydanticSerializationError)):
             json.dumps(serializer.encode_result(object()))
 
+    def test_wrong_result_type_is_rejected_at_encode(self):
+        """The worker that produced the bad result is where the failure lands, not the caller."""
+        serializer = _serializer(int)
+        with pytest.raises(PydanticSerializationError):
+            serializer.encode_result("not-an-int")
+
     def test_wrong_result_type_is_rejected(self):
         """A result payload that does not match the annotation fails validation."""
         serializer = _serializer(int)
