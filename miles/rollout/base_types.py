@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 from argparse import Namespace
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -65,6 +66,21 @@ class RolloutFnEvalOutput:
 
 RolloutFnInput = RolloutFnTrainInput | RolloutFnEvalInput
 RolloutFnOutput = RolloutFnTrainOutput | RolloutFnEvalOutput
+
+
+class BaseRolloutFn(abc.ABC):
+    def __init__(self, input: RolloutFnConstructorInput) -> None:
+        self.constructor_input = input
+
+    @abc.abstractmethod
+    def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
+        raise NotImplementedError
+
+    def save(self, rollout_id: int) -> None:
+        return None
+
+    def load(self, rollout_id: int | None) -> None:
+        return None
 
 
 @dataclass(frozen=True)

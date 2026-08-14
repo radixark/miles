@@ -1,30 +1,35 @@
+import asyncio
 import hashlib
 import logging
 import math
 import os
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from concurrent.futures import Future
+from typing import TYPE_CHECKING, Any
 
-import ray
 import torch
 import torch.distributed as dist
-from ray import ObjectRef
-from ray.actor import ActorHandle
 
 from miles.backends.megatron_utils.lora_utils import (
     build_lora_sync_config,
     is_lora_weight_name,
     lora_base_cpu_backup_enabled,
 )
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.backends.training_utils.conn_status import ConnStatusManager
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
+
+if TYPE_CHECKING:
+    pass
+
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator_base import HfWeightIteratorBase
-
 from .update_weight_from_distributed.broadcast import (
     connect_rollout_engines_from_distributed,
     disconnect_rollout_engines_from_distributed,
@@ -125,20 +130,12 @@ class UpdateWeightFromTensor:
                 self._ipc_gather_src = start_rank
 
         self._model_update_groups = None
-        self.rollout_engines: Sequence[ActorHandle] | None = None
-        self._connection_stale: bool = False
-
-    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
+        self.rollout_engines: Sequence[SGLangApiClient] | None = None
+        self.conn_status = ConnStatusManager()
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
+        rollout_engines: Sequence[SGLangApiClient],
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -147,7 +144,6 @@ class UpdateWeightFromTensor:
         for distributed. Map ranks to colocated IPC engines.
         """
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
 
         if engine_gpu_counts is None:
             engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
@@ -254,8 +250,10 @@ class UpdateWeightFromTensor:
 
         if rank == 0:
             mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
-            ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.pause_generation(mode=mode)) for client in self.rollout_engines]
+            )
+            async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in self.rollout_engines])
             if not skip_base_sync:
                 begin_weight_update(self.rollout_engines, weight_update_selector(self.args))
         dist.barrier(group=get_gloo_group())
@@ -266,8 +264,8 @@ class UpdateWeightFromTensor:
             for hf_named_tensors in self._hf_weight_iterator.get_hf_weight_chunks(
                 megatron_local_weights, weight_type="base"
             ):
-                refs, long_lived_tensors = self._send_base_params(hf_named_tensors)
-                results = ray.get(refs)
+                futures, long_lived_tensors = self._send_base_params(hf_named_tensors)
+                results = async_utils.wait_futures(futures)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors
 
@@ -276,8 +274,8 @@ class UpdateWeightFromTensor:
                 mm_tower_tensors = [
                     (name, tensor.to(torch.cuda.current_device())) for name, tensor in mm_tower_tensors
                 ]
-                refs, long_lived_tensors = self._send_base_params(mm_tower_tensors)
-                results = ray.get(refs)
+                futures, long_lived_tensors = self._send_base_params(mm_tower_tensors)
+                results = async_utils.wait_futures(futures)
                 _check_weight_sync_results(results, is_lora=False)
                 del long_lived_tensors, mm_tower_tensors
 
@@ -300,8 +298,8 @@ class UpdateWeightFromTensor:
 
             accumulated_named_tensors = _pp_assemble_full_adapter(accumulated_named_tensors)
 
-            refs, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
-            results = ray.get(refs)
+            futures, long_lived_tensors = self._send_lora_params(accumulated_named_tensors)
+            results = async_utils.wait_futures(futures)
             _check_weight_sync_results(results, is_lora=True)
             del long_lived_tensors
             del accumulated_named_tensors
@@ -317,7 +315,9 @@ class UpdateWeightFromTensor:
             # Skip when no fresh base bytes landed (skip_base_sync).
             if not skip_base_sync:
                 end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]
+            )
         dist.barrier(group=get_gloo_group())
 
     def _mm_tower_named_tensors(self) -> list[tuple[str, torch.Tensor]] | None:
@@ -364,7 +364,7 @@ class UpdateWeightFromTensor:
                 self._mm_tower_cache = []
         return self._mm_tower_cache
 
-    def _send_base_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def _send_base_params(self, hf_named_tensors) -> tuple[list[Future], Any]:
         refs, long_lived_tensors = _send_to_colocated_engine(
             hf_named_tensors=hf_named_tensors,
             ipc_engine=self._ipc_engine,
@@ -386,7 +386,7 @@ class UpdateWeightFromTensor:
                 refs = (refs or []) + refs_distributed
         return refs or [], long_lived_tensors
 
-    def _send_lora_params(self, hf_named_tensors) -> tuple[list[ObjectRef], Any]:
+    def _send_lora_params(self, hf_named_tensors) -> tuple[list[Future], Any]:
         if not any(is_lora_weight_name(n) for n, _ in hf_named_tensors):
             raise RuntimeError(
                 "LoRA weight sync failed: chunk contains no LoRA weights "
@@ -460,7 +460,7 @@ def _send_to_colocated_engine(
     check_equal: bool = False,
     selector: str = "all",
     repack_lora_for_ipc: bool = False,
-) -> tuple[list[ObjectRef], Any]:
+) -> tuple[list[Future], Any]:
     # Placeholder ranks (GPU slots reserved but no engine) have no gather group.
     # gather_object is only collective among group members, so we skip entirely.
     if ipc_gather_group is None:
@@ -503,11 +503,11 @@ def _send_to_colocated_engine(
         group=ipc_gather_group,
     )
 
-    refs = []
+    futures: list[Future] = []
     if is_gather_src:
         if is_lora:
             try:
-                ray.get(ipc_engine.unload_lora_adapter.remote(lora_name=lora_name))
+                async_utils.wait_futures([async_utils.submit(ipc_engine.unload_lora_adapter(lora_name=lora_name))])
             except Exception as _unload_err:
                 logger.debug("lora unload before load skipped: %s", _unload_err)
 
@@ -520,19 +520,22 @@ def _send_to_colocated_engine(
                     for n, t in hf_named_tensors
                 }
 
-            refs.append(
-                ipc_engine.load_lora_adapter_from_tensors.remote(
-                    lora_name=lora_name,
-                    config_dict=lora_config,
-                    serialized_named_tensors=[
-                        per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
-                    ],
-                    expected_checksums=expected_checksums,
+            futures.append(
+                async_utils.submit(
+                    ipc_engine.load_lora_adapter_from_tensors(
+                        lora_name=lora_name,
+                        config_dict=lora_config,
+                        serialized_named_tensors=[
+                            per_rank[0] if per_rank else None for per_rank in serialized_named_tensors
+                        ],
+                        expected_checksums=expected_checksums,
+                    )
                 )
             )
 
         else:
             num_dtypes = len(serialized_named_tensors[0])
+            ipc_gate = asyncio.Lock()
             for i in range(num_dtypes):
                 kwargs = {
                     "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
@@ -540,6 +543,13 @@ def _send_to_colocated_engine(
                     "weight_version": str(weight_version),
                     "selector": selector,
                 }
-                refs.append(ipc_engine.update_weights_from_tensor.remote(**kwargs))
+                futures.append(async_utils.submit(_update_weights_from_tensor_gated(ipc_gate, ipc_engine, kwargs)))
 
-    return refs, long_live_tensors
+    return futures, long_live_tensors
+
+
+async def _update_weights_from_tensor_gated(
+    gate: asyncio.Lock, api_client: SGLangApiClient, kwargs: dict[str, Any]
+) -> Any:
+    async with gate:
+        return await api_client.update_weights_from_tensor(**kwargs)

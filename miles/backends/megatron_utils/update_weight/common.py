@@ -5,14 +5,13 @@ import re
 from argparse import Namespace
 from collections.abc import Iterator, Mapping, Sequence
 
-import ray
 import torch
 import torch.distributed as dist
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
-from ray.actor import ActorHandle
-
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import async_utils
 from miles.utils.types import ParamInfo
 
 logger = logging.getLogger(__name__)
@@ -408,9 +407,11 @@ def collect_named_tensors_for_weight_transfer(
             yield name, tensor
 
 
-def begin_weight_update(rollout_engines: Sequence[ActorHandle], selector: str = "all"):
+def begin_weight_update(rollout_engines: Sequence[SGLangApiClient], selector: str = "all"):
     """Open a weight-update session on the selected rollout engines (restore packed weights)."""
-    ray.get([engine.begin_weight_update.remote(selector=selector) for engine in rollout_engines])
+    async_utils.wait_futures(
+        [async_utils.submit(client.begin_weight_update(selector=selector)) for client in rollout_engines]
+    )
 
 
 def weight_update_selector(args) -> str:
@@ -424,9 +425,9 @@ def weight_update_selector(args) -> str:
     return "all"
 
 
-def end_weight_update(rollout_engines: Sequence[ActorHandle]):
+def end_weight_update(rollout_engines: Sequence[SGLangApiClient]):
     """Close the weight-update session (post-load + quant post-process on the full model)."""
-    ray.get([engine.end_weight_update.remote() for engine in rollout_engines])
+    async_utils.wait_futures([async_utils.submit(client.end_weight_update()) for client in rollout_engines])
 
 
 def _check_weight_sync_results(results: list, *, is_lora: bool) -> None:

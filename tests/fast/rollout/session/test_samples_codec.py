@@ -12,7 +12,18 @@ import safetensors.numpy
 from safetensors import SafetensorError
 
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample, encode_samples
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+
+def _per_call(*spans: tuple[str, int, int]) -> WeightVersionsPerCall:
+    """One generation call's weight-version spans, given as `(version, abs_start, abs_end)` triples."""
+    return WeightVersionsPerCall(
+        spans=[WeightVersionSpan(version=version, abs_start=start, abs_end=end) for version, start, end in spans]
+    )
+
+
+def _versions(version: str) -> WeightVersionsPerCall:
+    return WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
 
 
 def _computed_sample(**overrides) -> Sample:
@@ -26,7 +37,7 @@ def _computed_sample(**overrides) -> Sample:
     s.rollout_routed_experts = np.arange(24, dtype=np.int32).reshape(4, 3, 2)
     s.rollout_indexer_topk = None
     s.status = Sample.Status.COMPLETED
-    s.weight_versions = ["w1", "w2"]
+    s.weight_versions = [_versions("w1"), _versions("w2")]
     s.prefix_cache_info = Sample.PrefixCacheInfo.from_dict({"cached_tokens": 2, "total_prompt_tokens": 3})
     s.metadata = {
         "lifecycle": [{"t0": 1.0, "t1": 2.0, "turn": 1}],
@@ -71,7 +82,7 @@ class TestSamplesWireCodec:
         assert out.loss_mask == [1, 1]
         assert out.response == "[10][11]" and out.response_length == 2
         assert out.status == Sample.Status.COMPLETED
-        assert out.weight_versions == ["w1", "w2"]
+        assert out.weight_versions == [_versions("w1"), _versions("w2")]
         assert out.prefix_cache_info.to_dict() == {"cached_tokens": 2, "total_prompt_tokens": 3}
         assert out.rollout_routed_experts.dtype == np.int32
         assert np.array_equal(out.rollout_routed_experts, np.arange(24, dtype=np.int32).reshape(4, 3, 2))
@@ -115,7 +126,7 @@ class TestSamplesWireCodec:
         # The empty reply is decoded before the driver takes its ABORTED path, so
         # the overlay-defaults guard must not fire on it — even for an input
         # sample that would violate the guard.
-        evolved = Sample(weight_versions=["stale"])
+        evolved = Sample(weight_versions=[_versions("stale")])
         reply = decode_samples_and_merge_input_sample(
             encode_samples([], {"max_trim_tokens": 0}, "no_records"), evolved
         )
@@ -124,7 +135,7 @@ class TestSamplesWireCodec:
     def test_defaults_guard_rejects_evolved_template(self):
         payload = encode_samples([_computed_sample()], {}, None)
         with pytest.raises(AssertionError, match="weight_versions"):
-            decode_samples_and_merge_input_sample(payload, Sample(weight_versions=["stale"]))
+            decode_samples_and_merge_input_sample(payload, Sample(weight_versions=[_versions("stale")]))
         with pytest.raises(AssertionError, match="teacher_log_probs"):
             decode_samples_and_merge_input_sample(payload, Sample(teacher_log_probs=[-1.0]))
         with pytest.raises(AssertionError, match="opd_student_top_logprobs"):
@@ -254,3 +265,45 @@ class TestSamplesWireCodec:
         valid = encode_samples([_computed_sample()], {}, None)
         with pytest.raises(expected_error, match=match):
             decode_samples_and_merge_input_sample(build_payload(valid), Sample())
+
+
+class TestWeightVersionsOnTheSamplesWire:
+    def test_weight_versions_round_trip_preserves_multiple_spans_per_call(self):
+        """A call whose weights changed mid-decode keeps all of its spans nested under that call."""
+        weight_versions = [_per_call(("w1", 0, 2), ("w2", 2, 3)), _per_call(("w3", 3, 5))]
+        payload = encode_samples([_computed_sample(weight_versions=weight_versions)], {}, None)
+
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+
+        assert out.weight_versions == weight_versions
+
+    def test_weight_versions_round_trip_preserves_empty_calls(self):
+        """Unstamped generation calls survive as empty entries so the call count is preserved."""
+        weight_versions = [_per_call(), _per_call(("w1", 3, 5)), _per_call()]
+        payload = encode_samples([_computed_sample(weight_versions=weight_versions)], {}, None)
+
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+
+        assert out.weight_versions == weight_versions
+
+    @pytest.mark.parametrize(
+        ("weight_versions", "match"),
+        [
+            pytest.param(["w1", "w2"], "must be a mapping", id="legacy-scalar-versions"),
+            pytest.param(
+                [{"version": "w1", "abs_start": 3, "abs_end": 5}],
+                "must be a mapping",
+                id="spans-not-nested-per-call",
+            ),
+            pytest.param([[{"version": "w1", "abs_start": 3}]], "abs_end", id="span-missing-field"),
+        ],
+    )
+    def test_malformed_weight_versions_shape_fails_loudly(self, weight_versions, match):
+        """A weight_versions payload that is not a per-call list of span mappings raises instead of decoding."""
+        valid = encode_samples([_computed_sample(weight_versions=[_per_call(("w1", 3, 5))])], {}, None)
+        payload = _mutated_payload(
+            valid, lambda meta, tensors: meta["samples"][0].update(weight_versions=weight_versions)
+        )
+
+        with pytest.raises(TypeError, match=match):
+            decode_samples_and_merge_input_sample(payload, Sample())

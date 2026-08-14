@@ -51,7 +51,7 @@ def core():
         tokenizer_type=_ARGS.tito_model,
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
     return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
 
 

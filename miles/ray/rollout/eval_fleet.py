@@ -31,16 +31,6 @@ class EvalFleet:
 
         On the manager's event loop: keep everything here awaiting rather than blocking.
         """
-        try:
-            if not self.args.use_fault_tolerance:
-                # Otherwise RolloutHealthMonitor owns the probing for these engines.
-                await self._srv.probe_and_mark_dead()
-            await self._srv.recover()
-            await self._srv.wait_all_engines_alive()
-        except Exception as e:
-            logger.warning(f"Eval fleet unhealthy: {e}")
-            raise EvalSkip("unhealthy") from e
-
         if not await self._pin_fleet(checkpoint_dir, weight_version):
             raise EvalSkip("pin_violation")
 

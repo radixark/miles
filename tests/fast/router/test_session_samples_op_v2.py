@@ -18,13 +18,13 @@ import json
 import logging
 import uuid
 from copy import deepcopy
-from types import SimpleNamespace
 
 import numpy as np
 import pybase64
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 from tests.fast.rollout.session.test_samples import _make_record
 
 from miles.rollout.session.errors import TokenizationError
@@ -33,22 +33,22 @@ from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
 from miles.utils.chat_template_utils import get_tito_tokenizer
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 from miles.utils.processing_utils import load_tokenizer
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 NUM_LAYERS = 3
 TOPK = 2
 
-_ARGS = SimpleNamespace(
+_ARGS = make_session_server_config(
     use_session_server="v2",
-    miles_router_timeout=30,
+    timeout=30,
     hf_checkpoint="Qwen/Qwen3-0.6B",
     chat_template_path=None,
     apply_chat_template_kwargs={"enable_thinking": False},
     tito_model="default",
     sglang_speculative_algorithm=None,
-    session_server_instance_id=uuid.uuid4().hex,
+    instance_id=uuid.uuid4().hex,
     save_debug_trajectory_data=None,
     session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
     session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
@@ -74,10 +74,8 @@ def _build_core(use_addition_r3: bool = False) -> SessionCoreV2:
         tokenizer_type=_ARGS.tito_model,
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCoreV2(
-        _UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id, use_addition_r3=use_addition_r3
-    )
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
+    return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.instance_id, use_addition_r3=use_addition_r3)
 
 
 @pytest.fixture(scope="module")
@@ -199,7 +197,10 @@ async def test_assembled_samples_golden_merged(core):
     assert m.loss_mask == [1, 1, 0, 0, 1, 1]
     assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
     assert m.status == Sample.Status.COMPLETED
-    assert m.weight_versions == ["w1", "w2"]
+    assert m.weight_versions == [
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w1", abs_start=3, abs_end=5)]),
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version="w2", abs_start=7, abs_end=9)]),
+    ]
     assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
     assert m.prefix_cache_info.to_dict() == {"cached_tokens": 5, "total_prompt_tokens": 10}
     # Overlay: template fields are the driver's, untouched by the wire.
@@ -664,17 +665,15 @@ async def _exploding_async_picker(leaf_samples, session_metadata):
 
 
 def _build_core_with_hooks(use_addition_r3: bool = False, **hook_args) -> SessionCoreV2:
-    args = SimpleNamespace(**{**vars(_ARGS), **hook_args})
+    args = make_session_server_config(**{**_ARGS.model_dump(), **hook_args})
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
     tito_tokenizer = get_tito_tokenizer(
         tokenizer,
         tokenizer_type=args.tito_model,
         chat_template_kwargs=args.apply_chat_template_kwargs,
     )
-    registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCoreV2(
-        _UnusedBackend(), registry, args, args.session_server_instance_id, use_addition_r3=use_addition_r3
-    )
+    registry = SessionRegistryV2(tokenizer, tito_tokenizer=tito_tokenizer)
+    return SessionCoreV2(_UnusedBackend(), registry, args, args.instance_id, use_addition_r3=use_addition_r3)
 
 
 async def _retry_shaped_session(core):
@@ -756,6 +755,25 @@ async def test_duplicate_picker_maps_to_422(core):
         response = await hooked.collect_samples(sid, max_seq_len=None)
         assert response.status_code == 422
         assert "duplicates" in bytes(response.body).decode()
+
+
+def _exploding_postprocessor(picked_samples, session_metadata):
+    raise RuntimeError("postprocess bug")
+
+
+class TestConfiguredPostprocessor:
+    async def test_configured_postprocessor_failure_maps_to_422_with_identity(self):
+        """A configured postprocessor is loaded and invoked, and its failure is a 422 naming that postprocessor."""
+        with function_registry.temporary("test_hooks.exploding_postprocessor", _exploding_postprocessor):
+            hooked = _build_core_with_hooks(session_sample_postprocessor_path="test_hooks.exploding_postprocessor")
+            sid = await _retry_shaped_session(hooked)
+
+            response = await hooked.collect_samples(sid, max_seq_len=None)
+
+            assert response.status_code == 422
+            body = bytes(response.body).decode()
+            assert "test_hooks.exploding_postprocessor" in body
+            assert "postprocess bug" in body
 
 
 async def test_agent_cannot_fill_missing_server_metadata(core, monkeypatch):

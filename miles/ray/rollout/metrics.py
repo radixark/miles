@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -11,7 +12,6 @@ from miles.utils.metric_utils import (
     dict_add_prefix,
     has_repetition,
 )
-from miles.utils.misc import load_function
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
@@ -107,7 +107,7 @@ def _compute_metrics_from_samples(args, samples):
     oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
     if oldest_versions:
         log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
-        mixed = sum(1 for s in samples if len(set(s.weight_versions)) > 1)
+        mixed = sum(1 for s in samples if len({span.version for span in s.all_weight_version_spans}) > 1)
         log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]
