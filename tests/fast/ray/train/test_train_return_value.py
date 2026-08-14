@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController
@@ -28,14 +28,14 @@ def _make_controller(cells: list) -> RayTrainGroup:
 
 
 def _set_train_return_value(cell: Any, value: Any) -> None:
-    for handle in cell._get_actor_handles():
+    for handle in get_raw_actor_handles(cell):
         ray.get(handle.set_train_return_value.remote(value))
 
 
 def _count_train_calls(cell: Any) -> int:
     return sum(
         sum(1 for method, _args, _kwargs in ray.get(handle.get_calls.remote()) if method == "train")
-        for handle in cell._get_actor_handles()
+        for handle in get_raw_actor_handles(cell)
     )
 
 

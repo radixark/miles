@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from types import SimpleNamespace
 
@@ -97,6 +98,26 @@ class TestTickCells:
         await controller.dispose()
 
         assert late.tick_count > 0
+
+    async def test_tick_cells_logs_each_failure_with_cell_id_and_traceback(self, caplog, monkeypatch):
+        """The log line is the only signal that a cell is stuck, and it has to name the cell and carry the cause."""
+        error = RuntimeError("cell exploded")
+        broken = _RecordingCell(error=error, cell_id="broken")
+        wedged = _RecordingCell(delay=60.0, cell_id="wedged")
+        controller = _make_controller({"default": _StubServer({"a": broken, "b": wedged})})
+        monkeypatch.setattr(inference_controller_module, "CELL_TICK_TIMEOUT_SECONDS", 0.01)
+
+        with caplog.at_level(logging.ERROR):
+            await controller._tick_cells()
+
+        failures = [record for record in caplog.records if record.message.startswith("Ticking cell ")]
+        assert [record.message for record in failures] == [
+            "Ticking cell broken failed",
+            "Ticking cell wedged failed",
+        ]
+        assert failures[0].exc_info[1] is error
+        assert isinstance(failures[1].exc_info[1], TimeoutError)
+        assert all(record.exc_info[2] is not None for record in failures)
 
     async def test_the_sweep_keeps_running_after_one_cell_raises(self):
         """One wedged engine must not stop every other cell from making progress."""

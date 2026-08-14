@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 import ray
-from tests.fast.ray.train.conftest import make_alive_cell, make_cell
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell
 
 from miles.ray.train.group import TrainerController
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -31,7 +31,7 @@ def _make_controller(cells: list) -> RayTrainGroup:
 
 def _make_failing_controller(fn_name: str) -> RayTrainGroup:
     cell = make_alive_cell(0, alive_cell_indices=[0])
-    for handle in cell._get_actor_handles():
+    for handle in get_raw_actor_handles(cell):
         ray.get(handle.set_fail_methods.remote([fn_name]))
     return _make_controller([cell])
 
@@ -108,7 +108,7 @@ class TestUninitializedCellsKeepTheControllerRetryable:
     async def test_offload_tolerates_losing_the_last_alive_cell_while_a_cell_is_still_healing(self):
         """A healing cell keeps the group recoverable, so the lifecycle call must not raise at all."""
         alive_cell = make_alive_cell(0, alive_cell_indices=[0])
-        for handle in alive_cell._get_actor_handles():
+        for handle in get_raw_actor_handles(alive_cell):
             ray.get(handle.set_fail_methods.remote(["sleep"]))
         uninitialized_cell = make_cell(1)
         group = _make_controller([alive_cell, uninitialized_cell])
@@ -123,7 +123,7 @@ class TestMultipleCellsStillTolerateFailures:
     async def test_one_dead_cell_does_not_stop_the_lifecycle_call(self):
         """Fault tolerance depends on surviving cells carrying on without the dead one."""
         cells = [make_alive_cell(index, alive_cell_indices=[0, 1]) for index in range(2)]
-        ray.get(cells[0]._get_actor_handles()[0].set_fail_methods.remote(["sleep"]))
+        ray.get(get_raw_actor_handles(cells[0])[0].set_fail_methods.remote(["sleep"]))
         group = _make_controller(cells)
 
         await group.offload()

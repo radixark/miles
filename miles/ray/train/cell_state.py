@@ -1,8 +1,7 @@
-import ray
-
 from pydantic import BaseModel, ConfigDict
 
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 
 class StateBase(BaseModel):
@@ -10,7 +9,7 @@ class StateBase(BaseModel):
 
 
 class StateAllocatedBase(StateBase):
-    actor_handles: list[ray.actor.ActorHandle]
+    worker_handles: list[BaseWorkerHandle]
 
 
 class StateAllocatedUninitialized(StateAllocatedBase):

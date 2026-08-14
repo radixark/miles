@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
@@ -13,6 +14,7 @@ from tests.fast.utils.workers.real_ray.conftest import (
 
 from miles.utils.http_utils import wait_tcp_ready
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, PortInfo
 
@@ -316,7 +318,9 @@ class TestStopCellOnRealRay:
 
 
 class TestWorkerInfosOnRealRay:
-    def test_a_driver_can_describe_and_reach_the_workers_of_one_cell(self, manager_factory, worker_probe_factory):
+    async def test_a_driver_can_describe_and_reach_the_workers_of_one_cell(
+        self, manager_factory, worker_probe_factory
+    ):
         """Worker infos survive the trip to the driver, including usable actor handles."""
         probe = worker_probe_factory()
         manager_factory(
@@ -332,26 +336,32 @@ class TestWorkerInfosOnRealRay:
         for worker_in_cell_index, info in enumerate(infos):
             recorded = records[f"1-{worker_in_cell_index}"]["context"]["self_addrs"]["primary"]
             assert {"host": info.self_addrs["primary"].host, "port": info.self_addrs["primary"].port} == recorded
-            node_ip = ray.get(info.actor_handle._get_node_ip.remote())
+            node_ip = await info.handle._get_node_ip()
             assert info.self_addrs["primary"].host.strip("[]") == node_ip
 
 
 class TestWorkerDeathOnRealRay:
-    def test_an_actor_dies_with_the_command_it_babysits(self, manager_factory, worker_probe_factory):
+    async def test_an_actor_dies_with_the_command_it_babysits(self, manager_factory, worker_probe_factory):
         """The actor's whole reason to exist is its subprocess, so its death must be visible to the driver."""
         probe = worker_probe_factory()
         manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
         probe.wait_for_records(2)
         infos = ray.get(RayWorkerManager.get_handle().get_worker_infos.remote("engine-0"))
 
-        ray.get(infos[0].actor_handle.kill_subprocess.remote())
+        # The babysit thread may reach os._exit before this reply is sent, so losing the reply is
+        # the death under test arriving early rather than a failure; the loop below still has to
+        # observe it, so nothing is taken on faith here.
+        try:
+            await infos[0].handle.kill_subprocess()
+        except WorkerUnreachableError:
+            pass
 
         deadline = time.monotonic() + 60
         while True:
             try:
-                ray.get(infos[0].actor_handle._get_node_ip.remote(), timeout=5)
-            except (ray.exceptions.RayActorError, ray.exceptions.GetTimeoutError):
+                await asyncio.wait_for(infos[0].handle._get_node_ip(), timeout=5)
+            except (WorkerUnreachableError, asyncio.TimeoutError):
                 break
             assert time.monotonic() < deadline, "the actor of a dead command is still alive"
-            time.sleep(0.5)
-        assert ray.get(infos[1].actor_handle._get_node_ip.remote(), timeout=30)
+            await asyncio.sleep(0.5)
+        assert await asyncio.wait_for(infos[1].handle._get_node_ip(), timeout=30)

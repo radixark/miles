@@ -1,13 +1,11 @@
 import asyncio
-import logging
-from types import SimpleNamespace
 
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
-from tests.fast.ray.train.conftest import make_alive_cell, make_cell, make_indep_dp_info
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell, make_cell, make_indep_dp_info
 
-from miles.ray.train import cell as cell_module
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 pytestmark = pytest.mark.asyncio
 
@@ -21,19 +19,20 @@ class TestInitialState:
         assert not cell.is_alive
         assert cell.is_uninitialized
 
-    def test_actor_handles_are_real_ray_actors(self):
+    def test_worker_handles_wrap_real_ray_actors(self):
         cell = make_cell(actor_count=3)
 
-        handles = cell._get_actor_handles()
+        handles = cell._get_worker_handles()
         assert len(handles) == 3
-        assert all(isinstance(h, ray.actor.ActorHandle) for h in handles)
+        assert all(isinstance(h, BaseWorkerHandle) for h in handles)
+        assert all(isinstance(h, ray.actor.ActorHandle) for h in get_raw_actor_handles(cell))
 
 
 class TestKillWorkers:
     async def test_killing_reaches_every_worker(self):
         """The dead workers must not linger in a cross-cell collective."""
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        handles = cell._get_actor_handles()
+        handles = get_raw_actor_handles(cell)
 
         await cell._kill_workers_and_confirm_dead()
 
@@ -52,14 +51,14 @@ class TestKillWorkers:
     async def test_stop_kills_the_underlying_workers(self):
         """Stopping a cell really kills its workers, so every handle is confirmed dead and rejects new calls."""
         cell = make_cell(actor_count=2)
-        handles = cell._get_actor_handles()
+        wrapped_handles = cell._get_worker_handles()
 
         await cell._kill_workers_and_confirm_dead()
 
-        for handle in handles:
-            await asyncio.wait_for(cell_module._confirm_actor_dead(handle), timeout=30.0)
+        for wrapped in wrapped_handles:
+            await asyncio.wait_for(wrapped.wait_dead(timeout=30.0), timeout=35.0)
             with pytest.raises(ray.exceptions.RayActorError):
-                ray.get(handle.get_calls.remote())
+                ray.get(wrapped._actor_handle.get_calls.remote())
 
 
 class TestMarkAsAlive:
@@ -74,11 +73,11 @@ class TestMarkAsAlive:
 
     def test_preserves_actor_handles(self):
         cell = make_cell(actor_count=3)
-        handles_before = cell._get_actor_handles()
+        handles_before = get_raw_actor_handles(cell)
 
         cell._mark_as_alive(indep_dp_info=make_indep_dp_info())
 
-        assert cell._get_actor_handles() == handles_before
+        assert get_raw_actor_handles(cell) == handles_before
 
     def test_rejects_from_alive(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
@@ -98,11 +97,11 @@ class TestUpdateIndepDPInfo:
 
     def test_preserves_actor_handles(self):
         cell = make_alive_cell(0, alive_cell_indices=[0])
-        handles = cell._get_actor_handles()
+        handles = get_raw_actor_handles(cell)
 
         cell._update_indep_dp_info(make_indep_dp_info(quorum_id=5))
 
-        assert cell._get_actor_handles() == handles
+        assert get_raw_actor_handles(cell) == handles
 
     def test_rejects_from_uninitialized(self):
         cell = make_cell()
@@ -147,7 +146,7 @@ class TestErroredCellTeardown:
         cell = make_alive_cell(0, alive_cell_indices=[0])
         cell._mark_as_errored()
         assert cell.is_errored
-        handles = cell._get_actor_handles()
+        handles = get_raw_actor_handles(cell)
 
         await cell._kill_workers_and_confirm_dead()
 
@@ -180,7 +179,7 @@ class TestAsyncInit:
         assert cell.is_alive
         assert cell.indep_dp_info == info
 
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             calls = ray.get(handle.get_calls.remote())
             assert [name for name, _args, _kwargs in calls] == ["configure_master_addr_and_port", "init"]
             kwargs = calls[1][2]
@@ -192,14 +191,14 @@ class TestAsyncInitFailure:
     async def test_init_failure_leaves_cell_not_alive(self):
         """A failed remote init marks the cell errored and tears it down; it is never reported alive."""
         cell = make_cell(actor_count=1)
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             ray.get(handle.set_fail_methods.remote(["init"]))
 
         with pytest.raises(RuntimeError, match="Injected failure"):
             await cell.init(indep_dp_info=make_indep_dp_info())
 
         assert not cell.is_alive
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             with pytest.raises(ray.exceptions.RayActorError):
                 ray.get(handle.get_calls.remote())
 
@@ -214,7 +213,7 @@ class TestPrepareIndepDPModeAlive:
         assert cell.indep_dp_info == new_info
         assert cell.is_alive
 
-        for handle in cell._get_actor_handles():
+        for handle in get_raw_actor_handles(cell):
             calls = ray.get(handle.get_calls.remote())
             reconfig_calls = [c for c in calls if c[0] == "reconfigure_indep_dp"]
             assert len(reconfig_calls) == 1
@@ -226,7 +225,7 @@ class TestPrepareIndepDPModeAlive:
         new_info = make_indep_dp_info(alive_cell_indices=[0, 1, 2], quorum_id=2)
         await cell.prepare_indep_dp_mode_alive(indep_dp_info=new_info, send_ckpt_dst_ranks=[1, 2])
 
-        handle = cell._get_actor_handles()[0]
+        handle = get_raw_actor_handles(cell)[0]
         calls = ray.get(handle.get_calls.remote())
         send_calls = [c for c in calls if c[0] == "send_ckpt"]
         assert len(send_calls) == 2
@@ -244,7 +243,7 @@ class TestPrepareIndepDPModeHealing:
         assert cell.is_alive
         assert cell.indep_dp_info == info
 
-        handle = cell._get_actor_handles()[0]
+        handle = get_raw_actor_handles(cell)[0]
         calls = ray.get(handle.get_calls.remote())
         assert any(c[0] == "init" for c in calls)
 
@@ -324,116 +323,3 @@ class TestFullLifecycle:
         cell._mark_as_alive(indep_dp_info=info_v2)
         assert cell.is_alive
         assert cell.indep_dp_info.quorum_id == 2
-
-
-def _make_coro_factory(behavior):
-    async def _coro():
-        return behavior()
-
-    return _coro
-
-
-def _raise_factory(exc):
-    async def _coro():
-        raise exc
-
-    return _coro
-
-
-class _FakeReadyMethod:
-    def __init__(self, coro_factories):
-        self._coro_factories = list(coro_factories)
-        self.call_count = 0
-
-    def remote(self):
-        self.call_count += 1
-        index = min(self.call_count - 1, len(self._coro_factories) - 1)
-        return self._coro_factories[index]()
-
-
-def _make_fake_handle(coro_factories):
-    ready = _FakeReadyMethod(coro_factories)
-    handle = SimpleNamespace()
-    handle.__ray_ready__ = ready
-    return handle, ready
-
-
-def _ray_actor_error():
-    return ray.exceptions.RayActorError()
-
-
-def _ray_task_error():
-    return ray.exceptions.RayTaskError.__new__(ray.exceptions.RayTaskError)
-
-
-class TestConfirmActorDead:
-    async def test_returns_immediately_when_actor_error_on_first_probe(self):
-        """A dead actor whose first probe raises RayActorError is confirmed dead after one probe."""
-        handle, ready = _make_fake_handle([_raise_factory(_ray_actor_error())])
-
-        await cell_module._confirm_actor_dead(handle)
-
-        assert ready.call_count == 1
-
-    async def test_returns_immediately_when_task_error_on_first_probe(self):
-        """RayTaskError on the first probe is also treated as confirmed actor death."""
-        handle, ready = _make_fake_handle([_raise_factory(_ray_task_error())])
-
-        await cell_module._confirm_actor_dead(handle)
-
-        assert ready.call_count == 1
-
-    async def test_retries_after_timeout_then_confirms_death(self, monkeypatch):
-        """A probe timeout is tolerated; the loop retries and confirms death on the next probe."""
-        slept = []
-
-        async def _noop_sleep(seconds):
-            slept.append(seconds)
-
-        monkeypatch.setattr(cell_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(cell_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0])))
-
-        handle, ready = _make_fake_handle(
-            [
-                _raise_factory(asyncio.TimeoutError()),
-                _raise_factory(_ray_actor_error()),
-            ]
-        )
-
-        await cell_module._confirm_actor_dead(handle)
-
-        assert ready.call_count == 2
-        assert slept == [1.0]
-
-    async def test_deadline_reached_returns_and_logs_error(self, monkeypatch, caplog):
-        """When the timeout deadline is exceeded after a hung probe, it returns and logs an ERROR."""
-
-        async def _noop_sleep(seconds):
-            return None
-
-        monkeypatch.setattr(cell_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(cell_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 200.0])))
-
-        handle, ready = _make_fake_handle([_raise_factory(asyncio.TimeoutError())])
-
-        with caplog.at_level(logging.ERROR, logger="miles.ray.train.cell"):
-            await cell_module._confirm_actor_dead(handle)
-
-        assert ready.call_count == 1
-        error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
-        assert len(error_records) == 1
-        assert "Timed out after 120s confirming actor death" in error_records[0].getMessage()
-
-
-def _make_monotonic(values):
-    seq = list(values)
-    state = {"i": 0}
-
-    def _monotonic():
-        i = state["i"]
-        if i < len(seq):
-            state["i"] = i + 1
-            return seq[i]
-        return seq[-1]
-
-    return _monotonic
