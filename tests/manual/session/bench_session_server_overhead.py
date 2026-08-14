@@ -604,7 +604,7 @@ def run_http_bench(args) -> dict[str, Any]:
         base_urls = [f"http://{ip}:{port}" for port in ports]
 
         # Spawn every instance before waiting on any (matches
-        # start_session_server): N instances pay ~one transformers import of
+        # wait_session_server_ready): N instances pay ~one transformers import of
         # wall-time, not N.
         ctx = multiprocessing.get_context("spawn")
         for idx, port in enumerate(ports):

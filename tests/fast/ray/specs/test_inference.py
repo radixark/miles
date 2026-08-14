@@ -8,7 +8,8 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig
-from miles.ray.specs.inference import _compute_spec_router
+from miles.ray.specs.inference import _compute_spec_router, compute_router_pool_id, spec_session_server
+from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.workers.argv_utils import parse_config_argv
 from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext
@@ -96,6 +97,52 @@ class TestComputeSpecRouterLaunchCommand:
         assert config.host == "127.0.0.1"
         assert config.port == 20000
         assert config.max_connections == 100
+
+
+class TestComputeSpecSessionServer:
+    def test_launch_command_wires_the_router_backend_and_roundtrips(self):
+        """The session server command targets the router addr from spec_addrs and its config parses back losslessly."""
+        args = make_args(
+            use_session_server="v1",
+            hf_checkpoint="/fake/model",
+            num_session_servers=2,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            miles_router_timeout=None,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            use_rollout_indexer_replay=False,
+            sglang_speculative_algorithm=None,
+            num_layers=None,
+            moe_router_topk=None,
+            save_debug_trajectory_data=None,
+            lora_rank=0,
+            lora_adapter_path=None,
+        )
+        spec = spec_session_server(args)
+        assert spec.scheduling.num_cells == 2
+
+        ctx = LaunchCommandContext(
+            cell_index=1,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            gpu_ids=[],
+        )
+        argv = shlex.split(spec.launch_command(ctx))
+
+        assert argv[:3] == [sys.executable, "-m", "miles.rollout.session.server"]
+        config = parse_config_argv(SessionServerConfig, argv[3:])
+        assert config.backend_url == "http://127.0.0.1:3000"
+        assert config.host == "127.0.0.1"
+        assert config.port == 5006
+        assert config.instance_id == f"{args.run_uuid}-1"
+
+    def test_disabled_schedules_zero_cells(self):
+        """Disabling the session server removes its cells instead of launching idle servers."""
+        args = make_args(use_session_server=False)
+        assert spec_session_server(args).scheduling.num_cells == 0
 
 
 class TestInferenceSpecPinToHead:

@@ -34,7 +34,7 @@ def patch_low_level(monkeypatch):
     - ``CommandActor`` → ``MockSGLangEngine`` so created actors are mocks
       (the real addr allocator runs; each mock serves HTTP on its port).
     - ``SGLangRouterApiClient`` → no-op (no router runs at the placeholder address).
-    - ``start_session_server`` → no-op (the production default touches network)."""
+    - ``wait_session_server_ready`` → no-op (the production default touches network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_cell as scell
@@ -50,7 +50,11 @@ def patch_low_level(monkeypatch):
     monkeypatch.setattr(rsrv, "wait_router_ready", _fake_router_ready)
 
     monkeypatch.setattr(rsrv, "SGLangRouterApiClient", _NoopRouterApiClient)
-    monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
+
+    async def _no_session_server(args):
+        return None
+
+    monkeypatch.setattr(ictl, "wait_session_server_ready", _no_session_server)
 
 
 def _write_sglang_config(tmp_path, *, models: list[tuple[str, bool]]) -> str:
