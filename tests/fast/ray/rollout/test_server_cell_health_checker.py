@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -126,7 +127,7 @@ class TestRolloutCellHealthCheckerProbeEndpoint:
         assert _ENDPOINT_CALLS == [("health_generate", "http://10.0.0.1:30000")]
 
 
-class TestRolloutCellHealthCheckerPauseBarrier:
+class TestRolloutCellHealthCheckerPause:
     async def test_pausing_the_controller_makes_the_predicate_false_for_every_cell(self):
         """The whole point of the pause is that no cell is probed inside the protected window."""
         controller, cell = await _make_controller_with_serving_cell()
@@ -136,44 +137,52 @@ class TestRolloutCellHealthCheckerPauseBarrier:
 
         assert cell._health_checker._get_activeness().active is False
 
-    async def test_pausing_discards_a_probe_that_was_already_in_flight(self):
-        """A probe launched before the pause must not publish a failure inside the protected window."""
+    async def test_a_probe_that_lands_after_the_pause_is_discarded(self):
+        """A probe launched before the pause must not publish a failure about the protected window."""
         results: list[bool] = []
         probe_started = asyncio.Event()
-
-        async def _hanging_check() -> None:
-            probe_started.set()
-            await asyncio.sleep(3600)
+        release_probe = asyncio.Event()
 
         controller, cell = await _make_controller_with_serving_cell()
-        checker = _restart_checker_with(cell, check_fn=_hanging_check, on_result=results.append)
+        checker, clock = _make_fake_clock_checker(
+            cell, check_fn=_gated_check_fn(probe_started, release_probe), on_result=results.append
+        )
+        checker.start()
+        await _settle(clock)
+        await clock.elapse(100.0)
         await asyncio.wait_for(probe_started.wait(), timeout=1)
 
         await controller.offload()
+        release_probe.set()
+        await _settle(clock)
 
-        assert checker._probe_task is None
         assert results == []
+        assert checker._consecutive_failures == 0
+        checker.stop()
 
-    async def test_the_pause_returns_only_after_the_in_flight_probe_is_really_gone(self):
-        """Returning while the probe is still running is exactly the race the barrier has to close."""
+    async def test_a_probe_that_spans_a_whole_pause_resume_window_is_discarded(self):
+        """The window is closed again when the probe lands, so only the epoch tells the result is stale."""
+        results: list[bool] = []
         probe_started = asyncio.Event()
-        probe_cancelled = asyncio.Event()
-
-        async def _hanging_check() -> None:
-            probe_started.set()
-            try:
-                await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                probe_cancelled.set()
-                raise
+        release_probe = asyncio.Event()
 
         controller, cell = await _make_controller_with_serving_cell()
-        _restart_checker_with(cell, check_fn=_hanging_check, on_result=None)
+        checker, clock = _make_fake_clock_checker(
+            cell, check_fn=_gated_check_fn(probe_started, release_probe), on_result=results.append
+        )
+        checker.start()
+        await _settle(clock)
+        await clock.elapse(100.0)
         await asyncio.wait_for(probe_started.wait(), timeout=1)
 
         await controller.offload()
+        await controller.prepare_eval()
+        release_probe.set()
+        await _settle(clock)
 
-        assert probe_cancelled.is_set()
+        assert results == []
+        assert checker._consecutive_failures == 0
+        checker.stop()
 
 
 class TestRolloutCellActiveAndEpoch:
@@ -254,7 +263,9 @@ async def _make_controller_with_serving_cell() -> tuple[InferenceController, Ser
     return controller, cell
 
 
-def _make_fake_clock_checker(cell: ServerCell) -> tuple[SimpleHealthChecker, FakeClock]:
+def _make_fake_clock_checker(
+    cell: ServerCell, *, check_fn: Any = None, on_result: Any = None
+) -> tuple[SimpleHealthChecker, FakeClock]:
     cell._health_checker.stop()
 
     async def _failing_check() -> None:
@@ -263,12 +274,22 @@ def _make_fake_clock_checker(cell: ServerCell) -> tuple[SimpleHealthChecker, Fak
     clock = FakeClock()
     checker = SimpleHealthChecker(
         name=f"rollout-cell-{cell.meta.cell_id}",
-        check_fn=_failing_check,
+        check_fn=check_fn or _failing_check,
         get_activeness=cell._get_health_checker_active_and_epoch,
+        on_result=on_result,
         config=SimpleHealthCheckerConfig(interval=10.0, timeout=5.0, first_wait=100.0, failure_threshold=3),
         clock=clock,
     )
     return checker, clock
+
+
+def _gated_check_fn(started: asyncio.Event, release: asyncio.Event) -> Callable[[], Coroutine[Any, Any, None]]:
+    async def check_fn() -> None:
+        started.set()
+        await release.wait()
+        raise RuntimeError("engine down")
+
+    return check_fn
 
 
 async def _settle(clock: FakeClock) -> None:
@@ -276,12 +297,3 @@ async def _settle(clock: FakeClock) -> None:
         if clock.pending_count >= 1:
             return
         await asyncio.sleep(0)
-
-
-def _restart_checker_with(cell: ServerCell, *, check_fn: Any, on_result: Any) -> SimpleHealthChecker:
-    checker: SimpleHealthChecker = cell._health_checker
-    checker.stop()
-    checker._check_fn = check_fn
-    checker._on_result = on_result
-    checker.start()
-    return checker

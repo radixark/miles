@@ -71,6 +71,33 @@ class _RecordingApiClient:
         _RecordingApiClient.calls.append(("check_weights", kwargs))
 
 
+class _ResultApiClient:
+    calls: list[tuple[str, dict]] = []
+    results: dict[str, dict] = {}
+    errors: dict[str, Exception] = {}
+
+    def __init__(self, server_url: str):
+        self.server_url = server_url
+
+    async def release_memory_occupation(self, tags=None):
+        return await self._record("release_memory_occupation", dict(tags=tags))
+
+    async def resume_memory_occupation(self, tags=None):
+        return await self._record("resume_memory_occupation", dict(tags=tags))
+
+    async def check_weights(self, action, allow_quant_error=False, selector="all", skip_list=None):
+        return await self._record(
+            "check_weights",
+            dict(action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list),
+        )
+
+    async def _record(self, name: str, kwargs: dict):
+        _ResultApiClient.calls.append((name, kwargs))
+        if (error := _ResultApiClient.errors.get(name)) is not None:
+            raise error
+        return _ResultApiClient.results.get(name)
+
+
 @pytest.fixture
 def cell_env(monkeypatch):
     """Stub out everything the cell reaches over the network, and record the calls."""
@@ -93,6 +120,17 @@ def cell_env(monkeypatch):
     monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute_addr_info)
 
     return dict(activated=activated, health=health, memory_calls=_RecordingApiClient.calls)
+
+
+@pytest.fixture
+def result_api_client(cell_env, monkeypatch):
+    """Give the cell an api client whose endpoints return distinct results and can be made to fail."""
+    _ResultApiClient.calls = []
+    _ResultApiClient.results = {}
+    _ResultApiClient.errors = {}
+    monkeypatch.setattr(server_cell_module, "SGLangApiClient", _ResultApiClient)
+
+    return _ResultApiClient
 
 
 def _make_cell(
@@ -138,6 +176,67 @@ class TestInit:
 
         with pytest.raises(AssertionError):
             await cell.init()
+
+    async def test_external_rollout_initialization_is_rejected_before_allocating_an_address(
+        self, cell_env, monkeypatch
+    ):
+        """External address allocation was removed, so the cell must refuse instead of opening a gate it does not own."""
+
+        async def _unexpected_compute_addr_info(self) -> CellAddrInfo:
+            raise AssertionError("external rollout initialization looked up a worker address")
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _unexpected_compute_addr_info)
+        cell = _make_cell(args_overrides=dict(rollout_external=True))
+
+        with pytest.raises(NotImplementedError):
+            await cell.init()
+
+        assert cell.is_uninitialized
+        assert cell_env["activated"] == []
+
+    async def test_an_address_lookup_failure_leaves_the_cell_uninitialized_and_retryable(self, cell_env, monkeypatch):
+        """Worker addresses appear late, so a lookup error must not consume the cell's only init."""
+        attempts = {"count": 0}
+
+        async def _flaky_compute_addr_info(self) -> CellAddrInfo:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("worker addresses are not published yet")
+            return _ADDR_INFO
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _flaky_compute_addr_info)
+        cell = _make_cell()
+
+        with pytest.raises(RuntimeError, match="not published yet"):
+            await cell.init()
+        assert cell.is_uninitialized
+        assert cell_env["activated"] == []
+
+        await cell.init()
+
+        assert isinstance(cell._state, StateInitializing)
+
+    async def test_a_launch_gate_failure_leaves_the_cell_uninitialized_and_retryable(self, cell_env, monkeypatch):
+        """Recording the transition before the gate opens would leave the engine waiting forever."""
+        attempts = {"count": 0}
+
+        async def _flaky_activate(gate_url: str) -> None:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("gate refused the activation")
+            cell_env["activated"].append(gate_url)
+
+        monkeypatch.setattr(server_cell_module, "activate_launch_gate", _flaky_activate)
+        cell = _make_cell()
+
+        with pytest.raises(RuntimeError, match="gate refused"):
+            await cell.init()
+        assert cell.is_uninitialized
+
+        await cell.init()
+
+        assert isinstance(cell._state, StateInitializing)
+        assert cell_env["activated"] == ["http://10.0.0.1:13000"]
 
 
 class TestTick:
@@ -246,6 +345,54 @@ class TestTick:
 
         assert isinstance(cell._state, StateServing)
         assert [name for name, _kwargs in router.calls] == ["add_worker"]
+
+    @pytest.mark.parametrize(
+        ("failing_operation", "error_message"),
+        [
+            ("release_memory_occupation", "engine refused to release its memory"),
+            ("resume_memory_occupation", "engine refused to resume its weights"),
+        ],
+    )
+    async def test_a_cell_whose_memory_reconfiguration_fails_is_retried_by_a_later_tick(
+        self, result_api_client, failing_operation: str, error_message: str
+    ):
+        """A failed release or resume must leave initialization retryable instead of stranding the cell as pending."""
+        result_api_client.errors[failing_operation] = RuntimeError(error_message)
+        cell = _make_cell(needs_offload=True)
+        await cell.init()
+
+        with pytest.raises(RuntimeError, match=error_message):
+            await cell.tick()
+        assert cell.is_initializing
+
+        result_api_client.errors.pop(failing_operation)
+        await cell.tick()
+
+        assert isinstance(cell._state, StatePendingWeights)
+
+    async def test_a_cell_whose_weight_snapshot_fails_is_retried_by_a_later_tick(self, cell_env, monkeypatch):
+        """Without the baseline the later comparison is meaningless, so the cell must not move on regardless."""
+
+        class _FlakyApiClient(_RecordingApiClient):
+            failures = 1
+
+            async def check_weights(self, **kwargs):
+                if _FlakyApiClient.failures > 0:
+                    _FlakyApiClient.failures -= 1
+                    raise RuntimeError("engine could not snapshot its weights")
+                await super().check_weights(**kwargs)
+
+        monkeypatch.setattr(server_cell_module, "SGLangApiClient", _FlakyApiClient)
+        cell = _make_cell(args_overrides=dict(check_weight_update_equal=True))
+        await cell.init()
+
+        with pytest.raises(RuntimeError, match="could not snapshot"):
+            await cell.tick()
+        assert cell.is_initializing
+
+        await cell.tick()
+
+        assert isinstance(cell._state, StatePendingWeights)
 
     async def test_debug_rollout_only_starts_serving_without_a_weight_update(self, cell_env):
         """With no trainer running, the engine must serve the weights it loaded from disk."""
@@ -500,3 +647,74 @@ class TestDispose:
         await cell.tick()
 
         assert isinstance(cell._state, StateDisposed)
+
+
+class TestMemoryOperations:
+    async def test_offload_releases_exactly_the_requested_tags_and_returns_the_engine_result(self, result_api_client):
+        """Dropping the tags would release the weights too, which the trainer expects to stay resident."""
+        result_api_client.results["release_memory_occupation"] = dict(released="kv_cache")
+        cell = _make_cell()
+        await cell.init()
+
+        result = await cell.offload(tags=["kv_cache"])
+
+        assert result_api_client.calls == [("release_memory_occupation", dict(tags=["kv_cache"]))]
+        assert result == dict(released="kv_cache")
+
+    async def test_onload_resumes_exactly_the_requested_tags_and_returns_the_engine_result(self, result_api_client):
+        """Multi-stage resume is driven tag by tag, so the caller's choice must reach the engine unchanged."""
+        result_api_client.results["resume_memory_occupation"] = dict(resumed="weights")
+        cell = _make_cell()
+        await cell.init()
+
+        result = await cell.onload(tags=["weights"])
+
+        assert result_api_client.calls == [("resume_memory_occupation", dict(tags=["weights"]))]
+        assert result == dict(resumed="weights")
+
+    async def test_an_engine_that_rejects_an_offload_surfaces_the_error_to_the_caller(self, result_api_client):
+        """Swallowing it would let the trainer start on gpus the engine still holds."""
+        result_api_client.errors["release_memory_occupation"] = RuntimeError("engine is busy")
+        cell = _make_cell()
+        await cell.init()
+
+        with pytest.raises(RuntimeError, match="engine is busy"):
+            await cell.offload(tags=["kv_cache"])
+
+    async def test_an_engine_that_rejects_an_onload_surfaces_the_error_to_the_caller(self, result_api_client):
+        """Swallowing it would let rollout proceed while the requested engine memory remains unavailable."""
+        result_api_client.errors["resume_memory_occupation"] = RuntimeError("weights are unavailable")
+        cell = _make_cell()
+        await cell.init()
+
+        with pytest.raises(RuntimeError, match="weights are unavailable"):
+            await cell.onload(tags=["weights"])
+
+
+class TestCheckWeights:
+    async def test_check_weights_forwards_every_argument_and_returns_the_engine_result(self, result_api_client):
+        """The controller drives comparisons through this method, so nothing may be defaulted away."""
+        result_api_client.results["check_weights"] = dict(equal=False)
+        cell = _make_cell()
+        await cell.init()
+
+        result = await cell.check_weights(
+            action="compare", allow_quant_error=True, selector="attn", skip_list=["lm_head"]
+        )
+
+        assert result_api_client.calls == [
+            (
+                "check_weights",
+                dict(action="compare", allow_quant_error=True, selector="attn", skip_list=["lm_head"]),
+            )
+        ]
+        assert result == dict(equal=False)
+
+    async def test_an_engine_that_rejects_a_weight_check_surfaces_the_error_to_the_caller(self, result_api_client):
+        """A silently dropped failure would report a passing check the engine never performed."""
+        result_api_client.errors["check_weights"] = RuntimeError("weights checker is unavailable")
+        cell = _make_cell()
+        await cell.init()
+
+        with pytest.raises(RuntimeError, match="weights checker is unavailable"):
+            await cell.check_weights(action="compare", allow_quant_error=False, selector="all", skip_list=None)
