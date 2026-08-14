@@ -13,6 +13,7 @@ from miles.backends.sglang_utils.sglang_config import (
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.utils.workers.worker_spec import HostAndPort
 
 
 class TestRolloutServerPureFunctions:
@@ -260,7 +261,10 @@ class TestStartRolloutServersCellChunking:
         async def _no_cells(self, *args, **kwargs):
             return None
 
-        monkeypatch.setattr(rollout_server, "start_router", lambda *args, **kwargs: ("127.0.0.1", 30000))
+        async def _fake_router_ready(*args, **kwargs):
+            return HostAndPort(host="127.0.0.1", port=30000)
+
+        monkeypatch.setattr(rollout_server, "wait_router_ready", _fake_router_ready)
         monkeypatch.setattr(RolloutServer, "start_all_cells", _no_cells)
 
     def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
