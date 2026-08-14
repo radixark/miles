@@ -344,7 +344,7 @@ def register_engines(servers) -> None:
 
 
 def report_data_buffer(length: int | None) -> None:
-    """Called at the top of every ``RolloutExecutor.generate()`` alongside
+    """Called at the top of every ``RolloutExecutor.get()`` alongside
     ``register_engines``, with ``getattr(data_source, "get_buffer_length",
     lambda: None)()``. A no-op for ``length is None`` — most data sources
     (plain ``RolloutDataSource``) never buffer samples across steps."""

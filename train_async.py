@@ -75,7 +75,7 @@ async def train(args):
 
     async def prepare_and_generate(rollout_id):
         await inference_controller.prepare_rollout(rollout_id)
-        return await rollout_executor.generate.remote(rollout_id)
+        return await rollout_executor.get.remote(rollout_id)
 
     # async train loop.
     rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
