@@ -19,7 +19,7 @@ from miles.utils.debug_utils.run_megatron.cli.worker_executor import (
     build_worker_args,
 )
 from miles.utils.debug_utils.run_megatron.worker.script_args import WorkerScriptArgs
-from miles.utils.external_utils.exec_command import exec_command_gpu
+from miles.utils.external_utils.command_utils.common import run_shell_command
 from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.typer_utils import dataclass_cli
 
@@ -84,7 +84,7 @@ def run_impl(args: RunArgs) -> None:
         nproc=parallel.nproc,
         worker_args=worker_args_str,
     )
-    exec_command_gpu(f"{env_exports} && {cmd}")
+    run_shell_command(f"{env_exports} && {cmd}")
     print(f"[cli] Run completed. Output: {args.output_dir}", flush=True)
 
 
