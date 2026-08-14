@@ -108,7 +108,7 @@ and the container images for each.
 ## Start here
 
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
-2. **[Quick Start](/getting-started/quick-start)** — a working training run in under an hour.
+2. **[Quick Start](/getting-started/quick-start)** — a training job up and running in under an hour.
 3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
 4. **[Launch script](/user-guide/launch-script)** — what `python scripts/run_*.py` does
    and how to override a recipe.

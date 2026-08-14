@@ -1,12 +1,24 @@
 ---
 title: Quick Start
-description: A quick RL training job on Qwen3-4B in under an hour.
+description: Get an RL training job on Qwen3-4B up and running in under an hour.
 ---
 **What you need**
 
 - A node with 8 GPUs (H100 / H200 / B-series).
-- Roughly 200 GB of free disk.
+- At least 500 GB of free disk — each saved checkpoint of this 4 B model is
+  roughly 50 GB, and one lands every 20 rollouts.
 - Docker with GPU access.
+
+**Pre-flight checks**
+
+```bash
+# Driver up, all 8 GPUs listed?
+nvidia-smi
+# Docker can hand GPUs to a container?
+docker run --rm --gpus all ubuntu nvidia-smi
+# Enough free disk?
+df -h /
+```
 
 **What you will accomplish**
 
