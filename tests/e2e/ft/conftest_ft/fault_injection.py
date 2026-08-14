@@ -50,6 +50,68 @@ class RecoveryGate:
         return [c for c in cells if cell_is_alive(c) and c["metadata"]["name"] not in self._state_of_cell_name]
 
 
+@dataclasses.dataclass(frozen=True)
+class InjectionOutcome:
+    cell_name: str
+    injection_index: int
+    recovered: bool
+    still_down: bool
+
+
+def _find_healing_end(phases: list[str], start: int) -> int | None:
+    remaining = ["Running", "Pending", "Running"]
+    for index in range(start, len(phases)):
+        if phases[index] == remaining[0]:
+            remaining.pop(0)
+            if not remaining:
+                return index
+    return None
+
+
+class PhaseHistory:
+    def __init__(self) -> None:
+        self.phases_of_cell_name: dict[str, list[str]] = {}
+        self._cell_type_of_name: dict[str, str] = {}
+        self._injection_marks_of_cell_name: dict[str, list[int]] = {}
+
+    def observe(self, cells: list[dict]) -> None:
+        for cell in cells:
+            name = cell["metadata"]["name"]
+            self._cell_type_of_name[name] = _cell_type_of(cell)
+            phases = self.phases_of_cell_name.setdefault(name, [])
+            phase = cell["status"]["phase"]
+            if not phases or phases[-1] != phase:
+                phases.append(phase)
+
+    def note_injected(self, cell_name: str) -> None:
+        phases = self.phases_of_cell_name.setdefault(cell_name, [])
+        marks = self._injection_marks_of_cell_name.setdefault(cell_name, [])
+        marks.append(max(len(phases) - 1, 0))
+
+    def injection_outcomes(self, *, cell_type: str | None = None) -> list[InjectionOutcome]:
+        outcomes: list[InjectionOutcome] = []
+        for name, marks in sorted(self._injection_marks_of_cell_name.items()):
+            if cell_type is not None and self._cell_type_of_name.get(name) != cell_type:
+                continue
+
+            phases = self.phases_of_cell_name[name]
+            next_search_start = 0
+            for injection_index, mark in enumerate(marks):
+                healing_end = _find_healing_end(phases, max(mark, next_search_start))
+                if healing_end is not None:
+                    next_search_start = healing_end
+                outcomes.append(
+                    InjectionOutcome(
+                        cell_name=name,
+                        injection_index=injection_index,
+                        recovered=healing_end is not None,
+                        still_down=healing_end is None and bool(phases) and phases[-1] != "Running",
+                    )
+                )
+
+        return outcomes
+
+
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
     return time.monotonic() + rng.expovariate(1.0 / mean_interval_seconds)
 
@@ -61,6 +123,8 @@ def run_fault_injection_loop(
     mean_interval_seconds: float,
     stop_event: threading.Event,
     on_successful_injection: Callable[[], None],
+    cell_type: str | None,
+    phase_history: PhaseHistory,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
@@ -71,29 +135,32 @@ def run_fault_injection_loop(
         if stop_event.wait(timeout=poll_interval_seconds):
             break
 
-        try:
-            resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
-            resp.raise_for_status()
-            cells = resp.json()["items"]
-        except Exception:
-            logger.info("Failed to list cells from api server", exc_info=True)
+        cells = list_cells(base_url=base_url, cell_type=cell_type)
+        if cells is None:
             continue
 
         # Track recovery on every poll so a crash->detect->heal cycle that completes between two
         # sparse injections is seen, not missed (which would exclude the cell from the live set forever).
         gate.observe({c["metadata"]["name"]: c for c in cells})
+        phase_history.observe(cells)
 
         if time.monotonic() < next_injection_time:
             continue
 
-        # Keep >=1 cell genuinely alive: if a prior injection has not recovered yet, wait and retry
-        # on a later poll rather than killing the last live replica.
-        alive = gate.genuinely_alive(cells)
-        if len(alive) <= 1:
-            logger.info("Deferring injection: %d genuinely-alive cell(s), need >1 to keep a live replica", len(alive))
+        # Keep >=1 cell of each kind genuinely alive: if a prior injection has not recovered yet, wait
+        # and retry on a later poll rather than killing that kind's last live replica.
+        alive_of_type: dict[str, list[dict]] = {}
+        for cell in gate.genuinely_alive(cells):
+            alive_of_type.setdefault(_cell_type_of(cell), []).append(cell)
+        spare_types = sorted(kind for kind, kind_cells in alive_of_type.items() if len(kind_cells) > 1)
+        if not spare_types:
+            logger.info(
+                "Deferring injection: no cell kind has a spare replica (%s)",
+                {kind: len(kind_cells) for kind, kind_cells in sorted(alive_of_type.items())},
+            )
             continue
 
-        target = rng.choice(alive)
+        target = rng.choice(alive_of_type[rng.choice(spare_types)])
         cell_name = target["metadata"]["name"]
         mode = rng.choice(FAILURE_MODES)
         try:
@@ -104,15 +171,37 @@ def run_fault_injection_loop(
             )
             resp.raise_for_status()
             gate.note_injected(cell_name)
+            phase_history.note_injected(cell_name)
             on_successful_injection()
             next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
         except Exception:
             logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
 
 
+def list_cells(*, base_url: str, cell_type: str | None) -> list[dict] | None:
+    try:
+        resp = requests.get(f"{base_url}/api/v1/cells", timeout=5)
+        resp.raise_for_status()
+        return [c for c in resp.json()["items"] if _matches_cell_type(c, cell_type)]
+    except Exception:
+        logger.info("Failed to list cells from api server", exc_info=True)
+        return None
+
+
+def _cell_type_of(cell: dict) -> str:
+    return cell["metadata"]["labels"]["miles.io/cell-type"]
+
+
+def _matches_cell_type(cell: dict, cell_type: str | None) -> bool:
+    return cell_type is None or _cell_type_of(cell) == cell_type
+
+
 class FaultInjectorHandle:
-    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float) -> None:
+    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float, cell_type: str | None) -> None:
         self.num_successful_injections: int = 0
+        self.phase_history = PhaseHistory()
+        self._base_url = base_url
+        self._cell_type = cell_type
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=run_fault_injection_loop,
@@ -122,6 +211,8 @@ class FaultInjectorHandle:
                 "mean_interval_seconds": mean_interval_seconds,
                 "stop_event": self._stop_event,
                 "on_successful_injection": self._on_successful_injection,
+                "cell_type": cell_type,
+                "phase_history": self.phase_history,
             },
             daemon=True,
             name="ft-random-fault-injector",
@@ -133,13 +224,22 @@ class FaultInjectorHandle:
     def stop_and_join(self, *, timeout_seconds: float) -> None:
         self._stop_event.set()
         self._thread.join(timeout=timeout_seconds)
+        self._observe_final_snapshot()
+
+    def _observe_final_snapshot(self) -> None:
+        cells = list_cells(base_url=self._base_url, cell_type=self._cell_type)
+        if cells is None:
+            return
+        self.phase_history.observe(cells)
 
     def _on_successful_injection(self) -> None:
         self.num_successful_injections += 1
 
 
-def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> FaultInjectorHandle:
+def spawn_fault_injector(*, seed: int, mean_interval_seconds: float, cell_type: str | None) -> FaultInjectorHandle:
     base_url = f"http://localhost:{API_SERVER_PORT}"
-    handle = FaultInjectorHandle(base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds)
+    handle = FaultInjectorHandle(
+        base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds, cell_type=cell_type
+    )
     handle.start()
     return handle
