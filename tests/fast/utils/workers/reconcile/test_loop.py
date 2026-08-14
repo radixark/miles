@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 import pytest
-from tests.fast.utils.workers.reconcile.utils import FakeSource, make_pod, pod_cell, settle
+from tests.fast.utils.workers.reconcile.utils import FakeSource, make_pod, pod_cell, replace_of, settle
 
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 from miles.utils.workers.reconcile.source_event import DeleteEvent, UpsertEvent
@@ -57,7 +57,7 @@ async def make_loop(
 
     await loop.start()
     await settle()
-    source.emit(*(UpsertEvent(key=pod.metadata.name, obj=pod) for pod in initial or []))
+    source.emit(replace_of(*(initial or [])))
     await settle()
     return loop, source, recorder
 
@@ -89,7 +89,10 @@ class TestIncrementalEvents:
         await settle()
 
         assert recorder.parent_keys == ["cell-a"]
-        assert "pod-0" not in loop._store
+
+        source.emit(replace_of())
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
         await loop.stop()
 
     async def test_delete_of_unknown_key_falls_back_to_tombstone(self):
@@ -400,3 +403,101 @@ class TestStop:
         assert shutdown is not None
         await shutdown
         assert source.closed_count == 1
+
+
+class TestInStreamRelist:
+    async def test_relist_replaces_the_store(self):
+        """A ReplaceEvent mid-stream swaps the whole world, not just the keys it mentions."""
+        pods = [make_pod("pod-0", cell="cell-a"), make_pod("pod-1", cell="cell-b")]
+        loop, source, recorder = await make_loop(initial=pods)
+        recorder.parent_keys.clear()
+
+        source.emit(replace_of(pods[0]))
+        await settle()
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-0"]
+        assert loop.get_by_parent("cell-b") == []
+        assert sorted(set(recorder.parent_keys)) == ["cell-a", "cell-b"]
+        await loop.stop()
+
+    async def test_relist_to_empty_deletes_everything_and_wakes_every_parent(self):
+        """A relist that returns nothing must retire every known object."""
+        pods = [make_pod("pod-0", cell="cell-a"), make_pod("pod-1", cell="cell-b")]
+        loop, source, recorder = await make_loop(initial=pods)
+        recorder.parent_keys.clear()
+
+        source.emit(replace_of())
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
+        assert loop.get_by_parent("cell-a") == []
+        assert loop.get_by_parent("cell-b") == []
+        await loop.stop()
+
+    async def test_relist_refreshes_and_reparents_a_survivor(self):
+        """A relisted object that moved cells updates both the store copy and both parents."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0", cell="cell-a", resource_version="1")])
+        recorder.parent_keys.clear()
+
+        source.emit(replace_of(make_pod("pod-0", cell="cell-b", resource_version="2")))
+        await settle()
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-b"]
+        assert loop.get_by_parent("cell-a") == []
+        assert [pod.metadata.resource_version for pod in loop.get_by_parent("cell-b")] == ["2"]
+        await loop.stop()
+
+    async def test_incremental_events_resume_after_a_relist(self):
+        """The stream returns to incremental mode once the relist has been applied."""
+        loop, source, recorder = await make_loop(initial=[])
+        source.emit(replace_of())
+        await settle()
+        recorder.parent_keys.clear()
+
+        source.emit(UpsertEvent(key="pod-0", obj=make_pod("pod-0")))
+        await settle()
+        assert recorder.parent_keys == ["cell-a"]
+        await loop.stop()
+
+    async def test_a_relist_skips_unmappable_objects_and_applies_the_rest(self):
+        """One poison object must not stop the whole pool from being updated."""
+        pods = [make_pod("pod-a", cell="cell-a"), make_pod("pod-b", cell="cell-b")]
+        loop, source, recorder = await make_loop(initial=pods)
+        recorder.parent_keys.clear()
+
+        source.emit(replace_of(make_pod("pod-a", cell="cell-c"), make_pod("pod-bad", cell=None)))
+        await settle()
+
+        assert source.open_count == 1
+        assert "pod-bad" not in loop._store
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-c")] == ["pod-a"]
+        assert loop.get_by_parent("cell-a") == []
+        assert loop.get_by_parent("cell-b") == []
+        assert sorted(recorder.parent_keys) == ["cell-a", "cell-b", "cell-c"]
+        await loop.stop()
+
+    async def test_a_relist_removes_a_known_object_that_becomes_unmappable(self):
+        """An object still listed but no longer attributable must leave the store, not linger."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0"), make_pod("pod-1")])
+        recorder.parent_keys.clear()
+
+        source.emit(replace_of(make_pod("pod-0", cell=None), make_pod("pod-1")))
+        await settle()
+
+        assert "pod-0" not in loop._store
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-1"]
+        await loop.stop()
+
+    async def test_consecutive_relists_replace_overlapping_then_disjoint_sets(self):
+        """Two relists in a row apply a survivor plus a newcomer, then a completely new world."""
+        loop, source, recorder = await make_loop(initial=[make_pod("pod-0"), make_pod("pod-1")])
+        recorder.parent_keys.clear()
+
+        source.emit(replace_of(make_pod("pod-1"), make_pod("pod-2")))
+        await settle()
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-a")] == ["pod-1", "pod-2"]
+
+        source.emit(replace_of(make_pod("pod-3", cell="cell-b")))
+        await settle()
+
+        assert loop.get_by_parent("cell-a") == []
+        assert [pod.metadata.name for pod in loop.get_by_parent("cell-b")] == ["pod-3"]
+        assert recorder.parent_keys == ["cell-a", "cell-a", "cell-b"]
+        await loop.stop()
