@@ -79,6 +79,14 @@ class TestComputeAddrInfo:
 
         assert addr_info.gate_url == "http://10.0.0.1:13007"
 
+    async def test_a_provider_without_a_gate_port_yields_no_gate_url(self, stub_provider):
+        """External engines publish no gate, so the cell must not fabricate one."""
+        provider = stub_provider(dict(primary=HostAndPort(host="10.0.0.1", port=30000)))
+
+        addr_info = await _make_cell(provider)._compute_addr_info()
+
+        assert addr_info.gate_url is None
+
     async def test_a_prefill_cell_also_carries_its_disaggregation_bootstrap_port(self, stub_provider):
         """PD disaggregation needs this port published to the router alongside the url."""
         provider = stub_provider(

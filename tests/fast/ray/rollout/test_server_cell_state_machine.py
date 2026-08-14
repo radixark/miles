@@ -25,6 +25,12 @@ _ADDR_INFO = CellAddrInfo(
     gate_url="http://10.0.0.1:13000",
 )
 
+_ADDR_INFO_NO_GATE = CellAddrInfo(
+    server_url="http://10.0.0.1:30000",
+    bootstrap_port=None,
+    gate_url=None,
+)
+
 
 def _make_meta(**overrides) -> ServerCellMetadata:
     return ServerCellMetadata(
@@ -249,6 +255,42 @@ class TestInit:
 
         assert isinstance(cell._state, StateInitializing)
         assert cell_env["activated"] == ["http://10.0.0.1:13000"]
+
+    async def test_a_cell_without_a_gate_port_skips_activation(self, cell_env, monkeypatch):
+        """External engines run no launch-gate wrapper, so init must not dial one."""
+
+        async def _compute(self) -> CellAddrInfo:
+            return _ADDR_INFO_NO_GATE
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute)
+        cell = _make_cell()
+
+        await cell.init()
+
+        assert cell_env["activated"] == []
+        assert cell.is_initializing
+
+
+class TestGatelessCellLifecycle:
+    async def test_a_gateless_cell_still_waits_for_a_weight_push_before_serving(self, cell_env, monkeypatch):
+        """An external cell keeps on-policy semantics: only a weight update publishes it to the router."""
+
+        async def _compute(self) -> CellAddrInfo:
+            return _ADDR_INFO_NO_GATE
+
+        monkeypatch.setattr(ServerCell, "_compute_addr_info", _compute)
+        router = _RecordingRouterApiClient()
+        cell = _make_cell(router=router)
+
+        await cell.init()
+        await cell.tick()
+        assert cell.is_pending_weights
+        assert router.calls == []
+
+        await cell.mark_weights_ready()
+
+        assert cell.is_serving
+        assert [name for name, _kwargs in router.calls] == ["add_worker"]
 
 
 class TestTickReportsTheEngineEnv:
