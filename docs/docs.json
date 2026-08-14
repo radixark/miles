@@ -267,7 +267,8 @@
        "ci/00-stage",
        "ci/01-label",
        "ci/02-docker-build",
-       "ci/03-metric-history-gate"
+       "ci/03-metric-history-gate",
+       "ci/04-release"
       ]
      }
     ]

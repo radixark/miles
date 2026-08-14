@@ -1,6 +1,7 @@
+# doc-dev: docs/ci/04-release.md
 name: Release Tag
-# Creates the vX.Y.Z tag that triggers release-docker.yml. Use after the
-# release branch's full CI (a release-branch-cut.yml run) is green.
+# Creates an annotated v<exact-version> tag, then explicitly dispatches
+# release-docker.yml. Use after release-branch-cut.yml is green.
 #
 # Unlike sglang's release-tag.yml, this one refuses to tag blind. It requires
 # a green `release-ci` commit status on the exact commit being tagged — the

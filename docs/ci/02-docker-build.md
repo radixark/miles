@@ -1,15 +1,15 @@
 ---
 title: Docker build
-description: The Dockerfiles, the build script, the remote build workflow, and how to build & push manually.
+description: The Dockerfiles, the build script, rolling and release build workflows, and how to build and push manually.
 ---
-GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, the PR-side build check, how the remote build is triggered, and how to build & push manually.
+GPU CI runs inside `radixark/miles`. This doc maps which Dockerfiles exist, the script that builds them, the PR-side build check, the rolling and versioned release workflows, and manual build and push behavior.
 
 ## Dockerfiles
 
 
 | Path                     | Builds                   | Wired into                             |
 | ------------------------ | ------------------------ | -------------------------------------- |
-| `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`                     |
+| `docker/Dockerfile`      | `radixark/miles` (CUDA)  | `docker-build.yml`, `release-docker.yml` |
 | `docker/Dockerfile.rocm` | AMD ROCm (MI30x / MI35x) | `docker-build.yml` (`rocm-*` variants) |
 
 
@@ -26,16 +26,16 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | `ENABLE_CUDA_13`                                                                                       | `1` = CUDA 13 (default) and installs the Mooncake wheel from the selected wheels release; `0` = CUDA 12.9 and keeps the base image's Mooncake                                                                                                                                                                                                         |
 | `WHEELS_REPO`                                                                                          | prebuilt-wheels GitHub repo (`yueming-yuan/miles-wheels`)                                                                                                                                                                                                                                                                                           |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags selected by `TARGETARCH` and installed **verbatim**. cu13 uses the rolling `cu130-x86_64` / `cu130-aarch64` releases; cu12-x86 overrides `WHEELS_TAG_X86` with the rolling `cu129-x86_64` release                                                                                                                                                                                              |
-| `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos                                                                                                                                                                                                                                                                                                                   |
+| `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos; empty commit args follow their branch, while release builds provide exact SHAs |
 
 
-**Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
+**Output** — one `radixark/miles` image for the platform buildx targets: the SGLang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM at its branch default or caller-pinned commit, Miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
 `docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`; the 7.2 variants also set `APPLY_ROCR_VMMFIX=1`, which downloads the ROCr VMM-pause fix `.so` from the `WHEELS_TAG_ROCM` release and installs it — ROCm 7.0 has no such regression and leaves it off).
 
 ## Build script
 
-`docker/build.py` builds and pushes the images. Select a build with `--variant` and a tag mode with `--image-tag {dev,latest,custom}`. A single `VARIANTS` table is the source of truth for each variant's image, target platforms, Dockerfile, and build-args.
+`docker/build.py` builds and pushes the images. Select a build with `--variant` and a tag mode with `--image-tag {dev,latest,custom}`. The `VARIANTS` table is the source of truth for each variant's image, target platforms, Dockerfile, and default build-args. Repeatable `--build-arg KEY=VALUE` options are appended after those defaults, so an explicit caller override wins.
 
 
 | `--variant`    | Tag (`--image-tag dev`)            | Platforms                     | Notes                                          |
@@ -52,7 +52,7 @@ The cu13 variants share one multi-arch CUDA base image and differ only in platfo
 
 The **Tag** column is for `--image-tag dev`, which also pushes a timestamped `dev-<YYYYMMDDHHMM>` sibling; `latest` swaps the prefix to `latest`, `custom` uses `--custom-tag`. `cu13` / `cu13-x86` / `cu13-aarch64` intentionally share `radixark/miles:dev` — the daily build runs `cu13` (multi-arch), while a single-arch variant overwrites `dev` with one arch when run alone.
 
-A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`.
+A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push-only — buildx writes the manifest straight to the registry, it can't load into the local image store. Use `cu13-x86` / `cu13-aarch64` (single-platform; the arm64 one cross-builds via QEMU on an x86 host) for local single-arch iteration. Other flags: `--push`, `--dry-run`, `--dockerfile`, `--custom-tag`, and repeatable `--build-arg KEY=VALUE`.
 
 ## PR build check (in `pr-test.yml`)
 
@@ -68,9 +68,9 @@ When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/verify_transfo
 
 Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` skips, and the matrix runs on `dev` as before.
 
-## Remote docker build (`docker-build.yml`)
+## Rolling Docker build (`docker-build.yml`)
 
-The only automated builder of `radixark/miles`. Two jobs:
+This workflow owns the rolling `dev` and `latest` image families. It has two jobs:
 
 - **`check-upstream`** (schedule / `simulate_schedule` only) — polls the inputs the image bakes: the HEAD SHA of sglang `sglang-miles` (`sgl-project/sglang`) and Megatron-LM `miles-main` (`radixark/Megatron-LM`) — the source branches it builds — plus a fingerprint of the selected `yueming-yuan/miles-wheels` rolling release, so a rebuilt sgl-router or other wheel also triggers a build (re-uploads to the same tag are caught by fingerprint, not commit SHA). It compares against the values cached from the last build and sets `should_build=true` if any moved. `miles` itself is intentionally not polled — that would rebuild far too often. This is what stops the 12-hour cron from rebuilding an unchanged image, with one staleness bound: because the image also bakes a `miles` checkout, `should_build` is forced to `true` once the last triggered build is **24h** old, so `dev` never drifts more than a day behind the `miles` repo even when sglang / Megatron / wheels are quiet. (The cache file's last line records the epoch of the last triggered build; it is only re-saved when a build fires.)
 - **`build-and-push`** (self-hosted `docker-build` runner) — calls `docker/build.py` to build + push, then conditionally points `latest` at the new `dev` and prunes old timestamped tags.
@@ -138,10 +138,23 @@ Pushes use a Docker Hub credential, not your identity:
 - **Remote (CI)** — the workflow logs in with repo secrets `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`, so you don't hold the key — you just trigger the run, which needs repo **Write** access. No approval gate, but `build-and-push` runs on a `self-hosted` runner, so it only fires when one is online.
 - **Local** — `build.py --push` uses your own `docker login`; you need push rights to the target namespace (`radixark/miles`, or `rocm/sgl-dev` for ROCm).
 
+## Versioned release build (`release-docker.yml`)
+
+An exact `vX.Y.Z`, `vX.Y.ZrcN`, or `vX.Y.Z.postN` tag push starts this workflow; `release-tag.yml` also dispatches it explicitly because a tag pushed with `GITHUB_TOKEN` does not trigger another workflow. A manual retry accepts `version` and `ref`, which must identify the same immutable tag.
+
+The workflow checks out the release ref, requires its committed `release-lock.json`, and passes the locked SGLang and Megatron-LM commits plus the checked-out Miles SHA to `docker/build.py` as final build-arg overrides. It publishes two official images:
+
+| Variant | Published tag |
+|---|---|
+| `cu13` | `radixark/miles:v<exact-version>` (`linux/amd64` + `linux/arm64`) |
+| `cu12-x86` | `radixark/miles:v<exact-version>-cu12` (`linux/amd64`) |
+
+This workflow does not move or prune any rolling `dev` or `latest` tag. See [Release a Version](/ci/04-release) for the guarded maintainer procedure and manual retry boundary.
+
 ### Pinning specific repo versions
 
-`docker/Dockerfile` already takes `MEGATRON_BRANCH` / `SGLANG_COMMIT` / `MILES_COMMIT` build-args, but `build.py` does not yet forward arbitrary build-args and `workflow_dispatch` exposes no input for them — so commit-pinning from the workflow needs two changes first: a passthrough in `build.py` and matching inputs in `docker-build.yml`.
+`docker/build.py` accepts repeatable `--build-arg KEY=VALUE` options and appends them after variant defaults. `release-docker.yml` uses that ordering to supply `SGLANG_COMMIT`, `MEGATRON_COMMIT`, and `MILES_COMMIT` from the checked-out tag and its `release-lock.json`; the rolling `docker-build.yml` continues to use branch defaults.
 
 ## Image retention (open)
 
-`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. So there is no durable record of which image a past CI run used — reproducing an old run needs retention / immutable tagging, which is a separate, unsolved design.
+`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut is the exception: it prefers the newest timestamped `dev` image, falls back to mutable `dev` if none exists, retags the result as prune-exempt `release-vX.Y.Z-ci`, and records that tag in `release-lock.json`. The maintainer runbook requires a verified timestamped image before cutting.
