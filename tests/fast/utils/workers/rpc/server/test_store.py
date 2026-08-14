@@ -4,7 +4,7 @@ import pytest
 
 from miles.utils.workers.rpc.common.protocol import CallStatusResponse
 from miles.utils.workers.rpc.server import store as store_module
-from miles.utils.workers.rpc.server.store import CallStore
+from miles.utils.workers.rpc.server.store import CallStore, DuplicateCallError
 
 
 def _make_store(*, ttl: float = 300.0) -> CallStore:
@@ -27,6 +27,23 @@ class TestBegin:
         store.begin(call_id="c1")
 
         assert store.contains("c1")
+
+    async def test_duplicate_pending_call_rejected(self) -> None:
+        """Reusing a pending call id fails loudly."""
+        store = _make_store()
+        store.begin(call_id="c1")
+
+        with pytest.raises(DuplicateCallError, match="already submitted"):
+            store.begin(call_id="c1")
+
+    async def test_duplicate_finished_call_rejected(self) -> None:
+        """Reusing a finished call id fails loudly."""
+        store = _make_store()
+        store.begin(call_id="c1")
+        store.finish(call_id="c1", outcome=CallStatusResponse(status="success", result=1))
+
+        with pytest.raises(DuplicateCallError, match="already submitted"):
+            store.begin(call_id="c1")
 
 
 class TestFinish:
