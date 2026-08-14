@@ -11,6 +11,7 @@ from tests.fast.fixtures.driver_fakes import (
 )
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.ray import placement_group
 from miles.utils import object_store
 
 
@@ -149,6 +150,32 @@ class TestCriticValuesHandoff:
 
         assert store.consumed == [ref]
         assert not store.contains(ref)
+
+
+class TestApiServerWiring:
+    async def test_api_server_receives_the_sync_driver_handles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only an enabled API server receives the live actor and inference controller handles."""
+        started_with: list[dict[str, Any]] = []
+        monkeypatch.setattr(placement_group, "start_api_server", lambda **kwargs: started_with.append(kwargs))
+        monkeypatch.setattr(
+            placement_group,
+            "get_backend_capability",
+            lambda args: SimpleNamespace(cell_operations=lambda: object()),
+        )
+        disabled_events: list[str] = []
+        disabled_args = _make_args(api_server_port=None)
+        _install_driver_fakes(monkeypatch, disabled_args, disabled_events)
+        await train_driver.train(disabled_args)
+        assert started_with == []
+
+        enabled_events: list[str] = []
+        enabled_args = _make_args(api_server_port=8080)
+        components = _install_driver_fakes(monkeypatch, enabled_args, enabled_events)
+        await train_driver.train(enabled_args)
+
+        assert len(started_with) == 1
+        assert started_with[0]["trainer_models"] == {"actor": components.actor_model}
+        assert started_with[0]["inference_controller"] is components.inference_controller
 
 
 class TestTerminalLifecycle:
