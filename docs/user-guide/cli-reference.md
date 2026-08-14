@@ -26,6 +26,7 @@ This page has two passes.
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
+| `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
 
 See [Training Backends](/user-guide/training-backend) for what `--colocate` flips on under the hood.
 
