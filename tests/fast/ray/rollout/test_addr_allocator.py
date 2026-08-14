@@ -37,7 +37,6 @@ def _start_engines_and_collect_addressing(
             rank_offset=rank_offset,
         ),
         num_gpus_per_engine=gpus_per_engine,
-        has_new_engines=False,
         worker_type=worker_type,
     )
     for index, slot in enumerate(slots):

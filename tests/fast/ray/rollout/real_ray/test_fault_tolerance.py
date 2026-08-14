@@ -39,7 +39,6 @@ def _build_group(
             model_path=model_path,
         ),
         num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
     )
 
 
