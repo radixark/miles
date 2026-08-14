@@ -37,6 +37,16 @@ class CellCondition(StrictBaseModel):
     def healthy(cls, status: TriState, *, reason: str | None = None) -> CellCondition:
         return cls(type="Healthy", status=status, reason=reason)
 
+    @classmethod
+    def from_health_checker_status(cls, status: TriState) -> CellCondition:
+        match status:
+            case TriState.FALSE:
+                return cls.healthy(TriState.FALSE, reason="HealthCheckFailed")
+            case TriState.UNKNOWN:
+                return cls.healthy(TriState.UNKNOWN, reason="HealthCheckUnknown")
+            case TriState.TRUE:
+                return cls.healthy(TriState.TRUE)
+
 
 class CellStatus(StrictBaseModel):
     phase: Literal["Pending", "Running", "Suspended"]
