@@ -18,16 +18,18 @@ class InferenceController:
     def __init__(self, args, pg):
         self.pg = pg
         self.args = args
-
-        if self.args.debug_train_only:
-            self.servers: dict[str, RolloutServer] = {}
-        else:
-            self.servers = start_rollout_servers(args, pg)
-            dashboard_hooks.register_router(args)
-            start_session_server(args)
+        self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self.eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
+
+    async def init(self) -> None:
+        if self.args.debug_train_only:
+            return
+
+        self.servers = await start_rollout_servers(self.args, self.pg)
+        dashboard_hooks.register_router(self.args)
+        start_session_server(self.args)
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
