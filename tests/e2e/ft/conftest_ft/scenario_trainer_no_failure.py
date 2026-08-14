@@ -53,7 +53,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     print("No-failure comparison test PASSED")
 
 
-TEST_NAME: str = "trainer_ft_no_failure"
+TEST_NAME: str = "trainer_no_failure"
 PHASES: list[str] = []
 
 
