@@ -354,12 +354,28 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
 
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(
-            load_function(self.spec.worker_class),
-            **self.spec.ctor_kwargs(self.launch_context),
+            bootstrapped_worker_class(self.spec.worker_class),
+            ctor_kwargs=self.spec.ctor_kwargs,
+            context=self.launch_context,
         )
 
     async def post_setup(self) -> None:
         pass
+
+
+def bootstrapped_worker_class(worker_class_path: str) -> type:
+    worker_class = load_function(worker_class_path)
+
+    class BootstrappedWorker(worker_class):
+        def __init__(
+            self, *, ctor_kwargs: Callable[[WorkerLaunchContext], dict[str, Any]], context: WorkerLaunchContext
+        ) -> None:
+            super().__init__(**ctor_kwargs(context))
+
+    BootstrappedWorker.__name__ = worker_class.__name__
+    BootstrappedWorker.__qualname__ = worker_class.__qualname__
+    BootstrappedWorker.__module__ = worker_class.__module__
+    return BootstrappedWorker
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:
