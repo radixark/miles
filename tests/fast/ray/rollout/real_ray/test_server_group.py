@@ -5,6 +5,7 @@ import ray
 from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 
@@ -44,7 +45,7 @@ class TestStartEnginesShortCircuits:
         handles, indices = group.start_engines(PortCursors.empty())
         assert handles == [] and indices == []
         assert group.has_new_engines is False
-        for e in group.all_engines:
+        for e in flatten_cells(group.cells):
             assert not e.is_allocated
 
     def test_placeholder_worker_short_circuits(self, placement_group_factory):
@@ -73,7 +74,7 @@ class TestStartEnginesRealActors:
         # Wait for init.remote() to actually complete on each actor.
         ray.get(handles)
 
-        for i, e in enumerate(group.all_engines):
+        for i, e in enumerate(flatten_cells(group.cells)):
             assert e.is_allocated
             calls = ray.get(e.actor_handle.get_calls.remote())
             method_names = [name for name, _, _ in calls]
@@ -84,7 +85,7 @@ class TestStartEnginesRealActors:
             assert e.addr_info.server_url == mock_engine_http_servers.for_rank(i).url
 
         # Cleanup: kill the actors we created.
-        for e in group.all_engines:
+        for e in flatten_cells(group.cells):
             ray.kill(e.actor_handle)
 
     def test_start_indices_filters_to_subset(self, patched_sglang_engine, placement_group_factory):
@@ -95,13 +96,13 @@ class TestStartEnginesRealActors:
         assert sorted(indices) == [1, 3]
         ray.get(handles)
 
-        assert not group.all_engines[0].is_allocated
-        assert group.all_engines[1].is_allocated
-        assert not group.all_engines[2].is_allocated
-        assert group.all_engines[3].is_allocated
+        assert not flatten_cells(group.cells)[0].is_allocated
+        assert flatten_cells(group.cells)[1].is_allocated
+        assert not flatten_cells(group.cells)[2].is_allocated
+        assert flatten_cells(group.cells)[3].is_allocated
 
         for i in (1, 3):
-            ray.kill(group.all_engines[i].actor_handle)
+            ray.kill(flatten_cells(group.cells)[i].actor_handle)
 
     def test_already_allocated_slot_is_skipped(self, patched_sglang_engine, placement_group_factory):
         """A second start_engines() call must NOT replace an already-allocated
@@ -112,12 +113,12 @@ class TestStartEnginesRealActors:
         # First call: allocates both slots.
         handles, _ = group.start_engines(PortCursors.empty())
         ray.get(handles)
-        first_handles = [e.actor_handle for e in group.all_engines]
+        first_handles = [e.actor_handle for e in flatten_cells(group.cells)]
 
         # Second call with no start_indices: should skip both.
         handles2, indices2 = group.start_engines(PortCursors.empty())
         assert handles2 == [] and indices2 == []
-        for first, e in zip(first_handles, group.all_engines, strict=True):
+        for first, e in zip(first_handles, flatten_cells(group.cells), strict=True):
             assert e.actor_handle is first  # still the same actor
 
         for h in first_handles:
@@ -138,10 +139,10 @@ class TestStopEnginesRealKill:
         handles, _ = group.start_engines(PortCursors.empty())
         ray.get(handles)
 
-        actors = [e.actor_handle for e in group.all_engines]
+        actors = [e.actor_handle for e in flatten_cells(group.cells)]
         group.stop_engines(engine_indices=[0, 1])
 
-        for e in group.all_engines:
+        for e in flatten_cells(group.cells):
             assert not e.is_allocated, "engine should be stopped"
 
         # Real-Ray claim: a follow-up call on a killed actor must surface as
@@ -162,14 +163,14 @@ class TestStopEnginesRealKill:
 
         # Plant a one-shot shutdown failure on engine 1.
         ray.get(
-            group.all_engines[1].actor_handle.set_fault.remote(
+            flatten_cells(group.cells)[1].actor_handle.set_fault.remote(
                 "shutdown",
                 RuntimeError("boom"),
             )
         )
 
         group.stop_engines(engine_indices=[0, 1])
-        for e in group.all_engines:
+        for e in flatten_cells(group.cells):
             assert not e.is_allocated, "all engines must be stopped despite shutdown raise"
 
 
@@ -199,8 +200,8 @@ class TestStartEnginesRealAllocator:
         # init kwargs == the addr_and_ports map produced by the real allocator
         kwargs0, kwargs1 = ray.get(
             [
-                group.all_engines[0].actor_handle.get_init_kwargs.remote(),
-                group.all_engines[1].actor_handle.get_init_kwargs.remote(),
+                flatten_cells(group.cells)[0].actor_handle.get_init_kwargs.remote(),
+                flatten_cells(group.cells)[1].actor_handle.get_init_kwargs.remote(),
             ]
         )
 
@@ -225,13 +226,13 @@ class TestStartEnginesRealAllocator:
         # sees these calls — but engine 1's ports still come from those
         # results, so this assertion catches a regression where the allocator
         # silently fell back to a stub or swallowed the .remote() calls.
-        leader_calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
+        leader_calls = ray.get(flatten_cells(group.cells)[0].actor_handle.get_calls.remote())
         leader_method_names = [name for name, _, _ in leader_calls]
         assert (
             "_get_current_node_ip_and_free_port" in leader_method_names
         ), f"allocator never called the port-finder; saw {leader_method_names}"
 
-        for e in group.all_engines:
+        for e in flatten_cells(group.cells):
             ray.kill(e.actor_handle)
 
     def test_real_allocator_advances_cursor_across_sequential_groups(
@@ -256,15 +257,15 @@ class TestStartEnginesRealAllocator:
         handles_b, _ = b.start_engines(cursors)
         ray.get(handles_b)
 
-        kwargs_a = ray.get([e.actor_handle.get_init_kwargs.remote() for e in a.all_engines])
-        kwargs_b = ray.get([e.actor_handle.get_init_kwargs.remote() for e in b.all_engines])
+        kwargs_a = ray.get([e.actor_handle.get_init_kwargs.remote() for e in flatten_cells(a.cells)])
+        kwargs_b = ray.get([e.actor_handle.get_init_kwargs.remote() for e in flatten_cells(b.cells)])
         ports_a = {p for kw in kwargs_a for p in (kw["port"], kw["nccl_port"])}
         ports_b = {p for kw in kwargs_b for p in (kw["port"], kw["nccl_port"])}
 
         assert ports_a.isdisjoint(ports_b), f"sequential groups overlapped on ports: a={ports_a} b={ports_b}"
 
         for g in (a, b):
-            for e in g.all_engines:
+            for e in flatten_cells(g.cells):
                 ray.kill(e.actor_handle)
 
 

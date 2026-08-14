@@ -6,6 +6,7 @@ from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.rollout.server_cell import flatten_cells
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 
@@ -40,7 +41,7 @@ def _start_group(group: ServerGroup) -> None:
 
 
 def _kill_group(group: ServerGroup) -> None:
-    for e in group.all_engines:
+    for e in flatten_cells(group.cells):
         if e.is_allocated:
             ray.kill(e.actor_handle)
 
@@ -128,7 +129,7 @@ class TestOffloadOnloadAggregation:
                 assert server.payloads_of("/release_memory_occupation") == [{"tags": ["weights"]}]
                 assert server.payloads_of("/resume_memory_occupation") == [{"tags": ["weights"]}]
 
-            for engine in a.all_engines + b.all_engines:
+            for engine in flatten_cells(a.cells) + flatten_cells(b.cells):
                 method_names = {name for name, _args, _kwargs in ray.get(engine.actor_handle.get_calls.remote())}
                 assert not {"release_memory_occupation", "resume_memory_occupation"} & method_names
         finally:
@@ -172,7 +173,7 @@ class TestOffloadOnloadAggregation:
         group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True)
         _start_group(group)
         group.mark_alive([0, 1])
-        group.all_engines[1].mark_stopped()
+        flatten_cells(group.cells)[1].mark_stopped()
 
         srv = RolloutServer(server_groups=[group])
         try:
