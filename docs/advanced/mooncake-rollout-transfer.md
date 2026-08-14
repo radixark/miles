@@ -32,54 +32,38 @@ CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
 for current package names and supported platforms.
 
-## Add Mooncake to a Miles command
+## Configure the backend
 
-Add the backend selector and Store configuration to an existing Miles recipe.
+Choose the transfer protocol before starting Ray. TCP works on any routable data
+network. RDMA also requires a local RDMA device on every node; device names may
+differ between nodes.
 
-Set the Mooncake endpoint first:
+If Ray and the Mooncake endpoint are already running, set the protocol and endpoint:
 
 ```bash
+export MOONCAKE_PROTOCOL="<tcp-or-rdma>"
 export MOONCAKE_MASTER_ADDR="<mooncake-master-host>:50051"
+
+# RDMA only. Set this to the device on the current node before starting Ray.
+# export MOONCAKE_DEVICE="<local-rdma-device>"
 ```
 
-<Tabs>
-  <Tab title="TCP">
+Then add these options to an existing Miles training command:
 
-    ```bash
-    --object-store-backend mooncake \
-    --mooncake-store-init-kwargs \
-      "{\"protocol\":\"tcp\",\"master_server_address\":\"${MOONCAKE_MASTER_ADDR}\"}"
-    ```
-
-  </Tab>
-  <Tab title="RDMA">
-
-    Set the local RDMA device before starting Ray on each node. Device names may
-    differ between nodes.
-
-    ```bash
-    export MOONCAKE_DEVICE="<local-rdma-device>"
-    ```
-
-    Then add:
-
-    ```bash
-    --object-store-backend mooncake \
-    --mooncake-store-init-kwargs \
-      "{\"protocol\":\"rdma\",\"master_server_address\":\"${MOONCAKE_MASTER_ADDR}\"}"
-    ```
-
-  </Tab>
-</Tabs>
+```bash
+--object-store-backend mooncake \
+--mooncake-store-init-kwargs \
+  "{\"protocol\":\"${MOONCAKE_PROTOCOL}\",\"master_server_address\":\"${MOONCAKE_MASTER_ADDR}\"}"
+```
 
 Use a data-network address that every client can reach. The JSON value must remain
 one shell argument.
 
-## Two-node example
+## Two-node walkthrough
 
 The example below runs three synchronous rollout and training iterations with FSDP.
 It uses one eight-GPU node for rollout and one eight-GPU node for training. Set the
-variables to match your cluster.
+variables to match your cluster, then complete the following steps in order.
 
 | Node | Address variable | Role |
 | --- | --- | --- |
@@ -90,16 +74,38 @@ Both nodes must use the same Python environment, Miles revision, and Mooncake
 version. The model and dataset paths referenced by the job must be available to the
 processes that use them.
 
-### 1. Start Mooncake and Ray on the head
+### 1. Choose the protocol and set node addresses
+
+On the head node, select TCP or RDMA and set its data-network address:
+
+```bash
+export HEAD_IP="<head-data-network-ip>"
+export MOONCAKE_PROTOCOL="<tcp-or-rdma>"
+
+# RDMA only. Use the device attached to HEAD_IP.
+# export MOONCAKE_DEVICE="<head-rdma-device>"
+```
+
+On the worker node, select the same protocol and set both node addresses:
+
+```bash
+export HEAD_IP="<head-data-network-ip>"
+export WORKER_IP="<worker-data-network-ip>"
+export MOONCAKE_PROTOCOL="<tcp-or-rdma>"
+
+# RDMA only. Use the device attached to WORKER_IP.
+# export MOONCAKE_DEVICE="<worker-rdma-device>"
+```
+
+For RDMA, set `MOONCAKE_DEVICE` before starting Ray so that Ray workers inherit the
+node-local device setting.
+
+### 2. Start Mooncake and Ray on the head
 
 Activate the Miles environment first, then run:
 
 ```bash
-export HEAD_IP="<head-data-network-ip>"
 export MOONCAKE_LOG="${MOONCAKE_LOG:-mooncake_master.log}"
-
-# RDMA only. Use the device attached to HEAD_IP.
-# export MOONCAKE_DEVICE="<head-rdma-device>"
 
 mooncake_master --rpc_port 50051 --metrics_port 50052 \
   >"${MOONCAKE_LOG}" 2>&1 &
@@ -113,17 +119,11 @@ ray start --head \
   --dashboard-port 8265
 ```
 
-### 2. Join the worker
+### 3. Join the worker
 
 Activate the same Miles environment on the worker, then run:
 
 ```bash
-export HEAD_IP="<head-data-network-ip>"
-export WORKER_IP="<worker-data-network-ip>"
-
-# RDMA only. Use the device attached to WORKER_IP.
-# export MOONCAKE_DEVICE="<worker-rdma-device>"
-
 ray stop --force
 ray start \
   --address="${HEAD_IP}:6379" \
@@ -135,38 +135,16 @@ ray start \
 Mooncake uses each Ray node IP as `local_hostname` by default. Starting Ray with the
 data-network addresses above therefore keeps both systems on the same network.
 
-### 3. Select TCP or RDMA
+### 4. Submit training from the head
 
-On the head, choose one Store configuration. The 2 GiB values are suitable for this
-small example; production jobs should size them for live rollout data, replicas, and
-concurrent transfers.
+Set the Store configuration and the repository, model, and dataset paths before
+submitting the job. The 2 GiB values are suitable for this small example; production
+jobs should size them for live rollout data, replicas, and concurrent transfers.
 
 ```bash
 export MOONCAKE_MASTER_ADDR="${HEAD_IP}:50051"
-```
+export MOONCAKE_STORE_INIT_KWARGS="{\"protocol\":\"${MOONCAKE_PROTOCOL}\",\"master_server_address\":\"${MOONCAKE_MASTER_ADDR}\",\"global_segment_size\":\"2gb\",\"local_buffer_size\":\"2gb\",\"chunk_bytes\":67108864}"
 
-<Tabs>
-  <Tab title="TCP">
-
-    ```bash
-    export MOONCAKE_STORE_INIT_KWARGS="{\"protocol\":\"tcp\",\"master_server_address\":\"${MOONCAKE_MASTER_ADDR}\",\"global_segment_size\":\"2gb\",\"local_buffer_size\":\"2gb\",\"chunk_bytes\":67108864}"
-    ```
-
-  </Tab>
-  <Tab title="RDMA">
-
-    ```bash
-    export MOONCAKE_STORE_INIT_KWARGS="{\"protocol\":\"rdma\",\"master_server_address\":\"${MOONCAKE_MASTER_ADDR}\",\"global_segment_size\":\"2gb\",\"local_buffer_size\":\"2gb\",\"chunk_bytes\":67108864}"
-    ```
-
-  </Tab>
-</Tabs>
-
-### 4. Submit training from the head
-
-Set the repository, model, and dataset paths before submitting the job:
-
-```bash
 export MILES_HOME="<path-to-miles>"
 export MODEL_PATH="<path-to-Qwen2.5-0.5B-Instruct>"
 export DATASET_PATH="<path-to-gsm8k-train.parquet>"
