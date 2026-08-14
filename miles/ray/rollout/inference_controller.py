@@ -65,6 +65,7 @@ class InferenceController(NodeProbeMixin):
         if self.args.debug_train_only:
             return
 
+        await self._engine_provider.init()
         router_addrs = await resolve_router_addrs(self.args, router_providers=self._router_providers)
         self.servers = await create_rollout_servers(
             self.args,
