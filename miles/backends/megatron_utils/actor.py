@@ -63,7 +63,7 @@ from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_manager import EnginesAndLock
+    from miles.ray.rollout.inference_controller import EnginesAndLock
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 

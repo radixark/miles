@@ -91,24 +91,38 @@ class MockRemoteCall:
         return future
 
 
-class MockRolloutManager:
+class MockInferenceController:
+    """Plain object, not a Ray actor: the controller lives in the driver process."""
+
     def __init__(
         self,
         phase: str = "Running",
         conditions: list[dict[str, str | None]] | None = None,
         is_suspended: bool = False,
     ) -> None:
-        self.stop_cell = MockRemoteCall(None)
-        self.start_cell = MockRemoteCall(None)
-        self.get_cell_phase = MockRemoteCall(phase)
-        self.get_cell_conditions = MockRemoteCall(
-            conditions
-            or [
-                {"type": "Allocated", "status": "True"},
-                {"type": "Healthy", "status": "True"},
-            ]
-        )
-        self.get_cell_is_suspended = MockRemoteCall(is_suspended)
+        self._phase = phase
+        self._conditions = conditions or [
+            {"type": "Allocated", "status": "True"},
+            {"type": "Healthy", "status": "True"},
+        ]
+        self._is_suspended = is_suspended
+        self.stopped_cells: list[int] = []
+        self.started_cells: list[int] = []
+
+    def get_cell_phase(self, cell_index: int) -> str:
+        return self._phase
+
+    def get_cell_conditions(self, cell_index: int) -> list[dict[str, str | None]]:
+        return self._conditions
+
+    def get_cell_is_suspended(self, cell_index: int) -> bool:
+        return self._is_suspended
+
+    async def stop_cell(self, cell_index: int) -> None:
+        self.stopped_cells.append(cell_index)
+
+    async def start_cell(self, cell_index: int) -> None:
+        self.started_cells.append(cell_index)
 
 
 class MockRayTrainCell:

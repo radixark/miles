@@ -22,7 +22,7 @@ from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, regi
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_manager import EnginesAndLock
+    from miles.ray.rollout.inference_controller import EnginesAndLock
 
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ class TrainRayActor(RayActor):
     def _get_parallel_config(self):
         raise NotImplementedError
 
-    def set_rollout_manager(self, rollout_manager):
-        self.rollout_manager = rollout_manager
+    def set_rollout_executor(self, rollout_executor):
+        self.rollout_executor = rollout_executor
         if self.args.rank == 0:
-            ray.get(self.rollout_manager.set_train_parallel_config.remote(self.train_parallel_config))
+            ray.get(self.rollout_executor.set_train_parallel_config.remote(self.train_parallel_config))

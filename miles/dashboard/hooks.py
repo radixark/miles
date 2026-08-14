@@ -322,7 +322,7 @@ def register_router(args) -> None:
 
 
 def register_engines(servers) -> None:
-    """Called at the top of every RolloutManager.generate(): pushes an engine
+    """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
     fault-tolerance recovery). Steady state costs one local tuple compare."""
     global _engines_fingerprint
@@ -344,7 +344,7 @@ def register_engines(servers) -> None:
 
 
 def report_data_buffer(length: int | None) -> None:
-    """Called at the top of every ``RolloutManager.generate()`` alongside
+    """Called at the top of every ``RolloutExecutor.generate()`` alongside
     ``register_engines``, with ``getattr(data_source, "get_buffer_length",
     lambda: None)()``. A no-op for ``length is None`` — most data sources
     (plain ``RolloutDataSource``) never buffer samples across steps."""

@@ -68,7 +68,8 @@ def _make_group(
     *,
     num_cells: int = 3,
     actor_count_per_cell: int = 1,
-    rollout_manager: object | None = None,
+    inference_controller: object | None = None,
+    rollout_executor: object | None = None,
 ) -> RayTrainGroup:
     """Create a RayTrainGroup through real __init__ with mocked pg and actor factory."""
     total_gpus = num_cells * actor_count_per_cell
@@ -79,7 +80,8 @@ def _make_group(
         pg=(MagicMock(), list(range(total_gpus)), list(range(total_gpus))),
         role="actor",
         with_ref=False,
-        rollout_manager=rollout_manager,
+        inference_controller=inference_controller,
+        rollout_executor=rollout_executor,
     )
 
 
@@ -128,7 +130,8 @@ class TestInit:
             pg=(MagicMock(), [0], [0]),
             role="actor",
             with_ref=False,
-            rollout_manager=None,
+            inference_controller=None,
+            rollout_executor=None,
         )
 
         assert len(group._cells) == 1
@@ -165,6 +168,32 @@ class TestStopStartCell:
         group.start_cell(1)
 
         assert group._cells[1].is_pending
+
+
+class TestSetRolloutExecutor:
+    async def test_set_rollout_executor_reaches_every_initial_cell(self):
+        """The group fans the executor handle out to every actor of every cell exactly once."""
+        group = await _make_alive_group(num_cells=3, actor_count_per_cell=2, rollout_executor="executor-handle")
+
+        await group.set_rollout_executor()
+
+        for cell in group._cells:
+            for handle in cell._get_actor_handles():
+                calls = ray.get(handle.get_calls.remote())
+                set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
+                assert len(set_calls) == 1
+                assert set_calls[0][1] == ("executor-handle",)
+
+    async def test_set_rollout_executor_propagates_a_cell_failure(self):
+        """A failing actor makes the fan-out raise and takes its own cell down."""
+        group = await _make_alive_group(num_cells=2, rollout_executor="executor-handle")
+        for handle in group._cells[1]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["set_rollout_executor"]))
+
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await group.set_rollout_executor()
+
+        assert group._cells[1].is_stopped
 
 
 class TestExecuteFirstAlive:
@@ -325,10 +354,9 @@ class TestRefreshCellsHealing:
             dst_ranks = sorted(c[2]["dst_rank"] for c in send_calls)
             assert dst_ranks == [1, 2]
 
-    async def test_healed_cell_receives_set_rollout_manager(self):
-        """Healed cell receives set_rollout_manager after init."""
-        rollout_mgr = MagicMock()
-        group = await _make_alive_group(num_cells=2, rollout_manager=rollout_mgr)
+    async def test_healed_cell_receives_set_rollout_executor(self):
+        """A healed cell is handed the executor handle again after init."""
+        group = await _make_alive_group(num_cells=2, rollout_executor="executor-handle")
         group.stop_cell(1)
         group.start_cell(1)
 
@@ -337,7 +365,10 @@ class TestRefreshCellsHealing:
         assert group._cells[1].is_alive
         for handle in group._cells[1]._get_actor_handles():
             calls = ray.get(handle.get_calls.remote())
-            assert any(c[0] == "set_rollout_manager" for c in calls)
+            set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
+            assert set_calls, "healed cell never received set_rollout_executor"
+            for call in set_calls:
+                assert call[1] == ("executor-handle",)
 
     async def test_pending_cell_with_stopped_cell(self):
         """Pending + stopped: only alive and pending participate, stopped excluded."""
@@ -999,20 +1030,20 @@ def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
 class TestMaybeLogInferenceEngineWeightChecksums:
     async def test_no_event_logger_does_not_call_check_weights(self):
         """Without an initialized event logger, no check_weights request is issued."""
-        rollout_mgr = MagicMock()
-        rollout_mgr.check_weights = MagicMock()
-        group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
+        inference_ctl = MagicMock()
+        inference_ctl.check_weights = MagicMock()
+        group = _make_group(num_cells=1, inference_controller=inference_ctl)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=False):
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
 
-        rollout_mgr.check_weights.assert_not_called()
+        inference_ctl.check_weights.assert_not_called()
 
     async def test_none_rollout_id_logs_event(self):
         """The initial out-of-loop sync (rollout_id=None) still logs an event with rollout_id=None."""
-        rollout_mgr = MagicMock()
-        rollout_mgr.check_weights.remote = AsyncMock(return_value=_checksum_response([{"w": "e0"}]))
-        group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
+        inference_ctl = MagicMock()
+        inference_ctl.check_weights = AsyncMock(return_value=_checksum_response([{"w": "e0"}]))
+        group = _make_group(num_cells=1, inference_controller=inference_ctl)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
             "miles.ray.train.group.get_event_logger"
@@ -1028,33 +1059,33 @@ class TestMaybeLogInferenceEngineWeightChecksums:
 
     async def test_debug_train_only_skips_collection(self):
         """Without real rollout engines (debug_train_only), no check_weights request is issued."""
-        rollout_mgr = MagicMock()
-        rollout_mgr.check_weights = MagicMock()
-        group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
+        inference_ctl = MagicMock()
+        inference_ctl.check_weights = MagicMock()
+        group = _make_group(num_cells=1, inference_controller=inference_ctl)
         group.args.debug_train_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
 
-        rollout_mgr.check_weights.assert_not_called()
+        inference_ctl.check_weights.assert_not_called()
 
     async def test_debug_rollout_only_skips_collection(self):
         """Without real train engines pushing weights (debug_rollout_only), no check_weights request is issued."""
-        rollout_mgr = MagicMock()
-        rollout_mgr.check_weights = MagicMock()
-        group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
+        inference_ctl = MagicMock()
+        inference_ctl.check_weights = MagicMock()
+        group = _make_group(num_cells=1, inference_controller=inference_ctl)
         group.args.debug_rollout_only = True
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True):
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=0)
 
-        rollout_mgr.check_weights.assert_not_called()
+        inference_ctl.check_weights.assert_not_called()
 
     async def test_enabled_logs_one_event_per_rollout(self):
         """With event logger on and real engines, one event holds every engine's checksums."""
-        rollout_mgr = MagicMock()
-        rollout_mgr.check_weights.remote = AsyncMock(return_value=_checksum_response([{"w": "e0"}, {"w": "e1"}]))
-        group = _make_group(num_cells=1, rollout_manager=rollout_mgr)
+        inference_ctl = MagicMock()
+        inference_ctl.check_weights = AsyncMock(return_value=_checksum_response([{"w": "e0"}, {"w": "e1"}]))
+        group = _make_group(num_cells=1, inference_controller=inference_ctl)
 
         with patch("miles.ray.train.group.is_event_logger_initialized", return_value=True), patch(
             "miles.ray.train.group.get_event_logger"
@@ -1064,7 +1095,7 @@ class TestMaybeLogInferenceEngineWeightChecksums:
 
             await group._maybe_log_inference_engine_weight_checksums(rollout_id=3)
 
-        rollout_mgr.check_weights.remote.assert_awaited_once_with("checksum")
+        inference_ctl.check_weights.assert_awaited_once_with("checksum")
         mock_logger.log.assert_called_once()
         logged = mock_logger.log.call_args.args[1]
         assert logged == dict(rollout_id=3, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}])

@@ -53,7 +53,7 @@ def make_cell(
     cell_index: int = 0,
     *,
     actor_count: int = 2,
-    rollout_manager: object | None = None,
+    rollout_executor: object | None = None,
 ) -> RayTrainCell:
     def factory():
         return [DummyTrainActor.remote() for _ in range(actor_count)]
@@ -64,7 +64,7 @@ def make_cell(
         with_ref=False,
         cell_index=cell_index,
         actor_factory=factory,
-        rollout_manager=rollout_manager,
+        rollout_executor=rollout_executor,
         health_checker=NoopHealthChecker(),
     )
 

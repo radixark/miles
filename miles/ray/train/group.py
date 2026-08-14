@@ -64,14 +64,16 @@ class RayTrainGroup:
         num_gpus_per_node: int,
         pg: tuple[PlacementGroup, list[int], list[int]],
         *,
-        rollout_manager: object | None,
+        inference_controller: object | None,
+        rollout_executor: object | None,
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
         self.args = args
-        self._rollout_manager = rollout_manager
+        self._inference_controller = inference_controller
+        self._rollout_executor = rollout_executor
 
         total_gpus = num_nodes * num_gpus_per_node
         num_cells = (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
@@ -99,7 +101,7 @@ class RayTrainGroup:
                 with_ref=with_ref,
                 with_opd_teacher=with_opd_teacher,
                 cell_index=cell_index,
-                rollout_manager=rollout_manager,
+                rollout_executor=rollout_executor,
                 actor_factory=lambda _pg=cell_pg, _ci=cell_index: allocate_gpus_for_actor(
                     args=args,
                     gpus_per_cell=gpus_per_cell,
@@ -258,14 +260,14 @@ class RayTrainGroup:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set; the actor releases the lock itself.
-        info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
-        await self._rollout_manager.health_monitoring_pause.remote()
+        info = await self._inference_controller.get_updatable_engines_and_lock()
+        await self._inference_controller.health_monitoring_pause()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
-        await self._rollout_manager.clear_updatable_has_new_engines.remote()
+        await self._inference_controller.clear_updatable_has_new_engines()
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
@@ -275,7 +277,7 @@ class RayTrainGroup:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        check_weights_result = await self._rollout_manager.check_weights.remote("checksum")
+        check_weights_result = await self._inference_controller.check_weights("checksum")
         engine_checksums = flatten_inference_engine_checksums(check_weights_result)
         get_event_logger().log(
             InferenceEngineWeightChecksumEvent,
@@ -298,8 +300,8 @@ class RayTrainGroup:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def set_rollout_manager(self):
-        await asyncio.gather(*[cell.set_rollout_manager() for cell in self._cells])
+    async def set_rollout_executor(self):
+        await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
     def stop_cell(self, cell_index: int) -> None:
         self._cells[cell_index].stop()

@@ -49,8 +49,8 @@ class DummyTrainActor:
         self._record("train", args, kwargs)
         return self._train_return_value
 
-    def set_rollout_manager(self, *args: Any, **kwargs: Any) -> None:
-        self._record("set_rollout_manager", args, kwargs)
+    def set_rollout_executor(self, *args: Any, **kwargs: Any) -> None:
+        self._record("set_rollout_executor", args, kwargs)
 
     def wake_up(self) -> None:
         self._record("wake_up", (), {})
