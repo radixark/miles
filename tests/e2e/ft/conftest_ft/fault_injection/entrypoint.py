@@ -52,6 +52,10 @@ class FaultInjectorHandle:
     def stop_and_join(self) -> None:
         self._stop_event.set()
         self._thread.join(timeout=STOP_AND_JOIN_TIMEOUT_SECONDS)
+        assert not self._thread.is_alive(), (
+            f"The fault injector was still mid-injection {STOP_AND_JOIN_TIMEOUT_SECONDS}s after being asked to "
+            f"stop, so it may still crash a cell nothing will heal, and reading its log now would race it"
+        )
         self._observe_final_snapshot()
 
     def _observe_final_snapshot(self) -> None:

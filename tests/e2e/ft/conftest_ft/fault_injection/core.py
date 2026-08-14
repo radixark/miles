@@ -6,8 +6,14 @@ import threading
 import time
 import requests
 
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm, CellFaultForms
-from tests.e2e.ft.conftest_ft.fault_injection.state import Event, EventLog, cell_type_of
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, BaseFaultForm, CellFaultForms
+from tests.e2e.ft.conftest_ft.fault_injection.state import (
+    Event,
+    EventLog,
+    ObservedCellState,
+    cell_type_of,
+    compute_observed_cell_state,
+)
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_genuinely_alive, compute_successful_form_names
 
 logger = logging.getLogger(__name__)
@@ -53,18 +59,35 @@ def run_fault_injection_loop(
 
         # Keep >=1 cell of each kind genuinely alive: if a prior injection has not recovered yet, wait
         # and retry on a later poll rather than killing that kind's last live replica.
-        alive_of_type: dict[str, list[dict]] = {}
+        live_replicas_of_type: dict[str, list[dict]] = {}
+        victims_of_type: dict[str, list[dict]] = {}
         for cell in compute_genuinely_alive(event_log.events, cells):
-            alive_of_type.setdefault(cell_type_of(cell), []).append(cell)
-        spare_types = sorted(kind for kind, kind_cells in alive_of_type.items() if len(kind_cells) > 1)
+            kind = cell_type_of(cell)
+            victims_of_type.setdefault(kind, []).append(cell)
+            if _cell_can_serve(cell):
+                live_replicas_of_type.setdefault(kind, []).append(cell)
+
+        logger.info(
+            "Live replicas %s, injectable victims %s",
+            {
+                kind: sorted(c["metadata"]["name"] for c in kind_cells)
+                for kind, kind_cells in sorted(live_replicas_of_type.items())
+            },
+            {
+                kind: sorted(c["metadata"]["name"] for c in kind_cells)
+                for kind, kind_cells in sorted(victims_of_type.items())
+            },
+        )
+
+        spare_types = sorted(kind for kind, kind_cells in live_replicas_of_type.items() if len(kind_cells) > 1)
         if not spare_types:
             logger.info(
-                "Deferring injection: no cell kind has a spare replica (%s)",
-                {kind: len(kind_cells) for kind, kind_cells in sorted(alive_of_type.items())},
+                "Deferring injection: no cell kind has a spare working replica (%s)",
+                {kind: len(kind_cells) for kind, kind_cells in sorted(live_replicas_of_type.items())},
             )
             continue
 
-        target = rng.choice(alive_of_type[rng.choice(spare_types)])
+        target = rng.choice(victims_of_type[rng.choice(spare_types)])
         cell_name = target["metadata"]["name"]
         target_type = cell_type_of(target)
         form = _draw_form(cell_fault_forms[target_type], events=event_log.events, cell_type=target_type, rng=rng)
@@ -78,6 +101,12 @@ def run_fault_injection_loop(
         event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=True)
         next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
         logger.info("Injected fault %s into %s", form.name, cell_name)
+
+
+def _cell_can_serve(cell: dict) -> bool:
+    if cell_type_of(cell) != ROLLOUT_CELL_TYPE:
+        return True
+    return compute_observed_cell_state(cell) is ObservedCellState.SERVING
 
 
 def _draw_form(
