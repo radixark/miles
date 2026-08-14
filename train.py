@@ -39,7 +39,7 @@ async def train(args):
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, rollout_executor)
 
-    maybe_start_api_server(args, actor_model=actor_model, inference_controller=inference_controller)
+    maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
 
     maybe_start_mini_ft_controller(args)
 

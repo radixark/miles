@@ -313,7 +313,9 @@ class TrainerController:
         model, optimzier, local ckpt, etc.
         """
         self.args = args
-        configure_logger(args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id))
+        configure_logger(
+            args, source=TrainerControllerProcessIdentity(trainer_id=self._trainer_id, model_id=args.trainer_model_id)
+        )
         object_store.init_instance(args, contribute_segment=False)
 
         if self._expected_num_cells > 1:

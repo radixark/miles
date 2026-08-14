@@ -56,6 +56,47 @@ class TestRunAnalysis:
         assert len(issues) == 1
 
 
+class TestSeveralModelIds:
+    def test_two_model_ids_are_not_compared_against_each_other(self, tmp_path: Path) -> None:
+        """Two model ids mean two different models, so their weights differ by design, not by fault."""
+        for model_id, param_hash in (("solver", "aaa"), ("verifier", "zzz")):
+            for cell_index in (0, 1):
+                event_logger = EventLogger(
+                    log_dir=tmp_path,
+                    file_name=f"{model_id}-{cell_index}.jsonl",
+                    source=TrainProcessIdentity(
+                        component="actor", model_id=model_id, cell_index=cell_index, rank_within_cell=0
+                    ),
+                )
+                _log_checksum_event(event_logger, rollout_id=0, param_hashes={"pp0.w": param_hash})
+                event_logger.close()
+
+        assert run_analysis(event_dir=tmp_path) == []
+
+    def test_two_cells_of_one_model_id_are_still_compared(self, tmp_path: Path) -> None:
+        """Partitioning by model id must not disable the check inside one model id, which is what it exists for."""
+        for cell_index, param_hash in ((0, "aaa"), (1, "zzz")):
+            event_logger = EventLogger(
+                log_dir=tmp_path,
+                file_name=f"solver-{cell_index}.jsonl",
+                source=TrainProcessIdentity(
+                    component="actor", model_id="solver", cell_index=cell_index, rank_within_cell=0
+                ),
+            )
+            _log_checksum_event(event_logger, rollout_id=0, param_hashes={"pp0.w": param_hash})
+            event_logger.close()
+
+        other = EventLogger(
+            log_dir=tmp_path,
+            file_name="verifier.jsonl",
+            source=TrainProcessIdentity(component="actor", model_id="verifier", cell_index=0, rank_within_cell=0),
+        )
+        _log_checksum_event(other, rollout_id=0, param_hashes={"pp0.w": "bbb"})
+        other.close()
+
+        assert len(run_analysis(event_dir=tmp_path)) == 1
+
+
 def _log_inference_engine_checksum_event(
     event_logger: EventLogger,
     *,

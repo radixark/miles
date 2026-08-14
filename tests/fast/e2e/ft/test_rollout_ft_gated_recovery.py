@@ -187,7 +187,7 @@ class _Harness:
         self.handler = _CellHandler(
             cell_type="rollout",
             operations=RayCellOperations(worker_manager_handle=self.worker_manager),
-            controller=self.controller,
+            controllers=[self.controller],
             pool_ids=[_POOL_ID],
         )
         self.ft_controller = _MiniFTController(
