@@ -12,16 +12,14 @@ class _ProcessIdentityBase(FrozenStrictBaseModel):
         return self.component
 
 
-class MainProcessIdentity(_ProcessIdentityBase):
-    component: Literal["main"] = "main"
-
-
-class RolloutExecutorProcessIdentity(_ProcessIdentityBase):
-    component: Literal["rollout_executor"] = "rollout_executor"
-
-
-class InferenceControllerProcessIdentity(_ProcessIdentityBase):
-    component: Literal["inference_controller"] = "inference_controller"
+class SimpleProcessIdentity(_ProcessIdentityBase):
+    component: Literal[
+        "main",
+        "rollout_executor",
+        "inference_controller",
+        "multi_lora_controller",
+        "worker_manager",
+    ]
 
 
 class TrainerControllerProcessIdentity(_ProcessIdentityBase):
@@ -42,10 +40,6 @@ class TrainProcessIdentity(_ProcessIdentityBase):
 
 
 ProcessIdentity = Annotated[
-    MainProcessIdentity
-    | RolloutExecutorProcessIdentity
-    | InferenceControllerProcessIdentity
-    | TrainerControllerProcessIdentity
-    | TrainProcessIdentity,
+    SimpleProcessIdentity | TrainerControllerProcessIdentity | TrainProcessIdentity,
     Discriminator("component"),
 ]

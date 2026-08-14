@@ -14,9 +14,9 @@ from miles.utils.audit_utils.event_logger.logger import (
     set_event_logger,
 )
 from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
-_TEST_SOURCE = MainProcessIdentity()
+_TEST_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _make_logger(log_dir: Path, file_name: str = "events.jsonl") -> EventLogger:

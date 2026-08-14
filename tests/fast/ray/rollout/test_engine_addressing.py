@@ -66,6 +66,7 @@ async def _launch_engines(args: Namespace) -> dict[str, LaunchCommandContext]:
 
     manager = RayWorkerManager()
     await manager.init(
+        args,
         specs,
         {
             "rollout": PlacementGroupInfo(

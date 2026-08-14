@@ -12,7 +12,7 @@ from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.logging_utils import configure_logger
 from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics
@@ -32,7 +32,7 @@ async def main(args):
     assert (
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
-    configure_logger(args, source=MainProcessIdentity())
+    configure_logger(args, source=SimpleProcessIdentity(component="main"))
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
