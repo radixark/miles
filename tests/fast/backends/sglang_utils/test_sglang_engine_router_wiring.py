@@ -10,10 +10,10 @@ class _RecordingRouterApiClient:
     def __init__(self, events: list[tuple[str, dict]] | None = None):
         self.calls: list[tuple[str, dict]] = [] if events is None else events
 
-    def add_worker(self, **kwargs):
+    async def add_worker(self, **kwargs):
         self.calls.append(("add_worker", kwargs))
 
-    def remove_worker(self, **kwargs):
+    async def remove_worker(self, **kwargs):
         self.calls.append(("remove_worker", kwargs))
 
 
