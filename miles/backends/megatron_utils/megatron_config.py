@@ -4,6 +4,7 @@ import logging
 import os
 import re
 from argparse import Namespace
+from pathlib import Path
 from typing import Any, Literal
 
 import pydantic
@@ -22,6 +23,7 @@ ACTOR_ROLE = "actor"
 CRITIC_ROLE = "critic"
 DEFAULT_MODEL_ROLE = ACTOR_ROLE
 TrainerRole = Literal["actor", "critic"]
+TRAINER_CHECKPOINT_DIRNAME = "trainers"
 MODEL_ID_PATTERN = re.compile(r"\A[a-z0-9]([a-z0-9-]*[a-z0-9])?\Z")
 
 PER_POLICY_ARGS: frozenset[str] = frozenset(
@@ -216,6 +218,7 @@ def _assert_no_declared_critic(raw: "_RawMegatronConfig") -> None:
 
 def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
     ans = copy.deepcopy(args)
+    ans.trainer_model_id = trainer.model_id
 
     for key, value in trainer.overrides.items():
         assert hasattr(ans, key), (
@@ -224,13 +227,35 @@ def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Nam
         )
         setattr(ans, key, value)
 
+    _apply_critical_derived_overrides(ans, base=args, trainer=trainer)
+
+    if trainer.model_id is not None:
+        ans.save = _compute_trainer_checkpoint_dir(base_dir=ans.save, trainer_id=trainer.trainer_id)
+        ans.load = _compute_trainer_checkpoint_dir(base_dir=ans.load, trainer_id=trainer.trainer_id)
+        ans.save_hf = _compute_trainer_checkpoint_dir(base_dir=ans.save_hf, trainer_id=trainer.trainer_id)
+
+    if args.megatron_config is not None:
+        resolve_args_checkpoint_load(ans)
+
     return ans
+
+
+def _apply_critical_derived_overrides(ans: Namespace, *, base: Namespace, trainer: MegatronTrainerConfig) -> None:
+    # TODO: most derived defaults are still computed from the base args; revisit after the arguments refactor
+    if "hf_checkpoint" in trainer.overrides and base.tokenizer_model == base.hf_checkpoint:
+        ans.tokenizer_model = ans.hf_checkpoint
 
 
 # ---------------------------- checkpoint dirs -----------------------------
 
 
-def resolve_args_checkpoint_load(args: argparse.Namespace) -> None:
+def _compute_trainer_checkpoint_dir(*, base_dir: str | None, trainer_id: str) -> str | None:
+    if base_dir is None:
+        return None
+    return str(Path(base_dir) / TRAINER_CHECKPOINT_DIRNAME / trainer_id)
+
+
+def resolve_args_checkpoint_load(args: Namespace) -> None:
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
