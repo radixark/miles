@@ -6,10 +6,14 @@ from collections.abc import AsyncIterator
 from typing import NamedTuple
 
 import httpx
+import pytest
+from fastapi.responses import JSONResponse
 
 from miles.utils.pydantic_utils import StrictBaseModel
-from miles.utils.workers.rpc.common.metadata import rpc
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs, rpc
+from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, CallStatusResponse
 from miles.utils.workers.rpc.server.app import create_rpc_app
+from miles.utils.workers.rpc.server.executor import RpcCallExecutor
 
 
 class _Item(StrictBaseModel):
@@ -65,6 +69,11 @@ class _Worker:
 
     def demo_tag_upper(self, tag: str) -> str:
         return tag.upper()
+
+
+class _AsyncCancelWorker:
+    async def demo_cancel_self(self) -> str:
+        raise asyncio.CancelledError
 
 
 @contextlib.asynccontextmanager
@@ -183,11 +192,93 @@ class TestProtocolErrors:
             response = await client.post("/v1/demo_sync", json={"call_id": "c1", "query": {"a": 1, "b": 2}, "junk": 1})
             assert response.status_code == 400
 
+    async def test_boot_uuid_mismatch_header_returns_412(self) -> None:
+        """A stale boot UUID request header is refused before scheduling."""
+        worker = _Worker()
+        async with _client(worker) as client:
+            response = await client.post(
+                "/v1/demo_sync",
+                headers={EXPECTED_BOOT_UUID_HEADER: "stale"},
+                json={"call_id": "c1", "query": {"a": 1, "b": 2}},
+            )
+            assert response.status_code == 412
+            assert response.headers[BOOT_UUID_HEADER] != "stale"
+            assert not worker.done_event.is_set()
+            assert worker.calls == 0
+
+    async def test_stale_boot_uuid_is_refused_before_routing_and_validation(self) -> None:
+        """A stale expectation wins over routing and validation, so a restart is never reported as a 404 or 400."""
+        async with _client(_Worker()) as client:
+            unknown_route = await client.post(
+                "/v1/nope", headers={EXPECTED_BOOT_UUID_HEADER: "stale"}, json={"call_id": "c1", "query": {}}
+            )
+            malformed = await client.post(
+                "/v1/demo_sync", headers={EXPECTED_BOOT_UUID_HEADER: "stale"}, json={"call_id": "c1"}
+            )
+
+            assert unknown_route.status_code == 412
+            assert malformed.status_code == 412
+
+    @pytest.mark.parametrize(
+        ("method", "query", "status_code"),
+        [("nope", {}, 404), ("demo_sync", {"a": "x", "b": 2}, 400)],
+    )
+    async def test_rejected_submission_does_not_reserve_call_id(self, method: str, query: dict, status_code: int):
+        """A submission refused before scheduling leaves its call id free for a corrected retry."""
+        async with _client(_Worker()) as client:
+            rejected = await _submit(client, method, query, call_id="reused")
+            assert rejected.response.status_code == status_code
+
+            accepted = await _submit(client, "demo_sync", {"a": 1, "b": 2}, call_id="reused")
+            assert accepted.response.status_code == 200
+            assert await _poll_until_done(client, "reused") == {"status": "success", "result": 3, "error": None}
+
     async def test_invalid_poll_timeout_400(self):
         """A negative long-poll timeout is a client error, reported as 400."""
         async with _client(_Worker()) as client:
             response = await client.get("/v1/calls/whatever", params={"timeout": -1.0})
             assert response.status_code == 400
+
+    async def test_error_responses_carry_boot_uuid_header(self):
+        """4xx responses carry the boot uuid header just like successful ones."""
+        async with _client(_Worker()) as client:
+            not_found = await client.post("/v1/nope", json={"call_id": "c1", "query": {}})
+            malformed = await client.post("/v1/demo_sync", json={"call_id": "c1"})
+            assert BOOT_UUID_HEADER in not_found.headers
+            assert BOOT_UUID_HEADER in malformed.headers
+
+    async def test_unhandled_route_error_still_carries_boot_uuid_header(self):
+        """An exception escaping a route becomes a 500 that still identifies the serving process."""
+        app = create_rpc_app(_Worker())
+
+        @app.get("/v1/boom")
+        async def boom() -> None:
+            raise RuntimeError("boom")
+
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                response = await client.get("/v1/boom")
+
+        assert response.status_code == 500
+        assert BOOT_UUID_HEADER in response.headers
+        assert response.json() == {"detail": "unhandled rpc server error"}
+
+    async def test_a_route_cannot_forge_the_boot_uuid_header(self):
+        """The boot uuid header is authoritative, so a header set downstream is overwritten, not kept."""
+        app = create_rpc_app(_Worker())
+
+        @app.get("/v1/forged")
+        async def forged() -> JSONResponse:
+            return JSONResponse(content={}, headers={BOOT_UUID_HEADER: "forged"})
+
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+                health = await client.get("/v1/health")
+                response = await client.get("/v1/forged")
+
+        assert response.headers[BOOT_UUID_HEADER] == health.headers[BOOT_UUID_HEADER]
 
 
 class TestDuplicateCalls:
@@ -253,3 +344,45 @@ class TestConcurrencyGroups:
             left_body = await _poll_until_done(client, left.call_id)
             right_body = await _poll_until_done(client, right.call_id)
             assert left_body["result"] == "left" and right_body["result"] == "right"
+
+
+class TestCancellationOutcome:
+    async def test_worker_cancellation_yields_terminal_outcome(self):
+        """A worker method raising CancelledError still records a terminal failed outcome."""
+        async with _client(_AsyncCancelWorker()) as client:
+            body = await _call(client, "demo_cancel_self", {})
+            assert body["status"] == "failed"
+            assert "CancelledError" in body["error"]
+
+    async def test_cancellation_is_re_raised_after_the_outcome_is_recorded(self):
+        """The execution records its terminal outcome and then stays cancelled instead of swallowing it."""
+        specs = collect_rpc_method_specs(_AsyncCancelWorker)
+        executor = RpcCallExecutor(worker=_AsyncCancelWorker(), specs=specs)
+        recorded: list[CallStatusResponse] = []
+
+        with pytest.raises(asyncio.CancelledError):
+            await executor._run(
+                spec=specs["demo_cancel_self"],
+                kwargs={},
+                call_id="c1",
+                finish=lambda *, outcome: recorded.append(outcome),
+            )
+
+        assert [outcome.status for outcome in recorded] == ["failed"]
+
+
+class TestBootUuid:
+    async def test_boot_uuid_header_stable_within_server(self):
+        """All responses of one server carry the same boot uuid header."""
+        async with _client(_Worker()) as client:
+            first = await client.get("/v1/health")
+            second = await client.get("/v1/health")
+            assert first.headers[BOOT_UUID_HEADER] == second.headers[BOOT_UUID_HEADER]
+
+    async def test_boot_uuid_differs_across_servers(self):
+        """Two server instances have different boot_uuids."""
+        async with _client(_Worker()) as first_client:
+            first = (await first_client.get("/v1/health")).headers[BOOT_UUID_HEADER]
+        async with _client(_Worker()) as second_client:
+            second = (await second_client.get("/v1/health")).headers[BOOT_UUID_HEADER]
+        assert first != second

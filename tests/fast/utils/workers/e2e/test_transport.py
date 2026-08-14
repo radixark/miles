@@ -3,6 +3,10 @@ import time
 
 import httpx
 import pytest
+from tests.fast.utils.workers.e2e.e2e_worker import E2eWorker
+from tests.fast.utils.workers.e2e.harness import ConnectionCountingRelay
+
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 
 
 class TestConnectionBehaviour:
@@ -31,6 +35,21 @@ class TestConnectionBehaviour:
         """Sequential calls reuse the pooled connection instead of reconnecting each time."""
         for _ in range(20):
             assert await handle.demo_sync(a=1, b=1) == 2
+
+    async def test_sequential_calls_reuse_the_same_http_connection(self, server):
+        """Sequential calls travel over one pooled TCP connection instead of reconnecting per request."""
+        relay = ConnectionCountingRelay(upstream_port=server.port)
+        await relay.start()
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0), trust_env=False) as client:
+                handle = RpcWorkerHandle(E2eWorker, server_url=relay.url, http_client=client)
+                for _ in range(5):
+                    assert await handle.demo_sync(a=1, b=1) == 2
+        finally:
+            await relay.stop()
+
+        assert relay.accepted == 1
 
     async def test_server_handles_many_short_connections(self, server):
         """Opening a fresh connection per request stays healthy."""

@@ -112,6 +112,12 @@ def wait_until_serving(server: ServerProcess, timeout: float = READY_TIMEOUT_SEC
     raise AssertionError(f"server never became ready within {timeout}s:\n{server.logs()}")
 
 
+def port_is_refused(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1.0)
+        return sock.connect_ex(("127.0.0.1", port)) != 0
+
+
 @dataclasses.dataclass
 class ProxyRequest:
     at: float
@@ -130,6 +136,8 @@ class FlakyProxy:
         self.reject_status: int | None = None
         self.reject_remaining = 0
         self.drop_remaining = 0
+        self.strip_boot_uuid = False
+        self.rewrite_boot_uuid: str | None = None
         self.record_only = False
 
     @property
@@ -186,7 +194,7 @@ class FlakyProxy:
                 self.drop_remaining -= 1
                 return
 
-            writer.write(response)
+            writer.write(self._maybe_rewrite(response))
             await writer.drain()
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
@@ -194,6 +202,20 @@ class FlakyProxy:
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
+
+    def _maybe_rewrite(self, response: bytes) -> bytes:
+        if not self.strip_boot_uuid and self.rewrite_boot_uuid is None:
+            return response
+
+        head, separator, body = response.partition(b"\r\n\r\n")
+        kept = []
+        for line in head.split(b"\r\n"):
+            if line.lower().startswith(b"x-miles-boot-uuid:"):
+                if self.strip_boot_uuid:
+                    continue
+                line = b"x-miles-boot-uuid: " + self.rewrite_boot_uuid.encode()
+            kept.append(line)
+        return b"\r\n".join(kept) + separator + body
 
 
 async def _forward(upstream_port: int, request: bytes) -> bytes:
@@ -249,3 +271,48 @@ def _write_simple(writer: asyncio.StreamWriter, status: int, body: bytes) -> Non
     writer.write(
         f"HTTP/1.1 {status} Injected\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode() + body
     )
+
+
+class ConnectionCountingRelay:
+    def __init__(self, upstream_port: int) -> None:
+        self._upstream_port = upstream_port
+        self._server: asyncio.Server | None = None
+        self.accepted = 0
+
+    @property
+    def port(self) -> int:
+        assert self._server is not None
+        return self._server.sockets[0].getsockname()[1]
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            await self._server.wait_closed()
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self.accepted += 1
+        upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", self._upstream_port)
+
+        try:
+            await asyncio.gather(_pump(reader, upstream_writer), _pump(upstream_reader, writer))
+        finally:
+            for stream in (upstream_writer, writer):
+                with contextlib.suppress(Exception):
+                    stream.close()
+
+
+async def _pump(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    with contextlib.suppress(ConnectionResetError, BrokenPipeError):
+        while chunk := await reader.read(65536):
+            writer.write(chunk)
+            await writer.drain()
+
+    with contextlib.suppress(Exception):
+        writer.write_eof()

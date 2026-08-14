@@ -2,15 +2,42 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
+import datetime
+import enum
 import os
 import threading
 import time
+import uuid
+from decimal import Decimal
 from pathlib import Path
 
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.rpc.common.metadata import rpc
 
 _BLOCK_GUARD_SECONDS = 20.0
+
+
+class Item(StrictBaseModel):
+    name: str
+    values: list[int]
+
+
+class Colour(enum.Enum):
+    RED = "red"
+    BLUE = "blue"
+
+
+class Nested(StrictBaseModel):
+    item: Item
+    lookup: dict[str, Item]
+    tags: set[str]
+
+
+@dataclasses.dataclass
+class Point:
+    x: int
+    y: int
 
 
 class Event(StrictBaseModel):
@@ -39,6 +66,9 @@ class E2eWorker:
     async def report_argv(self) -> list[str]:
         return self._argv
 
+    async def report_env(self, name: str) -> str | None:
+        return os.environ.get(name)
+
     async def report_counter(self, tag: str) -> int:
         with self._lock:
             return self._counters.get(tag, 0)
@@ -58,6 +88,95 @@ class E2eWorker:
 
     async def demo_async(self, value: dict) -> dict:
         return value
+
+    async def demo_model(self, item: Item) -> Item:
+        return item
+
+    async def demo_nested_model(self, payload: Nested) -> Nested:
+        return payload
+
+    async def report_nested_argument_types(self, payload: Nested) -> list[str]:
+        return [
+            type(payload).__name__,
+            type(payload.item).__name__,
+            type(payload.lookup["k"]).__name__,
+            type(payload.tags).__name__,
+            type(payload.item.values[0]).__name__,
+        ]
+
+    async def report_dataclass_argument_type(self, point: Point) -> str:
+        return type(point).__name__
+
+    async def report_enum_argument_is_member(self, colour: Colour) -> bool:
+        return colour is Colour.BLUE
+
+    async def report_scalar_argument_types(
+        self, when: datetime.datetime, value: uuid.UUID, amount: Decimal, blob: bytes, pair: tuple[int, str]
+    ) -> list[str]:
+        return [
+            type(when).__name__,
+            type(value).__name__,
+            type(amount).__name__,
+            type(blob).__name__,
+            type(pair).__name__,
+        ]
+
+    async def demo_enum(self, colour: Colour) -> Colour:
+        return colour
+
+    async def demo_dataclass(self, point: Point) -> Point:
+        return Point(x=point.y, y=point.x)
+
+    async def demo_datetime(self, when: datetime.datetime) -> datetime.datetime:
+        return when
+
+    async def demo_uuid(self, value: uuid.UUID) -> uuid.UUID:
+        return value
+
+    async def demo_decimal(self, value: Decimal) -> Decimal:
+        return value
+
+    async def demo_tuple(self, pair: tuple[int, str]) -> tuple[int, str]:
+        return pair
+
+    async def demo_optional(self, value: int | None) -> int | None:
+        return value
+
+    async def demo_union(self, value: int | str) -> int | str:
+        return value
+
+    async def demo_model_list(self, items: list[Item]) -> list[Item]:
+        return items
+
+    async def demo_bytes(self, blob: bytes) -> bytes:
+        return blob
+
+    async def demo_bytes_list(self, blobs: list[bytes]) -> list[bytes]:
+        return blobs
+
+    async def report_union_argument_type(self, value: datetime.datetime | str) -> str:
+        return type(value).__name__
+
+    async def demo_none_result(self) -> None:
+        return None
+
+    async def demo_wrong_result_type(self) -> int:
+        return "not-an-int"
+
+    async def demo_unserializable_result(self) -> int:
+        return object()
+
+    def demo_sync_raises(self, message: str) -> None:
+        raise ValueError(message)
+
+    async def demo_async_raises(self, message: str) -> None:
+        raise ValueError(message)
+
+    def demo_system_exit(self) -> None:
+        raise SystemExit(3)
+
+    async def demo_system_exit_async(self) -> None:
+        raise SystemExit(3)
 
     def demo_count_sync(self, tag: str) -> int:
         return self._bump(tag)
@@ -97,6 +216,15 @@ class E2eWorker:
         await self._async_gate(tag).wait()
         self._mark(tag, "end")
         return threading.current_thread().name
+
+    async def demo_block_until_cancelled(self, tag: str) -> str:
+        self._mark(tag, "start")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            (self._state_dir / f"cancelled_{tag}").touch()
+            raise
+        return tag
 
     async def demo_instant_async(self, tag: str) -> str:
         self._mark(tag, "start")
@@ -148,6 +276,27 @@ class E2eWorker:
             gate.set()
         return len(gates)
 
+    def demo_marker_after_sleep(self, name: str, seconds: float) -> str:
+        time.sleep(seconds)
+        (self._state_dir / name).touch()
+        return name
+
+    async def demo_marker_after_sleep_async(self, name: str, seconds: float) -> str:
+        await asyncio.sleep(seconds)
+        (self._state_dir / name).touch()
+        return name
+
+    def demo_hang(self, tag: str) -> str:
+        self._mark(tag, "start")
+        threading.Event().wait(timeout=_BLOCK_GUARD_SECONDS)
+        return tag
+
+    def demo_large_upload(self, blob: str) -> int:
+        return len(blob)
+
+    def demo_large_download(self, size: int) -> list[int]:
+        return list(range(size))
+
     def _bump(self, tag: str) -> int:
         with self._lock:
             self._counters[tag] = self._counters.get(tag, 0) + 1
@@ -177,3 +326,7 @@ def make_worker(argv: list[str]) -> E2eWorker:
 
 def make_raising_worker(argv: list[str]) -> E2eWorker:
     raise RuntimeError(WORKER_FACTORY_ERROR)
+
+
+def compute_env_vars(argv: list[str]) -> dict[str, str]:
+    return {"MILES_E2E_ARGV": ",".join(argv)}
