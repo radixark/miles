@@ -119,8 +119,9 @@ def _make_controller(order: list[str]):
     group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
     group._inference_controller = _OrderRecordingInferenceController(order)
 
-    async def _record_execute_first_alive(*args: object, **kwargs: object) -> None:
+    async def _record_execute_first_alive(*args: object, **kwargs: object) -> list[int]:
         order.append("execute_first_alive")
+        return [1]
 
     group._execute_first_alive = AsyncMock(side_effect=_record_execute_first_alive)
     group._maybe_log_inference_engine_weight_checksums = AsyncMock()

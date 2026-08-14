@@ -1137,3 +1137,25 @@ class TestCellStatusesUnderConcurrentReconcile:
         # The snapshot is taken before the first cell_status() call, so the evicted cell is still
         # answered for. What matters is that the read completes instead of raising.
         assert set(statuses) == {f"{controller._pool_id}-{i}" for i in range(3)}
+
+
+class TestUpdateWeightsReturnsTheVersion:
+    def _make_group(self, *, per_worker_versions: list[int | None]) -> RayTrainGroup:
+        group = RayTrainGroup.__new__(RayTrainGroup)
+        group.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False)
+        group._inference_controller = AsyncMock()
+        group._execute_first_alive = AsyncMock(return_value=per_worker_versions)
+        group._maybe_log_inference_engine_weight_checksums = AsyncMock()
+        return group
+
+    async def test_the_controller_answers_the_version_the_engines_now_serve(self):
+        """The driver can only publish the version to the executor if the controller hands it back."""
+        group = self._make_group(per_worker_versions=[11, 11])
+
+        assert await group.update_weights() == 11
+
+    async def test_a_trainer_that_skipped_the_broadcast_answers_nothing(self):
+        """--debug-skip-weight-update returns None from every worker, which must reach the driver as None."""
+        group = self._make_group(per_worker_versions=[None])
+
+        assert await group.update_weights() is None
