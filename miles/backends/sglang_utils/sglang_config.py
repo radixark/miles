@@ -1,6 +1,7 @@
 """Configuration models for SGLang engine deployment."""
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -143,21 +144,45 @@ class ServerGroupConfig(FrozenStrictBaseModel):
     worker_type: Literal["regular", "prefill", "decode", "placeholder"]
     num_gpus: int = pydantic.Field(gt=0)
     num_gpus_per_engine: int = pydantic.Field(gt=0)
+    gpu_offset: int = pydantic.Field(ge=0)
     overrides: dict = pydantic.Field(default_factory=dict)
+    needs_offload: bool
+
+    @property
+    def model_path(self) -> str:
+        return self.overrides["model_path"]
 
     @classmethod
     def resolve(
-        cls, raw: _RawServerGroupConfig, default_gpus_per_engine: int, default_model_path: str
+        cls,
+        raw: _RawServerGroupConfig,
+        args,
+        default_gpus_per_engine: int,
+        default_model_path: str,
+        gpu_offset_cursor: "_MutableBox",
     ) -> "ServerGroupConfig":
-        return cls(
+        rollout_pg_offset = _compute_rollout_offset(args)
+        megatron_num_gpus = _compute_megatron_num_gpus(args)
+
+        gpu_offset = gpu_offset_cursor.value
+        group_abs_start = rollout_pg_offset + gpu_offset
+        needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
+
+        ans = cls(
             worker_type=raw.worker_type,
             num_gpus=raw.num_gpus,
             num_gpus_per_engine=raw.num_gpus_per_engine or default_gpus_per_engine,
+            gpu_offset=gpu_offset,
             overrides={
                 "model_path": default_model_path,
+                **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
                 **raw.overrides,
             },
+            needs_offload=needs_offload,
         )
+
+        gpu_offset_cursor.value += raw.num_gpus
+        return ans
 
 
 class ModelConfig(FrozenStrictBaseModel):
@@ -167,14 +192,16 @@ class ModelConfig(FrozenStrictBaseModel):
     update_weights: bool
 
     @classmethod
-    def resolve(cls, raw: _RawModelConfig, args) -> "ModelConfig":
+    def resolve(cls, raw: _RawModelConfig, args, gpu_offset_cursor: "_MutableBox") -> "ModelConfig":
         """Resolve per-group defaults from model-level then args-level values."""
         default_model_path = raw.model_path or args.hf_checkpoint
         server_groups = [
             ServerGroupConfig.resolve(
                 g,
+                args,
                 default_gpus_per_engine=raw.num_gpus_per_engine or args.rollout_num_gpus_per_engine,
                 default_model_path=default_model_path,
+                gpu_offset_cursor=gpu_offset_cursor,
             )
             for g in raw.server_groups
         ]
@@ -218,11 +245,20 @@ class SglangConfig(FrozenStrictBaseModel):
 
     @classmethod
     def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
-        return cls(models=[ModelConfig.resolve(m, args) for m in raw.models])
+        gpu_offset_cursor = _MutableBox(value=0)
+        model_configs = [ModelConfig.resolve(m, args, gpu_offset_cursor) for m in raw.models]
+
+        assert gpu_offset_cursor.value == raw.total_num_gpus
+        return cls(models=model_configs)
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
+
+
+@dataclass
+class _MutableBox:
+    value: int
 
 
 def resolve_sglang_config(args) -> SglangConfig:
