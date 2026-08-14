@@ -141,7 +141,7 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--cluster-backend` | enum | `ray` | `ray` launches workers from the driver; `kubernetes` expects them to already exist. `kubernetes` is refused during validation until a later milestone provisions those workers. |
+| `--cluster-backend` | enum | `ray` | `ray` launches workers from the driver; `kubernetes` expects them to already exist. `kubernetes` is refused during validation until a later milestone provisions those workers. Under `kubernetes`, `--use-prometheus` is ignored. |
 | `--actor-num-nodes` | int | `1` | Total nodes for actor training. |
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
