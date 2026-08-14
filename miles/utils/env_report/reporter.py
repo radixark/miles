@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 _REPORTER_THREAD_NAME = "env-report"
 _INTERVAL_JITTER_RATIO = 0.5
 _STOP_TIMEOUT_SECONDS = 5.0
+_SUMMARY_HASH_CHARS = 12
 SETTLED_DELAY_SECONDS = 300.0
 
 
@@ -95,4 +96,6 @@ def _log_report_summary(report: EnvReport) -> None:
 
 
 def _summarise_repo(repo: EnvReportGitRepoInfo) -> str:
-    return f"{repo.commit}-dirty" if repo.dirty else repo.commit
+    if not repo.dirty:
+        return repo.commit
+    return f"{repo.commit}-dirty-{repo.uncommitted_hash[:_SUMMARY_HASH_CHARS] if repo.uncommitted_hash else 'unknown'}"
