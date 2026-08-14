@@ -775,6 +775,38 @@ class TestCriticSaveDerivation:
         assert args.critic_save is None
 
 
+class TestCheckpointLoadFallbackWiring:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_a_fresh_ppo_run_starts_the_actor_and_its_critic_from_the_reference_weights(self, tmp_path):
+        """The fallback has to run before critic_load is derived, or the critic resumes from a dir nobody wrote."""
+        ref_load = tmp_path / "ref"
+        ref_load.mkdir()
+
+        args = self._validate(
+            ["--advantage-estimator", "ppo", "--load", str(tmp_path / "absent"), "--ref-load", str(ref_load)]
+        )
+
+        assert args.load == str(ref_load)
+        assert args.critic_load == str(ref_load)
+
+    def test_an_existing_checkpoint_is_left_alone(self, tmp_path):
+        """A real resume must keep --load, which is also what the critic inherits."""
+        load = tmp_path / "save"
+        load.mkdir()
+        (load / "latest_checkpointed_iteration.txt").write_text("10")
+
+        args = self._validate(["--advantage-estimator", "ppo", "--load", str(load), "--ref-load", str(tmp_path)])
+
+        assert args.load == str(load)
+        assert args.critic_load == str(load)
+
+
 class TestSessionServerV2Validation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()
