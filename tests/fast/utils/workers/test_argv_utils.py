@@ -1,6 +1,7 @@
 import argparse
 import dataclasses
 import json
+import sys
 from typing import Any
 
 import pytest
@@ -10,7 +11,13 @@ from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers import argv_utils
-from miles.utils.workers.argv_utils import CONFIG_JSON_FLAG, config_to_argv, parse_config_argv, render_cli_argv
+from miles.utils.workers.argv_utils import (
+    CONFIG_JSON_FLAG,
+    config_to_argv,
+    dataclass_to_values,
+    parse_config_argv,
+    render_cli_argv,
+)
 
 
 class _DemoConfig(FrozenStrictBaseModel):
@@ -101,15 +108,21 @@ class TestConfigToArgv:
             lora_rank=0,
             lora_adapter_path=None,
             use_session_server="v2",
+            session_message_matcher="strict",
+            pause_generation_mode=None,
             session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
-            session_sample_postprocessor_path=(
-                "miles.rollout.session.v2.postprocessor_hub.default_postprocess"
-            ),
+            session_sample_postprocessor_path=("miles.rollout.session.v2.postprocessor_hub.default_postprocess"),
         )
         assert parse_config_argv(SessionServerConfig, config_to_argv(session_config)) == session_config
 
 
 class TestParseConfigArgv:
+    def test_none_argv_parses_the_process_arguments(self, monkeypatch):
+        """A None argv reads the payload from the process command line."""
+        config = _make_demo_config()
+        monkeypatch.setattr(sys, "argv", ["prog", *config_to_argv(config)])
+        assert parse_config_argv(_DemoConfig, None) == config
+
     def test_missing_flag_is_rejected(self):
         """An argv without the config-json flag fails to parse."""
         with pytest.raises(SystemExit):
@@ -172,7 +185,9 @@ def _from_parsed(parsed: argparse.Namespace) -> _DemoArgs:
 
 
 def _render(args_obj: _DemoArgs) -> list[str]:
-    return render_cli_argv(args_obj, make_parser=_make_parser, from_parsed=_from_parsed)
+    return render_cli_argv(
+        _input_values(args_obj), expected_obj=args_obj, make_parser=_make_parser, from_parsed=_from_parsed
+    )
 
 
 def _parse(argv: list[str]) -> _DemoArgs:
@@ -184,6 +199,26 @@ def _make_cli_default_args(**overrides) -> _DemoArgs:
     for name, value in overrides.items():
         setattr(args_obj, name, value)
     return args_obj
+
+
+def _input_values(args_obj: _DemoArgs) -> dict[str, object]:
+    values = dataclass_to_values(args_obj)
+    values["mapping"] = [f"{key}={value}" for key, value in args_obj.mapping.items()]
+    return values
+
+
+def _from_parsed_drifting(parsed: argparse.Namespace) -> _DemoArgs:
+    return dataclasses.replace(_from_parsed(parsed), ratio=99.0)
+
+
+def _render_drifting(args_obj: _DemoArgs, **overrides) -> list[str]:
+    return render_cli_argv(
+        _input_values(args_obj),
+        expected_obj=args_obj,
+        make_parser=_make_parser,
+        from_parsed=_from_parsed_drifting,
+        **overrides,
+    )
 
 
 class TestRenderCliArgv:
@@ -205,11 +240,131 @@ class TestRenderCliArgv:
         assert "--verbose" in argv
         assert _parse(argv) == args_obj
 
+    def test_a_variadic_dict_renders_key_value_tokens(self):
+        """A dict handed to an nargs option becomes key=value tokens, not JSON."""
+        args_obj = _make_cli_default_args(mapping={"k1": "v1", "k2": "v2"})
+        argv = render_cli_argv(
+            {"mapping": {"k1": "v1", "k2": "v2"}},
+            expected_obj=args_obj,
+            make_parser=_make_parser,
+            from_parsed=_from_parsed,
+        )
+        assert argv == ["--mapping", "k1=v1", "k2=v2"]
+
     def test_cli_only_defaults_are_not_rendered(self):
         """A field keeping its CLI default (even when it differs from the
         dataclass default) stays off the command line."""
         argv = _render(_make_cli_default_args(count=3))
         assert "--cli-filled" not in argv
+
+    def test_none_constructor_inputs_are_left_for_the_cli_to_normalize(self):
+        """A nullable input can normalize to a collection without being rendered."""
+        args_obj = _parse([])
+        argv = render_cli_argv(
+            {"items": None},
+            expected_obj=args_obj,
+            make_parser=_make_parser,
+            from_parsed=_from_parsed,
+        )
+        assert argv == []
+
+    def test_constructor_values_are_rendered_before_post_parse_normalization(self):
+        """Raw values are not normalized twice when from_parsed rewrites them."""
+
+        def from_parsed(parsed: argparse.Namespace) -> _DemoArgs:
+            args_obj = _from_parsed(parsed)
+            if args_obj.verbose:
+                args_obj.count //= 2
+            return args_obj
+
+        input_values = {**_input_values(_make_cli_default_args(verbose=True)), "count": 6}
+        args_obj = from_parsed(_make_parser().parse_args(["--verbose", "--count", "6"]))
+        argv = render_cli_argv(
+            input_values,
+            expected_obj=args_obj,
+            make_parser=_make_parser,
+            from_parsed=from_parsed,
+        )
+        assert _make_parser().parse_args(argv).count == 6
+        assert from_parsed(_make_parser().parse_args(argv)) == args_obj
+
+    def test_each_non_default_input_is_rendered_in_one_pass(self):
+        """Interacting non-default inputs are both emitted without reconciliation."""
+
+        def from_parsed(parsed: argparse.Namespace) -> _DemoArgs:
+            args_obj = _from_parsed(parsed)
+            if args_obj.ratio == 1.0:
+                args_obj.count = 3
+            return args_obj
+
+        input_values = {**_input_values(_make_cli_default_args(count=3)), "ratio": 0.5}
+        args_obj = from_parsed(_make_parser().parse_args(["--count", "3", "--ratio", "0.5"]))
+        argv = render_cli_argv(
+            input_values,
+            expected_obj=args_obj,
+            make_parser=_make_parser,
+            from_parsed=from_parsed,
+        )
+        assert argv == ["--count", "3", "--ratio", "0.5"]
+        assert from_parsed(_make_parser().parse_args(argv)) == args_obj
+
+    def test_raw_parser_default_is_omitted_before_post_parse_normalization(self):
+        """A raw default is omitted so post-parse normalization runs exactly once."""
+
+        def from_parsed(parsed: argparse.Namespace) -> _DemoArgs:
+            args_obj = _from_parsed(parsed)
+            if args_obj.verbose:
+                args_obj.ratio *= 0.3
+            return args_obj
+
+        input_values = {**_input_values(_make_cli_default_args(verbose=True)), "ratio": 1.0}
+        expected_obj = from_parsed(_make_parser().parse_args(["--verbose"]))
+        argv = render_cli_argv(
+            input_values,
+            expected_obj=expected_obj,
+            make_parser=_make_parser,
+            from_parsed=from_parsed,
+        )
+        assert argv == ["--verbose"]
+        assert from_parsed(_make_parser().parse_args(argv)) == expected_obj
+
+    def test_expected_object_is_constructed_only_once_during_render(self):
+        """The renderer performs one final conversion and never reconciles iteratively."""
+        conversion_count = 0
+
+        def from_parsed(parsed: argparse.Namespace) -> _DemoArgs:
+            nonlocal conversion_count
+            conversion_count += 1
+            return _from_parsed(parsed)
+
+        expected_obj = _from_parsed(_make_parser().parse_args(["--count", "3"]))
+        argv = render_cli_argv(
+            {**_input_values(expected_obj), "count": 3},
+            expected_obj=expected_obj,
+            make_parser=_make_parser,
+            from_parsed=from_parsed,
+        )
+        assert argv == ["--count", "3"]
+        assert conversion_count == 1
+
+    def test_default_store_true_value_is_expressed_by_omitting_the_flag(self):
+        """A default False remains implicit when other inputs change its resolved baseline."""
+
+        def from_parsed(parsed: argparse.Namespace) -> _DemoArgs:
+            args_obj = _from_parsed(parsed)
+            args_obj.verbose = args_obj.count == 0
+            return args_obj
+
+        input_values = _input_values(_make_cli_default_args(count=1))
+        args_obj = from_parsed(_make_parser().parse_args(["--count", "1"]))
+        argv = render_cli_argv(
+            input_values,
+            expected_obj=args_obj,
+            make_parser=_make_parser,
+            from_parsed=from_parsed,
+        )
+        assert "--verbose" not in argv
+        assert from_parsed(_make_parser().parse_args(argv)) == args_obj
 
     def test_unrenderable_false_on_a_true_default_flag_fails_loudly(self):
         """A store-true flag whose CLI default is True cannot express False."""
@@ -218,12 +373,26 @@ class TestRenderCliArgv:
 
     def test_roundtrip_mismatch_aborts_the_render(self):
         """A from_parsed that fails to reproduce the object aborts the render."""
+        args_obj = _make_cli_default_args(count=3)
         with pytest.raises(AssertionError, match="roundtrip mismatch"):
             render_cli_argv(
-                _make_cli_default_args(count=3),
+                _input_values(args_obj),
+                expected_obj=args_obj,
                 make_parser=_make_parser,
                 from_parsed=lambda parsed: _make_cli_default_args(count=999),
             )
+
+    def test_a_field_the_parser_rewrites_blocks_the_render(self):
+        """This is the failure that uncompared_fields exists to excuse."""
+        args_obj = _make_cli_default_args(count=3)
+        with pytest.raises(AssertionError, match="roundtrip mismatch"):
+            _render_drifting(args_obj)
+
+    def test_an_uncompared_field_is_excused_from_the_roundtrip(self):
+        """Some upstream fields are rewritten on every parse and can never be made to match."""
+        args_obj = _make_cli_default_args(count=3)
+        argv = _render_drifting(args_obj, uncompared_fields=frozenset({"ratio"}))
+        assert argv == ["--count", "3"]
 
 
 @dataclasses.dataclass
@@ -255,15 +424,21 @@ def _alias_from_parsed(parsed: argparse.Namespace) -> _AliasArgs:
     )
 
 
-_ALIAS_FIELD_TO_DEST = {"server_cert_path": "router_tls_cert_path", "prefill_urls": "router_prefill"}
+_ALIAS_FIELD_TO_DEST = {
+    "server_cert_path": "router_tls_cert_path",
+    "prefill_urls": "router_prefill",
+    "dllm_fdfo": "router_dllm_fdfo",
+    "mm_process_config": "router_mm_process_config",
+    "plain": "router_plain",
+}
 
 
 def _render_alias(args_obj: _AliasArgs) -> list[str]:
     return render_cli_argv(
-        args_obj,
+        dataclass_to_values(args_obj),
+        expected_obj=args_obj,
         make_parser=_make_alias_parser,
         from_parsed=_alias_from_parsed,
-        dest_prefix="router_",
         field_to_dest=_ALIAS_FIELD_TO_DEST,
     )
 
@@ -271,8 +446,8 @@ def _render_alias(args_obj: _AliasArgs) -> list[str]:
 class TestRenderCliArgvAgainstTheRealParserShape:
     """The renderer must take flag names and value shapes from the parser, not from field names."""
 
-    def test_prefixed_dest_is_resolved_without_an_explicit_mapping(self):
-        """A field whose dest is merely prefixed needs no entry in field_to_dest."""
+    def test_a_mapped_field_renders_the_dest_it_points_at(self):
+        """The mapping is the only thing that connects a field name to a flag."""
         argv = _render_alias(_AliasArgs(plain="other"))
         assert argv == ["--router-plain", "other"]
 
@@ -317,12 +492,13 @@ class TestRenderCliArgvAgainstTheRealParserShape:
         class _UnknownArgs:
             not_on_the_cli: str = "default"
 
+        args_obj = _UnknownArgs(not_on_the_cli="other")
         with pytest.raises(AssertionError, match="cannot be rendered"):
             render_cli_argv(
-                _UnknownArgs(not_on_the_cli="other"),
+                dataclass_to_values(args_obj),
+                expected_obj=args_obj,
                 make_parser=_make_alias_parser,
                 from_parsed=lambda parsed: _UnknownArgs(),
-                dest_prefix="router_",
             )
 
 
@@ -343,24 +519,67 @@ def _from_parsed_required(parsed: argparse.Namespace) -> _RequiredDemoArgs:
     return _RequiredDemoArgs(model=parsed.model, count=parsed.count)
 
 
-class TestRenderCliArgvRequiredArgv:
-    def test_required_flags_are_emitted_exactly_once(self):
-        """required_argv seeds the defaults probe and stays in the final argv."""
+def _render_required(args_obj: _RequiredDemoArgs, **overrides) -> list[str]:
+    return render_cli_argv(
+        dataclass_to_values(args_obj),
+        expected_obj=args_obj,
+        make_parser=_make_required_parser,
+        from_parsed=_from_parsed_required,
+        **overrides,
+    )
+
+
+class TestRenderCliArgvAlwaysRenderFields:
+    def test_an_always_render_field_is_emitted_exactly_once(self):
+        """An explicit policy field appears once even when another value is rendered."""
         args_obj = _RequiredDemoArgs(model="m", count=3)
-        argv = render_cli_argv(
-            args_obj,
-            make_parser=_make_required_parser,
-            from_parsed=_from_parsed_required,
-            required_argv=["--model", "m"],
-        )
+        argv = _render_required(args_obj, always_render_fields=("model",))
         assert argv.count("--model") == 1
         assert _from_parsed_required(_make_required_parser().parse_args(argv)) == args_obj
 
-    def test_a_parser_with_required_flags_needs_required_argv(self):
-        """Without required_argv the defaults probe hits the missing required flag."""
-        with pytest.raises(SystemExit):
-            render_cli_argv(
-                _RequiredDemoArgs(model="m"),
-                make_parser=_make_required_parser,
-                from_parsed=_from_parsed_required,
-            )
+    def test_an_always_render_field_is_emitted_even_at_its_own_default(self):
+        """The explicit-output policy is independent of the parser default."""
+        assert _render_required(_RequiredDemoArgs(model="m"), always_render_fields=("model",)) == ["--model", "m"]
+
+    def test_an_unspecified_always_render_field_uses_the_resolved_value(self):
+        """A raw None falls back to the value resolved by the target constructor."""
+        argv = render_cli_argv(
+            {"model": None},
+            expected_obj=_RequiredDemoArgs(model="m"),
+            make_parser=_make_required_parser,
+            from_parsed=_from_parsed_required,
+            always_render_fields=("model",),
+        )
+        assert argv == ["--model", "m"]
+
+    def test_an_always_render_field_is_emitted_at_the_parser_default(self):
+        """A value equal to the parser default is still emitted when the field is always rendered."""
+        args_obj = _RequiredDemoArgs(model="m", count=0)
+        assert _render_required(args_obj, always_render_fields=("count",)) == ["--count", "0", "--model", "m"]
+
+    def test_an_always_render_field_missing_from_inputs_uses_the_expected_value(self):
+        """An always-rendered field absent from the inputs falls back to the expected object."""
+        args_obj = _RequiredDemoArgs(model="m", count=3)
+        argv = render_cli_argv(
+            {"count": 3},
+            expected_obj=args_obj,
+            make_parser=_make_required_parser,
+            from_parsed=_from_parsed_required,
+            always_render_fields=("model",),
+        )
+        assert argv == ["--model", "m", "--count", "3"]
+
+    def test_an_always_render_field_prefers_the_raw_input_value(self):
+        """A normalized expected value cannot replace its raw constructor input."""
+
+        def from_parsed(parsed: argparse.Namespace) -> _RequiredDemoArgs:
+            return _RequiredDemoArgs(model=parsed.model, count=parsed.count // 2)
+
+        argv = render_cli_argv(
+            {"model": "m", "count": 6},
+            expected_obj=_RequiredDemoArgs(model="m", count=3),
+            make_parser=_make_required_parser,
+            from_parsed=from_parsed,
+            always_render_fields=("count",),
+        )
+        assert argv == ["--count", "6", "--model", "m"]

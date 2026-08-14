@@ -1,7 +1,7 @@
 import argparse
 import dataclasses
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import TypeVar
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -27,55 +27,60 @@ def parse_config_argv(config_cls: type[_ConfigT], argv: list[str] | None) -> _Co
     return config_cls.model_validate_json(args.config_json)
 
 
+def dataclass_to_values(args_obj: object) -> dict[str, object]:
+    return {field.name: getattr(args_obj, field.name) for field in dataclasses.fields(args_obj)}
+
+
 def render_cli_argv(
-    args_obj: _ArgsT,
+    input_values: Mapping[str, object],
     *,
+    expected_obj: _ArgsT,
     make_parser: Callable[[], argparse.ArgumentParser],
     from_parsed: Callable[[argparse.Namespace], _ArgsT],
-    required_argv: list[str] | None = None,
-    dest_prefix: str = "",
+    always_render_fields: Sequence[str] = (),
     field_to_dest: Mapping[str, str] | None = None,
+    uncompared_fields: frozenset[str] = frozenset(),
 ) -> list[str]:
-    parser = make_parser()
+    actions_by_dest = _actions_by_dest(make_parser())
+    field_to_dest = field_to_dest or {}
 
-    def parse(argv: list[str]) -> _ArgsT:
-        return from_parsed(make_parser().parse_args(argv))
+    def render(field_name: str, value: object) -> list[str]:
+        action = _resolve_action(actions_by_dest, field_name=field_name, field_to_dest=field_to_dest)
+        return _render_action_argv(action, value)
 
-    base_argv = list(required_argv or [])
-    argv = base_argv + _render_cli_argv(
-        args_obj,
-        cli_defaults=parse(base_argv),
-        parser=parser,
-        dest_prefix=dest_prefix,
-        field_to_dest=field_to_dest or {},
-    )
-
-    parsed = parse(argv)
-    assert parsed == args_obj, f"cli argv roundtrip mismatch: {parsed!r} != {args_obj!r}"
-    return argv
-
-
-def _render_cli_argv(
-    args_obj: _ArgsT,
-    *,
-    cli_defaults: _ArgsT,
-    parser: argparse.ArgumentParser,
-    dest_prefix: str,
-    field_to_dest: Mapping[str, str],
-) -> list[str]:
-    actions_by_dest = _actions_by_dest(parser)
-
-    argv: list[str] = []
-    for field in dataclasses.fields(args_obj):
-        value = getattr(args_obj, field.name)
-        if value == getattr(cli_defaults, field.name):
+    argv = [
+        token
+        for name in always_render_fields
+        for token in render(
+            name,
+            (
+                input_values[name]
+                if name in input_values and input_values[name] is not None
+                else getattr(expected_obj, name)
+            ),
+        )
+    ]
+    for name, value in input_values.items():
+        if name in always_render_fields or value is None:
             continue
 
-        action = _resolve_action(
-            actions_by_dest, field_name=field.name, dest_prefix=dest_prefix, field_to_dest=field_to_dest
-        )
+        action = _resolve_action(actions_by_dest, field_name=name, field_to_dest=field_to_dest)
+        if value == action.default:
+            continue
         argv.extend(_render_action_argv(action, value))
+
+    parsed = from_parsed(make_parser().parse_args(argv))
+    mismatch = _describe_mismatch(parsed, expected_obj, uncompared_fields=uncompared_fields)
+    assert not mismatch, f"cli argv roundtrip mismatch on {mismatch}"
     return argv
+
+
+def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: frozenset[str]) -> str:
+    return ", ".join(
+        f"{field.name}: parsed {getattr(parsed, field.name)!r} != wanted {getattr(wanted, field.name)!r}"
+        for field in dataclasses.fields(wanted)
+        if field.name not in uncompared_fields and getattr(parsed, field.name) != getattr(wanted, field.name)
+    )
 
 
 def _actions_by_dest(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
@@ -89,21 +94,15 @@ def _resolve_action(
     actions_by_dest: dict[str, argparse.Action],
     *,
     field_name: str,
-    dest_prefix: str,
     field_to_dest: Mapping[str, str],
 ) -> argparse.Action:
-    if field_name in field_to_dest:
-        candidates = [field_to_dest[field_name]]
-    else:
-        candidates = [field_name, dest_prefix + field_name] if dest_prefix else [field_name]
-
-    for dest in candidates:
-        action = actions_by_dest.get(dest)
-        if action is not None and action.option_strings:
-            return action
+    dest = field_to_dest.get(field_name, field_name)
+    action = actions_by_dest.get(dest)
+    if action is not None and action.option_strings:
+        return action
 
     raise AssertionError(
-        f"{field_name!r} cannot be rendered: the parser registers no option for dest {candidates!r}. "
+        f"{field_name!r} cannot be rendered: the parser registers no option for dest {dest!r}. "
         f"Add an entry to field_to_dest, or pass the value through the native passthrough path."
     )
 
@@ -113,6 +112,8 @@ def _render_action_argv(action: argparse.Action, value: object) -> list[str]:
         return [_boolean_option_string(action, value=bool(value))]
 
     if action.nargs == 0:
+        if value == action.default:
+            return []
         flag = _long_option_string(action)
         assert (
             value == action.const
