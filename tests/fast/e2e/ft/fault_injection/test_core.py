@@ -1,8 +1,17 @@
 import threading
 from unittest.mock import MagicMock, patch
 
-from tests.e2e.ft.conftest_ft.fault_injection import core, state, views
-from tests.fast.e2e.ft.fault_injection.utils import SERVING, cell, mock_response, staged
+from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state, views
+from tests.fast.e2e.ft.fault_injection.utils import (
+    api_server_fault_forms,
+    fixed_fault_forms,
+    typed_cell,
+    StubFaultForm,
+    SERVING,
+    cell,
+    mock_response,
+    staged,
+)
 
 
 def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
@@ -34,6 +43,7 @@ def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
             on_successful_injection=lambda: None,
             cell_type=None,
             event_log=state.EventLog(),
+            cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
         )
 
@@ -74,14 +84,11 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
             on_successful_injection=lambda: None,
             cell_type=None,
             event_log=state.EventLog(),
+            cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
         )
 
     assert len(injected) >= 2, f"expected a second injection after recovery, got {injected}"
-
-
-def _typed_cell(name: str, cell_type: str, *, healthy: bool = True) -> dict:
-    return cell(name, healthy=healthy, cell_type=cell_type)
 
 
 def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> list[str]:
@@ -110,6 +117,7 @@ def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> li
             on_successful_injection=lambda: None,
             cell_type=cell_type,
             event_log=state.EventLog(),
+            cell_fault_forms=api_server_fault_forms(),
             poll_interval_seconds=1e-6,
         )
 
@@ -120,10 +128,10 @@ def test_injection_can_be_restricted_to_one_kind_of_cell() -> None:
     """Rollout and trainer cells share one api server, so a run targets one kind at a time."""
     injected = _run_typed_injection_loop(
         [
-            _typed_cell("actor-0", "actor"),
-            _typed_cell("actor-1", "actor"),
-            _typed_cell("rollout-engine-0", "rollout"),
-            _typed_cell("rollout-engine-1", "rollout"),
+            typed_cell("actor-0", "actor"),
+            typed_cell("actor-1", "actor"),
+            typed_cell("rollout-engine-0", "rollout"),
+            typed_cell("rollout-engine-1", "rollout"),
         ],
         cell_type="rollout",
     )
@@ -136,9 +144,9 @@ def test_the_live_replica_count_only_considers_the_targeted_kind() -> None:
     """A single rollout cell must not be killed just because trainer cells are also alive."""
     injected = _run_typed_injection_loop(
         [
-            _typed_cell("actor-0", "actor"),
-            _typed_cell("actor-1", "actor"),
-            _typed_cell("rollout-engine-0", "rollout"),
+            typed_cell("actor-0", "actor"),
+            typed_cell("actor-1", "actor"),
+            typed_cell("rollout-engine-0", "rollout"),
         ],
         cell_type="rollout",
     )
@@ -150,10 +158,10 @@ def test_an_untyped_run_sees_every_cell() -> None:
     """A mixed-ft soak declares no cell type, and must be able to crash either kind."""
     injected = _run_typed_injection_loop(
         [
-            _typed_cell("actor-0", "actor"),
-            _typed_cell("actor-1", "actor"),
-            _typed_cell("rollout-engine-0", "rollout"),
-            _typed_cell("rollout-engine-1", "rollout"),
+            typed_cell("actor-0", "actor"),
+            typed_cell("actor-1", "actor"),
+            typed_cell("rollout-engine-0", "rollout"),
+            typed_cell("rollout-engine-1", "rollout"),
         ],
         cell_type=None,
     )
@@ -165,9 +173,9 @@ def test_an_untyped_run_still_keeps_one_replica_of_each_kind() -> None:
     """Counting kinds together would let the trainer cells license killing the last engine."""
     injected = _run_typed_injection_loop(
         [
-            _typed_cell("actor-0", "actor"),
-            _typed_cell("actor-1", "actor"),
-            _typed_cell("rollout-engine-0", "rollout"),
+            typed_cell("actor-0", "actor"),
+            typed_cell("actor-1", "actor"),
+            typed_cell("rollout-engine-0", "rollout"),
         ],
         cell_type=None,
     )
@@ -277,12 +285,49 @@ class TestUntypedInjectionSelection:
         """The mirror of the trainer case: untyped selection must not be hard-coded to actor cells."""
         injected = _run_typed_injection_loop(
             [
-                _typed_cell("actor-0", "actor"),
-                _typed_cell("rollout-engine-0", "rollout"),
-                _typed_cell("rollout-engine-1", "rollout"),
+                typed_cell("actor-0", "actor"),
+                typed_cell("rollout-engine-0", "rollout"),
+                typed_cell("rollout-engine-1", "rollout"),
             ],
             cell_type=None,
         )
 
         assert injected
         assert all(name.startswith("rollout-engine-") for name in injected), injected
+
+
+def test_the_loop_injects_through_the_forms_of_the_cell_it_picked() -> None:
+    """A pod deletion drawn by the loop must reach kubectl, not the api server's inject-fault route."""
+    drawn: list[str] = []
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 6:
+            stop_event.set()
+        return mock_response({"items": [typed_cell(f"actor-{i}", "actor") for i in range(3)]})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-12,
+            stop_event=stop_event,
+            on_successful_injection=lambda: None,
+            cell_type=None,
+            event_log=state.EventLog(),
+            cell_fault_forms=fixed_fault_forms(
+                [
+                    StubFaultForm(
+                        fault_forms.DELETE_POD_FORM_NAME,
+                        lambda cell, rng: drawn.append(fault_forms.DELETE_POD_FORM_NAME),
+                    )
+                ]
+            ),
+            poll_interval_seconds=1e-6,
+        )
+
+        assert drawn == [fault_forms.DELETE_POD_FORM_NAME, fault_forms.DELETE_POD_FORM_NAME], drawn
+        mock_requests.post.assert_not_called()

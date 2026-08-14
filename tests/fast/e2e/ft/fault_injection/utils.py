@@ -1,6 +1,33 @@
-from unittest.mock import MagicMock
+import contextlib
+import random
+from collections.abc import Callable, Iterator
+from unittest.mock import MagicMock, patch
 
-from tests.e2e.ft.conftest_ft.fault_injection import state
+from tests.e2e.ft.conftest_ft.fault_injection import core, fault_forms, state
+
+from miles.utils.external_utils import command_utils
+from miles.utils.workers.types import ClusterBackend
+
+
+def note_injected(log: state.EventLog, cell_name: str) -> None:
+    log.note_injection_attempt(
+        cell_name=cell_name,
+        form_name="sigkill",
+        succeeded=True,
+    )
+
+
+@contextlib.contextmanager
+def patched_requests() -> Iterator[MagicMock]:
+    # the loop lists cells through core and injects through fault_forms, so a mock on core alone
+    # leaves every injection reaching the real network and timing out against a host nobody serves
+    mock_requests = MagicMock()
+    with patch.object(core, "requests", mock_requests), patch.object(fault_forms, "requests", mock_requests):
+        yield mock_requests
+
+
+NAMESPACE = "miles-e2e"
+RUN_ID = "abc123"
 
 
 def cell(
@@ -77,3 +104,32 @@ def log_of(
             note_injected(log, "rollout-engine-0")
         log.observe([staged("rollout-engine-0", cell_state)])
     return log
+
+
+def typed_cell(name: str, cell_type: str, *, healthy: bool = True) -> dict:
+    return cell(name, healthy=healthy, cell_type=cell_type)
+
+
+def config_of(backend: ClusterBackend, *, namespace: str = NAMESPACE) -> command_utils.ExecuteTrainConfig:
+    return command_utils.ExecuteTrainConfig(cluster_backend=backend, namespace=namespace, run_id=RUN_ID)
+
+
+def api_server_fault_forms() -> fault_forms.CellFaultForms:
+    return fault_forms.create_cell_fault_forms(base_url="http://control", config=config_of(ClusterBackend.RAY))
+
+
+class StubFaultForm(fault_forms.BaseFaultForm):
+    def __init__(self, form_name: str, on_inject: Callable[[dict, random.Random], None]) -> None:
+        self._name = form_name
+        self._on_inject = on_inject
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def inject(self, cell: dict, rng: random.Random) -> None:
+        self._on_inject(cell, rng)
+
+
+def fixed_fault_forms(forms: list[fault_forms.BaseFaultForm]) -> fault_forms.CellFaultForms:
+    return {fault_forms.ACTOR_CELL_TYPE: forms, fault_forms.ROLLOUT_CELL_TYPE: forms}

@@ -1,13 +1,17 @@
 from unittest.mock import patch
 
 from tests.e2e.ft.conftest_ft.fault_injection import core, entrypoint, views
-from tests.fast.e2e.ft.fault_injection.utils import SERVING, mock_response, staged
+from tests.fast.e2e.ft.fault_injection.utils import api_server_fault_forms, SERVING, mock_response, staged
 
 
 def test_stop_and_join_takes_one_last_snapshot_before_the_log_is_read() -> None:
     """Regression: a recovery completing after the final poll must not be lost to a race."""
     handle = entrypoint.FaultInjectorHandle(
-        base_url="http://control", seed=0, mean_interval_seconds=1e9, cell_type="rollout"
+        base_url="http://control",
+        seed=0,
+        mean_interval_seconds=1e9,
+        cell_type="rollout",
+        cell_fault_forms=api_server_fault_forms(),
     )
 
     with patch.object(core, "requests") as mock_requests:
