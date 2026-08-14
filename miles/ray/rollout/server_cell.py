@@ -1,3 +1,5 @@
+import asyncio
+import functools
 import logging
 import os
 from dataclasses import dataclass
@@ -6,8 +8,9 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.ray.rollout.server_engine import ServerEngine
+from miles.backends.sglang_utils.sglang_engine import SGLangEngine, build_server_url
+from miles.ray.rollout.addr_allocator import PortAllocator
+from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils import dumper_utils
 
@@ -32,6 +35,72 @@ class ServerCell:
         states = {engine.is_allocated for engine in self.engines}
         assert len(states) == 1, f"a cell's engines are allocated and stopped together ({states=})"
         return states == {True}
+
+    async def start_engines(
+        self,
+        *,
+        args: Any,
+        pg: Any,
+        port_allocator: PortAllocator,
+        worker_type: str,
+        sglang_overrides: dict,
+        num_gpus_per_engine: int,
+        rank_offset: int,
+        gpu_offset: int,
+    ) -> None:
+        assert not self.is_allocated, "the caller starts only stopped cells"
+
+        num_gpu_per_engine = min(num_gpus_per_engine, args.num_gpus_per_node)
+
+        new_entries: list[tuple[int, ServerEngine, Any]] = []
+        for local_index, engine_slot in enumerate(self.engines):
+            global_rank = rank_offset + local_index
+            rollout_engine = launch_sglang_ray_actor(
+                args=args,
+                pg=pg,
+                global_rank=global_rank,
+                gpu_index=gpu_offset + local_index * num_gpu_per_engine,
+                worker_type=worker_type,
+                sglang_overrides=sglang_overrides,
+                num_gpus_per_engine=num_gpus_per_engine,
+            )
+
+            new_entries.append((global_rank, engine_slot, rollout_engine))
+            engine_slot.mark_allocated_uninitialized(rollout_engine)
+
+        addr_and_ports: dict[int, dict[str, Any]] = {}
+        dist_init_addr = None
+        for entry_index, (global_rank, _, actor) in enumerate(new_entries):
+            node_ip, _ = ray.get(actor._get_current_node_ip_and_free_port.remote())
+            alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
+
+            if entry_index == 0:
+                dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + args.sglang_dp_size)}"
+
+            addr_and_ports[global_rank] = dict(
+                host=node_ip,
+                port=alloc(),
+                nccl_port=alloc(),
+                engine_info_bootstrap_port=alloc(),
+                dist_init_addr=dist_init_addr,
+            )
+            if worker_type == "prefill":
+                addr_and_ports[global_rank]["disaggregation_bootstrap_port"] = alloc()
+
+        init_handles = []
+        for global_rank, engine_slot, actor in new_entries:
+            engine_addr_and_ports = addr_and_ports[global_rank]
+            engine_slot.set_addressing(
+                AddrInfo(
+                    server_url=build_server_url(
+                        host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
+                    ),
+                    bootstrap_port=engine_addr_and_ports.get("disaggregation_bootstrap_port"),
+                )
+            )
+            init_handles.append(actor.init.remote(**addr_and_ports[global_rank]))
+
+        await asyncio.gather(*init_handles)
 
     def stop(self):
         for local_index, engine in enumerate(self.engines):

@@ -1,17 +1,14 @@
 import asyncio
 import dataclasses
-import functools
 import logging
 from typing import Any
 
-import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-from miles.backends.sglang_utils.sglang_engine import build_server_url
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient, use_legacy_router_api
 from miles.ray.rollout.addr_allocator import PortAllocator
-from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells, launch_sglang_ray_actor
-from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
+from miles.ray.rollout.server_cell import SHUTDOWN_TIMEOUT, ServerCell, flatten_cells
+from miles.ray.rollout.server_engine import ServerEngine
 from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
@@ -82,8 +79,8 @@ class ServerGroup:
 
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
 
-        new_engine_indices: list[int] = []
-        init_handles: list = []
+        started_cell_indices: list[int] = []
+        cell_starts = []
         for cell_index, cell in enumerate(self.cells):
             if (start_cell_indices is not None) and (cell_index not in start_cell_indices):
                 continue
@@ -91,58 +88,28 @@ class ServerGroup:
             if cell.is_allocated:
                 continue
 
-            new_entries: list[tuple[int, ServerEngine, Any]] = []
-            for local_index, engine_slot in enumerate(cell.engines):
-                flat_index = cell_index * self.nodes_per_engine + local_index
-                global_rank = self.rank_offset + flat_index
-                rollout_engine = launch_sglang_ray_actor(
+            started_cell_indices.append(cell_index)
+            cell_starts.append(
+                cell.start_engines(
                     args=self.args,
                     pg=self.pg,
-                    global_rank=global_rank,
-                    gpu_index=self.gpu_offset + flat_index * num_gpu_per_engine,
+                    port_allocator=port_allocator,
                     worker_type=self.worker_type,
                     sglang_overrides=self.sglang_overrides,
                     num_gpus_per_engine=self.num_gpus_per_engine,
+                    rank_offset=self.rank_offset + cell_index * self.nodes_per_engine,
+                    gpu_offset=self.gpu_offset + cell_index * self.nodes_per_engine * num_gpu_per_engine,
                 )
+            )
 
-                new_entries.append((global_rank, engine_slot, rollout_engine))
-                new_engine_indices.append(flat_index)
-                engine_slot.mark_allocated_uninitialized(rollout_engine)
+        await asyncio.gather(*cell_starts)
 
-            self.has_new_engines = True
-
-            addr_and_ports: dict[int, dict[str, Any]] = {}
-            dist_init_addr = None
-            for entry_index, (global_rank, _, actor) in enumerate(new_entries):
-                node_ip, _ = ray.get(actor._get_current_node_ip_and_free_port.remote())
-                alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
-
-                if entry_index == 0:
-                    dist_init_addr = f"{node_ip}:{alloc(consecutive=30 + self.args.sglang_dp_size)}"
-
-                addr_and_ports[global_rank] = dict(
-                    host=node_ip,
-                    port=alloc(),
-                    nccl_port=alloc(),
-                    engine_info_bootstrap_port=alloc(),
-                    dist_init_addr=dist_init_addr,
-                )
-                if self.worker_type == "prefill":
-                    addr_and_ports[global_rank]["disaggregation_bootstrap_port"] = alloc()
-
-            for global_rank, engine_slot, actor in new_entries:
-                engine_addr_and_ports = addr_and_ports[global_rank]
-                engine_slot.set_addressing(
-                    AddrInfo(
-                        server_url=build_server_url(
-                            host=engine_addr_and_ports["host"], port=engine_addr_and_ports["port"]
-                        ),
-                        bootstrap_port=engine_addr_and_ports.get("disaggregation_bootstrap_port"),
-                    )
-                )
-                init_handles.append(actor.init.remote(**addr_and_ports[global_rank]))
-
-        await asyncio.gather(*init_handles)
+        new_engine_indices = [
+            cell_index * self.nodes_per_engine + local_index
+            for cell_index in started_cell_indices
+            for local_index in range(self.nodes_per_engine)
+        ]
+        self.has_new_engines |= bool(new_engine_indices)
         return new_engine_indices
 
     async def register_workers(self, engine_indices: list[int]) -> None:
