@@ -93,7 +93,7 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 
 - **Who uses it**: modes with `has_real_rollout == False`, through `--load-debug-rollout-data --debug-train-only`.
 - **Where it comes from**: `prepare()` in `conftest_ft/execution.py`, via `U.hf_download_dataset()` on `fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer`.
-- **Soak reuse**: `materialize_cyclic_debug_rollout_data()` symlinks the recorded files cyclically, so a soak can run more steps than were recorded.
+- **Soak reuse**: `materialize_cyclic_debug_rollout_data()` symlinks the recorded files cyclically under the shared data dir, so a soak can run more steps than were recorded and the run pod can read the links.
 - **Regenerating it needs the 5-layer model**: the full model's `rollout_log_probs` are incompatible with the 5-layer training model and produce NaN GRPO gradients.
 
 ```bash
