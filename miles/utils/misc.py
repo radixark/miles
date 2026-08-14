@@ -72,6 +72,16 @@ def get_free_port(start_port=10000, consecutive=1):
     return port
 
 
+class NodeProbeMixin:
+    @staticmethod
+    def _get_node_ip() -> str:
+        return get_current_node_ip()
+
+    @staticmethod
+    def _get_free_port_block(*, start_port: int, count: int) -> int:
+        return get_free_port(start_port=start_port, consecutive=count)
+
+
 def should_run_periodic_action(
     rollout_id: int,
     interval: int | None,
