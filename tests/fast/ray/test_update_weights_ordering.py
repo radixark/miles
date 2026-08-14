@@ -6,6 +6,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.actor_group import RayTrainGroup
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.utils.context_lock import ContextLock
 
 
 class _OrderRecordingInferenceController:
@@ -80,6 +81,9 @@ async def test_controller_pauses_health_checks_before_snapshotting_the_engines()
         order.append("get_updatable_server")
         return None
 
+    controller.context_lock = ContextLock("InferenceController")
+    controller.args = Namespace(colocate=False)
+    controller.servers = {}
     controller._health_monitoring_pause = _record_pause
     controller._ensure_cells_ready = _record_ensure_cells_ready
     controller._get_updatable_server = _record_snapshot
@@ -202,6 +206,12 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
         async def flush_cache(self):
             order.append(f"flush-{self._index}")
 
+        async def begin_weight_update(self):
+            order.append(f"begin-{self._index}")
+
+        async def end_weight_update(self):
+            order.append(f"end-{self._index}")
+
         async def continue_generation(self):
             order.append(f"continue-{self._index}")
 
@@ -219,5 +229,7 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
 
     assert set(order[:2]) == {"pause-0", "pause-1"}
     assert set(order[2:4]) == {"flush-0", "flush-1"}
-    assert set(order[4:]) == {"continue-0", "continue-1"}
+    assert set(order[4:6]) == {"begin-0", "begin-1"}
+    assert set(order[6:8]) == {"end-0", "end-1"}
+    assert set(order[8:]) == {"continue-0", "continue-1"}
     assert pause_modes == ["retract", "retract"]
