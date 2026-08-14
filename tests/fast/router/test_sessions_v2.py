@@ -23,7 +23,7 @@ from tests.fast.router.test_sessions import _create_session, _post_chat
 from miles.rollout.session.server import SessionServer
 from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 

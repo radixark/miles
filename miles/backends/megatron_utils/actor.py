@@ -286,7 +286,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:
-            from miles.utils.misc import load_function
+            from miles.utils.function_registry import load_function
 
             self.rollout_data_postprocess = load_function(x)
 
@@ -701,7 +701,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             from megatron.training.checkpointing import get_checkpoint_name
 
-            from miles.utils.misc import load_function
+            from miles.utils.function_registry import load_function
 
             checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
             hf_checkpoint_dir = (

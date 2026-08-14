@@ -1,5 +1,6 @@
 import asyncio
-from unittest.mock import MagicMock
+import inspect
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -21,7 +22,7 @@ from miles.rollout.inference_rollout.compatibility import (
     load_rollout_function,
 )
 from miles.utils.async_utils import run
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry, load_function
 
 
 @pytest.fixture
@@ -303,3 +304,26 @@ class TestSupportedGenerateFormats:
             assert isinstance(fn, MyGenerateFn)
             assert isinstance(result, GenerateFnOutput)
             assert result.samples == "my_sample"
+
+
+class TestShippedRolloutFunctions:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn",
+            "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn",
+            "examples.infra_features.fully_async.external_eval_fn.ExternalSglangEvalFn",
+        ],
+    )
+    def test_a_shipped_rollout_function_passes_the_loader_class_check(
+        self, path: str, constructor_input: RolloutFnConstructorInput
+    ) -> None:
+        """load_rollout_function rejects a class outside the hierarchy, and it runs inside the
+        rollout actor, so a miles-shipped path failing it kills the run at startup."""
+        loaded = load_function(path)
+        assert inspect.isclass(loaded)
+
+        with patch.object(loaded, "__init__", return_value=None):
+            fn = load_rollout_function(constructor_input, path)
+
+        assert isinstance(fn, BaseRolloutFn)
