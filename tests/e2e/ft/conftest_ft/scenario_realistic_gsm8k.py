@@ -16,11 +16,11 @@ from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigur
 
 app: typer.Typer = typer.Typer()
 
-TEST_NAME: str = "trainer_ft_realistic_gsm8k"
+TEST_NAME: str = "realistic_gsm8k"
 
 _MODEL_NAME: str = "Qwen2.5-0.5B-Instruct"
 _MODEL_TYPE: str = "qwen2.5-0.5B"
-# Same disaggregated layout as the dp2_cp2_real_rollout mode: 2 cells x CP2 on
+# Same disaggregated layout as the kill_train__dp2_cp2__moe_5layer mode: 2 cells x CP2 on
 # 4 training GPUs, plus 4 rollout engines x 1 GPU.
 _TRAIN_GPUS: int = 4
 _ROLLOUT_GPUS: int = 4
@@ -130,7 +130,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
     )
 
     perf_args = (
-        # Parallelism mirrors the dp2_cp2_real_rollout mode (2 cells x CP2), not
+        # Parallelism mirrors the kill_train__dp2_cp2__moe_5layer mode (2 cells x CP2), not
         # the no-fault baseline test.
         "--context-parallel-size 2 "
         "--use-dynamic-batch-size "

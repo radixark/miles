@@ -158,7 +158,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     print("Deterministic healing comparison test PASSED")
 
 
-TEST_NAME: str = "trainer_ft_deterministic"
+TEST_NAME: str = "trainer_deterministic"
 PHASES: list[str] = list(PHASE_START_ROLLOUT_IDS)
 
 

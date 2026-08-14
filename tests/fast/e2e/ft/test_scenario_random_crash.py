@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from tests.e2e.ft.conftest_ft import fault_injection as fi
 from tests.e2e.ft.conftest_ft.modes import MODES, FTTestMode
-from tests.e2e.ft.conftest_ft.scenario_ft_random import assert_healing
+from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
