@@ -64,6 +64,16 @@ class ServerCell:
         return self.actor_handles[0]
 
     @property
+    def engine_gpu_ids(self) -> list[list[int]]:
+        _, _, reordered_gpu_ids = self.pg
+        gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
+        bases = [
+            int(reordered_gpu_ids[self.gpu_offset + local_index * gpus_on_node])
+            for local_index in range(self.num_nodes)
+        ]
+        return [list(range(base, base + gpus_on_node)) for base in bases]
+
+    @property
     def addr_infos(self) -> list[AddrInfo]:
         assert isinstance(self._state, StateAllocatedBase)
         assert self._state.addr_infos is not None, f"{self._state=}"

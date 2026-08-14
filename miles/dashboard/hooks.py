@@ -332,11 +332,12 @@ def register_engines(servers) -> None:
     if handle is None:
         return
     try:
-        chunks = _alive_engine_chunks(servers)
-        fingerprint = tuple(id(actor_handle) for chunk in chunks for actor_handle in chunk)
+        cells = _alive_engine_cells(servers)
+        fingerprint = tuple(id(actor_handle) for cell in cells for actor_handle in cell.actor_handles)
         if fingerprint == _engines_fingerprint:
             return
-        infos = _ray_get([actor_handle.get_topology_info.remote() for chunk in chunks for actor_handle in chunk])
+        chunks = [cell.actor_handles for cell in cells]
+        infos = _collect_topology_infos(cells)
         handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=_group_engines(chunks, infos)))
         _engines_fingerprint = fingerprint
     except Exception:
@@ -361,16 +362,43 @@ def report_data_buffer(length: int | None) -> None:
         _warner.warn("dashboard data-buffer report failed")
 
 
-def _alive_engine_chunks(servers) -> list[list]:
+def _alive_engine_cells(servers) -> list:
     """A multi-node engine's cell holds ``num_nodes`` actors; only the first
     (master) owns the router-visible URL. Cells that are not alive are skipped
     until recovery completes."""
-    chunks = []
+    cells = []
     for server in servers.values():
         for cell in server.server_cells.values():
             if cell.is_alive:
-                chunks.append(cell.actor_handles)
-    return chunks
+                cells.append(cell)
+    return cells
+
+
+def _collect_topology_infos(cells) -> list[dict]:
+    """The driver already knows each engine's url, worker type and gpu layout;
+    only the node ip and the NVML uuids must be probed on the engine's node."""
+    probe_refs = [
+        ref
+        for cell in cells
+        for actor_handle, gpu_ids in zip(cell.actor_handles, cell.engine_gpu_ids, strict=True)
+        for ref in (actor_handle._get_node_ip.remote(), actor_handle._get_gpu_uuids.remote(gpu_ids))
+    ]
+    probed = iter(_ray_get(probe_refs))
+
+    infos = []
+    for cell in cells:
+        for addr_info, gpu_ids in zip(cell.addr_infos, cell.engine_gpu_ids, strict=True):
+            node_ip, gpu_uuids = next(probed), next(probed)
+            infos.append(
+                dict(
+                    url=addr_info.server_url,
+                    node_ip=node_ip,
+                    gpu_ids=gpu_ids,
+                    gpu_uuids=gpu_uuids,
+                    worker_type=cell.worker_type,
+                )
+            )
+    return infos
 
 
 def _group_engines(chunks: list[list], infos: list[dict]) -> list[EngineInfo]:

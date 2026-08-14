@@ -134,29 +134,37 @@ def test_register_train_actor_attaches_train_sink(monkeypatch):
 # ---------------------------- engine registration ---------------------------
 
 
-class FakeEngineHandle:
-    def __init__(self, info):
-        self._info = info
-        self.get_topology_info = self
+class _FakeProbe:
+    def __init__(self, value_fn):
+        self._value_fn = value_fn
 
-    def remote(self):
-        return self._info  # hooks._ray_get is patched to the identity function
+    def remote(self, *args):
+        return self._value_fn(*args)  # hooks._ray_get is patched to the identity function
+
+
+class FakeEngineHandle:
+    def __init__(self, node_ip):
+        self._get_node_ip = _FakeProbe(lambda: node_ip)
+        self._get_gpu_uuids = _FakeProbe(lambda gpu_ids: [None] * len(gpu_ids))
 
 
 class FakeCell:
-    """Duck-typed ServerCell: the hooks only read is_alive and actor_handles."""
+    """Duck-typed ServerCell: the hooks read the driver-side placement facts."""
 
-    def __init__(self, infos, alive=True):
-        self.actor_handles = [FakeEngineHandle(info) for info in infos]
+    def __init__(self, members, alive=True):
+        self.actor_handles = [FakeEngineHandle(node_ip) for _, node_ip, _ in members]
+        self.addr_infos = [type("FakeAddrInfo", (), {"server_url": url})() for url, _, _ in members]
+        self.engine_gpu_ids = [gpu_ids for _, _, gpu_ids in members]
+        self.worker_type = "regular"
         self.is_alive = alive
 
 
-def _cell(*infos, alive=True):
-    return [FakeCell(list(infos), alive=alive)]
+def _cell(*members, alive=True):
+    return [FakeCell(list(members), alive=alive)]
 
 
 def _info(url, node, gpus):
-    return dict(url=url, node_ip=node, gpu_ids=gpus, gpu_uuids=[None] * len(gpus), worker_type="regular", node_rank=0)
+    return (url, node, gpus)
 
 
 def _servers(*cell_lists):
@@ -183,7 +191,8 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     hooks.register_engines(servers)  # steady state: no remote traffic
     assert len(handle.update_topology.calls) == 1
 
-    single_cell[0].actor_handles = [FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))]  # recovery: new actor
+    recovered = FakeCell([_info("http://b:2", "node-a", [2, 3])])  # recovery: new actor
+    single_cell[0].actor_handles, single_cell[0].addr_infos = recovered.actor_handles, recovered.addr_infos
     hooks.register_engines(servers)
     assert len(handle.update_topology.calls) == 2
     assert handle.update_topology.calls[-1][0][0].engines[1].addr == "http://b:2"
