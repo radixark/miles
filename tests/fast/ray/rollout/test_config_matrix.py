@@ -165,7 +165,7 @@ class TestPdDisaggregation:
 
 
 class TestRolloutExternalPath:
-    def test_starting_engines_in_external_mode_is_not_implemented(self):
+    async def test_starting_engines_in_external_mode_is_not_implemented(self):
         """The external allocator was removed; starting engines must fail loudly until the replacement lands."""
         from miles.ray.rollout.addr_allocator import PortAllocator
         from miles.ray.rollout.server_cell import ServerCell
@@ -181,4 +181,4 @@ class TestRolloutExternalPath:
             has_new_engines=False,
         )
         with pytest.raises(NotImplementedError):
-            group.start_engines(PortAllocator.empty())
+            await group.start_engines(PortAllocator.empty())

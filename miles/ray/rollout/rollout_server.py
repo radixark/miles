@@ -41,8 +41,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             args.sglang_router_port = router_port
 
         server_groups: list[ServerGroup] = []
-        all_init_handles: list = []
-        new_engine_indices_per_group: list[list[int]] = []
+        start_futures: list = []
         port_allocator = PortAllocator.empty()
 
         for group_cfg in model_cfg.server_groups:
@@ -84,16 +83,13 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
             )
-            handles, new_engine_indices = group.start_engines(port_allocator)
-            all_init_handles.extend(handles)
+            start_futures.append(async_utils.submit(group.start_engines(port_allocator)))
             server_groups.append(group)
-            new_engine_indices_per_group.append(new_engine_indices)
 
             engine_offset += num_engines
             gpu_offset += group_cfg.num_gpus
 
-        if all_init_handles:
-            ray.get(all_init_handles)
+        new_engine_indices_per_group = async_utils.wait_futures(start_futures)
 
         for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
             group.mark_alive(engine_indices=new_engine_indices)

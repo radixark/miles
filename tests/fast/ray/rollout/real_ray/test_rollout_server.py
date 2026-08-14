@@ -35,9 +35,8 @@ def _build_group(
     )
 
 
-def _start_group(group: ServerGroup) -> None:
-    handles, _ = group.start_engines(PortAllocator.empty())
-    ray.get(handles)
+async def _start_group(group: ServerGroup) -> None:
+    await group.start_engines(PortAllocator.empty())
 
 
 def _kill_group(group: ServerGroup) -> None:
@@ -63,8 +62,8 @@ class TestCheckWeightsAggregation:
         pg_b = placement_group_factory(3)
         a = _build_group(pg_tuple=pg_a, num_engines=2)
         b = _build_group(pg_tuple=pg_b, num_engines=3, rank_offset=2)
-        _start_group(a)
-        _start_group(b)
+        await _start_group(a)
+        await _start_group(b)
         a.mark_alive([0, 1])
         b.mark_alive([0, 1, 2])
 
@@ -100,8 +99,8 @@ class TestOffloadOnloadAggregation:
         pg_b = placement_group_factory(3)
         a = _build_group(pg_tuple=pg_a, num_engines=2, needs_offload=True)
         b = _build_group(pg_tuple=pg_b, num_engines=3, rank_offset=2, needs_offload=True)
-        _start_group(a)
-        _start_group(b)
+        await _start_group(a)
+        await _start_group(b)
         a.mark_alive([0, 1])
         b.mark_alive([0, 1, 2])
 
@@ -143,8 +142,8 @@ class TestOffloadOnloadAggregation:
         pg_b = placement_group_factory(2)
         offloading = _build_group(pg_tuple=pg_a, num_engines=2, needs_offload=True)
         resident = _build_group(pg_tuple=pg_b, num_engines=2, rank_offset=2, needs_offload=False)
-        _start_group(offloading)
-        _start_group(resident)
+        await _start_group(offloading)
+        await _start_group(resident)
         offloading.mark_alive([0, 1])
         resident.mark_alive([0, 1])
 
@@ -166,7 +165,7 @@ class TestOffloadOnloadAggregation:
         """Offload must not block forever on an engine the group already gave up on."""
         pg = placement_group_factory(2)
         group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True)
-        _start_group(group)
+        await _start_group(group)
         group.mark_alive([0, 1])
         flatten_cells(group.cells)[1].mark_stopped()
 
