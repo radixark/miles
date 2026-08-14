@@ -1,8 +1,10 @@
 import argparse
+import contextlib
 import dataclasses
 import json
+import shlex
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, NamedTuple, TypeVar
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -194,6 +196,26 @@ def _boolean_option_string(action: argparse.Action, *, value: bool) -> str:
 # ==================== parser reflection ====================
 
 
+def parse_declared_args(text: str, *, parser: argparse.ArgumentParser) -> dict[str, object]:
+    tokens = shlex.split(text)
+    with with_relax_parser_required_args(parser):
+        namespace, unknown = parser.parse_known_args(tokens)
+    assert not unknown, f"the argument parser does not declare {unknown} of {text!r}"
+
+    action_by_option_string = parser._option_string_actions
+    dests = []
+    for token in tokens:
+        if not token.startswith("--"):
+            continue
+        assert token in action_by_option_string, f"the argument parser does not declare {token!r}"
+        dests.append(action_by_option_string[token].dest)
+    return {dest: getattr(namespace, dest) for dest in dests}
+
+
+def declared_arg_dests(parser: argparse.ArgumentParser) -> frozenset[str]:
+    return frozenset(action.dest for action in parser._actions)
+
+
 def coerce_dict_to_args(
     values: Mapping[str, Any], *, parser: argparse.ArgumentParser, allowed_names: frozenset[str], context: str
 ) -> dict[str, Any]:
@@ -237,6 +259,20 @@ def _coerce_value(
         assert isinstance(value, bool), f"{context} sets {dest!r} to {value!r}, which is not a boolean"
         return value
 
+    if isinstance(value, list):
+        assert _takes_several_values(
+            spec
+        ), f"{context} sets {dest!r} to the list {value!r}, but the command line takes a single value there"
+        return [_coerce_one_value(item, dest=dest, spec=spec, context=context) for item in value]
+
+    return _coerce_one_value(value, dest=dest, spec=spec, context=context)
+
+
+def _takes_several_values(spec: "_ArgSpec") -> bool:
+    return spec.nargs in ("*", "+") or (isinstance(spec.nargs, int) and spec.nargs > 1)
+
+
+def _coerce_one_value(value: Any, *, dest: str, spec: "_ArgSpec", context: str) -> Any:
     assert not isinstance(value, bool) and isinstance(
         value, (int, float, str)
     ), f"{context} sets {dest!r} to {value!r}, which is not a {spec.type.__name__}"
@@ -260,6 +296,7 @@ class _ArgSpec(NamedTuple):
     dest: str
     type: type
     choices: tuple[Any, ...] | None
+    nargs: int | str | None
 
 
 def _compute_arg_specs(parser: argparse.ArgumentParser) -> dict[str, _ArgSpec]:
@@ -277,7 +314,34 @@ def _compute_dest_of_option_names(parser: argparse.ArgumentParser) -> dict[str, 
 
 def _compute_arg_spec(action: argparse.Action) -> _ArgSpec:
     choices = None if action.choices is None else tuple(action.choices)
-    return _ArgSpec(dest=action.dest, type=_compute_arg_type(action), choices=choices)
+    return _ArgSpec(dest=action.dest, type=_compute_arg_type(action), choices=choices, nargs=action.nargs)
+
+
+@contextlib.contextmanager
+def with_suppressed_parser_help(parser: argparse.ArgumentParser) -> Iterator[None]:
+    suppressed = {
+        option: action
+        for option, action in parser._option_string_actions.items()
+        if isinstance(action, argparse._HelpAction)
+    }
+    for option in suppressed:
+        del parser._option_string_actions[option]
+    try:
+        yield
+    finally:
+        parser._option_string_actions.update(suppressed)
+
+
+@contextlib.contextmanager
+def with_relax_parser_required_args(parser: argparse.ArgumentParser) -> Iterator[None]:
+    required = [action for action in parser._actions if action.required]
+    for action in required:
+        action.required = False
+    try:
+        yield
+    finally:
+        for action in required:
+            action.required = True
 
 
 def _compute_arg_type(action: argparse.Action) -> type:
