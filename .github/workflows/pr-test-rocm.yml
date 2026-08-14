@@ -35,6 +35,17 @@ on:
         required: false
         type: string
         default: 'miles-rocm720-mi35x'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
+        required: true
+        type: string
+      cadence:
+        description: 'Explicit CI cadence (regular/nightly/weekly). Release cuts pass weekly for full scope.'
+        required: false
+        type: string
+        default: 'weekly'
 
 permissions:
   contents: read
@@ -54,6 +65,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || '' }}
           persist-credentials: false
       - name: Resolve CI policy inputs
         id: resolve
@@ -61,6 +73,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # workflow_call inherits the caller's event_name, so the cadence must
+          # be passed explicitly rather than inferred from the trigger.
+          CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
         run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
@@ -97,6 +112,7 @@ jobs:
     with:
       runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2

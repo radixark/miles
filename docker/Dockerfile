@@ -20,6 +20,8 @@ ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
+# Empty means the branch HEAD at build time; release builds set it to freeze one commit.
+ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
@@ -150,6 +152,7 @@ RUN pip install /tmp/wheels/apex-*.whl
 
 RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
     cd Megatron-LM && \
+    if [ -n "${MEGATRON_COMMIT}" ]; then git checkout -f ${MEGATRON_COMMIT} && git submodule update --init --recursive; fi && \
     pip install -e .
 
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz

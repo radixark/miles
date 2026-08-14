@@ -31,6 +31,22 @@ on:
         required: false
         type: string
         default: 'dev'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
+        required: true
+        type: string
+      cadence:
+        description: 'Explicit CI cadence (regular/nightly/weekly). Release cuts pass weekly for full scope.'
+        required: false
+        type: string
+        default: 'weekly'
+      image_tag:
+        description: 'Miles Docker image tag to run suites in (e.g. a frozen dev-<timestamp> tag).'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -62,6 +78,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || '' }}
           persist-credentials: false
       - name: Resolve CI policy inputs
         id: resolve
@@ -69,6 +86,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # workflow_call inherits the caller's event_name, so the cadence must
+          # be passed explicitly rather than inferred from the trigger.
+          CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
         run: python -m tests.ci.ci_policy
 
   docker-paths:
@@ -163,7 +183,9 @@ jobs:
         shell: bash
         env:
           PR_BODY: ${{ github.event.pull_request.body || '' }}
-          INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
+          # workflow_call image_tag (a frozen release-CI tag) outranks the
+          # dispatch input, which only exists on manual runs anyway.
+          INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
           DOCKER_BUILT: ${{ needs.docker-build.outputs.built }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
@@ -192,6 +214,7 @@ jobs:
         partition_id: [0, 1, 2, 3]
     uses: ./.github/workflows/_run-cpu-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-a-cpu
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 4
@@ -205,6 +228,7 @@ jobs:
     needs: [resolve-ci-policy, resolve-ci-image]
     uses: ./.github/workflows/_run-cpu-ci.yml
     with:
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cpu --suite stage-b-cpu
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
@@ -223,6 +247,7 @@ jobs:
     with:
       runs_on: '["h200", "2gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
@@ -246,6 +271,7 @@ jobs:
     with:
       runs_on: '["h100", "8gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h100
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
@@ -270,6 +296,7 @@ jobs:
     with:
       runs_on: '["h200", "8gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
@@ -294,6 +321,7 @@ jobs:
     with:
       runs_on: '["h200", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-4-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
@@ -318,6 +346,7 @@ jobs:
     with:
       runs_on: '["h200", "2gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw cuda --suite stage-c-2-gpu-h200
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2

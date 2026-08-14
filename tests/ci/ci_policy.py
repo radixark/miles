@@ -128,9 +128,20 @@ def _canonical_pr_labels(pr_labels_json: str) -> tuple[str, ...]:
     )
 
 
-def resolve_workflow_inputs(event_name: str, schedule: str, pr_labels_json: str) -> WorkflowPolicy:
-    """Adapt GitHub trigger facts to the workflow's stable policy outputs."""
-    if event_name == "pull_request":
+def resolve_workflow_inputs(
+    event_name: str, schedule: str, pr_labels_json: str, cadence_override: str = ""
+) -> WorkflowPolicy:
+    """Adapt GitHub trigger facts to the workflow's stable policy outputs.
+
+    `cadence_override` carries an explicit workflow_call cadence input (e.g. a
+    release-branch cut requesting a full-scope `weekly` run). It must win over
+    trigger inference: a called workflow inherits the *caller's* event_name, so
+    inferring from the trigger would silently degrade a release run to
+    `regular` scope.
+    """
+    if cadence_override:
+        cadence, raw_labels = cadence_override, ()
+    elif event_name == "pull_request":
         raw_labels = _canonical_pr_labels(pr_labels_json)
         cadence = NIGHTLY_CADENCE if "nightly" in raw_labels else REGULAR_CADENCE
     elif event_name == "schedule":
@@ -167,6 +178,7 @@ def main() -> int:
             event_name=os.environ["EVENT_NAME"],
             schedule=os.environ.get("SCHEDULE", ""),
             pr_labels_json=os.environ.get("PR_LABELS_JSON", ""),
+            cadence_override=os.environ.get("CADENCE_OVERRIDE", ""),
         )
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)

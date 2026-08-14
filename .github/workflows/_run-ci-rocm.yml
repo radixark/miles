@@ -22,6 +22,11 @@ on:
         type: boolean
         required: false
         default: true
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
+        type: string
+        required: false
+        default: ''
     secrets:
       WANDB_API_KEY:
         required: false
@@ -68,6 +73,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Cleanup Ray processes

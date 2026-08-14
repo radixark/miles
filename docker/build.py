@@ -96,8 +96,15 @@ def run(cmd: list[str], dry_run: bool) -> None:
 
 
 def build_and_push(
-    variant: str, image_tag: str, dry_run: bool, dockerfile: str, push: bool = False, custom_tag: str = ""
+    variant: str,
+    image_tag: str,
+    dry_run: bool,
+    dockerfile: str,
+    push: bool = False,
+    custom_tag: str = "",
+    extra_build_args: list[str] | None = None,
 ) -> None:
+    extra_build_args = extra_build_args or []
     config = VARIANTS[variant]
     # A variant may pin its own Dockerfile (e.g. ROCm); otherwise use the CLI default.
     dockerfile = config.get("dockerfile", dockerfile)
@@ -144,6 +151,12 @@ def build_and_push(
     for key, value in config.get("build_args", {}).items():
         cmd += ["--build-arg", f"{key}={value}"]
 
+    # Caller overrides (e.g. release builds pinning SGLANG_COMMIT / MILES_COMMIT
+    # from release-lock.json) come last so they win over variant defaults.
+    for spec in extra_build_args:
+        assert "=" in spec, f"--build-arg expects KEY=VALUE, got {spec!r}"
+        cmd += ["--build-arg", spec]
+
     for tag in tags:
         cmd += ["-t", tag]
 
@@ -177,8 +190,17 @@ def main(
     dry_run: bool = typer.Option(False, help="Print commands without executing them."),  # noqa: B008
     push: bool = typer.Option(False, help="Push images to registry after building."),  # noqa: B008
     custom_tag: str = typer.Option("", help="Custom tag name (required when --image-tag is custom)."),  # noqa: B008
+    build_arg: list[str] = typer.Option([], help="Extra KEY=VALUE build-arg (repeatable)."),  # noqa: B008
 ) -> None:
-    build_and_push(variant.value, image_tag.value, dry_run, dockerfile, push=push, custom_tag=custom_tag)
+    build_and_push(
+        variant.value,
+        image_tag.value,
+        dry_run,
+        dockerfile,
+        push=push,
+        custom_tag=custom_tag,
+        extra_build_args=build_arg,
+    )
 
 
 if __name__ == "__main__":
