@@ -7,6 +7,8 @@ from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
     BaseWorkerSpec,
     CommandWorkerSpec,
+    HostAndPort,
+    LaunchCommandContext,
     PortInfo,
     SchedulingSpec,
     ServeWorkerSpec,
@@ -17,6 +19,18 @@ def _make_port_info(**overrides) -> PortInfo:
     kwargs = dict(name="http", static_port=8000, mode="per_worker", allow_dynamic=False)
     kwargs.update(overrides)
     return PortInfo(**kwargs)
+
+
+def _make_launch_command_context(**overrides) -> LaunchCommandContext:
+    kwargs = dict(
+        cell_index=0,
+        worker_in_cell_index=0,
+        gpu_ids=[],
+        self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
+        spec_addrs={},
+    )
+    kwargs.update(overrides)
+    return LaunchCommandContext(**kwargs)
 
 
 def _make_base_kwargs(**overrides) -> dict:
@@ -92,10 +106,27 @@ class TestBaseWorkerSpec:
 
 class TestCommandWorkerSpec:
     def test_constructs_with_launch_command(self):
-        """A command spec carries the launch command besides base fields."""
-        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command="python -m sglang.launch_server")
-        assert spec.launch_command == "python -m sglang.launch_server"
+        """A command spec carries the launch command callable besides base fields."""
+        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "python -m sglang.launch_server")
+        ctx = _make_launch_command_context()
+        assert spec.launch_command(ctx) == "python -m sglang.launch_server"
         assert isinstance(spec, BaseWorkerSpec)
+
+    def test_launch_command_is_stored_uncalled(self):
+        """The launch_command callable is only evaluated once a context is available."""
+        calls: list[LaunchCommandContext] = []
+
+        def launch_command(ctx: LaunchCommandContext) -> str:
+            calls.append(ctx)
+            http = ctx.self_addrs["http"]
+            return f"serve --host {http.host} --port {http.port}"
+
+        spec = CommandWorkerSpec(**_make_base_kwargs(), launch_command=launch_command)
+        assert calls == []
+
+        ctx = _make_launch_command_context(self_addrs={"http": HostAndPort(host="10.0.0.1", port=9001)})
+        assert spec.launch_command(ctx) == "serve --host 10.0.0.1 --port 9001"
+        assert calls == [ctx]
 
 
 class TestServeWorkerSpec:
@@ -156,7 +187,7 @@ class TestServeWorkerSpecRpcPortInjection:
     def test_base_and_command_specs_get_no_rpc_port(self):
         """Only serve workers run the rpc server, so only they get the port."""
         base = BaseWorkerSpec(**_make_base_kwargs())
-        command = CommandWorkerSpec(**_make_base_kwargs(), launch_command="sleep 1")
+        command = CommandWorkerSpec(**_make_base_kwargs(), launch_command=lambda ctx: "sleep 1")
         assert RPC_PORT_NAME not in [port_info.name for port_info in base.port_infos]
         assert RPC_PORT_NAME not in [port_info.name for port_info in command.port_infos]
 
