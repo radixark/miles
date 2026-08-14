@@ -72,6 +72,19 @@ jobs:
             exit 1
           fi
 
+          # The frozen release-v*-ci image is built from the Dockerfile at cut
+          # time: a pick that changes image layers would make CI test the old
+          # image while release-docker publishes an untested new one. Such
+          # fixes ship as a new release (bump + fresh cut), never as a hotfix.
+          # requirements.txt is exempt — CI installs it at runtime and the
+          # release build bakes it, so both sides pick the change up.
+          if git diff --name-only "${COMMIT_SHA}^1" "$COMMIT_SHA" \
+              | grep -qE '^docker/(Dockerfile|build\.py|install-kube-tools\.sh|verify_transformer_engine\.py)$|^docker/patch/'; then
+            echo "::error::Commit $COMMIT_SHA touches image-layer files; the frozen CI image cannot represent it. Ship this as a new release (bump + release-branch-cut) instead of a cherry-pick."
+            git diff --name-only "${COMMIT_SHA}^1" "$COMMIT_SHA" | grep -E '^docker/'
+            exit 1
+          fi
+
           if ! git ls-remote --exit-code --heads origin "$TARGET_BRANCH" > /dev/null 2>&1; then
             echo "::error::Target branch '$TARGET_BRANCH' does not exist"
             exit 1
