@@ -44,6 +44,13 @@ class TestComputeEngineLaunchPlan:
         assert parsed.dist_init_addr == "10.0.0.1:20000"
         assert parsed.model_path == "/fake/model"
 
+    def test_every_plan_picks_a_fresh_random_seed(self):
+        """Each launch leaves the seed to sglang, so two plans never share one."""
+        args = make_engine_args()
+        seeds: set[int] = {parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).random_seed for _ in range(5)}
+        assert len(seeds) > 1
+        assert args.seed not in seeds
+
     def test_a_bracketed_v6_host_is_stripped_for_the_server_but_kept_in_dist_addr(self):
         """sglang binds a bare v6 host while the rendezvous addr stays bracketed."""
         plan = _plan(addr_overrides=dict(host="[fd00::2]", port=31007, dist_init_addr="[fd00::1]:15003"))
