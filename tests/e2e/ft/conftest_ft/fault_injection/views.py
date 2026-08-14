@@ -37,10 +37,16 @@ def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
 
 
 def compute_num_injections(events: list[Event], *, cell_type: str | None = None) -> int:
-    return sum(
-        sum(1 for one in cell_events if one.kind == "injected")
-        for cell_events in _compute_matching_cell_events(events, cell_type=cell_type).values()
-    )
+    return len(compute_injected_cell_names(events, cell_type=cell_type))
+
+
+def compute_injected_cell_names(events: list[Event], *, cell_type: str | None = None) -> list[str]:
+    return [
+        name
+        for name, cell_events in _compute_matching_cell_events(events, cell_type=cell_type).items()
+        for one in cell_events
+        if one.kind == "injected"
+    ]
 
 
 def compute_num_completed_recoveries(events: list[Event], *, cell_type: str | None = None) -> int:
