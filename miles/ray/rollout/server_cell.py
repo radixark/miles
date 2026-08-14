@@ -69,7 +69,7 @@ class ServerCell:
     def _pool_id(self) -> str:
         return compute_engine_pool(model_idx=self.meta.model_idx, group_index=self.meta.group_index)
 
-    async def start_engines(self) -> None:
+    async def _add_raw(self) -> None:
         assert not ({"host", "port"} & set(self.meta.sglang_overrides)), (
             f"sglang_overrides must not override host/port ({self.meta.sglang_overrides=}): the rollout process derives "
             f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
@@ -84,6 +84,7 @@ class ServerCell:
         master_addrs = await provider.get_addrs(worker_name=worker_name)
         primary = master_addrs["primary"]
         disaggregation_bootstrap = master_addrs.get("disaggregation_bootstrap")
+        # TODO simplify (remove) later
         self._mark_addressing(
             AddrInfo(
                 server_url=build_server_url(host=primary.host, port=primary.port),
@@ -96,8 +97,8 @@ class ServerCell:
             api_key=compute_api_key(self.args, sglang_overrides=self.meta.sglang_overrides),
         )
 
-    async def start(self, router_api_client: SGLangRouterApiClient, recover: bool = False) -> None:
-        await self.start_engines()
+    async def add(self, router_api_client: SGLangRouterApiClient, recover: bool = False) -> None:
+        await self._add_raw()
 
         if recover and self.meta.needs_offload:
             await self.api_client.release_memory_occupation()
@@ -106,12 +107,12 @@ class ServerCell:
 
         self._mark_alive()
 
-        await self.register(router_api_client)
+        await self._register(router_api_client)
 
-    async def stop(self, router_api_client: SGLangRouterApiClient) -> None:
+    async def dispose(self, router_api_client: SGLangRouterApiClient) -> None:
         if self.is_allocated:
             try:
-                await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
+                await asyncio.wait_for(self._unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
             except Exception as e:
                 logger.warning(
                     f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})"
@@ -165,7 +166,7 @@ class ServerCell:
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
 
-    async def register(self, router_api_client: SGLangRouterApiClient) -> None:
+    async def _register(self, router_api_client: SGLangRouterApiClient) -> None:
         await router_api_client.add_worker(
             worker_url=self.addr_info.server_url,
             worker_type=self.meta.worker_type,
@@ -173,7 +174,7 @@ class ServerCell:
             bootstrap_port=self.addr_info.bootstrap_port,
         )
 
-    async def unregister(self, router_api_client: SGLangRouterApiClient) -> None:
+    async def _unregister(self, router_api_client: SGLangRouterApiClient) -> None:
         await router_api_client.remove_worker(
             worker_url=self.addr_info.server_url,
             use_legacy_api=use_legacy_router_api(self.args),
