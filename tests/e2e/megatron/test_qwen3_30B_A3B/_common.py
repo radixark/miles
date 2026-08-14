@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import miles.utils.external_utils.command_utils as U
 
@@ -32,6 +32,8 @@ class CaseConfig:
     update_weight_transfer_mode: str = None
     num_rollout: int = 2
     fully_async: bool = False
+    extra_args: str = ""
+    extra_env_vars: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         # Validation only — topology values are passed explicitly, not inferred.
@@ -230,6 +232,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
+        f"{case.extra_args} "
     )
     return train_args
 
@@ -243,6 +246,7 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+    extra_env_vars |= case.extra_env_vars
 
     U.execute_train(
         train_args=train_args,

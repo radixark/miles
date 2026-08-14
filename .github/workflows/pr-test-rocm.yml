@@ -8,9 +8,9 @@ name: PR Test (ROCm)
 # Test selection is explicit rather than inherited from the CUDA suites. The
 # shared CI policy selects matching register_rocm_ci() labels for PR/nightly
 # runs and the full label scope for weekly; manual dispatch keeps the full
-# regular MI300X suite.
+# regular MI350 suite.
 #
-# The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
+# The MI350 host is split into two 4-GPU runners, so this stage is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
 # own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
 #
@@ -31,10 +31,10 @@ on:
   workflow_dispatch:
     inputs:
       ci_image_tag:
-        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
+        description: 'ROCm Docker image tag (default: miles-rocm720-mi35x, the undated tag each nightly image build overwrites)'
         required: false
         type: string
-        default: 'miles-rocm700-mi30x-20260708'
+        default: 'miles-rocm720-mi35x'
 
 permissions:
   contents: read
@@ -75,7 +75,7 @@ jobs:
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm720-mi35x"
           if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
             exit 1
@@ -83,7 +83,7 @@ jobs:
           echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
 
-  stage-c-4-gpu-mi300x:
+  stage-c-4-gpu-mi350:
     needs: [resolve-ci-policy, resolve-ci-image]
     # One shard per 4-GPU runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
@@ -95,10 +95,10 @@ jobs:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
-      runs_on: '["self-hosted", "amd", "mi300x", "4gpu"]'
+      runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
       execute_command: >-
-        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi300x
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}

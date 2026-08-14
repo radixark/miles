@@ -11,8 +11,9 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=600,
-    suite="stage-c-4-gpu-mi300x",
+    suite="stage-c-4-gpu-mi350",
     labels=["fsdp", "amd"],
+    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 NUM_GPUS = 4

@@ -214,6 +214,8 @@ RUN rm -rf /tmp/wheels
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
+# Lets scripts and tests pick the ROCm recipe without probing the device.
+ENV MILES_HARDWARE_PLATFORM=rocm
 ENV HIP_FORCE_DEV_KERNARG=1
 # ROCm 7.2 switched IPC to dma-buf, which leaks exported VRAM in colocate; force legacy IPC to avoid it.
 ENV HSA_ENABLE_IPC_MODE_LEGACY=1
