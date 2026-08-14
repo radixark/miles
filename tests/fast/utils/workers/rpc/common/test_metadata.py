@@ -432,3 +432,13 @@ class TestFailLoud:
 
         specs = collect_rpc_method_specs(Worker)
         assert specs["demo_any"].serializer.decode_query({"x": [1, "a"]}) == {"x": [1, "a"]}
+
+    def test_only_positional_or_keyword_parameters_may_be_filled_positionally(self):
+        """A caller's positional arguments are named in declaration order, and keyword-only names are not in it."""
+
+        class Worker:
+            def demo_mixed(self, a: int, b: int, *, c: int) -> int:
+                return a + b + c
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_mixed"].positional_parameter_names == ("a", "b")
