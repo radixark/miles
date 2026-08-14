@@ -346,7 +346,7 @@ def execute(args: ScriptArgs):
 
     # train/entropy_loss is a hardcoded 0.0 unless this is set, and a falling entropy is the
     # earliest warning of policy collapse on a long agentic run.
-    misc_args += "--observe-training-entropy "
+    misc_args += "--observe-training-entropy --use-rollout-entropy "
 
     # Under bf16 there is no grad scaler, so Megatron's prepare_grads() returns found_inf=False
     # unconditionally and a non-finite grad norm reaches the step, where clipping by
@@ -363,6 +363,7 @@ def execute(args: ScriptArgs):
             f"--wandb-project {args.wandb_project} "
             f"--wandb-group {args.wandb_run_name} "
             f"--wandb-key {args.wandb_key} "
+            "--disable-wandb-random-suffix "
         )
         if args.wandb_team:
             wandb_args += f"--wandb-team {args.wandb_team} "
