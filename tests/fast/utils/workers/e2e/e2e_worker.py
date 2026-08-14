@@ -65,6 +65,10 @@ class E2eWorker:
     async def demo_count_async(self, tag: str) -> int:
         return self._bump(tag)
 
+    def demo_count_after_sleep(self, tag: str, seconds: float) -> int:
+        time.sleep(seconds)
+        return self._bump(tag)
+
     def demo_sleep_sync(self, tag: str, seconds: float) -> str:
         self._mark(tag, "start")
         time.sleep(seconds)
