@@ -91,7 +91,9 @@ async def generate_and_rm(
             logger.debug(f"{log_prefix} Acquired semaphore, calling generate_function")
             if sink is not None:
                 sink.gen_start(sample)
-            output = await state.generate_function(
+            # per-sample override, e.g. an eval dataset naming its own generate function
+            generate_fn = load_generate_function(sample.generate_function_path) or state.generate_function
+            output = await generate_fn(
                 GenerateFnInput(
                     state=state,
                     sample=sample,
