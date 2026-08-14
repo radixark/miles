@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 class RolloutExecutor:
     """The class to run rollout and convert rollout data to training data."""
 
-    def __init__(self, args):
+    def __init__(self, *, args):
         event_logger_checkpoint.restore(args)
         configure_logger(args, source=RolloutExecutorProcessIdentity())
 
