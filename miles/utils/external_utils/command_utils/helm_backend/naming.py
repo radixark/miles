@@ -4,7 +4,7 @@ import random
 import time
 from pathlib import Path
 
-from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME, component_name
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
 
@@ -18,6 +18,14 @@ class RunNames:
     @staticmethod
     def release(*, run_id: str) -> str:
         return f"{CHART_NAME}-{run_id}"
+
+    @staticmethod
+    def service_fqdn(*, name: str, namespace: str) -> str:
+        return f"{name}.{namespace}.svc.cluster.local"
+
+    @staticmethod
+    def orchestrator_host(*, release: str, namespace: str) -> str:
+        return RunNames.service_fqdn(name=component_name(release, ORCHESTRATOR_COMPONENT), namespace=namespace)
 
 
 class RunFiles:
