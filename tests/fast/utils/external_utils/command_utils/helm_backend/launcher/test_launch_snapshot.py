@@ -79,7 +79,12 @@ def _trainer() -> ServeWorkerSpec:
     )
 
 
-def _request(*, train_args: str = "--rollout-num-gpus 8", extra_env_vars: dict[str, str] | None = None):
+def _request(
+    *,
+    train_args: str = "--rollout-num-gpus 8",
+    extra_env_vars: dict[str, str] | None = None,
+    extra_manifests: list[str] | None = None,
+):
     return ExecuteTrainRequest(
         train_args=train_args,
         num_gpus_per_node=8,
@@ -90,6 +95,7 @@ def _request(*, train_args: str = "--rollout-num-gpus 8", extra_env_vars: dict[s
         megatron_path="/root/Megatron-LM",
         before_ray_job_submit=None,
         prepare_cmd={},
+        extra_manifests=extra_manifests or [],
     )
 
 
@@ -263,6 +269,24 @@ class TestKubernetesLaunchSnapshot:
         record_launch(monkeypatch, tmp_path)
 
         assert set(yaml.safe_load(values_file(tmp_path).read_text())) == {"run"}
+
+
+class TestTheLauncherPassesExtraManifestsToTheChart:
+    def test_the_manifests_the_caller_named_reach_the_values_file_verbatim(self, monkeypatch, tmp_path):
+        """The chart installs this text as it stands, so the launcher may not reformat it on the way."""
+        manifests = [
+            "apiVersion: v1\nkind: Service\nmetadata:\n  name: external-sglang\n",
+            "apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: external-sglang\n",
+        ]
+        record_launch(monkeypatch, tmp_path, extra_manifests=manifests)
+
+        assert yaml.safe_load(values_file(tmp_path).read_text())["extraManifests"] == manifests
+
+    def test_a_launch_that_named_none_writes_no_such_section(self, monkeypatch, tmp_path):
+        """An empty section in the values would still override whatever a user's own values file set."""
+        record_launch(monkeypatch, tmp_path)
+
+        assert "extraManifests" not in yaml.safe_load(values_file(tmp_path).read_text())
 
 
 class TestSnapshotFiles:
