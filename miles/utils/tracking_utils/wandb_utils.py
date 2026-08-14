@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import wandb
 
-from miles.utils.env_report import decode_env_report
+from miles.utils.env_report.launcher_report import decode_env_report
 
 logger = logging.getLogger(__name__)
 
