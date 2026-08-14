@@ -94,6 +94,16 @@ def _was_stopped(group: RayTrainGroup, cell_index: int) -> bool:
     return [f"{group._pool}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
+def _was_killed(group: RayTrainGroup, cell_index: int) -> bool:
+    for handle in _cell(group, cell_index)._get_actor_handles():
+        try:
+            ray.get(handle.get_calls.remote())
+            return False
+        except ray.exceptions.RayActorError:
+            pass
+    return True
+
+
 async def _init_controller(group: RayTrainGroup) -> None:
     """Call init and wait for all cells to become alive."""
     await group.init()
@@ -617,7 +627,7 @@ class TestPerCellErrorIsolation:
 
         # Step 3: Cell 1 is errored, others alive
         assert _cell(group, 0).is_alive
-        assert _was_stopped(group, 1)
+        assert _was_killed(group, 1)
         assert _cell(group, 2).is_alive
 
         # Step 4: Other cells received train call
@@ -635,7 +645,7 @@ class TestPerCellErrorIsolation:
             ray.get(handle.set_fail_methods.remote(["train"]))
 
         await group._execute_all_alive_and_catch("train", rollout_id=0, rollout_data_ref="data")
-        assert _was_stopped(group, 0)
+        assert _was_killed(group, 0)
 
         # Step 2: Next broadcast only goes to cell 1
         await group._execute_all_alive_and_catch("train", rollout_id=1, rollout_data_ref="data")
@@ -659,7 +669,7 @@ class TestExecuteFirstAliveFallback:
         await group.save_model(rollout_id=42)
 
         # Step 3: Cell 0 errored, cell 1 handled it
-        assert _was_stopped(group, 0)
+        assert _was_killed(group, 0)
         assert _cell(group, 1).is_alive
 
         for handle in _cell(group, 1)._get_actor_handles():
@@ -676,7 +686,7 @@ class TestExecuteFirstAliveFallback:
         with pytest.raises(Exception):  # noqa: B017
             await group._execute_first_alive("save_model", rollout_id=42)
 
-        assert _was_stopped(group, 0)
+        assert _was_killed(group, 0)
 
     async def test_losing_the_last_cell_keeps_the_worker_error_as_the_cause(self):
         """Without the cause the driver traceback says nothing about why the last cell died."""
@@ -944,7 +954,7 @@ class TestTrainRetry:
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
         # Step 3: Cell 1 errored, alive cells each got 1 train call (no retry)
-        assert _was_stopped(group, 1)
+        assert _was_killed(group, 1)
         for i in [0, 2]:
             assert _count_train_calls(group, i) == 1
 

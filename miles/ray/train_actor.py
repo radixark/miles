@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1}
+TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
 
 def get_local_gpu_id():
@@ -146,6 +146,10 @@ class TrainRayActor(NodeProbeMixin):
     @ray.method(concurrency_group="fault_injector")
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
+
+    @ray.method(concurrency_group="kill_self")
+    def kill_self(self) -> None:
+        os._exit(1)
 
     def clear_memory(self):
         print_memory("before TrainRayActor.clear_memory")
