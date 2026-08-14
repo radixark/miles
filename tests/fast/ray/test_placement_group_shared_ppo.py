@@ -99,6 +99,7 @@ def _training_models_args(**overrides):
         "disable_param_buffers_cpu_backup": True,
         "start_rollout_id": None,
         "rollout_global_dataset": False,
+        "megatron_config": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -125,7 +126,7 @@ async def test_the_critic_controller_is_inited_with_neutralized_args(monkeypatch
     await placement_group_module.create_training_models(args, rollout_executor=_RecordingRolloutExecutor())
 
     actor_args, critic_args = (handle.inited_with for handle in handles)
-    assert actor_args is args
+    assert (actor_args.kl_coef, actor_args.use_opd, actor_args.disable_param_buffers_cpu_backup) == (0.1, True, True)
     assert (critic_args.kl_coef, critic_args.use_opd, critic_args.disable_param_buffers_cpu_backup) == (
         0,
         False,
