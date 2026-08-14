@@ -71,6 +71,20 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
           fetch-depth: 0
 
+      - name: Verify version matches setup.py
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # rc/postN tags share the branch with the base release and setup.py
+          # keeps the base version (hotfixes don't bump), so compare X.Y.Z only.
+          BASE_VERSION=$(echo "$VERSION" | sed -E 's/(rc[0-9]+|\.post[0-9]+)$//')
+          if ! grep -q "version=\"${BASE_VERSION}\"" setup.py; then
+            echo "::error::setup.py at '${{ github.event.inputs.ref }}' does not carry version=\"${BASE_VERSION}\" — merge the bump PR (release step ①) and get it onto this branch first"
+            grep -n 'version="' setup.py
+            exit 1
+          fi
+          echo "setup.py version matches ${BASE_VERSION}"
+
       - name: Create and push tag
         run: |
           TAG="v${{ github.event.inputs.version }}"
