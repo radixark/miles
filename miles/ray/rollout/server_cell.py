@@ -108,10 +108,17 @@ class ServerCell:
 
         global_ranks = [self.rank_offset + local_index for local_index in range(self.num_nodes)]
 
+        node_ips = [
+            node_ip
+            for node_ip, _ in await asyncio.gather(
+                *[actor._get_current_node_ip_and_free_port.remote() for actor in actor_handles]
+            )
+        ]
+
         addr_and_ports: dict[int, dict[str, Any]] = {}
         dist_init_addr = None
         for local_index, (rank, actor) in enumerate(zip(global_ranks, actor_handles, strict=True)):
-            node_ip, _ = ray.get(actor._get_current_node_ip_and_free_port.remote())
+            node_ip = node_ips[local_index]
             alloc = functools.partial(port_allocator.alloc, engine=actor, node_ip=node_ip)
 
             if local_index == 0:
