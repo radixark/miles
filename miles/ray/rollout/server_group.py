@@ -59,7 +59,7 @@ class ServerGroup:
         return [cell.engines[0] for cell in self.cells]
 
     def start_engines(
-        self, port_cursors: PortCursors, start_indices: list[int] | None = None
+        self, port_cursors: PortCursors, start_cell_indices: list[int] | None = None
     ) -> tuple[list, list[int]]:
         """Create Ray actors, allocate ports, and fire ``engine.init()`` without waiting.
 
@@ -78,6 +78,12 @@ class ServerGroup:
             return [], []
 
         num_gpu_per_engine = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
+
+        start_indices = (
+            None
+            if start_cell_indices is None
+            else [i for cell_index in start_cell_indices for i in self._engine_indices_of_cell(cell_index)]
+        )
 
         all_engines = flatten_cells(self.cells)
 
@@ -168,6 +174,9 @@ class ServerGroup:
             ]
         )
 
+    def _engine_indices_of_cell(self, cell_index: int) -> range:
+        return range(cell_index * self.nodes_per_engine, (cell_index + 1) * self.nodes_per_engine)
+
     def _primary_engines_of(self, engine_indices: list[int]) -> list[ServerEngine]:
         all_engines = flatten_cells(self.cells)
         return [
@@ -185,35 +194,31 @@ class ServerGroup:
     # single-thread async code will not yield without an await point
     # it has the drawback of freezing the whole async thread, which may be avoided later by
     # moving `shutdown` mainly to local code
-    def stop_engines(self, engine_indices: list[int]):
-        logger.info(f"Killing server {engine_indices=}...")
+    def stop_engines(self, cell_indices: list[int]):
+        logger.info(f"Killing server {cell_indices=}...")
+        engine_indices = [i for cell_index in cell_indices for i in self._engine_indices_of_cell(cell_index)]
         try:
             async_utils.run(asyncio.wait_for(self.unregister_workers(engine_indices), timeout=SHUTDOWN_TIMEOUT))
         except Exception as e:
             logger.warning(f"Unregistering {engine_indices=} from the router failed, tearing down anyway (e: {e})")
-        for cell_index in sorted({i // self.nodes_per_engine for i in engine_indices}):
-            cell = self.cells[cell_index]
-            cell_engine_indices = range(cell_index * self.nodes_per_engine, (cell_index + 1) * self.nodes_per_engine)
-            assert set(cell_engine_indices) <= set(
-                engine_indices
-            ), f"stop_engines must cover whole cells ({engine_indices=}, {cell_index=})"
-            cell.stop()
+        for cell_index in sorted(set(cell_indices)):
+            self.cells[cell_index].stop()
 
-    async def recover(self, port_cursors: PortCursors, filter_indices: list[int] | None = None):
-        all_engines = flatten_cells(self.cells)
-        if filter_indices is None:
-            filter_indices = [i for i, engine in enumerate(all_engines) if not engine.is_allocated]
-        start_indices = [idx for idx in filter_indices if not all_engines[idx].is_allocated]
+    async def recover(self, port_cursors: PortCursors, filter_cell_indices: list[int] | None = None):
+        if filter_cell_indices is None:
+            filter_cell_indices = [
+                cell_index
+                for cell_index, cell in enumerate(self.cells)
+                if any(not engine.is_allocated for engine in cell.engines)
+            ]
 
-        handles, new_engine_indices = self.start_engines(port_cursors, start_indices=start_indices)
+        handles, new_engine_indices = self.start_engines(port_cursors, start_cell_indices=filter_cell_indices)
         await asyncio.gather(*handles)
 
+        all_engines = flatten_cells(self.cells)
         release_handles = []
         all_resume_engines = []
         logger.info(f"Recovered {len(new_engine_indices)} dead rollout engines (worker_type={self.worker_type})")
-        assert len(new_engine_indices) == len(
-            start_indices
-        ), "curr_num_new_engines does not match start_indices length"
         if self.needs_offload and new_engine_indices:
             new_primary_engines = [all_engines[i] for i in new_engine_indices if i % self.nodes_per_engine == 0]
             release_handles.extend(engine.api_client.release_memory_occupation() for engine in new_primary_engines)
