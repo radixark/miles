@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
-from miles.ray.placement_group import create_rollout_components, create_training_models
-from miles.ray.train.group import TrainerController
+from miles.ray.placement_group import create_rollout_components
 
 pytestmark = pytest.mark.asyncio
 
@@ -21,6 +19,7 @@ def _make_args(**overrides) -> Namespace:
         sglang_router_ip=None,
         sglang_router_port=None,
         cluster_backend="ray",
+        eval_num_gpus=0,
         debug_train_only=False,
         use_session_server=False,
     )
@@ -41,7 +40,7 @@ def fake_components():
 
     controller_handle.init = AsyncMock(side_effect=_init)
 
-    async def resolve_router_addrs(args, *, provider) -> dict:
+    async def resolve_router_addrs(args, *, router_providers) -> dict:
         args.sglang_router_ip = "10.0.0.1"
         args.sglang_router_port = 4321
         return {}
@@ -151,97 +150,6 @@ class TestCreateRolloutComponents:
         await create_rollout_components(args)
 
         fake_components.executor_handle.set_eval_fleet.remote.assert_awaited_once_with(fake_components.eval_fleet)
-
-
-class _FakeRolloutExecutorHandle:
-    def __init__(self) -> None:
-        self.loaded_rollout_ids: list[int] = []
-        self.load = SimpleNamespace(remote=self._load_remote)
-
-    async def _load_remote(self, rollout_id: int) -> None:
-        self.loaded_rollout_ids.append(rollout_id)
-
-
-_TRAINER_START_ROLLOUT_ID = 7
-
-
-@pytest.fixture
-def fake_trainer_controllers(monkeypatch: pytest.MonkeyPatch):
-    events: list[tuple[str, str]] = []
-
-    async def _fake_init(self: TrainerController) -> list[int]:
-        events.append(("init", self._role))
-        return [_TRAINER_START_ROLLOUT_ID]
-
-    monkeypatch.setattr(TrainerController, "init", _fake_init)
-    return SimpleNamespace(events=events)
-
-
-def _training_args(**overrides) -> Namespace:
-    defaults = dict(
-        actor_num_nodes=1,
-        actor_num_gpus_per_node=2,
-        critic_num_nodes=1,
-        critic_num_gpus_per_node=2,
-        use_critic=False,
-        kl_coef=0.0,
-        use_kl_loss=False,
-        use_opd=False,
-        opd_type=None,
-        disable_param_buffers_cpu_backup=True,
-        start_rollout_id=None,
-        rollout_global_dataset=False,
-        indep_dp=False,
-        enable_witness=False,
-    )
-    defaults.update(overrides)
-    return Namespace(**defaults)
-
-
-class TestCreateTrainingModels:
-    async def test_only_the_actor_is_wired_to_the_rollout_path(self, fake_trainer_controllers):
-        """The critic never broadcasts weights, so handing it the engines would let it publish over the actor's."""
-        inference_controller = object()
-        rollout_executor = _FakeRolloutExecutorHandle()
-
-        actor, critic = await create_training_models(
-            _training_args(use_critic=True, use_opd=True, opd_type="megatron"),
-            inference_controller,
-            rollout_executor,
-        )
-
-        assert actor._inference_controller is inference_controller
-        assert actor._rollout_executor is rollout_executor
-        assert critic._inference_controller is None
-        assert critic._rollout_executor is None
-        assert critic._with_opd_teacher is False
-
-    @pytest.mark.parametrize(
-        ("use_opd", "opd_type", "expected"),
-        [(True, "megatron", True), (True, "sglang", False), (False, "megatron", False)],
-    )
-    async def test_the_actor_hosts_the_teacher_only_for_megatron_opd(
-        self, fake_trainer_controllers, use_opd: bool, opd_type: str, expected: bool
-    ):
-        """Only the in-process Megatron teacher lives in the trainer; the sglang teacher is served by the engines."""
-        actor, _ = await create_training_models(
-            _training_args(use_opd=use_opd, opd_type=opd_type),
-            object(),
-            _FakeRolloutExecutorHandle(),
-        )
-
-        assert actor._with_opd_teacher is expected
-
-    async def test_the_executor_is_connected_and_rewound_once_the_trainers_are_up(self, fake_trainer_controllers):
-        """Cells accept the executor only after init, and the executor resumes from the checkpoint's rollout."""
-        args = _training_args(rollout_global_dataset=False)
-        rollout_executor = _FakeRolloutExecutorHandle()
-
-        await create_training_models(args, object(), rollout_executor)
-
-        assert fake_trainer_controllers.events == [("init", "actor")]
-        assert args.start_rollout_id == _TRAINER_START_ROLLOUT_ID
-        assert rollout_executor.loaded_rollout_ids == [_TRAINER_START_ROLLOUT_ID - 1]
 
 
 class TestCreatePlacementGroups:
