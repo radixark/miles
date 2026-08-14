@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 from tests.fast.charts.utils import (
@@ -8,8 +9,52 @@ from tests.fast.charts.utils import (
     objects_of_kind,
     pod_spec,
     render,
+    render_run,
     requires_helm,
 )
+
+_POOL_ENTRIES = {
+    name: [{"name": name, "objectName": f"myrun-miles-run-{name}", "replicas": 1, "size": 1, "command": ["python"]}]
+    for name in ("engine", "trainer")
+}
+
+UNINSTALLABLE_RUN = (
+    "--set-json",
+    f"run.inferenceEngines={json.dumps(_POOL_ENTRIES['engine'])}",
+    "--set-json",
+    f"run.trainerEngines={json.dumps(_POOL_ENTRIES['trainer'])}",
+    "--set",
+    "run.autoUninstall.enabled=true",
+)
+
+_PAIRING_CONFIG = {
+    "namespace": NAMESPACE,
+    "release": "myrun",
+    "trainer_pool_id": "trainer",
+    "inference_pools": [
+        {
+            "pool_id": "engine",
+            "layout": {
+                "num_inference_cells": 1,
+                "num_trainer_cells": 1,
+                "num_pods_per_inference_cell": 1,
+                "num_pods_per_trainer_cell": 1,
+                "num_gpus_per_node": 8,
+                "gpu_offset": 0,
+            },
+        }
+    ],
+}
+
+COLOCATED_RUN = (
+    "--set-json",
+    f"run.inferenceEngines={json.dumps(_POOL_ENTRIES['engine'])}",
+    "--set-json",
+    f"run.trainerEngines={json.dumps(_POOL_ENTRIES['trainer'])}",
+    "--set-json",
+    f"run.colocate={json.dumps(_PAIRING_CONFIG)}",
+)
+
 
 def granted_verbs(role: dict[str, Any]) -> dict[tuple[str, str], set[str]]:
     return {
@@ -44,15 +89,30 @@ class TestRbacTemplates:
             ("", "secrets"): write,
             ("", "serviceaccounts"): write,
             ("", "services"): write,
-            ("", "pods"): {"delete", "get", "list", "watch"},
+            ("", "pods"): {"delete", "get", "list", "patch", "update", "watch"},
             ("", "pods/exec"): {"create"},
             ("", "pods/log"): {"get"},
             ("", "events"): {"get", "list", "watch"},
             ("", "persistentvolumeclaims"): {"get", "list", "watch"},
+            ("apps", "deployments"): write,
             ("apps", "statefulsets"): write,
             ("batch", "jobs"): write,
+            ("rbac.authorization.k8s.io", "roles"): write,
+            ("rbac.authorization.k8s.io", "rolebindings"): write,
             ("leaderworkerset.x-k8s.io", "leaderworkersets"): write,
         }
+
+    def test_the_role_covers_every_object_kind_miles_run_installs(self):
+        """A kind miles-run renders but the Role omits turns every colocated install into an apiserver rejection."""
+        granted = granted_verbs(named_object(render(), "Role", RELEASE_NAME))
+        installed = {
+            ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
+            for obj in render_run(*COLOCATED_RUN)
+            for group in [obj["apiVersion"].rpartition("/")[0]]
+        }
+
+        assert installed <= set(granted), sorted(installed - set(granted))
+        assert all("create" in granted[key] for key in installed)
 
     def test_the_uninstaller_account_can_delete_a_run_and_nothing_else(self):
         """A run's escape job runs as this account, and every verb beyond deletion is one it does not need."""
@@ -85,11 +145,32 @@ class TestRbacTemplates:
             UNINSTALLER_SERVICE_ACCOUNT
         )
 
+    def test_the_uninstaller_covers_every_kind_a_run_release_owns(self):
+        """helm uninstall stops at the first kind it may not delete, and leaves the release half removed."""
+        granted = granted_verbs(named_object(render(), "Role", UNINSTALLER_SERVICE_ACCOUNT))
+        installed = {
+            ("" if group in ("", "v1") else group, obj["kind"].lower() + "s")
+            for obj in render_run(*UNINSTALLABLE_RUN)
+            for group in [obj["apiVersion"].rpartition("/")[0]]
+        }
+
+        assert installed <= set(granted), sorted(installed - set(granted))
+        assert all("delete" in granted[key] for key in installed)
+
     def test_the_uninstaller_leaderworkerset_rules_follow_the_workbench_ones(self):
         """A cluster without the LWS CRDs cannot grant those rights to either account."""
         role = named_object(render("--set", "rbac.leaderWorkerSets=false"), "Role", UNINSTALLER_SERVICE_ACCOUNT)
 
         assert "leaderworkerset.x-k8s.io" not in {group for rule in role["rules"] for group in rule["apiGroups"]}
+
+    def test_the_role_is_a_superset_of_the_role_miles_run_asks_it_to_create(self):
+        """Kubernetes refuses a Role or RoleBinding carrying rules its creator does not already hold."""
+        granted = granted_verbs(named_object(render(), "Role", RELEASE_NAME))
+        created = [granted_verbs(role) for role in objects_of_kind(render_run(*COLOCATED_RUN), "Role")]
+
+        assert created
+        for rules in created:
+            assert all(verbs <= granted.get(key, set()) for key, verbs in rules.items())
 
     def test_the_role_can_neither_escalate_nor_reach_cluster_scope(self):
         """It may write namespaced RBAC only because it holds those rules; escalate or bind would lift that ceiling."""
