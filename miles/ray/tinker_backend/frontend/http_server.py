@@ -38,7 +38,7 @@ from miles.ray.tinker_backend.frontend.service import ApiError, TinkerFrontend
 from miles.ray.tinker_backend.http_server import TinkerHTTPServer
 from miles.ray.tinker_backend.operations import OperationBackpressure
 
-AUTH_EXEMPT_PATHS = ("/health", "/api/v1/healthz")
+AUTH_EXEMPT_PATHS = ("/health", "/healthz", "/api/v1/healthz")
 API_KEY_ENV = "MILES_TINKER_API_KEY"
 # The operator plane stays node-local even on a public bind; the SDK key is
 # a client credential, not an operator one.
@@ -47,7 +47,7 @@ LOOPBACK_PEERS = ("127.0.0.1", "::1", "localhost")
 
 def is_sdk_path(path: str) -> bool:
     """/api/v1/* plus the base liveness probe; everything else is operator."""
-    return path.startswith("/api/v1/") or path == "/health"
+    return path.startswith("/api/v1/") or path in ("/health", "/healthz")
 
 
 def resolve_api_key(args: Any) -> str | None:
@@ -121,6 +121,7 @@ class TinkerFrontendHTTPServer(TinkerHTTPServer):
         frontend = self.frontend
 
         # -------- bootstrap / session --------
+        @app.get("/healthz")
         @app.get("/api/v1/healthz")
         async def healthz() -> dict:
             return frontend.health()

@@ -60,11 +60,13 @@ class TestGuard:
         app = make_app()
         assert get(app, "/health").status_code == 200
         assert get(app, "/api/v1/healthz").status_code == 200
+        assert get(app, "/healthz").status_code == 200
 
     def test_healthz_is_503_until_the_trainer_is_ready(self):
         app = make_app(ready=False)
         assert get(app, "/health").status_code == 200  # liveness: the socket is up
         assert get(app, "/api/v1/healthz").status_code == 503  # readiness: no trainer yet
+        assert get(app, "/healthz").status_code == 503
 
 
 class TestLaunchFlags:
