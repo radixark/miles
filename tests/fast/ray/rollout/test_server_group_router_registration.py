@@ -115,9 +115,22 @@ async def test_registration_addresses_only_node0_of_a_multi_node_engine():
     group = _build_group(events=events, num_engines=2, num_gpus_per_engine=16)
 
     with _with_recording_client(group):
-        await group.register_workers([0, 1])
+        await group.register_workers([0])
 
     assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.1:30000"]
+
+
+async def test_registration_skips_a_cell_that_is_not_allocated():
+    """A stopped cell has no url to publish, so it must be filtered out."""
+    events: list[tuple[str, dict]] = []
+    group = _build_group(events=events, num_engines=2)
+    for engine in group.cells[0].engines:
+        engine.mark_stopped()
+
+    with _with_recording_client(group):
+        await group.register_workers([0, 1])
+
+    assert [kwargs["worker_url"] for _name, kwargs in events] == ["http://10.0.0.2:30001"]
 
 
 @pytest.mark.parametrize("missing", [dict(router_ip=None), dict(router_port=None)])
