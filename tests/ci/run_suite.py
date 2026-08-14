@@ -68,13 +68,14 @@ def filter_tests(
     """Filter registered tests down to the set that should run.
 
     The base predicate (hw / suite / cadence eligibility / disabled) is applied first.
-    Label selection then keeps a test iff it declares no labels (always-run)
-    or any of its labels is in `labels` -- the effective include set from
-    `resolve_policy` (the requested domain labels for a plain PR, near-total
-    registry sets for broad scopes). There is no separate exclusion pass: a
-    label a scope subtracted simply grants no inclusion, so a test whose
-    only labels were subtracted drops out (including from the skip report),
-    while a test that also carries an included label still runs.
+    Label selection then keeps a test iff it declares no labels (the CPU
+    always-on case) or any of its labels is in `labels` -- the effective
+    include set from `resolve_policy` (the requested domain labels for a plain
+    PR, near-total registry sets for broad scopes). GPU registrations require
+    at least one label. There is no separate exclusion pass: a label a scope
+    subtracted simply grants no inclusion, so a test whose only labels were
+    subtracted drops out (including from the skip report), while a test that
+    also carries an included label still runs.
     """
     valid_suites = CI_SUITES.get(hw, [])
     if suite not in valid_suites:
@@ -343,8 +344,8 @@ def main():
             "Raw PR-side labels (e.g. `run-ci-megatron run-ci-fsdp`). The "
             "`run-ci-` prefix is stripped on the Python side; the resulting "
             "domain-label set is intersected with each test's `labels` to "
-            "decide what runs. An empty list keeps only registrations with "
-            "no domain labels."
+            "decide what runs. An empty list keeps only CPU registrations "
+            "with no domain labels; it selects no GPU tests."
         ),
     )
     parser.add_argument(

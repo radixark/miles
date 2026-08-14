@@ -79,8 +79,9 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
 
     The workflow adapter resolves trigger-specific facts into a cadence and
     raw labels; this function never infers policy from a GitHub event name. A
-    test runs iff it is cadence-eligible and declares no labels (always-run)
-    or any of its labels is in the effective include set.
+    test runs iff it is cadence-eligible and declares no labels (the CPU
+    always-on case) or any of its labels is in the effective include set. GPU
+    registrations are validated separately to require a non-empty label set.
 
     Broad scopes are large include sets:
 

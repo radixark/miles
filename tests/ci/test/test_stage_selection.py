@@ -27,7 +27,7 @@ def _registration(
         filename=filename,
         est_time=1,
         suite=suite,
-        labels=labels or [],
+        labels=["precision"] if labels is None else labels,
         disabled=disabled,
     )
 
@@ -40,7 +40,7 @@ def _select(
     changed_files: tuple[ChangedFile, ...] | None,
     registrations: list[CIRegistry],
     *,
-    raw_labels: tuple[str, ...] = (),
+    raw_labels: tuple[str, ...] = ("run-ci-precision",),
     event_name: str = "pull_request",
 ) -> tuple[str, ...]:
     return select_skipped_gpu_stages(
@@ -73,7 +73,7 @@ def test_read_changed_files_fails_open_on_unusable_input(tmp_path, payload):
 def test_docs_tooling_and_cpu_only_tests_skip_every_gpu_stage():
     cpu_test = "tests/fast/doc/test_sync_example_docs.py"
     registrations = [
-        _registration("tests/fast-gpu/test_always.py", "stage-b-2-gpu-h200"),
+        _registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200"),
         CIRegistry(HWBackend.CPU, cpu_test, 1, "stage-a-cpu"),
     ]
     changed_files = (
@@ -84,25 +84,29 @@ def test_docs_tooling_and_cpu_only_tests_skip_every_gpu_stage():
         ChangedFile("M", (cpu_test,)),
     )
 
-    assert set(_select(changed_files, registrations)) == PR_GPU_STAGES
+    assert set(_select(changed_files, registrations, raw_labels=())) == PR_GPU_STAGES
 
 
-def test_changed_multi_backend_test_runs_only_its_local_stages():
+def test_changed_multi_backend_test_and_explicit_domain_run_their_stages():
     shared_test = "tests/e2e/test_shared.py"
     registrations = [
-        _registration("tests/fast-gpu/test_always.py", "stage-b-2-gpu-h200"),
+        _registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200"),
         _registration(shared_test, "stage-c-8-gpu-h100"),
         _registration(shared_test, "stage-c-4-gpu-mi350"),
     ]
 
     skipped = set(_select((ChangedFile("M", (shared_test,)),), registrations))
 
-    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-h100", "stage-c-4-gpu-mi350"}
+    assert skipped == PR_GPU_STAGES - {
+        "stage-b-2-gpu-h200",
+        "stage-c-8-gpu-h100",
+        "stage-c-4-gpu-mi350",
+    }
 
 
 def test_domain_label_adds_only_stages_with_matching_tests():
     registrations = [
-        _registration("tests/fast-gpu/test_always.py", "stage-b-2-gpu-h200"),
+        _registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200"),
         _registration("tests/e2e/test_megatron.py", "stage-c-8-gpu-h100", labels=["megatron"]),
     ]
     changed_files = (ChangedFile("M", ("docs/index.md",)),)
@@ -114,7 +118,7 @@ def test_domain_label_adds_only_stages_with_matching_tests():
 
 def test_broad_scope_adds_every_runnable_stage():
     registrations = [
-        _registration("tests/fast-gpu/test_always.py", "stage-b-2-gpu-h200"),
+        _registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200"),
         _registration("tests/e2e/test_megatron.py", "stage-c-8-gpu-h100", labels=["megatron"]),
     ]
     changed_files = (ChangedFile("M", ("docs/index.md",)),)
@@ -125,7 +129,7 @@ def test_broad_scope_adds_every_runnable_stage():
 
 
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
-    registrations = [_registration("tests/fast-gpu/test_always.py", "stage-b-2-gpu-h200")]
+    registrations = [_registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200")]
     changed_files = (ChangedFile("M", ("docs/index.md",)),)
 
     assert set(_select(changed_files, registrations, raw_labels=("bypass-fastfail",))) == PR_GPU_STAGES
@@ -158,11 +162,13 @@ def test_non_pr_or_missing_diff_never_prunes(event_name, changed_files):
 def test_changed_labeled_test_without_its_label_keeps_current_selection_semantics():
     changed_test = "tests/e2e/test_megatron.py"
     registrations = [
-        _registration("tests/fast-gpu/test_always.py", "stage-b-2-gpu-h200"),
+        _registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200"),
         _registration(changed_test, "stage-c-8-gpu-h100", labels=["megatron"]),
     ]
 
-    assert set(_select((ChangedFile("M", (changed_test,)),), registrations)) == PR_GPU_STAGES
+    assert set(_select((ChangedFile("M", (changed_test,)),), registrations)) == (
+        PR_GPU_STAGES - {"stage-b-2-gpu-h200"}
+    )
 
 
 def test_cli_publishes_all_gpu_stages_for_docs_diff(tmp_path):

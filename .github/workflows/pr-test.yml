@@ -210,6 +210,7 @@ jobs:
         python tests/ci/run_suite.py --hw cuda --suite stage-b-2-gpu-h200
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
   stage-c-8-gpu-h100:
@@ -236,6 +237,7 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
   stage-c-8-gpu-h200:
@@ -262,6 +264,7 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
   stage-c-4-gpu-h200:
@@ -288,6 +291,7 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 3
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
 
   stage-c-2-gpu-h200:
@@ -314,4 +318,5 @@ jobs:
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit

@@ -50,7 +50,7 @@ Distinct from image selection, the **`run-ci-image` label** selects the test sco
 - Each Miles PR workflow passes trigger facts and, for PRs, the diff to `tests/ci/ci_policy.py`, which publishes the resolved policy and `skipped_stages` for `run_suite.py` and GPU job gates.
 - A PR `nightly` label maps to nightly cadence.
 - A scheduled run maps its exact UTC `github.event.schedule` cron: `0 15 * * 0-5` maps to nightly and `0 15 * * 6` maps to weekly; an unknown cron fails.
-- A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI350 run.
+- A manual dispatch keeps regular cadence and has no PR labels. Both GPU workflows add `--match-all-labels` so an explicit manual operation runs the full regular GPU suites; CPU selection remains unchanged.
 - A reusable `workflow_call` supplies an explicit cadence override because the called workflow inherits the caller's event name. Policy resolution deliberately runs the caller commit's `ci_policy.py`; only suite jobs check out the requested release ref.
 
 A **nightly** policy selects every enabled tag except `long` and `ft-long`, admits both regular and `nightly=True` registrations, and disables fast-fail. **Weekly** and **release** select every enabled tag, admit both registration types, and disable fast-fail; release differs by never writing the rolling performance baseline. Regular cadence admits only regular registrations. All four cadences use the same stage inventory.

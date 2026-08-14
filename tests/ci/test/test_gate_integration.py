@@ -67,7 +67,9 @@ def _write_test_file(tmp_path: Path, gate_lines: str, *, name: str = "test_e2e_g
     body = (
         "from tests.ci.ci_register import register_cuda_ci\n"
         "from tests.ci.metric_history import register_ci_gate\n"
-        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100")\n' + textwrap.dedent(gate_lines).strip() + "\n"
+        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])\n'
+        + textwrap.dedent(gate_lines).strip()
+        + "\n"
     )
     p = tmp_path / name
     p.write_text(body)
