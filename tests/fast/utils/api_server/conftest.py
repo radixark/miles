@@ -231,7 +231,7 @@ def make_mock_group(cells: list[MockRayTrainCell]) -> object:
     from miles.ray.train.group import TrainerController
 
     group = object.__new__(RayTrainGroup)
-    group._cells = cells
+    group._cells_by_index = dict(enumerate(cells))
     group._indep_dp_quorum_id = 0
     group._alive_cell_ids = frozenset()
     return group

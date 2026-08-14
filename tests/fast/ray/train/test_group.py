@@ -25,6 +25,7 @@ def _make_mock_args(
     indep_dp: bool = True,
     enable_witness: bool = False,
     gpus_per_cell: int = 1,
+    num_cells: int = 3,
 ) -> SimpleNamespace:
     # Use SimpleNamespace (not MagicMock) so the args object is picklable. RayTrainCell.init
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
@@ -45,6 +46,8 @@ def _make_mock_args(
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=gpus_per_cell,
+        actor_num_nodes=1,
+        actor_num_gpus_per_node=num_cells * gpus_per_cell,
     )
 
 
@@ -55,15 +58,18 @@ def _make_controller(
     inference_controller: object | None = None,
     rollout_executor: object | None = None,
 ) -> RayTrainGroup:
-    """Create a RayTrainGroup through real __init__ against a fake worker manager."""
+    """Create a RayTrainGroup and let it observe every cell, as the watcher would."""
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
-    return RayTrainGroup(
-        args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell),
+    group = RayTrainGroup(
+        args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell, num_cells=num_cells),
         role="actor",
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
     )
+    for cell_index in range(num_cells):
+        group._cells_by_index[cell_index] = group._create_cell(cell_index)
+    return group
 
 
 async def _init_controller(group: RayTrainGroup) -> None:
