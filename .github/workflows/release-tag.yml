@@ -2,11 +2,11 @@ name: Release Tag
 # Creates the vX.Y.Z tag that triggers release-docker.yml. Use after the
 # release branch's full CI (a release-branch-cut.yml run) is green.
 #
-# Unlike sglang's release-tag.yml, this one refuses to tag blind. It finds the
-# newest release-branch-cut run for the ref by run title (branch-cut stamps the
-# branch into run-name) and requires it to be completed, green, and newer than
-# the branch tip — so a cherry-pick automatically invalidates older green runs.
-# force=true is the deliberate, audited escape hatch.
+# Unlike sglang's release-tag.yml, this one refuses to tag blind. It requires
+# a green `release-ci` commit status on the exact commit being tagged — the
+# status release-branch-cut.yml's finalizer job stamps on the tested SHA. A
+# cherry-pick moves the tip to an unstamped commit, so older green runs can
+# never vouch for it. force=true is the deliberate, audited escape hatch.
 
 on:
   workflow_dispatch:
@@ -28,6 +28,7 @@ on:
 permissions:
   contents: write
   actions: write
+  statuses: read
 
 jobs:
   create-tag:
@@ -63,53 +64,31 @@ jobs:
           fi
           echo "setup.py version matches ${BASE_VERSION}"
 
-      - name: Verify the branch-cut CI run for this ref
+      - name: Verify release CI on this exact commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ github.event.inputs.ref }}
           FORCE: ${{ github.event.inputs.force }}
         run: |
           if [ "$FORCE" = "true" ]; then
-            echo "::warning::force=true — tagging without a verified branch-cut CI run"
+            echo "::warning::force=true — tagging without verified release CI"
             exit 0
           fi
 
-          TIP_SHA=$(git rev-parse HEAD)
-          TIP_TIME=$(git log -1 --format=%cI HEAD)
-
-          # Newest branch-cut run for exactly this ref (run-name carries it).
-          RUN_JSON=$(gh run list --workflow=release-branch-cut.yml --limit 100 \
-            --json databaseId,displayTitle,status,conclusion,createdAt,url \
-            --jq "[.[] | select(.displayTitle == \"Release Branch Cut $REF\")][0]")
-          if [ -z "$RUN_JSON" ] || [ "$RUN_JSON" = "null" ]; then
-            echo "::error::No release-branch-cut run found for '$REF'. Dispatch it and wait for green: gh workflow run release-branch-cut.yml -f branch_name=$REF"
-            exit 1
-          fi
-          RUN_ID=$(echo "$RUN_JSON" | jq -r '.databaseId')
-          RUN_URL=$(echo "$RUN_JSON" | jq -r '.url')
-          STATUS=$(echo "$RUN_JSON" | jq -r '.status')
-          CONCLUSION=$(echo "$RUN_JSON" | jq -r '.conclusion')
-          CREATED=$(echo "$RUN_JSON" | jq -r '.createdAt')
-
-          if [ "$STATUS" != "completed" ]; then
-            echo "::error::The branch-cut run for '$REF' is still '$STATUS' — wait for it to finish: $RUN_URL"
-            exit 1
-          fi
-          if [ "$CONCLUSION" != "success" ]; then
-            echo "::error::The newest branch-cut run for '$REF' concluded '$CONCLUSION', not success: $RUN_URL"
-            exit 1
-          fi
-          # A run older than the branch tip tested a stale tip (e.g. a
-          # cherry-pick landed after it) — require a fresh full run.
-          if ! python3 -c "
-          import sys, datetime as dt
-          run = dt.datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00'))
-          tip = dt.datetime.fromisoformat(sys.argv[2])
-          sys.exit(0 if run > tip else 1)" "$CREATED" "$TIP_TIME"; then
-            echo "::error::The newest green branch-cut run for '$REF' ($RUN_URL, created $CREATED) predates the branch tip $TIP_SHA (committed $TIP_TIME). The branch changed after that CI run — re-dispatch release-branch-cut.yml -f branch_name=$REF and wait for green."
-            exit 1
-          fi
-          echo "Verified: run $RUN_ID ($RUN_URL) is the newest cut run for $REF, green, and newer than the branch tip."
+          SHA=$(git rev-parse HEAD)
+          # Latest status per context; stamped by release-branch-cut's finalizer.
+          STATE=$(gh api "repos/${{ github.repository }}/commits/$SHA/status" \
+            --jq '[.statuses[] | select(.context == "release-ci")][0].state // "absent"')
+          case "$STATE" in
+            success)
+              echo "release-ci on $SHA is success — tagging" ;;
+            absent)
+              echo "::error::No release-ci status on $SHA — this exact commit never completed full release CI (first cut still running, or a cherry-pick moved the tip). Dispatch: gh workflow run release-branch-cut.yml -f branch_name=$REF and wait for green."
+              exit 1 ;;
+            *)
+              echo "::error::release-ci on $SHA is '$STATE' — get the branch-cut run green, then tag."
+              exit 1 ;;
+          esac
 
       - name: Create and push tag
         env:

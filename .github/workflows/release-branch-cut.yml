@@ -27,6 +27,8 @@ on:
 
 permissions:
   contents: write
+  # report-ci-status stamps the release-ci commit status release-tag.yml checks.
+  statuses: write
 
 jobs:
   cut-release-branch:
@@ -35,6 +37,7 @@ jobs:
     outputs:
       branch_name: ${{ github.event.inputs.branch_name }}
       ci_image_tag: ${{ steps.freeze.outputs.ci_image_tag }}
+      tested_sha: ${{ steps.freeze.outputs.tested_sha }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -85,6 +88,7 @@ jobs:
             git fetch origin "$BRANCH_NAME"
             git checkout "$BRANCH_NAME"
             echo "ci_image_tag=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")" >> "$GITHUB_OUTPUT"
+            echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -120,6 +124,7 @@ jobs:
           git commit -m "release: freeze dependency lockfile for $BRANCH_NAME"
           git push origin "$BRANCH_NAME"
           echo "ci_image_tag=$CI_IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Froze: sglang=$SGLANG_SHA megatron=$MEGATRON_SHA image=$CI_IMAGE_TAG"
 
       - name: Summary
@@ -130,7 +135,7 @@ jobs:
             echo "- CI image: \`radixark/miles:${{ steps.freeze.outputs.ci_image_tag }}\`"
             echo "- Full-scope CI runs below. Once this run is fully green, tag with:"
             echo "  \`gh workflow run release-tag.yml -f version=X.Y.Z -f ref=${{ github.event.inputs.branch_name }}\`"
-            echo "  (release-tag verifies this run itself: newest cut run for the branch, green, newer than the branch tip)"
+            echo "  (release-tag checks the release-ci commit status this run stamps on the tested commit)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   run-tests-cuda:
@@ -151,3 +156,30 @@ jobs:
       ref: ${{ needs.cut-release-branch.outputs.branch_name }}
       cadence: release
     secrets: inherit
+
+  # Finalizer: stamps the verdict onto the exact tested commit so
+  # release-tag.yml can gate on per-SHA evidence instead of run archaeology.
+  # always() so a red run stamps failure; a re-dispatch on the same branch
+  # overwrites the same context (newest status per context wins).
+  report-ci-status:
+    needs: [cut-release-branch, run-tests-cuda, run-tests-rocm]
+    if: always() && needs.cut-release-branch.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post release-ci commit status on the tested SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.cut-release-branch.outputs.tested_sha }}
+          CUDA_RESULT: ${{ needs.run-tests-cuda.result }}
+          ROCM_RESULT: ${{ needs.run-tests-rocm.result }}
+        run: |
+          if [ "$CUDA_RESULT" = "success" ] && [ "$ROCM_RESULT" = "success" ]; then
+            STATE=success
+          else
+            STATE=failure
+          fi
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state="$STATE" -f context=release-ci \
+            -f description="full release CI (cuda=$CUDA_RESULT rocm=$ROCM_RESULT)" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Posted release-ci=$STATE on $SHA"
