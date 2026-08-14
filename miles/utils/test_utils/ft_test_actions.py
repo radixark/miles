@@ -6,10 +6,10 @@ from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.naming import parse_cell_id
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 if TYPE_CHECKING:
     from miles.ray.train.group import TrainerController
+    from miles.utils.workers.cell_operations.base import BaseCellOperations
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,20 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
 
 
 class FTTestActionControllerExecutor:
-    def __init__(self, *, actions: list[FTTestAction], controller: "TrainerController") -> None:
+    def __init__(
+        self, *, actions: list[FTTestAction], controller: "TrainerController", cell_operations: "BaseCellOperations"
+    ) -> None:
         self._actions = actions
         self._controller = controller
+        self._cell_operations = cell_operations
 
     @staticmethod
-    def from_args(args: object, *, controller: "TrainerController") -> "FTTestActionControllerExecutor":
-        return FTTestActionControllerExecutor(actions=_load_actions(args, _CONTROLLER_ACTIONS), controller=controller)
+    def from_args(
+        args: object, *, controller: "TrainerController", cell_operations: "BaseCellOperations"
+    ) -> "FTTestActionControllerExecutor":
+        return FTTestActionControllerExecutor(
+            actions=_load_actions(args, _CONTROLLER_ACTIONS), controller=controller, cell_operations=cell_operations
+        )
 
     async def run_after_step(self, rollout_id: int) -> None:
         for action in self._actions:
@@ -61,11 +68,11 @@ class FTTestActionControllerExecutor:
                 self._check_action_target(action)
                 logger.info("FT test action: %s cell %s after rollout %d", action.action, action.cell_id, rollout_id)
 
-                worker_manager = RayWorkerManager.get_handle()
+                operations = self._cell_operations
                 if action.action == "stop_cell_at_end":
-                    await worker_manager.stop_cells.remote([action.cell_id])
+                    await operations.suspend(cell_id=action.cell_id)
                 elif action.action == "start_cell_at_end":
-                    await worker_manager.start_cells.remote([action.cell_id])
+                    await operations.resume(cell_id=action.cell_id)
 
     def _check_action_target(self, action: FTTestAction) -> None:
         parsed = parse_cell_id(action.cell_id)

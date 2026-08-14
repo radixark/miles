@@ -19,15 +19,15 @@ class FakeBackendCapability(BackendCapability):
         self.static_provider = static_provider
         self.operations = cell_operations
         self.requested_pool_ids: list[list[str]] = []
-        self.requested_worker_names: list[str] = []
+        self.requested_static_pool_ids: list[str] = []
 
     def dynamic_worker_provider(self, *, pool_ids: Sequence[str]) -> BaseWorkerProvider:
         self.requested_pool_ids.append(list(pool_ids))
         assert self.cells_provider is not None, "this capability was built without a cells provider"
         return self.cells_provider
 
-    def static_worker_provider(self, *, worker_name: str) -> BaseWorkerProvider:
-        self.requested_worker_names.append(worker_name)
+    def static_worker_provider(self, *, pool_id: str) -> BaseWorkerProvider:
+        self.requested_static_pool_ids.append(pool_id)
         assert self.static_provider is not None, "this capability was built without a static provider"
         return self.static_provider
 

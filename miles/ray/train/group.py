@@ -30,10 +30,10 @@ from miles.utils.misc import NodeProbeMixin
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import WireNamespace
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,8 @@ class TrainerController(NodeProbeMixin):
     def __init__(
         self,
         *,
+        cell_provider: BaseWorkerProvider,
+        cell_operations: BaseCellOperations,
         inference_controller: BaseWorkerHandle | None,
         role: str,
         with_ref: bool,
@@ -63,6 +65,8 @@ class TrainerController(NodeProbeMixin):
         self._with_ref = with_ref
         self._with_opd_teacher = with_opd_teacher
         self._pool_id = compute_trainer_pool_id(role)
+        self._provider = cell_provider
+        self._cell_operations = cell_operations
         self._watcher_disposer: StopWatchFn | None = None
 
         self._indep_dp_quorum_id = 0
@@ -135,6 +139,7 @@ class TrainerController(NodeProbeMixin):
             cell_index=cell_index,
             workers_hash=workers_hash,
             health_checker=NoopHealthChecker(),
+            provider=self._provider,
         )
 
         if self._health_checker_config is not None:
@@ -304,10 +309,11 @@ class TrainerController(NodeProbeMixin):
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, controller=self)
+        self._test_action_executor = FTTestActionControllerExecutor.from_args(
+            args, controller=self, cell_operations=self._cell_operations
+        )
 
-        provider: BaseWorkerProvider = RayWorkerProvider.create(pool_ids=[self._pool_id])
-        self._watcher_disposer = await provider.watch_cells(self._reconcile)
+        self._watcher_disposer = await self._provider.watch_cells(self._reconcile)
         await self._wait_expected_num_cells()
 
         cell_results = await asyncio.gather(

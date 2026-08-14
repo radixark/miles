@@ -26,11 +26,17 @@ def _make_meta() -> ServerCellMetadata:
     )
 
 
+class _StubProvider:
+    async def get_addrs(self, worker_name: str):
+        raise AssertionError(f"disposing a cell must not address it ({worker_name=})")
+
+
 def _make_cell(*, router_api_client: MagicMock, **args_overrides: object) -> ServerCell:
     return ServerCell(
         args=make_args(num_gpus_per_node=8, **args_overrides),
         meta=_make_meta(),
         router_api_client=router_api_client,
+        provider=_StubProvider(),
     )
 
 

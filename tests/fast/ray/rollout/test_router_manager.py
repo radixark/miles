@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
@@ -40,17 +39,20 @@ def _make_two_model_args(tmp_path: Path) -> Namespace:
     )
 
 
+_ROUTER_PROVIDER = object()
+
+
 class TestResolveRouterAddrs:
     async def test_records_every_models_router_on_args(self, monkeypatch):
         """The driver-visible router contract (primary ip/port, per-model map) is written exactly once, here."""
         args = make_args(sglang_router_ip=None, sglang_router_port=None, sglang_model_routers=None)
 
-        async def _fake_wait_router_ready(model_idx: int) -> HostAndPort:
+        async def _fake_wait_router_ready(*, model_idx: int, provider) -> HostAndPort:
             return HostAndPort(host="10.0.0.9", port=30000 + model_idx)
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
 
-        router_addrs = await resolve_router_addrs(args)
+        router_addrs = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
 
         assert router_addrs == {"default": HostAndPort(host="10.0.0.9", port=30000)}
         assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.9", 30000)
@@ -61,14 +63,14 @@ class TestResolveRouterAddrs:
         args = make_args(sglang_router_ip=None, sglang_router_port=None, sglang_model_routers=None)
         waited: list[int] = []
 
-        async def _fake_wait_router_ready(model_idx: int) -> HostAndPort:
+        async def _fake_wait_router_ready(*, model_idx: int, provider) -> HostAndPort:
             waited.append(model_idx)
             return HostAndPort(host="10.0.0.9", port=30000 + model_idx)
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
 
-        first = await resolve_router_addrs(args)
-        second = await resolve_router_addrs(args)
+        first = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
+        second = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
 
         assert second == first
         assert waited == [0]
@@ -78,15 +80,19 @@ class TestResolveRouterAddrs:
         args = _make_two_model_args(tmp_path)
         waited: list[int] = []
 
-        async def _fake_wait_router_ready(model_idx: int) -> HostAndPort:
+        providers: list[object] = []
+
+        async def _fake_wait_router_ready(*, model_idx: int, provider) -> HostAndPort:
             waited.append(model_idx)
+            providers.append(provider)
             return HostAndPort(host="10.0.0.9", port=30000 + model_idx)
 
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_router_ready", _fake_wait_router_ready)
 
-        router_addrs = await resolve_router_addrs(args)
+        router_addrs = await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
 
         assert waited == [0, 1]
+        assert providers == [_ROUTER_PROVIDER, _ROUTER_PROVIDER]
         assert router_addrs == {
             "actor": HostAndPort(host="10.0.0.9", port=30000),
             "ref": HostAndPort(host="10.0.0.9", port=30001),
@@ -99,7 +105,7 @@ class TestResolveRouterAddrs:
         args = make_args(sglang_router_ip="10.0.0.1", sglang_router_port=3000, sglang_model_routers=None)
 
         with pytest.raises(AssertionError, match="external router mode was removed"):
-            await resolve_router_addrs(args)
+            await resolve_router_addrs(args, provider=_ROUTER_PROVIDER)
 
 
 class TestWaitRouterReady:
@@ -114,15 +120,11 @@ class TestWaitRouterReady:
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
-        monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
             lambda host, port, timeout: waited.append((host, port)),
         )
 
-        addr = await wait_router_ready(model_idx=1)
+        addr = await wait_router_ready(model_idx=1, provider=_FakeProvider())
 
         assert requested == ["inference-router-1-0-0"]
         assert waited == [("10.0.0.9", 12345)]
@@ -189,7 +191,7 @@ class TestWaitSessionServerReady:
         )
 
         args = make_args(use_session_server=False)
-        await wait_session_server_ready(args)
+        await wait_session_server_ready(args, provider=None)
 
         assert created == []
         assert not hasattr(args, "session_server_addrs")
@@ -199,7 +201,7 @@ class TestWaitSessionServerReady:
         """Enabling the session server without a tokenizer source fails fast."""
         args = make_args(use_session_server=True, hf_checkpoint=None)
         with pytest.raises(ValueError, match="hf-checkpoint"):
-            await wait_session_server_ready(args)
+            await wait_session_server_ready(args, provider=None)
 
     async def test_publishes_the_manager_addrs_and_instance_ids(self, monkeypatch):
         """The driver-side contract (ip, ports, instance ids) comes from the worker manager addrs."""
@@ -212,10 +214,6 @@ class TestWaitSessionServerReady:
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
-        monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
             lambda host, port, timeout: waited.append((host, port)),
         )
@@ -226,7 +224,7 @@ class TestWaitSessionServerReady:
             num_session_servers=2,
             run_uuid="00112233445566aa",
         )
-        await wait_session_server_ready(args)
+        await wait_session_server_ready(args, provider=_FakeProvider())
 
         assert requested == ["session-server-0-0", "session-server-1-0"]
         assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
@@ -250,10 +248,6 @@ class TestWaitSessionServerReady:
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
-        monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready",
             lambda host, port, timeout: waited.append((host, port)),
         )
@@ -264,7 +258,7 @@ class TestWaitSessionServerReady:
             num_session_servers=2,
             run_uuid="00112233445566aa",
         )
-        await wait_session_server_ready(args)
+        await wait_session_server_ready(args, provider=_FakeProvider())
 
         assert args.session_server_addrs == ["10.0.0.1:5005", "10.0.0.2:5005"]
         assert args.session_server_instance_ids == {
