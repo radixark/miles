@@ -32,6 +32,7 @@
         "run-ci-miles-plugin",
         "run-ci-model-scripts",
         "run-ci-mooncake",
+        "run-ci-multi-policy",
         "run-ci-precision",
         "run-ci-qwen35",
         "run-ci-replay",

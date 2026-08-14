@@ -19,6 +19,7 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
+from miles.utils.external_utils.model_args_utils import load_model_args
 
 
 def _write_yaml(data: dict, tmp_path) -> str:
@@ -758,3 +759,23 @@ class TestBaseArgumentsAreNotMutated:
         model.train_env_vars["NCCL_DEBUG"] = "INFO"
 
         assert args.train_env_vars == {"NCCL_DEBUG": "WARN"}
+
+
+class TestPerPolicyArgsCoverage:
+    @pytest.mark.parametrize("model_type", ["qwen2.5-0.5B", "qwen3-0.6B"])
+    def test_the_whitelist_admits_every_argument_of_a_model_script(self, model_type):
+        """A policy that cannot override one of its own architecture arguments would train another model's shape."""
+        options = get_megatron_arg_parser()._option_string_actions
+        flags = [token for token in load_model_args(model_type).split() if token.startswith("--")]
+        unknown = [flag for flag in flags if flag not in options]
+        assert not unknown, f"{model_type} passes {unknown}, which the megatron parser does not declare"
+
+        assert {options[flag].dest for flag in flags} <= PER_POLICY_ARGS
+
+    def test_the_whitelist_names_arguments_the_parser_actually_produces(self):
+        """The override keys are compared against this set and then looked up by the same name in the
+        parser, so a flag spelled the way it appears on a command line admits nothing at all: a config
+        carrying the argument's real name is refused, and the name in the set can never be reached."""
+        parsed = {action.dest for action in get_megatron_arg_parser()._actions}
+
+        assert PER_POLICY_ARGS <= parsed
