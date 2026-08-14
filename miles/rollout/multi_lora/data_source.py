@@ -20,7 +20,7 @@ MAX_RECONCILE_WORKERS = 16
 
 
 async def fetch_snapshot() -> dict:
-    return await get_multi_lora_controller().snapshot.remote()
+    return await get_multi_lora_controller().snapshot()
 
 
 def sampleable(snapshot: dict) -> dict[str, AdapterRun]:
@@ -51,7 +51,7 @@ class MultiLoRAAsyncDataSource(DataSource):
                 logger.info(f"Created data source for adapter '{name}'")
                 # Post-filter dataset length; the controller derives num_step
                 # from num_epoch for adapters that didn't set it.
-                await get_multi_lora_controller().resolve_num_step.remote(name, len(source.dataset))
+                await get_multi_lora_controller().resolve_num_step(name, len(source.dataset))
         self.update_queue(set(adapters))
 
     def create_source(self, adapter: AdapterRun) -> RolloutDataSource:
