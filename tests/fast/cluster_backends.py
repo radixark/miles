@@ -7,9 +7,20 @@ from dataclasses import dataclass
 
 import pytest
 
+from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.workers.types import ClusterBackend
 
 NAMESPACE_ENV_VAR = "MILES_TEST_K8S_NAMESPACE"
+
+KUBECTL_TIMEOUT_SECONDS: float = 60.0
+
+LEADER_WORKER_SET_API_PATH: str = "/apis/leaderworkerset.x-k8s.io/v1"
+
+REQUIRED_NAMESPACED_PERMISSIONS: tuple[tuple[str, str], ...] = (
+    ("list", "pods"),
+    ("delete", "pods"),
+    ("list", "leaderworkersets.leaderworkerset.x-k8s.io"),
+)
 
 
 @dataclass(frozen=True)
@@ -19,25 +30,34 @@ class BackendAvailability:
 
 
 def kubernetes_availability() -> BackendAvailability:
-    if shutil.which("kubectl") is None:
-        return BackendAvailability(False, "kubectl is not installed, so no cluster can be reached")
-    if shutil.which("helm") is None:
-        return BackendAvailability(False, "helm is not installed, and a run is installed as a release")
-    if not (namespace := os.environ.get(NAMESPACE_ENV_VAR)):
+    return kubernetes_availability_of_namespace(
+        os.environ.get(NAMESPACE_ENV_VAR, ""), namespace_source=NAMESPACE_ENV_VAR
+    )
+
+
+def kubernetes_availability_of_namespace(namespace: str, *, namespace_source: str) -> BackendAvailability:
+    for tool, why in (("kubectl", "so no cluster can be reached"), ("helm", "and a run is installed as a release")):
+        if shutil.which(tool) is None:
+            return BackendAvailability(False, f"{tool} is not installed, {why}")
+
+    if not namespace:
         return BackendAvailability(
             False,
-            f"set {NAMESPACE_ENV_VAR} to a namespace of your own; see docs/advanced/cluster-backend.md",
+            f"set {namespace_source} to a namespace of your own; see docs/advanced/cluster-backend.md",
         )
 
-    reachable = subprocess.run(["kubectl", "get", "--raw", "/version"], capture_output=True, text=True)
+    reachable = _run_kubectl(["get", "--raw", "/version"])
     if reachable.returncode != 0:
         return BackendAvailability(False, f"the cluster refused the credentials: {reachable.stderr.strip()[:200]}")
 
-    crd = subprocess.run(
-        ["kubectl", "get", "crd", "leaderworkersets.leaderworkerset.x-k8s.io"], capture_output=True, text=True
-    )
-    if crd.returncode != 0:
-        return BackendAvailability(False, "LeaderWorkerSet is not installed; an admin has to add it")
+    served = _run_kubectl(["get", "--raw", LEADER_WORKER_SET_API_PATH])
+    if served.returncode != 0:
+        return BackendAvailability(False, "LeaderWorkerSet is not served by this cluster; an admin has to add it")
+
+    for verb, resource in REQUIRED_NAMESPACED_PERMISSIONS:
+        allowed = _run_kubectl(["auth", "can-i", verb, resource, "--namespace", namespace])
+        if allowed.stdout.strip() != "yes":
+            return BackendAvailability(False, f"this account may not {verb} {resource} in namespace {namespace}")
 
     return BackendAvailability(True, f"using namespace {namespace}")
 
@@ -48,6 +68,10 @@ def ray_availability() -> BackendAvailability:
     except ImportError:
         return BackendAvailability(False, "ray is not installed")
     return BackendAvailability(True, "ray is importable")
+
+
+def _run_kubectl(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return run_process(["kubectl", *args], capture_output=True, check=False, timeout=KUBECTL_TIMEOUT_SECONDS)
 
 
 _AVAILABILITY = {

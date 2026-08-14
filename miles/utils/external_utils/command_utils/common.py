@@ -274,10 +274,10 @@ def run_shell_command(cmd: str, capture_output: bool = False) -> str | None:
 
 
 def run_process(
-    argv: list[str], *, capture_output: bool, check: bool, input: str | None = None
+    argv: list[str], *, capture_output: bool, check: bool, input: str | None = None, timeout: float | None = None
 ) -> subprocess.CompletedProcess[str]:
     logger.info(f"EXEC: {shlex.join(argv)}")
-    return subprocess.run(argv, check=check, capture_output=capture_output, text=True, input=input)
+    return subprocess.run(argv, check=check, capture_output=capture_output, text=True, input=input, timeout=timeout)
 
 
 def substitute_placeholders(cmd: str, *, node_rank: str, nnodes: str, master_addr: str, node_ip: str) -> str:
