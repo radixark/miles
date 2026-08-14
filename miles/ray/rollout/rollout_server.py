@@ -10,6 +10,7 @@ from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.router_manager import start_router
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
+from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
 
         for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
             group.mark_alive(engine_indices=new_engine_indices)
+            async_utils.run(group.register_workers(new_engine_indices))
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,

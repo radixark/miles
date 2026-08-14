@@ -81,7 +81,7 @@ class TestStartEnginesRealActors:
             init_kwargs = ray.get(e.actor_handle.get_init_kwargs.remote())
             assert init_kwargs["host"] == "127.0.0.1"
             assert init_kwargs["port"] == mock_engine_http_servers.for_rank(i).port
-            assert e.server_url == mock_engine_http_servers.for_rank(i).url
+            assert e.addr_info.server_url == mock_engine_http_servers.for_rank(i).url
 
         # Cleanup: kill the actors we created.
         for e in group.all_engines:
