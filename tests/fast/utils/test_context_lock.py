@@ -1,8 +1,10 @@
 import asyncio
 import dataclasses
+import logging
 
 import pytest
 
+from miles.utils import context_lock
 from miles.utils.context_lock import (
     ContextLock,
     acquires_lock,
@@ -305,6 +307,115 @@ async def _read_held(lock: ContextLock) -> bool:
 async def _reattach_and_release(lock: ContextLock) -> None:
     lock.reattach()
     lock.release()
+
+
+async def _acquire_and_report_held(lock: ContextLock) -> bool:
+    await lock.acquire()
+    return lock.held_in_current_context
+
+
+async def _cancel(task: asyncio.Task) -> None:
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+def _reminder_messages(caplog) -> list[str]:
+    return [record.message for record in caplog.records if record.message.startswith("Still waiting for lock")]
+
+
+class TestWaitReminder:
+    @pytest.fixture
+    def fast_reminder(self, monkeypatch):
+        monkeypatch.setattr(context_lock, "WAIT_LOG_INTERVAL_SECONDS", 0.01)
+
+    @pytest.mark.asyncio
+    async def test_a_blocked_acquirer_reminds_repeatedly(self, fast_reminder, caplog):
+        """A caller stuck on the lock keeps reporting that it is still waiting."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.08)
+        await _cancel(waiter)
+        await holder.finish()
+
+        assert len(_reminder_messages(caplog)) >= 2
+
+    @pytest.mark.asyncio
+    async def test_the_reminder_names_the_lock_and_the_elapsed_time(self, fast_reminder, caplog):
+        """The operator needs to know which lock is stuck and for how long."""
+        lock = ContextLock("stuck-lock")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.05)
+        await _cancel(waiter)
+        await holder.finish()
+
+        messages = _reminder_messages(caplog)
+        assert messages
+        assert all(message.startswith("Still waiting for lock 'stuck-lock' after ") for message in messages)
+        assert all(message.endswith("s") for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_an_uncontended_acquire_reminds_nothing(self, fast_reminder, caplog):
+        """The reminder must only fire while actually blocked."""
+        lock = ContextLock("test")
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await lock.acquire()
+            await asyncio.sleep(0.05)
+            lock.release()
+
+        assert _reminder_messages(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_the_reminder_stops_once_the_lock_is_acquired(self, fast_reminder, caplog):
+        """No reminder may keep firing after the caller got in."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+        waiter = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0.03)
+        await holder.finish()
+        await waiter
+
+        with caplog.at_level(logging.INFO, logger="miles.utils.context_lock"):
+            await asyncio.sleep(0.05)
+
+        assert _reminder_messages(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_that_eventually_wins_acquires_normally(self, fast_reminder):
+        """Reminding must not interfere with the acquisition itself."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(_acquire_and_report_held(lock))
+        await asyncio.sleep(0.05)
+        await holder.finish()
+
+        assert await waiter is True
+        assert lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_waiter_leaves_the_lock_untouched(self, fast_reminder):
+        """Giving up on the lock must neither mark it held nor steal it."""
+        lock = ContextLock("test")
+        holder = _HolderTask(lock)
+        await holder.start()
+
+        waiter = asyncio.create_task(lock.acquire())
+        await asyncio.sleep(0.03)
+        await _cancel(waiter)
+        await holder.finish()
+
+        assert not lock.locked
 
 
 class TestDetachAndReattach:
