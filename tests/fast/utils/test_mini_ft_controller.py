@@ -10,6 +10,11 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from miles.utils.arguments import (
+    _DEFAULT_FT_API_SERVER_PORT,
+    _resolve_api_server_port,
+    _resolve_mini_ft_controller_enable,
+)
 from miles.utils.ft_utils import mini_ft_controller
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.ft_utils.mini_ft_controller import (
@@ -649,26 +654,40 @@ class TestRunnerPatchCell:
         assert body == {"spec": {"suspend": False}}
 
 
-class TestArgumentValidation:
-    def test_requires_api_server_port(self) -> None:
-        """mini_ft_controller_enable=True + api_server_port=0 → error."""
-        from miles.utils.arguments import miles_validate_args
-
+class TestFtControllerDefaults:
+    @staticmethod
+    def _resolve(**overrides) -> tuple[int, bool]:
         args = argparse.Namespace(
-            mini_ft_controller_enable=True,
-            api_server_port=0,
-            use_fault_tolerance=False,
-            ft_components=None,
-            eval_datasets=None,
-            eval_data=None,
-            eval_config=None,
-            eval_prompt_data=None,
-            use_miles_dashboard=False,
-            run_uuid=None,
+            **{
+                "api_server_port": None,
+                "mini_ft_controller_enable": None,
+                "ft_components": [],
+                **overrides,
+            }
         )
+        args.api_server_port = _resolve_api_server_port(args)
+        return args.api_server_port, _resolve_mini_ft_controller_enable(args)
 
-        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --api-server-port"):
-            miles_validate_args(args)
+    def test_asking_for_fault_tolerance_opens_the_port_and_starts_the_healing_loop(self) -> None:
+        """The health checkers only publish a status; without both of these a run watches an
+        engine die and leaves it routed."""
+        assert self._resolve(ft_components=["rollout"]) == (_DEFAULT_FT_API_SERVER_PORT, True)
+
+    def test_a_run_without_fault_tolerance_opens_no_port_and_starts_no_loop(self) -> None:
+        """There is nothing to heal, so the port would be surface area for nobody."""
+        assert self._resolve(ft_components=[]) == (0, False)
+
+    def test_an_explicitly_disabled_port_also_disables_the_healing_loop(self) -> None:
+        """The loop drives cells over that port, so leaving it on would fail every poll."""
+        assert self._resolve(ft_components=["rollout"], api_server_port=0) == (0, False)
+
+    def test_an_explicit_port_is_kept_as_given(self) -> None:
+        """A run that pins the port has an external controller expecting to find it there."""
+        assert self._resolve(ft_components=["rollout"], api_server_port=9999) == (9999, True)
+
+    def test_an_explicit_healing_choice_wins_over_the_default(self) -> None:
+        """The flag is how a run opts out of healing while keeping the health reporting."""
+        assert self._resolve(ft_components=["rollout"], mini_ft_controller_enable=False)[1] is False
 
 
 class _FakeRunner:
