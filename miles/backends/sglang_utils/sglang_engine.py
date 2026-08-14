@@ -61,7 +61,7 @@ class EngineLaunchPlan:
 def compute_engine_launch_plan(
     args,
     *,
-    rank: int,
+    node_rank: int,
     worker_type: str,
     base_gpu_id: int,
     sglang_overrides: dict,
@@ -70,7 +70,7 @@ def compute_engine_launch_plan(
 ) -> EngineLaunchPlan:
     server_args_dict = _compute_server_args(
         args,
-        rank=rank,
+        node_rank=node_rank,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
         host=addr_and_ports["host"],
@@ -91,7 +91,7 @@ def compute_engine_launch_plan(
 def _compute_server_args(
     args,
     *,
-    rank,
+    node_rank: int,
     dist_init_addr,
     nccl_port,
     host,
@@ -105,7 +105,6 @@ def _compute_server_args(
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
-    node_rank = rank % nnodes
     base = _to_local_gpu_id(base_gpu_id)
     kwargs = {
         "model_path": args.hf_checkpoint,
