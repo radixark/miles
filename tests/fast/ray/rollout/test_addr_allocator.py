@@ -252,15 +252,14 @@ class TestConcurrentNodeProbes:
             engine = fake_engine(host=f"10.0.0.{index + 1}", port_seed=0)
             engine.__class__ = ray.actor.ActorHandle
             engine.init.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
-            alloc = engine._get_current_node_ip_and_free_port.remote.side_effect
 
             async def _probe():
                 events.append(("enter", index))
                 await asyncio.sleep(0.05)
                 events.append(("exit", index))
-                return alloc(start_port=15000, consecutive=1)
+                return f"10.0.0.{index + 1}"
 
-            engine._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: alloc(**kw) if kw else _probe()
+            engine._get_node_ip.remote.side_effect = _probe
             return engine
 
         actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
