@@ -1,10 +1,16 @@
+import asyncio
+import json
 import logging
 import socket
+import subprocess
+import sys
 from contextlib import ExitStack
+from dataclasses import dataclass
 
 import pytest
 
-from miles.utils.misc import NodeProbeMixin, filter_keys, get_free_port
+from miles.utils.env_report import ENV_REPORT_PREFIX
+from miles.utils.misc import NodeProbeMixin, SimpleTicker, filter_keys, get_free_port, get_gpu_uuids
 
 
 class TestFilterKeys:
@@ -41,6 +47,73 @@ class TestFilterKeys:
         assert any("filter_keys" in record.message for record in caplog.records)
 
 
+@dataclass(frozen=True)
+class _FakeGpuHandle:
+    index: int
+
+
+@dataclass(frozen=True)
+class _FakeNvmlUuid:
+    text: str
+
+    def __str__(self) -> str:
+        return self.text
+
+
+class _FakeNvml:
+    def __init__(
+        self,
+        *,
+        uuid_by_index: dict[int, str],
+        init_error: Exception | None = None,
+        uuid_error_indices: frozenset[int] = frozenset(),
+    ) -> None:
+        self._uuid_by_index = uuid_by_index
+        self._init_error = init_error
+        self._uuid_error_indices = uuid_error_indices
+
+    def nvmlInit(self) -> None:
+        if self._init_error is not None:
+            raise self._init_error
+
+    def nvmlDeviceGetHandleByIndex(self, index: int) -> _FakeGpuHandle:
+        return _FakeGpuHandle(index=index)
+
+    def nvmlDeviceGetUUID(self, handle: _FakeGpuHandle) -> _FakeNvmlUuid:
+        if handle.index in self._uuid_error_indices:
+            raise RuntimeError(f"nvml uuid lookup failed for {handle.index}")
+        return _FakeNvmlUuid(text=self._uuid_by_index[handle.index])
+
+
+class TestGetGpuUuids:
+    def test_get_gpu_uuids_returns_requested_nvml_uuids_in_order(self, monkeypatch) -> None:
+        """Each requested gpu index is resolved through NVML, coerced to str, and answered in request order."""
+        fake_nvml = _FakeNvml(uuid_by_index={0: "GPU-zero", 1: "GPU-one", 2: "GPU-two"})
+        monkeypatch.setitem(sys.modules, "pynvml", fake_nvml)
+
+        uuids = get_gpu_uuids([2, 0])
+
+        assert uuids == ["GPU-two", "GPU-zero"]
+        assert all(isinstance(uuid, str) for uuid in uuids)
+
+    def test_get_gpu_uuids_returns_none_per_gpu_when_nvml_fails(self, monkeypatch) -> None:
+        """A failing NVML init is swallowed and answered with exactly one None per requested gpu."""
+        fake_nvml = _FakeNvml(uuid_by_index={}, init_error=RuntimeError("nvml unavailable"))
+        monkeypatch.setitem(sys.modules, "pynvml", fake_nvml)
+
+        assert get_gpu_uuids([0, 1, 3]) == [None, None, None]
+
+    def test_get_gpu_uuids_returns_all_none_when_one_lookup_fails(self, monkeypatch) -> None:
+        """A single failing uuid lookup yields all-None rather than a partial or short list."""
+        fake_nvml = _FakeNvml(
+            uuid_by_index={0: "GPU-zero", 1: "GPU-one"},
+            uuid_error_indices=frozenset({1}),
+        )
+        monkeypatch.setitem(sys.modules, "pynvml", fake_nvml)
+
+        assert get_gpu_uuids([0, 1]) == [None, None]
+
+
 class TestNodeProbeMixin:
     def test_get_node_ip_returns_nonempty_string(self):
         """The node ip probe answers with a usable address string."""
@@ -68,3 +141,69 @@ class TestNodeProbeMixin:
         uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
         assert len(uuids) == 3
         assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)
+
+    def test_collect_env_report_forwards_probe_context(self, monkeypatch, capsys) -> None:
+        """Role, rank and the launcher's partial report all reach the printed env report."""
+
+        def _failing_pip_inspect(*args, **kwargs) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(args=["pip", "inspect"], returncode=1, stdout="", stderr="no pip")
+
+        monkeypatch.setattr("miles.utils.env_report.subprocess.run", _failing_pip_inspect)
+
+        NodeProbeMixin._collect_env_report(role="rollout", rank=7, partial_env_report='{"flavor": "probe"}')
+
+        lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith(ENV_REPORT_PREFIX)]
+        assert len(lines) == 1
+        parsed = json.loads(lines[0].removeprefix(ENV_REPORT_PREFIX))
+        assert parsed["role"] == "rollout"
+        assert parsed["rank"] == 7
+        assert parsed["launcher_env_report"] == {"flavor": "probe"}
+
+
+async def _append(calls: list[int]) -> None:
+    calls.append(1)
+
+
+class TestSimpleTicker:
+    async def test_it_keeps_calling_its_function(self):
+        """The ticked work only makes progress while the loop keeps coming back."""
+        calls: list[int] = []
+
+        ticker = SimpleTicker(lambda: _append(calls), interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+
+        assert len(calls) > 1
+
+    async def test_it_survives_a_failing_call(self):
+        """A raising sweep must not silently kill the loop for every later round."""
+        calls: list[int] = []
+
+        async def _boom() -> None:
+            calls.append(1)
+            raise RuntimeError("tick exploded")
+
+        ticker = SimpleTicker(_boom, interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+
+        assert len(calls) > 1
+
+    async def test_dispose_stops_the_loop(self):
+        """A surviving loop would keep working after its owner is gone."""
+        calls: list[int] = []
+
+        ticker = SimpleTicker(lambda: _append(calls), interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+        calls_after_dispose = len(calls)
+        await asyncio.sleep(0.02)
+
+        assert len(calls) == calls_after_dispose
+
+    async def test_disposing_twice_is_harmless(self):
+        """Teardown paths overlap, so a second dispose must not raise."""
+        ticker = SimpleTicker(lambda: _append([]), interval_seconds=0.0)
+
+        await ticker.dispose()
+        await ticker.dispose()
