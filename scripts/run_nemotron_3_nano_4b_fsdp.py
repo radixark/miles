@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 HF_REPO = "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16"
 MODEL_NAME = "NVIDIA-Nemotron-3-Nano-4B-BF16"
@@ -24,7 +24,7 @@ WANDB_GROUP = "nemotron-3-nano-4B-fsdp-dapo4k"
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_gpus_per_node: int = 4
     num_rollout: int = 100
     data_dir: str = "/root"
@@ -49,6 +49,7 @@ def _strip_remote_code(model_path: str):
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir}")
     U.exec_command_cpu(f"hf download {HF_REPO} --local-dir {args.model_dir}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -57,6 +58,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     model_path = f"{args.model_dir}/{MODEL_NAME}"
 
     ckpt_args = f"--hf-checkpoint {model_path} " f"--ref-load {model_path} "
@@ -148,13 +150,12 @@ def execute(args: ScriptArgs):
             f"{misc_args} "
             f"{args.extra_args} "
         ),
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=None,
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     prepare(args)
     execute(args)

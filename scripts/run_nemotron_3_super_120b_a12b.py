@@ -34,14 +34,14 @@ from dataclasses import dataclass
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     head_ip: str = "127.0.0.1"
     model_name: str = "NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
     megatron_model_type: str = "nemotron-3-super-120b-a12b"
@@ -55,6 +55,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _wait_for_head_port(head_ip: str) -> None:
+    U = head_ip.create_backend()
     for _ in range(60):
         # exec_command_cpu raises on a non-zero exit, so the probe reports through stdout.
         if U.exec_command_cpu(f"nc -z {head_ip} 6379 2>/dev/null; echo $?", capture_output=True).strip() == "0":
@@ -65,6 +66,7 @@ def _wait_for_head_port(head_ip: str) -> None:
 
 def _wait_for_ray_gpus(expected_gpus: int) -> None:
     """The head reports only its own 8 GPUs until the worker joins, and a job submitted then gets one node."""
+    U = expected_gpus.create_backend()
     for _ in range(120):
         if f"{expected_gpus}.0 GPU" in U.exec_command_cpu("ray status 2>/dev/null || true", capture_output=True):
             print(f"[ray] cluster ready: {expected_gpus} GPUs")
@@ -75,6 +77,7 @@ def _wait_for_ray_gpus(expected_gpus: int) -> None:
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     total_gpus = args.num_nodes * args.num_gpus_per_node
     hf_checkpoint = f"{args.model_dir}/{args.model_name}"
 
@@ -169,7 +172,7 @@ def _execute_train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{misc_args} "
@@ -187,7 +190,7 @@ def _execute_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Head role: start the ray head, wait for both nodes' GPUs, submit the job."""
     # execute_train reads MASTER_ADDR for the ray head's node ip and for the torch
@@ -197,10 +200,11 @@ def train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def worker(args: ScriptArgs):
     """Worker role: join the head's ray cluster and block."""
     # A re-run inherits the previous run's agents, and ray refuses to join with them alive.
+    U = args.create_backend()
     U.exec_command_cpu("pkill -9 sglang; sleep 3; ray stop --force; pkill -9 ray; pkill -9 miles; sleep 3; true; ")
     _wait_for_head_port(args.head_ip)
     U.exec_command_cpu(

@@ -15,15 +15,15 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = "google"
     model_name: str = "gemma-4-26B-A4B-it"
     megatron_model_type: str = "gemma-4-26b-a4b-it"
@@ -42,6 +42,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     U.exec_command_cpu(
         f"hf download {args.model_org}/{args.model_name} --local-dir {args.model_dir}/{args.model_name}"
@@ -52,6 +53,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _execute_train(args: ScriptArgs):
+    U = args.create_backend()
     ckpt = f"{args.model_dir}/{args.model_name}"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
     ckpt_args = (
@@ -157,7 +159,7 @@ def _execute_train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -167,7 +169,6 @@ def _execute_train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
@@ -175,7 +176,7 @@ def _execute_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Download model/data, then train."""
     _prepare_download(args)
@@ -183,14 +184,14 @@ def full_train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download model and data."""
     _prepare_download(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training only (assumes data is prepared)."""
     _execute_train(args)

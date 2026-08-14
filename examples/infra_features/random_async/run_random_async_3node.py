@@ -4,13 +4,13 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_name: str = "Qwen3.5-35B-A3B"
     megatron_model_type: str = "qwen3.5-35B-A3B"
     num_gpus_per_node: int = 8
@@ -26,6 +26,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir}")
     U.exec_command_cpu(
         f'test "$(cat {args.model_dir}/{args.model_name}_torch_dist/latest_checkpointed_iteration.txt 2>/dev/null)" = release || '
@@ -47,6 +48,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     if args.pause_generation_mode == "in_place" and args.update_weight_transfer_mode == "p2p":
         raise ValueError(
             "in_place + p2p is not supported: P2P transfer engine conflicts with "
@@ -160,7 +162,7 @@ def execute(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{runtime_args} "
         f"{sglang_args} "
@@ -174,7 +176,6 @@ def execute(args: ScriptArgs):
         megatron_model_type=args.megatron_model_type,
         train_script="train_async.py",
         megatron_path=args.megatron_path,
-        config=args,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
             "RANDOM_ASYNC_MAX_CONTEXT_TOKENS": "60000",
@@ -186,7 +187,7 @@ def execute(args: ScriptArgs):
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     if not args.skip_prepare:
         prepare(args)

@@ -1,0 +1,111 @@
+### 0
+helm dependency build <REPO_ROOT>/charts/miles-run
+
+### 1
+kubectl delete job miles-run-260101-000000-000-uninstall --namespace rl --ignore-not-found
+
+### 2
+helm upgrade --install miles-run-260101-000000-000 <REPO_ROOT>/charts/miles-run --namespace rl --values <SANDBOX>/infra.yaml --values <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/values/values-260101-000000-000001.yaml
+
+### pseudo file 1
+run:
+  env:
+    CUDA_DEVICE_MAX_CONNECTIONS: '1'
+    PYTHONUNBUFFERED: '1'
+  stateFile: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state
+  id: 260101-000000-000
+  inferenceEngines:
+  - command:
+    - python
+    - -m
+    - sglang.launch_server
+    - --node-rank
+    - $(LWS_WORKER_INDEX)
+    - --dist-init-addr
+    - $(LWS_LEADER_ADDRESS):9000
+    env:
+      NVSHMEM_DISABLE_NCCL: '1'
+    meta:
+      gpu_ids: 0,1,2,3,4,5,6,7
+    name: inference-engine-0-0
+    objectName: miles-run-260101-000000-000-inference-engine-0-0
+    ports:
+    - name: primary
+      port: 8000
+    - name: dist-init
+      port: 9000
+    replicas: 2
+    resources:
+      limits:
+        nvidia.com/gpu: 8
+    size: 2
+    poolId: inference-engine-0-0
+  objectNames:
+    colocatePairing: miles-run-260101-000000-000-colocate-pairing
+    mooncakeMaster: miles-run-260101-000000-000-mooncake-master
+    orchestrator: miles-run-260101-000000-000-orchestrator
+    uninstall: miles-run-260101-000000-000-uninstall
+    uninstallManifest: miles-run-260101-000000-000-uninstall-manifest
+  orchestrator:
+    command:
+    - python
+    - /repo/train.py
+    - --rollout-num-gpus
+    - '8'
+    - --cluster-backend
+    - kubernetes
+    - --run-uuid
+    - f52ecf8e9d7d4889
+  staticWorkers:
+  - command:
+    - python
+    - -m
+    - sglang_router.launch_router
+    - --host
+    - 0.0.0.0
+    - --port
+    - '30000'
+    name: inference-router-0
+    objectName: miles-run-260101-000000-000-inference-router-0
+    ports:
+    - name: primary
+      port: 30000
+    replicas: 1
+    poolId: inference-router-0
+  trainerEngines:
+  - command:
+    - <PYTHON>
+    - -m
+    - miles.utils.workers.process_supervisor
+    - --num-subprocesses
+    - '8'
+    - --
+    - <PYTHON>
+    - -m
+    - miles.utils.workers.serving.serve
+    - --specs
+    - miles.ray.specs.entrypoint.compute_specs_from_argv
+    - --pool-id
+    - trainer-engine-actor
+    - --
+    - --rollout-num-gpus
+    - '8'
+    - --cluster-backend
+    - kubernetes
+    - --run-uuid
+    - f52ecf8e9d7d4889
+    meta:
+      gpu_ids: 0,1,2,3,4,5,6,7
+    name: trainer-engine-actor
+    objectName: miles-run-260101-000000-000-trainer-engine-actor
+    ports:
+    - name: master
+      port: 9000
+    - name: rpc
+      port: 8000
+    replicas: 2
+    resources:
+      limits:
+        nvidia.com/gpu: 8
+    poolId: trainer-engine-actor
+

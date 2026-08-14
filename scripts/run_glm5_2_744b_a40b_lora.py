@@ -49,7 +49,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -70,8 +70,8 @@ _DEFAULT_TARGET_MODULES = (
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
-    run_id: str = U.create_run_id()
+class ScriptArgs(command_utils.ExecuteTrainConfig):
+    run_id: str = command_utils.create_run_id()
     model_name: Literal[
         "GLM-5.2",
         "GLM-5.2_5layer",
@@ -164,6 +164,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _download_dataset(args: ScriptArgs):
+    U = args.create_backend()
     match args.task:
         case "gsm8k":
             U.hf_download_dataset("zhuzilin/gsm8k", data_dir=args.data_dir)
@@ -172,6 +173,7 @@ def _download_dataset(args: ScriptArgs):
 
 
 def _prepare_download(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.data_dir} {args.model_dir}")
     repo = _HF_REPO.get(args.model_name)
     if repo is not None:
@@ -180,6 +182,7 @@ def _prepare_download(args: ScriptArgs):
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     print(
         f"[run] GLM-5.2 LoRA: model={args.model_name} (megatron_model_type={args.megatron_model_type}), dsa-backend={args.dsa_attention_backend}, r3={args.use_r3}, {args.num_gpus_per_node} GPUs, rollout tp={args.rollout_num_gpus_per_engine}"
     )
@@ -295,7 +298,7 @@ def _train(args: ScriptArgs):
 
     misc_args = f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --calculate-per-token-loss --actor-num-nodes 1 --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} --colocate "
 
-    wandb_args = U.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
+    wandb_args = command_utils.get_default_wandb_args(__file__, run_id=args.run_id) if args.enable_wandb else ""
 
     seq_args = (
         f"--seq-length {args.seq_window} --rollout-max-context-len {args.seq_window} " if args.seq_window > 0 else ""
@@ -305,7 +308,6 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
@@ -320,21 +322,21 @@ def _train(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare(args: ScriptArgs):
     """Download the model checkpoint (for a known HF repo) and the task dataset (gsm8k or dapo-math). Run once per node before training."""
     _prepare_download(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run GRPO LoRA training (assumes the dataset is already prepared)."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     """Download the model checkpoint + dataset, then run GRPO LoRA training."""
     _prepare_download(args)

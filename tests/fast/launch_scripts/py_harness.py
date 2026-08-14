@@ -11,10 +11,9 @@ from pathlib import Path
 from types import ModuleType
 
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, sanitize
-from tests.fast.utils.command_recorder import record_commands
+from tests.fast.utils.command_recorder import patch_helper, record_commands
 
-import miles.utils.external_utils.command_utils as command_utils
-from miles.utils.external_utils.model_args_utils import import_module_from_path
+from miles.utils.external_utils.model_args_utils import _import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
 
@@ -119,15 +118,15 @@ def install_command_recorder(monkeypatch) -> Recording:
         recording.pseudo_files.append(text)
         return f"base64:<frozen-pseudo-file-{len(recording.pseudo_files)}>"
 
-    monkeypatch.setattr(command_utils, "create_run_id", lambda: FROZEN_RUN_ID)
-    monkeypatch.setattr(command_utils, "encode_pseudo_file", fake_encode_pseudo_file)
+    patch_helper(monkeypatch, "create_run_id", lambda: FROZEN_RUN_ID)
+    patch_helper(monkeypatch, "encode_pseudo_file", fake_encode_pseudo_file)
 
     return recording
 
 
 def import_launch_script(path: Path) -> ModuleType:
     name = "miles_launch_script_" + path.relative_to(REPO_ROOT).with_suffix("").as_posix().replace("/", "_")
-    return import_module_from_path(path, name)
+    return _import_module_from_path(path, name)
 
 
 @contextmanager

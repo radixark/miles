@@ -9,7 +9,7 @@ import pytest
 import torch
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=900, suite="stage-c-2-gpu-h200", labels=["long"])
 
@@ -20,14 +20,15 @@ MODEL_DIR = Path(os.environ.get("MILES_E2E_MODEL_DIR", "/root/models"))
 MEGATRON_PATH = Path(os.environ.get("MILES_E2E_MEGATRON_PATH", "/root/Megatron-LM"))
 RUN_DIR = Path(os.environ.get("MILES_E2E_RUN_DIR", "/tmp/miles-verifiers-e2e"))
 VERIFIERS_DIR = Path("/tmp/verifiers-v0.2.0")
-ADAPTER_DIR = Path(U.repo_base_dir) / "examples" / "experimental" / "verifiers"
+ADAPTER_DIR = Path(command_utils.repo_base_dir) / "examples" / "experimental" / "verifiers"
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {RUN_DIR}")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.exec_command_cpu(
-        f"{sys.executable} -m pip install -r {U.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
+        f"{sys.executable} -m pip install -r {command_utils.repo_base_dir}/examples/experimental/verifiers/requirements.txt"
     )
     U.exec_command_cpu("uv tool install 'prime==0.6.19'")
     if not VERIFIERS_DIR.exists():
@@ -52,6 +53,7 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     config_path = RUN_DIR / "code-golf.toml"
     config_path.write_text('[taskset]\nid = "code-golf-v1"\n')
     dump_dir = RUN_DIR / "dump"
@@ -95,7 +97,7 @@ def execute():
             f"--actor-num-gpus-per-node {NUM_GPUS}",
             "--colocate",
             f"--dump-details {dump_dir}",
-            U.get_default_wandb_args(__file__),
+            command_utils.get_default_wandb_args(__file__),
         ]
     )
 
@@ -105,7 +107,7 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
             "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "0",
-            "PYTHONPATH": f"{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}",
+            "PYTHONPATH": f"{MEGATRON_PATH}:{ADAPTER_DIR}:{command_utils.repo_base_dir}",
             "VERIFIERS_CONFIG": str(config_path),
         },
         megatron_path=str(MEGATRON_PATH),
