@@ -59,7 +59,7 @@ def _make_cell(*, global_activeness=None, router=None, **meta_overrides) -> Serv
             meta=_make_meta(**meta_overrides),
             router_api_client=router or SimpleNamespace(),
             provider=_StubProvider(),
-            global_health_checker_activeness=global_activeness or (lambda: ActiveAndEpoch(active=True, epoch=0)),
+            health_checker_activeness=global_activeness or (lambda: ActiveAndEpoch(active=True, epoch=0)),
         )
     )
 
@@ -156,7 +156,8 @@ class TestAddCellHealthChecker:
 
     async def test_a_cell_added_mid_window_does_not_probe(self):
         """The window releases the lock, so reconcile can add a cell while probing is paused."""
-        srv = _make_server(global_health_checker_activeness=lambda: ActiveAndEpoch(active=False, epoch=0))
+        srv = _make_server()
+        srv.health_checker_activeness.bump_active(False)
 
         async with srv.context_lock:
             await srv.add_cell(_make_meta(needs_offload=True))
