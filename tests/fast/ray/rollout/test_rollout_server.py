@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
+from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells
 
 from miles.backends.sglang_utils.sglang_config import (
     _compute_megatron_num_gpus,
     _compute_rollout_offset,
     resolve_sglang_config,
 )
-from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
-from miles.utils.workers.worker_spec import HostAndPort
 
 
 class TestRolloutServerPureFunctions:
@@ -259,52 +256,71 @@ class TestRolloutServerCrossCellProperties:
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
 
 
-class TestStartRolloutServersCellChunking:
-    @pytest.fixture
-    def stub_engine_startup(self, monkeypatch):
-        async def _no_cells(self, *args, **kwargs):
-            return None
+class TestEngineListOrdering:
+    def _server_with_cells(self, num_cells: int) -> RolloutServer:
+        cells = {}
+        for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
+            meta = SimpleNamespace(num_gpus_per_engine=index + 1, gpu_offset=index)
+            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}")
+        return RolloutServer(server_cells=cells, args=SimpleNamespace())
 
-        async def _fake_router_ready(*args, **kwargs):
-            return HostAndPort(host="127.0.0.1", port=30000)
+    def test_engine_lists_are_ordered_by_gpu_offset_not_insertion(self):
+        """With 12 cells inserted in string-sorted id order all three derived lists come out offset-ordered."""
+        srv = self._server_with_cells(12)
+        assert srv.engine_gpu_offsets == list(range(12))
+        assert srv.api_clients == [f"client-{i}" for i in range(12)]
+        assert srv.engine_gpu_counts == [i + 1 for i in range(12)]
 
-        monkeypatch.setattr(rollout_server, "wait_router_ready", _fake_router_ready)
-        monkeypatch.setattr(RolloutServer, "add_cell", _no_cells)
 
-    def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
-        cfg_path = tmp_path / "cfg.yaml"
-        cfg_path.write_text(
-            make_sglang_config_yaml(
-                server_groups=[
-                    {"worker_type": "regular", "num_gpus": num_gpus, "num_gpus_per_engine": num_gpus_per_engine}
-                ]
-            )
+class TestAddCellRollback:
+    def _make_meta(self) -> ServerCellMetadata:
+        return ServerCellMetadata(
+            model_id="default",
+            worker_type="regular",
+            cell_id="inference-engine-0-0-0",
+            num_gpus_per_engine=1,
+            gpu_offset=0,
+            sglang_api_key=None,
+            worker_name="inference-engine-0-0-0-0",
+            needs_offload=False,
+            update_weights=True,
+            workers_hash="pseudo-hash-0",
         )
-        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
-        return list(asyncio.run(start_rollout_servers(args))["default"].server_cells.values())
 
-    def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
-        """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
-        cells = self._cells_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
-        assert [cell.meta.cell_index for cell in cells] == list(range(8))
+    @pytest.mark.asyncio
+    async def test_a_failed_add_leaves_no_bookkeeping_so_the_next_reconcile_retries(self, monkeypatch):
+        """A cell whose startup fails must not be committed, otherwise the hash no-op blocks any retry."""
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        monkeypatch.setattr(ServerCell, "add", _raise_async)
 
-    def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, stub_engine_startup, tmp_path):
-        """With 16 gpus per engine on 8-gpu nodes, the 32 gpus collapse into two cells."""
-        cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        assert [cell.meta.cell_index for cell in cells] == [0, 1]
+        with pytest.raises(RuntimeError, match="injected add failure"):
+            await srv.add_cell(self._make_meta())
 
-    def test_a_trailing_partial_multi_node_engine_is_rejected(self, stub_engine_startup, tmp_path):
-        """24 gpus do not divide into whole 2-node engines, so startup must fail fast."""
-        with pytest.raises(AssertionError, match="whole number of"):
-            self._cells_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
+        assert srv.server_cells == {}
+        assert srv.has_new_engines is False
 
-    def test_cells_carry_contiguous_gpu_offsets(self, stub_engine_startup, tmp_path):
-        """Each multi-node cell's gpu span starts where the previous one ended."""
-        cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        assert [cell.meta.gpu_offset for cell in cells] == [0, 16]
+    @pytest.mark.asyncio
+    async def test_a_successful_add_commits_the_cell_and_marks_new_engines(self, monkeypatch):
+        """After the failure is gone the same cell id can be added normally."""
+        srv = RolloutServer(server_cells={}, args=SimpleNamespace())
+        monkeypatch.setattr(ServerCell, "add", _noop_async)
+
+        await srv.add_cell(self._make_meta())
+
+        assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+        assert srv.has_new_engines is True
+
+
+async def _raise_async(self, router_api_client):
+    raise RuntimeError("injected add failure")
+
+
+async def _noop_async(self, router_api_client):
+    return None
 
 
 class TestRemoveCell:
+    @pytest.mark.asyncio
     async def test_remove_cell_detaches_the_cell_from_every_server_view(self):
         """A removed cell is gone from server_cells and from every view derived from it."""
         events: list[dict[str, Any]] = []
@@ -315,11 +331,11 @@ class TestRemoveCell:
 
         assert "default-0" not in srv.server_cells
         assert list(srv.server_cells) == ["default-1"]
-        assert list_cell_ids({"default": srv}) == ["default-1"]
         assert [client.server_url for client in srv.api_clients] == ["http://10.0.0.2:30001"]
         assert srv.engine_gpu_counts == [1]
         assert srv.engine_gpu_offsets == [1]
 
+    @pytest.mark.asyncio
     async def test_remove_cell_unregisters_from_the_router_before_dropping_the_cell(self):
         """Dropping the cell without unregistering would leave the router routing to a dead worker."""
         events: list[dict[str, Any]] = []
@@ -333,23 +349,21 @@ class TestRemoveCell:
 
 def _make_started_server(*, num_cells: int) -> RolloutServer:
     args = make_args(num_gpus_per_node=8)
-    srv = RolloutServer(server_cells={}, args=args, router_ip="10.0.0.9", router_port=9000, model_name="default")
+    srv = RolloutServer(server_cells={}, args=args)
     for cell_index in range(num_cells):
         meta = ServerCellMetadata(
+            model_id="default",
             worker_type="regular",
             cell_id=f"default-{cell_index}",
             num_gpus_per_engine=1,
             gpu_offset=cell_index,
-            sglang_overrides={},
-            model_idx=0,
-            group_index=0,
-            cell_index=cell_index,
+            sglang_api_key=None,
+            worker_name=f"default-{cell_index}-0",
             needs_offload=False,
-            model_path=None,
             update_weights=True,
+            workers_hash=f"pseudo-hash-{cell_index}",
         )
         cell = ServerCell(args=args, meta=meta)
-        cell._mark_allocated_uninitialized()
         cell._mark_addressing(AddrInfo(server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}"))
         cell._mark_alive()
         srv.server_cells[meta.cell_id] = cell

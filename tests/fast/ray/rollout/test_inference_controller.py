@@ -1,0 +1,272 @@
+from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from tests.fast.ray.rollout.conftest import make_args
+
+from miles.ray.rollout import inference_controller as inference_controller_module
+from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
+from miles.ray.rollout.server_cell import ServerCellMetadata
+from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
+from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_spec import WorkerMetaContext
+
+
+def _make_cell_info(
+    *,
+    cell_id: str = "inference-engine-0-0-0",
+    workers_hash: str = "pseudo-hash-0",
+    alive: bool = True,
+    model_id: str = "model-a",
+    pool_id: str = "inference-engine-0-0",
+) -> CellInfo:
+    return CellInfo(
+        cell_id=cell_id,
+        pool_id=pool_id,
+        alive=alive,
+        worker_names=[f"{cell_id}-0"],
+        workers_hash=workers_hash,
+        meta=dict(
+            model_id=model_id,
+            worker_type="regular",
+            num_gpus_per_engine=1,
+            gpu_offset=0,
+            sglang_api_key=None,
+            needs_offload=False,
+            update_weights=True,
+        ),
+    )
+
+
+def _make_cell_meta(info: CellInfo) -> ServerCellMetadata:
+    return ServerCellMetadata(
+        model_id=info.meta["model_id"],
+        worker_type=info.meta["worker_type"],
+        cell_id=info.cell_id,
+        num_gpus_per_engine=info.meta["num_gpus_per_engine"],
+        gpu_offset=info.meta["gpu_offset"],
+        sglang_api_key=info.meta["sglang_api_key"],
+        worker_name=info.worker_names[0],
+        needs_offload=info.meta["needs_offload"],
+        update_weights=info.meta["update_weights"],
+        workers_hash=info.workers_hash,
+    )
+
+
+class _RecordingServer:
+    def __init__(self, server_cells: dict | None = None):
+        self.server_cells = server_cells or {}
+        self.calls: list[tuple] = []
+
+    async def add_cell(self, cell_meta: ServerCellMetadata):
+        self.calls.append(("add", cell_meta.cell_id))
+        self.server_cells[cell_meta.cell_id] = SimpleNamespace(meta=cell_meta)
+
+    async def remove_cell(self, cell_id: str):
+        self.calls.append(("remove", cell_id))
+        del self.server_cells[cell_id]
+
+
+def _make_controller(servers: dict) -> InferenceController:
+    controller = InferenceController.__new__(InferenceController)
+    controller.servers = servers
+    return controller
+
+
+class TestReconcile:
+    @pytest.fixture
+    def servers(self) -> dict[str, _RecordingServer]:
+        return {"model-a": _RecordingServer(), "model-b": _RecordingServer()}
+
+    @pytest.mark.asyncio
+    async def test_an_observed_untracked_cell_is_added_to_its_model_server(self, servers):
+        """A newly observed engine cell lands in the server named by its model_id meta."""
+        controller = _make_controller(servers)
+        info = _make_cell_info()
+
+        await controller._reconcile(info.cell_id, info)
+
+        assert servers["model-a"].calls == [("add", info.cell_id)]
+
+    @pytest.mark.asyncio
+    async def test_a_second_models_cell_is_routed_to_that_models_server(self, servers):
+        """Routing is by model_id, so model-b's cell must not be absorbed by the first server."""
+        controller = _make_controller(servers)
+        info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", pool_id="inference-engine-1-0")
+
+        await controller._reconcile(info.cell_id, info)
+
+        assert servers["model-a"].calls == []
+        assert servers["model-b"].calls == [("add", info.cell_id)]
+
+    @pytest.mark.asyncio
+    async def test_a_disappeared_tracked_cell_is_removed(self, servers):
+        """A tracked cell reported as gone is removed even though no meta is observable."""
+        info = _make_cell_info()
+        servers["model-a"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
+        controller = _make_controller(servers)
+
+        await controller._reconcile(info.cell_id, None)
+
+        assert servers["model-a"].calls == [("remove", info.cell_id)]
+        assert servers["model-a"].server_cells == {}
+
+    @pytest.mark.asyncio
+    async def test_a_disappeared_cell_is_removed_from_its_owning_server(self, servers):
+        """The owner scan must find the server that actually tracks the cell, not the first one."""
+        info = _make_cell_info(cell_id="inference-engine-1-0-0", model_id="model-b", pool_id="inference-engine-1-0")
+        servers["model-b"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
+        controller = _make_controller(servers)
+
+        await controller._reconcile(info.cell_id, None)
+
+        assert servers["model-a"].calls == []
+        assert servers["model-b"].calls == [("remove", info.cell_id)]
+        assert servers["model-b"].server_cells == {}
+
+    @pytest.mark.asyncio
+    async def test_a_workers_hash_change_replaces_the_cell(self, servers):
+        """A relaunched cell (new workers_hash) is removed then re-added, in that order."""
+        old_info = _make_cell_info(workers_hash="pseudo-hash-0")
+        servers["model-a"].server_cells[old_info.cell_id] = SimpleNamespace(meta=_make_cell_meta(old_info))
+        controller = _make_controller(servers)
+        new_info = _make_cell_info(workers_hash="pseudo-hash-1")
+
+        await controller._reconcile(new_info.cell_id, new_info)
+
+        assert servers["model-a"].calls == [("remove", new_info.cell_id), ("add", new_info.cell_id)]
+        assert servers["model-b"].calls == []
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_tracked_cell_is_a_noop(self, servers):
+        """A tracked cell observed with the same workers_hash triggers no bookkeeping change."""
+        info = _make_cell_info()
+        servers["model-a"].server_cells[info.cell_id] = SimpleNamespace(meta=_make_cell_meta(info))
+        controller = _make_controller(servers)
+
+        await controller._reconcile(info.cell_id, info)
+
+        assert servers["model-a"].calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_disappeared_untracked_cell_is_a_noop(self, servers):
+        """A vanished cell that was never tracked (e.g. a router) triggers nothing."""
+        controller = _make_controller(servers)
+
+        await controller._reconcile("miles-router-0-0", None)
+
+        assert servers["model-a"].calls == []
+        assert servers["model-b"].calls == []
+
+
+class _FakeWorkerProvider:
+    def __init__(self, cell_infos: list[CellInfo]) -> None:
+        self._cell_infos = cell_infos
+        self._pools: list[str] = []
+        self.watched_pool_ids: list[str] | None = None
+
+    def created_with(self, pool_ids: list[str]) -> "_FakeWorkerProvider":
+        self._pools = list(pool_ids)
+        return self
+
+    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+        pool_ids = self._pools
+        self.watched_pool_ids = list(pool_ids)
+        for info in self._cell_infos:
+            if info.pool_id in pool_ids:
+                await reconcile(info.cell_id, info)
+
+        async def _stop_watch() -> None:
+            return None
+
+        return _stop_watch
+
+
+def _patch_init(
+    monkeypatch: pytest.MonkeyPatch, *, provider: _FakeWorkerProvider, servers: dict[str, _RecordingServer]
+) -> None:
+    async def _fake_create_rollout_servers(args: Namespace) -> dict[str, _RecordingServer]:
+        return servers
+
+    monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
+    monkeypatch.setattr(
+        inference_controller_module,
+        "RayWorkerProvider",
+        SimpleNamespace(create=lambda *, pool_ids: provider.created_with(pool_ids)),
+        raising=True,
+    )
+
+
+class TestInitSubscription:
+    @pytest.mark.asyncio
+    async def test_init_watches_exactly_the_engine_specs(self, monkeypatch: pytest.MonkeyPatch):
+        """init must subscribe to engine specs only; a router spec here is reconciled as an engine."""
+        args = make_args()
+        provider = _FakeWorkerProvider([])
+        _patch_init(monkeypatch, provider=provider, servers={"default": _RecordingServer()})
+
+        await InferenceController(args).init()
+
+        assert provider.watched_pool_ids == compute_engine_pool_ids(args)
+        assert compute_router_pool_id(0) not in provider.watched_pool_ids
+        assert "session-server" not in provider.watched_pool_ids
+
+    @pytest.mark.asyncio
+    async def test_init_survives_a_router_cell_offered_by_the_provider(self, monkeypatch: pytest.MonkeyPatch):
+        """A router cell carries no engine meta, so a too-wide subscription kills startup in the initial sync."""
+        args = make_args()
+        router_info = CellInfo(
+            cell_id="inference-router-0-0",
+            pool_id=compute_router_pool_id(0),
+            alive=True,
+            worker_names=["inference-router-0-0-0"],
+            workers_hash="pseudo-hash-router",
+            meta={},
+        )
+        engine_info = _make_cell_info(model_id="default")
+        provider = _FakeWorkerProvider([router_info, engine_info])
+        srv = _RecordingServer()
+        _patch_init(monkeypatch, provider=provider, servers={"default": srv})
+
+        await InferenceController(args).init()
+
+        assert srv.calls == [("add", engine_info.cell_id)]
+
+
+class TestEngineMetaContract:
+    def test_the_real_spec_meta_roundtrips_into_server_cell_metadata(self, tmp_path: Path):
+        """The engine spec's meta dict and the driver-side reader share one key set, pinned end to end."""
+        config_path: Path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            "sglang:\n"
+            "  - name: default\n"
+            "    server_groups:\n"
+            "      - worker_type: decode\n"
+            "        num_gpus: 4\n"
+            "        num_gpus_per_engine: 2\n"
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4, sglang_api_key="from-args")
+        (spec,) = specs_inference_engine(args)
+
+        info = CellInfo(
+            cell_id="inference-engine-0-0-1",
+            pool_id=spec.name,
+            alive=True,
+            worker_names=["inference-engine-0-0-1-0"],
+            workers_hash="pseudo-hash-0",
+            meta=spec.meta(WorkerMetaContext(cell_index=1)),
+        )
+
+        assert _compute_server_cell_meta_from_info(info) == ServerCellMetadata(
+            model_id="default",
+            worker_type="decode",
+            cell_id="inference-engine-0-0-1",
+            num_gpus_per_engine=2,
+            gpu_offset=2,
+            sglang_api_key="from-args",
+            worker_name="inference-engine-0-0-1-0",
+            needs_offload=False,
+            update_weights=True,
+            workers_hash="pseudo-hash-0",
+        )
