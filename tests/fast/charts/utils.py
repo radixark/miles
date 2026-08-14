@@ -1,20 +1,71 @@
 import os
 import shutil
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHARTS_DIR = REPO_ROOT / "charts"
+CHART_DIR = CHARTS_DIR / "miles-workbench"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
 
+RELEASE_NAME = "miles-workbench-myuser"
+OBJECT_NAME = RELEASE_NAME
 NAMESPACE = "myns"
-
 
 requires_helm = pytest.mark.skipif(
     shutil.which("helm") is None and not os.environ.get("CI"),
     reason="helm is required to render charts; CI installs it, so a CI run fails instead of skipping",
 )
+
+
+def run_helm_template(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "helm",
+            "template",
+            RELEASE_NAME,
+            str(CHART_DIR),
+            "-n",
+            NAMESPACE,
+            "--set",
+            f"objectName={OBJECT_NAME}",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def run_helm_lint(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["helm", "lint", str(CHART_DIR), "--set", f"objectName={OBJECT_NAME}", *args], capture_output=True, text=True
+    )
+
+
+def render(*args: str) -> list[dict[str, Any]]:
+    result = run_helm_template(*args)
+    assert result.returncode == 0, result.stderr
+    return [document for document in yaml.safe_load_all(result.stdout) if document is not None]
+
+
+def render_error(*args: str) -> str:
+    result = run_helm_template(*args)
+    assert result.returncode != 0, result.stdout
+    return result.stderr
+
+
+def chart_directories() -> list[Path]:
+    chart_dirs = sorted(
+        path.parent
+        for path in SHARED_INFRA_SCHEMA_PATH.parent.glob("*/Chart.yaml")
+        if "type: library" not in path.read_text()
+    )
+    assert chart_dirs, "no application chart found under charts/"
+    return chart_dirs
 
 
 def library_chart_directories() -> list[Path]:
@@ -23,3 +74,23 @@ def library_chart_directories() -> list[Path]:
         for path in SHARED_INFRA_SCHEMA_PATH.parent.glob("*/Chart.yaml")
         if "type: library" in path.read_text()
     )
+
+
+def objects_of_kind(objects: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    return [obj for obj in objects if obj["kind"] == kind]
+
+
+def single_object_of_kind(objects: list[dict[str, Any]], kind: str) -> dict[str, Any]:
+    matched = objects_of_kind(objects, kind)
+    assert len(matched) == 1, f"expected exactly one {kind}, got {[obj['metadata']['name'] for obj in matched]}"
+    return matched[0]
+
+
+def pod_spec(objects: list[dict[str, Any]]) -> dict[str, Any]:
+    return single_object_of_kind(objects, "StatefulSet")["spec"]["template"]["spec"]
+
+
+def container(objects: list[dict[str, Any]]) -> dict[str, Any]:
+    containers = pod_spec(objects)["containers"]
+    assert len(containers) == 1
+    return containers[0]

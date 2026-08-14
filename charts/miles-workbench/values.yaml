@@ -1,0 +1,31 @@
+objectName: ""
+
+infra:
+  image:
+    repository: radixark/miles
+    tag: dev
+    pullPolicy: Always
+    pullSecrets: []
+  sharedStorage:
+    type: hostPath
+    hostPath: /cluster-storage
+    pvcClaimName: ""
+    mountPath: /cluster-storage
+  scheduling:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  env: {}
+
+resources:
+  requests:
+    cpu: "2"
+    memory: 8Gi
+  limits: {}
+
+rbac:
+  create: true
+  leaderWorkerSets: true
+
+serviceAccount:
+  name: ""
