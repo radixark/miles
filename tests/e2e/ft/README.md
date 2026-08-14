@@ -85,8 +85,8 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 | `generate-data` | record debug rollout data with real engines, no dumper | comparison scenarios |
 
 - **Debugging**: prefer the individual subcommands over `run` — with a shared `--dump-dir` (plus `--phase` when multi-phase) you re-run only what changed.
-- **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--crash-probability`.
-- **`scenario_realistic_gsm8k`**: only `run`, with `--seed` / `--num-rollout` / `--crash-probability` / `--metric-threshold`; no `--mode`.
+- **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--crash-interval-seconds`.
+- **`scenario_realistic_gsm8k`**: only `run`, with `--seed` / `--num-rollout` / `--crash-interval-seconds` / `--metric-threshold`; no `--mode`.
 - **Dumps**: `/node_public/dumps/<test_name>/` via `resolve_dump_dir` in `conftest_ft/app.py`, deleted at the end of `run`.
 
 ### Generate Debug Rollout Data
@@ -265,7 +265,7 @@ Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src
 Type: soak (no baseline, no compare); passes if training completes without hanging and the
       witnesses hold
 Steps: 30 (default)
-CLI: --mode, --seed (42), --num-steps (30), --crash-probability (0.5)
+CLI: --mode, --seed (42), --num-steps (30), --crash-interval-seconds (120)
 
 Targeting and assertions follow the mode's ft_components:
   ("train",)          -> inject into "actor" cells only, assert healing CellReconfigureEvents
@@ -281,8 +281,8 @@ Architecture (external fault injection, not inside the training loop):
      d. Compute the genuinely-alive cells - reported Healthy, minus injected cells that have
         not completed a down -> up cycle - and defer unless a spare replica remains
      e. POST /api/v1/cells/{name}/inject-fault with a mode drawn from SIGKILL / EXIT /
-        SEGFAULT, then draw the next injection time (exponential, mean 60s /
-        crash_probability, ~120s at the default)
+        SEGFAULT, then draw the next injection time (exponential, mean
+        crash_interval_seconds divided by the number of ft components)
   3. inject_fault() runs on the actor's own ray concurrency group thread and kills the process
   4. The health checker notices by heartbeat timeout
   5. The mini FT controller recovers it (suspend -> resume)
@@ -298,7 +298,7 @@ Faults are random, so neither an exact sequence nor the end-state membership is 
 ```
 
 - **Why only ft-enabled components are targeted**: injecting into a component whose ft is off would crash something nothing is watching.
-- **Why a floor of two**: a single heal could be a fluke. The default `--crash-probability` is set high enough that the soak reliably clears the floor.
+- **Why a floor of two**: a single heal could be a fluke. The default `--crash-interval-seconds` is short enough that the soak reliably clears the floor.
 - **Why still-recovering cells are excluded**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica.
 - **Why `Serving`, not `Running`**: `Running` also covers a replacement that got weights but never re-entered the router. `Suspended` is not required in between — it lasts only `--mini-ft-controller-resume-delay` (10s), which a 2s poll can miss.
 - **Why poll faster than injections**: a crash → detect → heal cycle completing between two sparse injections must be seen, or its cell stays excluded from the live set forever.
@@ -308,7 +308,7 @@ Faults are random, so neither an exact sequence nor the end-state membership is 
 ```
 Type: soak (no baseline run; reference = the baseline test's wandb curves)
 Entry: test_realistic_gsm8k__kill_train.py, no mode variants
-CLI: --seed (42), --num-rollout (250), --crash-probability (0.1), --metric-threshold (0.55);
+CLI: --seed (42), --num-rollout (250), --crash-interval-seconds (600), --metric-threshold (0.55);
      no --mode
 
 Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of

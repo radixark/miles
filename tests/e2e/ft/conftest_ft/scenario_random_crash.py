@@ -17,7 +17,6 @@ from tests.e2e.ft.conftest_ft.execution import (
 )
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     API_SERVER_PORT,
-    MEAN_INTERVAL_SECONDS,
     FaultInjectorHandle,
     spawn_fault_injector,
 )
@@ -48,13 +47,17 @@ app: typer.Typer = typer.Typer()
 
 TEST_NAME: str = "random_crash"
 
+DEFAULT_CRASH_INTERVAL_SECONDS: float = 120.0
+
 
 @app.command(name="run")
 def run_ci(
     mode: Annotated[str, typer.Option(help="Test mode variant")],
     seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = 42,
     num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = 30,
-    crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.5,
+    crash_interval_seconds: Annotated[
+        float, typer.Option(help="Mean seconds between injections, shared out across the mode's ft components")
+    ] = DEFAULT_CRASH_INTERVAL_SECONDS,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -69,7 +72,7 @@ def run_ci(
     config = command_utils.default_config()
     dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
     print(f"Dump directory: {dump_dir}")
-    mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01) / len(ft_mode.ft_components)
+    mean_interval: float = crash_interval_seconds / len(ft_mode.ft_components)
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection interval: {mean_interval:.1f}s")
     print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
 
