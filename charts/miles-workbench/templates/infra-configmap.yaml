@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "miles-workbench.infraConfigMapName" . | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-workbench.labels" . | nindent 4 }}
+data:
+  {{ include "miles-workbench.infraValuesFileName" . }}: |
+    infra:
+      {{- toYaml .Values.infra | nindent 6 }}
