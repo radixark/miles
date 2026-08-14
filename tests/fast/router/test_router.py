@@ -148,6 +148,65 @@ class TestWorkerManagement:
         r.raise_for_status()
         assert set(r.json()["urls"]) == set(worker_urls)
 
+    def test_remove_worker_via_query_param(self, router_env: RouterEnv):
+        """A disposed cell must be able to deregister, or its dead url is routed to forever."""
+        worker_url = "http://127.0.0.1:30011"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        r = requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0)
+        r.raise_for_status()
+
+        assert r.json()["status"] == "success"
+        assert worker_url not in router_env.router.worker_request_counts
+
+    def test_remove_worker_via_body(self, router_env: RouterEnv):
+        """Removal accepts the same body form as add_worker so callers need no special case."""
+        worker_url = "http://127.0.0.1:30012"
+        requests.post(f"{router_env.url}/add_worker", json={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        requests.post(f"{router_env.url}/remove_worker", json={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        assert worker_url not in router_env.router.worker_request_counts
+
+    def test_remove_worker_clears_the_failure_and_dead_bookkeeping(self, router_env: RouterEnv):
+        """Leaving a removed url quarantined would keep it in the containers this fix drains."""
+        worker_url = "http://127.0.0.1:30013"
+        requests.post(f"{router_env.url}/add_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+        router_env.router.worker_failure_counts[worker_url] = 3
+        router_env.router.dead_workers.add(worker_url)
+
+        requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0).raise_for_status()
+
+        assert worker_url not in router_env.router.worker_failure_counts
+        assert worker_url not in router_env.router.dead_workers
+
+    def test_remove_worker_is_idempotent(self, router_env: RouterEnv):
+        """Teardown can race a health-check eviction, and a second removal must not error."""
+        worker_url = "http://127.0.0.1:30014"
+
+        r = requests.post(f"{router_env.url}/remove_worker", params={"url": worker_url}, timeout=5.0)
+
+        assert r.status_code == 200
+
+    def test_remove_worker_missing_url(self, router_env: RouterEnv):
+        """Without a url there is nothing to remove, and silently succeeding would hide the caller bug."""
+        r = requests.post(f"{router_env.url}/remove_worker", json={}, timeout=5.0)
+
+        assert r.status_code == 400
+        assert "error" in r.json()
+
+    def test_a_removed_worker_disappears_from_list_workers(self, router_env: RouterEnv):
+        """list_workers is what the rollout side aborts against, so dead urls must leave it."""
+        kept, removed = "http://127.0.0.1:30015", "http://127.0.0.1:30016"
+        for url in (kept, removed):
+            requests.post(f"{router_env.url}/add_worker", params={"url": url}, timeout=5.0).raise_for_status()
+
+        requests.post(f"{router_env.url}/remove_worker", params={"url": removed}, timeout=5.0).raise_for_status()
+
+        r = requests.get(f"{router_env.url}/list_workers", timeout=5.0)
+        r.raise_for_status()
+        assert r.json()["urls"] == [kept]
+
 
 class TestLoadBalancing:
     def test_use_url_selects_min_load(self, router_factory):
