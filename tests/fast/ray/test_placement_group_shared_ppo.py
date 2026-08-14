@@ -41,6 +41,11 @@ def test_external_rollout_only_reserves_no_local_bundles():
     assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0)
 
 
+def test_external_rollout_reserves_gpus_for_the_trainer_only():
+    """External engines run outside ray, so only the trainer's gpus may be bundled."""
+    assert _get_placement_group_layout(_layout_args(rollout_external=True)) == (2, 2)
+
+
 class _RecordingRolloutExecutor:
     def __init__(self):
         self.train_parallel_config = None
