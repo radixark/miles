@@ -16,16 +16,19 @@ on:
         required: false
         type: boolean
         default: false
+      # Empty defaults are load-bearing: a non-empty default would count as an
+      # explicit override and shadow release-lock.json on a release branch
+      # (precedence: explicit input / PR body > lockfile > branch HEAD).
       ci_megatron_pr:
-        description: 'Megatron-LM branch/commit (default: miles-main)'
+        description: 'Megatron-LM branch/commit (empty: release-lock.json if present, else miles-main)'
         required: false
         type: string
-        default: 'miles-main'
+        default: ''
       ci_sglang_pr:
-        description: 'SGLang branch/commit (default: sglang-miles)'
+        description: 'SGLang branch/commit (empty: release-lock.json if present, else sglang-miles)'
         required: false
         type: string
-        default: 'sglang-miles'
+        default: ''
       ci_image_tag:
         description: 'Miles Docker image tag (default: dev)'
         required: false
