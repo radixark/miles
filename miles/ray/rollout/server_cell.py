@@ -15,7 +15,6 @@ from miles.ray.rollout.cell_state import (
     StateAllocatedAlive,
     StateAllocatedBase,
     StateAllocatedUninitialized,
-    StateStopped,
 )
 from miles.ray.specs.inference import compute_engine_pool
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -46,7 +45,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
 class ServerCell:
     args: Any
     meta: ServerCellMetadata
-    _state: CellState = dataclasses.field(default_factory=StateStopped)
+    _state: CellState = dataclasses.field(default_factory=StateAllocatedUninitialized)
 
     @property
     def is_allocated(self) -> bool:
@@ -75,14 +74,10 @@ class ServerCell:
             f"sglang_overrides must not override host/port ({self.meta.sglang_overrides=}): the rollout process derives "
             f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
         )
-        assert not self.is_allocated, "the caller starts only stopped cells"
-
         if self.args.rollout_external:
             raise NotImplementedError(
                 "external rollout address allocation was removed and a new implementation is coming"
             )
-
-        self._mark_allocated_uninitialized()
 
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
         worker_name = compute_worker_name(pool=self._pool_id, cell_index=self.meta.cell_index)
@@ -123,10 +118,6 @@ class ServerCell:
                 )
         else:
             logger.info(f"Cell {self.meta.cell_id} is already stopped")
-        self._mark_stopped()
-
-    def _mark_allocated_uninitialized(self) -> None:
-        self._change_state("mark_allocated_uninitialized", StateStopped, StateAllocatedUninitialized())
 
     def _mark_addressing(self, addr_info: AddrInfo) -> None:
         self._change_state(
@@ -141,9 +132,6 @@ class ServerCell:
             StateAllocatedUninitialized,
             StateAllocatedAlive(addr_info=self.addr_info),
         )
-
-    def _mark_stopped(self) -> None:
-        self._change_state("mark_stopped", (StateStopped, StateAllocatedBase), StateStopped())
 
     # TODO: unify w/ trainer `change_state`
     def _change_state(
