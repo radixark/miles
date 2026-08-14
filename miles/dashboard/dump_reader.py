@@ -26,7 +26,7 @@ from typing import Any, ClassVar
 import polars as pl
 import torch
 
-from miles.utils.types import Sample, WeightVersionsPerCall
+from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionsPerCall
 
 
 class DumpStillWriting(Exception):
@@ -48,7 +48,10 @@ STEP_AGGREGATE_METRICS = (
 
 
 def _weight_version_summary(sample: Sample) -> tuple[list[str], int | None]:
-    return [span.version for span in sample.all_weight_version_spans], len(sample.weight_versions) or None
+    if sample.weight_versions:
+        return [span.version for span in sample.all_weight_version_spans], len(sample.weight_versions)
+    legacy = list(getattr(sample, LEGACY_WEIGHT_VERSIONS_KEY, None) or [])
+    return legacy, len(legacy) or None
 
 
 def _min_numeric_version(versions: list[str] | None) -> int | None:
