@@ -173,12 +173,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return 0
 
-        if role == "critic":
-            self.args.load = self.args.critic_load
-            self.args.save = self.args.critic_save
-            self.args.lr = self.args.critic_lr
-            self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
-        else:
+        if role != "critic":
             for m in all_replay_managers:
                 m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
                 m.enable_check_replay_result = m.enabled and self.args.ci_test
