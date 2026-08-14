@@ -26,7 +26,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_p
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-from miles.utils.retry_utils import retry
+from miles.utils.retry_utils import NonRetryableError, retry
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -200,14 +200,15 @@ class RayTrainGroup:
                 dict(rollout_id=rollout_id, cell_outcomes=cell_outcomes),
             )
 
-    @staticmethod
-    def _check_train_one_attempt(snapshot_alive_cells, results):
+    def _check_train_one_attempt(self, snapshot_alive_cells, results):
         outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
         if not outcomes["normal"] and not outcomes["discarded"]:
             log_structured(
                 logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"
             )
-            raise RuntimeError("All cells failed in this training attempt")
+            raise self._make_all_cells_failed_error("All cells failed in this training attempt") from _first_exception(
+                results
+            )
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
@@ -329,9 +330,16 @@ class RayTrainGroup:
 
     # ------------------------ utils to forward calls to cells ------------------------
 
+    def _is_recoverable(self) -> bool:
+        return any(cell.is_alive or cell.is_pending for cell in self._cells)
+
+    def _make_all_cells_failed_error(self, message: str) -> Exception:
+        return RuntimeError(message) if self._is_recoverable() else NonRetryableError(message)
+
     async def _execute_all_alive_and_catch(self, fn_name: str, **kwargs):
         snapshot_alive_cells = [c for c in self._cells if c.is_alive]
-        assert snapshot_alive_cells, "No alive cells"
+        if not snapshot_alive_cells:
+            raise NonRetryableError("No alive cells")
         # NOTE: no timeout here. If a cell hangs, the external FT controller
         # detects stale heartbeat via cell_status(), calls cell.stop() to kill
         # actors, which unblocks this gather with ActorDiedError.
@@ -344,8 +352,16 @@ class RayTrainGroup:
 
     async def _execute_first_alive(self, fn_name: str, **kwargs):
         alive_cells = [c for c in self._cells if c.is_alive]
-        assert alive_cells, "No alive cells, therefore cannot heal anymore"
-        return await alive_cells[0].execute(fn_name, **kwargs)
+        if not alive_cells:
+            raise NonRetryableError("No alive cells, therefore cannot heal anymore")
+        try:
+            return await alive_cells[0].execute(fn_name, **kwargs)
+        except Exception as cause:
+            if self._is_recoverable():
+                raise
+            raise self._make_all_cells_failed_error(
+                f"All cells failed during execute_first_alive#{fn_name}"
+            ) from cause
 
     # ------------------------ internals for stop/start ------------------------
 
@@ -365,7 +381,8 @@ class RayTrainGroup:
             all_states=all_states,
             quorum=self._indep_dp_quorum_id,
         )
-        assert len(snapshotted_alive_indices) > 0, "Cannot recover when all cells are dead"
+        if not snapshotted_alive_indices:
+            raise NonRetryableError("Cannot recover when all cells are dead")
 
         # Step 0: Determine whether need to reconfigure
         exists_alive_cell_changed_config = any(
@@ -517,6 +534,10 @@ class RayTrainGroup:
 
 
 PGTuple = tuple[PlacementGroup, list[int], list[int]]
+
+
+def _first_exception(results) -> BaseException | None:
+    return next((result for result in results if isinstance(result, BaseException)), None)
 
 
 def _slice_pg(pg: PGTuple, start: int, end: int) -> PGTuple:
