@@ -23,6 +23,10 @@ on:
         type: string
         default: ''
 
+# Publishing uses DOCKERHUB_* secrets, not GITHUB_TOKEN — checkout read is all it needs.
+permissions:
+  contents: read
+
 jobs:
   build-and-publish:
     if: github.repository == 'radixark/miles'
