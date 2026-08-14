@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
+from tests.fast.cluster_backends import create_backend_for_run
 
 from miles.utils.external_utils import command_utils
 
@@ -35,8 +36,10 @@ def _get_hf_num_layers(model_path: str) -> int:
         return json.load(f)["num_hidden_layers"]
 
 
-def prepare(mode: FTTestMode) -> None:
-    U = command_utils.default_config().create_backend()
+def prepare(mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig | None = None) -> None:
+    config = _resolve_config(config)
+
+    U = create_backend_for_run(config)
     U.exec_command_cpu(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
     U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
 
@@ -60,6 +63,10 @@ def prepare(mode: FTTestMode) -> None:
     _MEGATRON_SOURCE_PATCHER_CONFIG_PATH.write_text(megatron_yaml)
 
 
+def _resolve_config(config: command_utils.ExecuteTrainConfig | None) -> command_utils.ExecuteTrainConfig:
+    return config or command_utils.default_config()
+
+
 def get_common_train_args(
     mode: FTTestMode,
     *,
@@ -68,9 +75,7 @@ def get_common_train_args(
     enable_dumper: bool = True,
     debug_rollout_data_dir: str | None = None,
 ) -> str:
-    ckpt_args = (
-        f"--hf-checkpoint {_MODEL_DIR}/{mode.model_name} " f"--ref-load {_MODEL_DIR}/{mode.model_name}_torch_dist "
-    )
+    ckpt_args = f"--hf-checkpoint {_MODEL_DIR}/{mode.model_name} --ref-load {_MODEL_DIR}/{mode.model_name}_torch_dist "
 
     optimizer_args = (
         "--optimizer adam "
@@ -189,7 +194,7 @@ def run_training(
     extra_env_vars: dict[str, str] | None = None,
     config: command_utils.ExecuteTrainConfig | None = None,
 ) -> None:
-    U = command_utils.default_config().create_backend()
+    U = _resolve_config(config).create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     merged_env_vars = {
