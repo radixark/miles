@@ -484,7 +484,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "so its signature should be "
                     "`def generate_rollout(args, rollout_id, data_source, evaluation=False) "
                     "-> RolloutFnTrainOutput | RolloutFnEvalOutput` "
-                    "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
+                    "(see `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` "
+                    "for the default class-based implementation). "
                     "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
                 ),

@@ -5,7 +5,7 @@ eval:
     top_p: 0.95
     top_k: -1
     max_response_len: 24576
-  datasets: # these eval tasks go through miles dataset config and default rollout function (miles.rollout.sglang_rollout.generate_rollout)
+  datasets: # these eval tasks go through miles dataset config and default rollout function (miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn)
     - name: gpqa    # hf download --repo-type dataset zyzshishui0627/gpqa_diamond --local-dir /root/gpqa
       path: /root/gpqa/gpqa_eval.jsonl
       rm_type: gpqa
@@ -29,4 +29,3 @@ eval:
           n_samples_per_eval_prompt: 2
         - name: hle
           max_response_len: 32768
-

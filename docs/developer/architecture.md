@@ -50,11 +50,11 @@ miles/
 │   └── training_utils/   # loss.py / loss_hub/, ParallelState, log + CI checkers
 ├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
 ├── rollout/
-│   ├── sglang_rollout.py # default rollout function
+│   ├── sglang_rollout.py # legacy v1 rollout function
 │   ├── data_source.py    # buffer + JSONL loader
 │   ├── filter_hub/       # built-in filters
 │   ├── fully_async_*.py  # queue-backed producer for train_async.py
-│   └── inference_rollout/# experimental rollout refactor
+│   └── inference_rollout/# default class-based rollout
 ├── router/               # FastAPI proxy + worker load-balancer (router.py)
 ├── dashboard/            # run dashboard: collector, backend, dump reader
 ├── true_on_policy/       # true-on-policy contracts and per-model profiles
