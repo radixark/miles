@@ -301,14 +301,14 @@ class ServerGroup:
         if not self.needs_offload:
             return []
         return await asyncio.gather(
-            *[engine.api_client.release_memory_occupation(tags=tags) for engine in self.engines if engine.is_allocated]
+            *[cell.offload(tags=tags) for cell in self.cells if cell.primary_engine.is_allocated]
         )
 
     async def onload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
         return await asyncio.gather(
-            *[engine.api_client.resume_memory_occupation(tags=tags) for engine in self.engines if engine.is_allocated]
+            *[cell.onload(tags=tags) for cell in self.cells if cell.primary_engine.is_allocated]
         )
 
     async def check_weights(
@@ -316,10 +316,10 @@ class ServerGroup:
     ):
         return await asyncio.gather(
             *[
-                engine.api_client.check_weights(
+                cell.check_weights(
                     action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
                 )
-                for engine in self.engines
-                if engine.is_allocated
+                for cell in self.cells
+                if cell.primary_engine.is_allocated
             ]
         )
