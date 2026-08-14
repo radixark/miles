@@ -29,17 +29,21 @@ class ManifestDiff(FrozenStrictBaseModel):
 
 
 def diff_manifests(*, before: Manifest, after: Manifest) -> ManifestDiff:
-    old = before.by_key
-    new = after.by_key
+    old = before.by_identity
+    new = after.by_identity
     shared = sorted(set(old) & set(new))
     return ManifestDiff(
-        changed=[f"{key}: {path}" for key in shared for path in _disallowed_differences(old[key], new[key])],
-        added=sorted(set(new) - set(old)),
-        removed=sorted(set(old) - set(new)),
+        changed=[
+            f"{identity}: {path}"
+            for identity in shared
+            for path in _disallowed_differences(old[identity], new[identity])
+        ],
+        added=sorted(str(identity) for identity in set(new) - set(old)),
+        removed=sorted(str(identity) for identity in set(old) - set(new)),
         scaled=[
-            f"{key}: replicas {old[key].replicas} -> {new[key].replicas}"
-            for key in shared
-            if old[key].replicas != new[key].replicas
+            f"{identity}: replicas {old[identity].replicas} -> {new[identity].replicas}"
+            for identity in shared
+            if old[identity].replicas != new[identity].replicas
         ],
     )
 
