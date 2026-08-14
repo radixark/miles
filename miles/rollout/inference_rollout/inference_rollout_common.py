@@ -82,29 +82,28 @@ async def generate_and_rm(
     # generate
     log_prefix = f"[sample={getattr(sample, 'index', '?')}]"
     logger.debug(f"{log_prefix} Waiting for semaphore...")
-    async with state.generate_fn_semaphore:
-        if state.aborted:
-            sample.status = Sample.Status.ABORTED
+    try:
+        async with state.generate_fn_semaphore:
+            if state.aborted:
+                sample.status = Sample.Status.ABORTED
+                return sample
+
+            logger.debug(f"{log_prefix} Acquired semaphore, calling generate_function")
             if sink is not None:
-                sink.attempt_end(sample)
-            return sample
-
-        logger.debug(f"{log_prefix} Acquired semaphore, calling generate_function")
-        if sink is not None:
-            sink.gen_start(sample)
-        output = await state.generate_function(
-            GenerateFnInput(
-                state=state,
-                sample=sample,
-                sampling_params=deepcopy(sampling_params),
-                evaluation=evaluation,
+                sink.gen_start(sample)
+            output = await state.generate_function(
+                GenerateFnInput(
+                    state=state,
+                    sample=sample,
+                    sampling_params=deepcopy(sampling_params),
+                    evaluation=evaluation,
+                )
             )
-        )
-        sample = output.samples
-        logger.debug(f"{log_prefix} generate_function returned")
-
-    if sink is not None:
-        sink.attempt_end(sample)
+            sample = output.samples
+            logger.debug(f"{log_prefix} generate_function returned")
+    finally:
+        if sink is not None:
+            sink.attempt_end(sample)
 
     # TODO change to `if not args.group_rm: do reward model` for more clarity after the refactor below
     # for the rm that need the whole group, we will not do the rm here
