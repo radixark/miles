@@ -26,7 +26,7 @@ def _mode(
 class TestTotalNodeGpus:
     def test_colocated_mode_counts_shared_gpus_once(self) -> None:
         """The registered colocated mode reserves only the trainer's gpus, not trainer plus rollout."""
-        mode = MODES["colocate_dp2_cp2_rollout_ft"]
+        mode = MODES["kill_rollout__dp2_cp2__colocate"]
 
         assert mode.colocate
         assert mode.total_rollout_gpus == 4
@@ -34,7 +34,7 @@ class TestTotalNodeGpus:
 
     def test_disaggregated_mode_adds_rollout_gpus_to_train_gpus(self) -> None:
         """Without colocation the rollout engines need their own gpus on top of the trainer's."""
-        mode = MODES["dp2_cp2_real_rollout"]
+        mode = MODES["kill_train__dp2_cp2__moe_5layer"]
 
         assert not mode.colocate
         assert mode.total_node_gpus == 8

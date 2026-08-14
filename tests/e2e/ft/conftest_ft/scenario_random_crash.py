@@ -27,7 +27,7 @@ from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_inject
 
 app: typer.Typer = typer.Typer()
 
-TEST_NAME: str = "ft_random"
+TEST_NAME: str = "random_crash"
 
 
 @app.command(name="run")
