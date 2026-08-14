@@ -104,7 +104,6 @@ def make_cell(
     cell_index: int = 0,
     *,
     actor_count: int = 2,
-    rollout_executor: object | None = None,
     health_checker: BaseHealthChecker | None = None,
 ) -> TrainerCell:
     fake_worker_manager.actor_count_per_cell = actor_count
@@ -115,7 +114,6 @@ def make_cell(
         cell_id=f"trainer-actor-{cell_index}",
         cell_index=cell_index,
         workers_hash="pseudo-hash-1",
-        rollout_executor=rollout_executor,
         health_checker=health_checker if health_checker is not None else NoopHealthChecker(),
     )
 
