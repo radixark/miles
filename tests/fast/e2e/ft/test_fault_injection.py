@@ -383,21 +383,21 @@ def _mode(*ft_components: str) -> FTTestMode:
 
 def test_a_trainer_only_soak_targets_actor_cells() -> None:
     """It must not crash engines that its assertions say nothing about."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import compute_injected_cell_type
+    from tests.e2e.ft.conftest_ft.scenario_random_crash import compute_injected_cell_type
 
     assert compute_injected_cell_type(_mode("train")) == "actor"
 
 
 def test_a_rollout_only_soak_targets_rollout_cells() -> None:
     """Crashing trainer cells here would exercise a component this mode did not enable ft on."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import compute_injected_cell_type
+    from tests.e2e.ft.conftest_ft.scenario_random_crash import compute_injected_cell_type
 
     assert compute_injected_cell_type(_mode("rollout")) == "rollout"
 
 
 def test_a_mixed_soak_targets_every_kind() -> None:
     """The point of the mixed mode is that both kinds fail during one run."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import compute_injected_cell_type
+    from tests.e2e.ft.conftest_ft.scenario_random_crash import compute_injected_cell_type
 
     assert compute_injected_cell_type(_mode("train", "rollout")) is None
 

@@ -168,7 +168,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     print("With-failure comparison test PASSED")
 
 
-TEST_NAME: str = "trainer_ft_with_failure"
+TEST_NAME: str = "trainer_with_failure"
 PHASES: list[str] = ["phase_a", "phase_b"]
 
 
