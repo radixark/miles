@@ -13,7 +13,6 @@ from miles.utils.http_utils import _wrap_ipv6
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -58,7 +57,6 @@ class RayWorkerManager:
         await self._for_all_cells(lambda a: a.launch_actors())
         await self._for_all_cells(lambda a: a.alloc_ports())
         await self._for_all_cells(lambda a: a.post_setup())
-        await self._for_all_cells(lambda a: a.activate_gate())
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return self._find_actor(worker_name).self_addrs
@@ -156,12 +154,6 @@ class _CellManager(Generic[SpecT]):
 
     async def post_setup(self) -> None:
         await self._for_all_actors(lambda a: a.post_setup())
-
-    # TODO: temporary code that will be removed in later ops
-    async def activate_gate(self) -> None:
-        if (gate := self.actors[0].self_addrs.get(GATE_PORT_NAME)) is None:
-            return
-        await activate_launch_gate(gate_url=f"http://{gate.host}:{gate.port}")
 
     async def stop(self) -> None:
         await self._for_all_actors(lambda a: a.stop())

@@ -87,7 +87,7 @@ class RolloutServer:
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
         cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
-        await cell.add()
+        await cell.init()
         self.server_cells[cell_id] = cell
 
     async def remove_cell(self, cell_id: str):
