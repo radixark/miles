@@ -24,7 +24,6 @@ from miles.utils.context_lock import (
     with_lock,
 )
 from miles.utils.ft_utils.api_server.models import CellStatus
-from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SimpleTicker
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -57,7 +56,6 @@ class InferenceController:
         self.servers: dict[str, RolloutServer] = {}
         self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
-        self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
 
     @lock_exempt
@@ -72,7 +70,6 @@ class InferenceController:
         self.servers = await create_rollout_servers(
             self.args,
             context_lock=self.context_lock,
-            global_health_checker_activeness=self._health_checker_activeness.get,
             engine_provider=self._engine_provider,
             router_addrs=router_addrs,
         )
@@ -89,13 +86,13 @@ class InferenceController:
     # -------------------------- rollout lifecycle hooks -----------------------------
 
     @with_lock
-    async def prepare_rollout(self, rollout_id: int) -> None:
-        await self._health_monitoring_resume()
+    async def prepare_rollout(self, rollout_id: int, model_id: str | None = None) -> None:
+        await self._health_monitoring_resume(model_id)
         await dashboard_hooks.register_engines(self.servers, provider=self._engine_provider)
 
     @with_lock
-    async def prepare_eval(self) -> None:
-        await self._health_monitoring_resume()
+    async def prepare_eval(self, model_id: str | None = None) -> None:
+        await self._health_monitoring_resume(model_id)
 
     @with_lock
     async def dispose(self) -> None:
@@ -115,7 +112,7 @@ class InferenceController:
     # TODO may parallelly execute offload/onload across services
     @with_lock
     async def offload(self, tags: list[str] | None = None) -> None:
-        await self._health_monitoring_pause()
+        await self._health_monitoring_pause(None)
         for srv in self.servers.values():
             await srv.offload(tags=tags)
 
@@ -141,7 +138,7 @@ class InferenceController:
     @acquires_lock
     async def start_update_weights(self, model_id: str | None = None) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
-        await self._health_monitoring_pause()
+        await self._health_monitoring_pause(model_id)
         await self._ensure_cells_ready(model_id=model_id)
 
         srv = self._get_updatable_server(model_id=model_id)
@@ -319,12 +316,14 @@ class InferenceController:
     # -------------------------- utils -----------------------------
 
     @requires_lock
-    async def _health_monitoring_pause(self) -> None:
-        self._health_checker_activeness.bump_active(False)
+    async def _health_monitoring_pause(self, model_id: str | None) -> None:
+        for srv in self._get_servers_of_model_id(model_id):
+            srv.health_checker_activeness.bump_active(False)
 
     @requires_lock
-    async def _health_monitoring_resume(self) -> None:
-        self._health_checker_activeness.bump_active(True)
+    async def _health_monitoring_resume(self, model_id: str | None) -> None:
+        for srv in self._get_servers_of_model_id(model_id):
+            srv.health_checker_activeness.bump_active(True)
 
 
 @dataclass(frozen=True)

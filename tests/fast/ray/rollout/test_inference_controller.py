@@ -80,6 +80,7 @@ class _RecordingServer:
         cells_gate: asyncio.Event | None = None,
     ):
         self.server_cells = server_cells or {}
+        self.health_checker_activeness = ActivenessTracker(active=True)
         self.update_weights = update_weights
         self.model_name = model_name
         self.calls: list[tuple] = []
@@ -199,7 +200,6 @@ def _make_controller(servers: dict, *, engine_provider: _FakeWorkerProvider | No
     controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
-    controller._health_checker_activeness = ActivenessTracker(active=True)
     controller._engine_provider = engine_provider if engine_provider is not None else _FakeWorkerProvider([])
     controller._router_providers = [_FakeWorkerProvider([])]
     return controller
@@ -214,28 +214,30 @@ class TestHealthCheckerActiveness:
 
         await controller.offload()
 
-        assert not controller._health_checker_activeness.get().active
+        assert not srv.health_checker_activeness.get().active
         assert srv.calls == [("offload",)]
 
     @pytest.mark.asyncio
     async def test_starting_a_weight_update_pauses_probing(self):
         """Engines are unusable while their weights are being replaced."""
-        controller = _make_controller({"default": _RecordingServer()})
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
 
         info = await controller.start_update_weights()
         await controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
-        assert not controller._health_checker_activeness.get().active
+        assert not srv.health_checker_activeness.get().active
 
     @pytest.mark.asyncio
     async def test_preparing_a_rollout_resumes_probing(self):
         """Probing comes back exactly when the engines start serving traffic again."""
-        controller = _make_controller({"default": _RecordingServer()})
-        controller._health_checker_activeness.bump_active(False)
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+        srv.health_checker_activeness.bump_active(False)
 
         await controller.prepare_rollout(rollout_id=0)
 
-        assert controller._health_checker_activeness.get().active
+        assert srv.health_checker_activeness.get().active
 
     @pytest.mark.asyncio
     async def test_preparing_a_rollout_awaits_the_dashboard_engine_registration(self, monkeypatch):
@@ -257,12 +259,13 @@ class TestHealthCheckerActiveness:
     @pytest.mark.asyncio
     async def test_preparing_an_eval_resumes_probing(self):
         """Eval drives the same engines as a rollout does."""
-        controller = _make_controller({"default": _RecordingServer()})
-        controller._health_checker_activeness.bump_active(False)
+        srv = _RecordingServer()
+        controller = _make_controller({"default": srv})
+        srv.health_checker_activeness.bump_active(False)
 
         await controller.prepare_eval()
 
-        assert controller._health_checker_activeness.get().active
+        assert srv.health_checker_activeness.get().active
 
 
 class TestReconcile:
@@ -433,34 +436,83 @@ class TestReconcileAfterAFailedInit:
         with pytest.raises(RuntimeError, match="injected init failure"):
             await controller._reconcile(info.cell_id, info)
 
-        assert controller.get_cell_statuses() == {}
+        assert await controller.get_cell_statuses() == {}
 
 
-class TestGlobalHealthCheckerActiveness:
+class TestPerModelHealthCheckerActiveness:
+    @staticmethod
+    def _controller(*model_ids: str) -> tuple[InferenceController, dict[str, _RecordingServer]]:
+        servers = {model_id: _RecordingServer(model_name=model_id) for model_id in model_ids}
+        return _make_controller(servers), servers
+
     @pytest.mark.asyncio
-    async def test_init_hands_the_cells_the_controller_wide_activeness(self, monkeypatch: pytest.MonkeyPatch):
-        """Without it every cell keeps probing through the weight-update window the controller
-        just paused, and reports a mid-update engine unhealthy."""
-        received: dict[str, Any] = {}
+    async def test_a_weight_update_pauses_only_the_probing_of_its_own_policy(self):
+        """The other policy keeps serving through this window, and an unprobed engine is not healed."""
+        controller, servers = self._controller("solver", "verifier")
+        servers["solver"].update_weights = True
+        before = servers["verifier"].health_checker_activeness.get()
 
-        async def _fake_create_rollout_servers(args: Namespace, **kwargs: Any) -> dict[str, _RecordingServer]:
-            received.update(kwargs)
-            return {"default": _RecordingServer()}
+        await controller.start_update_weights(model_id="solver")
 
-        monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
-        monkeypatch.setattr(
-            inference_controller_module,
-            "RayWorkerProvider",
-            SimpleNamespace(create=lambda *, pool_ids: _FakeWorkerProvider([]).created_with(pool_ids)),
-        )
-        controller = InferenceController(make_args())
+        assert not servers["solver"].health_checker_activeness.get().active
+        assert servers["verifier"].health_checker_activeness.get() == before
 
-        await controller.init()
+    @pytest.mark.asyncio
+    async def test_a_rollout_of_one_policy_does_not_resume_the_probing_of_another(self):
+        """This is the race: verifier's next round used to un-pause probing of solver's engines
+        mid-broadcast, so the checker reported a live cell unhealthy and recycled it."""
+        controller, servers = self._controller("solver", "verifier")
+        async with controller.context_lock:
+            await controller._health_monitoring_pause("solver")
 
-        get_activeness = received["global_health_checker_activeness"]
-        assert get_activeness().active is True
-        controller._health_checker_activeness.bump_active(False)
-        assert get_activeness().active is False
+        await controller.prepare_rollout(rollout_id=0, model_id="verifier")
+
+        assert not servers["solver"].health_checker_activeness.get().active
+        assert servers["verifier"].health_checker_activeness.get().active
+
+    @pytest.mark.asyncio
+    async def test_a_policy_that_finished_training_leaves_its_engines_probed_again(self):
+        """Its last round ends with a weight update, and no later rollout of its own would ever un-pause it."""
+        controller, servers = self._controller("solver", "verifier")
+        servers["solver"].update_weights = True
+        await controller.start_update_weights(model_id="solver")
+        await controller.end_update_weights({})
+
+        await controller.prepare_eval(model_id="solver")
+
+        assert servers["solver"].health_checker_activeness.get().active
+        assert servers["verifier"].health_checker_activeness.get().active
+
+    @pytest.mark.asyncio
+    async def test_a_rollout_without_a_model_id_resumes_every_policy(self):
+        """A single policy run names no model, and must keep resuming the whole fleet."""
+        controller, servers = self._controller("solver", "verifier")
+        for srv in servers.values():
+            srv.health_checker_activeness.bump_active(False)
+
+        await controller.prepare_rollout(rollout_id=0)
+
+        assert all(srv.health_checker_activeness.get().active for srv in servers.values())
+
+    @pytest.mark.asyncio
+    async def test_offloading_pauses_every_policy(self):
+        """Colocate offloads the whole fleet at once, so every model stops answering probes."""
+        controller, servers = self._controller("solver", "verifier")
+
+        await controller.offload()
+
+        assert not any(srv.health_checker_activeness.get().active for srv in servers.values())
+
+    @pytest.mark.asyncio
+    async def test_an_eval_resumes_every_policy(self):
+        """Eval names no model either; it drives whatever fleet the run deployed."""
+        controller, servers = self._controller("solver", "verifier")
+        for srv in servers.values():
+            srv.health_checker_activeness.bump_active(False)
+
+        await controller.prepare_eval()
+
+        assert all(srv.health_checker_activeness.get().active for srv in servers.values())
 
 
 class TestInitSubscription:
