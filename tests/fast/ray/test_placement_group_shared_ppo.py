@@ -2,6 +2,7 @@ from argparse import Namespace
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import _get_placement_group_layout
@@ -17,6 +18,12 @@ def _layout_args(**overrides):
         "debug_rollout_only": False,
         "rollout_external": False,
         "colocate": False,
+        "use_critic": True,
+        "megatron_config": None,
+        "critic_load": None,
+        "critic_save": None,
+        "critic_lr": None,
+        "critic_lr_warmup_iters": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -44,6 +51,36 @@ def test_external_rollout_only_reserves_no_local_bundles():
 def test_external_rollout_reserves_gpus_for_the_trainer_only():
     """External engines run outside ray, so only the trainer's gpus may be bundled."""
     assert _get_placement_group_layout(_layout_args(rollout_external=True)) == (2, 2)
+
+
+def _multi_policy_layout_args(num_policies: int, **overrides):
+    model_ids = [chr(ord("a") + i) for i in range(num_policies)]
+    return _layout_args(megatron_config=encode_megatron_config(*model_ids), use_critic=False, **overrides)
+
+
+class TestPlacementGroupLayout:
+    def test_every_policy_reserves_a_trainer_slice_of_its_own(self):
+        """Sizing the group for one policy lands every policy on the same gpus."""
+        assert _get_placement_group_layout(_multi_policy_layout_args(1)) == (6, 2)
+        assert _get_placement_group_layout(_multi_policy_layout_args(2)) == (8, 4)
+        assert _get_placement_group_layout(_multi_policy_layout_args(3)) == (10, 6)
+
+    def test_the_rollout_side_of_the_layout_is_not_multiplied(self):
+        """Policies train apart but share one inference fleet, whose size --rollout-num-gpus alone decides."""
+        num_gpus, rollout_offset = _get_placement_group_layout(_multi_policy_layout_args(3))
+
+        assert num_gpus - rollout_offset == 4
+
+    def test_the_policy_count_multiplies_the_debug_and_external_layouts_too(self):
+        """These branches compute their own totals, so each one has to multiply on its own."""
+        assert _get_placement_group_layout(_multi_policy_layout_args(3, debug_train_only=True)) == (6, 0)
+        assert _get_placement_group_layout(_multi_policy_layout_args(3, rollout_external=True)) == (6, 6)
+
+    def test_only_the_actors_are_counted_as_policies(self):
+        """An actor and its critic share the actor placement group, so a critic must not widen it."""
+        args = _layout_args(megatron_config=encode_megatron_config("a"), use_critic=True)
+
+        assert _get_placement_group_layout(args) == (6, 2)
 
 
 class _RecordingRolloutExecutor:
