@@ -10,6 +10,10 @@ from miles.utils.http_utils import is_port_available
 
 logger = logging.getLogger(__name__)
 
+# ray uses 10002-19999, and 32768+ is the ephemeral range, so wrapped scans restart above ray's block
+_MIN_DYNAMIC_PORT = 20000
+_MAX_PORT = 65535
+
 
 async def call_agent_abort_hook(args) -> None:
     """Invoke the agent plugin's optional abort hook, if it defines one.
@@ -65,11 +69,19 @@ def get_current_node_ip():
 
 
 def get_free_port(start_port=10000, consecutive=1):
-    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available
+    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
+    # scanning upwards from start_port and wrapping around once the ports run out
+    highest_start = _MAX_PORT - consecutive + 1
+    assert start_port <= highest_start, f"{start_port=} leaves no room for {consecutive=} ports below {_MAX_PORT}"
+    lowest_start = min(start_port, _MIN_DYNAMIC_PORT)
+
     port = start_port
-    while not all(is_port_available(port + i) for i in range(consecutive)):
-        port += 1
-    return port
+    for _ in range(highest_start - lowest_start + 1):
+        if all(is_port_available(port + i) for i in range(consecutive)):
+            return port
+        port = port + 1 if port < highest_start else lowest_start
+
+    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {_MAX_PORT}]")
 
 
 def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
