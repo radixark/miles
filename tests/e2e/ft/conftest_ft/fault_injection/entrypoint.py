@@ -3,6 +3,7 @@
 import threading
 
 from tests.e2e.ft.conftest_ft.fault_injection.core import list_cells, run_fault_injection_loop
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog
 
 API_SERVER_PORT: int = 18080
@@ -10,7 +11,15 @@ MEAN_INTERVAL_SECONDS: float = 60.0
 
 
 class FaultInjectorHandle:
-    def __init__(self, *, base_url: str, seed: int, mean_interval_seconds: float, cell_type: str | None) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        seed: int,
+        mean_interval_seconds: float,
+        cell_type: str | None,
+        cell_fault_forms: CellFaultForms,
+    ) -> None:
         self.num_successful_injections: int = 0
         self.event_log = EventLog()
         self._base_url = base_url
@@ -26,6 +35,7 @@ class FaultInjectorHandle:
                 "on_successful_injection": self._on_successful_injection,
                 "cell_type": cell_type,
                 "event_log": self.event_log,
+                "cell_fault_forms": cell_fault_forms,
             },
             daemon=True,
             name="ft-random-fault-injector",
@@ -50,10 +60,19 @@ class FaultInjectorHandle:
 
 
 def spawn_fault_injector(
-    *, base_url: str, seed: int, mean_interval_seconds: float, cell_type: str | None
+    *,
+    base_url: str,
+    seed: int,
+    mean_interval_seconds: float,
+    cell_type: str | None,
+    cell_fault_forms: CellFaultForms,
 ) -> FaultInjectorHandle:
     handle = FaultInjectorHandle(
-        base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds, cell_type=cell_type
+        base_url=base_url,
+        seed=seed,
+        mean_interval_seconds=mean_interval_seconds,
+        cell_type=cell_type,
+        cell_fault_forms=cell_fault_forms,
     )
     handle.start()
     return handle
