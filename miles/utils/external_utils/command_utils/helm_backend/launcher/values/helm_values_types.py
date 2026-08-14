@@ -60,6 +60,13 @@ class PoolEntry(ValuesModel):
 class ObjectNames(ValuesModel):
     orchestrator: _ObjectName
     mooncake_master: _ObjectName
+    uninstall: _ObjectName
+    uninstall_manifest: _ObjectName
+
+
+class AutoUninstallSection(ValuesModel):
+    enabled: bool
+    service_account: _ObjectName
 
 
 class OrchestratorSection(ValuesModel):
@@ -83,6 +90,8 @@ class RunValues(ValuesModel):
     inference_engines: list[PoolEntry] | None = None
     trainer_engines: list[PoolEntry] | None = None
     env: _EnvVars | None = None
+    mooncake: MooncakeSection | None = None
+    auto_uninstall: AutoUninstallSection | None = None
 
 
 class Image(ValuesModel):

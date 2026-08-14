@@ -8,6 +8,9 @@ from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAM
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
 
+_UNINSTALL_COMPONENT = "uninstall"
+_UNINSTALL_MANIFEST_COMPONENT = "uninstall-manifest"
+
 _RUNS_DIR_NAME = "miles-runs"
 _STATE_DIR_NAME = "state"
 _VALUES_DIR_NAME = "values"
@@ -26,6 +29,14 @@ class RunNames:
     @staticmethod
     def orchestrator_host(*, release: str, namespace: str) -> str:
         return RunNames.service_fqdn(name=component_name(release, ORCHESTRATOR_COMPONENT), namespace=namespace)
+
+    @staticmethod
+    def uninstall_job(*, release: str) -> str:
+        return component_name(release, _UNINSTALL_COMPONENT)
+
+    @staticmethod
+    def uninstall_manifest(*, release: str) -> str:
+        return component_name(release, _UNINSTALL_MANIFEST_COMPONENT)
 
 
 class RunFiles:

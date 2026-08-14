@@ -30,6 +30,25 @@
     }
   },
   "definitions": {
+    "AutoUninstallSection": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "serviceAccount": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled",
+        "serviceAccount"
+      ],
+      "type": "object"
+    },
     "Image": {
       "additionalProperties": false,
       "properties": {
@@ -102,6 +121,29 @@
       ],
       "type": "object"
     },
+    "MooncakeSection": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "rpcPort": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "metricsPort": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "resources": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "NodeLocalStorage": {
       "additionalProperties": false,
       "properties": {
@@ -136,11 +178,25 @@
           "minLength": 1,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "type": "string"
+        },
+        "uninstall": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "uninstallManifest": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
         }
       },
       "required": [
         "orchestrator",
-        "mooncakeMaster"
+        "mooncakeMaster",
+        "uninstall",
+        "uninstallManifest"
       ],
       "type": "object"
     },
@@ -334,6 +390,12 @@
             "pattern": "^[ -<>-~]+$"
           },
           "type": "object"
+        },
+        "mooncake": {
+          "$ref": "#/definitions/MooncakeSection"
+        },
+        "autoUninstall": {
+          "$ref": "#/definitions/AutoUninstallSection"
         }
       },
       "required": [
