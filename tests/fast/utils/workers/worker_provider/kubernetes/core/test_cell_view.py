@@ -16,7 +16,9 @@ class FakeEngine:
         return prompt
 
 
-def make_parsed_pod(*, pod_in_cell_index: int, cell_size: int = 2, ready: bool = True, **kwargs) -> ParsedPod:
+def make_parsed_pod(
+    *, pod_in_cell_index: int, cell_size: int = 2, ready: bool = True, deleting: bool = False, **kwargs
+) -> ParsedPod:
     pod_ip = kwargs.pop("pod_ip", f"10.0.0.{pod_in_cell_index + 1}")
     return ParsedPod(
         name=f"engine-0-{pod_in_cell_index}",
@@ -25,6 +27,7 @@ def make_parsed_pod(*, pod_in_cell_index: int, cell_size: int = 2, ready: bool =
         pool_id="engine",
         pod_in_cell_index=pod_in_cell_index,
         ready=ready,
+        deleting=deleting,
         pod_ip=pod_ip,
         uid=f"uid-{pod_in_cell_index}",
         restart_count=0,
@@ -89,6 +92,21 @@ class TestCellLiveness:
         pods = [make_parsed_pod(pod_in_cell_index=0), make_parsed_pod(pod_in_cell_index=1, ready=False)]
 
         assert build_cell_info(pods).alive is False
+
+
+class TestCellDeletion:
+    def test_a_cell_holding_a_pod_under_deletion_is_not_alive(self):
+        """A gracefully terminating pod stays Ready, so readiness alone reports a cell that is going away."""
+        pods = [make_parsed_pod(pod_in_cell_index=0), make_parsed_pod(pod_in_cell_index=1, deleting=True)]
+
+        assert build_cell_info(pods).alive is False
+
+    def test_a_pod_entering_deletion_changes_the_cell_members_hash(self):
+        """Consumers reconcile on this hash, so a membership change it does not cover is never noticed."""
+        before = [make_parsed_pod(pod_in_cell_index=0), make_parsed_pod(pod_in_cell_index=1)]
+        after = [make_parsed_pod(pod_in_cell_index=0), make_parsed_pod(pod_in_cell_index=1, deleting=True)]
+
+        assert build_cell_info(before).workers_hash != build_cell_info(after).workers_hash
 
 
 class TestCellMeta:
