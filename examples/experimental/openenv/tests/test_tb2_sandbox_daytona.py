@@ -36,6 +36,27 @@ def test_sandbox_labels_explicit_launcher_and_run_id(monkeypatch):
     assert labels["openenv-run-id"] == "tb2-grpo-0717"
 
 
+def test_make_daytona_reuses_one_client(monkeypatch):
+    """One client per call is a socket leak: the SDK owns a connection pool with
+    no close(), and this runs once per create attempt, retries included."""
+    monkeypatch.setattr(sandbox, "_client", None)
+    monkeypatch.setenv("DAYTONA_API_KEY", "dtn_test")
+    built = []
+
+    class _Daytona:
+        def __init__(self, config):
+            built.append(config)
+
+    fake = type(sys)("daytona")
+    fake.Daytona = _Daytona
+    fake.DaytonaConfig = lambda **kw: kw
+    monkeypatch.setitem(sys.modules, "daytona", fake)
+
+    clients = [sandbox.make_daytona() for _ in range(5)]
+    assert len(built) == 1, "make_daytona built a client per call"
+    assert all(c is clients[0] for c in clients)
+
+
 def test_resolve_api_key_env_value_wins(monkeypatch, tmp_path: Path):
     key_file = tmp_path / "api_key"
     key_file.write_text("dtn_from_file\n")
