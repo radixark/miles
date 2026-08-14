@@ -10,7 +10,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
-from miles.ray.rollout.router_manager import wait_session_server_ready
+from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids
 from miles.utils.context_lock import (
@@ -54,10 +54,12 @@ class InferenceController:
         if self.args.debug_train_only:
             return
 
+        router_addrs = await resolve_router_addrs(self.args)
         self.servers = await create_rollout_servers(
             self.args,
             context_lock=self.context_lock,
             global_health_checker_activeness=self._health_checker_activeness.get,
+            router_addrs=router_addrs,
         )
         if self.args.eval_num_gpus > 0:
             self.eval_fleet = EvalFleet(self.args, srv=self.servers["eval"])

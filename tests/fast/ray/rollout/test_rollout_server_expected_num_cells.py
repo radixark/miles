@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
-from miles.ray.rollout import rollout_server as rollout_server_module
-from miles.ray.rollout.rollout_server import create_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch
@@ -101,20 +100,18 @@ def _expected_num_cells_from_specs(args: Namespace) -> dict[int, int]:
     return counts
 
 
-@pytest.fixture(autouse=True)
-def stub_router(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _wait_router_ready(model_idx: int) -> HostAndPort:
-        return HostAndPort(host="127.0.0.1", port=20000 + model_idx)
-
-    monkeypatch.setattr(rollout_server_module, "wait_router_ready", _wait_router_ready)
+def _make_router_addrs(models: list[dict]) -> dict[str, HostAndPort]:
+    return {
+        model["name"]: HostAndPort(host="127.0.0.1", port=20000 + model_idx) for model_idx, model in enumerate(models)
+    }
 
 
-async def _create_servers(args) -> dict:
-    """create_rollout_servers takes the controller's lock and activeness getter in production."""
+async def _create_servers(args: Namespace, models: list[dict]) -> dict[str, RolloutServer]:
     return await create_rollout_servers(
         args,
-        context_lock=ContextLock("test"),
+        context_lock=ContextLock("InferenceController"),
         global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
+        router_addrs=_make_router_addrs(models),
     )
 
 
@@ -137,7 +134,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         args = _make_args_with_config(models=models, tmp_path=tmp_path)
         expected_per_model_idx = _expected_num_cells_from_specs(args)
 
-        servers = await _create_servers(args)
+        servers = await _create_servers(args, models)
 
         actual_per_model_idx = {
             model_idx: servers[model["name"]].expected_num_cells for model_idx, model in enumerate(models)
@@ -148,7 +145,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         """Placeholder groups only reserve GPU slots, so counting them would make the barrier unreachable."""
         args = _make_args_with_config(models=_CONFIG_WITH_PLACEHOLDER, tmp_path=tmp_path)
 
-        servers = await _create_servers(args)
+        servers = await _create_servers(args, _CONFIG_WITH_PLACEHOLDER)
 
         assert servers["actor"].expected_num_cells == 2
 
@@ -156,10 +153,21 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         """Sharing one pool size across models would block the small model behind the big one."""
         args = _make_args_with_config(models=_CONFIG_MULTI_MODEL, tmp_path=tmp_path)
 
-        servers = await _create_servers(args)
+        servers = await _create_servers(args, _CONFIG_MULTI_MODEL)
 
         assert servers["actor"].expected_num_cells == 4
         assert servers["ref"].expected_num_cells == 1
+
+    async def test_every_model_talks_to_its_own_router(self, tmp_path: Path) -> None:
+        """A server paired with another model's router would advertise its cells to the wrong fleet."""
+        args = _make_args_with_config(models=_CONFIG_MULTI_MODEL, tmp_path=tmp_path)
+
+        servers = await _create_servers(args, _CONFIG_MULTI_MODEL)
+
+        actual = {
+            name: HostAndPort(host=server.router_ip, port=server.router_port) for name, server in servers.items()
+        }
+        assert actual == _make_router_addrs(_CONFIG_MULTI_MODEL)
 
 
 class TestEngineSpecNamingUsedByTheCrossCheck:
