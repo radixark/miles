@@ -95,7 +95,7 @@ class _RecordingRolloutExecutor:
         self.loaded_rollout_id = rollout_id
 
 
-def _patch_train_controller_handles(monkeypatch) -> list:
+def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int]] | None = None) -> list:
     handles = []
     calls: list[tuple[str, str]] = []
     monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: FakeBackendCapability())
@@ -110,7 +110,7 @@ def _patch_train_controller_handles(monkeypatch) -> list:
         async def init(self, args):
             calls.append((self.trainer_id, "init"))
             self.inited_with = args
-            return [0]
+            return (restored or {}).get(self.trainer_id, [0])
 
         async def get_train_parallel_config(self):
             calls.append((self.trainer_id, "get_train_parallel_config"))
@@ -151,6 +151,38 @@ def _training_models_args(**overrides):
     }
     values.update(overrides)
     return Namespace(**values)
+
+
+async def test_an_actor_and_a_critic_that_restored_to_different_rollouts_are_refused(monkeypatch):
+    """The two checkpoint trees are written one after the other, so a crash between them lands exactly here."""
+    _patch_train_controller_handles(monkeypatch, restored={"actor": [5], "critic": [4]})
+
+    with pytest.raises(AssertionError):
+        await placement_group_module.create_training_models(
+            _training_models_args(), rollout_executor=_RecordingRolloutExecutor()
+        )
+
+
+async def test_an_actor_and_a_critic_that_agree_set_the_start_rollout_id(monkeypatch):
+    """A resume takes its position from the checkpoints, and the executor replays from the rollout before it."""
+    _patch_train_controller_handles(monkeypatch, restored={"actor": [5], "critic": [5]})
+    args = _training_models_args()
+    rollout_executor = _RecordingRolloutExecutor()
+
+    await placement_group_module.create_training_models(args, rollout_executor=rollout_executor)
+
+    assert args.start_rollout_id == 5
+    assert rollout_executor.loaded_rollout_id == 4
+
+
+async def test_a_run_without_a_critic_takes_the_actor_position(monkeypatch):
+    """With one trainer there is nothing to agree with, and the actor's own position must still be taken."""
+    _patch_train_controller_handles(monkeypatch, restored={"actor": [5]})
+    args = _training_models_args(use_critic=False)
+
+    await placement_group_module.create_training_models(args, rollout_executor=_RecordingRolloutExecutor())
+
+    assert args.start_rollout_id == 5
 
 
 async def test_a_critic_run_inits_one_controller_per_role(monkeypatch):
