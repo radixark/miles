@@ -15,12 +15,14 @@ from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
+from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
     CommandWorkerSpec,
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
+    WorkerMetaContext,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,8 +74,15 @@ class RayWorkerManager:
                 gpu_ids=actor.gpu_ids,
                 actor_handle=actor.actor_handle,
             )
-            for actor in cell.actors
+            for actor in (cell.actors if cell.actors is not None else [])
         ]
+
+    def get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
+        # TODO: about `get_worker_infos` (which is only used by dashboard)
+        unknown = set(pool_ids) - set(self._pools)
+        assert not unknown, f"{unknown=} {sorted(self._pools)=}"
+        infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
+        return {info.cell_id: info for info in infos}
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
         matches = [a for g in self._pools.values() for c in g.cells for a in c.actors if a.name == worker_name]
@@ -152,6 +161,24 @@ class _CellManager(Generic[SpecT]):
 
     async def _for_all_actors(self, fn: Callable[[_BaseActorManager], Any]):
         await asyncio.gather(*[fn(a) for a in self.actors])
+
+    def get_info(self) -> CellInfo:
+        return CellInfo(
+            cell_id=self.cell_id,
+            pool_id=self.spec.name,
+            alive=self.alive,
+            worker_names=[a.name for a in self.actors] if self.actors is not None else [],
+            workers_hash=f"pseudo-hash-{self.generation}",
+            meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
+        )
+
+    @property
+    def cell_id(self) -> str:
+        return f"{self.spec.name}-{self.cell_index}"
+
+    @property
+    def alive(self) -> bool:
+        return self.actors is not None
 
 
 _SHUTDOWN_TIMEOUT = 30

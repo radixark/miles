@@ -816,6 +816,15 @@ class TestGetWorkerInfos:
         assert [info.self_addrs for info in infos] == manager.get_addrs()["engine"][2:]
         assert [info.actor_handle for info in infos] == fake_ray_cluster.handles[2:]
 
+    async def test_a_stopped_cell_reports_no_workers_instead_of_raising(self, fake_ray_cluster: FakeRayCluster):
+        """A cell stopped between snapshot and round-trip must report an empty worker list, not crash."""
+        manager = await _launch([_make_spec("engine")])
+        await manager.stop_cells(["engine-0"])
+
+        infos = manager.get_worker_infos("engine-0")
+
+        assert infos == []
+
 
 class TestGetWorkerInfosErrors:
     async def test_an_unknown_pool_is_reported_instead_of_guessed(self, fake_ray_cluster: FakeRayCluster):
@@ -831,3 +840,38 @@ class TestGetWorkerInfosErrors:
 
         with pytest.raises(IndexError):
             manager.get_worker_infos("engine", 2)
+
+
+class TestGetCellInfos:
+    async def test_only_the_asked_for_specs_are_reported(self, fake_ray_cluster: FakeRayCluster):
+        """The controller owns engines only; reconciling a router would try to serve from it."""
+        manager = await _launch([_make_spec("engine", num_cells=2), _make_spec("router")])
+
+        infos = manager.get_cell_infos(pool_ids=["engine"])
+
+        assert sorted(infos) == ["engine-0", "engine-1"]
+
+    async def test_every_info_carries_the_spec_it_came_from(self, fake_ray_cluster: FakeRayCluster):
+        """The spec name is what makes a cell's role explicit instead of sniffed from its meta."""
+        manager = await _launch([_make_spec("engine")])
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].pool_id == "engine"
+
+    async def test_an_unknown_pool_is_reported_instead_of_silently_empty(self, fake_ray_cluster: FakeRayCluster):
+        """A renamed spec would otherwise make every consumer see zero cells and blame something else."""
+        manager = await _launch([_make_spec("engine")])
+
+        with pytest.raises(AssertionError):
+            manager.get_cell_infos(pool_ids=["engine", "router"])
+
+    async def test_asking_for_nothing_reports_nothing(self, fake_ray_cluster: FakeRayCluster):
+        """A run with no engines of its own must not fall back to seeing everyone else's."""
+        manager = await _launch([_make_spec("engine")])
+
+        assert manager.get_cell_infos(pool_ids=[]) == {}
+
+    async def test_every_info_says_whether_its_cell_still_has_a_process(self, fake_ray_cluster: FakeRayCluster):
+        """A suspended cell must stay listed, or nothing could ever ask for it to be resumed."""
+        manager = await _launch([_make_spec("engine")])
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive
