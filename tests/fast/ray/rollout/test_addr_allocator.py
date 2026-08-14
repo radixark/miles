@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import ray
+
 from tests.fast.ray.rollout.conftest import fake_engine, make_args
 
 import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.server_cell import ServerCell
-from miles.ray.rollout.server_engine import ServerEngine
 
 
 def _start_engines_and_collect_addressing(
@@ -22,13 +23,13 @@ def _start_engines_and_collect_addressing(
     per global rank, the kwargs its ``init`` was called with."""
     requested = dict(rollout_engines)
     cell = ServerCell(
-        engines=[ServerEngine() for _ in requested],
         args=args,
-        pg=None,
+        num_nodes=len(requested),
         worker_type=worker_type,
         rank_offset=min(requested),
     )
     for engine in requested.values():
+        engine.__class__ = ray.actor.ActorHandle
         engine.init.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
 
     def _launch(*, global_rank, **kwargs):
