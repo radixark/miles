@@ -112,6 +112,10 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
     return f"{args.run_uuid}-{instance_index}"
 
 
+def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
+    return f"inference-engine-{model_idx}-{group_index}"
+
+
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
     config = resolve_sglang_config(args)  # TODO avoid resolve repeatedly
 
@@ -119,10 +123,11 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
         _compute_spec_inference_engine(
             args,
             model_idx=model_idx,
+            group_index=group_index,
             server_group_config=server_group_config,
         )
         for model_idx, model_cfg in enumerate(config.models)
-        for server_group_config in model_cfg.server_groups
+        for group_index, server_group_config in enumerate(model_cfg.server_groups)
         if server_group_config.worker_type != "placeholder"
     ]
 
@@ -130,6 +135,7 @@ def specs_inference_engine(args) -> list[CommandWorkerSpec]:
 def _compute_spec_inference_engine(
     args,
     model_idx: int,
+    group_index: int,
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
@@ -152,7 +158,7 @@ def _compute_spec_inference_engine(
 
     envs = compute_inference_engine_env_vars(args)
     return CommandWorkerSpec(
-        name=f"inference-engine-{model_idx}",
+        name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
         port_infos=[
             PortInfo(name="primary", static_port=8000, allow_dynamic=True),
             PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=True),

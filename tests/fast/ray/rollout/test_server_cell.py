@@ -22,7 +22,7 @@ def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool =
     cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(num_nodes)])
     if not addressed:
         return cell
-    cell._mark_addressing([AddrInfo(server_url=f"http://10.0.0.{i + 1}:3000{i}") for i in range(num_nodes)])
+    cell._mark_addressing(AddrInfo(server_url="http://10.0.0.1:30000"))
     if alive:
         cell._mark_alive()
     return cell
@@ -72,7 +72,7 @@ class TestServerCellState:
         """Only node 0 serves the endpoint the router routes to."""
         cell = _allocated_cell(num_nodes=2)
         assert cell.is_alive
-        assert cell.addr_info is cell.addr_infos[0]
+        assert cell.addr_info.server_url == "http://10.0.0.1:30000"
         assert cell.api_client.server_url == "http://10.0.0.1:30000"
 
     def test_stopping_releases_the_whole_cell(self):
@@ -101,7 +101,7 @@ class TestServerCellState:
 
         cell._mark_stopped()
         cell._mark_allocated_uninitialized([fake_actor_handle()])
-        cell._mark_addressing([AddrInfo(server_url="http://10.0.0.9:39999")])
+        cell._mark_addressing(AddrInfo(server_url="http://10.0.0.9:39999"))
         cell._mark_alive()
 
         assert cell.api_client.server_url == "http://10.0.0.9:39999"
@@ -191,12 +191,7 @@ def _addressed_cell(
         cell_id="cell-0",
     )
     cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(2)])
-    cell._mark_addressing(
-        [
-            AddrInfo(server_url=f"http://10.0.0.{index + 1}:3000{index}", bootstrap_port=bootstrap_port)
-            for index in range(2)
-        ]
-    )
+    cell._mark_addressing(AddrInfo(server_url="http://10.0.0.1:30000", bootstrap_port=bootstrap_port))
     cell._mark_alive()
     return cell
 
