@@ -6,6 +6,7 @@ from typing import Any, Generic, TypeVar
 import ray
 
 from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_worker_name
@@ -139,6 +140,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
                 num_cpus=0.2,
                 num_gpus=0,
                 runtime_env={"env_vars": self.spec.env_var()},
+                **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
             )
             .remote()
         )
