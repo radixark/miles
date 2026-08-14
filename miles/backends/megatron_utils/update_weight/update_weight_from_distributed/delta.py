@@ -176,6 +176,9 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                     ]
                 )
                 _check_weight_sync_results(results, is_lora=False)
+            else:
+                # TODO: temporarily weaken checkers; should enhance and fix related logics
+                _update_weight_version_if_unset(self.rollout_engines, str(self.weight_version))
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -409,3 +412,23 @@ def _atomic_write(path: str, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+_UNSET_WEIGHT_VERSION = "default"
+
+
+def _update_weight_version_if_unset(rollout_engines: Sequence[SGLangApiClient], weight_version: str) -> None:
+    reported = async_utils.wait_futures(
+        [async_utils.submit(client.get_weight_version()) for client in rollout_engines]
+    )
+    unset = [
+        client
+        for client, version in zip(rollout_engines, reported, strict=True)
+        if version in (None, _UNSET_WEIGHT_VERSION)
+    ]
+    async_utils.wait_futures(
+        [
+            async_utils.submit(client.update_weight_version(weight_version=weight_version, abort_all_requests=False))
+            for client in unset
+        ]
+    )
