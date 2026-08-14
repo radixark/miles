@@ -173,6 +173,15 @@ def flops_args_from_hf_config(config):
     if shared_ffn is None and getattr(config, "n_shared_experts", None):
         shared_ffn = config.n_shared_experts * moe_ffn
 
+    moe_layer_freq = _moe_layer_pattern(config, num_layers, num_experts)
+    needs_dense = moe_layer_freq is None or any(f == 0 for f in moe_layer_freq)
+    needs_moe = moe_layer_freq is not None and any(f > 0 for f in moe_layer_freq)
+    if (needs_dense and dense_ffn is None) or (needs_moe and moe_ffn is None):
+        raise ValueError(
+            f"{type(config).__name__} does not expose the FFN widths the FLOPs model needs "
+            f"(dense={dense_ffn}, moe={moe_ffn}); it likely nests them under a sub-config"
+        )
+
     return SimpleNamespace(
         hidden_size=hidden_size,
         num_attention_heads=num_attention_heads,
@@ -185,7 +194,7 @@ def flops_args_from_hf_config(config):
         moe_ffn_hidden_size=moe_ffn,
         moe_router_topk=_first(config, "num_experts_per_tok", "moe_topk", default=1),
         moe_shared_expert_intermediate_size=shared_ffn,
-        moe_layer_freq=_moe_layer_pattern(config, num_layers, num_experts),
+        moe_layer_freq=moe_layer_freq,
         q_lora_rank=getattr(config, "q_lora_rank", None),
         kv_lora_rank=getattr(config, "kv_lora_rank", None),
         qk_head_dim=getattr(config, "qk_nope_head_dim", None) or 0,

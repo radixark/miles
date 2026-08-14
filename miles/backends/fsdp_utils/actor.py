@@ -117,7 +117,11 @@ class FSDPTrainRayActor(TrainRayActor):
             dist.barrier(group=get_gloo_group())
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
-        self._flops_args = flops_args_from_hf_config(self.hf_config)
+        try:
+            self._flops_args = flops_args_from_hf_config(self.hf_config)
+        except (AssertionError, AttributeError, ValueError) as e:
+            self._flops_args = None
+            logger.warning(f"MFU will not be reported: {e}")
 
         routing_replay.enable(args)
 
@@ -441,8 +445,10 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_id=rollout_id,
             args=self.args,
             is_primary_rank=dist.get_rank() == 0,
-            compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(
-                seq_lens, self._flops_args, dist.get_world_size()
+            compute_total_fwd_flops=(
+                (lambda seq_lens: fwd_tflops_per_gpu(seq_lens, self._flops_args, dist.get_world_size()))
+                if self._flops_args is not None
+                else None
             ),
         )
 

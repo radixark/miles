@@ -143,6 +143,13 @@ def test_shared_experts_sized_from_the_borrowed_expert_width():
     )
 
 
+def test_a_config_that_hides_its_ffn_width_is_rejected_up_front():
+    hf = hf_config()
+    del hf.intermediate_size
+    with pytest.raises(ValueError, match="does not expose the FFN widths"):
+        flops_args_from_hf_config(hf)
+
+
 def test_deepseek_style_dense_prefix_matches():
     assert_same(
         hf_config(
