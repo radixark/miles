@@ -258,15 +258,6 @@ class ServerCell:
         self._state = new_state
         logger.info(f"Cell {self.meta.cell_id} {debug_name} end new={self._state}")
 
-    async def probe_and_mark_dead(self) -> None:
-        if not self.is_allocated:
-            return
-        try:
-            await asyncio.wait_for(self.api_client.get_weight_version(), timeout=60)
-        except Exception as e:
-            logger.warning(f"Cell unreachable ({e!r}); marking stopped for recovery")
-            self._mark_stopped()
-
     async def offload(self, tags: list[str] | None):
         return await self.api_client.release_memory_occupation(tags=tags)
 
