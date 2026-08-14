@@ -1,4 +1,3 @@
-import copy
 import logging
 import socket
 from typing import NamedTuple
@@ -7,6 +6,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.ray.specs.train import compute_critic_args
 from miles.ray.train.group import RayTrainGroup
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
@@ -164,10 +164,7 @@ async def create_training_models(args, pgs, inference_controller, rollout_execut
     actor_start_rollout_ids = await actor_model.init()
 
     if args.use_critic:
-        critic_args = copy.deepcopy(args)
-        critic_args.kl_coef = 0
-        critic_args.use_opd = False
-        critic_args.disable_param_buffers_cpu_backup = False
+        critic_args = compute_critic_args(args)
         critic_model = allocate_train_group(
             args=critic_args,
             num_nodes=args.critic_num_nodes,
