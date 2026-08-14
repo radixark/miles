@@ -105,16 +105,24 @@ class TestCreateRolloutComponents:
         assert num_rollout_per_epoch is None
         assert args.num_rollout == 3
 
-    async def test_weight_check_and_offload_go_to_the_controller(self, fake_components):
-        """Engine-side startup steps go to the controller, never to the executor."""
+    async def test_the_weight_check_reset_goes_to_the_controller(self, fake_components):
+        """The startup tensor reset goes to the controller, never to the executor."""
         args = _make_args(num_rollout=1, check_weight_update_equal=True, offload_rollout=True)
 
         await create_rollout_components(args)
 
         actions = [call.kwargs["action"] for call in fake_components.controller.check_weights.await_args_list]
-        assert actions == ["snapshot", "reset_tensors"]
-        fake_components.controller.offload.assert_awaited_once()
+        assert actions == ["reset_tensors"]
         fake_components.executor_handle.check_weights.remote.assert_not_called()
+
+    async def test_the_baseline_snapshot_is_not_taken_after_the_engines_are_up(self, fake_components):
+        """Snapshotting here would baseline the remapped weight storage, not the checkpoint."""
+        args = _make_args(num_rollout=1, check_weight_update_equal=True, offload_rollout=True)
+
+        await create_rollout_components(args)
+
+        actions = [call.kwargs["action"] for call in fake_components.controller.check_weights.await_args_list]
+        assert "snapshot" not in actions
 
 
 class TestCreatePlacementGroups:
