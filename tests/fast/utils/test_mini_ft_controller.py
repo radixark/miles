@@ -96,7 +96,7 @@ def _build_cell_json(
         "kind": "Cell",
         "metadata": {
             "name": name,
-            "labels": {"miles.io/cell-type": "actor", "miles.io/cell-index": "0"},
+            "labels": {"miles.io/cell-type": "actor", "miles.io/cell-id": name},
         },
         "spec": {"suspend": False},
         "status": {
