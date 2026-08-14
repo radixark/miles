@@ -37,11 +37,12 @@ def patch_low_level(monkeypatch, mock_engine_http_servers):
     - ``start_session_server`` → no-op (the production default touches network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
+    import miles.ray.rollout.server_cell as scell
     import miles.ray.rollout.server_group as sg
     from miles.ray.rollout.addr_allocator import PortCursors
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
-    monkeypatch.setattr(sg, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
+    monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
     # multi-model tests would otherwise spawn a real router subprocess for
     # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
     monkeypatch.setattr(
