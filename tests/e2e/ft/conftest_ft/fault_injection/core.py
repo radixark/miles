@@ -8,15 +8,13 @@ from collections.abc import Callable
 
 import requests
 
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog, cell_type_of
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_genuinely_alive
-
-from miles.utils.test_utils.fault_injector import FailureMode
 
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS: float = 2.0
-FAILURE_MODES: list[FailureMode] = [FailureMode.SIGKILL, FailureMode.EXIT, FailureMode.SEGFAULT]
 
 
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
@@ -32,6 +30,7 @@ def run_fault_injection_loop(
     on_successful_injection: Callable[[], None],
     cell_type: str | None,
     event_log: EventLog,
+    cell_fault_forms: CellFaultForms,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
 ) -> None:
     rng = random.Random(seed)
@@ -67,19 +66,15 @@ def run_fault_injection_loop(
 
         target = rng.choice(alive_of_type[rng.choice(spare_types)])
         cell_name = target["metadata"]["name"]
-        mode = rng.choice(FAILURE_MODES)
+        form = rng.choice(cell_fault_forms[cell_type_of(target)])
         try:
-            resp = requests.post(
-                f"{base_url}/api/v1/cells/{cell_name}/inject-fault",
-                json={"mode": mode.value, "sub_index": 0},
-                timeout=5,
-            )
-            resp.raise_for_status()
+            form.inject(target, rng)
             event_log.note_injected(cell_name)
             on_successful_injection()
             next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
+            logger.info("Injected fault %s into %s", form.name, cell_name)
         except Exception:
-            logger.info("Failed to inject fault into %s", cell_name, exc_info=True)
+            logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
 
 
 def list_cells(*, base_url: str, cell_type: str | None) -> list[dict] | None:
