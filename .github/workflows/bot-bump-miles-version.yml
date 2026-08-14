@@ -1,6 +1,6 @@
 name: Bot Bump Miles Version
 # Optional convenience for release step ①: a hand-opened PR editing setup.py's
-# version line (via scripts/release/bump_miles_version.py) is fully equivalent
+# version line (via .github/scripts/release/bump_miles_version.py) is fully equivalent
 # and triggers CI normally.
 
 on:
@@ -34,7 +34,7 @@ jobs:
           git config user.email "miles-bot@users.noreply.github.com"
           BRANCH_NAME="bot/bump-miles-version-${NEW_VERSION}-$(echo $RANDOM | md5sum | head -c 4)"
           git checkout -b "$BRANCH_NAME"
-          python scripts/release/bump_miles_version.py "$NEW_VERSION"
+          python .github/scripts/release/bump_miles_version.py "$NEW_VERSION"
           git add setup.py
           git commit -m "release: bump miles version to ${NEW_VERSION}"
           git push origin "$BRANCH_NAME"

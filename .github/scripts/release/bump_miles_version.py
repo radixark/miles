@@ -1,6 +1,6 @@
 """Bump the miles version in setup.py.
 
-Usage: python scripts/release/bump_miles_version.py 0.3.0
+Usage: python .github/scripts/release/bump_miles_version.py 0.3.0
 """
 
 import re
@@ -19,7 +19,7 @@ def main() -> int:
         print(f"Invalid version {new_version!r}; expected X.Y.Z, X.Y.ZrcN, or X.Y.Z.postN", file=sys.stderr)
         return 1
 
-    setup_py = Path(__file__).resolve().parents[2] / "setup.py"
+    setup_py = Path(__file__).resolve().parents[3] / "setup.py"
     content = setup_py.read_text()
     new_content, n = re.subn(r'version="[^"]+"', f'version="{new_version}"', content)
     assert n == 1, f"expected exactly one version= assignment in setup.py, found {n}"

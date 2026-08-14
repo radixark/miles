@@ -96,7 +96,7 @@ jobs:
               | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
           }
 
-          python3 scripts/release/write_release_lock.py "$BRANCH_NAME" "$SGLANG_SHA" "$MEGATRON_SHA" \
+          python3 .github/scripts/release/write_release_lock.py "$BRANCH_NAME" "$SGLANG_SHA" "$MEGATRON_SHA" \
             "$CI_IMAGE_TAG" "$(wheels_fp cu130-x86_64)" "$(wheels_fp cu130-aarch64)" "$(wheels_fp cu129-x86_64)"
           git add release-lock.json
           git commit -m "release: freeze dependency lockfile for $BRANCH_NAME"
