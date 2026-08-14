@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel
 
 from miles.utils.external_utils.command_utils.common import run_process
+from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -93,6 +94,10 @@ class Kubectl:
         if since_time is not None:
             command += ["--since-time", since_time]
         return command
+
+    @staticmethod
+    def release_selector(release: str) -> str:
+        return f"{INSTANCE_LABEL}={release}"
 
     @staticmethod
     def _run(
