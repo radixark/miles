@@ -13,6 +13,9 @@
         "sharedStorage": {
           "$ref": "#/definitions/SharedStorage"
         },
+        "paths": {
+          "$ref": "#/definitions/Paths"
+        },
         "scheduling": {
           "$ref": "#/definitions/Scheduling"
         },
@@ -21,6 +24,9 @@
             "type": "string"
           },
           "propertyNames": {
+            "not": {
+              "const": "PYTHONPATH"
+            },
             "pattern": "^[ -<>-~]+$"
           },
           "type": "object"
@@ -67,6 +73,49 @@
         "repository",
         "tag"
       ],
+      "type": "object"
+    },
+    "Paths": {
+      "additionalProperties": false,
+      "properties": {
+        "runsSubPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^([^/].*)?$",
+          "type": "string"
+        },
+        "repos": {
+          "$ref": "#/definitions/Repos"
+        }
+      },
+      "type": "object"
+    },
+    "Repos": {
+      "additionalProperties": false,
+      "properties": {
+        "miles": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^([^/].*)?$",
+          "type": "string"
+        },
+        "megatron": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^([^/].*)?$",
+          "type": "string"
+        },
+        "sglang": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^([^/].*)?$",
+          "type": "string"
+        }
+      },
       "type": "object"
     },
     "Scheduling": {

@@ -11,6 +11,15 @@ infra:
     hostPath: /cluster-storage
     pvcClaimName: ""
     mountPath: /cluster-storage
+  paths:
+    runsSubPath: miles_data
+    repos:
+      miles: ""
+      megatron: ""
+      sglang: ""
+  nodeLocalStorage:
+    hostPath: ""
+    mountPath: /scratch
   scheduling:
     nodeSelector: {}
     tolerations: []
