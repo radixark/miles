@@ -14,37 +14,25 @@ def _write_yaml(data: dict, tmp_path) -> str:
     return str(path)
 
 
+def _resolve(path: str, *, rollout_num_gpus: int, hf_checkpoint: str = "/path/to/model"):
+    from argparse import Namespace
+
+    from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
+
+    args = Namespace(
+        sglang_config=path,
+        prefill_num_servers=None,
+        rollout_num_gpus=rollout_num_gpus,
+        rollout_num_gpus_per_engine=1,
+        eval_num_gpus=0,
+        hf_checkpoint=hf_checkpoint,
+    )
+    return resolve_sglang_config(args)
+
+
 class TestSglangConfigUpdateWeights:
-    def test_update_weights_default_true(self, tmp_path):
-        """Models without explicit update_weights should resolve to True when model_path matches hf_checkpoint."""
-        from argparse import Namespace
-
-        from miles.backends.sglang_utils.sglang_config import SglangConfig
-
-        path = _write_yaml(
-            {
-                "sglang": [
-                    {
-                        "name": "actor",
-                        "engine_groups": [{"worker_type": "regular", "num_gpus": 4}],
-                    }
-                ]
-            },
-            tmp_path,
-        )
-        config = SglangConfig.from_yaml(path)
-        assert len(config.models) == 1
-        # Before resolve, update_weights is None (not yet inferred)
-        assert config.models[0].update_weights is None
-        # After resolve with matching hf_checkpoint, defaults to True
-        args = Namespace(hf_checkpoint="/path/to/model", rollout_num_gpus_per_engine=1)
-        config.models[0].resolve(args)
-        assert config.models[0].update_weights is True
-
     def test_update_weights_explicit_false(self, tmp_path):
         """Models with update_weights: false should be parsed correctly."""
-        from miles.backends.sglang_utils.sglang_config import SglangConfig
-
         path = _write_yaml(
             {
                 "sglang": [
@@ -63,7 +51,7 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
+        config = _resolve(path, rollout_num_gpus=6)
         assert len(config.models) == 2
         assert config.models[0].name == "actor"
         assert config.models[0].update_weights is True
@@ -72,9 +60,7 @@ class TestSglangConfigUpdateWeights:
         assert config.models[1].model_path == "/path/to/ref"
 
     def test_multi_model_total_gpus(self, tmp_path):
-        """total_num_gpus should sum across all models."""
-        from miles.backends.sglang_utils.sglang_config import SglangConfig
-
+        """Group gpu counts should sum across all models."""
         path = _write_yaml(
             {
                 "sglang": [
@@ -91,8 +77,8 @@ class TestSglangConfigUpdateWeights:
             },
             tmp_path,
         )
-        config = SglangConfig.from_yaml(path)
-        assert config.total_num_gpus == 12
+        config = _resolve(path, rollout_num_gpus=12)
+        assert sum(g.num_gpus for m in config.models for g in m.server_groups) == 12
 
 
 class TestGetModelUrl:
