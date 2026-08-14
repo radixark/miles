@@ -1,11 +1,10 @@
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import ray
-from tests.fast.ray.train.dummy_actor import DummyTrainActor
+from tests.fast.ray.train import conftest as train_conftest
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import RayTrainGroup
@@ -49,20 +48,35 @@ def _make_mock_args(
     )
 
 
+class _FakeRemoteMethod:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def remote(self, *args, **kwargs):
+        return self._fn(*args, **kwargs)
+
+
+class _FakeWorkerManager:
+    """Stand-in for the manager actor: reports the cells the specs would produce."""
+
+    def __init__(self, *, num_cells: int):
+        self.num_cells = num_cells
+        self.get_cell_infos = _FakeRemoteMethod(self._get_cell_infos)
+
+    def _get_cell_infos(self, *, pools: list[str]) -> dict:
+        return {f"{pools[0]}-{index}": None for index in range(self.num_cells)}
+
+
+_fake_worker_manager: _FakeWorkerManager | None = None
+
+
 @pytest.fixture(autouse=True)
-def _patch_actor_alloc():
-    """Persist allocate_gpus_for_actor patch across the whole test (incl. healing path).
-
-    Previously _make_controller used `with patch(...)` which expired when _make_controller
-    returned, so any later `allocate_gpus_for_actor` call during _refresh_cells
-    healing hit the real implementation (which dereferences mock args fields).
-    """
-
-    def _alloc(*, gpus_per_cell: int, num_gpus_per_actor: float, **_kwargs) -> list:
-        actor_count = max(int(gpus_per_cell // num_gpus_per_actor), 1)
-        return [DummyTrainActor.remote() for _ in range(actor_count)]
-
-    with patch("miles.ray.train.group.allocate_gpus_for_actor", side_effect=_alloc):
+def _patch_worker_manager():
+    """The manager owns actor creation now, so tests inject a fake one for the whole test."""
+    with (
+        patch("miles.ray.train.group.RayWorkerManager.get_handle", side_effect=lambda: _fake_worker_manager),
+        patch("miles.ray.train.group.ray.get", side_effect=lambda value: value),
+    ):
         yield
 
 
@@ -73,15 +87,13 @@ def _make_controller(
     inference_controller: object | None = None,
     rollout_executor: object | None = None,
 ) -> RayTrainGroup:
-    """Create a RayTrainGroup through real __init__ with mocked pg and actor factory."""
-    total_gpus = num_cells * actor_count_per_cell
+    """Create a RayTrainGroup through real __init__ against a fake worker manager."""
+    global _fake_worker_manager
+    _fake_worker_manager = _FakeWorkerManager(num_cells=num_cells)
+    train_conftest.fake_worker_provider.actor_count_per_cell = actor_count_per_cell
     return RayTrainGroup(
         args=_make_mock_args(indep_dp=True, gpus_per_cell=actor_count_per_cell),
-        num_nodes=1,
-        num_gpus_per_node=total_gpus,
-        pg=(MagicMock(), list(range(total_gpus)), list(range(total_gpus))),
         role="actor",
-        with_ref=False,
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
     )
@@ -122,22 +134,10 @@ class TestInit:
         all_handles = [h for handles in handles_per_cell for h in handles]
         assert len(set(id(h) for h in all_handles)) == 6
 
-    def test_single_cell_no_tcp_store(self):
-        # indep_dp=False forces single cell regardless of TP/PP/CP product;
-        # the autouse fixture handles allocate_gpus_for_actor.
-        group = RayTrainGroup(
-            args=_make_mock_args(indep_dp=False),
-            num_nodes=1,
-            num_gpus_per_node=1,
-            pg=(MagicMock(), [0], [0]),
-            role="actor",
-            with_ref=False,
-            inference_controller=None,
-            rollout_executor=None,
-        )
+    def test_single_cell_controller(self):
+        group = _make_controller(num_cells=1)
 
         assert len(group._cells) == 1
-        assert group._indep_dp_store is None
 
     async def test_init_marks_all_cells_alive(self):
         group = _make_controller(num_cells=3)
@@ -449,7 +449,7 @@ class TestRefreshCellsReconfigureEvent:
         group = await _make_alive_controller(num_cells=3)
         group.stop_cell(2)
         group.start_cell(2)
-        group._cells[2].actor_factory = _make_failing_actor_factory()
+        train_conftest.fake_worker_provider.fail_init_for_cell(2)
 
         await group._refresh_cells(rollout_id=5)
 
@@ -733,17 +733,6 @@ class TestExecuteFirstAliveFallback:
         assert attempts == 1
 
 
-def _make_failing_actor_factory() -> Callable:
-    """Create a factory that returns actors pre-configured to fail on init."""
-
-    def factory():
-        actor = DummyTrainActor.remote()
-        ray.get(actor.set_fail_methods.remote(["init"]))
-        return [actor]
-
-    return factory
-
-
 class TestRefreshCellsErrorHandling:
     async def test_healing_failure_marks_pending_cell_errored_keeps_alive(self):
         """When healing init fails, the pending cell is killed and stopped (via _execute_raw's
@@ -755,7 +744,7 @@ class TestRefreshCellsErrorHandling:
         group.start_cell(2)
 
         # Step 2: Replace actor factory so new actors fail on init
-        group._cells[2].actor_factory = _make_failing_actor_factory()
+        train_conftest.fake_worker_provider.fail_init_for_cell(2)
 
         # Step 3: Refresh — healing init fails, cell auto-marks errored
         await group._refresh_cells(rollout_id=0)

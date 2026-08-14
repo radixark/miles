@@ -1,17 +1,57 @@
 import os
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
 import miles.ray.train.group as group_module
+from miles.ray.specs.train import MASTER_PORT_NAME
 from miles.ray.train.cell import RayTrainCell
 from miles.utils.ft_utils.health_checker import NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
+from miles.utils.workers.ray_worker_manager import WorkerInfo
+from miles.utils.workers.worker_spec import HostAndPort
+
+
+class FakeWorkerProvider:
+    def __init__(self, actor_count_per_cell: int = 2):
+        self.actor_count_per_cell = actor_count_per_cell
+        self._cell_indices_failing_init: set[int] = set()
+
+    def fail_init_for_cell(self, cell_index: int) -> None:
+        self._cell_indices_failing_init.add(cell_index)
+
+    def get_worker_infos(self, *, pool: str, cell_index: int) -> list[WorkerInfo]:
+        handles = [DummyTrainActor.remote() for _ in range(self.actor_count_per_cell)]
+        if cell_index in self._cell_indices_failing_init:
+            ray.get([handle.set_fail_methods.remote(["init"]) for handle in handles])
+        return [
+            WorkerInfo(
+                name=f"{pool}-{cell_index}-{worker_index}",
+                generation=1,
+                self_addrs={MASTER_PORT_NAME: HostAndPort(host="10.0.0.1", port=20000)},
+                gpu_ids=[worker_index],
+                actor_handle=handle,
+            )
+            for worker_index, handle in enumerate(handles)
+        ]
+
+
+fake_worker_provider: FakeWorkerProvider | None = None
+
+
+@pytest.fixture(autouse=True)
+def _patch_worker_provider():
+    global fake_worker_provider
+    fake_worker_provider = FakeWorkerProvider()
+    provider_factory = SimpleNamespace(create=lambda: fake_worker_provider)
+    with patch("miles.ray.train.cell.RayWorkerProvider", provider_factory):
+        yield
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -70,15 +110,13 @@ def make_cell(
     actor_count: int = 2,
     rollout_executor: object | None = None,
 ) -> RayTrainCell:
-    def factory():
-        return [DummyTrainActor.remote() for _ in range(actor_count)]
-
+    fake_worker_provider.actor_count_per_cell = actor_count
     return RayTrainCell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
         cell_index=cell_index,
-        actor_factory=factory,
+        pool="trainer-actor",
         rollout_executor=rollout_executor,
         health_checker=NoopHealthChecker(),
     )
