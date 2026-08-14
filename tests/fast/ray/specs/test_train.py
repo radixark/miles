@@ -6,12 +6,14 @@ from unittest.mock import MagicMock
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.ray.specs import train as train_specs
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
     TRAINER_METHOD_CONCURRENCY_GROUPS,
+    compute_actor_args,
     compute_trainer_controller_pool_id,
     compute_trainer_pool_id,
     spec_trainer_controller_actor,
@@ -47,6 +49,7 @@ def _make_args(**overrides) -> SimpleNamespace:
         offload_train_target="cpu",
         offload_train_disk_dir="/tmp/offload",
         offload_train_disk_chunk_mb=64,
+        megatron_config=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)

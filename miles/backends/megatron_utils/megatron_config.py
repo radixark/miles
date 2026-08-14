@@ -1,7 +1,9 @@
 import argparse
+import copy
 import logging
 import os
 import re
+from argparse import Namespace
 from typing import Any, Literal
 
 import pydantic
@@ -162,7 +164,23 @@ def _compute_trainers(args) -> list[MegatronTrainerConfig]:
         trainers = [MegatronTrainerConfig.resolve(raw=t) for t in raw.trainers]
         assert trainers, "--megatron-config must declare at least one trainer"
 
+    if getattr(args, "use_critic", False) and not any(trainer.role == CRITIC_ROLE for trainer in trainers):
+        assert (
+            len({trainer.model_id for trainer in trainers}) == 1
+        ), "training several policy models does not support --use-critic"
+        trainers = [*trainers, _compute_critic_trainer(policy=trainers[0])]
+
     return trainers
+
+
+def _compute_critic_trainer(*, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
+    model_id = policy.model_id
+    return MegatronTrainerConfig(
+        trainer_id=CRITIC_ROLE if model_id is None else f"{model_id}-{CRITIC_ROLE}",
+        model_id=model_id,
+        role=CRITIC_ROLE,
+        overrides=dict(policy.overrides),
+    )
 
 
 def _resolve_raw_megatron_config(value: str | None) -> "_RawMegatronConfig | None":
@@ -179,6 +197,22 @@ def _assert_no_declared_critic(raw: "_RawMegatronConfig") -> None:
         f"checkpoint, learning rate and neutralized knobs are only applied to the critic the run "
         f"synthesizes itself from --use-critic"
     )
+
+
+# ---------------------------- per policy args -----------------------------
+
+
+def compute_trainer_args(args: Namespace, trainer: MegatronTrainerConfig) -> Namespace:
+    ans = copy.deepcopy(args)
+
+    for key, value in trainer.overrides.items():
+        assert hasattr(ans, key), (
+            f"--megatron-config trainer {trainer.trainer_id!r} overrides {key!r}, which this run's argument "
+            f"parser does not know"
+        )
+        setattr(ans, key, value)
+
+    return ans
 
 
 # ---------------------------- checkpoint dirs -----------------------------
