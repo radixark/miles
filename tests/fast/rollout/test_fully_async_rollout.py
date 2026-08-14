@@ -3,6 +3,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
+import argparse
 import asyncio
 from argparse import Namespace
 from collections import deque
@@ -82,6 +83,7 @@ def make_args(**overrides) -> Namespace:
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
         custom_async_data_buffer_path=None,
+        custom_async_data_buffer_path_per_model=None,
         megatron_config=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
@@ -478,13 +480,14 @@ def make_multi_policy_group(group_index: int, *trainer_model_ids: str) -> list[S
     return group
 
 
-def make_multi_buffer(*model_ids: str, max_staleness=None):
+def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None):
     unused = []
     args = make_args(
         rollout_batch_size=1,
         async_data_buffer_capacity_factor=1000.0,
         max_weight_staleness=max_staleness,
         megatron_config=encode_megatron_config(*model_ids),
+        custom_async_data_buffer_path_per_model=paths_per_model,
     )
     buffer = data_buffer.DefaultMultiDataBuffer(
         data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
@@ -712,6 +715,84 @@ class RecordingBuffer(data_buffer.DefaultDataBuffer):
     def __init__(self, input):
         super().__init__(input)
         RecordingBuffer.constructed_with = input
+
+
+class TestPerPolicyBufferClass:
+    def test_every_policy_keeps_the_built_in_buffer_by_default(self):
+        """The flag is opt-in, so a run that does not pass it must compose exactly what it composed before."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        assert [type(inner) for inner in buffer._inners.values()] == [
+            data_buffer.DefaultDataBuffer,
+            data_buffer.DefaultDataBuffer,
+        ]
+
+    def test_a_named_policy_gets_the_class_the_flag_names(self):
+        """Two policies can need different dataflow, which is the whole point of one buffer per policy."""
+        buffer, _ = make_multi_buffer("solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"])
+
+        assert type(buffer._inners["solver"]) is RecordingBuffer
+        assert type(buffer._inners["verifier"]) is data_buffer.DefaultDataBuffer
+
+    def test_the_custom_class_is_built_with_the_same_constructor_input(self):
+        """A custom buffer owns staleness and recycling, so it needs the handler the built-in one gets."""
+        buffer, unused = make_multi_buffer(
+            "solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"]
+        )
+
+        assert RecordingBuffer.constructed_with.unused_handler_fn == unused.append
+        assert RecordingBuffer.constructed_with.args is buffer._inners["verifier"]._args
+
+    def test_a_policy_this_run_does_not_train_is_refused(self):
+        """A typo would silently leave the policy it meant to configure on the built-in buffer."""
+        with pytest.raises(AssertionError, match="train no policy of this run"):
+            make_multi_buffer("solver", "verifier", paths_per_model=[f"reviewer={__name__}.RecordingBuffer"])
+
+
+class TestParseDataBufferPaths:
+    def test_it_maps_every_model_id_to_its_class_path(self):
+        """This is the mapping the composite buffer is built from."""
+        assert data_buffer._parse_data_buffer_paths(["solver=pkg.A", "verifier=pkg.B"]) == {
+            "solver": "pkg.A",
+            "verifier": "pkg.B",
+        }
+
+    def test_an_unset_flag_is_an_empty_mapping(self):
+        """Default is every policy on the built-in buffer, which is the empty mapping."""
+        assert data_buffer._parse_data_buffer_paths(None) == {}
+
+    @pytest.mark.parametrize("entry", ["solver", "=pkg.A", "solver=", "solver =  "])
+    def test_a_malformed_entry_is_refused(self, entry):
+        """Silently ignoring it would run the policy on a buffer the user did not ask for."""
+        with pytest.raises(ValueError, match="expected MODEL_ID=PATH"):
+            data_buffer._parse_data_buffer_paths([entry])
+
+    def test_the_whitespace_around_an_entry_is_not_part_of_the_names(self):
+        """A shell-quoted entry keeps its spaces, and an import path with them resolves to nothing."""
+        assert data_buffer._parse_data_buffer_paths([" solver = pkg.A "]) == {"solver": "pkg.A"}
+
+    def test_a_model_id_named_twice_is_refused(self):
+        """One of the two class paths would win silently, and which one is not something to guess."""
+        with pytest.raises(ValueError, match="Duplicate model id"):
+            data_buffer._parse_data_buffer_paths(["solver=pkg.A", "solver=pkg.B"])
+
+
+class TestDataBufferArgumentRegistration:
+    def test_the_per_model_flag_is_declared_by_the_rollout_function_that_uses_it(self):
+        """The framework asks the selected rollout function for its flags, so this hook must declare it."""
+        parser = argparse.ArgumentParser()
+        fully_async.FullyAsyncRolloutFn.add_arguments(parser)
+
+        parsed = parser.parse_args(["--custom-async-data-buffer-path-per-model", "solver=pkg.A", "verifier=pkg.B"])
+
+        assert parsed.custom_async_data_buffer_path_per_model == ["solver=pkg.A", "verifier=pkg.B"]
+
+    def test_a_run_that_never_passes_the_flag_leaves_every_policy_on_the_built_in_buffer(self):
+        """The default has to be None, which _parse_data_buffer_paths reads as the empty mapping."""
+        parser = argparse.ArgumentParser()
+        fully_async.FullyAsyncRolloutFn.add_arguments(parser)
+
+        assert parser.parse_args([]).custom_async_data_buffer_path_per_model is None
 
 
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):

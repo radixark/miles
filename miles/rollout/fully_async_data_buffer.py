@@ -10,8 +10,8 @@ Every group-level decision lives here — what to keep, what to hand to
 import asyncio
 import logging
 from abc import ABC, abstractmethod
-from argparse import Namespace
-from collections.abc import Callable, Iterator
+from argparse import ArgumentParser, Namespace
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 # A finished group is list[Sample], or list[list[Sample]] when a generate function
 # returns multiple samples per trajectory (e.g. multi-agent).
 Group = list[Sample | list[Sample]]
+
+DATA_BUFFER_PATH_PER_MODEL_FLAG = "--custom-async-data-buffer-path-per-model"
+
+
+def add_data_buffer_arguments(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        DATA_BUFFER_PATH_PER_MODEL_FLAG,
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="MODEL_ID=PATH",
+        help=(
+            "Per policy form of --custom-async-data-buffer-path, e.g. "
+            "--custom-async-data-buffer-path-per-model solver=pkg.SolverBuffer. A run training several "
+            "policies composes one buffer per policy (see DefaultMultiDataBuffer); each model id named "
+            "here gets that class instead of the built-in one, and every model id left out keeps it. "
+            "The model ids are the --megatron-config ones."
+        ),
+    )
 
 
 # =================================== shared ===================================
@@ -214,8 +233,14 @@ class DefaultMultiDataBuffer(DataBuffer):
     """
 
     def __init__(self, input: DataBufferConstructorInput):
+        paths = _parse_data_buffer_paths(input.args.custom_async_data_buffer_path_per_model)
+        model_ids = resolve_megatron_config(input.args).model_ids
+        assert not (unknown := sorted(set(paths) - set(model_ids))), (
+            f"{DATA_BUFFER_PATH_PER_MODEL_FLAG} names {unknown}, which train no policy of this run "
+            f"({sorted(model_ids)})"
+        )
         self._inners: dict[str, DataBuffer] = {
-            model_id: DefaultDataBuffer(input) for model_id in resolve_megatron_config(input.args).model_ids
+            model_id: (load_function(paths.get(model_id)) or DefaultDataBuffer)(input) for model_id in model_ids
         }
 
     async def put(self, input: DataBufferInput) -> None:
@@ -238,6 +263,19 @@ class DefaultMultiDataBuffer(DataBuffer):
 
 
 # TODO: a policy absent from a trajectory shortens its group below n_samples_per_prompt, which the drain refuses
+def _parse_data_buffer_paths(values: Iterable[str] | None) -> dict[str, str]:
+    ans: dict[str, str] = {}
+    for value in values or []:
+        model_id, separator, path = value.partition("=")
+        model_id, path = model_id.strip(), path.strip()
+        if not separator or not model_id or not path:
+            raise ValueError(f"Invalid {DATA_BUFFER_PATH_PER_MODEL_FLAG} entry {value!r}; expected MODEL_ID=PATH.")
+        if model_id in ans:
+            raise ValueError(f"Duplicate model id {model_id!r} in {DATA_BUFFER_PATH_PER_MODEL_FLAG}.")
+        ans[model_id] = path
+    return ans
+
+
 def _split_by_trainer_model_id(input: DataBufferInput) -> dict[str, DataBufferInput]:
     trainer_model_ids = list(dict.fromkeys(sample.trainer_model_id for sample in iter_samples(input.group)))
     assert None not in trainer_model_ids, (
