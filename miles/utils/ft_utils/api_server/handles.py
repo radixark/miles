@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 
 from miles.ray.train.group import RayTrainGroup
-from miles.utils.ft_utils.control_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus
 from miles.utils.test_utils.fault_injector import FailureMode
 
 

@@ -13,7 +13,7 @@ from miles.utils.test_utils.fault_injector import FailureMode
 
 logger = logging.getLogger(__name__)
 
-CONTROL_SERVER_PORT: int = 18080
+API_SERVER_PORT: int = 18080
 MEAN_INTERVAL_SECONDS: float = 60.0
 # Poll cell liveness this often so the gate tracks a crash->detect->heal cycle even when it
 # happens entirely between two (much sparser) injections; injections still fire on the long
@@ -27,7 +27,7 @@ def cell_is_alive(cell: dict) -> bool:
 
 
 class _CellState(enum.Enum):
-    INJECTED = enum.auto()  # we crashed it; the control server may still report it Healthy
+    INJECTED = enum.auto()  # we crashed it; the api server may still report it Healthy
     RECOVERING = enum.auto()  # observed unhealthy; awaiting its return to Healthy
 
 
@@ -76,7 +76,7 @@ def run_fault_injection_loop(
             resp.raise_for_status()
             cells = resp.json()["items"]
         except Exception:
-            logger.info("Failed to list cells from control server", exc_info=True)
+            logger.info("Failed to list cells from api server", exc_info=True)
             continue
 
         # Track recovery on every poll so a crash->detect->heal cycle that completes between two
@@ -139,7 +139,7 @@ class FaultInjectorHandle:
 
 
 def spawn_fault_injector(*, seed: int, mean_interval_seconds: float) -> FaultInjectorHandle:
-    base_url = f"http://localhost:{CONTROL_SERVER_PORT}"
+    base_url = f"http://localhost:{API_SERVER_PORT}"
     handle = FaultInjectorHandle(base_url=base_url, seed=seed, mean_interval_seconds=mean_interval_seconds)
     handle.start()
     return handle

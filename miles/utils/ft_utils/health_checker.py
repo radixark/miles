@@ -8,7 +8,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.utils.ft_utils.control_server.models import TriState
+from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.test_utils.clock import Clock, RealClock
 from miles.utils.tracking_utils.structured_log import log_structured
