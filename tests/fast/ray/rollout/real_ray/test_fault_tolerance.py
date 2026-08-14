@@ -21,6 +21,7 @@ def _build_group(
     needs_offload: bool = False,
     update_weights: bool = True,
     model_path: str | None = None,
+    num_gpus_per_engine: int = 1,
 ) -> ServerGroup:
     args = make_args(num_gpus_per_node=8)
     engines = [ServerEngine() for _ in range(num_engines)]
@@ -28,7 +29,7 @@ def _build_group(
         args=args,
         pg=pg_tuple,
         all_engines=engines,
-        num_gpus_per_engine=1,
+        num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
         needs_offload=needs_offload,
         update_weights=update_weights,
@@ -223,5 +224,32 @@ class TestSimulateCrashKeepsActorReachable:
             ray.get(actor.simulate_crash.remote())
             # Actor handle still reachable at Ray level — follow-up returns.
             ray.get(actor.health_generate.remote(timeout=1.0), timeout=10.0)
+        finally:
+            _kill_all(group)
+
+
+@pytest.mark.asyncio
+class TestRecoverMultiNodeEngine:
+    async def test_recover_releases_and_resumes_only_on_node0(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+    ):
+        """Recovering a 2-node engine must not send release/resume to node 1."""
+        pg = placement_group_factory(16)
+        group = _build_group(pg_tuple=pg, num_engines=2, num_gpus_per_engine=16, needs_offload=True)
+        assert group.nodes_per_engine == 2
+
+        try:
+            await group.recover(port_cursors=PortCursors.empty())
+
+            node0_calls, node1_calls = ray.get([e.actor_handle.get_calls.remote() for e in group.all_engines])
+            node0_methods = [name for name, _args, _kwargs in node0_calls]
+            node1_methods = [name for name, _args, _kwargs in node1_calls]
+
+            assert "release_memory_occupation" in node0_methods
+            assert "resume_memory_occupation" in node0_methods
+            assert "release_memory_occupation" not in node1_methods
+            assert "resume_memory_occupation" not in node1_methods
         finally:
             _kill_all(group)
