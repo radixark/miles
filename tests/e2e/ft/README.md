@@ -4,19 +4,20 @@
 
 ### CI Entries
 
-- **CI entry files**: `test_<component>_ft_<scenario>_<mode>.py`
+- **CI entry files**: `test_<TEST_NAME>__<mode>.py`, or `test_<TEST_NAME>__<kill>.py` when the scenario pins its own topology and takes no mode; split on the first `__` to read the scenario and the rest back out, which is why no scenario name contains one.
+- **The segment after the scenario is always the kill segment**: a mode name starts with it, and an entry with no mode carries it alone, so every entry says what its run crashes without anyone opening the file.
 - **Entry file content**: `register_cuda_ci(est_time=..., suite=..., labels=[...])` plus `run_ci(_MODE)` under `__main__`, no test logic.
 - **Execution model**: bare `python3 <file>` from the repo root, exit code = pass/fail (`tests/ci/ci_utils.py` `run_unittest_files`).
 
 | Scenario | Modes with an entry file |
 | --- | --- |
-| `scenario_no_failure` | `dp2_cp2_tp2_ep2`, `dp2_cp2_pp2`, `dp4_cp2`, `dp2_cp2_real_rollout` |
-| `scenario_deterministic` | `dp2_cp2_tp2_ep2`, `dp2_cp2_pp2`, `dp4_cp2`, `dp2_cp2_real_rollout` |
-| `scenario_with_failure` | `dp2_cp2_tp2_ep2`, `dp2_cp2_pp2`, `dp2_cp2_real_rollout_dense` |
-| `scenario_ft_random` | `dp2_cp2_tp2_ep2`, `dp2_cp2_real_rollout`, `colocate_dp2_cp2_rollout_ft` |
-| `scenario_realistic_gsm8k` | `test_trainer_ft_realistic_gsm8k.py`, no modes |
+| `scenario_trainer_no_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
+| `scenario_trainer_deterministic` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp4_cp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer` |
+| `scenario_trainer_with_failure` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2` |
+| `scenario_random_crash` | `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer`, `kill_train__dp2_cp2__moe_5layer`, `kill_rollout__dp2_cp2__colocate` |
+| `scenario_realistic_gsm8k` | `test_realistic_gsm8k__kill_train.py`, no modes |
 
-- **Forced absences**: `6node_*` is multi-node with no CI lane; `colocate_dp2_cp2_rollout_ft` only fits `scenario_ft_random`, the one scenario that crashes engines; `dp2_cp2_real_rollout_dense` supersedes `dp2_cp2_real_rollout` in `scenario_with_failure`. `scenario_with_failure` x `dp4_cp2` is an authorized skip. Every other absence is an unclaimed cell, not a decision — adding an entry file is all it takes.
+- **Forced absences**: `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` is multi-node with no CI lane; `kill_rollout__dp2_cp2__colocate` only fits `scenario_random_crash`, the one scenario that crashes engines; `kill_train__dp2_cp2` supersedes `kill_train__dp2_cp2__moe_5layer` in `scenario_trainer_with_failure`. `scenario_trainer_with_failure` x `kill_train__dp4_cp2__fake_rollout__moe_5layer` is an authorized skip. Every other absence is an unclaimed cell, not a decision — adding an entry file is all it takes.
 
 ### Scenarios
 
@@ -24,27 +25,30 @@
 
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
 | --- | --- | --- |
-| `scenario_no_failure` | comparison | indep_dp matches normal DP when no faults |
-| `scenario_with_failure` | comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
-| `scenario_deterministic` | comparison, multi-phase | healing state transfer is bitwise-correct, on cold start and on resume from a post-healing ckpt |
-| `scenario_ft_random` | soak | system survives random crashes without hanging |
+| `scenario_trainer_no_failure` | comparison | indep_dp matches normal DP when no faults |
+| `scenario_trainer_with_failure` | comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
+| `scenario_trainer_deterministic` | comparison, multi-phase | healing state transfer is bitwise-correct, on cold start and on resume from a post-healing ckpt |
+| `scenario_random_crash` | soak | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | soak | model still reaches gsm8k accuracy under random crashes |
 
 ### Modes
 
 - **Selection**: `--mode`, defined in `conftest_ft/modes.py`; `scenario_realistic_gsm8k` takes none.
+- **Mode names**: `<kill>__<parallelism>[__fake_rollout][__moe_5layer|__moe_full][__colocate]`, segments separated by `__` and joined by `_` inside a segment.
+- **What a name carries**: the `kill` segment always, then only the axes that differ from the naming defaults — real sglang engines, the dense `Qwen3-0.6B`, disaggregated placement. Node counts, engine counts and cell counts are never in the name; read them from the table below.
+- **Why `kill` leads**: what a run crashes is the subject of this suite, so it is the first thing the name answers, and it is a property of the mode alone — no scenario widens it at runtime.
 - **Declared per mode**: cell count, parallelism, model, train/rollout GPU split, `colocate` (default disaggregated, i.e. training and rollout on separate nodes), `ft_components` (default `("train",)`).
 - **No rollout engines**: modes with `rollout_num_engines == 0` train on pre-recorded debug rollout data.
 
 | Mode | Nodes | GPUs (train + rollout) | DP cells | Parallelism | Rollout | Model | `ft_components` | Why it exists |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `dp2_cp2_tp2_ep2` | 1 | 8 + 0 | 2 | CP2 TP2 EP2 | debug data | 5-layer MoE | `("train",)` | TP + EP coverage |
-| `dp2_cp2_pp2` | 1 | 8 + 0 | 2 | CP2 PP2 | debug data | 5-layer MoE | `("train",)` | PP coverage, via `--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2` |
-| `dp4_cp2` | 1 | 8 + 0 | 4 | CP2 | debug data | 5-layer MoE | `("train",)` | multi-replica coverage (>= 4 cells) |
-| `dp2_cp2_real_rollout` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | 5-layer MoE | `("train",)` | real engines + the weight-update path |
-| `dp2_cp2_real_rollout_dense` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | `scenario_with_failure` under real generation; needs the dense model (see below) |
-| `colocate_dp2_cp2_rollout_ft` | 1 | 4 shared | 2 | CP2 | 4 engines × 1 GPU, colocated | dense Qwen3-0.6B | `("rollout",)` | the only rollout-only mode: crashes engines, not trainer cells |
-| `6node_dp4_cp2_tp2_pp2_ep2_etp2` | 4 train + 2 rollout | 32 + 16 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | `("train",)` | full model, all parallelism; multi-node, so no CI entry |
+| `kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 TP2 EP2 | debug data | 5-layer MoE | `("train",)` | TP + EP coverage |
+| `kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 2 | CP2 PP2 | debug data | 5-layer MoE | `("train",)` | PP coverage, via `--decoder-first-pipeline-num-layers 3 --decoder-last-pipeline-num-layers 2` |
+| `kill_train__dp4_cp2__fake_rollout__moe_5layer` | 1 | 8 + 0 | 4 | CP2 | debug data | 5-layer MoE | `("train",)` | multi-replica coverage (>= 4 cells) |
+| `kill_train__dp2_cp2__moe_5layer` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | 5-layer MoE | `("train",)` | real engines + the weight-update path |
+| `kill_train__dp2_cp2` | 1 | 4 + 4 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | `("train",)` | `scenario_trainer_with_failure` under real generation; needs the dense model (see below) |
+| `kill_rollout__dp2_cp2__colocate` | 1 | 4 shared | 2 | CP2 | 4 engines × 1 GPU, colocated | dense Qwen3-0.6B | `("rollout",)` | the only rollout-only mode: crashes engines, not trainer cells |
+| `kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full` | 4 train + 2 rollout | 32 + 16 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | `("train",)` | full model, all parallelism; multi-node, so no CI entry |
 
 - **Batch shape**: `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` everywhere — 256 samples per rollout, divisible by both 2 and 4 cells. Uneven distribution across replicas is **not** exercised.
 - **Model**: 1-node modes use the 5-layer MoE `Qwen3-30B-A3B-5layer`, except the two dense modes.
@@ -57,7 +61,7 @@
 - **Broad scopes**: `run-ci-all` includes both; the nightly cadence includes `ft-short` but not `ft-long`; `run-ci-image` excludes both.
 - **Suite**: `suite="stage-c-8-gpu-h200"`, run by the job of the same name in `.github/workflows/pr-test.yml`.
 - **ft-long is disabled**: all four entries pass `disabled="FT soak tests pending CI infra support"`, and `tests/ci/run_suite.py` drops every test with a non-`None` `disabled`, so `run-ci-ft-long` executes nothing. Unblocked by an ft-long capable lane; nothing in the tests is known broken.
-- **Fast-layer stand-in**: `tests/fast/e2e/ft/test_rollout_ft_gated_recovery.py` covers suspend → gated relaunch → recovery on CPU meanwhile.
+- **Fast-layer stand-in**: `tests/fast/e2e/ft/test_rollout_gated_recovery.py` covers suspend → gated relaunch → recovery on CPU meanwhile.
 - **Add a `(scenario, mode)`**: copy an entry file, change `_MODE`.
 - **Add a label**: an entry in `tests/ci/labels.py` plus the matching `run-ci-<key>` GitHub label; the workflow needs no edit.
 
@@ -67,10 +71,10 @@
 
 ```bash
 # One mode, exactly as CI runs it
-PYTHONPATH=. python tests/e2e/ft/test_trainer_ft_no_failure_dp2_cp2_tp2_ep2.py
+PYTHONPATH=. python tests/e2e/ft/test_trainer_no_failure__kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer.py
 
 # Any mode, including the ones with no entry file
-PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_no_failure.py run --mode dp4_cp2
+PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run --mode kill_train__dp4_cp2__fake_rollout__moe_5layer
 ```
 
 | Subcommand | Does | Available in |
@@ -81,7 +85,7 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_no_failure.py run --mode d
 | `generate-data` | record debug rollout data with real engines, no dumper | comparison scenarios |
 
 - **Debugging**: prefer the individual subcommands over `run` — with a shared `--dump-dir` (plus `--phase` when multi-phase) you re-run only what changed.
-- **`scenario_ft_random`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--crash-probability`.
+- **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--crash-probability`.
 - **`scenario_realistic_gsm8k`**: only `run`, with `--seed` / `--num-rollout` / `--crash-probability` / `--metric-threshold`; no `--mode`.
 - **Dumps**: `/node_public/dumps/<test_name>/` via `resolve_dump_dir` in `conftest_ft/app.py`, deleted at the end of `run`.
 
@@ -94,8 +98,8 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_no_failure.py run --mode d
 
 ```bash
 # 1. Generate with the 5-layer model and real sglang engines (no dumper)
-PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_no_failure.py generate-data \
-    --mode dp2_cp2_real_rollout --num-steps 12 --output-dir /tmp/gen_rollout
+PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py generate-data \
+    --mode kill_train__dp2_cp2__moe_5layer --num-steps 12 --output-dir /tmp/gen_rollout
 
 # 2. Inspect
 ls /tmp/gen_rollout/rollout_data/
@@ -116,9 +120,9 @@ hf upload --repo-type dataset fzyzcjy/miles-test-rollout-Qwen3-30B-A3B-5layer \
 
 
 - **Why only some are bitwise**: baseline and target reduce over different topologies, so allreduce kernel ordering differs — unless `--deterministic-mode` and `--debug-deterministic-collective` are on.
-- **Why `train/grad_norm` is exempt in `scenario_deterministic`**: it sums squared shard fragments, so its bracketing follows the dist-optimizer shard count (8 flat vs 2 per cell); a few fp32 ulps are inherent. The grads stay bitwise-checked through the dumps.
+- **Why `train/grad_norm` is exempt in `scenario_trainer_deterministic`**: it sums squared shard fragments, so its bracketing follows the dist-optimizer shard count (8 flat vs 2 per cell); a few fp32 ulps are inherent. The grads stay bitwise-checked through the dumps.
 
-### `scenario_no_failure`
+### `scenario_trainer_no_failure`
 
 ```
 Type: comparison (baseline=normal DP, target=indep_dp)
@@ -136,7 +140,7 @@ Compare: dumps rel <= 0.0085; metrics rtol=1e-2, atol=1e-8
 Roughly equal, not bitwise - allreduce kernel ordering differs across topologies.
 ```
 
-### `scenario_with_failure`
+### `scenario_trainer_with_failure`
 
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
@@ -186,13 +190,13 @@ Grad families with a `max_abs` floor (cancellation-dominated near-zero grads; re
 
 - **Where `3e-3` comes from**: the degraded commit's ulp drift lands as <= 2.8e-3 absolute noise in those near-zero grads (40 tensors, 2026-06-12), against real grads around `1e-2`. Embedding, output, final-norm grads, every activation and every pre-fault rollout keep the strict set.
 
-#### `dp2_cp2_real_rollout_dense` mode
+#### `kill_train__dp2_cp2` mode
 
-`scenario_with_failure` against live generation: real sglang engines, deterministic inference, temperature 0.8.
+`scenario_trainer_with_failure` against live generation: real sglang engines, deterministic inference, temperature 0.8.
 
 - **Post-fault rollouts are injected**: `--ci-inject-rollout-data-path` replays the baseline's `--save-debug-rollout-data` recording from rollout 3 on (crash rollout + 1).
 - **Why inject**: the degraded-quorum commit brackets microbatch accumulation differently, and under live sampling that ulp diff flips tokens until the two runs' rollout data diverges wholesale. It is fault-inherent -- no collective ordering removes it. Injecting makes training inputs identical by construction, keeping the comparison strict.
-- **The target stays real**: engines and generation still run (samples discarded), `update_weights` fires after the degraded commit and after healing, the health monitor pauses and resumes — the whole crash → retry → heal → weight-sync path. Engine checksums are not compared here; only `scenario_deterministic` does that.
+- **The target stays real**: engines and generation still run (samples discarded), `update_weights` fires after the degraded commit and after healing, the health monitor pauses and resumes — the whole crash → retry → heal → weight-sync path. Engine checksums are not compared here; only `scenario_trainer_deterministic` does that.
 - **Generation is still asserted**: `RolloutDataInjectionUtil.assert_matches_generated` requires bitwise-identical prompt tokens per sample, plus a mean response-token match ratio above `--ci-inject-rollout-data-min-match-ratio`, set to 0.5 here (the flag's own default is 0.9). A broken `update_weights` drops that ratio by ~2 orders.
 - **Not asserted**: exact post-fault sampled content beyond the ratio; pre-fault rollouts are compared for real.
 
@@ -205,7 +209,7 @@ Guard calibration (2026-06-12, first post-fault rollout, 256 samples, correct we
 
 - **Why dense**: on the truncated MoE, uncalibrated logits plus router near-ties amplify the drift to 0.19, indistinguishable from unrelated content; dense's 0.63 sits 2 orders above that, so 0.5 separates them.
 
-### `scenario_deterministic`
+### `scenario_trainer_deterministic`
 
 ```
 Type: comparison, multi-phase (phase_a + phase_b)
@@ -255,7 +259,7 @@ Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src
 - **What phase_b adds**: reproducing the baseline bit-for-bit also proves the ckpt round-trips bitwise.
 - **Why the healing witness**: it gates the off-by-one bug where healing never runs and the comparison passes on two fault-free runs.
 
-### `scenario_ft_random`
+### `scenario_random_crash`
 
 ```
 Type: soak (no baseline, no compare); passes if training completes without hanging and the
@@ -303,22 +307,22 @@ Faults are random, so neither an exact sequence nor the end-state membership is 
 
 ```
 Type: soak (no baseline run; reference = the baseline test's wandb curves)
-Entry: test_trainer_ft_realistic_gsm8k.py, no mode variants
+Entry: test_realistic_gsm8k__kill_train.py, no mode variants
 CLI: --seed (42), --num-rollout (250), --crash-probability (0.1), --metric-threshold (0.55);
      no --mode
 
 Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of
         tests/e2e/long/test_qwen2.5_0.5B_gsm8k.py, whose regular CI runs are the no-fault
         reference wandb curves
-Layout: mirrors dp2_cp2_real_rollout - 2 cells x CP2 on 4 train GPUs + 4 rollout engines
+Layout: mirrors kill_train__dp2_cp2__moe_5layer - 2 cells x CP2 on 4 train GPUs + 4 rollout engines
         x 1 GPU, disaggregated
-Faults: scenario_ft_random's external injection loop (shared conftest_ft/fault_injection.py),
+Faults: scenario_random_crash's external injection loop (shared conftest_ft/fault_injection.py),
         against "actor" cells
 
 Assertions:
   1. --ci-metric-checker-key eval/gsm8k against a threshold that must stay identical to the
      no-fault baseline's (0.55); passes if ANY eval reaches it
-  2. assert_soak_reconfigure_events, shared with scenario_ft_random: >= 2 accepted injections
+  2. assert_soak_reconfigure_events, shared with scenario_random_crash: >= 2 accepted injections
      and >= 2 healings
 
 Fault recovery must not cost end-to-end learning, which the comparison scenarios cannot observe.
