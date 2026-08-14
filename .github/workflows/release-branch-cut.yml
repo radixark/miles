@@ -119,7 +119,7 @@ jobs:
     uses: ./.github/workflows/pr-test.yml
     with:
       ref: ${{ needs.cut-release-branch.outputs.branch_name }}
-      cadence: weekly
+      cadence: release
       image_tag: ${{ needs.cut-release-branch.outputs.ci_image_tag }}
     secrets: inherit
 
@@ -130,5 +130,5 @@ jobs:
     uses: ./.github/workflows/pr-test-rocm.yml
     with:
       ref: ${{ needs.cut-release-branch.outputs.branch_name }}
-      cadence: weekly
+      cadence: release
     secrets: inherit

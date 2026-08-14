@@ -42,10 +42,10 @@ on:
         required: true
         type: string
       cadence:
-        description: 'Explicit CI cadence (regular/nightly/weekly). Release cuts pass weekly for full scope.'
+        description: 'Explicit CI cadence (regular/nightly/weekly/release). Release cuts use release: weekly scope, no baseline writes.'
         required: false
         type: string
-        default: 'weekly'
+        default: 'release'
 
 permissions:
   contents: read
