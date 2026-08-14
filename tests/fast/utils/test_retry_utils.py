@@ -1,7 +1,9 @@
+import asyncio
 import logging
 
 import pytest
 
+from miles.utils import retry_utils
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 
 pytestmark = pytest.mark.asyncio
@@ -15,6 +17,17 @@ class _FakeSleep:
 
     async def __call__(self, delay: float) -> None:
         self.delays.append(delay)
+
+
+class _FakeRandom:
+    """Stands in for the random module and always returns the top of the requested range."""
+
+    def __init__(self) -> None:
+        self.ranges: list[tuple[float, float]] = []
+
+    def uniform(self, low: float, high: float) -> float:
+        self.ranges.append((low, high))
+        return high
 
 
 class TestRetryBasic:
@@ -461,6 +474,118 @@ class TestRetryUntilDeadline:
         assert "op=submit" in records[0].message
         assert "call=c1" in records[0].message
         assert "op=retry_until_deadline" not in records[0].message
+
+    async def test_backoff_grows_and_caps_before_each_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Sleeps between retries grow by the backoff factor and then stop at max_delay."""
+        fake_sleep = _FakeSleep()
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        attempts = 0
+
+        async def attempt(remaining: float) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 5:
+                raise ValueError("still down")
+            return "done"
+
+        result = await retry_until_deadline(
+            attempt,
+            total_seconds=1000.0,
+            retry_on=ValueError,
+            initial_delay=0.5,
+            max_delay=4.0,
+            backoff_factor=3.0,
+            jitter_ratio=0.0,
+        )
+
+        assert result == "done"
+        assert fake_sleep.delays == [0.5, 1.5, 4.0, 4.0, 4.0]
+
+    async def test_jitter_ratio_is_applied_to_each_base_delay(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Jitter is drawn from zero to jitter_ratio times the base delay and added on top of it."""
+        fake_sleep = _FakeSleep()
+        fake_random = _FakeRandom()
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        monkeypatch.setattr(retry_utils, "random", fake_random)
+        attempts = 0
+
+        async def attempt(remaining: float) -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 3:
+                raise ValueError("still down")
+            return "done"
+
+        result = await retry_until_deadline(
+            attempt,
+            total_seconds=1000.0,
+            retry_on=ValueError,
+            initial_delay=1.0,
+            max_delay=10.0,
+            backoff_factor=2.0,
+            jitter_ratio=0.25,
+        )
+
+        assert result == "done"
+        assert fake_random.ranges == [(0.0, 0.25), (0.0, 0.5), (0.0, 1.0)]
+        assert fake_sleep.delays == [1.25, 2.5, 5.0]
+
+    async def test_budget_exhaustion_reraises_without_sleep_and_logs_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A sleep that would outlast the remaining budget re-raises at once and logs the giving-up warning."""
+        fake_sleep = _FakeSleep()
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        attempts = 0
+
+        async def attempt(remaining: float) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise ValueError("still down")
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.retry_utils"):
+            with pytest.raises(ValueError, match="still down"):
+                await retry_until_deadline(
+                    attempt,
+                    total_seconds=0.5,
+                    retry_on=ValueError,
+                    initial_delay=10.0,
+                    jitter_ratio=0.0,
+                )
+
+        assert attempts == 1
+        assert fake_sleep.delays == []
+        records = [record for record in caplog.records if "giving up" in record.message]
+        assert len(records) == 1
+        assert records[0].message == "retry_until_deadline: giving up after 0.5s"
+        assert records[0].exc_info is not None
+
+    async def test_retry_on_tuple_retries_each_listed_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Every member of a retry_on tuple, including OSError, is treated as retryable."""
+        fake_sleep = _FakeSleep()
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+        raised: list[type[Exception]] = []
+
+        async def attempt(remaining: float) -> str:
+            if not raised:
+                raised.append(OSError)
+                raise OSError("connection refused")
+            if len(raised) == 1:
+                raised.append(ValueError)
+                raise ValueError("bad payload")
+            return "done"
+
+        result = await retry_until_deadline(
+            attempt,
+            total_seconds=1000.0,
+            retry_on=(OSError, ValueError),
+            initial_delay=0.5,
+            jitter_ratio=0.0,
+        )
+
+        assert result == "done"
+        assert raised == [OSError, ValueError]
+        assert fake_sleep.delays == [0.5, 1.0]
 
 
 async def _immediately(value):

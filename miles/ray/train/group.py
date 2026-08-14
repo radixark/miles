@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 _RETRY_MAX_ATTEMPTS = 30
 
 
@@ -137,12 +138,12 @@ class RayTrainGroup:
 
     # ------------------------ API :: train ------------------------
 
-    async def train(self, rollout_id: int, rollout_data_pack):
+    async def train(self, rollout_id: int, rollout_data_pack) -> list:
         """Do one rollout training"""
 
         event_analyzer.run_analysis_from_args(self.args)
 
-        async def _fn(attempt: int):
+        async def _fn(attempt: int) -> list:
             witness_info = self._allocate_witness_info(
                 rollout_id=rollout_id,
                 attempt=attempt,
@@ -167,9 +168,18 @@ class RayTrainGroup:
                 results=results,
             )
 
-        await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
+            return [
+                worker_result
+                for cell_results in results
+                if not isinstance(cell_results, BaseException)
+                for worker_result in cell_results
+            ]
+
+        worker_results = await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
 
         self._test_action_executor.run_after_step(rollout_id=rollout_id)
+
+        return worker_results
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
