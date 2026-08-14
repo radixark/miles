@@ -834,7 +834,7 @@ class TestGetWorkerInfos:
         )
         manager = await _launch([spec], _make_pgs(num_slots=8))
 
-        infos = manager.get_worker_infos("engine", 1)
+        infos = manager.get_worker_infos("engine-1")
 
         assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
         assert [info.generation for info in infos] == [1, 1]
@@ -857,15 +857,15 @@ class TestGetWorkerInfosErrors:
         """Asking about a spec the manager never launched must fail loudly."""
         manager = await _launch([_make_spec("engine")])
 
-        with pytest.raises(KeyError):
-            manager.get_worker_infos("router", 0)
+        with pytest.raises(AssertionError):
+            manager.get_worker_infos("router-0")
 
     async def test_a_cell_index_beyond_the_group_is_reported(self, fake_ray_cluster: FakeRayCluster):
         """Asking about a cell that does not exist must fail rather than return another cell."""
         manager = await _launch([_make_spec("engine", num_cells=2)])
 
-        with pytest.raises(IndexError):
-            manager.get_worker_infos("engine", 2)
+        with pytest.raises(AssertionError):
+            manager.get_worker_infos("engine-2")
 
 
 class TestGetCellInfos:

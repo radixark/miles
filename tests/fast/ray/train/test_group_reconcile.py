@@ -31,7 +31,7 @@ def _make_controller(*, num_cells: int = 2, indep_dp: bool = False) -> RayTrainG
     group._rollout_executor = None
     group._health_checker_config = None
     group._health_checker_activeness = True
-    group._cells_by_index = {}
+    group._cells_by_id = {}
     return group
 
 
@@ -42,7 +42,7 @@ def _make_cell_info(cell_index: int) -> CellInfo:
         alive=True,
         worker_names=[f"{_POOL_ID}-{cell_index}-0"],
         workers_hash="pseudo-hash-1",
-        meta={"role": "actor"},
+        meta={"role": "actor", "cell_index": cell_index},
     )
 
 

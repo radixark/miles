@@ -27,7 +27,6 @@ from miles.dashboard.store import (
 )
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
-from miles.utils.workers.naming import parse_worker_name
 
 logger = logging.getLogger(__name__)
 
@@ -386,8 +385,7 @@ def _collect_worker_infos(cells) -> list[list]:
     manager_handle = RayWorkerManager.get_handle()
     futures = []
     for cell in cells:
-        pool, cell_index, _ = parse_worker_name(cell.meta.worker_name)
-        futures.append(manager_handle.get_worker_infos.remote(pool=pool, cell_index=cell_index))
+        futures.append(manager_handle.get_worker_infos.remote(cell_id=cell.meta.cell_id))
     return _ray_get(futures)
 
 
