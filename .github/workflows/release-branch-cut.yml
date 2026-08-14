@@ -1,4 +1,7 @@
 name: Release Branch Cut
+# The branch name is stamped into run-name so release-tag.yml can find this
+# run by title when it verifies the CI gate.
+run-name: Release Branch Cut ${{ inputs.branch_name }}
 #
 # Creates a release/vX.Y.Z branch from main, freezes the dependency triplet
 # into release-lock.json on that branch, then runs the full-scope (weekly
@@ -125,8 +128,9 @@ jobs:
             echo "## Release Branch Cut"
             echo "- Branch: \`${{ github.event.inputs.branch_name }}\`"
             echo "- CI image: \`radixark/miles:${{ steps.freeze.outputs.ci_image_tag }}\`"
-            echo "- Full-scope CI runs below; tag only after everything is green:"
-            echo "  \`gh workflow run release-tag.yml -f version=X.Y.Z -f ref=${{ github.event.inputs.branch_name }} -f ci_run_id=${{ github.run_id }}\`"
+            echo "- Full-scope CI runs below. Once this run is fully green, tag with:"
+            echo "  \`gh workflow run release-tag.yml -f version=X.Y.Z -f ref=${{ github.event.inputs.branch_name }}\`"
+            echo "  (release-tag verifies this run itself: newest cut run for the branch, green, newer than the branch tip)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   run-tests-cuda:

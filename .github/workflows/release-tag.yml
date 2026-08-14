@@ -2,9 +2,11 @@ name: Release Tag
 # Creates the vX.Y.Z tag that triggers release-docker.yml. Use after the
 # release branch's full CI (a release-branch-cut.yml run) is green.
 #
-# Unlike sglang's release-tag.yml, this one refuses to tag blind: pass the
-# run ID of the green release-branch-cut run (ci_run_id), or force=true to
-# skip the check deliberately.
+# Unlike sglang's release-tag.yml, this one refuses to tag blind. It finds the
+# newest release-branch-cut run for the ref by run title (branch-cut stamps the
+# branch into run-name) and requires it to be completed, green, and newer than
+# the branch tip — so a cherry-pick automatically invalidates older green runs.
+# force=true is the deliberate, audited escape hatch.
 
 on:
   workflow_dispatch:
@@ -17,13 +19,8 @@ on:
         description: 'Branch or commit to tag (e.g., release/v0.3.0)'
         required: true
         type: string
-      ci_run_id:
-        description: 'Run ID of the green release-branch-cut.yml run that tested this ref'
-        required: false
-        type: string
-        default: ''
       force:
-        description: 'Tag without a verified CI run (not recommended)'
+        description: 'Tag without a verified green branch-cut run (not recommended)'
         required: false
         type: boolean
         default: false
@@ -38,32 +35,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Validate version format
+        env:
+          VERSION: ${{ github.event.inputs.version }}
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+((rc|\.post)[0-9]+)?$'; then
             echo "::error::Invalid version: $VERSION (expected X.Y.Z, X.Y.ZrcN, or X.Y.Z.postN)"
             exit 1
           fi
-
-      - name: Verify CI run
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          CI_RUN_ID="${{ github.event.inputs.ci_run_id }}"
-          if [ -z "$CI_RUN_ID" ]; then
-            if [ "${{ github.event.inputs.force }}" = "true" ]; then
-              echo "::warning::Tagging without a verified CI run (force=true)"
-              exit 0
-            fi
-            echo "::error::Provide ci_run_id of the green release-branch-cut run, or force=true"
-            exit 1
-          fi
-          CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/$CI_RUN_ID" -q '.conclusion')
-          if [ "$CONCLUSION" != "success" ]; then
-            echo "::error::CI run $CI_RUN_ID conclusion is '$CONCLUSION', not 'success'"
-            exit 1
-          fi
-          echo "CI run $CI_RUN_ID verified green"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -85,16 +63,67 @@ jobs:
           fi
           echo "setup.py version matches ${BASE_VERSION}"
 
-      - name: Create and push tag
+      - name: Verify the branch-cut CI run for this ref
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ github.event.inputs.ref }}
+          FORCE: ${{ github.event.inputs.force }}
         run: |
-          TAG="v${{ github.event.inputs.version }}"
+          if [ "$FORCE" = "true" ]; then
+            echo "::warning::force=true — tagging without a verified branch-cut CI run"
+            exit 0
+          fi
+
+          TIP_SHA=$(git rev-parse HEAD)
+          TIP_TIME=$(git log -1 --format=%cI HEAD)
+
+          # Newest branch-cut run for exactly this ref (run-name carries it).
+          RUN_JSON=$(gh run list --workflow=release-branch-cut.yml --limit 100 \
+            --json databaseId,displayTitle,status,conclusion,createdAt,url \
+            --jq "[.[] | select(.displayTitle == \"Release Branch Cut $REF\")][0]")
+          if [ -z "$RUN_JSON" ] || [ "$RUN_JSON" = "null" ]; then
+            echo "::error::No release-branch-cut run found for '$REF'. Dispatch it and wait for green: gh workflow run release-branch-cut.yml -f branch_name=$REF"
+            exit 1
+          fi
+          RUN_ID=$(echo "$RUN_JSON" | jq -r '.databaseId')
+          RUN_URL=$(echo "$RUN_JSON" | jq -r '.url')
+          STATUS=$(echo "$RUN_JSON" | jq -r '.status')
+          CONCLUSION=$(echo "$RUN_JSON" | jq -r '.conclusion')
+          CREATED=$(echo "$RUN_JSON" | jq -r '.createdAt')
+
+          if [ "$STATUS" != "completed" ]; then
+            echo "::error::The branch-cut run for '$REF' is still '$STATUS' — wait for it to finish: $RUN_URL"
+            exit 1
+          fi
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::The newest branch-cut run for '$REF' concluded '$CONCLUSION', not success: $RUN_URL"
+            exit 1
+          fi
+          # A run older than the branch tip tested a stale tip (e.g. a
+          # cherry-pick landed after it) — require a fresh full run.
+          if ! python3 -c "
+          import sys, datetime as dt
+          run = dt.datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00'))
+          tip = dt.datetime.fromisoformat(sys.argv[2])
+          sys.exit(0 if run > tip else 1)" "$CREATED" "$TIP_TIME"; then
+            echo "::error::The newest green branch-cut run for '$REF' ($RUN_URL, created $CREATED) predates the branch tip $TIP_SHA (committed $TIP_TIME). The branch changed after that CI run — re-dispatch release-branch-cut.yml -f branch_name=$REF and wait for green."
+            exit 1
+          fi
+          echo "Verified: run $RUN_ID ($RUN_URL) is the newest cut run for $REF, green, and newer than the branch tip."
+
+      - name: Create and push tag
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+          REF: ${{ github.event.inputs.ref }}
+        run: |
+          TAG="v${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "::error::Tag $TAG already exists"
             exit 1
           fi
           git config user.name "miles-bot"
           git config user.email "miles-bot@users.noreply.github.com"
-          echo "Tagging $TAG at $(git rev-parse HEAD) (ref ${{ github.event.inputs.ref }})"
+          echo "Tagging $TAG at $(git rev-parse HEAD) (ref $REF)"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
 
@@ -105,8 +134,7 @@ jobs:
         # manually pushed tags.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
         run: |
-          gh workflow run release-docker.yml \
-            -f version="${{ github.event.inputs.version }}" \
-            -f ref="v${{ github.event.inputs.version }}"
-          echo "::notice::Dispatched release-docker.yml for v${{ github.event.inputs.version }}"
+          gh workflow run release-docker.yml -f version="$VERSION" -f ref="v$VERSION"
+          echo "::notice::Dispatched release-docker.yml for v$VERSION"
