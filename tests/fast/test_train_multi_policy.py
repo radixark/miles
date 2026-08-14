@@ -4,8 +4,10 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
 import asyncio
 from argparse import Namespace
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import train_multi_policy as multi_policy_driver
@@ -13,7 +15,9 @@ from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from train_multi_policy import train_multi_policy
 
+from miles.ray import placement_group
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
+from miles.utils.multi_policy.parker import Parker
 from miles.utils.multi_policy.utils import TrainerInfo
 
 
@@ -38,6 +42,8 @@ def _make_args(**overrides: Any) -> Namespace:
 def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str, TrainerInfo]:
     handles = {model_id: AsyncMock() for model_id in model_ids} if handles is None else handles
     start_rollout_ids = start_rollout_ids or {}
+    for handle in handles.values():
+        _let_a_follower_yield(handle)
     return {
         model_id: TrainerInfo(model_id=model_id, start_rollout_id=start_rollout_ids.get(model_id, 0), handle=handle)
         for model_id, handle in handles.items()
@@ -78,7 +84,6 @@ def _stub_driver_environment(monkeypatch):
         "init_tracking",
         "define_policy_metric_groups",
         "launch_worker_manager",
-        "maybe_start_api_server",
         "maybe_start_mini_ft_controller",
         "validate_multi_policy_args",
         "assert_consistent_restore",
@@ -103,13 +108,55 @@ async def _slow_train(rollout_id: int, rollout_data_ref, **kwargs) -> None:
     await asyncio.sleep(0.05)
 
 
+async def _train_that_never_returns(rollout_id: int, rollout_data_ref: Any, **kwargs: Any) -> None:
+    await asyncio.Event().wait()
+
+
+def _let_a_follower_yield(handle) -> None:
+    async def yield_to_the_leader(rollout_id: int, rollout_data_ref, **kwargs) -> None:
+        await asyncio.sleep(0)
+
+    if isinstance(handle.train, AsyncMock) and handle.train.side_effect is None:
+        handle.train.side_effect = yield_to_the_leader
+
+
 class TestInitialWeightPublication:
+    async def test_api_server_receives_every_configured_trainer_handle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each configured trainer id must expose its model's live handle through the shared API server."""
+        start_api_server = Mock()
+        monkeypatch.setattr(placement_group, "start_api_server", start_api_server)
+        monkeypatch.setattr(
+            placement_group,
+            "get_backend_capability",
+            lambda _args: SimpleNamespace(cell_operations=lambda: object()),
+        )
+
+        context = await _run(_make_args(num_rollout=0, api_server_port=18080))
+
+        start_api_server.assert_called_once()
+        assert start_api_server.call_args.kwargs["trainer_models"] == {
+            "a-actor": context["trainers"]["a"],
+            "b-actor": context["trainers"]["b"],
+        }
+        assert start_api_server.call_args.kwargs["inference_controller"] is context["inference_controller"]
+
     async def test_every_policy_compares_its_engines_against_its_own_trainer(self):
         """--ci-test asks for this comparison, and running it for one policy would leave the others unchecked."""
         context = await _run(_make_args(num_rollout=0, check_weight_update_equal=True))
 
         compared = [call.kwargs["model_id"] for call in context["inference_controller"].check_weights.await_args_list]
         assert sorted(compared) == ["a", "b"]
+
+    async def test_each_policy_stamps_its_startup_sync_with_its_own_restore_point(self):
+        """The policies resume at their own rollouts, so one global start id would misattribute their weights."""
+        await _run(_make_args(num_rollout=0), start_rollout_ids=dict(a=3, b=7))
+
+        stamped = {
+            call.kwargs["trainer_model_id"]: call.args[0].start_rollout_id
+            for call in multi_policy_driver.update_weights.await_args_list
+            if "rollout_id" not in call.kwargs
+        }
+        assert stamped == dict(a=3, b=7)
 
     async def test_a_run_that_does_not_ask_for_the_comparison_does_not_pay_for_it(self):
         """The comparison walks every parameter, so it stays off unless the run turns it on."""
@@ -220,6 +267,43 @@ class TestRunPolicies:
         assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0]
         assert [call.args[0] for call in trainers["b"].train.await_args_list] == [5]
 
+    async def test_a_debug_run_stops_the_leader_after_its_own_rounds(self):
+        """--debug-exit-after-rollout counts from where the policy resumed, not from rollout zero."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(
+            _make_args(num_rollout=10, debug_exit_after_rollout=1), trainers=trainers, start_rollout_ids=dict(a=0, b=5)
+        )
+
+        assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0]
+
+    async def test_a_debug_run_leaves_the_followers_running(self):
+        """A follower's rounds are the leader's to end, so honouring the flag there would retire it
+        from the checkpoint every remaining round waits at."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["a"].train = _slow_train
+
+        await _run(_make_args(num_rollout=10, debug_exit_after_rollout=1), trainers=trainers)
+
+        assert len(trainers["b"].train.await_args_list) >= 2
+
+    async def test_the_run_ends_when_the_leader_runs_out_of_rounds(self):
+        """The leader owns --num-rollout; a follower resuming further back must not extend the run."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(_make_args(num_rollout=2), trainers=trainers, start_rollout_ids=dict(a=0, b=0))
+
+        assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0, 1]
+
+    async def test_a_follower_is_never_the_one_that_ends_the_run(self):
+        """Followers train unbounded rounds, so the run must not stop because one of them reached num_rollout."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["a"].train = _slow_train
+
+        await _run(_make_args(num_rollout=2), trainers=trainers)
+
+        assert len(trainers["b"].train.await_args_list) >= 2
+
 
 class TestSaving:
     async def test_the_leader_parks_everybody_and_records_where_they_stood(self, tmp_path):
@@ -317,3 +401,94 @@ class TestSaving:
         trainers["a"].save_model.assert_not_awaited()
         trainers["b"].save_model.assert_not_awaited()
         context["rollout_executor"].save.assert_not_awaited()
+
+
+class TestARunThatCancellationCannotEnd:
+    async def test_a_follower_that_absorbs_cancellation_still_stops(self):
+        """A follower loops without bound, so ending the run must not depend on cancellation reaching it."""
+        absorbed = False
+
+        async def _train(rollout_id: int, rollout_data_ref: Any, **kwargs: Any) -> None:
+            nonlocal absorbed
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if absorbed:
+                    raise
+                absorbed = True
+
+        async def _get(rollout_id: int, trainer_model_id: str | None = None) -> dict:
+            await asyncio.sleep(0.01)
+            return dict(data_ref=None)
+
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["b"].train = _train
+        rollout_executor = AsyncMock()
+        rollout_executor.get = _get
+
+        await asyncio.wait_for(
+            _run(_make_args(num_rollout=1), trainers=trainers, rollout_executor=rollout_executor), timeout=10
+        )
+
+        assert absorbed
+
+
+class TestEvalDispatch:
+    async def test_eval_fires_once_per_point_however_many_policies_train(self):
+        """One shared-engine eval scores every policy through the generate chain; a per-policy dispatch would double it."""
+        context = await _run(_make_args(num_rollout=2, eval_interval=2))
+
+        eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
+        assert eval_rollout_ids == [0, 1]
+        assert context["inference_controller"].prepare_eval.await_count == 2
+
+    async def test_a_run_without_an_eval_interval_never_evaluates(self):
+        """--eval-interval is the only opt-in; a surprise eval pauses production for the whole test split."""
+        context = await _run(_make_args(num_rollout=2))
+
+        context["rollout_executor"].eval.assert_not_awaited()
+        context["inference_controller"].prepare_eval.assert_not_awaited()
+
+    async def test_skip_eval_before_train_drops_only_the_starting_point(self):
+        """The flag exists to skip the expensive untrained point, not to turn eval off."""
+        context = await _run(_make_args(num_rollout=2, eval_interval=2, skip_eval_before_train=True))
+
+        eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
+        assert eval_rollout_ids == [1]
+
+    async def test_eval_holds_every_follower_parked(self, monkeypatch):
+        """A follower pushing weights mid-eval would swap its engines' weights under the running sweep."""
+        held_during_eval = []
+
+        class SpyParker(Parker):
+            holding = False
+
+            @asynccontextmanager
+            async def with_all_parked(self):
+                async with super().with_all_parked():
+                    SpyParker.holding = True
+                    try:
+                        yield
+                    finally:
+                        SpyParker.holding = False
+
+        async def _eval(rollout_id: int) -> None:
+            held_during_eval.append(SpyParker.holding)
+
+        rollout_executor = AsyncMock()
+        rollout_executor.eval = AsyncMock(side_effect=_eval)
+        monkeypatch.setattr(multi_policy_driver, "Parker", SpyParker)
+
+        await _run(
+            _make_args(num_rollout=2, eval_interval=2, skip_eval_before_train=True),
+            rollout_executor=rollout_executor,
+        )
+
+        assert held_during_eval == [True]
+
+    async def test_a_resumed_run_does_not_re_evaluate_the_untrained_model(self):
+        """The rollout-0 point describes the base checkpoint; a resume from rollout 1 is past it."""
+        context = await _run(_make_args(num_rollout=2, eval_interval=2), start_rollout_ids={"a": 1, "b": 1})
+
+        eval_rollout_ids = [call.args[0] for call in context["rollout_executor"].eval.await_args_list]
+        assert eval_rollout_ids == [1]
