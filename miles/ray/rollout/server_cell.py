@@ -42,6 +42,7 @@ class ServerCellMetadata(FrozenStrictBaseModel):
 class ServerCell:
     args: Any
     meta: ServerCellMetadata
+    router_api_client: SGLangRouterApiClient
     _state: CellState = dataclasses.field(default_factory=StateAllocatedUninitialized)
 
     @property
@@ -62,7 +63,7 @@ class ServerCell:
     def api_client(self) -> SGLangApiClient:
         return SGLangApiClient(server_url=self.addr_info.server_url)
 
-    async def _add_raw(self) -> None:
+    async def add(self) -> None:
         if self.args.rollout_external:
             raise NotImplementedError(
                 "external rollout address allocation was removed and a new implementation is coming"
@@ -85,9 +86,6 @@ class ServerCell:
             api_key=self.meta.sglang_api_key,
         )
 
-    async def add(self, router_api_client: SGLangRouterApiClient) -> None:
-        await self._add_raw()
-
         if self.args.check_weight_update_equal and self.meta.update_weights:
             await self.check_weights(action="snapshot", allow_quant_error=False, selector="all", skip_list=None)
 
@@ -97,12 +95,23 @@ class ServerCell:
 
         self._mark_alive()
 
-        await self._register(router_api_client)
+        await self.router_api_client.add_worker(
+            worker_url=self.addr_info.server_url,
+            worker_type=self.meta.worker_type,
+            use_legacy_api=use_legacy_router_api(self.args),
+            bootstrap_port=self.addr_info.bootstrap_port,
+        )
 
-    async def dispose(self, router_api_client: SGLangRouterApiClient) -> None:
+    async def dispose(self) -> None:
         if self.is_allocated:
             try:
-                await asyncio.wait_for(self._unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
+                await asyncio.wait_for(
+                    self.router_api_client.remove_worker(
+                        worker_url=self.addr_info.server_url,
+                        use_legacy_api=use_legacy_router_api(self.args),
+                    ),
+                    timeout=SHUTDOWN_TIMEOUT,
+                )
             except Exception as e:
                 logger.warning(
                     f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})"
@@ -154,20 +163,6 @@ class ServerCell:
     async def check_weights(self, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None):
         return await self.api_client.check_weights(
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
-        )
-
-    async def _register(self, router_api_client: SGLangRouterApiClient) -> None:
-        await router_api_client.add_worker(
-            worker_url=self.addr_info.server_url,
-            worker_type=self.meta.worker_type,
-            use_legacy_api=use_legacy_router_api(self.args),
-            bootstrap_port=self.addr_info.bootstrap_port,
-        )
-
-    async def _unregister(self, router_api_client: SGLangRouterApiClient) -> None:
-        await router_api_client.remove_worker(
-            worker_url=self.addr_info.server_url,
-            use_legacy_api=use_legacy_router_api(self.args),
         )
 
 

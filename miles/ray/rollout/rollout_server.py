@@ -91,14 +91,14 @@ class RolloutServer:
     async def add_cell(self, cell_meta: ServerCellMetadata):
         cell_id = cell_meta.cell_id
         assert cell_id not in self.server_cells
-        cell = ServerCell(args=self.args, meta=cell_meta)
-        await cell.add(self._router_api_client)
+        cell = ServerCell(args=self.args, router_api_client=self._router_api_client, meta=cell_meta)
+        await cell.add()
         self.server_cells[cell_id] = cell
         self.has_new_engines = True
 
     async def remove_cell(self, cell_id: str):
         logger.info(f"Killing server {cell_id=}...")
-        await self.server_cells[cell_id].dispose(self._router_api_client)
+        await self.server_cells[cell_id].dispose()
         del self.server_cells[cell_id]
 
     async def offload(self, tags: list[str] | None = None):
