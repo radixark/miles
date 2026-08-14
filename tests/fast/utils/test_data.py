@@ -7,17 +7,11 @@ import pytest
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import object_store
 from miles.utils.data import remove_train_output_refs
-from miles.utils.object_store import (
-    BaseObjectStore,
-    ObjectStoreBackend,
-    ObjectStoreGetResult,
-    StoreObjectRef,
-    ValueSpec,
-)
+from miles.utils.object_store import BaseObjectStore, ObjectStoreGetResult, StoreObjectRef, ValueSpec
 
 
 def _ref(payload: Any) -> StoreObjectRef:
-    return StoreObjectRef(backend=ObjectStoreBackend.MOONCAKE, payload=payload)
+    return StoreObjectRef(payload=payload)
 
 
 class _RecordingStore(BaseObjectStore):

@@ -8,8 +8,9 @@ from types import TracebackType
 from typing import Any
 
 import ray
+from pydantic import ConfigDict
 
-from miles.utils.ray_utils import Box
+from miles.utils.pydantic_utils import StrictBaseModel
 
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
@@ -27,12 +28,16 @@ except ImportError as exc:
 
 # ============================== types ==============================
 
-StoreObjectRef = Box
-
 
 class ObjectStoreBackend(Enum):
     RAY = "ray"
     MOONCAKE = "mooncake"
+
+
+class StoreObjectRef(StrictBaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    payload: Any
 
 
 @dataclass(frozen=True)
@@ -115,10 +120,10 @@ class BaseObjectStore(ABC):
 
 class RayObjectStore(BaseObjectStore):
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
-        return Box(ray.put(value))
+        return StoreObjectRef(payload=ray.put(value))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
-        return ObjectStoreGetResult(value=ray.get(ref.inner), release_fn=_release_noop)
+        return ObjectStoreGetResult(value=ray.get(ref.payload), release_fn=_release_noop)
 
     def remove(self, ref: StoreObjectRef) -> None:
         pass
@@ -155,14 +160,14 @@ class MooncakeObjectStore(BaseObjectStore):
             config=self._replicate_config(),
             field_schemas=_field_schemas_for_value(value, value_spec),
         )
-        return Box(export_ref(ref))
+        return StoreObjectRef(payload=export_ref(ref))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
-        value = self._transfer.get(import_ref(ref.inner), type="dict")
+        value = self._transfer.get(import_ref(ref.payload), type="dict")
         return ObjectStoreGetResult(value=value, release_fn=MooncakeBundleTransfer.release_result)
 
     def remove(self, ref: StoreObjectRef) -> None:
-        self._transfer.cleanup_dataproto(import_ref(ref.inner))
+        self._transfer.cleanup_dataproto(import_ref(ref.payload))
 
     def _replicate_config(self) -> Any:
         if self._replica_num == 1:
