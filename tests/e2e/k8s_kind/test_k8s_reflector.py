@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import Any
 
 from kubernetes_asyncio import client as kubernetes_client
 from tests.ci.ci_register import register_cpu_ci
 from tests.e2e.k8s_apiserver.reflector_utils import pod_names_of, running_reconcile_loop
 from tests.e2e.k8s_apiserver.utils import BUSYBOX_IMAGE, CELL_LABEL, pod_body, wait_until
 
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.reconcile.k8s_api import KubernetesAsyncioPodApi, PodWatchEvent
 from miles.utils.workers.reconcile.loop import ReconcileLoop
 
@@ -235,6 +235,6 @@ def _restart_count(loop: ReconcileLoop, cell: str) -> int:
     return max((_pod_restart_count(pod) for pod in loop.get_by_parent(cell)), default=0)
 
 
-def _pod_restart_count(pod: Any) -> int:
+def _pod_restart_count(pod: Pod) -> int:
     statuses = pod.status.container_statuses
     return max((status.restart_count for status in statuses), default=0) if statuses else 0
