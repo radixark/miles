@@ -61,8 +61,6 @@ A subtraction is not a per-test veto — it only stops that label from granting 
 
 A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short`, and nightly plus `run-ci-long`, add the explicitly requested tests back rather than silently dropping the request.
 
-On PRs, labels also contribute to GPU stage selection before a self-hosted runner is allocated. A domain label marks only stages containing an enabled, cadence-eligible test with that label; `nightly`, `run-ci-all`, and `run-ci-image` mark every stage runnable under their resolved scope. This is combined with changed-path impact, so a docs-only PR carrying `run-ci-megatron` runs the stages containing selected Megatron tests without restoring unrelated always-on stages. `bypass-fastfail` contributes no test scope and therefore never restores a pruned stage.
-
 ## Registration and scan scope
 
 Labels are optional; registration is not. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
@@ -81,7 +79,7 @@ By default CI fails fast on two levels:
 - Cross-stage: GPU stages run only when `stage-a-cpu` succeeds — the `if` requires `needs.stage-a-cpu.result == 'success'`.
 - Within-stage: each suite stops at the first failure (`pytest -x` for CPU; `run_unittest_files` breaks on the first failing file for CUDA).
 
-For GPU stages selected to run, the `bypass-fastfail` PR label turns both off so one run surfaces every failure:
+The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 
 - Cross-stage: each GPU stage consumes the shared `bypass_fastfail` policy output, so GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: `run_suite.py` derives continue-on-error from the same resolved policy (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.

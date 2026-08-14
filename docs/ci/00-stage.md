@@ -47,7 +47,7 @@ Distinct from image selection, the **`run-ci-image` label** selects the test sco
 **Policy resolution (`resolve-ci-policy`).**
 
 - `pull_request`, `schedule`, and `workflow_dispatch` only say how the workflow started; none itself implies a cadence or domain scope.
-- Each Miles PR workflow passes trigger facts and the PR diff to `tests/ci/ci_policy.py` and publishes its `cadence`, `raw_labels`, `bypass_fastfail`, and `skipped_stages` outputs. That module owns trigger adaptation; `run_suite.py` and the stage planner share the same registration-selection predicate.
+- Each Miles PR workflow passes trigger facts and, for PRs, the diff to `tests/ci/ci_policy.py`, which publishes the resolved policy and `skipped_stages` for `run_suite.py` and GPU job gates.
 - A PR `nightly` label maps to nightly cadence.
 - A scheduled run maps its exact UTC `github.event.schedule` cron: `0 15 * * 0-5` maps to nightly and `0 15 * * 6` maps to weekly; an unknown cron fails.
 - A manual dispatch keeps regular cadence and has no PR labels. `pr-test.yml` therefore runs the ordinary always-on selection, while the dedicated ROCm dispatch adds `--match-all-labels` to preserve its full regular MI350 run.
@@ -57,11 +57,9 @@ A **nightly** policy selects every enabled tag except `long` and `ft-long`, admi
 
 `run-ci-all` selects the full domain-tag set without changing cadence. `run-ci-image` selects every enabled tag except `long`, `ft-short`, and `ft-long`. If scope signals overlap, the precedence is `run-ci-all` > weekly/release full scope > nightly > `run-ci-image`. The resolved cadence and raw/synthetic labels are passed to `run_suite.py`, which computes one run policy (see [Labels](/ci/01-label) for the subtraction semantics).
 
-**PR GPU stage selection.** A PR GPU stage runs only when the current cadence/label policy selects at least one enabled registration in that stage and the PR affects it. A changed registered test file affects its declared local GPU suites; registered CPU-only tests, Markdown/docs paths, and the known non-GPU config/tooling affect no GPU suite. Explicit domain labels affect stages containing matching tests, while `nightly`, `run-ci-all`, and `run-ci-image` affect every stage runnable under that scope. `bypass-fastfail` is behavior-only and does not affect stage selection.
+**PR GPU stage selection.** Before runner allocation, PR GPU stages are filtered by `runnable ∩ affected`: `runnable` reuses cadence/label selection, while `affected` maps changed registered tests to their suites. Known non-GPU paths affect none; unknown, missing, or malformed diffs affect all. `nightly`, `run-ci-all`, and `run-ci-image` add their runnable stages; `bypass-fastfail` does not. CPU stages and scheduled/manual runs are not filtered.
 
-Any unclassified path is conservatively treated as affecting every GPU stage. The workflows collect a NUL-delimited `git diff --name-status -z -M HEAD^1 HEAD`, so rename endpoints and special filenames are preserved; a missing, empty, or malformed diff publishes an empty skip list and leaves the full fleet eligible. Scheduled and manual runs never prune, new workflow stages run by default, and CPU jobs are outside this selector.
-
-**Dependencies / gating.** In `pr-test.yml`, both CPU stages require only `resolve-ci-policy`. PR-image preparation is gated by `stage-a-cpu`, and the selected NVIDIA GPU stages follow image resolution; `stage-b-cpu` stays parallel and does not gate that chain. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each selected suite continue after a test failure; none bypasses policy or Docker/image failure or restores a pruned stage.
+**Dependencies / gating.** In `pr-test.yml`, both CPU stages require only `resolve-ci-policy`. PR-image preparation is gated by `stage-a-cpu`, and the NVIDIA GPU stages follow image resolution; `stage-b-cpu` stays parallel and does not gate that chain. Resolved nightly, weekly, or release cadence and the `bypass-fastfail` PR label admit the chain after an actual `stage-a-cpu` failure and make each suite continue after a test failure; none bypasses policy or Docker/image failure.
 
 **Runner selection.** CUDA stages request runners by label via `runs_on`, a JSON list passed through to `runs-on` — a runner must carry **all** listed labels (GPU class + count). CPU stages call `_run-cpu-ci.yml`, whose only job runs on GitHub-hosted `ubuntu-latest`, so they don't occupy GPU-fleet slots.
 
