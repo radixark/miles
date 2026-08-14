@@ -86,7 +86,7 @@ class TestConfigToArgv:
             host="127.0.0.1",
             port=30100,
             instance_id="abc",
-            backend_url="http://127.0.0.1:30080",
+            backend_url="http://127.0.0.1:30000",
             timeout=600.0,
             hf_checkpoint="/fake/model",
             chat_template_path=None,
@@ -323,4 +323,44 @@ class TestRenderCliArgvAgainstTheRealParserShape:
                 make_parser=_make_alias_parser,
                 from_parsed=lambda parsed: _UnknownArgs(),
                 dest_prefix="router_",
+            )
+
+
+@dataclasses.dataclass
+class _RequiredDemoArgs:
+    model: str
+    count: int = 0
+
+
+def _make_required_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--count", type=int, default=0)
+    return parser
+
+
+def _from_parsed_required(parsed: argparse.Namespace) -> _RequiredDemoArgs:
+    return _RequiredDemoArgs(model=parsed.model, count=parsed.count)
+
+
+class TestRenderCliArgvRequiredArgv:
+    def test_required_flags_are_emitted_exactly_once(self):
+        """required_argv seeds the defaults probe and stays in the final argv."""
+        args_obj = _RequiredDemoArgs(model="m", count=3)
+        argv = render_cli_argv(
+            args_obj,
+            make_parser=_make_required_parser,
+            from_parsed=_from_parsed_required,
+            required_argv=["--model", "m"],
+        )
+        assert argv.count("--model") == 1
+        assert _from_parsed_required(_make_required_parser().parse_args(argv)) == args_obj
+
+    def test_a_parser_with_required_flags_needs_required_argv(self):
+        """Without required_argv the defaults probe hits the missing required flag."""
+        with pytest.raises(SystemExit):
+            render_cli_argv(
+                _RequiredDemoArgs(model="m"),
+                make_parser=_make_required_parser,
+                from_parsed=_from_parsed_required,
             )
