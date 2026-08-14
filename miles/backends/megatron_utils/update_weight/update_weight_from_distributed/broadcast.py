@@ -89,7 +89,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 self.args, self._group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self._group_name, rollout_engines
+                self.args, self._group_name, rollout_engines, engine_gpu_counts=engine_gpu_counts
             )
 
     @property
