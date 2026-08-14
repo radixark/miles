@@ -46,7 +46,7 @@ class Helm:
             ],
             capture_output=True,
         )
-        return Manifest.parse(json.loads(rendered.stdout)["manifest"])
+        return Manifest.parse(json.loads(rendered.stdout)["manifest"], namespace=namespace)
 
     @staticmethod
     def template(
@@ -79,7 +79,7 @@ class Helm:
             ["helm", "get", "manifest", release, "--namespace", namespace], capture_output=True, check=False
         )
         if listed.returncode == 0:
-            return Manifest.parse(listed.stdout)
+            return Manifest.parse(listed.stdout, namespace=namespace)
         if "not found" in (listed.stderr + listed.stdout).lower():
             return None
         raise RuntimeError(
