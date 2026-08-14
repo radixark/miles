@@ -113,18 +113,24 @@ def _compute_spec_trainer_controller(
 
 
 def specs_trainer(args) -> list[ServeWorkerSpec]:
+    # TODO: support different sizes after the args refactor
+    actor_gpus_per_instance = args.actor_num_nodes * args.actor_num_gpus_per_node
     specs = []
+    actor_index = 0
     for config in compute_trainer_configs(args):
         if config.role == CRITIC_ROLE:
-            num_nodes, num_gpus_per_node = args.critic_num_nodes, args.critic_num_gpus_per_node
+            num_nodes, num_gpus_per_node, pg_slot_offset = args.critic_num_nodes, args.critic_num_gpus_per_node, 0
         else:
             num_nodes, num_gpus_per_node = args.actor_num_nodes, args.actor_num_gpus_per_node
+            pg_slot_offset = actor_index * actor_gpus_per_instance
+            actor_index += 1
         specs.append(
             _compute_spec_trainer(
                 compute_trainer_args(args, config),
                 config=config,
                 num_nodes=num_nodes,
                 num_gpus_per_node=num_gpus_per_node,
+                pg_slot_offset=pg_slot_offset,
             )
         )
     return specs
@@ -160,6 +166,7 @@ def _compute_spec_trainer(
     config: MegatronTrainerConfig,
     num_nodes: int,
     num_gpus_per_node: int,
+    pg_slot_offset: int,
 ) -> ServeWorkerSpec:
     trainer_id = config.trainer_id
     total_gpus = num_nodes * num_gpus_per_node
@@ -186,6 +193,7 @@ def _compute_spec_trainer(
             num_gpu_slots_per_worker=1,
             num_gpus_per_node=num_gpus_per_node,
             pg_name="actor",
+            pg_slot_offset=pg_slot_offset,
         ),
         worker_class=_TRAINER_ACTOR_CLASSES[args.train_backend],
         ctor_kwargs=lambda ctx: dict(
