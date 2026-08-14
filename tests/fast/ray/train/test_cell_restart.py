@@ -78,3 +78,31 @@ class TestKillRpcTimeout:
 
         assert [handle.kill_self_call_count for handle in hanging_handles] == [1, 1]
         assert [handle.wait_dead_call_count for handle in hanging_handles] == [1, 1]
+
+
+class _OrderRecordingKillHandle:
+    def __init__(self, events: list[str], index: int) -> None:
+        self._events = events
+        self._index = index
+
+    async def kill_self(self) -> None:
+        self._events.append(f"kill-{self._index}")
+        await asyncio.sleep(0)
+
+    async def wait_dead(self, *, timeout: float) -> None:
+        self._events.append(f"wait-{self._index}")
+        await asyncio.sleep(0)
+
+
+class TestKillOrdering:
+    async def test_every_kill_request_is_sent_before_any_death_is_confirmed(self, monkeypatch: pytest.MonkeyPatch):
+        """Confirming rank 0's death first blocks the kill of ranks still stuck inside a collective."""
+        events: list[str] = []
+        cell = make_cell(2)
+        handles = [_OrderRecordingKillHandle(events, index) for index in range(3)]
+        monkeypatch.setattr(cell, "_get_worker_handles", lambda: handles)
+
+        await cell._kill_workers_and_confirm_dead()
+
+        assert [event.split("-")[0] for event in events] == ["kill", "kill", "kill", "wait", "wait", "wait"]
+        assert sorted(events) == ["kill-0", "kill-1", "kill-2", "wait-0", "wait-1", "wait-2"]

@@ -130,8 +130,11 @@ class FakeController:
 class FakeRemoteMethod:
     def __init__(self, sink: list[str]) -> None:
         self._sink = sink
+        self.error: Exception | None = None
 
     async def remote(self, cell_ids: list[str]) -> None:
+        if self.error is not None:
+            raise self.error
         self._sink.extend(cell_ids)
 
 
@@ -246,6 +249,35 @@ class TestRunAfterStep:
             await _run(executor, manager, 1)
 
         assert manager.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_the_index_one_past_the_last_cell_is_rejected(self):
+        """Cell indices are half-open, so index N of an N-cell pool is the easiest off-by-one to write in CI config."""
+        manager = FakeWorkerManager()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-actor-3")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=FakeController(num_cells=3))
+
+        with pytest.raises(AssertionError):
+            await _run(executor, manager, 1)
+
+        assert manager.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_stop_propagates_and_the_later_action_never_fires(self):
+        """Carrying on after the requested transition failed turns a broken scenario into a green run."""
+        manager = FakeWorkerManager()
+        manager.stop_cells.error = RuntimeError("worker manager rejected the stop")
+        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-actor-0")
+        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-actor-2")
+        executor = FTTestActionControllerExecutor(
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3)
+        )
+
+        with pytest.raises(RuntimeError, match="rejected the stop"):
+            await _run(executor, manager, 7)
+
+        assert manager.stopped == []
+        assert manager.started == []
 
 
 _CRASH_ACTION = FTTestAction(

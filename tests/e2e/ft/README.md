@@ -154,7 +154,7 @@ cell 0, alive back to N). Baseline and phase_a event dirs must contain zero reco
 events. This positively proves the crash -> shrink -> heal path executed; without it the
 comparison could silently degenerate to two fault-free runs.
 
-Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
+Fault injection via --ci-ft-test-actions JSON (data-driven, executed by TrainerController).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.
 The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
 ```

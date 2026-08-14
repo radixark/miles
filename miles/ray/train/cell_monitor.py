@@ -11,12 +11,12 @@ from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, Tr
 from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthChecker, SimpleHealthCheckerConfig
 
 if TYPE_CHECKING:
-    from miles.ray.train.cell import RayTrainCell
+    from miles.ray.train.cell import TrainerCell
 
 
 def create_trainer_cell_health_checker(
     *,
-    cell: "RayTrainCell",
+    cell: "TrainerCell",
     config: SimpleHealthCheckerConfig,
     get_activeness: Callable[[], ActiveAndEpoch],
 ) -> SimpleHealthChecker:
