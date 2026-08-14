@@ -269,7 +269,7 @@ class RolloutServer:
         self.has_new_engines |= bool(cell_indices)
 
     async def recover(self, cell_indices: list[int] | None = None):
-        """Recover dead engines, overlapping init across cells.
+        """Recover dead cells, overlapping init across cells.
 
         Reuses the startup allocator so its per-node cursors still sit past the
         ports the live engines hold, instead of rescanning from the base port.
