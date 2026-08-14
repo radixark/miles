@@ -1,6 +1,7 @@
 import copy
 import logging
 import multiprocessing
+import os
 import random
 import uuid
 
@@ -13,6 +14,14 @@ from miles.utils.http_utils import run_router as run_sglang_router
 from miles.utils.http_utils import wait_for_server_ready
 
 logger = logging.getLogger(__name__)
+
+# How long a spawned router / session-server child gets to start accepting
+# connections. The spawn re-imports the full torch/sglang module graph, which
+# on a CPU-starved or cold-page-cache host (observed: Modal gVisor containers,
+# 8 visible cores shared with 8 initializing Megatron ranks) can exceed the
+# old hardcoded 30s. wait_for_server_ready still aborts immediately if the
+# child dies, so a generous ceiling costs nothing on the failure path.
+_SERVER_READY_TIMEOUT_SECS = int(os.getenv("MILES_SERVER_READY_TIMEOUT_SECS", "300"))
 
 
 def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
@@ -72,7 +81,7 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     )
     process.daemon = True
     process.start()
-    wait_for_server_ready(router_ip, router_port, process, timeout=30)
+    wait_for_server_ready(router_ip, router_port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
 
@@ -146,5 +155,5 @@ def start_session_server(args):
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
     for port, process in processes:
-        wait_for_server_ready(ip, port, process, timeout=30)
+        wait_for_server_ready(ip, port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")
