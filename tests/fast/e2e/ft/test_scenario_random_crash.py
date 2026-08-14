@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 from tests.e2e.ft.conftest_ft.fault_injection import entrypoint, fault_forms, state
-from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_drawn_fault_forms_worked, assert_healing
+from tests.e2e.ft.conftest_ft.scenario_random_crash import (
+    _assert_drawn_fault_forms_worked,
+    _get_extra_env_vars,
+    assert_healing,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
@@ -12,6 +16,11 @@ from miles.utils.workers.types import ClusterBackend
 
 _ROLLOUT_CELL_NAME = "rollout-engine-0"
 _ACTOR_CELL_NAME = "actor-0"
+
+
+def test_fully_async_soak_enables_the_required_rollout_api() -> None:
+    """The Ray runtime must receive the class-based rollout feature flag."""
+    assert _get_extra_env_vars(fully_async=True) == {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
 
 
 def _injector(*, cell_types: tuple[str, ...]) -> entrypoint.FaultInjectorHandle:

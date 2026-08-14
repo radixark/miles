@@ -164,6 +164,20 @@ def get_ft_args(mode: FTTestMode) -> str:
     return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
 
 
+DEFAULT_TRAIN_SCRIPT: str = "train.py"
+FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
+
+
+def get_train_script(*, fully_async: bool) -> str:
+    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
+
+
+def get_fully_async_args(*, fully_async: bool) -> str:
+    if not fully_async:
+        return ""
+    return "--fully-async --pause-generation-mode in_place "
+
+
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
 _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     "NCCL_ALGO": "Ring",
@@ -193,6 +207,7 @@ def run_training(
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
     config: command_utils.ExecuteTrainConfig | None = None,
+    train_script: str = DEFAULT_TRAIN_SCRIPT,
 ) -> None:
     U = _resolve_config(config).create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
@@ -220,4 +235,5 @@ def run_training(
         megatron_model_type=mode.megatron_model_type,
         extra_env_vars=merged_env_vars,
         megatron_path=_MEGATRON_PATH,
+        train_script=train_script,
     )

@@ -4,13 +4,22 @@
 
 from collections import Counter
 from pathlib import Path
-from typing import Annotated
 
 import typer
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
+from tests.e2e.ft.conftest_ft.cli_options import (
+    FullyAsyncOption,
+    ModeOption,
+    NumStepsOption,
+    RolloutCrashIntervalSecondsOption,
+    SeedOption,
+    TrainerCrashIntervalSecondsOption,
+)
 from tests.e2e.ft.conftest_ft.execution import (
     get_common_train_args,
     get_ft_args,
+    get_fully_async_args,
+    get_train_script,
     materialize_cyclic_debug_rollout_data,
     prepare,
     run_training,
@@ -56,15 +65,12 @@ DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 240.0
 
 @app.command(name="run")
 def run_ci(
-    mode: Annotated[str, typer.Option(help="Test mode variant")],
-    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = DEFAULT_SEED,
-    num_steps: Annotated[int, typer.Option(help="Number of train() calls")] = DEFAULT_NUM_STEPS,
-    trainer_crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between trainer cell injections")
-    ] = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
-    rollout_crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between rollout engine injections")
-    ] = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    mode: ModeOption,
+    seed: SeedOption = DEFAULT_SEED,
+    num_steps: NumStepsOption = DEFAULT_NUM_STEPS,
+    trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    fully_async: FullyAsyncOption = False,
 ) -> None:
     """Random failure soak test, for whichever components the mode enables ft on.
 
@@ -76,8 +82,12 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    if fully_async:
+        assert_mode_supports_fully_async(ft_mode, mode=mode)
+
     config = command_utils.default_config()
-    dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
+    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
+    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}")
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
         ft_mode.ft_components,
@@ -86,6 +96,7 @@ def run_ci(
     )
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
     print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
+    print(f"Train script: {get_train_script(fully_async=fully_async)}")
 
     prepare(ft_mode, config=config)
 
@@ -95,6 +106,7 @@ def run_ci(
             ft_mode, dump_dir=dump_dir, num_steps=num_steps, debug_rollout_data_dir=debug_rollout_data_dir
         )
         + get_ft_args(ft_mode)
+        + get_fully_async_args(fully_async=fully_async)
         + f"--api-server-port {API_SERVER_PORT} "
         + "--mini-ft-controller-enable "
     )
@@ -108,15 +120,38 @@ def run_ci(
     )
 
     try:
-        run_training(train_args=train_args, mode=ft_mode, dump_dir=dump_dir, config=config)
+        run_training(
+            train_args=train_args,
+            mode=ft_mode,
+            dump_dir=dump_dir,
+            extra_env_vars=_get_extra_env_vars(fully_async=fully_async),
+            config=config,
+            train_script=get_train_script(fully_async=fully_async),
+        )
     finally:
         injector.stop_and_join()
 
     assert_healing(
-        ft_mode.ft_components, injector=injector, event_dir=Path(dump_dir) / "events", context=f"{TEST_NAME} {mode}"
+        ft_mode.ft_components, injector=injector, event_dir=Path(dump_dir) / "events", context=f"{test_name} {mode}"
     )
 
-    print(f"Random failure soak test PASSED (mode={mode}, seed={seed}, steps={num_steps})")
+    print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def _get_extra_env_vars(*, fully_async: bool) -> dict[str, str]:
+    if fully_async:
+        return {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    return {}
+
+
+def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
+    assert ft_mode.has_real_rollout, (
+        f"Mode {mode!r} has no rollout engines, so a fully-async soak would train off pre-recorded debug rollout "
+        f"data and would prove nothing about generating while training"
+    )
+    assert (
+        not ft_mode.colocate
+    ), f"Mode {mode!r} is colocated, which train_async.py rejects: a fully-async run needs engines of its own"
 
 
 def assert_healing(
