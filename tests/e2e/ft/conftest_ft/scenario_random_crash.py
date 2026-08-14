@@ -2,6 +2,7 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 
+from collections import Counter
 from pathlib import Path
 from typing import Annotated
 
@@ -20,18 +21,30 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     FaultInjectorHandle,
     spawn_fault_injector,
 )
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import create_cell_fault_forms
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
+    ACTOR_CELL_TYPE,
+    CELL_TYPE_OF_FT_COMPONENT,
+    ROLLOUT_CELL_TYPE,
+    create_cell_fault_forms,
+)
 from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_cells_with_unfinished_recovery,
     compute_forms_drawn_without_success,
+    compute_injected_cell_names,
     compute_num_completed_recoveries,
     compute_num_injections,
     compute_states_of_cell_name,
+    compute_successful_form_names,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, assert_soak_reconfigure_events
+from miles.utils.test_utils.reconfigure_assertions import (
+    assert_min_soak_injections,
+    assert_soak_reconfigure_events,
+    load_reconfigure_events,
+)
+from miles.utils.workers.naming import parse_cell_id
 
 app: typer.Typer = typer.Typer()
 
@@ -58,7 +71,7 @@ def run_ci(
     config = command_utils.default_config()
     dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
     print(f"Dump directory: {dump_dir}")
-    mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
+    mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01) / len(ft_mode.ft_components)
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection interval: {mean_interval:.1f}s")
     print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
 
@@ -96,24 +109,29 @@ def run_ci(
 def compute_injected_cell_type(ft_mode: FTTestMode) -> str | None:
     match tuple(sorted(ft_mode.ft_components)):
         case ("train",):
-            return "actor"
+            return ACTOR_CELL_TYPE
         case ("rollout",):
-            return "rollout"
+            return ROLLOUT_CELL_TYPE
         case _:
             return None
 
 
 def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_dir: str) -> None:
-    assert_min_soak_injections(injector.num_successful_injections, context=f"{TEST_NAME} {ft_mode.ft_components}")
+    events = injector.event_log.events
+    event_dir = Path(dump_dir) / "events"
+
     _assert_drawn_fault_forms_worked(injector)
 
     if "train" in ft_mode.ft_components:
         assert_soak_reconfigure_events(
-            Path(dump_dir) / "events",
-            num_successful_injections=injector.num_successful_injections,
+            event_dir, num_successful_injections=compute_num_injections(events, cell_type=ACTOR_CELL_TYPE)
         )
+        assert_trainer_injections_healed(injector, event_dir=event_dir)
 
     if "rollout" in ft_mode.ft_components:
+        assert_min_soak_injections(
+            compute_num_injections(events, cell_type=ROLLOUT_CELL_TYPE), context=f"{TEST_NAME} rollout cells"
+        )
         assert_every_rollout_injection_recovered(injector)
 
     _assert_enabled_fault_forms_worked(injector, ft_components=ft_components)
@@ -122,6 +140,40 @@ def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_d
 def _assert_drawn_fault_forms_worked(injector: FaultInjectorHandle) -> None:
     never_worked = compute_forms_drawn_without_success(injector.event_log.events)
     assert not never_worked, f"Fault forms drawn but never once successful: {never_worked}"
+
+
+def _assert_enabled_fault_forms_worked(injector: FaultInjectorHandle, *, ft_components: tuple[str, ...]) -> None:
+    events = injector.event_log.events
+    never_worked: list[tuple[str, str]] = []
+    for component in ft_components:
+        cell_type = CELL_TYPE_OF_FT_COMPONENT[component]
+        if (forms := injector.cell_fault_forms.get(cell_type)) is None:
+            continue
+        worked = compute_successful_form_names(events, cell_type=cell_type)
+        never_worked += [(cell_type, form.name) for form in forms if form.name not in worked]
+
+    assert not never_worked, f"fault forms this soak enabled but never injected successfully: {sorted(never_worked)}"
+
+
+def assert_trainer_injections_healed(injector: FaultInjectorHandle, *, event_dir: Path) -> None:
+    injected: Counter[int] = Counter(
+        parse_cell_id(name).cell_index
+        for name in compute_injected_cell_names(injector.event_log.events, cell_type=ACTOR_CELL_TYPE)
+    )
+    healed: Counter[int] = Counter(
+        cell_index for event in load_reconfigure_events(event_dir) for cell_index in event.healed_cell_indices
+    )
+    debt: Counter[int] = injected - healed
+
+    assert not debt, (
+        f"Trainer recovery witness failed: cell index -> accepted injection(s) never healed {dict(debt)} when "
+        f"training ended (injected {dict(injected)}, healed {dict(healed)} across the events in {event_dir})"
+    )
+
+    print(
+        f"Trainer recovery witness assertion passed: every one of {sum(injected.values())} accepted injection(s) "
+        f"is paired with a healing of the same cell ({dict(healed)})"
+    )
 
 
 def assert_every_rollout_injection_recovered(injector: FaultInjectorHandle) -> None:
