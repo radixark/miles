@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 import ray
-from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, make_args
 
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.server_engine import ServerEngine
@@ -24,7 +24,7 @@ def _build_group(
     return ServerGroup(
         args=args,
         pg=pg_tuple,
-        all_engines=engines,
+        cells=chunk_engines_into_cells(engines, num_gpus_per_engine=1, num_gpus_per_node=8),
         num_gpus_per_engine=1,
         has_new_engines=False,
         worker_type=worker_type,
@@ -277,7 +277,9 @@ class TestNodeZeroDetectionPrecondition:
             ServerGroup(
                 args=args,
                 pg=pg,
-                all_engines=[ServerEngine() for _ in range(2)],
+                cells=chunk_engines_into_cells(
+                    [ServerEngine() for _ in range(2)], num_gpus_per_engine=16, num_gpus_per_node=8
+                ),
                 num_gpus_per_engine=16,
                 has_new_engines=False,
                 rank_offset=1,
@@ -288,7 +290,7 @@ class TestNodeZeroDetectionPrecondition:
         ServerGroup(
             args=make_args(num_gpus_per_node=8),
             pg=placement_group_factory(1),
-            all_engines=[],
+            cells=[],
             num_gpus_per_engine=16,
             has_new_engines=False,
             worker_type="placeholder",

@@ -8,6 +8,7 @@ from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
 from miles.ray.rollout.addr_allocator import PortCursors
 from miles.ray.rollout.router_manager import start_router
+from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
 from miles.utils import async_utils
@@ -48,6 +49,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             gpus_per_engine = group_cfg.num_gpus_per_engine
             num_gpu_per_engine_local = min(gpus_per_engine, args.num_gpus_per_node)
             num_engines = group_cfg.num_gpus // num_gpu_per_engine_local
+            nodes_per_engine = max(1, gpus_per_engine // args.num_gpus_per_node)
 
             group_abs_start = rollout_pg_offset + gpu_offset
             needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
@@ -62,8 +64,13 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             group = ServerGroup(
                 args=args,
                 pg=pg,
-                all_engines=(
-                    [ServerEngine() for _ in range(num_engines)] if group_cfg.worker_type != "placeholder" else []
+                cells=(
+                    [
+                        ServerCell(engines=[ServerEngine() for _ in range(nodes_per_engine)])
+                        for _ in range(num_engines // nodes_per_engine)
+                    ]
+                    if group_cfg.worker_type != "placeholder"
+                    else []
                 ),
                 num_gpus_per_engine=gpus_per_engine,
                 has_new_engines=False,
