@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,17 +12,16 @@ from miles.backends.sglang_utils.sglang_config import (
     _compute_rollout_offset,
     resolve_sglang_config,
 )
-from miles.ray.rollout import rollout_server as rollout_server_module
 from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 class TestRolloutServerPureFunctions:
-    def testresolve_sglang_config_yaml_gpu_mismatch_asserts(self, tmp_path):
+    def test_resolve_sglang_config_yaml_gpu_mismatch_asserts(self, tmp_path: Path) -> None:
+        """A YAML fleet whose GPU total disagrees with the CLI allocation is rejected."""
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(
             "sglang:\n"
@@ -221,41 +221,36 @@ class TestCreateRolloutServersWiring:
     )
 
     @pytest.mark.asyncio
-    async def test_create_rollout_servers_wires_each_model_and_router_completely(self, tmp_path, monkeypatch):
-        """Every model gets its own router, the first one is published on the legacy args, and the injected lock, activeness getter and update_weights all survive."""
-
-        async def _wait_router_ready(model_idx: int) -> HostAndPort:
-            return HostAndPort(host=f"10.0.0.{model_idx + 1}", port=20000 + model_idx)
-
-        monkeypatch.setattr(rollout_server_module, "wait_router_ready", _wait_router_ready)
+    async def test_create_rollout_servers_wires_each_model_and_router_completely(self, tmp_path):
+        """Every model gets its own router and its own activeness tracker, and the injected lock and update_weights survive."""
 
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(self._CONFIG_YAML)
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=12, debug_rollout_only=True)
         lock = ContextLock("InferenceControllerUnderTest")
-        active_and_epoch = ActiveAndEpoch(active=False, epoch=7)
-
-        def _get_active_and_epoch() -> ActiveAndEpoch:
-            return active_and_epoch
+        router_addrs = {
+            name: HostAndPort(host=f"10.0.0.{model_idx + 1}", port=20000 + model_idx)
+            for model_idx, name in enumerate(("actor", "ref"))
+        }
 
         servers = await create_rollout_servers(
             args,
             context_lock=lock,
-            global_health_checker_activeness=_get_active_and_epoch,
+            engine_provider=_StubProvider(),
+            router_addrs=router_addrs,
         )
 
         assert {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()} == {
             "actor": ("10.0.0.1", 20000),
             "ref": ("10.0.0.2", 20001),
         }
-        assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 20000)
-        assert args.sglang_model_routers == {"actor": ("10.0.0.1", 20000), "ref": ("10.0.0.2", 20001)}
         assert [srv.model_name for srv in servers.values()] == ["actor", "ref"]
         assert (servers["actor"].update_weights, servers["ref"].update_weights) == (True, False)
-        active_and_epoch = ActiveAndEpoch(active=True, epoch=8)
         for srv in servers.values():
             assert srv.context_lock is lock
-            assert srv.global_health_checker_activeness() == ActiveAndEpoch(active=True, epoch=8)
+        servers["actor"].health_checker_activeness.bump_active(False)
+        assert not servers["actor"].health_checker_activeness.get().active
+        assert servers["ref"].health_checker_activeness.get().active
 
 
 class TestEngineListOrdering:
@@ -297,6 +292,23 @@ class TestAddCellRollback:
             update_weights=True,
             workers_hash="pseudo-hash-0",
         )
+
+    @pytest.mark.asyncio
+    async def test_disposing_the_server_removes_every_cell_it_tracks(self, monkeypatch):
+        """Controller teardown must reach each cell so its health checker task stops with it."""
+        srv = RolloutServer(
+            server_cells={},
+            args=make_args(colocate=True, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
+        )
+        monkeypatch.setattr(ServerCell, "init", _noop_async)
+
+        async with srv.context_lock:
+            await srv.add_cell(self._make_meta())
+            await srv.dispose()
+
+        assert srv.server_cells == {}
 
     @pytest.mark.asyncio
     async def test_a_failed_add_drops_the_cell_after_disposing_it(self, monkeypatch):
@@ -437,7 +449,10 @@ class TestDuplicateCellId:
     async def test_adding_a_duplicate_cell_id_preserves_the_original_cell(self, monkeypatch):
         """Overwriting the entry would drop the first cell's health checker task and router registration on the floor."""
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=make_args(colocate=True, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _noop_async)
 
@@ -466,7 +481,10 @@ class TestRemoveCellDisposal:
             await real_dispose(cell)
 
         srv = RolloutServer(
-            server_cells={}, args=SimpleNamespace(colocate=True, ft_components=[]), context_lock=_make_lock()
+            server_cells={},
+            args=make_args(colocate=True, ft_components=[]),
+            context_lock=_make_lock(),
+            engine_provider=_StubProvider(),
         )
         monkeypatch.setattr(ServerCell, "init", _noop_async)
         monkeypatch.setattr(ServerCell, "dispose", _blocking_dispose)
