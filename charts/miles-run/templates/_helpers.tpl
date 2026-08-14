@@ -56,6 +56,7 @@ affinity:
        reach another worker recomputes its address and builds a backend capability of its own. */ -}}
 {{- define "miles-run.releaseEnv" -}}
 {{- $identity := dict "MILES_K8S_NAMESPACE" .Release.Namespace "MILES_K8S_RELEASE" .Release.Name -}}
+{{- with .Values.run.launchRecord }}{{- $identity = merge (dict "MILES_SCRIPT_ENV_REPORT" .) $identity }}{{- end }}
 {{- $base := include "miles-common.envBase" . | fromYaml -}}
 {{- $run := deepCopy (.Values.run.env | default dict) -}}
 {{- toYaml (merge $identity $base $run) }}

@@ -9,9 +9,15 @@ from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state im
 from miles.utils.pydantic_utils import FrozenOpenBaseModel, FrozenStrictBaseModel
 
 
+class EnvEntry(FrozenOpenBaseModel):
+    name: str
+    value: str = ""
+
+
 class Container(FrozenOpenBaseModel):
     name: str
     command: list[str] = []
+    env: list[EnvEntry] = []
 
 
 class PodSpec(FrozenOpenBaseModel):
