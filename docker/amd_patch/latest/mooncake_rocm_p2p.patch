@@ -1,0 +1,81 @@
+diff --git a/mooncake-transfer-engine/src/CMakeLists.txt b/mooncake-transfer-engine/src/CMakeLists.txt
+index b151901f..86123552 100644
+--- a/mooncake-transfer-engine/src/CMakeLists.txt
++++ b/mooncake-transfer-engine/src/CMakeLists.txt
+@@ -107,7 +107,16 @@ if(USE_HIP)
+   if(USE_HIP_DMABUF)
+     find_package(hsa-runtime64 CONFIG)
+     if(hsa-runtime64_FOUND)
+-      target_compile_definitions(transfer_engine PRIVATE USE_HIP_DMABUF)
++      # The dmabuf MR-registration code lives in rdma_context.cpp, which is
++      # compiled in the rdma_transport OBJECT library and pulled into
++      # transfer_engine via $<TARGET_OBJECTS:transport>. A PRIVATE define on
++      # transfer_engine never reaches that object compilation, so the dmabuf
++      # path is silently compiled out and GPU MRs fall back to plain
++      # ibv_reg_mr (EINVAL on device memory). Put the define (and the hsa
++      # include/link usage requirements) on the target that actually compiles
++      # rdma_context.cpp.
++      target_compile_definitions(rdma_transport PRIVATE USE_HIP_DMABUF)
++      target_link_libraries(rdma_transport PUBLIC hsa-runtime64::hsa-runtime64)
+       target_link_libraries(transfer_engine PUBLIC hsa-runtime64::hsa-runtime64)
+       message(STATUS "HIP dmabuf MR registration enabled (hsa-runtime64 found)")
+     else()
+diff --git a/mooncake-transfer-engine/src/multi_transport.cpp b/mooncake-transfer-engine/src/multi_transport.cpp
+index fdb6a5c9..30475ede 100644
+--- a/mooncake-transfer-engine/src/multi_transport.cpp
++++ b/mooncake-transfer-engine/src/multi_transport.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include "multi_transport.h"
+ #include <algorithm>
++#include <cstdlib>
+ #include <sstream>
+ #include <string>
+ 
+@@ -465,7 +466,10 @@ Status MultiTransport::selectTransport(const TransferRequest& entry,
+     // priority instead of relying on buffer registration order.
+     if (proto.find(',') != std::string::npos) {
+         auto protocol_priority = [](const std::string& p) {
+-            if (p == "hip") return 4;
++            // hip is intra-node GPU-IPC only. On a cross-node request a
++            // hip+rdma segment must fall through to rdma; allow deployments
++            // that know they need the cross-node path to de-prioritize hip.
++            if (p == "hip") return std::getenv("MC_DISABLE_HIP") ? 0 : 4;
+             if (p == "cxl") return 3;
+             if (p == "rdma") return 2;
+             if (p == "tcp") return 1;
+diff --git a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp b/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp
+index e02b4348..9b76dacb 100644
+--- a/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp
++++ b/mooncake-transfer-engine/src/transport/rdma_transport/rdma_transport.cpp
+@@ -777,6 +777,17 @@ int RdmaTransport::selectDevice(SegmentDesc *desc, uint64_t offset,
+          ++buffer_id) {
+         const auto &buffer = buffers[buffer_id];
+ 
++#ifdef ENABLE_MULTI_PROTOCOL
++        // The RDMA transport must only bind buffers registered under the rdma
++        // protocol. Device (hip) buffers alias the same GPU addresses but carry
++        // no lkey/rkey, so picking one yields an empty-lkey out-of-bounds read
++        // in the submit path. The !empty() guard leaves legacy single-protocol
++        // descriptors (empty protocol field) unaffected.
++        if (!buffer.protocol.empty() && buffer.protocol != "rdma") {
++            continue;
++        }
++#endif
++
+         // Check if offset is within buffer range
+         if (offset < buffer.addr || length > buffer.length ||
+             offset - buffer.addr > buffer.length - length) {
+@@ -816,6 +827,12 @@ int RdmaTransport::selectDeviceByLocalHca(SegmentDesc *desc, uint64_t offset,
+          ++buffer_id) {
+         const auto &buffer = buffers[buffer_id];
+ 
++#ifdef ENABLE_MULTI_PROTOCOL
++        if (!buffer.protocol.empty() && buffer.protocol != "rdma") {
++            continue;
++        }
++#endif
++
+         if (offset < buffer.addr || length > buffer.length ||
+             offset - buffer.addr > buffer.length - length) {
+             continue;
