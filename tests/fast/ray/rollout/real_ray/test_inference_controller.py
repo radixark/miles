@@ -12,7 +12,11 @@ from miles.ray.rollout.inference_controller import InferenceController
 
 
 @pytest.fixture
-def patch_low_level(monkeypatch):
+def patch_low_level(monkeypatch, mock_engine_http_servers):
+    """Replace, in the test process:
+    - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks.
+    - addr allocator → deterministic stub pointing at the mock http servers.
+    - ``start_session_server`` → no-op (the production default touches network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
     import miles.ray.rollout.server_group as sg
@@ -33,8 +37,8 @@ def patch_low_level(monkeypatch):
         return (
             {
                 rank: dict(
-                    host="127.0.0.1",
-                    port=30000 + rank,
+                    host=mock_engine_http_servers.new_for_rank(rank).host,
+                    port=mock_engine_http_servers.for_rank(rank).port,
                     nccl_port=31000 + rank,
                     engine_info_bootstrap_port=32000 + rank,
                     dist_init_addr=f"127.0.0.1:{33000 + rank}",
@@ -362,6 +366,7 @@ class TestCheckWeights:
         placement_group_factory,
         tmp_path,
         patch_low_level,
+        mock_engine_http_servers,
     ):
         """``check_weights`` targets only the updatable model. The snapshot/reset/
         compare round-trip is meaningless for a frozen model (restored from disk,
@@ -379,18 +384,33 @@ class TestCheckWeights:
         for per_group in results:
             assert len(per_group) == 2
             for engine_result in per_group:
-                assert engine_result == {"_mock": True}
+                assert engine_result == {"mock": True}
 
-        # Frozen (non-updatable) servers must not have been touched.
-        for srv in controller.servers.values():
-            if srv.update_weights:
-                continue
-            for group in srv.server_groups:
-                for engine in group.engines:
-                    if not engine.is_allocated:
-                        continue
-                    calls = ray.get(engine.actor_handle.get_calls.remote())
-                    assert not any(c[0] == "check_weights" for c in calls)
+        updatable_urls = {
+            engine.server_url
+            for srv in controller.servers.values()
+            if srv.update_weights
+            for group in srv.server_groups
+            for engine in group.engines
+            if engine.is_allocated
+        }
+        frozen_urls = {
+            engine.server_url
+            for srv in controller.servers.values()
+            if not srv.update_weights
+            for group in srv.server_groups
+            for engine in group.engines
+            if engine.is_allocated
+        }
+        assert updatable_urls and frozen_urls
+
+        for rank in range(4):
+            server = mock_engine_http_servers.for_rank(rank)
+            asked = "/weights_checker" in server.paths
+            if server.url in updatable_urls:
+                assert asked, f"updatable engine {server.url} was not checked"
+            if server.url in frozen_urls:
+                assert not asked, f"frozen engine {server.url} must not be checked"
 
 
 @pytest.mark.asyncio
