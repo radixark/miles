@@ -83,6 +83,9 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                             rank_offset=engine_offset + cell_start,
                             gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
                             sglang_overrides=overrides,
+                            needs_offload=needs_offload,
+                            model_path=overrides.get("model_path", args.hf_checkpoint),
+                            update_weights=model_cfg.update_weights,
                         )
                     )
 
@@ -92,11 +95,8 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 num_gpus_per_engine=gpus_per_engine,
                 has_new_engines=False,
                 worker_type=group_cfg.worker_type,
-                needs_offload=needs_offload,
-                model_path=overrides.get("model_path", args.hf_checkpoint),
                 router_ip=router_ip,
                 router_port=router_port,
-                update_weights=model_cfg.update_weights,
             )
             start_futures.append(async_utils.submit(group.start_engines(port_allocator)))
             server_groups.append(group)
