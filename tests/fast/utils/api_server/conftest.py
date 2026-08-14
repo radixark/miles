@@ -238,7 +238,7 @@ class MockTrainerCell:
         )
 
 
-def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-actor") -> object:
+def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-engine-actor") -> object:
     from miles.ray.train.group import TrainerController
 
     group = object.__new__(TrainerController)
