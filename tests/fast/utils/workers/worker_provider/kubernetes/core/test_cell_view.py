@@ -121,7 +121,9 @@ class TestWorkerInfos:
 
     def test_offsets_the_rpc_port_of_each_worker_the_way_its_process_binds_it(self):
         """The workers of a pod share its ip, so only the port tells them apart."""
-        infos = build_worker_infos([make_parsed_pod(pod_in_cell_index=0, gpu_ids=(0, 1))], workers_per_pod=2)
+        infos = build_worker_infos(
+            [make_parsed_pod(pod_in_cell_index=0, cell_size=1, gpu_ids=(0, 1))], workers_per_pod=2
+        )
 
         assert [info.self_addrs["rpc"].port for info in infos] == [8000, 8001]
 
@@ -146,3 +148,8 @@ class TestWorkerInfos:
         """Numbering workers off a gapped pod list would name workers that belong to another pod."""
         with pytest.raises(AssertionError, match="missing pods"):
             build_worker_infos([make_parsed_pod(pod_in_cell_index=1)])
+
+    def test_refuses_a_cell_still_missing_its_last_pod(self):
+        """A prefix check alone passes a half-arrived group, and the tail is what is actually missing."""
+        with pytest.raises(AssertionError, match="missing pods"):
+            build_worker_infos([make_parsed_pod(pod_in_cell_index=0, cell_size=2)])
