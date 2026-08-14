@@ -21,7 +21,7 @@ class SessionServerConfig(FrozenStrictBaseModel):
     save_debug_trajectory_data: str | None
     lora_rank: int
     lora_adapter_path: str | None
-    use_session_server: str | None
+    use_session_server: bool | str | None
     session_message_matcher: str
     pause_generation_mode: str | None
     session_sample_picker_path: str | None
