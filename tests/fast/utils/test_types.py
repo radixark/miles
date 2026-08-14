@@ -1,11 +1,12 @@
 """Unit tests for Sample.strip_last_output_tokens."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import numpy
 import pytest
 
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 def _make_sample(
@@ -105,3 +106,149 @@ class TestStripLastOutputTokens:
         original_tokens = list(s.tokens)
         s.strip_last_output_tokens(-1, tokenizer)
         assert s.tokens == original_tokens
+
+    def test_strip_clips_weight_version_spans(self, tokenizer):
+        """Stripping output tokens truncates overlapping spans and drops fully-stripped ones."""
+        s = _make_sample([1, 2], [3, 4, 5, 6])
+        s.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v2", 4, 6)]),
+        ]
+        s.strip_last_output_tokens(3, tokenizer)
+        assert s.all_weight_version_spans == [WeightVersionSpan("v1", 2, 3)]
+        assert len(s.weight_versions) == 2
+
+
+def _make_args() -> SimpleNamespace:
+    return SimpleNamespace(sglang_speculative_algorithm=None)
+
+
+def _make_meta_info(output_ids: list[int], **extra) -> dict:
+    return {
+        "finish_reason": {"type": "stop"},
+        "completion_tokens": len(output_ids),
+        "output_token_logprobs": [(-0.1, token_id) for token_id in output_ids],
+        **extra,
+    }
+
+
+class TestWeightVersions:
+    def test_update_from_meta_info_parses_per_token_weight_versions(self):
+        """Per-token weight_versions from meta_info are shifted to absolute token indices."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.update_from_meta_info(
+            _make_args(),
+            _make_meta_info(
+                [3, 4, 5],
+                weight_versions=[{"version": "v1", "start": 0, "end": 2}, {"version": "v2", "start": 2, "end": 3}],
+            ),
+        )
+        assert s.weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4), WeightVersionSpan("v2", 4, 5)])
+        ]
+
+    def test_update_from_meta_info_synthesizes_span_from_scalar_weight_version(self):
+        """Without per-token data, the scalar weight_version becomes one span over the new tokens."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.update_from_meta_info(_make_args(), _make_meta_info([3, 4, 5], weight_version="v7"))
+        assert s.weight_versions == [WeightVersionsPerCall(spans=[WeightVersionSpan("v7", 2, 5)])]
+
+    def test_output_end_anchors_the_span_when_the_caller_appends_its_own_tokens(self):
+        """output_end marks the end of the generated tokens, so filler stored after them is not covered."""
+        meta = {"output_token_logprobs": [(-0.1, i) for i in range(4)], "weight_version": "v1"}
+        call = WeightVersionsPerCall.from_meta_info(meta, output_end=14)
+        assert call.spans == [WeightVersionSpan("v1", 10, 14)]
+
+    def test_zero_length_spans_are_dropped(self):
+        """An aborted call with no output tokens reports a zero-length span that covers nothing."""
+        call = WeightVersionsPerCall.from_meta_info(
+            {"output_token_logprobs": [], "weight_versions": [{"version": "v1", "start": 0, "end": 0}]}, output_end=7
+        )
+        assert call.spans == []
+
+    def test_update_from_meta_info_records_a_call_without_weight_version(self):
+        """A call the engine did not stamp still counts as one call, with no spans."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.update_from_meta_info(_make_args(), _make_meta_info([3, 4, 5]))
+        assert s.weight_versions == [WeightVersionsPerCall(spans=[])]
+        assert s.all_weight_version_spans == []
+
+    def test_turn_count_includes_calls_without_weight_versions(self):
+        """The per-call nesting counts every generate call, stamped or not."""
+        s = _make_sample([1, 2], [3, 4])
+        s.update_from_meta_info(_make_args(), _make_meta_info([3, 4]))
+        s.tokens += [5, 6]
+        s.response_length += 2
+        s.update_from_meta_info(_make_args(), _make_meta_info([5, 6], weight_version="v2"))
+        assert len(s.weight_versions) == 2
+        assert s.all_weight_version_spans == [WeightVersionSpan("v2", 4, 6)]
+
+    def test_update_from_meta_info_appends_one_entry_per_call(self):
+        """Each generate call appends its own entry with correct absolute offsets."""
+        s = _make_sample([1, 2], [3, 4])
+        s.update_from_meta_info(_make_args(), _make_meta_info([3, 4], weight_version="v1"))
+        s.tokens += [5, 6, 7]
+        s.response_length += 3
+        s.update_from_meta_info(_make_args(), _make_meta_info([5, 6, 7], weight_version="v2"))
+        assert s.weight_versions == [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v2", 4, 7)]),
+        ]
+        assert s.all_weight_version_spans == [WeightVersionSpan("v1", 2, 4), WeightVersionSpan("v2", 4, 7)]
+
+    def test_reset_for_retry_clears_weight_versions(self):
+        """reset_for_retry clears weight_versions along with other outputs."""
+        s = _make_sample([1, 2], [3, 4])
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)])]
+        s.reset_for_retry()
+        assert s.weight_versions == []
+
+    def test_validate_accepts_contiguous_spans(self):
+        """validate passes for ordered non-overlapping spans within the token range."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v2", 4, 5)]),
+        ]
+        s.validate()
+
+    def test_validate_rejects_overlapping_spans_across_calls(self):
+        """validate fails when spans from successive calls overlap."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v2", 3, 5)]),
+        ]
+        with pytest.raises(AssertionError, match="invalid weight version span"):
+            s.validate()
+
+    def test_validate_rejects_span_beyond_tokens(self):
+        """validate fails when a span extends past the token list."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 6)])]
+        with pytest.raises(AssertionError, match="invalid weight version span"):
+            s.validate()
+
+    def test_validate_rejects_empty_version(self):
+        """validate fails when a span carries an empty version string."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("", 2, 4)])]
+        with pytest.raises(AssertionError, match="empty version"):
+            s.validate()
+
+    def test_to_dict_from_dict_roundtrip(self):
+        """Per-call weight versions survive a to_dict/from_dict roundtrip as typed objects."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)]),
+            WeightVersionsPerCall(spans=[WeightVersionSpan("v2", 4, 5)]),
+        ]
+        restored = Sample.from_dict(s.to_dict())
+        assert restored.weight_versions == s.weight_versions
+        assert all(isinstance(span, WeightVersionSpan) for span in restored.all_weight_version_spans)
+
+    def test_oldest_weight_version_reads_all_spans(self):
+        """oldest_weight_version takes the minimum numeric version across every span."""
+        s = _make_sample([1, 2], [3, 4, 5])
+        s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("7", 2, 4), WeightVersionSpan("5", 4, 5)])]
+        assert s.oldest_weight_version == 5
