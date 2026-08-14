@@ -10,6 +10,8 @@ import torch
 
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 
+from miles.backends.training_utils.conn_status import ConnStatusManager
+
 
 @pytest.fixture(scope="module")
 def actor_module():
@@ -172,7 +174,8 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker._asleep = asleep
     worker._heartbeat = Mock()
     worker.weight_updater = Mock()
-    worker.weight_updater.is_rollout_engines_fresh.return_value = True
+    worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
+    worker.weight_updater.conn_status.needs_reconnect.return_value = False
     info = Namespace(
         engine_gpu_counts=[],
         engine_gpu_offsets=[],

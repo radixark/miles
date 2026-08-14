@@ -744,12 +744,13 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             reload_process_groups()
 
-        if has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
+        if has_new_engines or self.weight_updater.conn_status.needs_reconnect():
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
+            self.weight_updater.conn_status.mark_reconnected()
             dist.barrier(group=get_gloo_group())
 
         if self.args.debug_skip_weight_update:
@@ -865,4 +866,4 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
-        self.weight_updater.mark_engine_connection_stale()
+        self.weight_updater.conn_status.mark_trainer_stale()
