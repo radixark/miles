@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import _resolve_session_server_ports, start_router, start_session_server
+from miles.router.config import MilesRouterConfig
+from miles.utils.workers.argv_utils import parse_config_argv
 
 
 class TestStartRouter:
@@ -37,6 +40,59 @@ class TestStartRouter:
         ), patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
             with pytest.raises(RuntimeError, match="already in use"):
                 start_router(args)
+
+
+class TestStartRouterLaunchCommand:
+    @pytest.fixture
+    def captured_launches(self, monkeypatch):
+        launches: list[list[str]] = []
+
+        def fake_launch(argv, *, envs):
+            launches.append(argv)
+            return MagicMock()
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.get_host_info", lambda: ("h", "127.0.0.1"))
+        monkeypatch.setattr("miles.ray.rollout.router_manager.is_port_available", lambda port: True)
+        monkeypatch.setattr("miles.utils.workers.process_utils.launch_bound_subprocess", fake_launch)
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_for_server_ready", lambda *fn_args, **fn_kwargs: None
+        )
+        return launches
+
+    def test_sgl_router_launches_the_native_cli(self, captured_launches, monkeypatch):
+        """The sgl router runs as the upstream CLI with the allocated ports."""
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.find_available_port", lambda start: 20000 if start < 4000 else 4001
+        )
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        ip, port = start_router(args)
+
+        (argv,) = captured_launches
+        assert argv[0] == sys.executable
+        assert argv[1:3] == ["-m", "sglang_router.launch_router"]
+        assert argv[argv.index("--port") + 1] == str(port) == "20000"
+        assert argv[argv.index("--prometheus-port") + 1] == "4001"
+
+    def test_miles_router_launches_with_a_parseable_config(self, captured_launches, monkeypatch):
+        """The miles router command's config payload parses back losslessly."""
+        monkeypatch.setattr("miles.ray.rollout.router_manager.find_available_port", lambda start: 20000)
+        args = make_args(
+            use_miles_router=True,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            miles_router_max_connections=100,
+            miles_router_timeout=None,
+            miles_router_health_check_failure_threshold=3,
+            rollout_health_check_interval=10.0,
+        )
+        ip, port = start_router(args)
+
+        (argv,) = captured_launches
+        assert argv[:3] == [sys.executable, "-m", "miles.router.router"]
+        config = parse_config_argv(MilesRouterConfig, argv[3:])
+        assert config.host == ip
+        assert config.port == port == 20000
+        assert config.max_connections == 100
 
 
 class TestStartSessionServer:
