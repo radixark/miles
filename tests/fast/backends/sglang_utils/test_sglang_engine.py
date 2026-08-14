@@ -19,6 +19,7 @@ def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None
         nccl_port=20031,
         engine_info_bootstrap_port=20033,
         dist_init_addr="10.0.0.1:20000",
+        disaggregation_bootstrap_port=None,
     )
     addr_and_ports.update(addr_overrides or {})
     return compute_engine_launch_cmd(
@@ -28,7 +29,12 @@ def _cmd(*, worker_type: str = "regular", args=None, addr_overrides: dict | None
         base_gpu_id=0,
         sglang_overrides={},
         num_gpus_per_engine=1,
-        addr_and_ports=addr_and_ports,
+        dist_init_addr=addr_and_ports["dist_init_addr"],
+        nccl_port=addr_and_ports["nccl_port"],
+        host=addr_and_ports["host"],
+        port=addr_and_ports["port"],
+        disaggregation_bootstrap_port=addr_and_ports["disaggregation_bootstrap_port"],
+        engine_info_bootstrap_port=addr_and_ports["engine_info_bootstrap_port"],
         **kwargs,
     )
 
