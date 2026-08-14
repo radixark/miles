@@ -9,7 +9,7 @@ from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray.train.group import TrainerController
+from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils.audit_utils.event_logger.logger import EventLogger, read_events, set_event_logger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -77,6 +77,9 @@ def _make_controller(
         with_ref=with_ref,
         with_opd_teacher=with_opd_teacher,
         inference_controller=inference_controller,
+    )
+    group._health_checker_config = compute_trainer_health_checker_config(
+        group.args, expected_num_cells=group._expected_num_cells
     )
     for cell_index in range(num_cells):
         cell = group._create_cell(
