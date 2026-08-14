@@ -2,16 +2,21 @@
 
 import dataclasses
 import logging
+from pathlib import Path
 
+import pydantic
 import yaml
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
 
 
-@dataclasses.dataclass
-class ServerGroupConfig:
+# ---------------------------- raw config -----------------------------
+
+
+class _RawServerGroupConfig(FrozenStrictBaseModel):
     """Configuration for a single server group.
 
     Attributes:
@@ -28,18 +33,10 @@ class ServerGroupConfig:
     worker_type: str
     num_gpus: int
     num_gpus_per_engine: int | None = None
-    overrides: dict = dataclasses.field(default_factory=dict)
-
-    def __post_init__(self):
-        valid_types = {"regular", "prefill", "decode", "placeholder"}
-        assert (
-            self.worker_type in valid_types
-        ), f"Invalid worker_type '{self.worker_type}', must be one of {valid_types}"
-        assert self.num_gpus > 0, f"num_gpus must be > 0, got {self.num_gpus}"
+    overrides: dict = {}
 
 
-@dataclasses.dataclass
-class ModelConfig:
+class _RawModelConfig(FrozenStrictBaseModel):
     """Configuration for a single model deployment.
 
     Attributes:
@@ -56,6 +53,109 @@ class ModelConfig:
                         otherwise.
     """
 
+    name: str
+    model_path: str | None = None
+    num_gpus_per_engine: int | None = None
+    server_groups: list[_RawServerGroupConfig] = pydantic.Field(
+        default_factory=list,
+        validation_alias=pydantic.AliasChoices("server_groups", "engine_groups"),
+    )
+    update_weights: bool | None = None
+
+    @property
+    def total_num_gpus(self) -> int:
+        return sum(g.num_gpus for g in self.server_groups)
+
+
+class _RawSglangConfig(FrozenStrictBaseModel):
+    """Configuration for SGLang engine deployment.
+
+    Loaded from ``--sglang-config`` YAML file.
+
+    **Config format**::
+
+        sglang:
+          - name: actor
+            model_path: /path/to/actor
+            update_weights: true          # receives training weight updates (default)
+            num_gpus_per_engine: 2
+            server_groups:
+              - worker_type: prefill
+                num_gpus: 4
+                num_gpus_per_engine: 2
+              - worker_type: decode
+                num_gpus: 8
+                num_gpus_per_engine: 4
+          - name: ref
+            model_path: /path/to/ref
+            update_weights: false          # frozen, no weight updates
+            server_groups:
+              - worker_type: regular
+                num_gpus: 4
+
+    Each model gets its own router.  ``placeholder`` groups reserve GPU
+    slots without creating engines.  ``overrides`` are ``ServerArgs``
+    field names applied on top of the base ``--sglang-*`` CLI args.
+
+    Set ``update_weights: false`` for frozen models (reference, reward,
+    etc.) that should not receive weight updates from training.
+
+    .. note::
+
+       ``engine_groups`` is accepted as a backward-compatible alias for
+       ``server_groups`` in the YAML config.
+    """
+
+    models: list[_RawModelConfig] = pydantic.Field(validation_alias=pydantic.AliasChoices("models", "sglang"))
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "_RawSglangConfig":
+        return cls.model_validate(yaml.safe_load(Path(path).read_text()))
+
+    @staticmethod
+    def from_prefill_num_servers(args) -> "_RawSglangConfig":
+        """Build a config equivalent to the legacy --prefill-num-servers flag."""
+        total_gpus = args.rollout_num_gpus
+        prefill_gpus = args.prefill_num_servers * args.rollout_num_gpus_per_engine
+        decode_gpus = total_gpus - prefill_gpus
+        assert decode_gpus > 0, f"No decode GPUs: total {total_gpus}, prefill {prefill_gpus}"
+        return _RawSglangConfig(
+            models=[
+                _RawModelConfig(
+                    name="default",
+                    server_groups=[
+                        _RawServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),
+                        _RawServerGroupConfig(worker_type="decode", num_gpus=decode_gpus),
+                    ],
+                )
+            ]
+        )
+
+    @property
+    def total_num_gpus(self) -> int:
+        return sum(m.total_num_gpus for m in self.models)
+
+
+# ---------------------------- resolved config -----------------------------
+
+
+@dataclasses.dataclass
+class ServerGroupConfig:
+    worker_type: str
+    num_gpus: int
+    num_gpus_per_engine: int | None = None
+    overrides: dict = dataclasses.field(default_factory=dict)
+
+    def __post_init__(self):
+        valid_types = {"regular", "prefill", "decode", "placeholder"}
+        assert (
+            self.worker_type in valid_types
+        ), f"Invalid worker_type '{self.worker_type}', must be one of {valid_types}"
+        assert self.num_gpus > 0, f"num_gpus must be > 0, got {self.num_gpus}"
+
+
+@dataclasses.dataclass
+class ModelConfig:
     name: str
     model_path: str | None = None
     num_gpus_per_engine: int | None = None
@@ -97,118 +197,55 @@ class ModelConfig:
     def has_pd_disaggregation(self) -> bool:
         return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
 
-    @property
-    def total_num_gpus(self) -> int:
-        return sum(g.num_gpus for g in self.server_groups)
-
 
 @dataclasses.dataclass
 class SglangConfig:
-    """Configuration for SGLang engine deployment.
-
-    Loaded from ``--sglang-config`` YAML file.
-
-    **Config format**::
-
-        sglang:
-          - name: actor
-            model_path: /path/to/actor
-            update_weights: true          # receives training weight updates (default)
-            num_gpus_per_engine: 2
-            server_groups:
-              - worker_type: prefill
-                num_gpus: 4
-                num_gpus_per_engine: 2
-              - worker_type: decode
-                num_gpus: 8
-                num_gpus_per_engine: 4
-          - name: ref
-            model_path: /path/to/ref
-            update_weights: false          # frozen, no weight updates
-            server_groups:
-              - worker_type: regular
-                num_gpus: 4
-
-    Each model gets its own router.  ``placeholder`` groups reserve GPU
-    slots without creating engines.  ``overrides`` are ``ServerArgs``
-    field names applied on top of the base ``--sglang-*`` CLI args.
-
-    Set ``update_weights: false`` for frozen models (reference, reward,
-    etc.) that should not receive weight updates from training.
-
-    .. note::
-
-       ``engine_groups`` is accepted as a backward-compatible alias for
-       ``server_groups`` in the YAML config.
-    """
-
     models: list[ModelConfig]
-
-    @staticmethod
-    def from_yaml(path: str) -> "SglangConfig":
-        with open(path) as f:
-            data = yaml.safe_load(f)
-
-        assert "sglang" in data, (
-            f"sglang config must have a 'sglang' key, got {list(data.keys())}. "
-            f"Wrap your server_groups inside a model entry under 'sglang'."
-        )
-        models = []
-        for m in data["sglang"]:
-            raw_groups = m.get("server_groups") or m.get("engine_groups") or []
-            groups = [ServerGroupConfig(**g) for g in raw_groups]
-            models.append(
-                ModelConfig(
-                    name=m["name"],
-                    model_path=m.get("model_path"),
-                    num_gpus_per_engine=m.get("num_gpus_per_engine"),
-                    server_groups=groups,
-                    update_weights=m.get("update_weights"),
-                )
-            )
-        return SglangConfig(models=models)
-
-    @staticmethod
-    def from_prefill_num_servers(args) -> "SglangConfig":
-        """Build a config equivalent to the legacy --prefill-num-servers flag."""
-        total_gpus = args.rollout_num_gpus
-        prefill_gpus = args.prefill_num_servers * args.rollout_num_gpus_per_engine
-        decode_gpus = total_gpus - prefill_gpus
-        assert decode_gpus > 0, f"No decode GPUs: total {total_gpus}, prefill {prefill_gpus}"
-        return SglangConfig(
-            models=[
-                ModelConfig(
-                    name="default",
-                    server_groups=[
-                        ServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),
-                        ServerGroupConfig(worker_type="decode", num_gpus=decode_gpus),
-                    ],
-                )
-            ]
-        )
 
     @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
 
-    @property
-    def total_num_gpus(self) -> int:
-        return sum(m.total_num_gpus for m in self.models)
-
 
 def resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
-    config = _compute_raw_sglang_config(args)
+    raw = _compute_raw_sglang_config(args)
+
+    config = SglangConfig(
+        models=[
+            ModelConfig(
+                name=m.name,
+                model_path=m.model_path,
+                num_gpus_per_engine=m.num_gpus_per_engine,
+                server_groups=[ServerGroupConfig(**g.model_dump()) for g in m.server_groups],
+                update_weights=m.update_weights,
+            )
+            for m in raw.models
+        ]
+    )
+    if args.eval_num_gpus > 0:
+        eval_models = [m for m in config.models if m.name == "eval"]
+        if not eval_models:
+            eval_models = [
+                ModelConfig(
+                    name="eval",
+                    server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.eval_num_gpus)],
+                )
+            ]
+            config.models.append(eval_models[0])
+        _apply_eval_model_config(eval_models[0], args)
+
     for model in config.models:
         model.resolve(args)
+
     return config
 
 
-def _compute_raw_sglang_config(args) -> SglangConfig:
+def _compute_raw_sglang_config(args) -> _RawSglangConfig:
     eval_num_gpus = args.eval_num_gpus
 
     if getattr(args, "sglang_config", None) is not None:
-        config = SglangConfig.from_yaml(args.sglang_config)
+        config = _RawSglangConfig.from_yaml(args.sglang_config)
         expected = args.rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
         assert (
@@ -224,25 +261,16 @@ def _compute_raw_sglang_config(args) -> SglangConfig:
         return config
 
     if args.prefill_num_servers is not None:
-        config = SglangConfig.from_prefill_num_servers(args)
-    else:
-        config = SglangConfig(
-            models=[
-                ModelConfig(
-                    name="default",
-                    server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
-                )
-            ]
-        )
+        return _RawSglangConfig.from_prefill_num_servers(args)
 
-    if eval_num_gpus > 0:
-        eval_model = ModelConfig(
-            name="eval",
-            server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=eval_num_gpus)],
-        )
-        _apply_eval_model_config(eval_model, args)
-        config.models.append(eval_model)
-    return config
+    return _RawSglangConfig(
+        models=[
+            _RawModelConfig(
+                name="default",
+                server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+            )
+        ]
+    )
 
 
 def _eval_sglang_overrides(args) -> dict:
@@ -263,7 +291,7 @@ def _eval_sglang_overrides(args) -> dict:
     return overrides | collect_eval_sglang_overrides(args)
 
 
-def _apply_eval_model_config(model_cfg: ModelConfig, args) -> None:
+def _apply_eval_model_config(model_cfg: "ModelConfig", args) -> None:
     """Fill the eval model from the ``--eval-*`` args: YAML > ``--eval-sglang-*`` > ``--sglang-*``."""
     if model_cfg.update_weights is None:
         # Never joins the training broadcast group; the fleet is synced by snapshot only.
