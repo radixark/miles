@@ -171,6 +171,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
     def mark_engine_connection_stale(self) -> None:
         self._connection_stale = True
 
+    def _reset_registration_state(self) -> None:
+        """Drop memory-registration state owned by the previous TransferEngine."""
+        self._model_registered = False
+        self._weight_memory_registry = {}
+        self._tensor_update_pending.clear()
+        self._staged_tensors.clear()
+
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[ActorHandle],
@@ -189,10 +196,11 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
+        self._connection_stale = True
         self.rollout_engine_lock = rollout_engine_lock
 
         if self._is_source:
+            self._reset_registration_state()
             self._group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
             targets = self.transfer_plan.plan_p2p()
             (
@@ -244,6 +252,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 ]
 
                 self._transfer_engine_meta_list.append((model_replica, remote_infos))
+
+        self._connection_stale = False
 
     def _create_cpu_replica(
         self,
