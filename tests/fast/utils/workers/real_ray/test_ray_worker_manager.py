@@ -221,3 +221,46 @@ class TestCrossSpecWiringOnRealRay:
 
         assert router_record["env"] == {"ROUTER_ONLY": "r", "ENGINE_ONLY": None}
         assert engine_record["env"] == {"ROUTER_ONLY": None, "ENGINE_ONLY": "e"}
+
+
+class TestMasterPortsOnRealRay:
+    def test_all_ranks_of_a_cell_are_launched_with_their_cells_master_endpoint(
+        self, manager_factory, worker_probe_factory
+    ):
+        """Every worker of a cell receives the same master endpoint, allocated once by rank 0."""
+        probe = worker_probe_factory()
+        handle = manager_factory(
+            [
+                make_command_spec(
+                    "engine",
+                    num_cells=2,
+                    num_workers_per_cell=2,
+                    launch_command=probe.launch_command,
+                    port_infos=[
+                        PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                        PortInfo(
+                            name="dist_init", static_port=9000, mode="master", allow_dynamic=True, num_consecutive=4
+                        ),
+                    ],
+                )
+            ]
+        )
+
+        records = probe.wait_for_records(4)
+        masters = {name: record["context"]["self_addrs"]["dist_init"] for name, record in records.items()}
+
+        assert masters["0-0"] == masters["0-1"]
+        assert masters["1-0"] == masters["1-1"]
+        assert masters["0-0"] != masters["1-0"]
+        addrs = ray.get(handle.get_addrs.remote())["engine"]
+        assert [sorted(addr) for addr in addrs] == [
+            ["dist_init", "primary"],
+            ["primary"],
+            ["dist_init", "primary"],
+            ["primary"],
+        ]
+        primary_ports = [addr["primary"].port for addr in addrs]
+        assert len(set(primary_ports)) == 4
+        for master in [masters["0-0"], masters["1-0"]]:
+            reserved = range(master["port"], master["port"] + 4)
+            assert not set(reserved) & set(primary_ports)
