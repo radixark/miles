@@ -13,8 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class InferenceController:
-    def __init__(self, args, pg):
-        self.pg = pg
+    def __init__(self, args):
         self.args = args
         self.servers: dict[str, RolloutServer] = {}
         self.rollout_id = -1
@@ -24,7 +23,7 @@ class InferenceController:
         if self.args.debug_train_only:
             return
 
-        self.servers = await start_rollout_servers(self.args, self.pg)
+        self.servers = await start_rollout_servers(self.args)
         dashboard_hooks.register_router(self.args)
         await wait_session_server_ready(self.args)
 

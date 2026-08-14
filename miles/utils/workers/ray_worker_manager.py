@@ -56,16 +56,8 @@ class RayWorkerManager:
         await self._for_all_cells(lambda a: a.alloc_ports())
         await self._for_all_cells(lambda a: a.post_setup())
 
-    def get_worker_addr(self, worker_name: str) -> HostAndPort:
-        matches = [
-            a.primary_addr
-            for g in self._pools.values()
-            for c in g.cells
-            for a in c.actors
-            if a.name == worker_name
-        ]
-        assert len(matches) == 1, f"{matches=}"
-        return matches[0]
+    def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        return self._find_actor(worker_name).self_addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._pools.items()}
@@ -82,6 +74,11 @@ class RayWorkerManager:
             )
             for actor in cell.actors
         ]
+
+    def _find_actor(self, worker_name: str) -> _BaseActorManager:
+        matches = [a for g in self._pools.values() for c in g.cells for a in c.actors if a.name == worker_name]
+        assert len(matches) == 1, f"{matches=}"
+        return matches[0]
 
     async def _for_all_cells(self, fn: Callable[[_CellManager], Any]):
         await asyncio.gather(*[fn(c) for g in self._pools.values() for c in g.cells])
@@ -202,10 +199,6 @@ class _BaseActorManager(Generic[SpecT]):
     @property
     def generation(self) -> int:
         return self.parent.generation
-
-    @property
-    def primary_addr(self) -> HostAndPort:
-        return self.self_addrs["primary"]
 
     @property
     def gpu_ids(self) -> list[int]:

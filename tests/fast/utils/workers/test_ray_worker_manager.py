@@ -175,7 +175,7 @@ class TestInitAllocatesPorts:
         manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=2)])
 
         ports = [
-            manager.get_worker_addr(f"engine-{cell_index}-{worker_in_cell_index}").port
+            manager.get_worker_addrs(f"engine-{cell_index}-{worker_in_cell_index}")["primary"].port
             for cell_index in range(2)
             for worker_in_cell_index in range(2)
         ]
@@ -190,8 +190,8 @@ class TestInitAllocatesPorts:
         )
         manager = await _launch([spec])
 
-        first = manager.get_worker_addr("engine-0-0").port
-        second = manager.get_worker_addr("engine-0-1").port
+        first = manager.get_worker_addrs("engine-0-0")["primary"].port
+        second = manager.get_worker_addrs("engine-0-1")["primary"].port
         assert second >= first + 5
         assert [call.kwargs["count"] for call in fake_ray_cluster.calls_of("_get_free_port_block")] == [5, 5]
 
@@ -206,7 +206,7 @@ class TestInitAllocatesPorts:
         )
         manager = await _launch([spec])
 
-        assert manager.get_worker_addr("router-0-0").port == 7777
+        assert manager.get_worker_addrs("router-0-0")["primary"].port == 7777
         assert len(fake_ray_cluster.calls_of("_get_free_port_block")) == 1
 
     async def test_ports_are_tracked_per_node(self, fake_ray_cluster: FakeRayCluster):
@@ -214,8 +214,8 @@ class TestInitAllocatesPorts:
         fake_ray_cluster.use_node_ips("10.0.0.1", "10.0.0.2")
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
-        first = manager.get_worker_addr("engine-0-0")
-        second = manager.get_worker_addr("engine-0-1")
+        first = manager.get_worker_addrs("engine-0-0")["primary"]
+        second = manager.get_worker_addrs("engine-0-1")["primary"]
         assert (first.host, second.host) == ("10.0.0.1", "10.0.0.2")
         assert first.port == second.port
 
@@ -224,14 +224,14 @@ class TestInitAllocatesPorts:
         fake_ray_cluster.use_node_ips("10.1.2.3")
         manager = await _launch([_make_spec("router")])
 
-        assert manager.get_worker_addr("router-0-0").host == "10.1.2.3"
+        assert manager.get_worker_addrs("router-0-0")["primary"].host == "10.1.2.3"
 
     async def test_ipv6_hosts_are_bracketed(self, fake_ray_cluster: FakeRayCluster):
         """An ipv6 node address is advertised in url-safe bracketed form."""
         fake_ray_cluster.use_node_ips("2001:db8::7")
         manager = await _launch([_make_spec("router")])
 
-        assert manager.get_worker_addr("router-0-0").host == "[2001:db8::7]"
+        assert manager.get_worker_addrs("router-0-0")["primary"].host == "[2001:db8::7]"
 
 
 class TestPortAllocationDetails:
@@ -267,7 +267,8 @@ class TestPortAllocationDetails:
         manager = await _launch([_make_spec("router", num_workers_per_cell=2), _make_spec("engine", num_cells=2)])
 
         ports = [
-            manager.get_worker_addr(name).port for name in ["router-0-0", "router-0-1", "engine-0-0", "engine-1-0"]
+            manager.get_worker_addrs(name)["primary"].port
+            for name in ["router-0-0", "router-0-1", "engine-0-0", "engine-1-0"]
         ]
         assert len(set(ports)) == 4
 
@@ -299,7 +300,7 @@ class TestInitStartsCommands:
         for cell_index in range(2):
             for worker_in_cell_index in range(2):
                 ctx = recorder.context_of(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index)
-                expected = manager.get_worker_addr(f"engine-{cell_index}-{worker_in_cell_index}")
+                expected = manager.get_worker_addrs(f"engine-{cell_index}-{worker_in_cell_index}")["primary"]
                 assert ctx.self_addrs["primary"] == expected
 
 
@@ -379,20 +380,20 @@ class TestFailureModes:
         assert fake_ray_cluster.calls_of("run") == []
 
 
-class TestGetWorkerAddr:
+class TestGetWorkerAddrs:
     async def test_names_are_the_pool_with_the_cell_and_worker_index(self, fake_ray_cluster: FakeRayCluster):
         """Workers are addressable under ``<spec>-<cell>-<worker>``."""
         manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=2)])
 
         for name in ["engine-0-0", "engine-0-1", "engine-1-0", "engine-1-1"]:
-            assert manager.get_worker_addr(name).port > 0
+            assert manager.get_worker_addrs(name)["primary"].port > 0
 
     async def test_an_unknown_worker_name_fails_loudly(self, fake_ray_cluster: FakeRayCluster):
         """Looking up a worker that does not exist must not silently return an arbitrary address."""
         manager = await _launch([_make_spec("engine", num_cells=2)])
 
         with pytest.raises(AssertionError):
-            manager.get_worker_addr("engine-2-0")
+            manager.get_worker_addrs("engine-2-0")["primary"]
 
 
 class TestPinToHead:
@@ -438,12 +439,13 @@ class TestSpecAddrs:
 
         for ctx in recorder.contexts:
             assert sorted(ctx.spec_addrs) == ["inference-router-0", "session-server"]
-            assert ctx.spec_addrs["inference-router-0"][0]["primary"] == manager.get_worker_addr(
-                "inference-router-0-0-0"
+            assert (
+                ctx.spec_addrs["inference-router-0"][0]["primary"]
+                == manager.get_worker_addrs("inference-router-0-0-0")["primary"]
             )
             assert [addr["primary"] for addr in ctx.spec_addrs["session-server"]] == [
-                manager.get_worker_addr("session-server-0-0"),
-                manager.get_worker_addr("session-server-1-0"),
+                manager.get_worker_addrs("session-server-0-0")["primary"],
+                manager.get_worker_addrs("session-server-1-0")["primary"],
             ]
 
 
@@ -456,7 +458,7 @@ class TestGetAddrs:
         )
 
         expected = [
-            manager.get_worker_addr(f"engine-{cell_index}-{worker_in_cell_index}")
+            manager.get_worker_addrs(f"engine-{cell_index}-{worker_in_cell_index}")["primary"]
             for cell_index in range(2)
             for worker_in_cell_index in range(2)
         ]
@@ -573,7 +575,7 @@ class TestMasterPorts:
 
         for worker_in_cell_index in range(2):
             ctx = recorder.context_of(cell_index=0, worker_in_cell_index=worker_in_cell_index)
-            assert ctx.self_addrs["primary"] == manager.get_worker_addr(f"engine-0-{worker_in_cell_index}")
+            assert ctx.self_addrs["primary"] == manager.get_worker_addrs(f"engine-0-{worker_in_cell_index}")["primary"]
 
 
 class TestConcurrentPhases:
@@ -597,7 +599,7 @@ class TestConcurrentPhases:
             manager = await asyncio.wait_for(_launch([_make_spec("engine", num_cells=3)]), timeout=10)
 
         assert sorted(entered) == [0, 1, 2]
-        assert len({manager.get_worker_addr(f"engine-{index}-0").port for index in range(3)}) == 3
+        assert len({manager.get_worker_addrs(f"engine-{index}-0")["primary"].port for index in range(3)}) == 3
 
 
 class TestGpuPlacement:

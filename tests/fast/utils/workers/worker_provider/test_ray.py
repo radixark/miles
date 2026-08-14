@@ -11,7 +11,7 @@ from miles.utils.workers.worker_spec import HostAndPort
 
 @dataclass
 class _FakeRemoteMethod:
-    answers: list[HostAndPort]
+    answers: list[dict[str, HostAndPort]]
     requested_names: list[str] = field(default_factory=list)
 
     def remote(self, worker_name: str) -> Any:
@@ -21,15 +21,15 @@ class _FakeRemoteMethod:
 
 @dataclass
 class _FakeManagerHandle:
-    get_worker_addr: _FakeRemoteMethod
+    get_worker_addrs: _FakeRemoteMethod
 
 
-async def _resolved(value: HostAndPort) -> HostAndPort:
+async def _resolved(value: dict[str, HostAndPort]) -> dict[str, HostAndPort]:
     return value
 
 
-def _make_handle(*answers: HostAndPort) -> _FakeManagerHandle:
-    return _FakeManagerHandle(get_worker_addr=_FakeRemoteMethod(answers=list(answers)))
+def _make_handle(*answers: dict[str, HostAndPort]) -> _FakeManagerHandle:
+    return _FakeManagerHandle(get_worker_addrs=_FakeRemoteMethod(answers=list(answers)))
 
 
 class TestRayWorkerProviderCreate:
@@ -37,7 +37,7 @@ class TestRayWorkerProviderCreate:
         """The provider finds the manager by its well-known actor name and asks it for the address."""
         import miles.utils.workers.ray_worker_manager as ray_worker_manager_mod
 
-        handle = _make_handle(HostAndPort(host="10.0.0.7", port=15000))
+        handle = _make_handle({"primary": HostAndPort(host="10.0.0.7", port=15000)})
         looked_up: list[str] = []
 
         class _FakeRay:
@@ -49,24 +49,38 @@ class TestRayWorkerProviderCreate:
         monkeypatch.setattr(ray_worker_manager_mod, "ray", _FakeRay)
 
         provider = RayWorkerProvider.create()
-        addr = await provider.get_addr(worker_name="router-0-0")
+        addr = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
 
         assert looked_up == ["ray_worker_manager"]
-        assert handle.get_worker_addr.requested_names == ["router-0-0"]
+        assert handle.get_worker_addrs.requested_names == ["router-0-0"]
         assert addr == HostAndPort(host="10.0.0.7", port=15000)
 
 
-class TestRayWorkerProviderGetAddr:
+class TestRayWorkerProviderAddressLookup:
     async def test_every_lookup_asks_the_manager_again(self):
         """Addresses are never cached, so a relaunched worker is not answered with a stale endpoint."""
         handle = _make_handle(
-            HostAndPort(host="10.0.0.7", port=15000),
-            HostAndPort(host="10.0.0.7", port=15001),
+            {"primary": HostAndPort(host="10.0.0.7", port=15000)},
+            {"primary": HostAndPort(host="10.0.0.7", port=15001)},
         )
         provider = RayWorkerProvider(worker_manager_handle=handle)
 
-        first = await provider.get_addr(worker_name="router-0-0")
-        second = await provider.get_addr(worker_name="router-0-0")
+        first = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
+        second = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
 
         assert (first.port, second.port) == (15000, 15001)
-        assert handle.get_worker_addr.requested_names == ["router-0-0", "router-0-0"]
+        assert handle.get_worker_addrs.requested_names == ["router-0-0", "router-0-0"]
+
+
+class TestRayWorkerProviderGetAddrs:
+    async def test_returns_every_named_port_of_the_worker(self):
+        """Consumers that need more than the primary endpoint get the worker's whole address map."""
+        addrs = {
+            "primary": HostAndPort(host="10.0.0.7", port=15000),
+            "disaggregation_bootstrap": HostAndPort(host="10.0.0.7", port=15001),
+        }
+        handle = _make_handle(addrs)
+        provider = RayWorkerProvider(worker_manager_handle=handle)
+
+        assert await provider.get_addrs(worker_name="engine-0-0") == addrs
+
