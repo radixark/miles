@@ -66,6 +66,13 @@ jobs:
             echo "branch_exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Login to Docker Hub
+        if: steps.check_exists.outputs.branch_exists != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Create branch and freeze release-lock.json
         id: freeze
         run: |
@@ -86,8 +93,16 @@ jobs:
           MEGATRON_SHA=$(git ls-remote https://github.com/radixark/Megatron-LM refs/heads/miles-main | cut -f1)
 
           # Latest timestamped dev tag = a frozen image for the release CI run.
-          CI_IMAGE_TAG=$(curl -s "https://hub.docker.com/v2/repositories/radixark/miles/tags/?page_size=100&name=dev-" \
+          DEV_IMAGE_TAG=$(curl -s "https://hub.docker.com/v2/repositories/radixark/miles/tags/?page_size=100&name=dev-" \
             | python3 -c "import sys, json, re; names = [t['name'] for t in json.load(sys.stdin)['results']]; c = sorted(n for n in names if re.fullmatch(r'dev-\d{12}', n)); print(c[-1] if c else 'dev')")
+
+          # docker-build.yml's scheduled prune keeps only the newest 20 dev-<ts>
+          # tags, so a pinned one vanishes within weeks — and a .postN re-run of
+          # this workflow would then fail every container pull. Retag the frozen
+          # image under a release-scoped name the prune regex never matches.
+          CI_IMAGE_TAG="release-${BRANCH_NAME#release/}-ci"
+          docker buildx imagetools create -t "radixark/miles:${CI_IMAGE_TAG}" "radixark/miles:${DEV_IMAGE_TAG}"
+          echo "Retagged radixark/miles:${DEV_IMAGE_TAG} -> radixark/miles:${CI_IMAGE_TAG}"
 
           # Wheels release fingerprints (audit only: rolling tags can have assets
           # replaced in place, so they cannot be pinned by name — see docker-build.yml).
