@@ -153,7 +153,7 @@ async def create_training_models(
     else:
         critic_model = None
 
-    start_rollout_ids = critic_start_rollout_ids if args.use_critic else actor_start_rollout_ids
+    start_rollout_ids = (critic_start_rollout_ids if args.use_critic else []) + actor_start_rollout_ids
 
     assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
