@@ -88,10 +88,10 @@ the largest models all live on Megatron-LM. See
   for per-GPU status and the container image for each.
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](https://miles.radixark.com/docs/advanced/on-policy-distillation).
-- **Coding-agent environments.** Connectors for
-  [Harbor, NeMo Gym, OpenEnv, Verifiers, Strands Agents and tau-bench](https://miles.radixark.com/docs/user-guide/environments),
-  each plugging into the rollout layer that fits it, with task sandboxes on AgentENV,
-  Daytona, E2B or Modal.
+- **Agentic environments.** Train coding and computer-use agents through connectors for
+  Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout
+  layer that fits it, with task sandboxes on AgentENV, Daytona, E2B or Modal. See
+  [Agentic Environments](https://miles.radixark.com/docs/user-guide/environments).
 
 ## Getting Started
 
