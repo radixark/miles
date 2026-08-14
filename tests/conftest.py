@@ -9,6 +9,13 @@ _ = rollout_env, generation_env
 
 
 @pytest.fixture(autouse=True)
+def no_env_reporting(monkeypatch):
+    """Constructing a worker configures its logger, which in a real process starts a thread that
+    shells out to pip and git; tests exercise that reporter directly instead."""
+    monkeypatch.setattr("miles.utils.logging_utils.start_env_reporting", lambda args: None)
+
+
+@pytest.fixture(autouse=True)
 def enable_experimental_rollout_refactor():
     os.environ["MILES_EXPERIMENTAL_ROLLOUT_REFACTOR"] = "1"
     yield
