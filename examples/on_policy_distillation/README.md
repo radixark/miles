@@ -18,9 +18,6 @@ This directory contains runnable examples:
 - `run-qwen3-8b-opsd.sh`: Privileged-context self-distillation. Teacher and
   student are the same Qwen3-8B weights, but the teacher scores the student's
   response on a prompt carrying the verified answer
-  (`--opd-privileged-context-key`). Same-weights self-distillation is otherwise
-  degenerate, since the reverse-KL is ~0, which is why `run-qwen3-8B-opd-megatron.sh`
-  is only a mechanism demo and why `qwen3_5_35b_selfdistill` has to train an
-  RLVR teacher first. Privileged context makes the KL non-zero in one phase.
+  (`--opd-privileged-context-key`).
 
 Use `--opd-log-prob-top-k 0` to run the original sampled-token OPD path.
