@@ -51,7 +51,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  # Literal prefix, not github.workflow — see pr-test.yml's concurrency
+  # comment: the caller-resolved name would collide this group with the CUDA
+  # one under a single release-branch-cut run.
+  group: pr-test-rocm-${{ github.event.pull_request.number || github.event.schedule || inputs.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:

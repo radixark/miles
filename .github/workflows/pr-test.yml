@@ -57,7 +57,12 @@ permissions:
 concurrency:
   # PR updates supersede their previous run; distinct cron schedules and
   # manual operations must not cancel one another on the default branch.
-  group: ${{ github.workflow }}-${{ github.event.number || github.event.schedule || github.run_id }}
+  # The prefix is a literal, not github.workflow: in a called workflow that
+  # context resolves to the *caller's* name, which would collapse the CUDA
+  # and ROCm groups of one release-branch-cut run into the same group and
+  # let them cancel each other. inputs.ref (workflow_call only) groups
+  # release CI by branch, so a ② re-dispatch cancels the stale previous run.
+  group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}
   cancel-in-progress: true
 
 # `resolve-ci-policy` passes trigger-specific facts to `ci_policy.py`, which
