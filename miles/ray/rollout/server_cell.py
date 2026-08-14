@@ -166,6 +166,14 @@ class ServerCell:
             await api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
         serve_without_weight_update: bool = not self.meta.update_weights or self.args.debug_rollout_only
+        if not serve_without_weight_update and self.args.check_weight_update_equal:
+            await self.check_weights(
+                action="reset_tensors",
+                allow_quant_error=False,
+                selector="all",
+                skip_list=self.args.check_weight_update_skip_list,
+            )
+
         if serve_without_weight_update:
             await self._register_with_router(addr_info=addr_info)
 
@@ -173,13 +181,6 @@ class ServerCell:
 
         if serve_without_weight_update:
             self._mark_serving()
-        elif self.args.check_weight_update_equal:
-            await self.check_weights(
-                action="reset_tensors",
-                allow_quant_error=False,
-                selector="all",
-                skip_list=self.args.check_weight_update_skip_list,
-            )
 
     async def mark_weights_ready(self) -> None:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
