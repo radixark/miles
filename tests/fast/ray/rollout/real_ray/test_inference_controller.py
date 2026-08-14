@@ -101,7 +101,7 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
 
 
 def _cells(controller, model: str = "actor"):
-    return controller.servers[model].server_cells
+    return list(controller.servers[model].server_cells.values())
 
 
 async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_interval_s: float = 0.2) -> None:
@@ -153,7 +153,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """``stop_cell(0)`` kills cell 0's actor; cell 1 untouched."""
+        """``stop_cell`` kills cell 0's actor; cell 1 untouched."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -161,7 +161,7 @@ class TestStartStopCell:
         await controller.get_updatable_engines_and_lock()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
-        await controller.stop_cell(0)
+        await controller.stop_cell("actor-0")
 
         await _assert_engine_dies(actor0)
         assert isinstance(ray.get(actor1.get_calls.remote()), list)
@@ -173,7 +173,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """stop_cell(0) → start_cell(0) drives a real ``recover()`` that spawns
+        """stop_cell → start_cell drives a real ``recover()`` that spawns
         a fresh mock actor in place of the killed one."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
@@ -183,8 +183,8 @@ class TestStartStopCell:
         actor0_before = _cells(controller)[0].primary_actor_handle
         url_before = eal_before.rollout_engines[0].server_url
 
-        await controller.stop_cell(0)
-        await controller.start_cell(0)
+        await controller.stop_cell("actor-0")
+        await controller.start_cell("actor-0")
 
         eal_after = await controller.get_updatable_engines_and_lock()
         actor0_after = _cells(controller)[0].primary_actor_handle
@@ -201,8 +201,8 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """``stop_cell(1)`` (not 0) must kill engine 1, leaving engine 0 alive —
-        guards against off-by-one in ``get_cell_indexer_of_id_map``."""
+        """``stop_cell("actor-1")`` (not 0) must kill engine 1, leaving engine 0
+        alive — guards against addressing the wrong cell."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
@@ -210,7 +210,7 @@ class TestStartStopCell:
         await controller.get_updatable_engines_and_lock()
         actor0, actor1 = [cell.primary_actor_handle for cell in _cells(controller)]
 
-        await controller.stop_cell(1)
+        await controller.stop_cell("actor-1")
 
         assert isinstance(ray.get(actor0.get_calls.remote()), list)
         await _assert_engine_dies(actor1)
@@ -222,7 +222,7 @@ class TestStartStopCell:
         tmp_path,
         patch_low_level,
     ):
-        """Calling ``stop_cell(0)`` twice does not raise — production code logs
+        """Calling ``stop_cell`` twice does not raise — production code logs
         and proceeds when the engine is already de-allocated."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
@@ -230,8 +230,8 @@ class TestStartStopCell:
         controller = _make_controller(args, pg)
         await controller.get_updatable_engines_and_lock()  # ensure engines are alive
 
-        await controller.stop_cell(0)
-        await controller.stop_cell(0)  # must not raise
+        await controller.stop_cell("actor-0")
+        await controller.stop_cell("actor-0")  # must not raise
 
 
 @pytest.mark.asyncio
@@ -253,7 +253,7 @@ class TestCellDispatchAcrossModels:
         actor_handles = [cell.primary_actor_handle for cell in _cells(controller, "actor")]
         ref_handles = [cell.primary_actor_handle for cell in _cells(controller, "ref")]
 
-        await controller.stop_cell(2)
+        await controller.stop_cell("ref-0")
 
         # actor untouched
         for h in actor_handles:
@@ -325,8 +325,8 @@ class TestGetUpdatableEnginesAndLock:
         eal_cleared = await controller.get_updatable_engines_and_lock()
         assert eal_cleared.has_new_engines is False
 
-        await controller.stop_cell(0)
-        await controller.start_cell(0)
+        await controller.stop_cell("actor-0")
+        await controller.start_cell("actor-0")
         eal_recovered = await controller.get_updatable_engines_and_lock()
         assert eal_recovered.has_new_engines is True
 
@@ -397,14 +397,14 @@ class TestCheckWeights:
             cell
             for srv in controller.servers.values()
             if srv.update_weights
-            for cell in srv.server_cells
+            for cell in srv.server_cells.values()
             if cell.is_allocated
         ]
         frozen_cells = [
             cell
             for srv in controller.servers.values()
             if not srv.update_weights
-            for cell in srv.server_cells
+            for cell in srv.server_cells.values()
             if cell.is_allocated
         ]
         assert updatable_cells and frozen_cells
@@ -439,12 +439,12 @@ class TestRecoverUpdatableEngines:
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
-        controller.servers["actor"].server_cells[0]._mark_stopped()
+        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
 
         await controller.recover_updatable_engines()
 
         # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not controller.servers["actor"].server_cells[0].is_allocated
+        assert not controller.servers["actor"].server_cells["actor-0"].is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
         self,
@@ -463,12 +463,12 @@ class TestRecoverUpdatableEngines:
         actor0_before = _cells(controller)[0].primary_actor_handle
 
         ray.kill(actor0_before)
-        controller.servers["actor"].server_cells[0]._mark_stopped()
+        controller.servers["actor"].server_cells["actor-0"]._mark_stopped()
 
         await controller.prepare_rollout(0)
         await controller.recover_updatable_engines()
 
-        slot0 = controller.servers["actor"].server_cells[0]
+        slot0 = controller.servers["actor"].server_cells["actor-0"]
         assert slot0.is_allocated
         assert slot0.primary_actor_handle is not actor0_before
         assert isinstance(ray.get(slot0.primary_actor_handle.get_calls.remote()), list)

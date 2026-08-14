@@ -367,7 +367,7 @@ def _alive_engine_chunks(servers) -> list[list]:
     until recovery completes."""
     chunks = []
     for server in servers.values():
-        for cell in server.server_cells:
+        for cell in server.server_cells.values():
             if cell.is_alive:
                 chunks.append(cell.actor_handles)
     return chunks

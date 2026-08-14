@@ -6,12 +6,14 @@ import pytest
 from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
 
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, get_cell_indexer_of_id_map
-from miles.ray.rollout.server_cell import ServerCell
+from miles.ray.rollout.rollout_server import RolloutServer, format_cell_id, list_cell_ids
+from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
 
 
 def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool = True) -> ServerCell:
-    cell = ServerCell(num_nodes=num_nodes, args=make_args(num_gpus_per_node=8), worker_type="regular")
+    cell = ServerCell(
+        num_nodes=num_nodes, args=make_args(num_gpus_per_node=8), worker_type="regular", cell_id="cell-0"
+    )
     cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(num_nodes)])
     if not addressed:
         return cell
@@ -24,7 +26,7 @@ def _allocated_cell(num_nodes: int = 1, *, alive: bool = True, addressed: bool =
 class TestServerCellState:
     def test_a_fresh_cell_is_stopped(self):
         """A cell owns one state machine for all of its node-ranks."""
-        cell = ServerCell(num_nodes=2, args=make_args(num_gpus_per_node=8), worker_type="regular")
+        cell = ServerCell(num_nodes=2, args=make_args(num_gpus_per_node=8), worker_type="regular", cell_id="cell-0")
         assert not cell.is_allocated
         assert not cell.is_alive
 
@@ -111,7 +113,12 @@ class TestServerCellApiCalls:
 def _addressed_cell(
     *, worker_type: str = "regular", bootstrap_port: int | None = None, **args_overrides
 ) -> ServerCell:
-    cell = ServerCell(args=make_args(num_gpus_per_node=8, **args_overrides), worker_type=worker_type, num_nodes=2)
+    cell = ServerCell(
+        args=make_args(num_gpus_per_node=8, **args_overrides),
+        worker_type=worker_type,
+        num_nodes=2,
+        cell_id="cell-0",
+    )
     cell._mark_allocated_uninitialized([fake_actor_handle() for _ in range(2)])
     cell._mark_addressing(
         [
@@ -167,53 +174,44 @@ def _build_servers(
     *, num_servers: int = 1, engines_per_server: int = 2, num_gpus_per_engine: int = 1
 ) -> dict[str, RolloutServer]:
     args = make_args(num_gpus_per_node=8)
-    nodes_per_engine = max(1, num_gpus_per_engine // 8)
+    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
     servers: dict[str, RolloutServer] = {}
     for s_idx in range(num_servers):
+        model_name = f"model_{s_idx}"
         cells = [_allocated_cell(num_nodes=nodes_per_engine) for _ in range(engines_per_server // nodes_per_engine)]
         for cell in cells:
             cell.num_gpus_per_engine = num_gpus_per_engine
-        servers[f"model_{s_idx}"] = RolloutServer(
-            server_cells=cells,
+        servers[model_name] = RolloutServer(
+            server_cells={format_cell_id(server_id=model_name, index=i): cell for i, cell in enumerate(cells)},
             args=args,
-            model_name=f"model_{s_idx}",
+            model_name=model_name,
             update_weights=True,
         )
     return servers
 
 
-class TestGetCellIndexerOfIdMap:
-    def test_single_server_one_cell_per_engine(self):
-        """Happy path: one server with N engines → N cells, each cell_index=i, all under model_0."""
+class TestListCellIds:
+    def test_single_server_lists_every_cell(self):
+        """Happy path: one server with N cells → N ids under model_0."""
         servers = _build_servers(num_servers=1, engines_per_server=3)
-        cells = get_cell_indexer_of_id_map(servers)
-        assert len(cells) == 3
-        for i, cell in enumerate(cells):
-            assert cell.srv_key == "model_0"
-            assert cell.cell_index == i
+        assert list_cell_ids(servers) == ["model_0-0", "model_0-1", "model_0-2"]
 
-    def test_multi_server_ordered_by_key_alphabetically(self):
-        """When multiple servers exist, cells are emitted in srv_key order."""
+    def test_multi_server_ordered_by_model_id_alphabetically(self):
+        """When multiple servers exist, ids are emitted in model id order."""
         servers = _build_servers(num_servers=2, engines_per_server=1)
-        cells = get_cell_indexer_of_id_map(servers)
-        srv_keys_in_order = [c.srv_key for c in cells]
-        assert srv_keys_in_order == sorted(srv_keys_in_order)
-        assert srv_keys_in_order == ["model_0", "model_1"]
+        assert list_cell_ids(servers) == ["model_0-0", "model_1-0"]
 
     def test_multinode_engine_slots_form_one_cell(self):
         """num_gpus_per_engine=16 and num_gpus_per_node=8 → nodes_per_engine=2;
         the 2 engine slots form one cell."""
         servers = _build_servers(num_servers=1, engines_per_server=2, num_gpus_per_engine=16)
-        cells = get_cell_indexer_of_id_map(servers)
-        assert len(cells) == 1
-        assert cells[0].cell_index == 0
+        assert list_cell_ids(servers) == ["model_0-0"]
 
-    def test_server_without_cells_emits_zero_cells(self):
+    def test_server_without_cells_emits_zero_ids(self):
         """A server with no cells (e.g. only placeholder groups) emits no cell ids."""
         srv = MagicMock()
-        srv.server_cells = []
-        out = get_cell_indexer_of_id_map({"only": srv})
-        assert out == []
+        srv.server_cells = {}
+        assert list_cell_ids({"only": srv}) == []
 
     def test_empty_server_dict_returns_empty_list(self):
-        assert get_cell_indexer_of_id_map({}) == []
+        assert list_cell_ids({}) == []
