@@ -26,6 +26,7 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -42,7 +43,7 @@ class TrainerController:
         self,
         args,
         *,
-        inference_controller: object | None,
+        inference_controller: BaseWorkerHandle | None,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
