@@ -90,6 +90,7 @@ SpecMetaFn = Callable[[WorkerMetaContext], dict[str, Any]]
 
 class BaseWorkerSpec(FrozenStrictBaseModel):
     name: str
+    category: str | None = None
     port_infos: list[PortInfo]
     env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
