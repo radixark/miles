@@ -5,6 +5,8 @@ import logging
 
 import yaml
 
+from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+
 logger = logging.getLogger(__name__)
 
 
@@ -192,3 +194,95 @@ class SglangConfig:
     @property
     def total_num_gpus(self) -> int:
         return sum(m.total_num_gpus for m in self.models)
+
+
+def resolve_sglang_config(args) -> SglangConfig:
+    """Build a SglangConfig from args, choosing the right source."""
+    eval_num_gpus = args.eval_num_gpus
+
+    if getattr(args, "sglang_config", None) is not None:
+        config = SglangConfig.from_yaml(args.sglang_config)
+        expected = args.rollout_num_gpus + eval_num_gpus
+        actual = config.total_num_gpus
+        assert (
+            actual == expected
+        ), f"sglang_config total GPUs ({actual}) != rollout_num_gpus + eval_num_gpus ({expected})"
+        if eval_num_gpus > 0:
+            eval_models = [m for m in config.models if m.name == "eval"]
+            assert len(eval_models) == 1 and eval_models[0].total_num_gpus == eval_num_gpus, (
+                f"--eval-num-gpus {eval_num_gpus} requires the sglang_config YAML to contain "
+                f"exactly one model named 'eval' with that many GPUs."
+            )
+            _apply_eval_model_config(eval_models[0], args)
+        return config
+
+    if args.prefill_num_servers is not None:
+        config = SglangConfig.from_prefill_num_servers(args)
+    else:
+        config = SglangConfig(
+            models=[
+                ModelConfig(
+                    name="default",
+                    server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+                )
+            ]
+        )
+
+    if eval_num_gpus > 0:
+        eval_model = ModelConfig(
+            name="eval",
+            server_groups=[ServerGroupConfig(worker_type="regular", num_gpus=eval_num_gpus)],
+        )
+        _apply_eval_model_config(eval_model, args)
+        config.models.append(eval_model)
+    return config
+
+
+def _eval_sglang_overrides(args) -> dict:
+    """Eval-fleet engine settings; anything absent is inherited from the rollout engines."""
+    overrides = {
+        # Eval samples never feed training, so the replay side-channels are pure overhead.
+        "enable_return_routed_experts": False,
+        "enable_return_indexer_topk": False,
+    }
+    if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
+        # Inheriting these across a different tp gives an engine SGLang refuses to boot.
+        tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
+        overrides |= dict.fromkeys(tp_coupled, 1)
+        logger.info(
+            f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
+            f"{', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
+        )
+    return overrides | collect_eval_sglang_overrides(args)
+
+
+def _apply_eval_model_config(model_cfg: ModelConfig, args) -> None:
+    """Fill the eval model from the ``--eval-*`` args: YAML > ``--eval-sglang-*`` > ``--sglang-*``."""
+    if model_cfg.update_weights is None:
+        # Never joins the training broadcast group; the fleet is synced by snapshot only.
+        model_cfg.update_weights = False
+    overrides = _eval_sglang_overrides(args)
+    for group in model_cfg.server_groups:
+        if group.num_gpus_per_engine is None:
+            group.num_gpus_per_engine = args.eval_num_gpus_per_engine
+        group.overrides = overrides | group.overrides
+
+
+def _compute_rollout_offset(args) -> int:
+    """Offset (in PG bundle slots) where rollout GPUs start."""
+    if args.debug_train_only or args.debug_rollout_only or args.colocate:
+        return 0
+    if getattr(args, "critic_train_only", False):
+        return args.critic_num_nodes * args.critic_num_gpus_per_node
+    offset = args.actor_num_nodes * args.actor_num_gpus_per_node
+    return offset
+
+
+def _compute_megatron_num_gpus(args) -> int:
+    """Total number of megatron (actor + critic) GPU slots in the placement group."""
+    if getattr(args, "debug_rollout_only", False):
+        return 0
+    if getattr(args, "critic_train_only", False):
+        return args.critic_num_nodes * args.critic_num_gpus_per_node
+    num = args.actor_num_nodes * args.actor_num_gpus_per_node
+    return num
