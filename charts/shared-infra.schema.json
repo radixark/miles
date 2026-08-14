@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Miles shared infra values",
+  "description": "Cluster-shaped values that every Miles chart accepts under the same paths, so one user-maintained values.yaml drives miles-workbench and miles-run alike. Helm does not resolve cross-file $ref, so each chart inlines these definitions verbatim into its own values.schema.json; tests/fast/charts pins them equal.",
+  "type": "object",
+  "properties": {
+    "infra": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["image", "sharedStorage"],
+      "properties": {
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository", "tag"],
+          "properties": {
+            "repository": {"type": "string", "minLength": 1},
+            "tag": {"type": "string", "minLength": 1},
+            "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]},
+            "pullSecrets": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"}}
+          }
+        },
+        "sharedStorage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "mountPath"],
+          "properties": {
+            "type": {"enum": ["hostPath", "pvc", "none"]},
+            "hostPath": {"type": "string", "pattern": "^(/.*)?$", "not": {"pattern": "(^|/)\\.\\.(/|$)"}},
+            "pvcClaimName": {"type": "string", "maxLength": 253, "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$"},
+            "mountPath": {"type": "string", "pattern": "^/", "not": {"pattern": "(^|/)\\.\\.(/|$)"}}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"type": {"const": "hostPath"}}, "required": ["type"]},
+              "then": {"properties": {"hostPath": {"minLength": 1}}, "required": ["hostPath"]}
+            },
+            {
+              "if": {"properties": {"type": {"const": "pvc"}}, "required": ["type"]},
+              "then": {"properties": {"pvcClaimName": {"minLength": 1}}, "required": ["pvcClaimName"]}
+            }
+          ]
+        },
+        "scheduling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+            "tolerations": {"type": "array", "items": {"type": "object"}},
+            "affinity": {"type": "object"}
+          }
+        },
+        "env": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[ -<>-~]+$"},
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    }
+  }
+}
