@@ -56,6 +56,11 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
     extra_env_vars: dict[str, str]
     megatron_path: str
     before_ray_job_submit: Callable[[], None] | None
+    prepare_cmd: dict[str, str]
+
+
+TRAINER_ROLE = "trainer"
+_PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
 
 
 class BaseCommandBackend(ABC):
@@ -72,7 +77,14 @@ class BaseCommandBackend(ABC):
         before_ray_job_submit: Callable[[], None] | None = None,
         extra_env_vars: dict[str, str] | None = None,
         megatron_path: str = "/root/Megatron-LM",
+        prepare_cmd: dict[str, str] | None = None,
     ) -> None:
+        prepare_cmd = prepare_cmd if prepare_cmd is not None else {}
+        assert set(prepare_cmd) <= _PREPARE_CMD_ROLES, (
+            f"prepare_cmd names the roles {sorted(set(prepare_cmd) - _PREPARE_CMD_ROLES)}, but a backend only "
+            f"knows how to run a preparation command for {sorted(_PREPARE_CMD_ROLES)}"
+        )
+
         if not os.path.isabs(train_script):
             train_script = f"{repo_base_dir}/{train_script}"
 
@@ -90,6 +102,7 @@ class BaseCommandBackend(ABC):
                 extra_env_vars=extra_env_vars if extra_env_vars is not None else {},
                 megatron_path=megatron_path,
                 before_ray_job_submit=before_ray_job_submit,
+                prepare_cmd=prepare_cmd,
             )
         )
 
@@ -123,6 +136,7 @@ def execute_train(
     extra_env_vars=None,
     config: ExecuteTrainConfig | None = None,
     megatron_path: str = "/root/Megatron-LM",
+    prepare_cmd: dict[str, str] | None = None,
 ):
     from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
@@ -134,6 +148,7 @@ def execute_train(
         before_ray_job_submit=before_ray_job_submit,
         extra_env_vars=extra_env_vars,
         megatron_path=megatron_path,
+        prepare_cmd=prepare_cmd,
     )
 
 
