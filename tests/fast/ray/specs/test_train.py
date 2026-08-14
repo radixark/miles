@@ -47,6 +47,7 @@ def _make_args(**overrides) -> SimpleNamespace:
         offload_train_target="cpu",
         offload_train_disk_dir="/tmp/offload",
         offload_train_disk_chunk_mb=64,
+        megatron_config=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)

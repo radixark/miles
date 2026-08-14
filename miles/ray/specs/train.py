@@ -1,7 +1,12 @@
-import copy
 import os
 from pathlib import Path
 
+from miles.backends.megatron_utils.megatron_config import (
+    ACTOR_ROLE,
+    CRITIC_ROLE,
+    compute_trainer_args,
+    resolve_megatron_config,
+)
 from miles.ray.specs.inference import create_inference_controller_handle
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
@@ -106,7 +111,7 @@ def _compute_spec_trainer_controller(
 def specs_trainer(args) -> list[ServeWorkerSpec]:
     specs = [
         _compute_spec_trainer(
-            args,
+            compute_actor_args(args),
             role="actor",
             num_nodes=args.actor_num_nodes,
             num_gpus_per_node=args.actor_num_gpus_per_node,
@@ -138,8 +143,14 @@ def compute_trainer_num_cells(args, *, role: str) -> int:
     return (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
 
 
+def compute_actor_args(args):
+    [actor_config] = [config for config in resolve_megatron_config(args).trainers if config.role == ACTOR_ROLE]
+    return compute_trainer_args(args, actor_config)
+
+
 def compute_critic_args(args):
-    critic_args = copy.deepcopy(args)
+    [critic_config] = [config for config in resolve_megatron_config(args).trainers if config.role == CRITIC_ROLE]
+    critic_args = compute_trainer_args(args, critic_config)
     critic_args.kl_coef = 0
     critic_args.use_opd = False
     critic_args.disable_param_buffers_cpu_backup = False
