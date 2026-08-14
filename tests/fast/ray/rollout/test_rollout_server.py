@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_dataclass_group, make_sglang_config_yaml
+from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
 
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.rollout_server import (
@@ -13,7 +13,6 @@ from miles.ray.rollout.rollout_server import (
     _resolve_sglang_config,
     start_rollout_servers,
 )
-from miles.ray.rollout.server_group import ServerGroup
 
 
 class TestRolloutServerPureFunctions:
@@ -228,52 +227,37 @@ class TestRolloutServerPureFunctions:
         assert _compute_megatron_num_gpus(args) == 0
 
 
-class TestRolloutServerCrossGroupProperties:
-    def test_engines_collects_node0_engines_from_each_group(self):
-        a = make_dataclass_group(num_engines=2, gpu_offset=0)
-        b = make_dataclass_group(num_engines=2, gpu_offset=2)
-        srv = RolloutServer(server_groups=[a, b])
+class TestRolloutServerCrossCellProperties:
+    def test_engines_collects_primary_engines_from_each_cell(self):
+        cells = make_dataclass_cells(num_cells=2, gpu_offset=0) + make_dataclass_cells(num_cells=2, gpu_offset=2)
+        srv = RolloutServer(server_cells=cells)
         assert len(srv.engines) == 4
 
     def test_engine_gpu_counts_parallel_to_engines(self):
-        a = make_dataclass_group(num_engines=2, num_gpus_per_engine=1)
-        b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2)
-        srv = RolloutServer(server_groups=[a, b])
+        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1) + make_dataclass_cells(
+            num_cells=2, num_gpus_per_engine=2
+        )
+        srv = RolloutServer(server_cells=cells)
         assert srv.engine_gpu_counts == [1, 1, 2, 2]
 
-    def test_engine_gpu_offsets_consistent_across_groups(self):
-        a = make_dataclass_group(num_engines=2, num_gpus_per_engine=1, gpu_offset=0)
-        b = make_dataclass_group(num_engines=2, num_gpus_per_engine=2, gpu_offset=4)
-        srv = RolloutServer(server_groups=[a, b])
+    def test_engine_gpu_offsets_consistent_across_cells(self):
+        cells = make_dataclass_cells(num_cells=2, num_gpus_per_engine=1, gpu_offset=0) + make_dataclass_cells(
+            num_cells=2, num_gpus_per_engine=2, gpu_offset=4
+        )
+        srv = RolloutServer(server_cells=cells)
         assert srv.engine_gpu_offsets == [0, 1, 4, 6]
-
-
-class TestRolloutServerNodesPerEngineHeterogeneity:
-    def test_homogeneous_groups_return_single_value(self):
-        a = make_dataclass_group(num_gpus_per_engine=1)
-        b = make_dataclass_group(num_gpus_per_engine=1)
-        srv = RolloutServer(server_groups=[a, b])
-        assert srv.nodes_per_engine == 1
-
-    def test_heterogeneous_groups_raise_value_error(self):
-        # 1 gpu/engine vs 16 gpu/engine on 8-gpu nodes → 1 vs 2 nodes/engine
-        a = make_dataclass_group(num_gpus_per_engine=1)
-        b = make_dataclass_group(num_gpus_per_engine=16)
-        srv = RolloutServer(server_groups=[a, b])
-        with pytest.raises(ValueError, match="Heterogeneous nodes_per_engine"):
-            _ = srv.nodes_per_engine
 
 
 class TestStartRolloutServersCellChunking:
     @pytest.fixture
     def stub_engine_startup(self, monkeypatch):
-        async def _no_engines(self, *args, **kwargs):
-            return []
+        async def _no_cells(self, *args, **kwargs):
+            return None
 
         monkeypatch.setattr(rollout_server, "start_router", lambda *args, **kwargs: ("127.0.0.1", 30000))
-        monkeypatch.setattr(ServerGroup, "start_engines", _no_engines)
+        monkeypatch.setattr(RolloutServer, "start_all_cells", _no_cells)
 
-    def _servers_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
+    def _cells_for(self, tmp_path, *, num_gpus: int, num_gpus_per_engine: int):
         cfg_path = tmp_path / "cfg.yaml"
         cfg_path.write_text(
             make_sglang_config_yaml(
@@ -283,30 +267,46 @@ class TestStartRolloutServersCellChunking:
             )
         )
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=num_gpus, num_gpus_per_node=8)
-        return start_rollout_servers(args, pg=None)
+        return start_rollout_servers(args, pg=None)["default"].server_cells
 
     def test_a_single_node_engine_becomes_its_own_cell(self, stub_engine_startup, tmp_path):
         """With one gpu per engine on 8-gpu nodes, every engine is a one-engine cell."""
-        servers = self._servers_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
-        (group,) = servers["default"].server_groups
-        assert group.nodes_per_engine == 1
-        assert [len(cell.engines) for cell in group.cells] == [1] * 8
+        cells = self._cells_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
+        assert [len(cell.engines) for cell in cells] == [1] * 8
 
     def test_a_multi_node_engine_chunks_its_node_ranks_into_one_cell(self, stub_engine_startup, tmp_path):
         """With 16 gpus per engine on 8-gpu nodes, each cell holds both node-ranks."""
-        servers = self._servers_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        (group,) = servers["default"].server_groups
-        assert group.nodes_per_engine == 2
-        assert [len(cell.engines) for cell in group.cells] == [2, 2]
+        cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        assert [len(cell.engines) for cell in cells] == [2, 2]
 
     def test_a_trailing_partial_multi_node_engine_is_rejected(self, stub_engine_startup, tmp_path):
         """24 gpus do not divide into whole 2-node engines, so startup must fail fast."""
         with pytest.raises(AssertionError, match="whole number of"):
-            self._servers_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
+            self._cells_for(tmp_path, num_gpus=24, num_gpus_per_engine=16)
 
     def test_cells_carry_contiguous_rank_and_gpu_offsets(self, stub_engine_startup, tmp_path):
         """Each multi-node cell starts where the previous one ended, so node-0 detection stays valid."""
-        servers = self._servers_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
-        (group,) = servers["default"].server_groups
-        assert [cell.rank_offset for cell in group.cells] == [0, 2]
-        assert [cell.gpu_offset for cell in group.cells] == [0, 16]
+        cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        assert [cell.rank_offset for cell in cells] == [0, 2]
+        assert [cell.gpu_offset for cell in cells] == [0, 16]
+
+    def test_every_multi_node_cell_starts_on_an_aligned_rank(self, stub_engine_startup, tmp_path):
+        """sglang derives node_rank from the global rank, so a cell must not start mid-engine."""
+        cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+        for cell in cells:
+            assert cell.rank_offset % len(cell.engines) == 0
+
+    def test_a_group_starting_at_a_misaligned_rank_is_rejected(self, stub_engine_startup, tmp_path):
+        """One single-node engine ahead of a 2-node group leaves an odd engine_offset and must fail fast."""
+        cfg_path = tmp_path / "cfg.yaml"
+        cfg_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[
+                    {"worker_type": "prefill", "num_gpus": 1, "num_gpus_per_engine": 1},
+                    {"worker_type": "decode", "num_gpus": 32, "num_gpus_per_engine": 16},
+                ]
+            )
+        )
+        args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=33, num_gpus_per_node=8)
+        with pytest.raises(AssertionError, match="not aligned to"):
+            start_rollout_servers(args, pg=None)

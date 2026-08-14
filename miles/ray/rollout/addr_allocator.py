@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import ray
 
@@ -8,11 +8,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PortAllocator:
-    _values: dict[str, int]
-
-    @staticmethod
-    def empty() -> "PortAllocator":
-        return PortAllocator(_values={})
+    _values: dict[str, int] = field(default_factory=dict)
 
     def alloc(self, *, engine, node_ip: str, consecutive: int = 1) -> int:
         # use small ports to prevent ephemeral port between 32768 and 65536.

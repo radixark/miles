@@ -367,10 +367,9 @@ def _alive_engine_chunks(servers) -> list[list]:
     skipped until recovery completes."""
     chunks = []
     for server in servers.values():
-        for group in server.server_groups:
-            for cell in group.cells:
-                if all(engine.is_allocated and engine.is_alive for engine in cell.engines):
-                    chunks.append(cell.engines)
+        for cell in server.server_cells:
+            if all(engine.is_allocated and engine.is_alive for engine in cell.engines):
+                chunks.append(cell.engines)
     return chunks
 
 
