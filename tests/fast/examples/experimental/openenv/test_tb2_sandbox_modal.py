@@ -1,10 +1,9 @@
 """Tests for the Modal sandbox half: image layering, sandbox sizing, the
 tunnel URL, and the create path's lifetime/diagnostic contract.
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the recipe:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 """
 
 import sys
@@ -14,8 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import tb2_sandbox_modal as sandbox  # noqa: E402
+import tb2_sandbox_modal as sandbox
 
 _COMMANDS = ("apt-get install -y curl", "curl -LsSf https://astral.sh/uv/install.sh | sh", "mkdir -p /opt/tb2-tasks")
 

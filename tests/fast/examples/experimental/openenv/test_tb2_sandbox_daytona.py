@@ -1,10 +1,9 @@
 """Tests for the Daytona sandbox half: ownership labels and the orphan-TTL
 keepalive lifecycle.
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the recipe:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 """
 
 import inspect
@@ -15,8 +14,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import tb2_sandbox_daytona as sandbox  # noqa: E402
+import tb2_sandbox_daytona as sandbox
 
 
 def test_sandbox_labels_default_to_unix_user(monkeypatch):

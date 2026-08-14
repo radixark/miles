@@ -1,9 +1,8 @@
 """Offline unit tests for the Modal-sandbox agent function (no network, no GPU).
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the adapter:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 
 Covers only what is Modal's own. Episode dispatch, create throttling, backoff
 budgets and the cancel-mid-create reaper belong to the shared SandboxBackend and are
@@ -16,12 +15,8 @@ import sys
 import types
 from pathlib import Path
 
+import openenv_modal_agent_function as omaf
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import openenv_modal_agent_function as omaf  # noqa: E402
-
 
 # --- start hook -------------------------------------------------------------
 

@@ -195,7 +195,7 @@ on CPU-only machines, in three independent layers (all three pass as of
    failure semantics, and the data conversion. No network, no docker:
 
    ```bash
-   pytest examples/experimental/nemo-gym/tests/ -q
+   pytest tests/fast/examples/experimental/nemo_gym -q
    ```
 
 2. **Golden scan** — the sandbox + per-task image + SWE-bench harness chain,
