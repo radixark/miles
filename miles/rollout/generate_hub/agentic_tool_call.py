@@ -24,13 +24,13 @@ Agent function contract:
 """
 
 import argparse
-import asyncio
 import logging
 import time
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
 
+import httpx
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -68,7 +68,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     metadata = {**metadata, "session_server_id": tracer.session_server_id}
 
     agent_metadata = None
-    collect_timed_out = False
+    collect_failed = False
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
@@ -90,16 +90,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             collect_kwargs["agent_metadata"] = agent_metadata
         try:
             result = await tracer.collect_samples(input.sample, **collect_kwargs)
-        except asyncio.TimeoutError:
-            collect_timed_out = True
-            logger.warning(f"{log_prefix} Timed out collecting samples", exc_info=True)
+        # Costs this sample, not the run; a non-2xx still raises RuntimeError.
+        except (TimeoutError, httpx.TransportError) as e:
+            collect_failed = True
+            logger.warning(f"{log_prefix} Failed collecting samples: {e!r}", exc_info=True)
         else:
             logger.debug(
                 f"{log_prefix} collect_samples done: {len(result.samples)} samples, "
                 f"total_time={time.monotonic()-t_start:.1f}s"
             )
 
-    if collect_timed_out:
+    if collect_failed:
         sample = deepcopy(input.sample)
         sample.status = Sample.Status.ABORTED
         return GenerateFnOutput(samples=[sample] if use_v2 else sample)
