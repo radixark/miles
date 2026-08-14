@@ -63,9 +63,12 @@ jobs:
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
     steps:
       - name: Checkout repository
+        # Deliberately not inputs.ref: this job executes ci_policy.py, so it
+        # always runs the triggering commit's copy (CodeQL cache-poisoning
+        # surface). The cadence arrives via CADENCE_OVERRIDE; only the suite
+        # jobs check out the release ref.
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref || '' }}
           persist-credentials: false
       - name: Resolve CI policy inputs
         id: resolve
