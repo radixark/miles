@@ -57,7 +57,7 @@ class FTTestMode:
 
 MODES: dict[str, FTTestMode] = {
     # --- 1-node (8 GPUs) variants ---
-    "dp2_cp2_tp2_ep2": FTTestMode(
+    "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
         model_hf_repo=MODEL_HF_REPO,
         megatron_model_type=MODEL_TYPE,
@@ -69,7 +69,7 @@ MODES: dict[str, FTTestMode] = {
             "--sequence-parallel"
         ),
     ),
-    "dp2_cp2_pp2": FTTestMode(
+    "kill_train__dp2_cp2_pp2__fake_rollout__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
         model_hf_repo=MODEL_HF_REPO,
         megatron_model_type=MODEL_TYPE,
@@ -81,14 +81,14 @@ MODES: dict[str, FTTestMode] = {
             "--decoder-last-pipeline-num-layers 2"
         ),
     ),
-    "dp4_cp2": FTTestMode(
+    "kill_train__dp4_cp2__fake_rollout__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
         model_hf_repo=MODEL_HF_REPO,
         megatron_model_type=MODEL_TYPE,
         num_cells=4,
         parallel_args="--context-parallel-size 2",
     ),
-    "dp2_cp2_real_rollout": FTTestMode(
+    "kill_train__dp2_cp2__moe_5layer": FTTestMode(
         model_name=MODEL_NAME,
         model_hf_repo=MODEL_HF_REPO,
         megatron_model_type=MODEL_TYPE,
@@ -98,8 +98,8 @@ MODES: dict[str, FTTestMode] = {
         rollout_gpus_per_engine=1,
         parallel_args="--context-parallel-size 2",
     ),
-    # Same topology as dp2_cp2_real_rollout but a small real dense model (see README).
-    "dp2_cp2_real_rollout_dense": FTTestMode(
+    # Same topology as kill_train__dp2_cp2__moe_5layer but a small real dense model (see README).
+    "kill_train__dp2_cp2": FTTestMode(
         model_name=DENSE_MODEL_NAME,
         model_hf_repo=DENSE_MODEL_HF_REPO,
         megatron_model_type=DENSE_MODEL_TYPE,
@@ -110,7 +110,7 @@ MODES: dict[str, FTTestMode] = {
         parallel_args="--context-parallel-size 2",
     ),
     # --- 1-node (8 GPUs) colocated: engines share the trainer's gpus ---
-    "colocate_dp2_cp2_rollout_ft": FTTestMode(
+    "kill_rollout__dp2_cp2__colocate": FTTestMode(
         model_name=DENSE_MODEL_NAME,
         model_hf_repo=DENSE_MODEL_HF_REPO,
         megatron_model_type=DENSE_MODEL_TYPE,
@@ -123,7 +123,7 @@ MODES: dict[str, FTTestMode] = {
         parallel_args="--context-parallel-size 2",
     ),
     # --- 6-node (48 GPUs) disaggregated: 4 train nodes + 2 rollout nodes ---
-    "6node_dp4_cp2_tp2_pp2_ep2_etp2": FTTestMode(
+    "kill_train__dp4_cp2_tp2_pp2_ep2_etp2__moe_full": FTTestMode(
         model_name=FULL_MODEL_NAME,
         model_hf_repo=FULL_MODEL_HF_REPO,
         megatron_model_type=FULL_MODEL_TYPE,
