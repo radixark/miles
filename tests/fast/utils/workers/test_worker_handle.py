@@ -266,8 +266,8 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds):
             slept.append(seconds)
 
-        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0])))
+        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 1.0])))
         handle, inner = _make_handle(
             __ray_ready__=_FakeRemoteMethod(
                 [
@@ -289,9 +289,9 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds: float) -> None:
             slept.append(seconds)
 
-        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
         monkeypatch.setattr(
-            worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 60.0, 200.0]))
+            ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 60.0, 200.0]))
         )
         handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_return_factory(None)]))
 
@@ -310,8 +310,8 @@ class TestRayWorkerHandleWaitDead:
         async def _noop_sleep(seconds):
             return None
 
-        monkeypatch.setattr(worker_handle_module.asyncio, "sleep", _noop_sleep)
-        monkeypatch.setattr(worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 200.0])))
+        monkeypatch.setattr(ray_worker_handle_module.asyncio, "sleep", _noop_sleep)
+        monkeypatch.setattr(ray_worker_handle_module, "time", SimpleNamespace(monotonic=_make_monotonic([0.0, 200.0])))
         handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_raise_factory(asyncio.TimeoutError())]))
 
         with caplog.at_level(logging.ERROR, logger="miles.utils.workers.ray_worker_handle"):
