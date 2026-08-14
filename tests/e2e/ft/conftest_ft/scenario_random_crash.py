@@ -20,6 +20,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     FaultInjectorHandle,
     spawn_fault_injector,
 )
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import create_cell_fault_forms
 from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_cells_with_unfinished_recovery,
     compute_num_completed_recoveries,
@@ -78,6 +79,7 @@ def run_ci(
         seed=seed,
         mean_interval_seconds=mean_interval,
         cell_type=compute_injected_cell_type(ft_mode),
+        cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
     )
 
     try:
