@@ -324,6 +324,18 @@ class TestCheckpoints:
 
 
 class TestSampling:
+    def test_router_transport_capacity_tracks_router_queue(self):
+        async def scenario():
+            backend = make_backend(router_queue_size=512, router_queue_timeout_secs=321)
+            frontend = TinkerFrontend(backend)
+            try:
+                assert frontend.sampling_transport.max_connections == 512
+                assert frontend.sampling_transport.pool_timeout_s == 321
+            finally:
+                await frontend.close()
+
+        asyncio.run(scenario())
+
     async def publish(self, stack, model_id, seq_id, sampling_session_seq_id):
         publish = stack.frontend.save_weights_for_sampler(
             wire.SaveWeightsForSamplerRequest(

@@ -86,7 +86,11 @@ class TinkerFrontend:
         self.sampling_transport = (
             sampling_transport
             if sampling_transport is not None
-            else SGLangRouterSamplingTransport(backend.sampling_endpoint())
+            else SGLangRouterSamplingTransport(
+                backend.sampling_endpoint(),
+                max_connections=int(getattr(backend.args, "router_queue_size", 100)),
+                pool_timeout_s=float(getattr(backend.args, "router_queue_timeout_secs", 600.0)),
+            )
         )
         self.sessions = SessionStore()
         self.models = ModelStore()
