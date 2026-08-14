@@ -60,6 +60,7 @@ async def train(args):
     eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+        await rollout_manager.prepare_eval.remote()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
     async def save_training_model(model, rollout_id, force_sync):
@@ -69,8 +70,12 @@ async def train(args):
         if args.use_critic and args.offload_train:
             await model.offload()
 
+    async def prepare_and_generate(rollout_id):
+        await rollout_manager.prepare_rollout.remote(rollout_id)
+        return await rollout_manager.generate.remote(rollout_id)
+
     # async train loop.
-    rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -78,7 +83,7 @@ async def train(args):
 
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:
-            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
@@ -111,6 +116,7 @@ async def train(args):
             await actor_model.update_weights(rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+            await rollout_manager.prepare_eval.remote()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         if (
