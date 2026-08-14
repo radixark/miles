@@ -8,6 +8,12 @@ from tests.fast.fixtures.rollout_fixtures import rollout_env
 _ = rollout_env, generation_env
 
 
+@pytest.fixture(autouse=True)
+def clear_legacy_rollout_gate(monkeypatch):
+    # an ambient value changes which arguments the parser registers
+    monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
+
+
 @pytest.fixture(scope="session")
 def ray_local_mode():
     """Session-scoped Ray init. On CI ``RAY_ADDRESS`` points at an existing
