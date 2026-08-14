@@ -128,8 +128,14 @@ class TestAssertSoakReconfigureEvents:
             assert_soak_reconfigure_events(tmp_path, num_successful_injections=1)
 
     def test_fails_when_too_few_healings(self, tmp_path: Path) -> None:
-        """Enough injections but fewer than the required healing events fail the witness."""
+        """Enough injections but fewer than the required healed cells fail the witness."""
         _write_events(tmp_path, [_SHRINK_PARTIAL, _HEALING_PARTIAL])
 
         with pytest.raises(AssertionError, match="Healing witness failed"):
             assert_soak_reconfigure_events(tmp_path, num_successful_injections=3)
+
+    def test_one_event_that_readmits_two_cells_counts_as_two_healings(self, tmp_path: Path) -> None:
+        """A single reconfigure can heal several cells at once, and counting events would under-count them."""
+        _write_events(tmp_path, [dict(_HEALING_PARTIAL, healed_cell_indices=[0, 1], alive_cell_indices_after=[0, 1])])
+
+        assert_soak_reconfigure_events(tmp_path, num_successful_injections=2)
