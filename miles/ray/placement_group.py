@@ -18,6 +18,7 @@ from miles.ray.specs.train import (
     CRITIC_ROLE,
     compute_actor_args,
     compute_critic_args,
+    compute_trainer_configs,
     create_trainer_controller_handle,
 )
 from miles.ray.wiring import get_backend_capability
@@ -102,7 +103,8 @@ def _create_placement_group(num_gpus) -> PlacementGroupInfo:
 
 
 def _get_placement_group_layout(args) -> tuple[int, int]:
-    actor_num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
+    num_policies = len([config for config in compute_trainer_configs(args) if config.role == ACTOR_ROLE])
+    actor_num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node * num_policies
 
     if args.debug_train_only:
         return actor_num_gpus, 0
