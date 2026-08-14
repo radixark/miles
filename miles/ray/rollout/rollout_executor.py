@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from typing import Any
 
 import ray
 
@@ -96,7 +97,7 @@ class RolloutExecutor:
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
 
-    def dispose(self):
+    def dispose(self) -> None:
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
@@ -107,7 +108,7 @@ class RolloutExecutor:
 
     # -------------------------- data generation -----------------------------
 
-    async def get(self, rollout_id):
+    async def get(self, rollout_id: int) -> dict[str, Any]:
         start_time = time.time()
         self.rollout_id = rollout_id
         self._rollouts_since_weight_version_publish += 1
@@ -136,11 +137,11 @@ class RolloutExecutor:
 
     async def eval(
         self,
-        rollout_id,
+        rollout_id: int,
         hf_dir: str | None = None,
         export_time_seconds: float | None = None,
         require_marker: bool = True,
-    ):
+    ) -> None:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
@@ -239,24 +240,24 @@ class RolloutExecutor:
     # -------------------------- checkpointing -----------------------------
 
     # TODO the train and eval rollout functions will become one object, so one save/load is enough here
-    def save(self, rollout_id):
+    def save(self, rollout_id: int) -> None:
         self.data_source.save(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
-    def load(self, rollout_id=None):
+    def load(self, rollout_id: int | None = None) -> None:
         self.data_source.load(rollout_id)
         if self.use_experimental_refactor:
             self.generate_rollout.load(rollout_id)
 
     # -------------------------- misc APIs -----------------------------
 
-    def get_num_rollout_per_epoch(self):
+    def get_num_rollout_per_epoch(self) -> int:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    def set_weight_version(self, weight_version: int):
+    def set_weight_version(self, weight_version: int) -> None:
         # warning instead of assert when use indep_dp ft
         if self.weight_version is not None and weight_version < self.weight_version:
             message = f"Engine weight version went backwards: {self.weight_version} -> {weight_version}"
@@ -265,7 +266,7 @@ class RolloutExecutor:
         self.weight_version = weight_version
         self._rollouts_since_weight_version_publish = 0
 
-    def set_train_parallel_config(self, config: dict):
+    def set_train_parallel_config(self, config: dict[str, Any]) -> None:
         self.train_parallel_config = config
 
     def set_eval_fleet(self, eval_fleet: "EvalFleet | None"):
