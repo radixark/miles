@@ -154,7 +154,7 @@ def test_mtp_dense_mlp_mapping_still_uses_dense_hf_weights():
 def test_mtp_block_spec_uses_current_transformer_layer_spec():
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
-    bridge.config = "CONFIG_OBJECT"
+    bridge.config = types.SimpleNamespace(mtp_num_layers=1)
     bridge.hf_config = types.SimpleNamespace(text_config=types.SimpleNamespace(mtp_num_hidden_layers=1))
 
     provider = bridge._model_provider([])
@@ -162,6 +162,17 @@ def test_mtp_block_spec_uses_current_transformer_layer_spec():
 
     assert result["transformer_layer_spec"] == "REAL_LAYER_SPEC_VP3"
     assert result["mtp_block_spec"] == ("mtp-spec", "REAL_LAYER_SPEC_VP3")
+
+
+def test_mtp_block_spec_respects_disabled_runtime_config():
+    module = load_bridge_module()
+    bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
+    bridge.config = types.SimpleNamespace(mtp_num_layers=0)
+    bridge.hf_config = types.SimpleNamespace(text_config=types.SimpleNamespace(mtp_num_hidden_layers=1))
+
+    result = bridge._get_gptmodel_args()
+
+    assert result == {"base": "ok"}
 
 
 def test_eh_proj_keeps_column_order_when_loading_to_mcore():

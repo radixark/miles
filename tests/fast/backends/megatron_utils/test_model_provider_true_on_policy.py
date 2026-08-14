@@ -1,5 +1,8 @@
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
 
 
 def _make_args():
@@ -90,3 +93,55 @@ def test_critic_provider_builds_untied_scalar_output_head(monkeypatch):
 
     assert model.share_embeddings_and_output_weights is False
     assert tuple(model.output_layer.weight.shape) == (1, 2560)
+
+
+def test_bridge_runtime_config_honors_explicit_mtp_override():
+    from miles.backends.megatron_utils.model_provider import _apply_bridge_runtime_config
+
+    args = MagicMock()
+    args.mtp_num_layers = 0
+    provider = SimpleNamespace(mtp_num_layers=1, config=SimpleNamespace(mtp_num_layers=1))
+
+    _apply_bridge_runtime_config(provider, args)
+
+    assert provider.mtp_num_layers == 0
+    assert provider.config.mtp_num_layers == 0
+
+
+def test_bridge_runtime_config_preserves_checkpoint_mtp_default():
+    from miles.backends.megatron_utils.model_provider import _apply_bridge_runtime_config
+
+    args = MagicMock()
+    args.mtp_num_layers = None
+    provider = SimpleNamespace(mtp_num_layers=1, config=SimpleNamespace(mtp_num_layers=1))
+
+    _apply_bridge_runtime_config(provider, args)
+
+    assert provider.mtp_num_layers == 1
+    assert provider.config.mtp_num_layers == 1
+
+
+def test_lora_bridge_path_applies_runtime_config_before_finalize(monkeypatch):
+    from megatron.bridge import AutoBridge
+
+    from miles.backends.megatron_utils import bridge_lora_helpers, model_provider
+
+    class RuntimeConfigApplied(Exception):
+        pass
+
+    provider = SimpleNamespace()
+    bridge = SimpleNamespace(to_megatron_provider=lambda **_kwargs: provider)
+    monkeypatch.setattr(AutoBridge, "from_hf_pretrained", lambda *_args, **_kwargs: bridge)
+    monkeypatch.setattr(bridge_lora_helpers, "load_hf_config", lambda _checkpoint: SimpleNamespace())
+
+    def apply_runtime_config(actual_provider, args):
+        assert actual_provider is provider
+        assert args.mtp_num_layers == 0
+        raise RuntimeConfigApplied
+
+    monkeypatch.setattr(model_provider, "_apply_bridge_runtime_config", apply_runtime_config)
+
+    with pytest.raises(RuntimeConfigApplied):
+        bridge_lora_helpers._setup_lora_model_via_bridge(
+            Namespace(hf_checkpoint="Qwen/Qwen3.5-4B", mtp_num_layers=0)
+        )

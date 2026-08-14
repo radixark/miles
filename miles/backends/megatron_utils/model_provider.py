@@ -77,6 +77,14 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     # attention kernel selection
     provider.attention_backend = args.attention_backend
 
+    # Model checkpoints may advertise an auxiliary MTP block that is not used
+    # by the requested training run. Respect an explicit CLI override while
+    # preserving the checkpoint-derived value when the flag is unset.
+    if getattr(args, "mtp_num_layers", None) is not None:
+        provider.mtp_num_layers = args.mtp_num_layers
+        if getattr(provider, "config", None) is not None:
+            provider.config.mtp_num_layers = args.mtp_num_layers
+
     # MoE token dispatcher (same-name, always present)
     provider.moe_token_dispatcher_type = args.moe_token_dispatcher_type
 

@@ -131,6 +131,13 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
+    # LoRA models use this separate Bridge construction path, so apply the
+    # same explicit runtime overrides as the non-LoRA provider before the
+    # LoRA-specific settings below are finalized.
+    from .model_provider import _apply_bridge_runtime_config
+
+    _apply_bridge_runtime_config(provider, args)
+
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size
     provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
     provider.expert_model_parallel_size = args.expert_model_parallel_size
