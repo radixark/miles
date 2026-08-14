@@ -11,9 +11,14 @@ import pytest
 
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
-from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
+from miles.rollout.base_types import (
+    BaseRolloutFn,
+    RolloutFnConstructorInput,
+    RolloutFnEvalInput,
+    RolloutFnTrainInput,
+)
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
 
@@ -51,6 +56,10 @@ def make_group(
     status: Sample.Status = Sample.Status.COMPLETED,
     weight_versions: list[str] | None = None,
 ) -> list[Sample]:
+    versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
+        for version in weight_versions or []
+    ]
     return [
         Sample(
             group_index=group_index,
@@ -61,7 +70,7 @@ def make_group(
             label="ok",
             reward=1,
             status=status,
-            weight_versions=list(weight_versions or []),
+            weight_versions=list(versions),
         )
         for i in range(N_SAMPLES_PER_PROMPT)
     ]
@@ -217,7 +226,10 @@ async def test_stale_group_recycled(monkeypatch):
         for group in groups:
             for sample in group:
                 if not sample.weight_versions:
-                    sample.weight_versions = list(data_source_fresh_versions)
+                    sample.weight_versions = [
+                        WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
+                        for version in data_source_fresh_versions
+                    ]
         return groups
 
     data_source.get_samples = get_samples_with_fresh_versions
@@ -537,3 +549,18 @@ async def test_group_granularity_opts_the_worker_out_of_backfill(monkeypatch):
     release.set()
     output = await drain
     assert len(output.samples) == 1
+
+
+class TestRolloutFnContract:
+    def test_it_is_a_rollout_fn_the_loader_accepts(self):
+        """load_rollout_fn gates on issubclass(fn, BaseRolloutFn), so a class that forgets the
+        base is rejected at startup no matter how complete its behaviour is."""
+        assert issubclass(fully_async.FullyAsyncRolloutFn, BaseRolloutFn)
+
+    def test_the_constructor_input_reaches_the_base(self, monkeypatch):
+        """The base stores it as constructor_input; skipping super().__init__ leaves the
+        attribute missing on every path that reads it."""
+        data_source = FakeDataSource()
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
+
+        assert fn.constructor_input.data_source is data_source

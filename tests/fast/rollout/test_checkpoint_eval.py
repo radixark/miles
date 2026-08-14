@@ -63,7 +63,9 @@ class CheckpointFnStub(CheckpointEvalFn):
 
 
 def make_manager(args, eval_fn=None, fleet=None):
-    mgr = object.__new__(getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor))
+    mgr = object.__new__(
+        getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor)
+    )
     mgr.args = args
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
