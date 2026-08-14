@@ -1,4 +1,5 @@
 from argparse import Namespace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -9,6 +10,8 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.backends.megatron_utils.megatron_config import MegatronConfig, resolve_megatron_config
 from miles.utils.multi_policy import utils as multi_policy_utils
+from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
+from miles.utils.multi_policy.utils import TrainerInfo
 
 
 def _make_config(*model_ids: str) -> MegatronConfig:
@@ -31,6 +34,7 @@ def _make_args(*model_ids: str, **overrides: Any) -> Namespace:
         save_debug_rollout_data=None,
         load_debug_rollout_data=None,
         ci_inject_rollout_data_path=None,
+        ckpt_step=None,
     )
     defaults.update(overrides)
     return Namespace(**{**parser_defaults(), **defaults})
@@ -84,6 +88,7 @@ class TestValidateMultiPolicyArgs:
             (dict(dump_details="/tmp/dump"), "--dump-details"),
             (dict(load_debug_rollout_data="/tmp/{rollout_id}.pt"), "--load-debug-rollout-data"),
             (dict(ci_inject_rollout_data_path="/tmp/{rollout_id}.pt"), "--ci-inject-rollout-data-path"),
+            (dict(ckpt_step=7), "--ckpt-step"),
         ],
     )
     def test_the_unsupported_run_shapes_are_refused(self, monkeypatch, overrides, message):
@@ -107,11 +112,18 @@ class TestValidateMultiPolicyArgs:
         with pytest.raises(AssertionError, match="needs --sglang-config"):
             self._validate(_make_args("a", "b", sglang_config=None))
 
+    def test_a_checkpointing_run_is_accepted(self, monkeypatch):
+        """Saving was refused until the global checkpoint existed, and nothing else must reintroduce the refusal."""
+        _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
+
+        self._validate(_make_args("a", "b", save="/ckpt", save_interval=10))
+
 
 def _make_trainer_args(*model_ids: str, **overrides: Any) -> Namespace:
     defaults = dict(
         megatron_config=encode_megatron_config(*model_ids),
         use_critic=False,
+        rollout_global_dataset=True,
         trainer_model_id=None,
         tokenizer_model="/ckpt/hf",
         hf_checkpoint="/ckpt/hf",
@@ -193,6 +205,29 @@ class TestCreatePolicyTrainers:
 
         rollout_executor.load.assert_awaited_once_with(1)
 
+    async def test_a_resume_without_the_global_rollout_state_is_refused(self, monkeypatch, tmp_path):
+        """The models would resume at rollout 4 while the data source silently restarts at the first prompt."""
+        self._stub_create_training_model(monkeypatch, dict(a=4, b=4))
+
+        with pytest.raises(AssertionError, match="global_dataset_state_dict_3.pt is missing"):
+            await multi_policy_utils.create_trainers(
+                _make_trainer_args("a", "b", load=str(tmp_path)), rollout_executor=AsyncMock()
+            )
+
+    async def test_a_resume_with_the_global_rollout_state_loads_it(self, monkeypatch, tmp_path):
+        """The supported resume shape has to stay reachable, or no multi policy run could ever restart."""
+        self._stub_create_training_model(monkeypatch, dict(a=4, b=4))
+        state = tmp_path / "rollout" / "global_dataset_state_dict_3.pt"
+        state.parent.mkdir(parents=True)
+        state.write_bytes(b"")
+        rollout_executor = AsyncMock()
+
+        await multi_policy_utils.create_trainers(
+            _make_trainer_args("a", "b", load=str(tmp_path)), rollout_executor=rollout_executor
+        )
+
+        rollout_executor.load.assert_awaited_once_with(3)
+
     async def test_a_trainer_config_without_a_policy_model_id_is_refused(self, monkeypatch):
         """Every state this driver keys is keyed by model id, so an unnamed trainer has nowhere to live."""
         self._stub_create_training_model(monkeypatch, {})
@@ -201,6 +236,20 @@ class TestCreatePolicyTrainers:
             await multi_policy_utils.create_trainers(
                 _make_trainer_args(megatron_config=None), rollout_executor=AsyncMock()
             )
+
+
+class TestAssertGlobalRolloutStateExists:
+    def test_a_non_global_data_source_needs_no_global_rollout_state(self, tmp_path: Path) -> None:
+        """A custom data source does not use Miles' global dataset state file when resuming."""
+        args = Namespace(rollout_global_dataset=False, load=str(tmp_path))
+
+        multi_policy_utils._assert_global_rollout_state_exists(args, leader_rollout_id=3)
+
+    def test_a_resume_without_a_load_directory_skips_the_global_state_file_check(self) -> None:
+        """A takeover or save-only resume has no load directory whose dataset state can be checked."""
+        args = Namespace(rollout_global_dataset=True, load=None)
+
+        multi_policy_utils._assert_global_rollout_state_exists(args, leader_rollout_id=3)
 
 
 class TestDefinePolicyMetricGroups:
@@ -217,3 +266,100 @@ class TestDefinePolicyMetricGroups:
             dict(prefix="b", step_key="b/rollout/step"),
             dict(prefix="b/train", step_key="b/train/step"),
         ]
+
+
+class TestAssertConsistentRestore:
+    @staticmethod
+    def _trainers(**start_rollout_ids: int) -> dict[str, TrainerInfo]:
+        return {
+            model_id: TrainerInfo(model_id=model_id, start_rollout_id=value, handle=AsyncMock())
+            for model_id, value in start_rollout_ids.items()
+        }
+
+    def _assert(self, args, **start_rollout_ids: int) -> None:
+        multi_policy_utils.assert_consistent_restore(
+            args, trainers=self._trainers(**start_rollout_ids), leader_model_id="a"
+        )
+
+    def test_a_fresh_run_needs_no_record(self, tmp_path):
+        """Nothing was ever saved, so there is nothing to be consistent with."""
+        self._assert(Namespace(save=str(tmp_path), load=None), a=0, b=0)
+
+    def test_the_policies_resume_at_the_positions_the_record_names(self, tmp_path):
+        """Fully async policies run at their own pace, so a lagging policy is a legal resume."""
+        MultiPolicyCheckpointState(leader_model_id="a", rollout_ids={"a": 4, "b": 2}).save(tmp_path)
+
+        self._assert(Namespace(save=str(tmp_path), load=None), a=5, b=3)
+
+    def test_the_record_is_read_from_the_load_directory(self, tmp_path):
+        """Resuming with --load elsewhere and a fresh --save is the common shape and used to skip the check."""
+        load_dir = tmp_path / "old"
+        MultiPolicyCheckpointState(leader_model_id="a", rollout_ids={"a": 4, "b": 2}).save(load_dir)
+        args = Namespace(save=str(tmp_path / "new"), load=str(load_dir))
+
+        with pytest.raises(AssertionError, match="must resume exactly where"):
+            self._assert(args, a=5, b=5)
+
+    def test_a_policy_restored_past_its_recorded_position_is_refused(self, tmp_path):
+        """The global rollout data was snapshotted at the recorded moment, not at this one."""
+        MultiPolicyCheckpointState(leader_model_id="a", rollout_ids={"a": 4, "b": 2}).save(tmp_path)
+
+        with pytest.raises(AssertionError, match="must resume exactly where"):
+            self._assert(Namespace(save=str(tmp_path), load=None), a=5, b=4)
+
+    def test_a_resume_without_a_record_fails_loudly(self, tmp_path):
+        """Silently skipping the check is exactly the mixture of checkpoints the record exists to refuse."""
+        with pytest.raises(AssertionError, match="no record of"):
+            self._assert(Namespace(save=str(tmp_path), load=None), a=5, b=3)
+
+    def test_a_record_written_under_another_leader_is_refused(self, tmp_path):
+        """The global rollout index means whatever the leader's index meant when it was written."""
+        MultiPolicyCheckpointState(leader_model_id="b", rollout_ids={"a": 4, "b": 4}).save(tmp_path)
+
+        with pytest.raises(AssertionError, match="as the leader policy"):
+            self._assert(Namespace(save=str(tmp_path), load=None), a=5, b=5)
+
+    def test_a_policy_restored_while_the_leader_starts_from_scratch_is_refused(self, tmp_path):
+        """The data source would be replayed from zero into a policy that already trained on it."""
+        with pytest.raises(AssertionError, match="starts from scratch"):
+            self._assert(Namespace(save=str(tmp_path), load=None), a=0, b=3)
+
+    def test_a_resume_without_any_state_directory_is_refused(self):
+        """A run resuming with neither --load nor --save has nowhere to read the other policies from."""
+        with pytest.raises(AssertionError, match="without --load or --save"):
+            self._assert(Namespace(save=None, load=None), a=5, b=3)
+
+    def test_a_leader_that_is_not_one_of_the_policies_is_reported(self, tmp_path):
+        """Every position this check compares hangs off the leader, so a leader nobody trains is unanswerable."""
+        with pytest.raises(KeyError, match="'c'"):
+            multi_policy_utils.assert_consistent_restore(
+                Namespace(save=str(tmp_path), load=None), trainers=self._trainers(a=5, b=3), leader_model_id="c"
+            )
+
+
+class TestTheIterationAResumeStartsFrom:
+    def test_a_resume_that_names_one_iteration_for_every_policy_is_refused(self, monkeypatch):
+        """The followers would restore the leader's iteration and only fail the consistency check afterwards."""
+        _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
+
+        with pytest.raises(AssertionError, match="every policy stands at an iteration of its own"):
+            multi_policy_utils.validate_multi_policy_args(
+                _make_args("a", "b", ckpt_step=7), megatron_config=_make_config("a", "b")
+            )
+
+    def test_the_iteration_zero_a_selector_can_name_is_refused_too(self, monkeypatch):
+        """Zero is a checkpoint like any other, and a falsy check would let this one resume."""
+        _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
+
+        with pytest.raises(AssertionError, match="--ckpt-step"):
+            multi_policy_utils.validate_multi_policy_args(
+                _make_args("a", "b", ckpt_step=0), megatron_config=_make_config("a", "b")
+            )
+
+    def test_a_run_that_names_no_iteration_is_accepted(self, monkeypatch):
+        """Every multi policy resume reads the iteration each policy recorded, and this is that run."""
+        _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
+
+        multi_policy_utils.validate_multi_policy_args(
+            _make_args("a", "b", ckpt_step=None), megatron_config=_make_config("a", "b")
+        )
