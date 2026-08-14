@@ -38,7 +38,7 @@ WORKDIR /root/
 
 RUN apt update
 # ethtool for network diagnostics
-RUN apt install -y nvtop rsync dnsutils ethtool
+RUN apt install -y nvtop rsync dnsutils ethtool tmux
 
 # nccl-tests for diagnostics
 RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
