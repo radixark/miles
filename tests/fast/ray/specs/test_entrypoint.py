@@ -3,7 +3,16 @@ from __future__ import annotations
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.ray.specs.inference import compute_router_providers
 from miles.utils.workers.worker_spec import BaseWorkerSpec
+
+
+def _capability_that_refuses_to_be_used():
+    class _Unusable:
+        def static_worker_provider(self, *, pool_id):
+            raise AssertionError(f"a train-only run asked for a worker provider for {pool_id!r}")
+
+    return _Unusable()
 
 
 class TestComputeSpecs:

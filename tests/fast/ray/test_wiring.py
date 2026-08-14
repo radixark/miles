@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray import wiring
 from miles.utils.workers.backend_capability import factory
