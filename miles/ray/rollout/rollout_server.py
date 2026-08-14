@@ -24,6 +24,7 @@ async def start_rollout_servers(args) -> dict[str, "RolloutServer"]:
 
     config = resolve_sglang_config(args)
 
+    add_cell_tasks = []
     servers: dict[str, RolloutServer] = {}
 
     for model_idx, model_cfg in enumerate(config.models):
@@ -33,7 +34,15 @@ async def start_rollout_servers(args) -> dict[str, "RolloutServer"]:
             args.sglang_router_ip = router_addr.host
             args.sglang_router_port = router_addr.port
 
-        server_cells: dict[str, ServerCell] = {}
+        cell_count = 0
+        srv = RolloutServer(
+            server_cells={},
+            args=args,
+            router_ip=router_addr.host,
+            router_port=router_addr.port,
+            model_name=model_cfg.name,
+            update_weights=model_cfg.update_weights,
+        )
 
         for group_index, group_cfg in enumerate(model_cfg.server_groups):
             gpus_per_engine = group_cfg.num_gpus_per_engine
@@ -53,34 +62,26 @@ async def start_rollout_servers(args) -> dict[str, "RolloutServer"]:
                     f"{nodes_per_engine=} engines; the trailing engine would have no node to run its remaining ranks"
                 )
                 for cell_start in range(0, num_engines, nodes_per_engine):
-                    cell_id = format_cell_id(server_id=model_cfg.name, index=len(server_cells))
-                    server_cells[cell_id] = ServerCell(
-                        args=args,
-                        meta=ServerCellMetadata(
-                            worker_type=group_cfg.worker_type,
-                            cell_id=cell_id,
-                            num_gpus_per_engine=gpus_per_engine,
-                            gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
-                            sglang_overrides=group_cfg.overrides,
-                            model_idx=model_idx,
-                            group_index=group_index,
-                            cell_index=cell_start // nodes_per_engine,
-                            needs_offload=group_cfg.needs_offload,
-                            model_path=group_cfg.model_path,
-                            update_weights=model_cfg.update_weights,
-                        ),
+                    cell_id = format_cell_id(server_id=model_cfg.name, index=cell_count)
+                    cell_meta = ServerCellMetadata(
+                        worker_type=group_cfg.worker_type,
+                        cell_id=cell_id,
+                        num_gpus_per_engine=gpus_per_engine,
+                        gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
+                        sglang_overrides=group_cfg.overrides,
+                        model_idx=model_idx,
+                        group_index=group_index,
+                        cell_index=cell_start // nodes_per_engine,
+                        needs_offload=group_cfg.needs_offload,
+                        model_path=group_cfg.model_path,
+                        update_weights=model_cfg.update_weights,
                     )
+                    cell_count += 1
+                    add_cell_tasks.append(srv.add_cell(cell_meta))
 
-        servers[model_cfg.name] = RolloutServer(
-            server_cells=server_cells,
-            args=args,
-            router_ip=router_addr.host,
-            router_port=router_addr.port,
-            model_name=model_cfg.name,
-            update_weights=model_cfg.update_weights,
-        )
+        servers[model_cfg.name] = srv
 
-    await asyncio.gather(*[srv.start_all_cells() for srv in servers.values()])
+    await asyncio.gather(*add_cell_tasks)
 
     args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
 
@@ -125,13 +126,15 @@ class RolloutServer:
 
         For servers without a ``RolloutHealthMonitor``, which does the same job.
         """
-        for cell in self.server_cells:
+        for cell in self.server_cells.values():
             await cell.probe_and_mark_dead()
 
-    async def start_all_cells(self):
-        cell_ids = [cell_id for cell_id, cell in self.server_cells.items() if not cell.is_allocated]
-        await asyncio.gather(*[self.server_cells[cell_id].start(self._router_api_client) for cell_id in cell_ids])
-        self.has_new_engines |= bool(cell_ids)
+    async def add_cell(self, cell_meta: ServerCellMetadata):
+        cell_id = cell_meta.cell_id
+        assert cell_id not in self.server_cells
+        self.server_cells[cell_id] = ServerCell(args=self.args, meta=cell_meta)
+        await self.server_cells[cell_id].start(self._router_api_client)
+        self.has_new_engines = True
 
     async def stop_cells(self, cell_ids: list[str]):
         logger.info(f"Killing server {cell_ids=}...")
