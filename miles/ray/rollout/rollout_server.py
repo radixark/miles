@@ -266,16 +266,12 @@ class RolloutServer:
         await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.offload(tags=tags))
-        return await asyncio.gather(*handles)
+        per_group = await asyncio.gather(*[g.offload(tags=tags) for g in self.server_groups])
+        return [result for group_results in per_group for result in group_results]
 
     async def onload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.onload(tags))
-        return await asyncio.gather(*handles)
+        per_group = await asyncio.gather(*[g.onload(tags) for g in self.server_groups])
+        return [result for group_results in per_group for result in group_results]
 
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
