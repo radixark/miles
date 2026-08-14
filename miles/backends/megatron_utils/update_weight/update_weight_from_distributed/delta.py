@@ -130,7 +130,14 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             os.makedirs(self.delta_dir, exist_ok=True)
             if self._post_write_hook is not None:
                 self._post_write_hook(self.args, self.delta_dir, list(self.rollout_engines))
-            pulls = [engine.pull_weights.remote(target_version=0) for engine in self.rollout_engines]
+            pulls = [
+                engine.pull_weights.remote(
+                    target_version=0,
+                    local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
+                    source_dir=self.args.update_weight_disk_dir,
+                )
+                for engine in self.rollout_engines
+            ]
         dist.barrier(group=get_gloo_group())
 
         read_hf = make_tensor_reader(self.args.hf_checkpoint)  # index the HF headers once
@@ -247,7 +254,16 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
-            pulls = ray.get([engine.pull_weights.remote(self.weight_version) for engine in self.rollout_engines])
+            pulls = ray.get(
+                [
+                    engine.pull_weights.remote(
+                        target_version=self.weight_version,
+                        local_checkpoint_dir=self.args.update_weight_local_checkpoint_dir,
+                        source_dir=self.args.update_weight_disk_dir,
+                    )
+                    for engine in self.rollout_engines
+                ]
+            )
             _check_weight_sync_results(pulls, is_lora=False)
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
