@@ -10,6 +10,7 @@ from miles.backends.sglang_utils.sglang_config import (
     _compute_rollout_offset,
     resolve_sglang_config,
 )
+from miles.utils.external_utils.command_utils.common import encode_pseudo_file
 
 
 def _make_args(**overrides) -> Namespace:
@@ -662,3 +663,21 @@ class TestHostPortOverrideRejection:
                 eval_num_gpus=2,
                 eval_sglang_gated_launch_port=13007,
             )
+
+
+class TestSglangConfigFileArg:
+    _YAML = (
+        "sglang:\n" "  - name: actor\n" "    server_groups:\n" "      - worker_type: regular\n" "        num_gpus: 8\n"
+    )
+
+    def test_a_path_is_still_read_from_disk(self, tmp_path):
+        """The flag has always named a file, and every existing launch script still passes one."""
+        cfg = _resolve_yaml(tmp_path, self._YAML)
+
+        assert [model.name for model in cfg.models] == ["actor"]
+
+    def test_an_inline_base64_payload_is_accepted(self, tmp_path):
+        """A test or a launcher that has no writable shared path must be able to inline the config."""
+        cfg = resolve_sglang_config(_make_args(sglang_config=encode_pseudo_file(self._YAML)))
+
+        assert [model.name for model in cfg.models] == ["actor"]

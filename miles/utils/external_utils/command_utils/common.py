@@ -13,7 +13,9 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from miles.utils.external_utils.model_args_utils import load_model_args
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
+from miles.utils.workers.argv_utils import parse_declared_args
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME
 
 if TYPE_CHECKING:
@@ -194,6 +196,12 @@ def _is_tcp_server_ready(host: str, port: int) -> bool:
 
 def encode_pseudo_file(text: str) -> str:
     return PSEUDO_FILE_PREFIX + base64.b64encode(text.encode()).decode()
+
+
+def compute_model_args_overrides(model_type: str) -> dict[str, object]:
+    from miles.backends.megatron_utils.megatron_config import get_megatron_arg_parser
+
+    return parse_declared_args(load_model_args(model_type), parser=get_megatron_arg_parser())
 
 
 NUM_GPUS_OF_HARDWARE = {
