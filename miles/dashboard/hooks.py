@@ -387,8 +387,8 @@ def _collect_worker_infos(cells) -> list[list]:
     return _ray_get(
         [
             manager_handle.get_worker_infos.remote(
-                pool=compute_engine_pool(model_idx=cell.model_idx, group_index=cell.group_index),
-                cell_index=cell.cell_index,
+                pool=compute_engine_pool(model_idx=cell.meta.model_idx, group_index=cell.meta.group_index),
+                cell_index=cell.meta.cell_index,
             )
             for cell in cells
         ]
@@ -409,7 +409,7 @@ def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
         engines.append(
             EngineInfo(
                 addr=cell.addr_info.server_url,
-                worker_type=cell.worker_type,
+                worker_type=cell.meta.worker_type,
                 engine_rank=engine_rank,
                 gpus=[
                     [info.self_addrs["primary"].host.strip("[]"), gpu_id]

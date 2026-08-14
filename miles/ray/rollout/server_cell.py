@@ -18,6 +18,7 @@ from miles.ray.rollout.cell_state import (
     StateStopped,
 )
 from miles.ray.specs.inference import compute_engine_pool
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -27,20 +28,24 @@ logger = logging.getLogger(__name__)
 SHUTDOWN_TIMEOUT = 30
 
 
+class ServerCellMetadata(FrozenStrictBaseModel):
+    worker_type: Literal["regular", "prefill", "decode"]
+    cell_id: str
+    num_gpus_per_engine: int
+    gpu_offset: int
+    sglang_overrides: dict
+    model_idx: int
+    group_index: int
+    cell_index: int
+    needs_offload: bool
+    model_path: str | None
+    update_weights: bool
+
+
 @dataclass
 class ServerCell:
     args: Any
-    worker_type: Literal["regular", "prefill", "decode"]
-    cell_id: str
-    num_gpus_per_engine: int = 1
-    gpu_offset: int = 0
-    sglang_overrides: dict = dataclasses.field(default_factory=dict)
-    model_idx: int = 0
-    group_index: int = 0
-    cell_index: int = 0
-    needs_offload: bool = False
-    model_path: str | None = None
-    update_weights: bool = True
+    meta: ServerCellMetadata
     _state: CellState = dataclasses.field(default_factory=StateStopped)
 
     @property
@@ -63,11 +68,11 @@ class ServerCell:
 
     @property
     def _pool_id(self) -> str:
-        return compute_engine_pool(model_idx=self.model_idx, group_index=self.group_index)
+        return compute_engine_pool(model_idx=self.meta.model_idx, group_index=self.meta.group_index)
 
     async def start_engines(self) -> None:
-        assert not ({"host", "port"} & set(self.sglang_overrides)), (
-            f"sglang_overrides must not override host/port ({self.sglang_overrides=}): the rollout process derives "
+        assert not ({"host", "port"} & set(self.meta.sglang_overrides)), (
+            f"sglang_overrides must not override host/port ({self.meta.sglang_overrides=}): the rollout process derives "
             f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
         )
         assert not self.is_allocated, "the caller starts only stopped cells"
@@ -80,7 +85,7 @@ class ServerCell:
         self._mark_allocated_uninitialized()
 
         provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-        worker_name = compute_worker_name(pool=self._pool_id, cell_index=self.cell_index)
+        worker_name = compute_worker_name(pool=self._pool_id, cell_index=self.meta.cell_index)
         master_addrs = await provider.get_addrs(worker_name=worker_name)
         primary = master_addrs["primary"]
         disaggregation_bootstrap = master_addrs.get("disaggregation_bootstrap")
@@ -93,15 +98,15 @@ class ServerCell:
 
         await wait_server_healthy(
             server_url=self.addr_info.server_url,
-            api_key=compute_api_key(self.args, sglang_overrides=self.sglang_overrides),
+            api_key=compute_api_key(self.args, sglang_overrides=self.meta.sglang_overrides),
         )
 
     async def start(self, router_api_client: SGLangRouterApiClient, recover: bool = False) -> None:
         await self.start_engines()
 
-        if recover and self.needs_offload:
+        if recover and self.meta.needs_offload:
             await self.api_client.release_memory_occupation()
-            if self.update_weights or self.model_path:
+            if self.meta.update_weights or self.meta.model_path:
                 await self.api_client.resume_memory_occupation(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
         self._mark_alive()
@@ -113,9 +118,11 @@ class ServerCell:
             try:
                 await asyncio.wait_for(self.unregister(router_api_client), timeout=SHUTDOWN_TIMEOUT)
             except Exception as e:
-                logger.warning(f"Unregistering cell {self.cell_id} from the router failed, tearing down anyway ({e})")
+                logger.warning(
+                    f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})"
+                )
         else:
-            logger.info(f"Cell {self.cell_id} is already stopped")
+            logger.info(f"Cell {self.meta.cell_id} is already stopped")
         self._mark_stopped()
 
     def _mark_allocated_uninitialized(self) -> None:
@@ -145,10 +152,10 @@ class ServerCell:
         old_state_cls: type[CellState] | tuple[type[CellState], ...],
         new_state: CellState,
     ) -> None:
-        logger.info(f"Cell {self.cell_id} {debug_name} start old={self._state}")
+        logger.info(f"Cell {self.meta.cell_id} {debug_name} start old={self._state}")
         assert isinstance(self._state, old_state_cls), f"{self._state=}"
         self._state = new_state
-        logger.info(f"Cell {self.cell_id} {debug_name} end new={self._state}")
+        logger.info(f"Cell {self.meta.cell_id} {debug_name} end new={self._state}")
 
     async def probe_and_mark_dead(self) -> None:
         if not self.is_allocated:
@@ -173,7 +180,7 @@ class ServerCell:
     async def register(self, router_api_client: SGLangRouterApiClient) -> None:
         await router_api_client.add_worker(
             worker_url=self.addr_info.server_url,
-            worker_type=self.worker_type,
+            worker_type=self.meta.worker_type,
             use_legacy_api=use_legacy_router_api(self.args),
             bootstrap_port=self.addr_info.bootstrap_port,
         )

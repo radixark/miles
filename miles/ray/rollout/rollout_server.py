@@ -7,7 +7,7 @@ from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
 from miles.ray.rollout.router_manager import wait_router_ready
-from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata, compute_nodes_per_engine
 
 logger = logging.getLogger(__name__)
 
@@ -56,17 +56,19 @@ async def start_rollout_servers(args) -> dict[str, "RolloutServer"]:
                     cell_id = format_cell_id(server_id=model_cfg.name, index=len(server_cells))
                     server_cells[cell_id] = ServerCell(
                         args=args,
-                        worker_type=group_cfg.worker_type,
-                        cell_id=cell_id,
-                        num_gpus_per_engine=gpus_per_engine,
-                        gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
-                        sglang_overrides=group_cfg.overrides,
-                        model_idx=model_idx,
-                        group_index=group_index,
-                        cell_index=cell_start // nodes_per_engine,
-                        needs_offload=group_cfg.needs_offload,
-                        model_path=group_cfg.model_path,
-                        update_weights=model_cfg.update_weights,
+                        meta=ServerCellMetadata(
+                            worker_type=group_cfg.worker_type,
+                            cell_id=cell_id,
+                            num_gpus_per_engine=gpus_per_engine,
+                            gpu_offset=group_cfg.gpu_offset + cell_start * num_gpu_per_engine_local,
+                            sglang_overrides=group_cfg.overrides,
+                            model_idx=model_idx,
+                            group_index=group_index,
+                            cell_index=cell_start // nodes_per_engine,
+                            needs_offload=group_cfg.needs_offload,
+                            model_path=group_cfg.model_path,
+                            update_weights=model_cfg.update_weights,
+                        ),
                     )
 
         servers[model_cfg.name] = RolloutServer(
@@ -112,11 +114,11 @@ class RolloutServer:
     @property
     def engine_gpu_counts(self) -> list[int]:
         """Per-engine GPU count for all node-0 engines, parallel to ``engines``."""
-        return [cell.num_gpus_per_engine for cell in self.server_cells.values()]
+        return [cell.meta.num_gpus_per_engine for cell in self.server_cells.values()]
 
     @property
     def engine_gpu_offsets(self) -> list[int]:
-        return [cell.gpu_offset for cell in self.server_cells.values()]
+        return [cell.meta.gpu_offset for cell in self.server_cells.values()]
 
     async def probe_and_mark_dead(self):
         """Mark unreachable cells stopped so ``recover`` restarts them.
@@ -138,12 +140,12 @@ class RolloutServer:
 
     async def offload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self._allocated_cells_of() if cell.needs_offload]
+            *[cell.offload(tags=tags) for cell in self._allocated_cells_of() if cell.meta.needs_offload]
         )
 
     async def onload(self, tags: list[str] | None = None):
         return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self._allocated_cells_of() if cell.needs_offload]
+            *[cell.onload(tags=tags) for cell in self._allocated_cells_of() if cell.meta.needs_offload]
         )
 
     async def check_weights(
