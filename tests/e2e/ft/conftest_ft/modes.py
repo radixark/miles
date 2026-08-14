@@ -109,6 +109,18 @@ MODES: dict[str, FTTestMode] = {
         rollout_gpus_per_engine=1,
         parallel_args="--context-parallel-size 2",
     ),
+    # Same topology again, with ft on both kinds so one run crashes trainer cells and engines.
+    "kill_train_rollout__dp2_cp2": FTTestMode(
+        model_name=DENSE_MODEL_NAME,
+        model_hf_repo=DENSE_MODEL_HF_REPO,
+        megatron_model_type=DENSE_MODEL_TYPE,
+        num_cells=2,
+        train_gpus_per_node=4,
+        rollout_num_engines=4,
+        rollout_gpus_per_engine=1,
+        ft_components=("train", "rollout"),
+        parallel_args="--context-parallel-size 2",
+    ),
     # --- 1-node (8 GPUs) colocated: engines share the trainer's gpus ---
     "kill_rollout__dp2_cp2__colocate": FTTestMode(
         model_name=DENSE_MODEL_NAME,
