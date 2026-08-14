@@ -74,6 +74,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         orchestrator_command=["python", request.train_script, *pod_argv],
         worker_argv=pod_argv,
         env=train_env_vars(request, {}, config=config),
+        colocate=bool(args.colocate),
         mooncake_plan=MooncakeInfo.plan_of_args(args),
         prepare_cmd=request.prepare_cmd,
     )
