@@ -6,6 +6,7 @@ import os
 import random
 import shlex
 import socket
+import subprocess
 from pathlib import Path
 
 from miles.utils.file_arg_utils import PSEUDO_FILE_PREFIX
@@ -124,3 +125,10 @@ GENERATION_HARDWARE = {
     "GB200": "Blackwell",
     "GB300": "Blackwell",
 }
+
+
+def run_process(
+    argv: list[str], *, capture_output: bool, check: bool, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    logger.info(f"EXEC: {shlex.join(argv)}")
+    return subprocess.run(argv, check=check, capture_output=capture_output, text=True, input=input)
