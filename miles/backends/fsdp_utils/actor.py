@@ -119,9 +119,9 @@ class FSDPTrainRayActor(TrainRayActor):
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
         try:
             self._flops_args = flops_args_from_hf_config(self.hf_config)
-        except (AssertionError, AttributeError, ValueError) as e:
+        except Exception as e:
             self._flops_args = None
-            logger.warning(f"MFU will not be reported: {e}")
+            logger.warning(f"MFU will not be reported, {type(self.hf_config).__name__} could not be sized: {e}")
 
         routing_replay.enable(args)
 
