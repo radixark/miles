@@ -32,7 +32,7 @@ class TestComputeSpecs:
             "inference-engine-0-2",
             "rollout-executor",
             "trainer-controller-actor",
-            "trainer-actor",
+            "trainer-engine-actor",
         ]
 
     def test_a_disabled_session_server_is_listed_with_no_cells(self, tmp_path):

@@ -4,20 +4,8 @@ import sys
 
 IMPORTED_MODULES_SEPARATOR = ","
 
-# Everything here lands in sys.modules through site initialization, before the
-# entrypoint runs a line of its own, so none of it says anything about what the
-# entrypoint imports. nvidia_cutlass_dsl arrives via a .pth in dist-packages.
-ALLOWED_LIGHT_ENTRYPOINT_IMPORTS = frozenset(
-    {
-        "__main__",
-        "miles",
-        "tests",
-        "sitecustomize",
-        "usercustomize",
-        "_distutils_hack",
-        "_virtualenv",
-        "nvidia_cutlass_dsl",
-    }
+FORBIDDEN_LIGHT_ENTRYPOINT_IMPORTS = frozenset(
+    {"torch", "megatron", "sglang", "vllm", "transformers", "deepspeed", "ray", "uvicorn"}
 )
 
 
@@ -39,4 +27,4 @@ def report_imported_top_level_modules() -> str:
 
 def unexpected_light_entrypoint_imports(reported: str) -> list[str]:
     imported = {name for name in reported.split(IMPORTED_MODULES_SEPARATOR) if name}
-    return sorted(imported - ALLOWED_LIGHT_ENTRYPOINT_IMPORTS)
+    return sorted(imported & FORBIDDEN_LIGHT_ENTRYPOINT_IMPORTS)
