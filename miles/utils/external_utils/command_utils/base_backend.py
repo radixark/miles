@@ -11,6 +11,7 @@ from pathlib import Path
 
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
+    create_run_id,
     MOONCAKE_MASTER_LOG_PATH,
     MOONCAKE_MASTER_METRICS_PORT,
     MOONCAKE_MASTER_PORT,
@@ -22,6 +23,7 @@ from miles.utils.external_utils.exec_command import exec_command_cpu, exec_comma
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.http_utils import wait_for_server_ready
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.typer_utils import dataclass_from_env
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.types import ClusterBackend
 
@@ -36,6 +38,11 @@ class ExecuteTrainConfig:
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
     cluster_backend: ClusterBackend = ClusterBackend.RAY
+    run_id: str = field(default_factory=create_run_id)
+    namespace: str = ""
+    helm_values: tuple[str, ...] = ()
+    force: bool = False
+    ci_run: bool = False
 
     def create_backend(self) -> BaseCommandBackend:
         match self.cluster_backend:
@@ -45,6 +52,10 @@ class ExecuteTrainConfig:
                 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
                 return RayCommandBackend(self)
+
+
+def default_config(config_class: type = ExecuteTrainConfig) -> ExecuteTrainConfig:
+    return dataclass_from_env(config_class)
 
 
 class ExecuteTrainRequest(FrozenStrictBaseModel):
