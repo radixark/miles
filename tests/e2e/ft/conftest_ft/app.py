@@ -8,6 +8,8 @@ from typing import Annotated
 
 import typer
 
+from tests.e2e.ft.conftest_ft.cli_options import DumpDirOption, EnableDumperOption, ModeOption, PhaseOption
+
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
@@ -106,27 +108,27 @@ def create_comparison_app_and_run_ci(
 
     @app.command()
     def baseline(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
-        dump_dir: Annotated[str | None, typer.Option(help="Dump base directory")] = None,
-        phase: Annotated[str, typer.Option(help="Phase name (multi-phase tests)")] = "",
-        enable_dumper: Annotated[bool, typer.Option(help="Enable dumper output")] = True,
+        mode: ModeOption,
+        dump_dir: DumpDirOption = None,
+        phase: PhaseOption = "",
+        enable_dumper: EnableDumperOption = True,
     ) -> None:
         """Run baseline (normal DP) training."""
         _run_side("baseline", build_baseline_args, mode, dump_dir, phase, enable_dumper=enable_dumper)
 
     @app.command()
     def target(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
-        dump_dir: Annotated[str | None, typer.Option(help="Dump base directory")] = None,
-        phase: Annotated[str, typer.Option(help="Phase name (multi-phase tests)")] = "",
-        enable_dumper: Annotated[bool, typer.Option(help="Enable dumper output")] = True,
+        mode: ModeOption,
+        dump_dir: DumpDirOption = None,
+        phase: PhaseOption = "",
+        enable_dumper: EnableDumperOption = True,
     ) -> None:
         """Run target (indep_dp) training."""
         _run_side("target", build_target_args, mode, dump_dir, phase, enable_dumper=enable_dumper)
 
     @app.command()
     def compare(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
+        mode: ModeOption,
         dump_dir: Annotated[str, typer.Option(help="Dump base directory")],
     ) -> None:
         """Compare baseline and target dumps."""
@@ -135,8 +137,8 @@ def create_comparison_app_and_run_ci(
 
     @app.command()
     def run(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
-        enable_dumper: Annotated[bool, typer.Option(help="Enable dumper output")] = True,
+        mode: ModeOption,
+        enable_dumper: EnableDumperOption = True,
     ) -> None:
         """Full pipeline: prepare + all phases + compare."""
         run_pipeline(
@@ -189,7 +191,7 @@ def create_non_comparison_app(
 
     @app.command()
     def run(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
+        mode: ModeOption,
     ) -> None:
         """Full pipeline: prepare + execute + verify."""
         ft_mode = resolve_mode(mode)
