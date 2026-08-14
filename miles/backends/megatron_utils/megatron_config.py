@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import re
 from typing import Any, Literal
 
@@ -8,7 +9,7 @@ import yaml
 
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.argv_utils import coerce_dict_to_args
+from miles.utils.workers.argv_utils import coerce_dict_to_args, declared_arg_dests
 from miles.utils.workers.naming import DNS_LABEL_PATTERN, TRAINER_ID_MAX_LENGTH
 
 logger = logging.getLogger(__name__)
@@ -27,22 +28,6 @@ PER_POLICY_ARGS: frozenset[str] = frozenset(
         "hf_checkpoint",
         "ref_load",
         "megatron_to_hf_mode",
-        "num_layers",
-        "hidden_size",
-        "ffn_hidden_size",
-        "num_attention_heads",
-        "group_query_attention",
-        "num_query_groups",
-        "kv_channels",
-        "add_qkv_bias",
-        "qk_layernorm",
-        "swiglu",
-        "normalization",
-        "layernorm_epsilon",
-        "add_bias_linear",
-        "use_rotary_position_embeddings",
-        "rotary_base",
-        "vocab_size",
         "optimizer",
         "lr",
         "min_lr",
@@ -70,6 +55,97 @@ PER_POLICY_ARGS: frozenset[str] = frozenset(
         "entropy_coef",
         "eps_clip",
         "eps_clip_high",
+    }
+)
+
+MODEL_DEFINITION_ARGS: frozenset[str] = frozenset(
+    {
+        "activation_func_clamp_value",
+        "add_bias_linear",
+        "add_qkv_bias",
+        "apply_layernorm_1p",
+        "attention_dropout",
+        "attention_output_gate",
+        "attention_softmax_in_fp32",
+        "beta_fast",
+        "beta_slow",
+        "custom_model_provider_path",
+        "dsa_indexer_head_dim",
+        "dsa_indexer_n_heads",
+        "dsa_indexer_topk",
+        "dsv4_compress_ratios",
+        "dsv4_compress_rope_theta",
+        "dsv4_hc_mult",
+        "dsv4_hc_sinkhorn_iters",
+        "dsv4_n_hash_layers",
+        "dsv4_o_groups",
+        "dsv4_o_lora_rank",
+        "dsv4_window_size",
+        "enable_experimental",
+        "experimental_attention_variant",
+        "ffn_hidden_size",
+        "group_query_attention",
+        "hidden_dropout",
+        "hidden_size",
+        "kv_channels",
+        "kv_lora_rank",
+        "layernorm_epsilon",
+        "make_vocab_size_divisible_by",
+        "max_position_embeddings",
+        "moe_aux_loss_coeff",
+        "moe_ffn_hidden_size",
+        "moe_grouped_gemm",
+        "moe_latent_size",
+        "moe_layer_freq",
+        "moe_permute_fusion",
+        "moe_router_bias_update_rate",
+        "moe_router_dtype",
+        "moe_router_enable_expert_bias",
+        "moe_router_group_topk",
+        "moe_router_load_balancing_type",
+        "moe_router_num_groups",
+        "moe_router_pre_softmax",
+        "moe_router_score_function",
+        "moe_router_topk",
+        "moe_router_topk_scaling_factor",
+        "moe_shared_expert_gate",
+        "moe_shared_expert_intermediate_size",
+        "moe_token_dispatcher_type",
+        "moe_token_drop_policy",
+        "mscale",
+        "mscale_all_dim",
+        "mtp_num_layers",
+        "multi_latent_attention",
+        "norm_epsilon",
+        "normalization",
+        "num_attention_heads",
+        "num_experts",
+        "num_layers",
+        "num_query_groups",
+        "original_max_position_embeddings",
+        "position_embedding_type",
+        "post_mlp_layernorm",
+        "post_self_attn_layernorm",
+        "q_lora_rank",
+        "qk_head_dim",
+        "qk_layernorm",
+        "qk_pos_emb_head_dim",
+        "rope_type",
+        "rotary_base",
+        "rotary_interleaved",
+        "rotary_percent",
+        "rotary_scaling_factor",
+        "seq_length",
+        "softmax_type",
+        "spec",
+        "swiglu",
+        "untie_embeddings_and_output_weights",
+        "use_rope_scaling",
+        "use_rotary_position_embeddings",
+        "v_head_dim",
+        "vocab_size",
+        "window_attn_skip_freq",
+        "window_size",
     }
 )
 
@@ -181,6 +257,37 @@ def _assert_no_declared_critic(raw: "_RawMegatronConfig") -> None:
     )
 
 
+# ---------------------------- checkpoint dirs -----------------------------
+
+
+def resolve_args_checkpoint_load(args: argparse.Namespace) -> None:
+    # TODO: During loading, we need to set the start_rollout_id here.
+    if args.megatron_to_hf_mode == "bridge":
+        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
+        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
+        # Mirrors the non-bridge branch below.
+        if not _has_megatron_checkpoint(args.load):
+            args.load = args.ref_load or args.hf_checkpoint
+            args.start_rollout_id = 0
+    else:
+        if not _has_megatron_checkpoint(args.load):
+            args.no_load_optim = True
+            args.no_load_rng = True
+            args.finetune = True
+            args.load = args.ref_load
+            if args.ref_ckpt_step is not None:
+                args.ckpt_step = args.ref_ckpt_step
+            args.start_rollout_id = 0
+
+
+def _has_megatron_checkpoint(load_dir: str | None) -> bool:
+    return (
+        load_dir is not None
+        and os.path.exists(load_dir)
+        and os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
+    )
+
+
 # ---------------------------- validation -----------------------------
 
 
@@ -213,10 +320,11 @@ def _resolve_overrides(overrides: dict[str, Any], *, model_id: str) -> dict[str,
     if not overrides:
         return overrides
 
+    parser = get_megatron_arg_parser()
     return coerce_dict_to_args(
         overrides,
-        parser=get_megatron_arg_parser(),
-        allowed_names=PER_POLICY_ARGS,
+        parser=parser,
+        allowed_names=PER_POLICY_ARGS | (MODEL_DEFINITION_ARGS & declared_arg_dests(parser)),
         context=f"--megatron-config model {model_id!r}",
     )
 
