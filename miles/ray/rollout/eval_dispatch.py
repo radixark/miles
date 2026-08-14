@@ -1,10 +1,9 @@
+import asyncio
 import logging
 import os
 import shutil
 import time
 from collections import deque
-
-import ray
 
 logger = logging.getLogger(__name__)
 
@@ -21,19 +20,19 @@ class EvalDispatcher:
         self.args = args
         self.actor_model = actor_model
         self.rollout_manager = rollout_manager
-        self.pending: deque[tuple[int, ray.ObjectRef, str | None]] = deque()
+        self.pending: deque[tuple[int, asyncio.Task, str | None]] = deque()
         self._exported: list[str] = []
 
     async def dispatch(self, rollout_id: int, hf_dir: str | None = None, force: bool = False) -> None:
         """A caller-supplied ``hf_dir`` is an existing checkpoint, not one of our exports."""
         if not self.args.eval_uses_snapshots:
-            await self.rollout_manager.eval.remote(rollout_id)
+            await self.rollout_manager.eval(rollout_id)
             return
 
         await self._reap_finished()
         if len(self.pending) >= self.args.eval_max_in_flight:
             if self.args.eval_overflow_policy == "skip" and not force:
-                await self.rollout_manager.report_eval_skip.remote(rollout_id, "busy")
+                await self.rollout_manager.report_eval_skip(rollout_id, "busy")
                 return
             await self._settle(*self.pending.popleft())
 
@@ -50,14 +49,16 @@ class EvalDispatcher:
                 except Exception as e:
                     logger.error(f"HF snapshot export for eval {rollout_id} failed: {e}")
                     shutil.rmtree(hf_dir, ignore_errors=True)
-                    await self.rollout_manager.report_eval_skip.remote(rollout_id, "export_failed")
+                    await self.rollout_manager.report_eval_skip(rollout_id, "export_failed")
                     return
                 exported_dir = hf_dir
 
-        ref = self.rollout_manager.eval.remote(
-            rollout_id, hf_dir=hf_dir, export_time_seconds=export_time, require_marker=require_marker
+        task = asyncio.ensure_future(
+            self.rollout_manager.eval(
+                rollout_id, hf_dir=hf_dir, export_time_seconds=export_time, require_marker=require_marker
+            )
         )
-        self.pending.append((rollout_id, ref, exported_dir))
+        self.pending.append((rollout_id, task, exported_dir))
 
     async def drain(self) -> None:
         while self.pending:
@@ -70,17 +71,16 @@ class EvalDispatcher:
 
     async def _reap_finished(self) -> None:
         while self.pending:
-            done, _ = ray.wait([self.pending[0][1]], timeout=0)
-            if not done:
+            if not self.pending[0][1].done():
                 break
             await self._settle(*self.pending.popleft())
 
-    async def _settle(self, rollout_id: int, ref, exported_dir: str | None) -> None:
+    async def _settle(self, rollout_id: int, task: asyncio.Task, exported_dir: str | None) -> None:
         try:
-            await ref
+            await task
         except Exception:
             logger.exception(f"Async eval for rollout {rollout_id} raised")
-            await self.rollout_manager.report_eval_skip.remote(rollout_id, "crashed")
+            await self.rollout_manager.report_eval_skip(rollout_id, "crashed")
         finally:
             self._retire(exported_dir)
 
