@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import ray
@@ -22,7 +23,7 @@ def _make_controller(cells: list) -> RayTrainGroup:
     group._witness_allocator = None
     group._indep_dp_quorum_id = 0
     group._health_checker_activeness = ActivenessTracker(active=True)
-    group._test_action_executor = SimpleNamespace(run_after_step=lambda **kwargs: None)
+    group._test_action_executor = SimpleNamespace(run_after_step=AsyncMock())
     return group
 
 
