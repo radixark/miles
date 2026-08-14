@@ -1,5 +1,6 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import shlex
 from dataclasses import dataclass
 
 import typer
@@ -57,6 +58,52 @@ class FTTestMode:
         if self.colocate:
             return self.train_gpus_per_node
         return self.train_gpus_per_node + self.total_rollout_gpus
+
+
+KILL_SEGMENT_OF_FT_COMPONENTS: dict[tuple[str, ...], str] = {
+    ("train",): "kill_train",
+    ("rollout",): "kill_rollout",
+    ("train", "rollout"): "kill_train_rollout",
+}
+
+MODEL_SEGMENT_OF_MODEL_NAME: dict[str, str | None] = {
+    DENSE_MODEL_NAME: None,
+    MODEL_NAME: "moe_5layer",
+    FULL_MODEL_NAME: "moe_full",
+}
+
+PARALLELISM_SEGMENT_OF_FLAG: dict[str, str] = {
+    "--context-parallel-size": "cp",
+    "--tensor-model-parallel-size": "tp",
+    "--pipeline-model-parallel-size": "pp",
+    "--expert-model-parallel-size": "ep",
+    "--expert-tensor-parallel-size": "etp",
+}
+
+
+def compute_mode_name(mode: FTTestMode) -> str:
+    segments: list[str] = [KILL_SEGMENT_OF_FT_COMPONENTS[mode.ft_components], _compute_parallelism_segment(mode)]
+
+    if not mode.has_real_rollout:
+        segments.append("fake_rollout")
+    if (model_segment := MODEL_SEGMENT_OF_MODEL_NAME[mode.model_name]) is not None:
+        segments.append(model_segment)
+    if mode.colocate:
+        segments.append("colocate")
+
+    return "__".join(segments)
+
+
+def _compute_parallelism_segment(mode: FTTestMode) -> str:
+    tokens: list[str] = shlex.split(mode.parallel_args)
+    size_of_flag: dict[str, str] = dict(zip(tokens, tokens[1:], strict=False))
+
+    parts: list[str] = [f"dp{mode.num_cells}"]
+    parts += [
+        f"{short}{size_of_flag[flag]}" for flag, short in PARALLELISM_SEGMENT_OF_FLAG.items() if flag in size_of_flag
+    ]
+
+    return "_".join(parts)
 
 
 MODES: dict[str, FTTestMode] = {
