@@ -5,8 +5,10 @@ import shutil
 
 from miles.utils.external_utils.command_utils.common import run_process
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.diagnosis import collect_diagnosis
+from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles
 from miles.utils.external_utils.miles_workbench.naming import CHART_DIR, PACKAGE, object_name
-from miles.utils.external_utils.miles_workbench.options import ExecArgs, InstallArgs, ReleaseArgs
+from miles.utils.external_utils.miles_workbench.options import DiagnosisArgs, ExecArgs, InstallArgs, ReleaseArgs
 from miles.utils.external_utils.miles_workbench.preflight.runner import run_preflight_checks
 from miles.utils.external_utils.miles_workbench.render import helm_value_overrides
 
@@ -25,6 +27,7 @@ def install(args: InstallArgs) -> None:
         _run(["helm", "dependency", "build", str(CHART_DIR)])
     else:
         run_preflight_checks(args)
+
     _run(_helm_install_command(args))
     _wait_until_ready(namespace=args.namespace, release=args.release, timeout=args.timeout)
 
@@ -45,8 +48,21 @@ def uninstall(args: ReleaseArgs) -> None:
     _run(["helm", "uninstall", args.release, "--namespace", args.namespace])
 
 
+def collect_diagnosis_command(args: DiagnosisArgs) -> None:
+    _require_binary("kubectl")
+
+    state_file = RunFiles.latest_state_file(run_directory=args.run_dir) if args.run_dir is not None else None
+    diagnosis = collect_diagnosis(namespace=args.namespace, output_dir=args.output_dir, state_file=state_file)
+    missing = diagnosis.missing + ((f"a verdict under {args.run_dir}",) if args.run_dir and not state_file else ())
+
+    print(str(diagnosis.directory), flush=True)
+    if missing:
+        logger.error("FAIL  the diagnosis is incomplete, these could not be collected: %s", ", ".join(missing))
+        raise SystemExit(1)
+
+
 def _helm_install_command(args: InstallArgs) -> list[str]:
-    command = Helm.upgrade_command(args.release, args.namespace, CHART_DIR, [])
+    command = Helm.upgrade_command(args.release, args.namespace, CHART_DIR, [], ci_run=False)
     command += ["--set-string", f"objectName={object_name(args.release)}"]
     return command + helm_value_overrides(args)
 
