@@ -48,6 +48,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 32
     n_samples_per_prompt: int = 1
     global_batch_size: int = 32
+    use_dynamic_batch_size: bool = True
 
     api_port: int = 8068
     enable_wandb: bool = False
@@ -95,11 +96,14 @@ def _serve(args: ScriptArgs, service: bool):
 
     optimizer_args = "--optimizer adam --lr 1e-4 --lr-decay-style constant "
 
+    dynamic_batch_args = (
+        "--use-dynamic-batch-size --max-tokens-per-gpu 9216 " if args.use_dynamic_batch_size else ""
+    )
     perf_args = (
         f"--tensor-model-parallel-size {args.tp} --sequence-parallel "
         "--pipeline-model-parallel-size 1 --context-parallel-size 1 "
         "--expert-model-parallel-size 1 --expert-tensor-parallel-size 1 "
-        "--use-dynamic-batch-size --max-tokens-per-gpu 9216 "
+        f"{dynamic_batch_args}"
     )
 
     sglang_args = "--rollout-num-gpus-per-engine 1 --sglang-mem-fraction-static 0.8 "

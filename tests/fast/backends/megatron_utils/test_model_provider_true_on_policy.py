@@ -145,3 +145,20 @@ def test_lora_bridge_path_applies_runtime_config_before_finalize(monkeypatch):
         bridge_lora_helpers._setup_lora_model_via_bridge(
             Namespace(hf_checkpoint="Qwen/Qwen3.5-4B", mtp_num_layers=0)
         )
+
+
+def test_gdn_single_sample_fallback_removes_only_packed_boundaries():
+    from miles.backends.megatron_utils.bridge_lora_helpers import _ignore_packed_sequence_boundaries
+
+    calls = []
+
+    class FakeGDN:
+        def forward(self, hidden_states, **kwargs):
+            calls.append((hidden_states, kwargs))
+            return "output"
+
+    module = FakeGDN()
+    _ignore_packed_sequence_boundaries(module)
+
+    assert module.forward("states", packed_seq_params=object(), attention_mask=None) == "output"
+    assert calls == [("states", {"packed_seq_params": None, "attention_mask": None})]
