@@ -420,3 +420,43 @@ def _always_refuse(cell: dict, rng: random.Random) -> None:
 
 def _do_nothing(cell: dict, rng: random.Random) -> None:
     return None
+
+
+class TestRolloutSpareReadiness:
+    def test_a_healthy_engine_that_is_not_in_the_router_is_not_a_spare(self) -> None:
+        """Regression: a relaunched engine reads Healthy long before it can answer, so it is no replacement."""
+        injected = _run_typed_injection_loop(
+            [
+                typed_cell("rollout-engine-0", "rollout"),
+                typed_cell("rollout-engine-1", "rollout", serving=False),
+            ],
+            cell_type="rollout",
+        )
+
+        assert injected == []
+
+    def test_two_serving_engines_still_leave_one_of_them_injectable(self) -> None:
+        """The readiness rule must not block the case it was never meant to block."""
+        injected = _run_typed_injection_loop(
+            [typed_cell("rollout-engine-0", "rollout"), typed_cell("rollout-engine-1", "rollout")],
+            cell_type="rollout",
+        )
+
+        assert injected
+
+    def test_a_trainer_cell_is_judged_by_liveness_alone(self) -> None:
+        """Trainer cells carry no Serving condition, so requiring one would stop every trainer soak."""
+        assert core._cell_can_serve(typed_cell("actor-0", "actor"))
+
+    def test_an_engine_that_cannot_serve_yet_is_still_injectable(self) -> None:
+        """Crashing an engine mid-relaunch is a real fault window, and only the replica count needs it to serve."""
+        injected = _run_typed_injection_loop(
+            [
+                typed_cell("rollout-engine-0", "rollout"),
+                typed_cell("rollout-engine-1", "rollout"),
+                typed_cell("rollout-engine-2", "rollout", serving=False),
+            ],
+            cell_type="rollout",
+        )
+
+        assert injected

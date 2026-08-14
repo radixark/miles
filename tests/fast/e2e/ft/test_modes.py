@@ -71,3 +71,19 @@ class TestColocationValidation:
         )
 
         assert mode.total_node_gpus == 6
+
+
+class TestMixedFtMode:
+    def test_the_mixed_mode_enables_ft_on_both_kinds_of_cell(self) -> None:
+        """Trainer and rollout healing must interleave in one run, which needs ft on both."""
+        mode = MODES["kill_train_rollout__dp2_cp2"]
+
+        assert mode.ft_components == ("train", "rollout")
+        assert mode.has_real_rollout
+
+    def test_the_mixed_mode_is_disaggregated(self) -> None:
+        """Colocation makes a trainer crash and an engine crash contend for the same gpus, which is not the case to soak first."""
+        mode = MODES["kill_train_rollout__dp2_cp2"]
+
+        assert not mode.colocate
+        assert mode.total_node_gpus == 8
