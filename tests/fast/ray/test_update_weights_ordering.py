@@ -2,6 +2,7 @@ from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.actor_group import RayTrainGroup
 from miles.ray.rollout.inference_controller import InferenceController
@@ -36,25 +37,76 @@ def _assert_the_snapshot_is_handed_back_unchanged(controller: _OrderRecordingInf
     )
 
 
+class _ColocatedCellStub:
+    def __init__(self) -> None:
+        self.init_count = 0
+        self.ready = False
+
+    async def init(self) -> None:
+        self.init_count += 1
+        self.ready = True
+
+    @property
+    def is_uninitialized(self) -> bool:
+        return not self.ready
+
+    @property
+    def is_pending_weights_or_serving(self) -> bool:
+        return self.ready
+
+
+class _ServerStub:
+    def __init__(self, server_cells: dict[str, _ColocatedCellStub]) -> None:
+        self.server_cells = server_cells
+
+
+def _make_inference_controller(**arg_overrides: object) -> InferenceController:
+    return InferenceController(make_args(**arg_overrides))
+
+
 @pytest.mark.asyncio
 async def test_controller_pauses_health_checks_before_snapshotting_the_engines():
-    """``start_update_weights`` pauses the health monitor before it reads the engine set."""
+    """``start_update_weights`` pauses the health monitor, then readies the cells, then reads the engine set."""
     order: list[str] = []
-    controller = InferenceController.__new__(InferenceController)
+    controller = _make_inference_controller()
 
     async def _record_pause() -> None:
         order.append("health_monitoring_pause")
 
-    def _record_snapshot():
+    async def _record_ensure_cells_ready() -> None:
+        order.append("ensure_cells_ready")
+
+    def _record_snapshot() -> None:
         order.append("get_updatable_server")
         return None
 
     controller._health_monitoring_pause = _record_pause
+    controller._ensure_cells_ready = _record_ensure_cells_ready
     controller._get_updatable_server = _record_snapshot
 
     await controller.start_update_weights()
 
-    assert order == ["health_monitoring_pause", "get_updatable_server"]
+    assert order == ["health_monitoring_pause", "ensure_cells_ready", "get_updatable_server"]
+
+
+@pytest.mark.asyncio
+async def test_start_update_weights_initializes_colocated_cells_before_snapshotting_the_engines():
+    """A colocated cell is initialized inside the weight update window, before the engine snapshot is taken."""
+    controller = _make_inference_controller(colocate=True)
+    cell = _ColocatedCellStub()
+    controller.servers = {"default": _ServerStub({"a": cell})}
+    init_counts_at_snapshot: list[int] = []
+
+    def _record_snapshot() -> None:
+        init_counts_at_snapshot.append(cell.init_count)
+        return None
+
+    controller._get_updatable_server = _record_snapshot
+
+    await controller.start_update_weights()
+
+    assert cell.init_count == 1
+    assert init_counts_at_snapshot == [1]
 
 
 def _make_v1_group(order: list[str]) -> RayTrainGroup:
