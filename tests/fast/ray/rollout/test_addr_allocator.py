@@ -5,37 +5,37 @@ from unittest.mock import MagicMock
 from tests.fast.ray.rollout.conftest import fake_engine, make_args
 
 from miles.ray.rollout.addr_allocator import (
-    PortCursors,
+    PortAllocator,
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
 
 
-class TestPortCursors:
+class TestPortAllocator:
     def test_empty_has_no_values(self):
-        c = PortCursors.empty()
+        c = PortAllocator.empty()
         assert c._values == {}
 
     def test_next_base_port_default_when_empty(self):
-        assert PortCursors.empty().next_base_port() == 15000
+        assert PortAllocator.empty().next_base_port() == 15000
 
     def test_next_base_port_returns_max_value(self):
-        c = PortCursors(_values={0: 17000, 1: 16500, 2: 18000})
+        c = PortAllocator(_values={"10.0.0.1": 17000, "10.0.0.2": 16500, "10.0.0.3": 18000})
         assert c.next_base_port() == 18000
 
     def test_assign_copies_values(self):
-        a = PortCursors.empty()
-        b = PortCursors(_values={0: 19000, 1: 19500})
+        a = PortAllocator.empty()
+        b = PortAllocator(_values={"10.0.0.1": 19000, "10.0.0.2": 19500})
         a.assign(b)
-        assert a._values == {0: 19000, 1: 19500}
+        assert a._values == {"10.0.0.1": 19000, "10.0.0.2": 19500}
 
     def test_assign_is_decoupled(self):
         """After assign, mutating source must not bleed into target."""
-        a = PortCursors.empty()
-        b = PortCursors(_values={0: 19000})
+        a = PortAllocator.empty()
+        b = PortAllocator(_values={"10.0.0.1": 19000})
         a.assign(b)
-        b._values[0] = 99999
-        assert a._values == {0: 19000}, "assign must deep-copy the inner dict"
+        b._values["10.0.0.1"] = 99999
+        assert a._values == {"10.0.0.1": 19000}, "assign must deep-copy the inner dict"
 
 
 def _all_ports(addr_and_ports: dict) -> list[int]:
@@ -80,11 +80,11 @@ class TestAllocateNormal:
             }
             assert len(same_rank_ports) == 4, f"rank {rank} reused a port: {addr_and_ports[rank]}"
 
-        # Cursor must reflect the *node*'s next free port (single-node here → key 0).
-        assert isinstance(cursors, PortCursors)
-        assert set(cursors._values.keys()) == {0}
+        # Cursor must reflect the *node*'s next free port (single node → its ip).
+        assert isinstance(cursors, PortAllocator)
+        assert set(cursors._values.keys()) == {"10.0.0.1"}
         # And it must sit past every port we handed out.
-        assert cursors._values[0] >= max(_all_ports(addr_and_ports)) + 1
+        assert cursors._values["10.0.0.1"] >= max(_all_ports(addr_and_ports)) + 1
 
         # Cross-rank: every numeric port across all 8 engines must be unique.
         all_ports = _all_ports(addr_and_ports)
@@ -180,7 +180,7 @@ class TestAllocateNormal:
         # also reserves consecutive blocks for dist_init_addr that aren't all
         # visible in the output, so we can't pin to max_issued + 1).
         max_issued = max(_all_ports(addr_and_ports))
-        assert cursors._values[0] > max_issued
+        assert cursors._values["10.0.0.1"] > max_issued
         # And the lowest port must be >= base_port (allocator never went below it).
         assert min(_all_ports(addr_and_ports)) >= 22000
 
@@ -207,13 +207,13 @@ class TestAllocateExternal:
         assert isinstance(result[0]["port"], int)
 
 
-class TestSharedPortCursorsAcrossGroups:
-    """Two ``ServerGroup``s sharing one ``PortCursors`` must produce disjoint
+class TestSharedPortAllocatorAcrossGroups:
+    """Two ``ServerGroup``s sharing one ``PortAllocator`` must produce disjoint
     port allocations across nodes — required for parallel recover."""
 
     def test_sequential_groups_share_cursor_and_avoid_overlap(self, patch_ray_get):
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        cursors = PortCursors.empty()
+        cursors = PortAllocator.empty()
 
         engines_a = [(rank, fake_engine(port_seed=0)) for rank in range(4)]
         addrs_a, next_a = allocate_rollout_engine_addr_and_ports_normal(
