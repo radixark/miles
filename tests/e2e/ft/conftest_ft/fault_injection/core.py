@@ -45,6 +45,9 @@ def run_fault_injection_loop(
         # injections is seen, not missed (which would exclude the cell from the live set forever).
         event_log.observe(cells)
 
+        if stop_event.is_set():
+            break
+
         if time.monotonic() < next_injection_time:
             continue
 
