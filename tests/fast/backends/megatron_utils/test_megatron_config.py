@@ -1,11 +1,19 @@
+import sys
 from argparse import Namespace
+from types import SimpleNamespace
 
+import pydantic
 import pytest
 import yaml
 from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
-from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
+from miles.backends.megatron_utils import megatron_config as megatron_config_module
+from miles.backends.megatron_utils.megatron_config import (
+    _resolve_overrides,
+    get_megatron_arg_parser,
+    resolve_megatron_config,
+)
 
 
 def _write_yaml(data: dict, tmp_path) -> str:
@@ -59,6 +67,13 @@ class TestResolveMegatronConfig:
 
         assert config.model_ids == ["solo"]
 
+    def test_duplicate_trainer_ids_are_refused(self, tmp_path):
+        """Two entries sharing a trainer id would land in one controller and one engine pool."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "a"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="trainer ids must be unique"):
+            resolve_megatron_config(_make_args(path))
+
     def test_a_trainer_id_defaults_to_the_model_id_and_the_role(self, tmp_path):
         """The trainer id addresses a pool, so its default must stay the name every deployment already uses."""
         path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
@@ -73,6 +88,20 @@ class TestResolveMegatronConfig:
         path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "legacy-actor"}]}, tmp_path)
 
         assert resolve_megatron_config(_make_args(path)).trainers[0].trainer_id == "legacy-actor"
+
+    def test_an_explicit_trainer_id_colliding_with_a_derived_one_is_refused(self, tmp_path):
+        """Uniqueness has to hold across both spellings, or two trainers would share one engine pool."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b", "trainer_id": "a-actor"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="trainer ids must be unique"):
+            resolve_megatron_config(_make_args(path))
+
+    def test_a_trainer_id_that_is_not_a_dns_label_is_refused(self, tmp_path):
+        """A trainer id is embedded in Kubernetes pool names, which must be lowercase DNS labels."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "Legacy_Actor"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="trainer ids"):
+            resolve_megatron_config(_make_args(path))
 
     def test_several_entries_of_one_model_id_are_not_a_multi_policy_run(self, tmp_path):
         """An actor and a critic of one policy share its id, and one policy is not several policies."""
@@ -118,3 +147,87 @@ class TestResolveMegatronConfig:
     def test_a_run_without_the_flag_has_no_leader_model_id(self):
         """A single policy run has no leader to index the trainers by, and must answer None rather than invent one."""
         assert resolve_megatron_config(_make_args()).leader_model_id is None
+
+
+class TestDerivedPerPolicyArgs:
+    def test_a_model_id_that_escapes_its_checkpoint_directory_is_refused(self, tmp_path):
+        """A model id is pasted into --save and --load, so it must stay one path component."""
+        path = _write_yaml({"trainers": [{"model_id": "../evil"}, {"model_id": "b"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="not usable as Kubernetes pool names"):
+            resolve_megatron_config(_make_args(path))
+
+    @pytest.mark.parametrize("model_id", ["policy_a", "PolicyA", "-policy", "policy-", "policy.a"])
+    def test_a_model_id_that_is_not_a_dns_label_is_refused(self, tmp_path, model_id):
+        """A model id is embedded in Kubernetes pool names, which must be lowercase DNS labels."""
+        path = _write_yaml({"trainers": [{"model_id": model_id}, {"model_id": "b"}]}, tmp_path)
+
+        with pytest.raises(pydantic.ValidationError, match="not usable as Kubernetes pool names"):
+            resolve_megatron_config(_make_args(path))
+
+    @pytest.mark.parametrize("model_id", ["default", "policy-a", "a1", "a-b-c"])
+    def test_lowercase_dns_labels_are_accepted(self, tmp_path, model_id):
+        """The ids the docs and examples use must survive validation."""
+        path = _write_yaml({"trainers": [{"model_id": model_id}, {"model_id": "other"}]}, tmp_path)
+
+        assert resolve_megatron_config(_make_args(path)).model_ids == [model_id, "other"]
+
+
+class TestOverrideCoercion:
+    def test_a_value_is_typed_by_the_declared_argument_not_by_the_yaml_scalar(self, tmp_path):
+        """YAML reads `5e-7` as a string, so an untyped overlay would train against a string learning rate."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"lr": "5e-7", "global_batch_size": "128"}}]}, tmp_path
+        )
+
+        overrides = resolve_megatron_config(_make_args(path)).get("a").overrides
+
+        assert overrides == {"lr": 5e-7, "global_batch_size": 128}
+
+    def test_a_boolean_argument_given_a_non_boolean_is_refused(self, tmp_path):
+        """`sequence_parallel: yes-please` would otherwise become a truthy string."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"sequence_parallel": "yes-please"}}]}, tmp_path
+        )
+
+        with pytest.raises(AssertionError, match="not a boolean"):
+            resolve_megatron_config(_make_args(path))
+
+    def test_an_override_without_a_value_is_refused(self, tmp_path):
+        """A key written with an empty YAML value reads as None, which no argument can be set to."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"eps_clip_high": None}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="no value"):
+            resolve_megatron_config(_make_args(path))
+
+    def test_an_argument_outside_the_per_policy_whitelist_is_refused(self, tmp_path):
+        """Rhythm arguments are read from the base command line, so accepting them here would do nothing."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "overrides": {"num_rollout": 3}}]}, tmp_path)
+
+        with pytest.raises(AssertionError, match="num_rollout"):
+            resolve_megatron_config(_make_args(path))
+
+
+class TestResolveOverrides:
+    def test_an_empty_override_map_never_builds_the_parser(self, monkeypatch):
+        """Building the parser imports and runs megatron's whole argument stack, per trainer that overrides nothing."""
+        monkeypatch.setattr(
+            megatron_config_module,
+            "get_megatron_arg_parser",
+            lambda: pytest.fail("the parser was built for a trainer that overrides nothing"),
+        )
+
+        assert _resolve_overrides({}, model_id="a") == {}
+
+
+class TestGetMegatronArgParser:
+    def test_a_parser_that_never_reaches_the_provider_fails_loudly(self, monkeypatch):
+        """Silently answering an empty parser would type every override as a string."""
+        monkeypatch.setitem(
+            sys.modules,
+            "miles.backends.megatron_utils.arguments",
+            SimpleNamespace(parse_args=lambda extra_args_provider: Namespace()),
+        )
+
+        with pytest.raises(AssertionError, match="returned without calling the extra args provider"):
+            get_megatron_arg_parser()
