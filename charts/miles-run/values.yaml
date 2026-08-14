@@ -36,4 +36,7 @@ run:
         cpu: "2"
         memory: 8Gi
       limits: {}
+  staticWorkers: []
+  inferenceEngines: []
+  trainerEngines: []
   env: {}

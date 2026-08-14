@@ -53,6 +53,13 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- define "miles-run.labelEnv" -}}
+- name: {{ .name }}
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.labels['{{ .label }}']
+{{- end }}
+
 {{- define "miles-run.nodeLocalVolume" -}}
 {{- with (.Values.infra.nodeLocalStorage | default dict).hostPath -}}
 - name: node-local
