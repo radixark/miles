@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -10,8 +11,10 @@ from miles.utils.workers.rpc.client.call import RpcCall
 from miles.utils.workers.rpc.client.misc import (
     RETRY_INITIAL_DELAY_SECONDS,
     RETRYABLE_ERRORS,
+    WORKER_IS_GONE_ERRORS,
     BootUuidPin,
     RpcTransport,
+    ServerRestartedError,
 )
 from miles.utils.workers.rpc.common.metadata import (
     RpcMethodSpec,
@@ -25,6 +28,8 @@ DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
 DEFAULT_READY_TIMEOUT_SECONDS = 600.0
 
 _HEALTH_TIMEOUT_SECONDS = 5.0
+
+logger = logging.getLogger(__name__)
 
 
 class RpcWorkerHandle(BaseWorkerHandle):
@@ -50,6 +55,9 @@ class RpcWorkerHandle(BaseWorkerHandle):
         self._transport = RpcTransport(
             server_url=server_url, http_client=http_client, boot_uuid_pin=self._boot_uuid_pin
         )
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}({self._worker_cls_name})"
 
     def __getattr__(self, name: str) -> Callable[..., Awaitable[Any]]:
         if name.startswith("_"):
@@ -84,8 +92,16 @@ class RpcWorkerHandle(BaseWorkerHandle):
                 f"{self._worker_cls_name} rpc server not ready within {timeout}s: {e!r}"
             ) from e
 
-    async def wait_dead(self, *, timeout: float) -> None:
-        raise NotImplementedError("RpcWorkerHandle cannot confirm worker death yet")
+    async def _probe_is_dead(self) -> bool:
+        try:
+            await self._transport.request(
+                "GET", HEALTH_PATH, seconds=_HEALTH_TIMEOUT_SECONDS, response_model=HealthResponse
+            )
+        except (ServerRestartedError, *WORKER_IS_GONE_ERRORS):
+            return True
+        except RETRYABLE_ERRORS:
+            return False
+        return False
 
     async def _perform_call(self, *, spec: RpcMethodSpec, kwargs: dict[str, Any]) -> Any:
         call = RpcCall(
