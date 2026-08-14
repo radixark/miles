@@ -4,11 +4,18 @@
 import os
 import shutil
 from pathlib import Path
-from typing import Annotated
 
 import typer
-
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
+from tests.e2e.ft.conftest_ft.cli_options import (
+    FullyAsyncOption,
+    MetricThresholdOption,
+    NumRolloutOption,
+    RolloutCrashIntervalSecondsOption,
+    SeedOption,
+    TrainerCrashIntervalSecondsOption,
+)
+from tests.e2e.ft.conftest_ft.execution import get_fully_async_args, get_train_script
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
     compute_mean_interval_seconds_of_cell_type,
@@ -43,16 +50,14 @@ DEFAULT_METRIC_THRESHOLD: float = 0.55
 
 @app.command(name="run")
 def run_ci(
-    seed: Annotated[int, typer.Option(help="Random seed for fault injection")] = DEFAULT_SEED,
-    num_rollout: Annotated[int, typer.Option(help="Number of rollouts")] = DEFAULT_NUM_ROLLOUT,
-    trainer_crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between trainer cell injections")
-    ] = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
-    rollout_crash_interval_seconds: Annotated[
-        float, typer.Option(help="Mean seconds between rollout engine injections")
-    ] = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
-    metric_threshold: Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")] = DEFAULT_METRIC_THRESHOLD,
+    seed: SeedOption = DEFAULT_SEED,
+    num_rollout: NumRolloutOption = DEFAULT_NUM_ROLLOUT,
+    trainer_crash_interval_seconds: TrainerCrashIntervalSecondsOption = DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS,
+    rollout_crash_interval_seconds: RolloutCrashIntervalSecondsOption = DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS,
+    metric_threshold: MetricThresholdOption = DEFAULT_METRIC_THRESHOLD,
+    fully_async: FullyAsyncOption = False,
 ) -> None:
+    test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
     config = command_utils.default_config()
     U = create_backend_for_run(config)
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
@@ -61,19 +66,26 @@ def run_ci(
         rollout_crash_interval_seconds=rollout_crash_interval_seconds,
     )
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection intervals: {mean_interval_seconds_of_cell_type}")
+    print(f"Test: {test_name}, train script: {get_train_script(fully_async=fully_async)}")
 
     _prepare_gsm8k(U)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
 
-    dump_dir: str = resolve_dump_dir(TEST_NAME)
+    dump_dir: str = resolve_dump_dir(test_name)
     # Start from a clean dump dir so the event analyzer never reads a previous run's
     # stale events (run_training does this for the other scenarios; gsm8k bypasses it).
     if os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     os.makedirs(dump_dir, exist_ok=True)
 
-    train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
+    train_args = _get_gsm8k_train_args(
+        seed=seed,
+        num_rollout=num_rollout,
+        metric_threshold=metric_threshold,
+        fully_async=fully_async,
+        test_name=test_name,
+    )
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
     base_url = f"http://{U.api_server_host()}:{API_SERVER_PORT}"
@@ -96,13 +108,14 @@ def run_ci(
                 "RAY_DEDUP_LOGS": "0",
                 "SGLANG_LOG_MS": "1",
             },
+            train_script=get_train_script(fully_async=fully_async),
         )
     finally:
         injector.stop_and_join()
 
-    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / "events", context=TEST_NAME)
+    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / "events", context=test_name)
 
-    print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
+    print(f"Random failure gsm8k accuracy test PASSED ({test_name}, seed={seed}, rollouts={num_rollout})")
 
 
 def _prepare_gsm8k(U: BaseCommandBackend) -> None:
@@ -119,7 +132,9 @@ def _prepare_gsm8k(U: BaseCommandBackend) -> None:
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
-def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: float) -> str:
+def _get_gsm8k_train_args(
+    *, seed: int, num_rollout: int, metric_threshold: float, fully_async: bool, test_name: str
+) -> str:
     ckpt_args = f"--hf-checkpoint /root/models/{_MODEL_NAME}/ " f"--ref-load /root/models/{_MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -137,7 +152,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         "--over-sampling-batch-size 64 "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--global-batch-size 256 "
-    )
+    ) + get_fully_async_args(fully_async=fully_async)
 
     eval_args = (
         "--eval-interval 20 "
@@ -205,7 +220,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{command_utils.get_default_wandb_args(f'test_{TEST_NAME}.py', run_name_prefix=f'seed{seed}')} "
+        f"{command_utils.get_default_wandb_args(f'test_{test_name}.py', run_name_prefix=f'seed{seed}')} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
