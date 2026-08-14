@@ -11,6 +11,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from miles.backends.megatron_utils import megatron_config as megatron_config_module
 from miles.backends.megatron_utils.megatron_config import (
     PER_POLICY_ARGS,
+    _compute_trainer_checkpoint_dir,
     _has_megatron_checkpoint,
     _resolve_overrides,
     compute_trainer_args,
@@ -444,6 +445,180 @@ class TestComputeTrainerArgs:
         assert _model_args(args, model_id="a").use_critic is False
 
 
+class TestTrainerCheckpointDirs:
+    def test_a_multi_policy_run_gives_every_trainer_its_own_checkpoint_dir(self, tmp_path):
+        """A shared --save makes two policies write the same iter_* directory and overwrite each other."""
+        old = tmp_path / "old"
+        for trainer_id in ("a-actor", "b-actor"):
+            trainer_dir = old / "trainers" / trainer_id
+            trainer_dir.mkdir(parents=True)
+            (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run", load=str(old))
+
+        model_a = _model_args(args, model_id="a")
+        model_b = _model_args(args, model_id="b")
+
+        assert (model_a.save, model_a.load) == ("/ckpt/run/trainers/a-actor", str(old / "trainers" / "a-actor"))
+        assert (model_b.save, model_b.load) == ("/ckpt/run/trainers/b-actor", str(old / "trainers" / "b-actor"))
+
+    def test_a_checkpoint_dir_is_keyed_by_the_trainer_id_and_not_by_the_model_id(self, tmp_path):
+        """A trainer id is unique where a model id is not, so keying the directory by the model would collide."""
+        path = _write_yaml({"trainers": [{"model_id": "a", "trainer_id": "a-second"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run")
+
+        saves = [compute_trainer_args(args, trainer).save for trainer in resolve_megatron_config(args).trainers]
+
+        assert saves == ["/ckpt/run/trainers/a-second", "/ckpt/run/trainers/b-actor"]
+
+    def test_an_explicitly_named_policy_gets_its_own_checkpoint_dir(self, tmp_path):
+        """A split trainer must not share its checkpoint paths with another policy's release."""
+        old = tmp_path / "old"
+        trainer_dir = old / "trainers" / "a-actor"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run", load=str(old), save_hf="/ckpt/hf")
+
+        model = _model_args(args, model_id="a")
+
+        assert (model.save, model.load, model.save_hf) == (
+            "/ckpt/run/trainers/a-actor",
+            str(trainer_dir),
+            "/ckpt/hf/trainers/a-actor",
+        )
+
+    def test_a_named_critic_derives_its_dir_from_the_critic_checkpoint(self, tmp_path):
+        """A named critic must namespace its own checkpoint base rather than the policy's base."""
+        old = tmp_path / "critic-old"
+        trainer_dir = old / "trainers" / "alpha-critic"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "alpha"}]}, tmp_path)
+        args = _make_args(
+            path,
+            use_critic=True,
+            save="/ckpt/actor",
+            load="/old/actor",
+            critic_save="/ckpt/critic",
+            critic_load=str(old),
+        )
+        [_, critic] = resolve_megatron_config(args).trainers
+
+        model = compute_trainer_args(args, critic)
+
+        assert (model.save, model.load) == ("/ckpt/critic/trainers/alpha-critic", str(trainer_dir))
+
+    def test_an_unset_checkpoint_dir_stays_unset(self, tmp_path):
+        """A run without --save must not grow a derived path out of None."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="a").save is None
+
+    def test_the_derived_dir_is_the_trainer_id_under_a_trainers_directory(self):
+        """The layout is a user visible contract: it is where a resume looks for a trainer's checkpoints."""
+        assert (
+            _compute_trainer_checkpoint_dir(base_dir="/ckpt/run", trainer_id="policy-b-actor")
+            == "/ckpt/run/trainers/policy-b-actor"
+        )
+
+    def test_a_policy_cannot_name_its_own_checkpoint_directory(self, tmp_path):
+        """The per trainer directory is derived from the base --load after the overlay, which would drop an override."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"load": "/ckpt/a"}}, {"model_id": "b"}]}, tmp_path
+        )
+
+        with pytest.raises(AssertionError, match="sets 'load', which it may not override"):
+            resolve_megatron_config(_make_args(path))
+
+
+class TestPerPolicyCheckpointResolution:
+    def test_a_fresh_policy_falls_back_to_the_reference_weights_without_the_policy_subdirectory(self, tmp_path):
+        """The --ref-load fallback holds shared reference weights, not a per policy checkpoint tree."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save="/ckpt/run", load="/ckpt/run", ref_load="/models/ref")
+
+        model_args = _model_args(args, model_id="a")
+
+        assert model_args.save == "/ckpt/run/trainers/a-actor"
+        assert model_args.load == "/models/ref"
+        assert (model_args.finetune, model_args.start_rollout_id) == (True, 0)
+
+    def test_a_policy_with_its_own_tracker_resumes_from_its_own_directory(self, tmp_path):
+        """The tracker of a policy lives under its own subdirectory, so the root never looks resumable."""
+        root = tmp_path / "run"
+        trainer_dir = root / "trainers" / "a-actor"
+        trainer_dir.mkdir(parents=True)
+        (trainer_dir / "latest_checkpointed_iteration.txt").write_text("7")
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+        args = _make_args(path, save=str(root), load=str(root), ref_load="/models/ref")
+
+        model_args = _model_args(args, model_id="a")
+
+        assert model_args.load == str(trainer_dir)
+        assert (model_args.finetune, model_args.start_rollout_id) == (False, None)
+
+    def test_a_fresh_bridge_policy_falls_back_to_its_own_hf_checkpoint(self, tmp_path):
+        """In bridge mode a policy starts from its own hugging face checkpoint, not from another policy's."""
+        path = _write_yaml(
+            {
+                "trainers": [
+                    {"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}},
+                    {"model_id": "b", "overrides": {"hf_checkpoint": "/models/b"}},
+                ]
+            },
+            tmp_path,
+        )
+        args = _make_args(path, megatron_to_hf_mode="bridge", save="/ckpt/run", load="/ckpt/run")
+
+        assert _model_args(args, model_id="a").load == "/models/a"
+        assert _model_args(args, model_id="b").load == "/models/b"
+
+
+class TestPerPolicyDerivedDefaults:
+    def test_a_policy_checkpoint_override_repoints_the_tokenizer(self, tmp_path):
+        """The tokenizer latched onto the base checkpoint at parse time, so a policy of its own needs its own."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
+            tmp_path,
+        )
+        args = _make_args(path)
+
+        assert _model_args(args, model_id="a").tokenizer_model == "/models/a"
+        assert _model_args(args, model_id="b").tokenizer_model == "/models/base"
+
+    def test_a_tokenizer_named_on_the_command_line_is_left_alone(self, tmp_path):
+        """That tokenizer was chosen rather than derived, so no policy may re-point it at its own checkpoint."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"hf_checkpoint": "/models/a"}}, {"model_id": "b"}]},
+            tmp_path,
+        )
+        args = _make_args(path, tokenizer_model="/models/shared")
+
+        assert _model_args(args, model_id="a").tokenizer_model == "/models/shared"
+
+
+class TestMultiPolicyIds:
+    def test_an_explicitly_named_policy_keeps_its_trainer_model_id(self, tmp_path):
+        """A split trainer keeps its policy identity even when its release carries no neighbouring policy."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="a").trainer_model_id == "a"
+
+    def test_a_run_without_a_megatron_config_carries_no_trainer_model_id(self):
+        """The unnamed legacy actor keeps using the unnamespaced single-policy key."""
+        args = _make_args()
+        [trainer] = resolve_megatron_config(args).trainers
+
+        assert compute_trainer_args(args, trainer).trainer_model_id is None
+
+    def test_each_policy_of_a_multi_policy_run_carries_its_own_id(self, tmp_path):
+        """Metrics, routers and checkpoints are all namespaced by this value."""
+        path = _write_yaml({"trainers": [{"model_id": "a"}, {"model_id": "b"}]}, tmp_path)
+
+        assert _model_args(_make_args(path), model_id="b").trainer_model_id == "b"
+
+
 class TestSynthesizedCriticTrainer:
     def test_arguments_that_do_not_carry_use_critic_yet_still_resolve(self):
         """use_critic is derived while the arguments are validated, and the config is resolved before that."""
@@ -452,7 +627,7 @@ class TestSynthesizedCriticTrainer:
 
         assert [trainer.role for trainer in resolve_megatron_config(args).trainers] == ["actor"]
 
-    def test_a_critic_run_synthesizes_the_critic_beside_the_actor(self):
+    def test_a_run_without_the_flag_synthesizes_the_critic_beside_the_actor(self):
         """The critic used to be assembled in specs and in the worker; the config is now the only source."""
         config = resolve_megatron_config(_make_args(use_critic=True))
 

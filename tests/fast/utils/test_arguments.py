@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
+
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
@@ -1770,3 +1772,42 @@ def test_the_megatron_config_flag_defaults_to_none(tmp_path):
     assert parser.parse_args(["--megatron-config", str(tmp_path / "x.yaml")] + REQUIRED_ARGS).megatron_config == str(
         tmp_path / "x.yaml"
     )
+
+
+class TestMilesValidateArgsCheckpointResolution:
+    @staticmethod
+    def _parse(extra, tmp_path):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        # megatron owns --finetune and the fallback only ever turns it on, so the run that
+        # leaves it alone has to start from the default megatron would have given it
+        parser.set_defaults(finetune=False)
+        return parser.parse_args(
+            ["--hf-checkpoint", str(tmp_path), "--ref-load", str(tmp_path), "--num-rollout", "1"]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_a_single_policy_run_still_resolves_its_checkpoint_fallback(self, tmp_path):
+        """The fallback is what lets a fresh run start from --ref-load, and it must survive the multi policy fork."""
+        args = self._parse([], tmp_path)
+
+        miles_validate_args(args)
+
+        assert (args.load, args.finetune, args.start_rollout_id) == (str(tmp_path), True, 0)
+
+    def test_a_multi_policy_run_leaves_the_global_load_and_save_untouched(self, tmp_path):
+        """Each trainer resolves its own fallback later; settling it globally would point every policy at one dir."""
+        args = self._parse(["--megatron-config", encode_megatron_config("a", "b")], tmp_path)
+
+        miles_validate_args(args)
+
+        assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+    def test_a_single_trainer_config_also_defers_the_fallback_to_the_overlay(self, tmp_path):
+        """That trainer may override --ref-load, and a fallback settled before the overlay would ignore it."""
+        args = self._parse(["--megatron-config", encode_megatron_config("a")], tmp_path)
+
+        miles_validate_args(args)
+
+        assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
