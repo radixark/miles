@@ -29,8 +29,8 @@ import tests.ci.run_suite as run_suite_module
 from tests.ci.ci_policy import (
     NIGHTLY_CADENCE,
     REGULAR_CADENCE,
-    SCHEDULE_POLICIES,
     RELEASE_CADENCE,
+    SCHEDULE_POLICIES,
     WEEKLY_CADENCE,
     resolve_policy,
     strip_run_ci_prefix,
