@@ -14,4 +14,4 @@ class WorkerInfo(StrictBaseModel):
     generation: int
     self_addrs: NamedHostAndPorts
     gpu_ids: list[int]
-    handle: BaseWorkerHandle
+    handle: BaseWorkerHandle | None
