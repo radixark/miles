@@ -2,20 +2,25 @@ import socket
 import time
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future
+from typing import TYPE_CHECKING
 
 import ray
 import torch
 import torch.distributed as dist
-from ray import ObjectRef
-from ray.actor import ActorHandle
 from tqdm import tqdm
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import async_utils
 from miles.utils.distributed_utils import init_process_group
 
 from miles.utils.lora import LORA_ADAPTER_NAME
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
+
+if TYPE_CHECKING:
+    from ray.actor import ActorHandle
 
 
 class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
@@ -43,7 +48,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         self.quantization_config = quantization_config
         self.weight_version = 0
         self._model_update_groups = None
-        self.rollout_engines: Sequence[ActorHandle] | None = None
+        self.rollout_engines: Sequence[SGLangApiClient] | None = None
         self._connection_stale: bool = False
         self._init_lora(
             args=args,
@@ -62,8 +67,8 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
 
     def connect_rollout_engines(
         self,
-        rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
+        rollout_engines: Sequence[SGLangApiClient],
+        rollout_engine_lock: "ActorHandle",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -109,7 +114,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
         try:
-            refs = update_weights_from_distributed(
+            futures = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
                 self.weight_version,
@@ -117,7 +122,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 converted_named_tensors,
                 selector=self._weight_update_selector,
             )
-            ray.get(refs)
+            async_utils.wait_futures(futures)
             converted_named_tensors.clear()
         finally:
             # Leaking this lock makes the next weight sync poll forever, so the
@@ -139,16 +144,18 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
-        refs = [
-            engine.load_lora_adapter_from_distributed.remote(
-                lora_name=LORA_ADAPTER_NAME,
-                config_dict=self._lora_config,
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=self._group_name,
+        futures = [
+            async_utils.submit(
+                client.load_lora_adapter_from_distributed(
+                    lora_name=LORA_ADAPTER_NAME,
+                    config_dict=self._lora_config,
+                    names=names,
+                    dtypes=dtypes,
+                    shapes=shapes,
+                    group_name=self._group_name,
+                )
             )
-            for engine in self.rollout_engines
+            for client in self.rollout_engines
         ]
         contiguous_tensors = [
             param.data if param.data.is_contiguous() else param.data.contiguous() for _, param in named_tensors
@@ -159,7 +166,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         for handle in handles:
             handle.wait()
 
-        _check_weight_sync_results(ray.get(refs), is_lora=True)
+        _check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
 
     def _update_multi_lora_weight_implementation(
         self,
@@ -174,17 +181,19 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         dtypes = [param.dtype for _, param in named_tensors]
         shapes = [list(param.shape) for _, param in named_tensors]
 
-        refs = [
-            engine.load_lora_adapter_from_distributed.remote(
-                lora_name=lora_name,
-                config_dict=lora_config,
-                names=names,
-                dtypes=dtypes,
-                shapes=shapes,
-                group_name=self._group_name,
-                upsert=True,
+        futures = [
+            async_utils.submit(
+                client.load_lora_adapter_from_distributed(
+                    lora_name=lora_name,
+                    config_dict=lora_config,
+                    names=names,
+                    dtypes=dtypes,
+                    shapes=shapes,
+                    group_name=self._group_name,
+                    upsert=True,
+                )
             )
-            for engine in self.rollout_engines
+            for client in self.rollout_engines
         ]
         # NCCL needs contiguous buffers (lora_B slices are strided); the list keeps them alive
         # until the async broadcasts complete.
@@ -195,13 +204,13 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
         for handle in handles:
             handle.wait()
 
-        _check_weight_sync_results(ray.get(refs), is_lora=True)
+        _check_weight_sync_results(async_utils.wait_futures(futures), is_lora=True)
 
 
 def connect_rollout_engines_from_distributed(
     args: Namespace,
     group_name: str,
-    rollout_engines: Sequence[ActorHandle],
+    rollout_engines: Sequence[SGLangApiClient],
     engine_gpu_counts: Sequence[int] | None = None,
 ) -> dist.ProcessGroup:
     """
@@ -219,17 +228,19 @@ def connect_rollout_engines_from_distributed(
         master_port = sock.getsockname()[1]
     world_size = sum(engine_gpu_counts) + 1
 
-    refs = []
+    futures = []
     rank_cursor = 1
-    for i, engine in enumerate(rollout_engines):
-        refs.append(
-            engine.init_weights_update_group.remote(
-                master_address,
-                master_port,
-                rank_cursor,
-                world_size,
-                group_name,
-                backend="nccl",
+    for i, api_client in enumerate(rollout_engines):
+        futures.append(
+            async_utils.submit(
+                api_client.init_weights_update_group(
+                    master_address,
+                    master_port,
+                    rank_cursor,
+                    world_size,
+                    group_name,
+                    backend="nccl",
+                )
             )
         )
         rank_cursor += engine_gpu_counts[i]
@@ -240,7 +251,7 @@ def connect_rollout_engines_from_distributed(
         rank=0,
         group_name=group_name,
     )
-    ray.get(refs)
+    async_utils.wait_futures(futures)
     return model_update_groups
 
 
@@ -248,35 +259,37 @@ def disconnect_rollout_engines_from_distributed(args, group_name, model_update_g
     """
     Destroy NCCL on training and engines.
     """
-    refs = [engine.destroy_weights_update_group.remote(group_name) for engine in rollout_engines]
+    futures = [async_utils.submit(client.destroy_weights_update_group(group_name)) for client in rollout_engines]
     try:
         if model_update_groups is not None:
             dist.destroy_process_group(model_update_groups)
     finally:
-        ray.get(refs)
+        async_utils.wait_futures(futures)
 
 
 def update_weights_from_distributed(
     group_name: str,
     group: dist.ProcessGroup,
     weight_version: int,
-    rollout_engines: Sequence[ActorHandle],
+    rollout_engines: Sequence[SGLangApiClient],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     selector: str = "all",
-) -> list[ObjectRef]:
+) -> list[Future]:
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
     """
-    refs = [
-        engine.update_weights_from_distributed.remote(
-            names=[name for name, _ in converted_named_tensors],
-            dtypes=[param.dtype for _, param in converted_named_tensors],
-            shapes=[param.shape for _, param in converted_named_tensors],
-            selector=selector,
-            group_name=group_name,
-            weight_version=str(weight_version),
+    futures = [
+        async_utils.submit(
+            client.update_weights_from_distributed(
+                names=[name for name, _ in converted_named_tensors],
+                dtypes=[param.dtype for _, param in converted_named_tensors],
+                shapes=[param.shape for _, param in converted_named_tensors],
+                selector=selector,
+                group_name=group_name,
+                weight_version=str(weight_version),
+            )
         )
-        for engine in rollout_engines
+        for client in rollout_engines
     ]
 
     contiguous_tensors = [
@@ -288,4 +301,4 @@ def update_weights_from_distributed(
     for handle in handles:
         handle.wait()
 
-    return refs
+    return futures

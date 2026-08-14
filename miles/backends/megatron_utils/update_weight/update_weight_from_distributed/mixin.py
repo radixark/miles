@@ -2,12 +2,12 @@ import logging
 from argparse import Namespace
 from collections.abc import Callable, Sequence
 
-import ray
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.timer import timer
@@ -47,7 +47,7 @@ class DistBucketedWeightUpdateMixin:
         self._is_source: bool (whether it's the rank broadcasting weights after `all_gather`).
         self._is_lora_source: bool (the single rank holding the full adapter; for LoRA sync).
         self.weight_version: int.
-        self.rollout_engines: Sequence[ActorHandle]. engines of rollout side.
+        self.rollout_engines: Sequence[SGLangApiClient]. engines of rollout side.
         self._group_name: str. Identifier shown in the tqdm progress bar.
         self._update_weight_implementation(converted_named_tensors, pbar) -> None
             Transfer a bucket of HF-format ``(name, tensor)`` pairs to rollout
@@ -259,8 +259,11 @@ class DistBucketedWeightUpdateMixin:
             )
 
         if self._lora_loaded:
-            ray.get(
-                [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
+            async_utils.wait_futures(
+                [
+                    async_utils.submit(client.unload_lora_adapter(lora_name=LORA_ADAPTER_NAME))
+                    for client in self.rollout_engines
+                ]
             )
         self._update_lora_weight_implementation(accumulated_named_tensors)
         self._lora_loaded = True
@@ -311,9 +314,11 @@ class DistBucketedWeightUpdateMixin:
         self._weight_update_selector = weight_update_selector(self.args)
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
-            ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.pause_generation(mode=mode)) for client in self.rollout_engines]
+            )
             if mode != "in_place":
-                ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
+                async_utils.wait_futures([async_utils.submit(client.flush_cache()) for client in self.rollout_engines])
 
             begin_weight_update(self.rollout_engines, self._weight_update_selector)
 
@@ -321,14 +326,16 @@ class DistBucketedWeightUpdateMixin:
         """Close the weight-update session and resume rollout engines."""
         if dist.get_rank() == 0:
             # unify update weight version here to cover both full param and lora update
-            ray.get(
+            async_utils.wait_futures(
                 [
-                    engine.update_weight_version.remote(weight_version=str(self.weight_version))
-                    for engine in self.rollout_engines
+                    async_utils.submit(client.update_weight_version(weight_version=str(self.weight_version)))
+                    for client in self.rollout_engines
                 ]
             )
             end_weight_update(self.rollout_engines)
-            ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
+            async_utils.wait_futures(
+                [async_utils.submit(client.continue_generation()) for client in self.rollout_engines]
+            )
 
     def pop_metrics(self) -> dict[str, float]:
         """Return and clear ``update_weight_metrics``. Drained by the actor onto the step log;

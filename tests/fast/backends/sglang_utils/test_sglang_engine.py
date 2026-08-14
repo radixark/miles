@@ -1,74 +1,14 @@
-import inspect
-
 import pytest
 
 
-class _RecordingApiClient:
-    def __init__(self):
-        self.calls: list[tuple[str, dict]] = []
-
-    def __getattr__(self, name: str):
-        async def method(**kwargs):
-            self.calls.append((name, kwargs))
-            return {"called": name}
-
-        return method
-
-
-def _make_engine():
-    pytest.importorskip("sglang")
-    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-
-    engine = SGLangEngine.__new__(SGLangEngine)
-    engine.api_client = _RecordingApiClient()
-    return engine
-
-
-def test_engine_methods_forward_to_the_api_client():
-    """SGLangEngine is a thin shell over SGLangApiClient."""
-    engine = _make_engine()
-
-    assert engine.update_weights_from_tensor(serialized_named_tensors=["a"]) == {
-        "called": "update_weights_from_tensor"
-    }
-    assert engine.health_generate() == {"called": "health_generate"}
-    assert engine.check_weights(action="snapshot") == {"called": "check_weights"}
-
-    assert [name for name, _kwargs in engine.api_client.calls] == [
-        "update_weights_from_tensor",
-        "health_generate",
-        "check_weights",
-    ]
-
-
-def _forwarding_method_names() -> list[str]:
+def test_engine_exposes_only_launcher_duties():
+    """The actor keeps launcher duties only; http calls live on SGLangApiClient."""
     pytest.importorskip("sglang")
     from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
     from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 
     client_methods = {name for name in vars(SGLangApiClient) if not name.startswith("_")}
-    return sorted(name for name in vars(SGLangEngine) if name in client_methods)
+    engine_methods = {name for name in vars(SGLangEngine) if not name.startswith("_")}
 
-
-@pytest.mark.parametrize("method_name", _forwarding_method_names())
-def test_shell_forwards_every_argument_verbatim(method_name):
-    """No shell drops, renames or defaults-over any of the arguments it forwards."""
-    engine = _make_engine()
-    signature = inspect.signature(getattr(engine, method_name))
-    kwargs = {
-        name: param.default if param.default is not inspect.Parameter.empty else f"<{name}>"
-        for name, param in signature.parameters.items()
-    }
-
-    getattr(engine, method_name)(**kwargs)
-
-    assert engine.api_client.calls == [(method_name, kwargs)]
-
-
-@pytest.mark.parametrize("method_name", _forwarding_method_names())
-def test_every_shell_stays_synchronous(method_name):
-    """Ray actor methods must stay sync: the client's coroutine is driven by the background loop."""
-    pytest.importorskip("sglang")
-    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-
-    assert not inspect.iscoroutinefunction(getattr(SGLangEngine, method_name))
+    assert not (engine_methods & client_methods), "these belong on the api client, not on the actor"
+    assert {"init", "shutdown", "simulate_crash", "get_topology_info"} <= engine_methods
