@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_dataclass_cells, make_sglang_config_yaml
@@ -13,7 +15,8 @@ from miles.backends.sglang_utils.sglang_config import (
 )
 from miles.ray.rollout import rollout_server
 from miles.ray.rollout.cell_state import AddrInfo
-from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.workers.worker_spec import HostAndPort
 
 
@@ -299,3 +302,72 @@ class TestStartRolloutServersCellChunking:
         """Each multi-node cell's gpu span starts where the previous one ended."""
         cells = self._cells_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         assert [cell.meta.gpu_offset for cell in cells] == [0, 16]
+
+
+class TestRemoveCell:
+    async def test_remove_cell_detaches_the_cell_from_every_server_view(self):
+        """A removed cell is gone from server_cells and from every view derived from it."""
+        events: list[dict[str, Any]] = []
+        srv = _make_started_server(num_cells=2)
+
+        with _with_recording_router(events):
+            await srv.remove_cell("default-0")
+
+        assert "default-0" not in srv.server_cells
+        assert list(srv.server_cells) == ["default-1"]
+        assert list_cell_ids({"default": srv}) == ["default-1"]
+        assert [client.server_url for client in srv.api_clients] == ["http://10.0.0.2:30001"]
+        assert srv.engine_gpu_counts == [1]
+        assert srv.engine_gpu_offsets == [1]
+
+    async def test_remove_cell_unregisters_from_the_router_before_dropping_the_cell(self):
+        """Dropping the cell without unregistering would leave the router routing to a dead worker."""
+        events: list[dict[str, Any]] = []
+        srv = _make_started_server(num_cells=2)
+
+        with _with_recording_router(events):
+            await srv.remove_cell("default-0")
+
+        assert events == [{"call": "remove_worker", "worker_url": "http://10.0.0.1:30000", "use_legacy_api": False}]
+
+
+def _make_started_server(*, num_cells: int) -> RolloutServer:
+    args = make_args(num_gpus_per_node=8)
+    srv = RolloutServer(server_cells={}, args=args, router_ip="10.0.0.9", router_port=9000, model_name="default")
+    for cell_index in range(num_cells):
+        meta = ServerCellMetadata(
+            worker_type="regular",
+            cell_id=f"default-{cell_index}",
+            num_gpus_per_engine=1,
+            gpu_offset=cell_index,
+            sglang_overrides={},
+            model_idx=0,
+            group_index=0,
+            cell_index=cell_index,
+            needs_offload=False,
+            model_path=None,
+            update_weights=True,
+        )
+        cell = ServerCell(args=args, meta=meta)
+        cell._mark_allocated_uninitialized()
+        cell._mark_addressing(AddrInfo(server_url=f"http://10.0.0.{cell_index + 1}:3000{cell_index}"))
+        cell._mark_alive()
+        srv.server_cells[meta.cell_id] = cell
+    return srv
+
+
+def _with_recording_router(events: list[dict[str, Any]]) -> Any:
+    return patch.object(
+        RolloutServer, "_router_api_client", property(lambda self: _RecordingRouterApiClient(events=events))
+    )
+
+
+class _RecordingRouterApiClient:
+    def __init__(self, *, events: list[dict[str, Any]]) -> None:
+        self._events = events
+
+    async def add_worker(self, **kwargs: Any) -> None:
+        self._events.append({"call": "add_worker", **kwargs})
+
+    async def remove_worker(self, **kwargs: Any) -> None:
+        self._events.append({"call": "remove_worker", **kwargs})
