@@ -16,6 +16,7 @@ import requests
 
 from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
 from miles.rollout.session.server import SessionServer
+from miles.router.config import compute_miles_router_config
 from miles.router.router import MilesRouter
 from miles.utils.arguments import parse_args
 from miles.utils.http_utils import find_available_port, init_http_client
@@ -83,8 +84,9 @@ def _build_args(*, data_path: str, router_port: int, extra_argv: list[str] | Non
 
 @contextmanager
 def _with_miles_router(args: Namespace) -> Iterator[UvicornThreadServer]:
-    router = MilesRouter(args, verbose=False)
-    server = UvicornThreadServer(router.app, host=args.sglang_router_ip, port=args.sglang_router_port)
+    config = compute_miles_router_config(args, host=args.sglang_router_ip, port=args.sglang_router_port)
+    router = MilesRouter(config, verbose=False)
+    server = UvicornThreadServer(router.app, host=config.host, port=config.port)
     try:
         server.start()
         yield server

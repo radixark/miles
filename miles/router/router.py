@@ -1,4 +1,3 @@
-import argparse
 import asyncio
 import json
 import logging
@@ -10,12 +9,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import Response
 
+from miles.router.config import MilesRouterConfig
 from miles.utils.logging_utils import configure_logger_raw
 
 logger = logging.getLogger(__name__)
 
 
-def run_router(args):
+def run_router(config: MilesRouterConfig):
     """
     Run the Miles router with the specified configuration.
     """
@@ -25,16 +25,16 @@ def run_router(args):
     setproctitle.setproctitle("miles-router")
 
     # Initialize the router with tokenizer and lazy worker initialization
-    miles_router = MilesRouter(args, verbose=False)
+    miles_router = MilesRouter(config, verbose=False)
 
     # Start the server
-    uvicorn.run(miles_router.app, host=args.sglang_router_ip, port=args.sglang_router_port, log_level="info")
+    uvicorn.run(miles_router.app, host=config.host, port=config.port, log_level="info")
 
 
 class MilesRouter:
-    def __init__(self, args, verbose=False):
+    def __init__(self, config: MilesRouterConfig, verbose=False):
         """Initialize the miles-router with SGLang router address"""
-        self.args = args
+        self.config = config
         self.verbose = verbose
 
         self.app = FastAPI()
@@ -47,17 +47,9 @@ class MilesRouter:
         # Quarantined workers excluded from routing pool
         self.dead_workers: set[str] = set()
 
-        max_connections = getattr(args, "miles_router_max_connections", None)
-        if max_connections is None:
-            max_connections = (
-                args.sglang_server_concurrency * args.rollout_num_gpus // args.rollout_num_gpus_per_engine
-            )
-
-        timeout = getattr(args, "miles_router_timeout", None)
-
         self.client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=max_connections),
-            timeout=httpx.Timeout(timeout),
+            limits=httpx.Limits(max_connections=config.max_connections),
+            timeout=httpx.Timeout(config.timeout),
         )
 
         self._setup_routes()
@@ -86,8 +78,8 @@ class MilesRouter:
 
     async def _health_check_loop(self):
         """Background loop to monitor worker health and adjust routing pool."""
-        interval = self.args.rollout_health_check_interval
-        threshold = self.args.miles_router_health_check_failure_threshold
+        interval = self.config.health_check_interval
+        threshold = self.config.health_check_failure_threshold
 
         while True:
             try:
@@ -234,18 +226,3 @@ class MilesRouter:
         assert url in self.worker_request_counts, f"URL {url} not recognized"
         self.worker_request_counts[url] -= 1
         assert self.worker_request_counts[url] >= 0, f"URL {url} count went negative"
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=30000)
-    parser.add_argument("--sglang-host", type=str, required=True)
-    parser.add_argument("--sglang-port", type=int, required=True)
-    parser.add_argument("--tokenizer-name", type=str, help="Name of the tokenizer to use for tokenization")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-
-    args = parser.parse_args()
-
-    # Run the router
-    run_router(args)
