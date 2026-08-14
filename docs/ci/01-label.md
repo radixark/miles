@@ -76,12 +76,12 @@ Each `test_*.py` under `tests/fast/` is auto-registered as a CPU test (backend C
 
 By default CI fails fast on two levels:
 
-- Cross-stage: PR-image preparation and GPU stages run only when `stage-a-cpu` succeeds — their gates require `needs.stage-a-cpu.result == 'success'`.
+- Cross-stage: GPU stages run only when `stage-a-cpu` succeeds — the `if` requires `needs.stage-a-cpu.result == 'success'`.
 - Within-stage: each suite stops at the first failure (`pytest -x` for CPU; `run_unittest_files` breaks on the first failing file for CUDA).
 
 The `bypass-fastfail` PR label turns both off so one run surfaces every failure:
 
-- Cross-stage: the PR-image caller and each GPU stage consume the shared `bypass_fastfail` policy output, so the Docker/image/GPU chain runs after an actual `stage-a-cpu` failure. A skipped or cancelled CPU gate still stops the chain.
+- Cross-stage: each GPU stage consumes the shared `bypass_fastfail` policy output, so GPU stages run even after `stage-a-cpu` fails.
 - Within-stage: `run_suite.py` derives continue-on-error from the same resolved policy (drops `pytest -x`; sets `continue_on_error=True` for CUDA). The stage still ends red — it changes coverage, not the verdict.
 
 A resolved nightly, weekly, or release cadence bypasses fast-fail on both levels so a broad run surfaces every failure rather than stopping at the first. For nightly this applies equally whether the cadence came from the PR `nightly` label or the explicitly mapped nightly cron; release comes from the called workflow's explicit override. Local `--nightly` applies the same nightly selection and within-stage behavior; cross-stage gating does not exist in a local invocation.
