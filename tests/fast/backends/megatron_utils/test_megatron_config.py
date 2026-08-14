@@ -10,6 +10,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.backends.megatron_utils import megatron_config as megatron_config_module
 from miles.backends.megatron_utils.megatron_config import (
+    PER_POLICY_ARGS,
     _has_megatron_checkpoint,
     _resolve_overrides,
     compute_trainer_args,
@@ -433,6 +434,15 @@ class TestComputeTrainerArgs:
         with pytest.raises(AssertionError, match="does not know"):
             _model_args(_make_args(path), model_id="a")
 
+    def test_an_overlaid_advantage_estimator_does_not_fabricate_a_critic(self, tmp_path):
+        """use_critic is settled from the command line before the overlay, so an override must not flip it."""
+        path = _write_yaml(
+            {"trainers": [{"model_id": "a", "overrides": {"advantage_estimator": "ppo"}}, {"model_id": "b"}]}, tmp_path
+        )
+        args = _make_args(path, advantage_estimator="grpo")
+
+        assert _model_args(args, model_id="a").use_critic is False
+
 
 class TestSynthesizedCriticTrainer:
     def test_arguments_that_do_not_carry_use_critic_yet_still_resolve(self):
@@ -443,7 +453,7 @@ class TestSynthesizedCriticTrainer:
         assert [trainer.role for trainer in resolve_megatron_config(args).trainers] == ["actor"]
 
     def test_a_critic_run_synthesizes_the_critic_beside_the_actor(self):
-        """A --use-critic run trains two trainers, so both must be enumerable from the config."""
+        """The critic used to be assembled in specs and in the worker; the config is now the only source."""
         config = resolve_megatron_config(_make_args(use_critic=True))
 
         assert [(t.trainer_id, t.role, t.model_id) for t in config.trainers] == [
@@ -476,12 +486,91 @@ class TestSynthesizedCriticTrainer:
 
     def test_the_critic_of_a_named_policy_inherits_its_id_and_its_overlay(self, tmp_path):
         """The critic trains the same policy, so it must be addressed by that policy and see its settings."""
-        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"lr": 5e-7}}]}, tmp_path)
+        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"eps_clip": 0.3}}]}, tmp_path)
 
         [_, critic] = resolve_megatron_config(_make_args(path, use_critic=True)).trainers
 
         assert (critic.trainer_id, critic.model_id, critic.role) == ("alpha-critic", "alpha", "critic")
-        assert critic.overrides["lr"] == 5e-7
+        assert critic.overrides["eps_clip"] == 0.3
+
+    def test_the_synthesized_critic_reproduces_the_legacy_worker_swap(self):
+        """The worker no longer remaps critic_* onto the standard fields, so the overlay must do it."""
+        args = _make_args(
+            use_critic=True,
+            save="/ckpt/run",
+            load="/ckpt/run",
+            critic_load="/ckpt/critic",
+            critic_save="/ckpt/run_critic",
+            critic_lr=2e-6,
+            critic_lr_warmup_iters=3,
+        )
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[1])
+
+        assert (critic_args.kl_coef, critic_args.use_opd, critic_args.disable_param_buffers_cpu_backup) == (
+            0,
+            False,
+            False,
+        )
+        assert (critic_args.load, critic_args.save, critic_args.lr, critic_args.lr_warmup_iters) == (
+            "/ckpt/critic",
+            "/ckpt/run_critic",
+            2e-6,
+            3,
+        )
+
+    def test_the_actor_of_a_critic_run_keeps_its_own_checkpoint_and_schedule(self):
+        """The two trainers share one command line, so a leaked critic override would retrain the actor."""
+        args = _make_args(use_critic=True, save="/ckpt/run", load="/ckpt/run", critic_load="/ckpt/critic")
+
+        actor_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[0])
+
+        assert (actor_args.load, actor_args.save, actor_args.lr, actor_args.kl_coef) == (
+            "/ckpt/run",
+            "/ckpt/run",
+            1e-6,
+            0.1,
+        )
+
+    def test_an_internally_synthesized_override_bypasses_the_user_whitelist(self):
+        """kl_coef and load are not per-policy yaml arguments, yet the critic must still be able to set them."""
+        args = _make_args(use_critic=True, critic_load="/ckpt/critic")
+
+        overrides = set(resolve_megatron_config(args).trainers[1].overrides)
+
+        assert {"kl_coef", "load"} <= overrides
+        assert not {"kl_coef", "load"} & set(PER_POLICY_ARGS)
+
+    def test_a_critic_without_its_own_schedule_inherits_the_unset_values(self, tmp_path):
+        """--critic-lr is unset by default, and the critic takes it as it is: the policy's own lr does not apply."""
+        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"lr": 5e-7}}]}, tmp_path)
+        args = _make_args(path, use_critic=True)
+
+        critic_args = compute_trainer_args(args, resolve_megatron_config(args).trainers[1])
+
+        assert (critic_args.lr, critic_args.lr_warmup_iters) == (None, None)
+
+    def test_the_critic_overlay_names_exactly_the_fields_the_worker_used_to_swap(self):
+        """A new critic_* argument that nobody wires in here would be read from the command line and ignored."""
+        overrides = resolve_megatron_config(_make_args(use_critic=True)).trainers[1].overrides
+
+        assert set(overrides) == {
+            "kl_coef",
+            "use_opd",
+            "disable_param_buffers_cpu_backup",
+            "load",
+            "save",
+            "lr",
+            "lr_warmup_iters",
+        }
+
+    def test_a_policy_override_of_a_critic_neutralized_field_loses_to_the_neutralization(self, tmp_path):
+        """The overlay order is what neutralizes the critic, so a policy override of the same field must not win."""
+        path = _write_yaml({"trainers": [{"model_id": "alpha", "overrides": {"lr": 5e-7, "eps_clip": 0.3}}]}, tmp_path)
+
+        overrides = resolve_megatron_config(_make_args(path, use_critic=True, critic_lr=2e-6)).trainers[1].overrides
+
+        assert (overrides["lr"], overrides["eps_clip"]) == (2e-6, 0.3)
 
 
 class TestBaseArgumentsAreNotMutated:
