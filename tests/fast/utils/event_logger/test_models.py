@@ -6,6 +6,7 @@ from pydantic import TypeAdapter, ValidationError
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.utils.audit_utils.event_logger.models import (
     CellReconfigureEvent,
+    EngineEnvReportEvent,
     Event,
     InferenceEngineWeightChecksumEvent,
     TrainGroupStepEndEvent,
@@ -157,6 +158,28 @@ class TestInferenceEngineWeightChecksumEvent:
         assert isinstance(parsed, InferenceEngineWeightChecksumEvent)
         assert parsed.rollout_id == 4
         assert parsed.engine_checksums == engine_checksums
+
+
+class TestEngineEnvReportEvent:
+    def test_json_roundtrip(self) -> None:
+        """The engine's own report is stored as an opaque mapping, so an upstream schema change cannot break it."""
+        server_info = {
+            "model_path": "/models/qwen",
+            "version": "0.5.0",
+            "internal_states": [{"env_vars": {"RANK": "0"}, "waiting_queue": 0}],
+        }
+        event = EngineEnvReportEvent(
+            timestamp=_FIXED_TS,
+            source=_FIXED_SOURCE,
+            cell_id="cell-0",
+            server_url="http://10.0.0.1:30000",
+            server_info=server_info,
+        )
+        parsed = _event_adapter.validate_json(event.model_dump_json())
+        assert isinstance(parsed, EngineEnvReportEvent)
+        assert parsed.cell_id == "cell-0"
+        assert parsed.server_url == "http://10.0.0.1:30000"
+        assert parsed.server_info == server_info
 
 
 class TestWitnessSnapshotParamEventWithStaleIds:

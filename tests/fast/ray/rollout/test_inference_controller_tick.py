@@ -16,6 +16,7 @@ class _RecordingCell:
         self.tick_count = 0
         self.finished_count = 0
         self.meta = SimpleNamespace(cell_id=cell_id)
+        self.is_pending_weights_or_serving = False
         self._error = error
         self._delay = delay
 
