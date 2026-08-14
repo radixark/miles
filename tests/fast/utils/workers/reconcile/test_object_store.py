@@ -74,16 +74,6 @@ class TestIncrementalEvents:
         assert "pod-0" not in store
 
 
-class TestQueries:
-    def test_get_by_parent_returns_members_sorted_by_key(self):
-        """Membership listing is deterministic."""
-        store = make_store()
-        store.handle_event(UpsertEvent(key="pod-b", obj=make_pod("pod-b", cell="cell-a")))
-        store.handle_event(UpsertEvent(key="pod-a", obj=make_pod("pod-a", cell="cell-a")))
-
-        assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-a", "pod-b"]
-
-
 class TestReplace:
     def test_replace_swaps_the_whole_store_and_reports_both_sides(self):
         """A replace applies atomically and names the parents it added to and removed from."""
@@ -118,7 +108,7 @@ class TestReplace:
         affected = store.handle_event(ReplaceEvent(objects={}))
 
         assert affected == {"cell-a"}
-        assert store.get_by_parent("cell-a") == []
+        assert store.parent_keys() == set()
 
     def test_a_relist_refreshes_a_survivor_whose_parent_did_not_change(self):
         """A survivor still in the listing must be replaced by the newly listed copy, not left stale."""
@@ -141,6 +131,25 @@ class TestReplace:
         assert affected == {"cell-a"}
         assert "pod-0" not in store
         assert "pod-1" in store
+
+
+class TestQueries:
+    def test_get_by_parent_returns_members_sorted_by_key(self):
+        """Membership listing is deterministic."""
+        store = make_store()
+        store.handle_event(UpsertEvent(key="pod-b", obj=make_pod("pod-b", cell="cell-a")))
+        store.handle_event(UpsertEvent(key="pod-a", obj=make_pod("pod-a", cell="cell-a")))
+
+        assert [pod.metadata.name for pod in store.get_by_parent("cell-a")] == ["pod-a", "pod-b"]
+
+    def test_parent_keys_lists_every_cell_that_still_has_members(self):
+        """parent_keys is what a resync re-drives."""
+        store = make_store()
+        store.handle_event(UpsertEvent(key="pod-a", obj=make_pod("pod-a", cell="cell-a")))
+        store.handle_event(UpsertEvent(key="pod-b", obj=make_pod("pod-b", cell="cell-b")))
+        store.handle_event(DeleteEvent(key="pod-b", last_obj=None))
+
+        assert store.parent_keys() == {"cell-a"}
 
 
 class TestUnknownEvent:
