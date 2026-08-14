@@ -240,7 +240,6 @@ def run_session_verify(args: argparse.Namespace) -> None:
             num_gpus_per_node=args.actor_num_gpus_per_node,
             megatron_model_type=None,
             extra_env_vars={
-                "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
                 "MILES_TITO_MODEL": args.tito_model,
                 "MILES_SESSION_VERIFY_METRICS_PATH": metrics_path,
             },

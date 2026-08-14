@@ -240,7 +240,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
 def execute(case: CaseConfig, *, wandb_file: str) -> None:
     train_args = build_train_args(case, wandb_file=wandb_file)
 
-    extra_env_vars = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+    extra_env_vars = {}
     if case.use_int4_rollout:
         extra_env_vars |= {
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",

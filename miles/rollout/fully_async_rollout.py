@@ -6,8 +6,8 @@ data buffer (see ``fully_async_data_buffer.py``). Rollout production and trainin
 consumption run in parallel, so per-iteration wall time moves from
 ``rollout_time + train_time`` toward ``max(rollout_time, train_time)``.
 
-Selected by ``train_async.py --fully-async``, which also requires the class-based
-rollout API (``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1``).
+Selected by ``train_async.py --fully-async``, which requires the class-based
+rollout API (the default; incompatible with ``MILES_USE_LEGACY_ROLLOUT_V1=1``).
 
 Evaluation targets whatever ``GenerateState`` ``RolloutManager`` passes via
 ``RolloutFnEvalInput.generate_state`` (see ``miles/rollout/checkpoint_eval.py``
@@ -36,6 +36,7 @@ from miles.rollout.fully_async_data_buffer import (
     Group,
     first_sample,
 )
+from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
@@ -172,8 +173,10 @@ class FullyAsyncRolloutFn:
             if do_print:
                 sample = first_sample(entry.group)
                 logger.info(
-                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, "
-                    f"label: {sample.label}, reward: {sample.reward}"
+                    "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
+                    sample_text_preview(sample),
+                    str(sample.label)[:100],
+                    reward_log_summary(sample.reward),
                 )
                 do_print = False
 
@@ -181,8 +184,10 @@ class FullyAsyncRolloutFn:
 
         sample = first_sample(data[-1])
         logger.info(
-            f"Finish rollout: {[str(sample.prompt) + sample.response]}, "
-            f"label: {sample.label}, reward: {sample.reward}"
+            "Finish rollout: text_preview=%s, label=%s, reward_summary=%s",
+            sample_text_preview(sample),
+            str(sample.label)[:100],
+            reward_log_summary(sample.reward),
         )
 
         data.sort(key=lambda group: first_sample(group).index)

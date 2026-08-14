@@ -2,7 +2,7 @@
 reward computation, Miles owns everything around it.
 
 Wire it up with ``--rollout-function-path verifiers_rollout.VerifiersRolloutFn``
-(or ``.generate_rollout`` without ``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR``) plus
+(or ``.generate_rollout`` under ``MILES_USE_LEGACY_ROLLOUT_V1=1``) plus
 ``--disable-rollout-global-dataset``, and point ``VERIFIERS_CONFIG`` at a
 Verifiers ``EnvConfig`` TOML file. ``run.py`` in this directory does all of
 that; see README.md.

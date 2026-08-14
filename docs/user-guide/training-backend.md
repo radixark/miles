@@ -359,8 +359,8 @@ Memory, once the layout is set:
 
 Under `--colocate` this backend also implements `sleep` / `wake_up` by moving the model and
 the optimizer to host memory and back, gated on `--offload-train`. The deeper offload
-targets are Megatron-only: `--offload-train-target disk` asserts the Megatron backend, and
-`--stream-optimizer-state-to-disk` builds on it.
+targets are Megatron-only: both `--offload-train-target disk` and
+`--stream-optimizer-state-to-disk` assert the Megatron backend.
 
 ### 3. Precision
 

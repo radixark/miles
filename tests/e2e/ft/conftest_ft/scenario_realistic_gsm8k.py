@@ -59,7 +59,6 @@ def run_ci(
             num_gpus_per_node=_TRAIN_GPUS + _ROLLOUT_GPUS,
             megatron_model_type=_MODEL_TYPE,
             extra_env_vars={
-                "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
                 # --ft-components train depends on cell-based indep_dp, which only
                 # the v2 RayTrainGroup supports.
                 "MILES_EXPERIMENTAL_FT_TRAINER": "1",

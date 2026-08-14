@@ -4,11 +4,12 @@ import os
 import pytest
 import requests
 from huggingface_hub import snapshot_download
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.e2e.sglang.utils.sglang_server import start_sglang_server
 from transformers import AutoTokenizer
 
 register_cuda_ci(est_time=190, suite="stage-c-4-gpu-h200", labels=["sglang"])
+register_rocm_ci(est_time=80, suite="nightly-stage-c-4-gpu-mi350", labels=["sglang"])
 
 DEFAULT_MODEL_ID = "Qwen/Qwen3-0.6B"
 DEFAULT_MODEL_PATH = "/root/models/Qwen3-0.6B"

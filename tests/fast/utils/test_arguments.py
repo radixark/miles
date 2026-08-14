@@ -158,9 +158,8 @@ def test_fully_async_eval_resolves_to_the_producer_itself():
     assert resolve_rollout_function_paths(override) == (path, "pkg.CustomEval")
 
 
-def test_fully_async_rejects_abort_pause_mode(monkeypatch):
+def test_fully_async_rejects_abort_pause_mode():
     """Generation is always in flight, so aborting on every weight update would kill it."""
-    monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
     args = SimpleNamespace(
         fully_async=True,
         multi_lora=False,
