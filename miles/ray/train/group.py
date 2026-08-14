@@ -27,6 +27,7 @@ from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecuto
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,14 @@ class RayTrainGroup:
         self._test_action_executor = FTTestActionControllerExecutor.from_args(args, group=self)
 
     @property
+    def pool_id(self) -> str:
+        return self._pool_id
+
+    @property
+    def expected_num_cells(self) -> int:
+        return self._expected_num_cells
+
+    @property
     def _expected_num_cells(self) -> int:
         return compute_trainer_num_cells(self.args, role=self._role)
 
@@ -103,13 +112,25 @@ class RayTrainGroup:
         )
 
     async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
-        if observed is None:
-            return
+        actual = self._cells_by_id.get(cell_id)
+        await apply_cell_observation(
+            cell_id=cell_id,
+            observed=observed,
+            actual_workers_hash=actual.workers_hash if actual is not None else None,
+            add=self._add_cell,
+            remove=self._remove_cell,
+        )
 
-        if cell_id not in self._cells_by_id:
-            self._cells_by_id[cell_id] = self._create_cell(cell_id, cell_index=observed.meta["cell_index"])
+    async def _add_cell(self, cell_id: str, observed: CellInfo) -> None:
+        self._cells_by_id[cell_id] = self._create_cell(
+            cell_id, cell_index=observed.meta["cell_index"], workers_hash=observed.workers_hash
+        )
 
-    def _create_cell(self, cell_id: str, *, cell_index: int) -> RayTrainCell:
+    async def _remove_cell(self, cell_id: str) -> None:
+        cell = self._cells_by_id.pop(cell_id)
+        cell.health_checker.stop()
+
+    def _create_cell(self, cell_id: str, *, cell_index: int, workers_hash: str) -> RayTrainCell:
         cell = RayTrainCell(
             args=self.args,
             role=self._role,
@@ -117,6 +138,7 @@ class RayTrainGroup:
             with_opd_teacher=self._with_opd_teacher,
             cell_id=cell_id,
             cell_index=cell_index,
+            workers_hash=workers_hash,
             rollout_executor=self._rollout_executor,
             health_checker=NoopHealthChecker(),
         )
