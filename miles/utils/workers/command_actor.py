@@ -4,6 +4,7 @@ import subprocess
 import threading
 
 from miles.utils.misc import NodeProbeMixin
+from miles.utils.test_utils import fault_injector
 from miles.utils.workers import process_utils
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,9 @@ class CommandActor(NodeProbeMixin):
     def kill_subprocess(self) -> None:
         assert self._process is not None, "CommandActor has no subprocess to kill"
         process_utils.kill_process_tree(self._process)
+
+    def inject_fault(self, mode: str) -> None:
+        fault_injector.inject_fault(mode=mode)
 
     def _babysit(self, process: subprocess.Popen) -> None:
         returncode = process.wait()
