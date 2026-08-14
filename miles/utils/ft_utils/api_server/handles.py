@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Protocol
 
-import ray
-
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
 from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_provider.base import CellInfo
 
 
@@ -19,12 +18,12 @@ class _CellHandler:
         self,
         *,
         cell_type: str,
-        worker_manager: ray.actor.ActorHandle,
+        operations: BaseCellOperations,
         controller: _CellStatusSource,
         pool_ids: list[str],
     ) -> None:
         self._cell_type = cell_type
-        self._worker_manager = worker_manager
+        self._operations = operations
         self._controller = controller
         self._pool_ids = pool_ids
 
@@ -71,13 +70,13 @@ class _CellHandler:
         )
 
     async def _get_cell_infos(self) -> dict[str, CellInfo]:
-        return await self._worker_manager.get_cell_infos.remote(pool_ids=self._pool_ids)
+        return await self._operations.cell_infos(pool_ids=self._pool_ids)
 
     async def suspend(self, cell_id: str) -> None:
-        await self._worker_manager.stop_cells.remote([cell_id])
+        await self._operations.suspend(cell_id=cell_id)
 
     async def resume(self, cell_id: str) -> None:
-        await self._worker_manager.start_cells.remote([cell_id])
+        await self._operations.resume(cell_id=cell_id)
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        await self._worker_manager.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
+        await self._operations.inject_fault(cell_id=cell_id, mode=mode, sub_index=sub_index)
