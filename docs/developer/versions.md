@@ -65,12 +65,12 @@ an SGLang collision, `blake3` / `xxhash` / `zstandard` name the disk-delta weigh
 
 ## Release identities and source ownership
 
-Release values represent different facts. Each row below names the canonical source that workflows derive or consume.
+Release values represent different facts. Each row below names the source used by the supported automatic path.
 
 | Fact | Authoritative source | Derived or consumed values |
 |---|---|---|
 | Base Miles version | `setup.py` | Release branch `release/vX.Y.Z`; base-version check before tagging |
-| Exact published version | Annotated Git tag `v<exact-version>` | CUDA image tags `v<exact-version>` and `v<exact-version>-cu12` |
+| Exact published version | `version` input to `release-tag.yml`, persisted as annotated Git tag `v<exact-version>` | CUDA image tags `v<exact-version>` and `v<exact-version>-cu12` |
 | Frozen dependency selection | `release-lock.json` committed on the release branch | SGLang commit, Megatron-LM commit, and the CUDA image tag used by release CI |
 
 For example, base version `0.3.0` owns branch `release/v0.3.0`; that branch can produce exact tags `v0.3.0rc0`, `v0.3.0`, and `v0.3.0.post1` without changing `setup.py` between tags.

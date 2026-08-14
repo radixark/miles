@@ -7,7 +7,6 @@ Usage:
     python docker/build.py --variant cu13-x86 --image-tag dev --push      # single arch
     python docker/build.py --variant cu12-x86 --image-tag latest
     python docker/build.py --variant cu13 --image-tag dev --dry-run
-    python docker/build.py --variant cu13 --image-tag custom --custom-tag release-test --build-arg MILES_COMMIT=FULL_SHA --dry-run
 """
 
 import os

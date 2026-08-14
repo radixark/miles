@@ -100,8 +100,7 @@ jobs:
           SGLANG_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
           MEGATRON_SHA=$(git ls-remote https://github.com/radixark/Megatron-LM refs/heads/miles-main | cut -f1)
 
-          # Prefer the latest timestamped dev tag; the implementation falls back
-          # to mutable dev if none exists, which the maintainer runbook forbids.
+          # Prefer the latest timestamped dev tag; fall back to mutable dev if none exists.
           DEV_IMAGE_TAG=$(curl -s "https://hub.docker.com/v2/repositories/radixark/miles/tags/?page_size=100&name=dev-" \
             | python3 -c "import sys, json, re; names = [t['name'] for t in json.load(sys.stdin)['results']]; c = sorted(n for n in names if re.fullmatch(r'dev-\d{12}', n)); print(c[-1] if c else 'dev')")
 

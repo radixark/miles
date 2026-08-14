@@ -58,7 +58,7 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push
 
 Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
 
-When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
+When a PR touches `docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt` (detected by the `docker-paths` job), `pr-test.yml` inserts a build in front of the test matrix:
 
 | Job | What it does |
 | --- | --- |
@@ -79,14 +79,16 @@ This workflow owns the rolling `dev` and `latest` image families. It has two job
 
 ### Triggers: automatic vs manual
 
-- **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
+- **Automatic** (no human) — the **schedule** (cron 00:00 / 12:00 UTC, gated by `check-upstream`) and any **push to `main` that touches `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt`**. Both leave `--variant` empty and build **two images**: `cu13` → `radixark/miles` (multi-arch) and `cu12-x86` → `radixark/miles:dev-cu12`.
 - **Manual** — `workflow_dispatch` (pick one variant — see Trigger a build yourself below) or running `docker/build.py` locally. Only the `rocm-*` images have **no automatic path** (`cu13-x86` / `cu13-aarch64` just rebuild the same `dev` image single-arch).
+
+`docker/build.py` and `docker/patch/**` participate in PR image validation but are not `main`-push triggers; [Release a Version](/ci/04-release) treats them as manual preflight cases.
 
 
 | Trigger                                     | `check-upstream`                   | builds                | `latest` move     | prune      |
 | ------------------------------------------- | ---------------------------------- | --------------------- | ----------------- | ---------- |
 | schedule (cron 00:00 / 12:00 UTC)           | runs; build if upstream moved or last build ≥ 24h ago | `cu13` + `cu12-x86`   | yes (both)        | yes (both) |
-| push to `main` touching `docker/Dockerfile`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
+| push to `main` touching `docker/Dockerfile`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, or `requirements.txt` | skipped                            | `cu13` + `cu12-x86`   | no                | no         |
 | `workflow_dispatch`                         | skipped                            | the one input variant | no                | no         |
 | `workflow_dispatch` + `simulate_schedule`   | runs                               | the one input variant | no                | no         |
 
@@ -140,21 +142,8 @@ Pushes use a Docker Hub credential, not your identity:
 
 ## Versioned release build (`release-docker.yml`)
 
-An exact `vX.Y.Z`, `vX.Y.ZrcN`, or `vX.Y.Z.postN` tag push starts this workflow; `release-tag.yml` also dispatches it explicitly because a tag pushed with `GITHUB_TOKEN` does not trigger another workflow. A manual retry accepts `version` and `ref`, which must identify the same immutable tag.
-
-The workflow checks out the release ref, requires its committed `release-lock.json`, and passes the locked SGLang and Megatron-LM commits plus the checked-out Miles SHA to `docker/build.py` as final build-arg overrides. It publishes two official images:
-
-| Variant | Published tag |
-|---|---|
-| `cu13` | `radixark/miles:v<exact-version>` (`linux/amd64` + `linux/arm64`) |
-| `cu12-x86` | `radixark/miles:v<exact-version>-cu12` (`linux/amd64`) |
-
-This workflow does not move or prune any rolling `dev` or `latest` tag. See [Release a Version](/ci/04-release) for the guarded maintainer procedure and manual retry boundary.
-
-### Pinning specific repo versions
-
-`docker/build.py` accepts repeatable `--build-arg KEY=VALUE` options and appends them after variant defaults. `release-docker.yml` uses that ordering to supply `SGLANG_COMMIT`, `MEGATRON_COMMIT`, and `MILES_COMMIT` from the checked-out tag and its `release-lock.json`; the rolling `docker-build.yml` continues to use branch defaults.
+`release-docker.yml` checks out the supplied release ref, requires its committed `release-lock.json`, and passes the locked SGLang and Megatron-LM commits plus the checked-out Miles SHA as final `--build-arg` overrides. Rolling `docker-build.yml` keeps the branch defaults. Published tags and the guarded dispatch and retry procedure are documented in [Release a Version](/ci/04-release).
 
 ## Image retention (open)
 
-`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut is the exception: it prefers the newest timestamped `dev` image, falls back to mutable `dev` if none exists, retags the result as prune-exempt `release-vX.Y.Z-ci`, and records that tag in `release-lock.json`. The maintainer runbook requires a verified timestamped image before cutting.
+`docker-build.yml` prunes `dev-<timestamp>` and `dev-cu12-<timestamp>` as separate series, keeping the newest 20 of each; `dev` / `latest` and `dev-cu12` / `latest-cu12` move forward. Ordinary PR, nightly, and weekly CI therefore has no durable image record. A release branch cut instead retags the newest timestamped `dev` image, or mutable `dev` when none exists, as prune-exempt `release-vX.Y.Z-ci` and records that tag in `release-lock.json`. The guarded preflight is documented in [Release a Version](/ci/04-release).

@@ -125,7 +125,7 @@ Current sentinels, so you know when you have walked into one:
 |---|---|
 | `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/ci/00-stage.md`, `docs/ci/01-label.md` |
 | `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/ci/04-release.md` |
-| `docker/Dockerfile`, `docker/Dockerfile.rocm`, `docker/build.py` | `docs/ci/02-docker-build.md` |
+| `docker/build.py` | `docs/ci/02-docker-build.md` |
 | `tests/ci/metric_history/**` | `docs/ci/03-metric-history-gate.md` |
 
 Grep for `doc-dev:` before editing anything under `.github/workflows/` or `docker/`. A

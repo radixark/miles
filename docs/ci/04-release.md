@@ -118,4 +118,3 @@ gh workflow run release-docker.yml -f version="${EXACT_VERSION}" -f ref="v${EXAC
 ```
 
 The current manual interface does not cross-check `version` against `ref`; a mismatch could publish one ref's source under another official version tag.
-
