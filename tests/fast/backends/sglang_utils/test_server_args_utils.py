@@ -50,6 +50,7 @@ def _server_args(
     server_args_dict = _compute_server_args(
         args or _args(),
         node_rank=node_rank,
+        gated_launch_port=20034,
         dist_init_addr=dist_init_addr,
         nccl_port=20031,
         host="10.0.0.1",
