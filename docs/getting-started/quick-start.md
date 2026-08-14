@@ -1,28 +1,27 @@
 ---
 title: Quick Start
-description: Get an RL training job on Qwen3-4B up and running in under an hour.
+description: Get an RL training job up and running in under an hour.
 ---
 **What you need**
 
 - A node with 8 GPUs (H100 / H200 / B-series).
-- At least 500 GB of free disk — each saved checkpoint of this 4 B model is
-  roughly 50 GB, and one lands every 20 rollouts.
+- At least 500 GB of free disk.
 - Docker with GPU access.
 
 **Pre-flight checks**
 
 ```bash
 # Driver up, all 8 GPUs listed?
-nvidia-smi
+nvidia-smi -L
 # Docker can hand GPUs to a container?
 docker run --rm --gpus all ubuntu nvidia-smi
-# Enough free disk?
-df -h /
+# Enough free disk where Docker stores data?
+df -h $(docker info -f '{{.DockerRootDir}}')
 ```
 
 **What you will accomplish**
 
-- Launch a GRPO run and watch the reward climb!
+- Launch a GRPO run on Qwen3-4B and watch the reward climb!
 
 Training a different model? The flow is the same — see [Models](/models/index) for
 the per-model recipes.
