@@ -48,7 +48,6 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
     def connect_rollout_engines(
         self,
         rollout_engines,
-        rollout_engine_lock,
         engine_gpu_counts=None,
         engine_gpu_offsets=None,
     ):

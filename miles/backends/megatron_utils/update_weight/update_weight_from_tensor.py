@@ -26,7 +26,7 @@ from miles.utils.lora import LORA_ADAPTER_NAME
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 from .common import _check_weight_sync_results, begin_weight_update, end_weight_update, weight_update_selector
 from .hf_weight_iterator_base import HfWeightIteratorBase
@@ -143,7 +143,6 @@ class UpdateWeightFromTensor:
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: "ActorHandle",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:

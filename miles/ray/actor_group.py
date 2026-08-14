@@ -127,7 +127,7 @@ class RayTrainGroup:
             await self._inference_controller.recover_updatable_engines()
 
         await self._inference_controller.health_monitoring_pause()
-        info = await self._inference_controller.get_updatable_engines_and_lock()
+        info = await self._inference_controller.get_updatable_engines()
 
         await self._broadcast("update_weights", info=info)
         await self._inference_controller.clear_updatable_has_new_engines()

@@ -33,7 +33,7 @@ from .p2p_transfer_utils import (
 )
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -179,7 +179,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: "ActorHandle",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -195,7 +194,6 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         """
         self.rollout_engines = rollout_engines
         self._connection_stale = False
-        self.rollout_engine_lock = rollout_engine_lock
 
         if self._is_source:
             self._group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
