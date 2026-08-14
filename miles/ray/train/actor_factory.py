@@ -3,7 +3,7 @@ from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.specs.train import compute_trainer_env_vars
-from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
 
@@ -33,11 +33,10 @@ def allocate_gpus_for_actor(
 
         actor_impl = FSDPTrainRayActor
 
-    ft = args.use_fault_tolerance
     TrainRayActor = ray.remote(
         num_gpus=1,
-        **(dict(concurrency_groups={"heartbeat_status": 1, "default": 1, "fault_injector": 1}) if ft else {}),
-    )(_with_ft_concurrency_groups(actor_impl) if ft else actor_impl)
+        concurrency_groups=TRAINER_CONCURRENCY_GROUPS,
+    )(actor_impl)
 
     # Create worker actors
     actor_handles = []
@@ -76,18 +75,3 @@ def allocate_gpus_for_actor(
         )
 
     return actor_handles
-
-
-def _with_ft_concurrency_groups(actor_impl: type) -> type:
-    class _FtTrainRayActor(actor_impl):
-        @ray.method(concurrency_group="heartbeat_status")
-        def get_heartbeat_status(self) -> HeartbeatStatus:
-            return super().get_heartbeat_status()
-
-        @ray.method(concurrency_group="fault_injector")
-        def inject_fault(self, mode: str) -> None:
-            super().inject_fault(mode)
-
-    _FtTrainRayActor.__name__ = actor_impl.__name__
-    _FtTrainRayActor.__qualname__ = actor_impl.__qualname__
-    return _FtTrainRayActor
