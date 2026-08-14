@@ -200,7 +200,7 @@ class TestExecuteFirstAlive:
     async def test_picks_first_alive_cell(self):
         group = await _make_alive_controller(num_cells=3)
 
-        await group._execute_first_alive("save_model", 42)
+        await group._execute_first_alive("save_model", rollout_id=42)
 
         for handle in group._cells[0]._get_actor_handles():
             calls = ray.get(handle.get_calls.remote())
@@ -368,7 +368,7 @@ class TestRefreshCellsHealing:
             set_calls = [c for c in calls if c[0] == "set_rollout_executor"]
             assert set_calls, "healed cell never received set_rollout_executor"
             for call in set_calls:
-                assert call[1] == ("executor-handle",)
+                assert call[2] == {"rollout_executor": "executor-handle"}
 
     async def test_pending_cell_with_stopped_cell(self):
         """Pending + stopped: only alive and pending participate, stopped excluded."""
@@ -615,7 +615,7 @@ class TestPerCellErrorIsolation:
             ray.get(handle.set_fail_methods.remote(["train"]))
 
         # Step 2: Broadcast train
-        await group._execute_all_alive_and_catch("train", 0, "data")
+        await group._execute_all_alive_and_catch("train", rollout_id=0, rollout_data_ref="data")
 
         # Step 3: Cell 1 is errored, others alive
         assert group._cells[0].is_alive
@@ -636,11 +636,11 @@ class TestPerCellErrorIsolation:
         for handle in group._cells[0]._get_actor_handles():
             ray.get(handle.set_fail_methods.remote(["train"]))
 
-        await group._execute_all_alive_and_catch("train", 0, "data")
+        await group._execute_all_alive_and_catch("train", rollout_id=0, rollout_data_ref="data")
         assert group._cells[0].is_stopped
 
         # Step 2: Next broadcast only goes to cell 1
-        await group._execute_all_alive_and_catch("train", 1, "data")
+        await group._execute_all_alive_and_catch("train", rollout_id=1, rollout_data_ref="data")
 
         for handle in group._cells[1]._get_actor_handles():
             calls = ray.get(handle.get_calls.remote())
@@ -676,7 +676,7 @@ class TestExecuteFirstAliveFallback:
             ray.get(handle.set_fail_methods.remote(["save_model"]))
 
         with pytest.raises(Exception):  # noqa: B017
-            await group._execute_first_alive("save_model", 42)
+            await group._execute_first_alive("save_model", rollout_id=42)
 
         assert group._cells[0].is_stopped
 
