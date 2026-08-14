@@ -24,12 +24,17 @@ def _build_group(
     engines = [ServerEngine() for _ in range(num_engines)]
     return ServerGroup(
         args=args,
-        pg=pg_tuple,
-        cells=chunk_engines_into_cells(engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8),
+        cells=chunk_engines_into_cells(
+            engines,
+            num_gpus_per_engine=num_gpus_per_engine,
+            num_gpus_per_node=8,
+            args=args,
+            pg=pg_tuple,
+            rank_offset=rank_offset,
+            gpu_offset=gpu_offset,
+        ),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
-        gpu_offset=gpu_offset,
-        rank_offset=rank_offset,
         update_weights=True,
         needs_offload=needs_offload,
     )
