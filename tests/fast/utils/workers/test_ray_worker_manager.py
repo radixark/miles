@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import pytest
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, FakeRayCluster
 
+from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
@@ -39,6 +40,9 @@ def _make_spec(
     env_var: dict[str, str] | None = None,
     launch_command: Callable[[LaunchCommandContext], str] | None = None,
     num_gpus_per_worker: float = 0,
+    num_gpu_slots_per_worker: int = 0,
+    pg_name: str | None = None,
+    pg_slot_offset: int = 0,
     pin_to_head: bool = False,
 ) -> CommandWorkerSpec:
     return CommandWorkerSpec(
@@ -51,17 +55,30 @@ def _make_spec(
             num_cells=num_cells,
             num_workers_per_cell=num_workers_per_cell,
             num_gpus_per_worker=num_gpus_per_worker,
+            num_gpu_slots_per_worker=num_gpu_slots_per_worker,
+            pg_name=pg_name,
+            pg_slot_offset=pg_slot_offset,
             pin_to_head=pin_to_head,
         ),
         launch_command=launch_command if launch_command is not None else (lambda ctx: "sleep 600"),
     )
 
 
+def _make_pgs(*, num_slots: int = 8, first_gpu_id: int = 0) -> dict[str, PlacementGroupInfo]:
+    return {
+        "rollout": PlacementGroupInfo(
+            pg="fake-pg",
+            pg_reordered_bundle_indices=[(slot * 3 + 1) % num_slots for slot in range(num_slots)],
+            pg_reordered_gpu_ids=[first_gpu_id + slot for slot in range(num_slots)],
+        )
+    }
+
+
 async def _launch(
     specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(specs, {})
+    await manager.init(specs, pgs if pgs is not None else {})
     return manager
 
 
@@ -581,3 +598,103 @@ class TestConcurrentPhases:
 
         assert sorted(entered) == [0, 1, 2]
         assert len({manager.get_worker_addr(f"engine-{index}-0").port for index in range(3)}) == 3
+
+
+class TestGpuPlacement:
+    async def test_gpu_slots_expand_over_cells_and_workers(self, fake_ray_cluster: FakeRayCluster):
+        """Each worker occupies its own contiguous slot span after its group's base offset."""
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_cells=2,
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+            pg_slot_offset=2,
+            launch_command=recorder.command,
+        )
+        await _launch([spec], _make_pgs(num_slots=10, first_gpu_id=0))
+
+        assert [
+            recorder.context_of(cell_index=cell_index, worker_in_cell_index=worker_in_cell_index).gpu_ids
+            for cell_index in range(2)
+            for worker_in_cell_index in range(2)
+        ] == [[2, 3], [4, 5], [6, 7], [8, 9]]
+
+    async def test_gpu_ids_come_from_the_reordered_slot_mapping(self, fake_ray_cluster: FakeRayCluster):
+        """A worker's gpu ids start at the node-local id its slot maps to, not at the slot index."""
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+            launch_command=recorder.command,
+        )
+        await _launch([spec], _make_pgs(num_slots=8, first_gpu_id=4))
+
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == [4, 5]
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=1).gpu_ids == [6, 7]
+
+    async def test_a_pg_worker_is_scheduled_on_the_bundle_its_slot_maps_to(self, fake_ray_cluster: FakeRayCluster):
+        """The actor is placed on the reordered bundle of its slot, not on the raw slot index."""
+        pgs = _make_pgs(num_slots=8)
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=1,
+            pg_name="rollout",
+            pg_slot_offset=3,
+        )
+        await _launch([spec], pgs)
+
+        strategies = [handle.options["scheduling_strategy"] for handle in fake_ray_cluster.handles]
+        assert [strategy.placement_group_bundle_index for strategy in strategies] == [
+            pgs["rollout"].pg_reordered_bundle_indices[3],
+            pgs["rollout"].pg_reordered_bundle_indices[4],
+        ]
+        assert all(strategy.placement_group == "fake-pg" for strategy in strategies)
+        assert all(handle.options["num_gpus"] == 0.2 for handle in fake_ray_cluster.handles)
+
+    async def test_a_worker_without_a_pg_asks_for_no_placement(self, fake_ray_cluster: FakeRayCluster):
+        """Specs that do not own gpus are scheduled anywhere and get no gpu ids."""
+        recorder = _LaunchRecorder()
+        await _launch([_make_spec("router", launch_command=recorder.command)])
+
+        assert "scheduling_strategy" not in fake_ray_cluster.handles[0].options
+        assert fake_ray_cluster.handles[0].options["num_gpus"] == 0
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == []
+
+
+class TestPgActorResources:
+    async def test_the_gpu_request_comes_from_the_spec(self, fake_ray_cluster: FakeRayCluster):
+        """A spec that declares a gpu fraction gets exactly that, so co-located engines still fit."""
+        await _launch([_make_spec("engine", num_gpus_per_worker=0.2)])
+
+        assert fake_ray_cluster.handles[0].options["num_gpus"] == 0.2
+
+    async def test_pg_workers_capture_their_child_tasks_in_the_group(self, fake_ray_cluster: FakeRayCluster):
+        """Child tasks must stay inside the placement group, or they escape the reserved gpus."""
+        spec = _make_spec(
+            "engine",
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=1,
+            pg_name="rollout",
+        )
+        await _launch([spec], _make_pgs())
+
+        assert fake_ray_cluster.handles[0].options["scheduling_strategy"].placement_group_capture_child_tasks is True
+
+
+class TestPgFailureModes:
+    async def test_a_spec_pointing_at_an_unknown_placement_group_fails(self, fake_ray_cluster: FakeRayCluster):
+        """Mistyping the placement group name must fail instead of silently ignoring placement."""
+        spec = _make_spec("engine", num_gpus_per_worker=0.2, num_gpu_slots_per_worker=1, pg_name="typo")
+
+        with pytest.raises(KeyError):
+            await _launch([spec], _make_pgs())
+
+        assert fake_ray_cluster.calls_of("run") == []
