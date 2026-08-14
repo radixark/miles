@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import ray
@@ -47,9 +47,9 @@ class RayWorkerManager:
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
 
-        await self._for_all_worker_managers(lambda a: a.launch_actor())
-        await self._for_all_worker_managers(lambda a: a.alloc_ports())
-        await self._for_all_worker_managers(lambda a: a.post_setup())
+        await self._for_all_cells(lambda a: a.launch_actors())
+        await self._for_all_cells(lambda a: a.alloc_ports())
+        await self._for_all_cells(lambda a: a.post_setup())
 
     def get_worker_addr(self, worker_name: str) -> HostAndPort:
         matches = [
@@ -65,8 +65,8 @@ class RayWorkerManager:
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells for a in c.actors] for name, g in self._pools.items()}
 
-    async def _for_all_worker_managers(self, fn: Callable[[_BaseActorManager], Any]):
-        await asyncio.gather(*[fn(a) for g in self._pools.values() for c in g.cells for a in c.actors])
+    async def _for_all_cells(self, fn: Callable[[_CellManager], Any]):
+        await asyncio.gather(*[fn(c) for g in self._pools.values() for c in g.cells])
 
 
 @dataclass(kw_only=True)
@@ -75,54 +75,69 @@ class _PoolManager:
     cells: list[_CellManager]
 
     @classmethod
-    def initial(cls, spec: BaseWorkerSpec, manager_ref: RayWorkerManager) -> _PoolManager:
-        scheduling = spec.scheduling
+    def initial(cls, spec: BaseWorkerSpec, manager: RayWorkerManager) -> _PoolManager:
         return cls(
             spec=spec,
             cells=[
                 _CellManager(
+                    manager=manager,
                     cell_index=cell_index,
-                    actors=[
-                        # TODO support Serve mode
-                        _CommandActorManager(
-                            worker_in_cell_index=worker_in_cell_index,
-                            manager=manager_ref,
-                            spec=spec,
-                            actor_handle=None,
-                            generation=1,
-                            gpu_slot_index=(
-                                scheduling.pg_slot_offset
-                                + (cell_index * scheduling.num_workers_per_cell + worker_in_cell_index)
-                                * scheduling.num_gpu_slots_per_worker
-                                if scheduling.pg_name is not None
-                                else None
-                            ),
-                        )
-                        for worker_in_cell_index in range(scheduling.num_workers_per_cell)
-                    ],
+                    spec=spec,
+                    actors=None,
                 )
-                for cell_index in range(scheduling.num_cells)
+                for cell_index in range(spec.scheduling.num_cells)
             ],
         )
-
-
-@dataclass(kw_only=True)
-class _CellManager:
-    cell_index: int
-    actors: list[_BaseActorManager]
-
-    def __post_init__(self):
-        for actor in self.actors:
-            actor.parent = self
 
 
 SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
 
 
 @dataclass(kw_only=True)
+class _CellManager(Generic[SpecT]):
+    manager: RayWorkerManager
+    cell_index: int
+    spec: SpecT
+    actors: list[_BaseActorManager] | None
+
+    async def launch_actors(self):
+        assert self.actors is None
+        scheduling = self.spec.scheduling
+        self.actors = [
+            # TODO support Serve mode
+            _CommandActorManager(
+                manager=self.manager,
+                parent=self,
+                worker_in_cell_index=worker_in_cell_index,
+                spec=self.spec,
+                actor_handle=None,
+                generation=1,
+                gpu_slot_index=(
+                    scheduling.pg_slot_offset
+                    + (self.cell_index * scheduling.num_workers_per_cell + worker_in_cell_index)
+                    * scheduling.num_gpu_slots_per_worker
+                    if scheduling.pg_name is not None
+                    else None
+                ),
+            )
+            for worker_in_cell_index in range(scheduling.num_workers_per_cell)
+        ]
+        await self._for_all_actors(lambda a: a.launch_actor())
+
+    async def alloc_ports(self) -> None:
+        await self._for_all_actors(lambda a: a.alloc_ports())
+
+    async def post_setup(self) -> None:
+        await self._for_all_actors(lambda a: a.post_setup())
+
+    async def _for_all_actors(self, fn: Callable[[_BaseActorManager], Any]):
+        await asyncio.gather(*[fn(a) for a in self.actors])
+
+
+@dataclass(kw_only=True)
 class _BaseActorManager(Generic[SpecT]):
     manager: RayWorkerManager
-    parent: _CellManager = field(init=False)
+    parent: _CellManager
     worker_in_cell_index: int
     spec: SpecT
     actor_handle: ray.actor.ActorHandle | None

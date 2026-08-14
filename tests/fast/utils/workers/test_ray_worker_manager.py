@@ -698,3 +698,23 @@ class TestPgFailureModes:
             await _launch([spec], _make_pgs())
 
         assert fake_ray_cluster.calls_of("run") == []
+
+
+class TestCellLifecycle:
+    async def test_a_cell_launches_its_workers_only_once(self, fake_ray_cluster: FakeRayCluster):
+        """Launching an already-populated cell again would orphan the first generation of actors."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        cell = manager._pools["engine"].cells[0]
+
+        with pytest.raises(AssertionError):
+            await cell.launch_actors()
+
+        assert len(fake_ray_cluster.handles) == 2
+
+    async def test_the_stages_of_a_cell_fan_out_to_every_worker(self, fake_ray_cluster: FakeRayCluster):
+        """Each stage covers all workers of the cell, so no rank is left half-configured."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=3)])
+
+        assert len(fake_ray_cluster.calls_of("_get_node_ip")) == 3
+        assert len(fake_ray_cluster.calls_of("run")) == 3
+        assert len(manager._pools["engine"].cells[0].actors) == 3
