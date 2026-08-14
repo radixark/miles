@@ -32,6 +32,7 @@ KNOWN_LABELS: dict[str, str] = {
     "ft-long": "Fault-tolerance trainer soak tests (random-crash survival, realistic-gsm8k convergence)",
     "weight-update": "Weight update tests",
     "fully-async": "Fully-async rollout tests",
+    "multi-policy": "Multi policy training tests (several policy models in one run)",
     "replay": "Routing / indexer replay tests",
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
     "mooncake": "Mooncake object-store rollout transfer tests",
