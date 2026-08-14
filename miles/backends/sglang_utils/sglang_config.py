@@ -244,6 +244,14 @@ class ModelConfig(FrozenStrictBaseModel):
     def has_pd_disaggregation(self) -> bool:
         return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
 
+    @property
+    def num_server_cells(self) -> int:
+        return sum(
+            group.num_gpus // group.num_gpus_per_engine
+            for group in self.server_groups
+            if group.worker_type != "placeholder"
+        )
+
 
 class SglangConfig(FrozenStrictBaseModel):
     models: list[ModelConfig]
