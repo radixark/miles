@@ -125,7 +125,7 @@ def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
             stop_event=stop_event,
             on_successful_injection=lambda: None,
             cell_type=None,
-            phase_history=fi.PhaseHistory(),
+            recovery_witness=fi.RecoveryWitness(),
             poll_interval_seconds=1e-6,
         )
 
@@ -165,7 +165,7 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
             stop_event=stop_event,
             on_successful_injection=lambda: None,
             cell_type=None,
-            phase_history=fi.PhaseHistory(),
+            recovery_witness=fi.RecoveryWitness(),
             poll_interval_seconds=1e-6,
         )
 
@@ -201,7 +201,7 @@ def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> li
             stop_event=stop_event,
             on_successful_injection=lambda: None,
             cell_type=cell_type,
-            phase_history=fi.PhaseHistory(),
+            recovery_witness=fi.RecoveryWitness(),
             poll_interval_seconds=1e-6,
         )
 
@@ -267,183 +267,114 @@ def test_an_untyped_run_still_keeps_one_replica_of_each_kind() -> None:
     assert all(name.startswith("actor-") for name in injected), injected
 
 
-def _phased(name: str, phase: str, *, cell_type: str = "rollout") -> dict:
+_SERVING = fi.ObservedCellState.SERVING
+_RUNNING_NOT_SERVING = fi.ObservedCellState.RUNNING_NOT_SERVING
+_PENDING = fi.ObservedCellState.PENDING
+_SUSPENDED = fi.ObservedCellState.SUSPENDED
+
+
+def _staged(name: str, state: fi.ObservedCellState, *, cell_type: str = "rollout") -> dict:
+    phase = {
+        _SUSPENDED: "Suspended",
+        _PENDING: "Pending",
+        _RUNNING_NOT_SERVING: "Running",
+        _SERVING: "Running",
+    }[state]
+    conditions: list[dict] = (
+        [
+            {"type": "Healthy", "status": "True"},
+            {"type": "Serving", "status": "True" if state is _SERVING else "False"},
+        ]
+        if phase == "Running"
+        else []
+    )
     return {
         "metadata": {"name": name, "labels": {"miles.io/cell-type": cell_type}},
-        "status": {"phase": phase, "conditions": []},
+        "status": {"phase": phase, "conditions": conditions},
     }
 
 
-INJECT: str = "INJECT"
+def _witness_of(
+    states: list[fi.ObservedCellState], *, inject_before: dict[int, int] | None = None
+) -> fi.RecoveryWitness:
+    witness = fi.RecoveryWitness()
+    for index, state in enumerate(states):
+        for _ in range((inject_before or {}).get(index, 0)):
+            witness.note_injected("rollout-engine-0")
+        witness.observe([_staged("rollout-engine-0", state)])
+    return witness
 
 
-def _replay(script: list[str], *, cell_name: str = "rollout-engine-0", cell_type: str = "rollout") -> fi.PhaseHistory:
-    history = fi.PhaseHistory()
-    for step in script:
-        if step == INJECT:
-            history.note_injected(cell_name)
-        else:
-            history.observe([_phased(cell_name, step, cell_type=cell_type)])
-    return history
+def test_a_running_cell_that_is_not_in_the_router_is_not_serving() -> None:
+    """The api server renders PendingWeights and Serving alike, so the Serving condition must split them."""
+    assert fi.compute_observed_cell_state(_staged("c", _RUNNING_NOT_SERVING)) is _RUNNING_NOT_SERVING
+    assert fi.compute_observed_cell_state(_staged("c", _SERVING)) is _SERVING
 
 
-def test_phase_history_records_only_transitions() -> None:
+def test_observed_states_record_only_transitions() -> None:
     """Polling runs for the life of the training run, so repeats must not accumulate."""
-    history = _replay(["Running", "Running", "Suspended", "Suspended", "Running"])
+    witness = _witness_of([_SERVING, _SERVING, _SUSPENDED, _SUSPENDED, _SERVING])
 
-    assert history.phases_of_cell_name == {"rollout-engine-0": ["Running", "Suspended", "Running"]}
-
-
-def test_a_colocated_cell_heals_through_pending() -> None:
-    """A relaunched engine stays gated until the next weight update window activates it."""
-    history = _replay(["Running", INJECT, "Suspended", "Pending", "Running"])
-
-    assert [outcome.recovered for outcome in history.injection_outcomes()] == [True]
+    assert witness.states_of_cell_name == {"rollout-engine-0": [_SERVING, _SUSPENDED, _SERVING]}
 
 
-def test_a_missed_suspended_sample_still_counts_as_healed() -> None:
+def test_a_colocated_cell_recovers_through_a_gated_relaunch() -> None:
+    """A relaunched engine stays gated until the next weight update window puts it back in the router."""
+    witness = _witness_of([_SERVING, _SUSPENDED, _PENDING, _RUNNING_NOT_SERVING, _SERVING], inject_before={1: 1})
+
+    assert witness.num_completed_recoveries(cell_type="rollout") == 1
+    assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {}
+
+
+def test_a_missed_suspended_sample_still_counts_as_a_recovery() -> None:
     """Suspension lasts only the resume delay, so a 2s poll can miss it entirely."""
-    history = _replay(["Running", INJECT, "Pending", "Running"])
+    witness = _witness_of([_SERVING, _PENDING, _SERVING], inject_before={1: 1})
 
-    assert [outcome.recovered for outcome in history.injection_outcomes()] == [True]
+    assert witness.num_completed_recoveries(cell_type="rollout") == 1
 
 
-def test_a_cell_that_never_crashed_is_not_a_healing_witness() -> None:
+def test_a_replacement_that_never_reaches_the_router_is_not_a_recovery() -> None:
+    """Regression: a relaunched engine stuck at PendingWeights also reads Running, and must not pass."""
+    witness = _witness_of([_SERVING, _PENDING, _RUNNING_NOT_SERVING], inject_before={1: 1})
+
+    assert witness.num_completed_recoveries(cell_type="rollout") == 0
+    assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {"rollout-engine-0": 1}
+
+
+def test_a_cell_that_was_never_injected_is_not_a_recovery_witness() -> None:
     """Otherwise a run that injected nothing would still pass the gated assertion."""
-    history = _replay(["Pending", "Running"])
+    witness = _witness_of([_PENDING, _SERVING])
 
-    assert history.injection_outcomes() == []
-
-
-def test_skipping_the_pending_phase_is_not_a_healing_witness() -> None:
-    """A cell that never re-entered Pending was never replaced, so it witnesses no healing."""
-    history = _replay(["Running", INJECT, "Suspended", "Running"])
-
-    assert [(outcome.recovered, outcome.still_down) for outcome in history.injection_outcomes()] == [(False, False)]
+    assert witness.num_injections(cell_type="rollout") == 0
+    assert witness.num_completed_recoveries(cell_type="rollout") == 0
 
 
-def test_a_healing_that_predates_the_injection_does_not_pair_with_it() -> None:
-    """A recovery from an earlier crash must not vouch for a later injection."""
-    history = _replay(["Running", "Pending", "Running", INJECT, "Running"])
+def test_skipping_the_relaunch_phase_is_not_a_recovery() -> None:
+    """A cell that never left Running was never replaced, so it witnesses no healing."""
+    witness = _witness_of([_SERVING, _RUNNING_NOT_SERVING, _SERVING], inject_before={1: 1})
 
-    assert [(outcome.recovered, outcome.still_down) for outcome in history.injection_outcomes()] == [(False, False)]
-
-
-def test_one_healing_cannot_pair_with_two_injections() -> None:
-    """The whole point of pairing: N injections need N recoveries, not one shared witness."""
-    history = _replay(["Running", INJECT, "Pending", "Running", INJECT, "Running"])
-
-    assert [outcome.recovered for outcome in history.injection_outcomes()] == [True, False]
+    assert witness.num_completed_recoveries(cell_type="rollout") == 0
 
 
-def test_each_injection_pairs_with_its_own_later_healing() -> None:
-    """Two crash->heal cycles on one cell are two witnessed recoveries."""
-    history = _replay(["Running", INJECT, "Pending", "Running", INJECT, "Pending", "Running"])
+def test_each_accepted_injection_needs_its_own_completed_recovery() -> None:
+    """Regression: a second crash accepted just before the run ends must not ride on the first heal."""
+    witness = _witness_of([_SERVING, _PENDING, _SERVING, _SERVING], inject_before={1: 1, 3: 1})
 
-    assert [outcome.recovered for outcome in history.injection_outcomes()] == [True, True]
-
-
-def test_an_injection_whose_cell_is_still_down_at_the_end_is_flagged_as_unfinished() -> None:
-    """Training can finish mid-recovery, which is not evidence that healing is broken."""
-    history = _replay(["Running", INJECT, "Pending"])
-
-    assert [(outcome.recovered, outcome.still_down) for outcome in history.injection_outcomes()] == [(False, True)]
+    assert witness.num_injections(cell_type="rollout") == 2
+    assert witness.num_completed_recoveries(cell_type="rollout") == 1
+    assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {"rollout-engine-0": 1}
 
 
-def test_injection_outcomes_can_be_restricted_to_one_kind_of_cell() -> None:
-    """A mixed soak injects both kinds, but the rollout witness only judges rollout cells."""
-    history = fi.PhaseHistory()
-    history.observe([_phased("actor-0", "Running", cell_type="actor"), _phased("rollout-engine-0", "Running")])
-    history.note_injected("actor-0")
-    history.note_injected("rollout-engine-0")
+def test_recoveries_of_another_cell_kind_do_not_count() -> None:
+    """A mixed soak injects both kinds, and the rollout witness must only see rollout cells."""
+    witness = fi.RecoveryWitness()
+    witness.observe([_staged("actor-0", _SERVING, cell_type="actor")])
+    witness.note_injected("actor-0")
+    for state in [_PENDING, _SERVING]:
+        witness.observe([_staged("actor-0", state, cell_type="actor")])
 
-    assert [outcome.cell_name for outcome in history.injection_outcomes(cell_type="rollout")] == ["rollout-engine-0"]
-
-
-def test_the_loop_records_every_accepted_injection_in_the_phase_history() -> None:
-    """Pairing recoveries to injections needs the injections in the same history as the phases."""
-    cells = [_typed_cell("rollout-engine-0", "rollout"), _typed_cell("rollout-engine-1", "rollout")]
-    phase_history = fi.PhaseHistory()
-    stop_event = threading.Event()
-    polls = {"n": 0}
-
-    def fake_get(url: str, timeout: float) -> MagicMock:
-        polls["n"] += 1
-        if polls["n"] >= 6:
-            stop_event.set()
-        return _mock_response({"items": cells})
-
-    with patch.object(fi, "requests") as mock_requests:
-        mock_requests.get.side_effect = fake_get
-        mock_requests.post.side_effect = lambda url, json, timeout: _mock_response({})
-        fi.run_fault_injection_loop(
-            base_url="http://control",
-            seed=0,
-            mean_interval_seconds=1e-6,
-            stop_event=stop_event,
-            on_successful_injection=lambda: None,
-            cell_type="rollout",
-            phase_history=phase_history,
-            poll_interval_seconds=1e-6,
-        )
-
-    outcomes = phase_history.injection_outcomes(cell_type="rollout")
-    assert outcomes
-    assert all(outcome.cell_name.startswith("rollout-engine-") for outcome in outcomes)
-
-
-def test_stop_and_join_takes_one_last_snapshot_before_the_history_is_read() -> None:
-    """Regression: a recovery completing after the final poll must not be lost to a race."""
-    handle = fi.FaultInjectorHandle(base_url="http://control", seed=0, mean_interval_seconds=1e9, cell_type="rollout")
-
-    with patch.object(fi, "requests") as mock_requests:
-        mock_requests.get.side_effect = lambda url, timeout: _mock_response(
-            {"items": [_phased("rollout-engine-0", "Running")]}
-        )
-        handle.start()
-        handle.stop_and_join(timeout_seconds=5)
-
-    assert handle.phase_history.phases_of_cell_name == {"rollout-engine-0": ["Running"]}
-
-
-def _injector_with_history(history: fi.PhaseHistory) -> fi.FaultInjectorHandle:
-    handle = fi.FaultInjectorHandle(base_url="http://control", seed=0, mean_interval_seconds=1e9, cell_type="rollout")
-    handle.phase_history = history
-    return handle
-
-
-def test_the_rollout_witness_accepts_one_paired_recovery_per_injection() -> None:
-    """Two injections each followed by their own Running -> Pending -> Running is the happy path."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import assert_rollout_healed_through_pending
-
-    history = _replay(["Running", INJECT, "Pending", "Running", INJECT, "Pending", "Running"])
-    assert_rollout_healed_through_pending(_injector_with_history(history))
-
-
-def test_the_rollout_witness_rejects_one_recovery_standing_in_for_two_injections() -> None:
-    """Regression: independent 'injected twice' and 'healed once' assertions passed this run."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import assert_rollout_healed_through_pending
-
-    history = _replay(["Running", INJECT, "Pending", "Running", INJECT, "Running"])
-    with pytest.raises(AssertionError, match="followed by no"):
-        assert_rollout_healed_through_pending(_injector_with_history(history))
-
-
-def test_the_rollout_witness_rejects_a_single_recovery() -> None:
-    """One heal could be a fluke, so the soak must witness the floor of two."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import assert_rollout_healed_through_pending
-
-    history = _replay(["Running", INJECT, "Pending", "Running"])
-    with pytest.raises(AssertionError, match="need >= 2"):
-        assert_rollout_healed_through_pending(_injector_with_history(history))
-
-
-def test_the_rollout_witness_tolerates_a_recovery_that_training_end_cut_short() -> None:
-    """A cell still out of Running when training stops is unfinished, not a healing failure."""
-    from tests.e2e.ft.conftest_ft.scenario_ft_random import assert_rollout_healed_through_pending
-
-    history = _replay(["Running", INJECT, "Pending", "Running", INJECT, "Pending", "Running", INJECT, "Pending"])
-    assert_rollout_healed_through_pending(_injector_with_history(history))
+    assert witness.num_completed_recoveries(cell_type="rollout") == 0
+    assert witness.num_completed_recoveries(cell_type="actor") == 1
 
 
 def _mode(*ft_components: str) -> FTTestMode:
@@ -469,3 +400,144 @@ def test_a_mixed_soak_targets_every_kind() -> None:
     from tests.e2e.ft.conftest_ft.scenario_ft_random import compute_injected_cell_type
 
     assert compute_injected_cell_type(_mode("train", "rollout")) is None
+
+
+def test_stop_and_join_takes_one_last_snapshot_before_the_witness_is_read() -> None:
+    """Regression: a recovery completing after the final poll must not be lost to a race."""
+    handle = fi.FaultInjectorHandle(base_url="http://control", seed=0, mean_interval_seconds=1e9, cell_type="rollout")
+
+    with patch.object(fi, "requests") as mock_requests:
+        mock_requests.get.side_effect = lambda url, timeout: _mock_response(
+            {"items": [_staged("rollout-engine-0", _SERVING)]}
+        )
+        handle.start()
+        handle.stop_and_join(timeout_seconds=5)
+
+    assert handle.recovery_witness.states_of_cell_name == {"rollout-engine-0": [_SERVING]}
+
+
+class TestRecoveryWitnessPairing:
+    def test_another_cells_relaunch_cannot_complete_the_injected_cells_recovery(self) -> None:
+        """A sibling engine's relaunch-and-serve cycle must not discharge the injected cell's debt."""
+        witness = fi.RecoveryWitness()
+        witness.observe([_staged("rollout-engine-0", _SERVING), _staged("rollout-engine-1", _SERVING)])
+        witness.note_injected("rollout-engine-0")
+        for sibling_state in [_PENDING, _SERVING]:
+            witness.observe([_staged("rollout-engine-0", _SERVING), _staged("rollout-engine-1", sibling_state)])
+
+        assert witness.num_injections(cell_type="rollout") == 1
+        assert witness.num_completed_recoveries(cell_type="rollout") == 0
+        assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {"rollout-engine-0": 1}
+
+    def test_relaunch_observed_before_injection_does_not_count_as_recovery(self) -> None:
+        """The cycle must be ordered injection then relaunch then serving, not merely present in the history."""
+        witness = _witness_of([_SERVING, _PENDING, _SERVING], inject_before={2: 1})
+
+        assert witness.num_injections(cell_type="rollout") == 1
+        assert witness.num_completed_recoveries(cell_type="rollout") == 0
+        assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {"rollout-engine-0": 1}
+
+
+class TestFaultInjectionLoopErrorHandling:
+    def test_list_cells_failure_is_retried_without_recording_recovery(self) -> None:
+        """A transient outage after injection must preserve pending recovery debt and retry."""
+        cells = [_staged("rollout-engine-0", _SERVING), _staged("rollout-engine-1", _SERVING)]
+        witness = fi.RecoveryWitness()
+        injected: list[str] = []
+        debt_around_failure: list[dict[str, int]] = []
+        stop_event = threading.Event()
+        polls = {"n": 0}
+
+        def fake_get(url: str, timeout: float) -> MagicMock:
+            polls["n"] += 1
+            if polls["n"] in {2, 3}:
+                debt_around_failure.append(witness.cells_with_unfinished_recovery(cell_type="rollout"))
+            if polls["n"] == 2:
+                raise RuntimeError("api server unreachable")
+            if polls["n"] >= 6:
+                stop_event.set()
+            return _mock_response({"items": cells})
+
+        def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+            injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+            return _mock_response({})
+
+        with patch.object(fi, "requests") as mock_requests:
+            mock_requests.get.side_effect = fake_get
+            mock_requests.post.side_effect = fake_post
+            fi.run_fault_injection_loop(
+                base_url="http://control",
+                seed=0,
+                mean_interval_seconds=1e-12,
+                stop_event=stop_event,
+                on_successful_injection=lambda: None,
+                cell_type=None,
+                recovery_witness=witness,
+                poll_interval_seconds=1e-6,
+            )
+
+        assert len(injected) == 1, injected
+        expected_debt: dict[str, int] = {injected[0]: 1}
+        assert debt_around_failure == [expected_debt, expected_debt]
+        assert witness.states_of_cell_name == {"rollout-engine-0": [_SERVING], "rollout-engine-1": [_SERVING]}
+        assert witness.num_injections(cell_type="rollout") == 1
+        assert witness.num_completed_recoveries(cell_type="rollout") == 0
+        assert witness.cells_with_unfinished_recovery(cell_type="rollout") == expected_debt
+
+    def test_failed_fault_post_is_not_counted_and_is_retried(self) -> None:
+        """A rejected inject-fault call must leave the soak free to try again, and must not inflate the tally."""
+        cells = [_staged("rollout-engine-0", _SERVING), _staged("rollout-engine-1", _SERVING)]
+        witness = fi.RecoveryWitness()
+        attempts: list[str] = []
+        successes = {"n": 0}
+        stop_event = threading.Event()
+        polls = {"n": 0}
+
+        def fake_get(url: str, timeout: float) -> MagicMock:
+            polls["n"] += 1
+            if polls["n"] >= 5:
+                stop_event.set()
+            return _mock_response({"items": cells})
+
+        def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+            attempts.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+            if len(attempts) == 1:
+                raise RuntimeError("inject-fault refused")
+            return _mock_response({})
+
+        def note_success() -> None:
+            successes["n"] += 1
+
+        with patch.object(fi, "requests") as mock_requests:
+            mock_requests.get.side_effect = fake_get
+            mock_requests.post.side_effect = fake_post
+            fi.run_fault_injection_loop(
+                base_url="http://control",
+                seed=0,
+                mean_interval_seconds=1e-6,
+                stop_event=stop_event,
+                on_successful_injection=note_success,
+                cell_type=None,
+                recovery_witness=witness,
+                poll_interval_seconds=1e-6,
+            )
+
+        assert len(attempts) == 2, attempts
+        assert successes["n"] == 1
+        assert witness.num_injections(cell_type="rollout") == 1
+
+
+class TestUntypedInjectionSelection:
+    def test_untyped_run_injects_rollout_when_only_rollout_has_a_spare(self) -> None:
+        """The mirror of the trainer case: untyped selection must not be hard-coded to actor cells."""
+        injected = _run_typed_injection_loop(
+            [
+                _typed_cell("actor-0", "actor"),
+                _typed_cell("rollout-engine-0", "rollout"),
+                _typed_cell("rollout-engine-1", "rollout"),
+            ],
+            cell_type=None,
+        )
+
+        assert injected
+        assert all(name.startswith("rollout-engine-") for name in injected), injected
