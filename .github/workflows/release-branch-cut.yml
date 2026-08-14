@@ -1,16 +1,17 @@
+# doc-dev: docs/ci/04-release.md
 name: Release Branch Cut
-# The branch name is stamped into run-name so release-tag.yml can find this
-# run by title when it verifies the CI gate.
+# The branch name in run-name identifies the operator run; release-tag.yml
+# gates on the per-SHA release-ci commit status, not on this title.
 run-name: Release Branch Cut ${{ inputs.branch_name }}
 #
 # Creates a release/vX.Y.Z branch from main, freezes the dependency triplet
-# into release-lock.json on that branch, then runs the full-scope (weekly
-# cadence) CI suites against it. Re-dispatching on an existing branch skips
+# into release-lock.json on that branch, then runs the full-scope release
+# cadence CI suites against it. Re-dispatching on an existing branch skips
 # creation and just re-runs the tests (e.g. after a cherry-pick).
 #
-# A miles version is a frozen triplet (miles + sglang-miles + miles-main), not
-# one repo — see docs/developer/versions.md. The lockfile is what makes the
-# tested combination and the released image the same combination.
+# A Miles version freezes the repository commit plus the SGLang and Megatron-LM
+# commits; see docs/developer/versions.md. The lockfile also names the CUDA CI
+# image, while wheel fingerprints are audit records and ROCm remains smoke-only.
 
 on:
   workflow_dispatch:
@@ -99,7 +100,7 @@ jobs:
           SGLANG_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
           MEGATRON_SHA=$(git ls-remote https://github.com/radixark/Megatron-LM refs/heads/miles-main | cut -f1)
 
-          # Latest timestamped dev tag = a frozen image for the release CI run.
+          # Prefer the latest timestamped dev tag; fall back to mutable dev if none exists.
           DEV_IMAGE_TAG=$(curl -s "https://hub.docker.com/v2/repositories/radixark/miles/tags/?page_size=100&name=dev-" \
             | python3 -c "import sys, json, re; names = [t['name'] for t in json.load(sys.stdin)['results']]; c = sorted(n for n in names if re.fullmatch(r'dev-\d{12}', n)); print(c[-1] if c else 'dev')")
 
@@ -133,9 +134,9 @@ jobs:
             echo "## Release Branch Cut"
             echo "- Branch: \`${{ github.event.inputs.branch_name }}\`"
             echo "- CI image: \`radixark/miles:${{ steps.freeze.outputs.ci_image_tag }}\`"
-            echo "- Full-scope CI runs below. Once this run is fully green, tag with:"
-            echo "  \`gh workflow run release-tag.yml -f version=X.Y.Z -f ref=${{ github.event.inputs.branch_name }}\`"
-            echo "  (release-tag checks the release-ci commit status this run stamps on the tested commit)"
+            echo "- Once fully green, confirm the branch still points to the tested SHA, keep it frozen, then tag:"
+            echo "  \`gh workflow run release-tag.yml -f version=X.Y.Z -f ref=${{ steps.freeze.outputs.tested_sha }}\`"
+            echo "  (release-tag checks release-ci on this SHA but does not compare the remote branch tip)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   run-tests-cuda:

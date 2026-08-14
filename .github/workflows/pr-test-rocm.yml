@@ -7,8 +7,8 @@ name: PR Test (ROCm)
 #
 # Test selection is explicit rather than inherited from the CUDA suites. The
 # shared CI policy selects matching register_rocm_ci() labels for PR/nightly
-# runs and the full label scope for weekly; manual dispatch keeps the full
-# regular MI350 suite.
+# runs and the full scope for weekly or explicitly called release runs; manual
+# dispatch keeps the full regular MI350 suite.
 #
 # The MI350 host is split into two 4-GPU runners, so this stage is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its

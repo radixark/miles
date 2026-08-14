@@ -1,3 +1,4 @@
+# doc-dev: docs/ci/04-release.md
 name: Bot Cherry Pick to Release Branch
 # Picks a merged main PR (or a raw commit) onto a release branch. Re-dispatch
 # release-branch-cut.yml on the branch afterwards to re-run the full CI.

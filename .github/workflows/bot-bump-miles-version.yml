@@ -1,3 +1,4 @@
+# doc-dev: docs/ci/04-release.md
 name: Bot Bump Miles Version
 # Optional convenience for release step ①: a hand-opened PR editing setup.py's
 # version line (via .github/scripts/release/bump_miles_version.py) is fully equivalent
@@ -7,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       new_version:
-        description: 'New miles version (e.g., 0.3.0 or 0.3.0rc0)'
+        description: 'Base Miles version (X.Y.Z only; e.g., 0.3.0)'
         required: true
         type: string
 

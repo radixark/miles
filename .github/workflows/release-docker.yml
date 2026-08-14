@@ -1,11 +1,14 @@
+# doc-dev: docs/ci/04-release.md
 name: Release Docker Images
 #
-# Triggered by a vX.Y.Z tag push (from release-tag.yml). Builds and publishes:
+# release-tag.yml dispatches this workflow explicitly after its GITHUB_TOKEN
+# tag push; independently pushed matching tags and manual retries also run it.
+# Builds and publishes:
 #   - radixark/miles:v{version}        (cu13, amd64+arm64)
 #   - radixark/miles:v{version}-cu12   (cu12.9, amd64)
-# Every dependency build-arg is pinned from the tag's release-lock.json, and
-# MILES_COMMIT is the tagged SHA — so the image is the frozen triplet the
-# release branch CI tested, not the branch heads at build time.
+# SGLANG_COMMIT and MEGATRON_COMMIT come from release-lock.json; MILES_COMMIT
+# is the checked-out SHA. Wheel release tags remain rolling inputs whose
+# lockfile fingerprints are audit records, not restored build inputs.
 
 on:
   push:
