@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import re
 from typing import Any, Literal
 
@@ -177,6 +178,37 @@ def _assert_no_declared_critic(raw: "_RawMegatronConfig") -> None:
         f"--megatron-config declares a critic for {declared}, which is not supported yet: the critic "
         f"checkpoint, learning rate and neutralized knobs are only applied to the critic the run "
         f"synthesizes itself from --use-critic"
+    )
+
+
+# ---------------------------- checkpoint dirs -----------------------------
+
+
+def resolve_args_checkpoint_load(args: argparse.Namespace) -> None:
+    # TODO: During loading, we need to set the start_rollout_id here.
+    if args.megatron_to_hf_mode == "bridge":
+        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
+        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
+        # Mirrors the non-bridge branch below.
+        if not _has_megatron_checkpoint(args.load):
+            args.load = args.ref_load or args.hf_checkpoint
+            args.start_rollout_id = 0
+    else:
+        if not _has_megatron_checkpoint(args.load):
+            args.no_load_optim = True
+            args.no_load_rng = True
+            args.finetune = True
+            args.load = args.ref_load
+            if args.ref_ckpt_step is not None:
+                args.ckpt_step = args.ref_ckpt_step
+            args.start_rollout_id = 0
+
+
+def _has_megatron_checkpoint(load_dir: str | None) -> bool:
+    return (
+        load_dir is not None
+        and os.path.exists(load_dir)
+        and os.path.exists(os.path.join(load_dir, "latest_checkpointed_iteration.txt"))
     )
 
 
