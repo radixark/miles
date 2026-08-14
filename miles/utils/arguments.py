@@ -26,6 +26,7 @@ from miles.utils.megatron_args_utils import compute_megatron_world_size_except_d
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
+from miles.utils.workers.argv_utils import with_relax_parser_required_args
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend, resolve_worker_comm_backend
 
 logger = logging.getLogger(__name__)
@@ -2678,7 +2679,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
 
         def add_user_provided_function_arguments(parser):
             try:
-                args_partial, _ = parser.parse_known_args()
+                with with_relax_parser_required_args(parser):
+                    args_partial, _ = parser.parse_known_args()
             except SystemExit:
                 return parser
             paths = [args_partial.custom_inference_engine_provider_path]
