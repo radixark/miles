@@ -14,6 +14,7 @@ import pytest
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
 from miles.utils.async_utils import run
 from miles.utils.http_utils import find_available_port, init_http_client
@@ -237,10 +238,17 @@ def with_session_server(
     # caller's per-port map, where OpenAIEndpointTracer.create reads it from.
     instance_id = uuid.uuid4().hex
     args.session_server_instance_ids = {port: instance_id}
-    server_args = copy.deepcopy(args)
-    server_args.miles_router_timeout = 30
-    server_args.session_server_instance_id = instance_id
-    session_server = SessionServer(server_args, backend_url=backend_url)
+    # Sample assembly runs inside the server, so the R3 decode shape args
+    # must reach the server config (set them via args_kwargs BEFORE the
+    # server starts; assigning to the driver args afterwards has no effect).
+    config = compute_session_server_config(
+        args,
+        host="127.0.0.1",
+        port=port,
+        instance_id=instance_id,
+        backend_url=backend_url,
+    )
+    session_server = SessionServer(config)
 
     server = UvicornThreadServer(session_server.app, host="127.0.0.1", port=port)
     server.start()
