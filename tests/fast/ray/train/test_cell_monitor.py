@@ -12,7 +12,7 @@ from miles.ray.train.cell_state import (
     StateStopped,
 )
 from miles.utils.ft_utils.api_server.models import TriState
-from miles.utils.ft_utils.health_checker import ActivenessState, SimpleHealthCheckerConfig
+from miles.utils.ft_utils.health_checker import ActiveAndEpoch, SimpleHealthCheckerConfig
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 
 
@@ -125,7 +125,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
-            get_activeness=lambda: ActivenessState(active=True, epoch=0),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         )
 
         await checker._check_fn()
@@ -141,7 +141,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
-            get_activeness=lambda: ActivenessState(active=True, epoch=0),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         )
 
         with pytest.raises(ray.exceptions.RayActorError):
@@ -156,7 +156,7 @@ class TestTrainerCellHealthCheckLiveness:
         checker = create_trainer_cell_health_checker(
             cell=cell,
             config=SimpleHealthCheckerConfig(interval=10.0, timeout=10.0, first_wait=0.0, failure_threshold=3),
-            get_activeness=lambda: ActivenessState(active=True, epoch=0),
+            get_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         )
 
         await checker._check_fn()
