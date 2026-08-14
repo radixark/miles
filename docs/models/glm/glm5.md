@@ -32,7 +32,7 @@ python scripts/run_glm5_744b_a40b.py prepare --model-name GLM-5 --num-nodes 16
 
 ### 3.2 HF → Megatron `torch_dist` conversion
 
-Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`) and fails fast if it does not, then converts it to the `glm5-744B-A40B` Megatron model type. Run `prepare-cp` afterwards on every node to copy the converted checkpoint from shared NFS to local disk.
+Also handled by `prepare`. Before conversion the launcher validates, via `_validate_glm_checkpoint`, that the checkpoint uses the native GLM-5 config (`model_type=glm_moe_dsa`, `architectures=[GlmMoeDsaForCausalLM]`) and fails fast if it does not, then converts it to the `glm5-744B-A40B` Megatron model type. Training itself copies the converted checkpoint from shared NFS to each node's local disk before it starts.
 
 ## 4. Launch
 
@@ -42,7 +42,7 @@ Also handled by `prepare`. Before conversion the launcher validates, via `_valid
 python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes 16
 ```
 
-The Typer app exposes four subcommands:
+The Typer app exposes three subcommands:
 
 ```bash
 python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <N>
@@ -50,10 +50,7 @@ python scripts/run_glm5_744b_a40b.py full-train --model-name GLM-5 --num-nodes <
 # Just download model + datasets and convert to Megatron
 python scripts/run_glm5_744b_a40b.py prepare    --model-name GLM-5 --num-nodes <N>
 
-# Copy converted checkpoint from shared NFS to local disk (run on every node)
-python scripts/run_glm5_744b_a40b.py prepare-cp --model-name GLM-5 --num-nodes <N>
-
-# Train only (assumes prepare/prepare-cp done)
+# Train only (assumes prepare done); copies the checkpoint to each node's local disk first
 python scripts/run_glm5_744b_a40b.py train      --model-name GLM-5 --num-nodes <N>
 ```
 
