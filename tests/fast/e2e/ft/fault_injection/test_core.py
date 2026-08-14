@@ -122,6 +122,36 @@ def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> li
     return injected
 
 
+def test_a_stop_that_arrives_while_listing_buys_no_further_injection() -> None:
+    """A fault injected on the way out is one nothing is left polling to see recover."""
+    injected: list[str] = []
+    stop_event = threading.Event()
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        stop_event.set()
+        return mock_response({"items": [typed_cell("actor-0", "actor"), typed_cell("actor-1", "actor")]})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        injected.append(url)
+        return mock_response({})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        mock_requests.post.side_effect = fake_post
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-9,
+            stop_event=stop_event,
+            cell_type=None,
+            event_log=state.EventLog(),
+            cell_fault_forms=api_server_fault_forms(),
+            poll_interval_seconds=1e-6,
+        )
+
+    assert injected == []
+
+
 def test_injection_can_be_restricted_to_one_kind_of_cell() -> None:
     """Rollout and trainer cells share one api server, so a run targets one kind at a time."""
     injected = _run_typed_injection_loop(
