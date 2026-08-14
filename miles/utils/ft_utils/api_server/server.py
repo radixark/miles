@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections.abc import Callable
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -17,6 +19,9 @@ from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
 logger = logging.getLogger(__name__)
 
+_API_SERVER_STARTUP_TIMEOUT_SECONDS = 30.0
+_THREAD_READY_POLL_INTERVAL_SECONDS = 0.05
+
 
 # -------------------------- entrypoint ------------------------------
 
@@ -24,7 +29,7 @@ logger = logging.getLogger(__name__)
 def start_api_server(
     *,
     args,
-    actor_model: RayTrainGroup,
+    actor_model: TrainerController,
     inference_controller: object,
     port: int,
     ft_components: list[str],
@@ -54,15 +59,17 @@ def start_api_server(
     _start_api_server_raw(registry=_CellRegistry(handlers), port=port)
 
 
-def _start_api_server_raw(registry: _CellRegistry, port: int) -> None:
+def _start_api_server_raw(registry: _CellRegistry, port: int) -> uvicorn.Server:
     app = _create_api_app(registry)
 
-    def _run() -> None:
-        uvicorn.run(app, host="0.0.0.0", port=port)
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    logger.info("Api server started on port %d", port)
+    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port))
+    _start_and_wait_thread(
+        target=server.run,
+        is_ready=lambda: server.started,
+        description=f"Api server on port {port}",
+        timeout_seconds=_API_SERVER_STARTUP_TIMEOUT_SECONDS,
+    )
+    return server
 
 
 # -------------------------- main app ------------------------------
@@ -152,3 +159,39 @@ class _K8sError(Exception):
         self.status_code = status_code
         self.reason = reason
         self.message = message
+
+
+# -------------------------- thread startup ------------------------------
+
+
+def _start_and_wait_thread(
+    *,
+    target: Callable[[], None],
+    is_ready: Callable[[], bool],
+    description: str,
+    timeout_seconds: float,
+) -> threading.Thread:
+    error: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            target()
+        except BaseException as err:  # noqa: BLE001 - re-raised on the caller thread below
+            logger.error("%s died", description, exc_info=True)
+            error.append(err)
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    deadline = time.monotonic() + timeout_seconds
+    while not is_ready():
+        if error:
+            raise RuntimeError(f"{description} failed during startup") from error[0]
+        if not thread.is_alive():
+            raise RuntimeError(f"{description} exited during startup")
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"{description} did not finish startup within {timeout_seconds}s")
+        time.sleep(_THREAD_READY_POLL_INTERVAL_SECONDS)
+
+    logger.info("%s started", description)
+    return thread
