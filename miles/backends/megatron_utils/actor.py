@@ -17,7 +17,7 @@ from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_co
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import async_utils, train_dump_utils
+from miles.utils import async_utils, object_store, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -27,6 +27,7 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.object_store import ValueSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -71,6 +72,8 @@ if TYPE_CHECKING:
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+CRITIC_VALUES_VALUE_SPEC: dict[str, ValueSpec] = {"values": ValueSpec(codec="auto")}
 
 
 def _setup_disk_offload_reclaim(disk_dir: str) -> None:
@@ -457,7 +460,10 @@ class MegatronTrainRayActor(TrainRayActor):
         values = None
         if get_parallel_state().is_pp_last_stage and "values" in rollout_data:
             # Ship by object reference
-            values = Box(ray.put([value.detach().cpu() for value in rollout_data["values"]]))
+            values = object_store.get_instance().put(
+                value={"values": [value.detach().cpu() for value in rollout_data["values"]]},
+                value_spec=CRITIC_VALUES_VALUE_SPEC,
+            )
         return TrainStepOutput(outcome=train_step_outcome, values=values)
 
     def _use_rollout_replay(self, m) -> bool:
@@ -551,9 +557,10 @@ class MegatronTrainRayActor(TrainRayActor):
                             "actor and critic share the same parallel topology, so the critic rank "
                             "paired with a pp-last-stage actor rank must have shipped 'values'"
                         )
+                        shipped = object_store.get_instance().get(values_ref).value
                         rollout_data["values"] = [
                             value.to(device=torch.cuda.current_device(), non_blocking=True)
-                            for value in ray.get(values_ref.inner)
+                            for value in shipped["values"]
                         ]
                 if self._active_model_tag != "actor":
                     self._switch_model("actor")
