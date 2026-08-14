@@ -38,6 +38,7 @@ from tests.ci.ci_policy import (
 from tests.ci.ci_register import CIRegistry, HWBackend, discover_ci_files, register_cpu_ci
 from tests.ci.labels import KNOWN_LABELS
 from tests.ci.run_suite import CI_SUITES, build_cpu_pytest_cmd, filter_tests
+from tests.ci.stage_selection import PR_GPU_STAGES
 
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
@@ -340,6 +341,10 @@ class TestWorkflowScopeSeam:
         assert "cadence: ${{ steps.resolve.outputs.cadence }}" in policy_block
         assert "raw_labels: ${{ steps.resolve.outputs.raw_labels }}" in policy_block
         assert "bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}" in policy_block
+        assert "skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}" in policy_block
+        assert "fetch-depth: 2" in policy_block
+        assert "git diff --name-status -z -M HEAD^1 HEAD" in policy_block
+        assert "CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z" in policy_block
         assert 'case "$EVENT_NAME"' not in policy_block
         assert "jq " not in policy_block
 
@@ -392,6 +397,17 @@ class TestWorkflowScopeSeam:
         assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 5
         assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 5
 
+    def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
+        workflow = self._workflow()
+        cuda_stages = PR_GPU_STAGES - {"stage-c-4-gpu-mi350"}
+        for stage_name in cuda_stages:
+            block = workflow.split(f"  {stage_name}:", 1)[1]
+            block = re.split(r"^  [A-Za-z_][A-Za-z0-9_-]*:\s*$", block, maxsplit=1, flags=re.MULTILINE)[0]
+            expected = f"!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), '{stage_name}')"
+            assert expected in block
+
+        assert workflow.count("outputs.skipped_stages || '[]'") == len(cuda_stages)
+
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
         # schedule outranks the workflow_call-only inputs.ref segment, so cron
@@ -436,6 +452,9 @@ class TestRocmWorkflowScopeSeam:
         assert "EVENT_NAME: ${{ github.event_name }}" in policy_block
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
+        assert "CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z" in policy_block
+        assert "git diff --name-status -z -M HEAD^1 HEAD" in policy_block
+        assert "skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}" in policy_block
         assert "run: python -m tests.ci.ci_policy" in policy_block
         assert "github.event.schedule || inputs.ref || github.run_id" in workflow
 
@@ -454,6 +473,12 @@ class TestRocmWorkflowScopeSeam:
         assert "--labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}" in command
         assert "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}" in command
         assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
+        assert "needs.resolve-ci-policy.result == 'success'" in stage
+        assert "needs.resolve-ci-image.result == 'success'" in stage
+        assert (
+            "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
+            in stage
+        )
         assert "--labels amd" not in command
         assert "if: github.event_name == 'workflow_dispatch'" not in workflow
 

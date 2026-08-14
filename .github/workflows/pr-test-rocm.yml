@@ -64,6 +64,7 @@ jobs:
       cadence: ${{ steps.resolve.outputs.cadence }}
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
+      skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
     steps:
       - name: Checkout repository
         # Deliberately not inputs.ref: this job executes ci_policy.py, so it
@@ -72,7 +73,16 @@ jobs:
         # jobs check out the release ref.
         uses: actions/checkout@v4
         with:
+          fetch-depth: 2
           persist-credentials: false
+      - name: Collect PR changed files
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          if ! git diff --name-status -z -M HEAD^1 HEAD > "$RUNNER_TEMP/changed-files.z"; then
+            rm -f "$RUNNER_TEMP/changed-files.z"
+            echo "::warning::Unable to compute PR diff; all GPU stages remain eligible."
+          fi
       - name: Resolve CI policy inputs
         id: resolve
         env:
@@ -82,6 +92,7 @@ jobs:
           # workflow_call inherits the caller's event_name, so the cadence must
           # be passed explicitly rather than inferred from the trigger.
           CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
+          CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
@@ -106,6 +117,11 @@ jobs:
 
   stage-c-4-gpu-mi350:
     needs: [resolve-ci-policy, resolve-ci-image]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
     # One shard per 4-GPU runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
     # shard's failure does not cancel the other mid-run.

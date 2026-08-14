@@ -4,7 +4,14 @@ import subprocess
 import sys
 import tempfile
 
-from tests.ci.ci_policy import CI_CADENCES, NIGHTLY_CADENCE, REGULAR_CADENCE, RunPolicy, resolve_policy
+from tests.ci.ci_policy import (
+    CI_CADENCES,
+    NIGHTLY_CADENCE,
+    REGULAR_CADENCE,
+    RunPolicy,
+    registration_matches_selection,
+    resolve_policy,
+)
 from tests.ci.ci_register import CIRegistry, HWBackend, collect_tests, discover_ci_files
 from tests.ci.ci_utils import (
     CI_GATE_RECORD_DIR_ENV,
@@ -73,10 +80,19 @@ def filter_tests(
     if suite not in valid_suites:
         raise ValueError(f"Unknown suite {suite} for backend {hw.name}")
 
-    ci_tests = [t for t in ci_tests if t.backend == hw and t.suite == suite and (not t.nightly or admit_nightly_tests)]
-
     label_set: set[str] = labels or set()
-    ci_tests = [t for t in ci_tests if not t.labels or (set(t.labels) & label_set)]
+    ci_tests = [
+        t
+        for t in ci_tests
+        if t.backend == hw
+        and t.suite == suite
+        and registration_matches_selection(
+            t.labels,
+            t.nightly,
+            admit_nightly_tests=admit_nightly_tests,
+            include_labels=label_set,
+        )
+    ]
 
     enabled_tests = [t for t in ci_tests if t.disabled is None]
     skipped_tests = [t for t in ci_tests if t.disabled is not None]
