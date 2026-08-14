@@ -20,7 +20,7 @@ class RpcServer:
     def __init__(self, *, worker: object) -> None:
         self._specs = collect_rpc_method_specs(type(worker))
         self._store = CallStore()
-        self._executor = RpcCallExecutor(worker=worker)
+        self._executor = RpcCallExecutor(worker=worker, specs=self._specs)
         log_structured(
             logger.info,
             tag="rpc",
@@ -28,6 +28,7 @@ class RpcServer:
             phase="boot",
             worker=type(worker).__name__,
             methods=len(self._specs),
+            groups=self._executor.concurrency_groups,
         )
 
     def submit_call(self, *, method_name: str, request: SubmitRequest) -> SubmitResponse:
