@@ -5,11 +5,11 @@ import urllib.request
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
 
-TIGHT_DEVICE_MEMORY = U.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
+TIGHT_DEVICE_MEMORY = command_utils.get_bool_env_var("MILES_TEST_TIGHT_DEVICE_MEMORY", "1")
 
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
@@ -21,6 +21,7 @@ TEACHER_PORT = 13141
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
@@ -84,6 +85,7 @@ def _launch_teacher_server(teacher_gpu: str):
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     train_gpus, teacher_gpu = _get_gpu_split()
     teacher_process = None
 
@@ -187,7 +189,7 @@ def execute():
             f"{rollout_args} "
             f"{optimizer_args} "
             f"{grpo_args} "
-            f"{U.get_default_wandb_args(__file__)} "
+            f"{command_utils.get_default_wandb_args(__file__)} "
             f"{perf_args} "
             f"{eval_args} "
             f"{sglang_args} "

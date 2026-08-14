@@ -22,7 +22,6 @@ else:
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
 
 # Smoke test for the GLM-5.2 (glm_moe_dsa) training script. Exercises the DSA
 # cross-layer index-sharing path (5 layers = 3 dense + 2 MoE, computing layers
@@ -56,6 +55,7 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.output_dir}")
     _prepare_download(args)
     _validate_glm_checkpoint(args)

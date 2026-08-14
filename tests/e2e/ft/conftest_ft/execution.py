@@ -9,7 +9,7 @@ from pathlib import Path
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
 _MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"
@@ -36,6 +36,7 @@ def _get_hf_num_layers(model_path: str) -> int:
 
 
 def prepare(mode: FTTestMode) -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
     U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
 
@@ -148,7 +149,7 @@ def get_common_train_args(
         f"{mode.parallel_args} "
         f"{misc_args} "
         f"{dumper_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
     )
 
     return train_args
@@ -186,7 +187,9 @@ def run_training(
     *,
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
+    config: command_utils.ExecuteTrainConfig | None = None,
 ) -> None:
+    U = command_utils.default_config().create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     merged_env_vars = {

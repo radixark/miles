@@ -2,7 +2,7 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 # FIXME: need to modify megatron, better fix later.
 register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h100", labels=["ckpt"], disabled="Disabled due to bugs.")
@@ -27,6 +27,7 @@ def _get_latest_checkpointed_iteration() -> int:
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download zai-org/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu(f"rm -rf /root/models/{MODEL_NAME}_miles")
@@ -42,6 +43,7 @@ def prepare():
 
 
 def execute(mode: str = "", ckpt_step: int | None = None):
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
     if mode == "save":
         ckpt_args += f"--save /root/models/{MODEL_NAME}_miles "
@@ -163,7 +165,7 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
