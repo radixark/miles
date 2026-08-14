@@ -43,6 +43,26 @@
 {{- end }}
 {{- end }}
 
+{{- define "miles-workbench.uninstallerRoleRules" -}}
+- apiGroups: [""]
+  resources: ["configmaps", "secrets", "serviceaccounts", "services", "pods"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings"]
+  verbs: ["get", "list", "delete"]
+{{- if .Values.rbac.leaderWorkerSets }}
+- apiGroups: ["leaderworkerset.x-k8s.io"]
+  resources: ["leaderworkersets"]
+  verbs: ["get", "list", "delete"]
+{{- end }}
+{{- end }}
+
 {{- define "miles-workbench.infraConfigMapName" -}}
 {{- printf "%s-infra" (include "miles-workbench.fullname" .) }}
 {{- end }}
