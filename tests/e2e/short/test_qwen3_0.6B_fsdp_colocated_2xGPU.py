@@ -82,6 +82,8 @@ def execute():
         "--update-weight-buffer-size 536870912 "  # 512MB
     )
 
+    perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 9216 "
+
     ci_args = (
         "--ci-test "
         "--ci-disable-kl-checker "
@@ -100,6 +102,7 @@ def execute():
         f"{U.get_default_wandb_args(__file__)} "
         f"{eval_args} "
         f"{fsdp_args} "
+        f"{perf_args} "
         f"{ci_args} "
         f"{misc_args} "
     )
