@@ -361,7 +361,12 @@ class MilesSGLangTransport:
             "choices": [
                 {
                     "token_ids": completion_ids,
-                    "logprobs": {"content": [{"logprob": value} for value in completion_logprobs]},
+                    "logprobs": {
+                        "content": [
+                            {"token": f"token_id:{token_id}", "logprob": logprob}
+                            for token_id, logprob in zip(completion_ids, completion_logprobs, strict=True)
+                        ]
+                    },
                     "finish_reason": _finish_reason(output),
                 }
             ],

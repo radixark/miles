@@ -553,7 +553,16 @@ async def test_transport_translates_renderer_request_to_sglang(monkeypatch):
         options={"headers": {"X-Session-ID": "trace-id"}},
     )
 
-    assert response.json()["choices"][0]["token_ids"] == [20, 21]
+    assert response.json()["choices"][0] == {
+        "token_ids": [20, 21],
+        "logprobs": {
+            "content": [
+                {"token": "token_id:20", "logprob": -0.1},
+                {"token": "token_id:21", "logprob": -0.2},
+            ]
+        },
+        "finish_reason": "stop",
+    }
     assert requests == [
         (
             "http://127.0.0.1:30000/generate",
