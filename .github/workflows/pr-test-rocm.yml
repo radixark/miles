@@ -7,8 +7,8 @@ name: PR Test (ROCm)
 #
 # Test selection is explicit rather than inherited from the CUDA suites. The
 # shared CI policy selects matching register_rocm_ci() labels for PR/nightly
-# runs and the full label scope for weekly; manual dispatch keeps the full
-# regular MI350 suite.
+# runs and the full scope for weekly or explicitly called release runs; manual
+# dispatch keeps the full regular MI350 suite.
 #
 # The MI350 host is split into two 4-GPU runners, so this stage is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
@@ -35,12 +35,26 @@ on:
         required: false
         type: string
         default: 'miles-rocm720-mi35x'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
+        required: true
+        type: string
+      cadence:
+        description: 'Explicit CI cadence (regular/nightly/weekly/release). Release cuts use release: weekly scope, no baseline writes.'
+        required: false
+        type: string
+        default: 'release'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  # Literal prefix, not github.workflow — see pr-test.yml's concurrency
+  # comment: the caller-resolved name would collide this group with the CUDA
+  # one under a single release-branch-cut run.
+  group: pr-test-rocm-${{ github.event.pull_request.number || github.event.schedule || inputs.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -52,6 +66,10 @@ jobs:
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
     steps:
       - name: Checkout repository
+        # Deliberately not inputs.ref: this job executes ci_policy.py, so it
+        # always runs the triggering commit's copy (CodeQL cache-poisoning
+        # surface). The cadence arrives via CADENCE_OVERRIDE; only the suite
+        # jobs check out the release ref.
         uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -61,6 +79,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # workflow_call inherits the caller's event_name, so the cadence must
+          # be passed explicitly rather than inferred from the trigger.
+          CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
         run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
@@ -97,6 +118,7 @@ jobs:
     with:
       runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2

@@ -29,6 +29,7 @@ import tests.ci.run_suite as run_suite_module
 from tests.ci.ci_policy import (
     NIGHTLY_CADENCE,
     REGULAR_CADENCE,
+    RELEASE_CADENCE,
     SCHEDULE_POLICIES,
     WEEKLY_CADENCE,
     resolve_policy,
@@ -191,6 +192,8 @@ class TestResolvePolicy:
             (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _ALL, True),
             (WEEKLY_CADENCE, set(), _ALL, True),
             (WEEKLY_CADENCE, {"run-ci-image"}, _ALL, True),
+            (RELEASE_CADENCE, set(), _ALL, True),
+            (RELEASE_CADENCE, {"run-ci-image"}, _ALL, True),
         ],
     )
     def test_selection_and_fastfail(self, cadence, labels, expected, bypass):
@@ -198,8 +201,10 @@ class TestResolvePolicy:
         assert policy.cadence == cadence
         assert policy.include_labels == expected
         scheduled_cadence = cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE}
-        assert policy.admit_nightly_tests is scheduled_cadence
+        assert policy.admit_nightly_tests is (scheduled_cadence or cadence == RELEASE_CADENCE)
         assert policy.bypass_fastfail is bypass
+        # Release runs weekly's scope, but its frozen dependency SHAs must
+        # never write the rolling perf baseline.
         assert policy.write_baseline is scheduled_cadence
 
     def test_unknown_cadence_rejected(self):
@@ -235,6 +240,7 @@ class TestResolvePolicy:
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}),
             (NIGHTLY_CADENCE, set()),
             (WEEKLY_CADENCE, set()),
+            (RELEASE_CADENCE, set()),
         ],
     )
     def test_include_set_stays_inside_known_labels(self, cadence, labels):
@@ -354,13 +360,16 @@ class TestWorkflowScopeSeam:
 
     def test_non_pr_concurrency_does_not_collapse_to_ref(self):
         workflow = self._workflow()
-        assert "github.event.schedule || github.run_id" in workflow
+        # schedule outranks the workflow_call-only inputs.ref segment, so cron
+        # runs never share a ref-derived group; plain dispatches (no ref
+        # input) fall through to run_id.
+        assert "github.event.schedule || inputs.ref || github.run_id" in workflow
 
     def test_closed_pr_only_cancels_existing_run(self):
         workflow = self._workflow()
         assert "types: [opened, synchronize, reopened, ready_for_review, labeled, closed]" in workflow
         assert (
-            "group: ${{ github.workflow }}-${{ github.event.number || github.event.schedule || github.run_id }}"
+            "group: pr-test-${{ github.event.number || github.event.schedule || inputs.ref || github.run_id }}"
             in workflow
         )
 
@@ -390,7 +399,7 @@ class TestRocmWorkflowScopeSeam:
         assert "SCHEDULE: ${{ github.event.schedule || '' }}" in policy_block
         assert "PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}" in policy_block
         assert "run: python -m tests.ci.ci_policy" in policy_block
-        assert "github.event.schedule || github.run_id" in workflow
+        assert "github.event.schedule || inputs.ref || github.run_id" in workflow
 
     def test_stage_consumes_policy_and_preserves_manual_full_scope(self):
         workflow = self._workflow()

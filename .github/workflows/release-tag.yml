@@ -1,0 +1,120 @@
+# doc-dev: docs/ci/04-release.md
+name: Release Tag
+# Creates an annotated v<exact-version> tag, then explicitly dispatches
+# release-docker.yml. Use after release-branch-cut.yml is green.
+#
+# Unlike sglang's release-tag.yml, this one refuses to tag blind. It requires
+# a green `release-ci` commit status on the exact commit being tagged — the
+# status release-branch-cut.yml's finalizer job stamps on the tested SHA. A
+# cherry-pick moves the tip to an unstamped commit, so older green runs can
+# never vouch for it. force=true is the deliberate, audited escape hatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to tag, without v prefix (e.g., 0.3.0 or 0.3.0.post1)'
+        required: true
+        type: string
+      ref:
+        description: 'Branch or commit to tag (e.g., release/v0.3.0)'
+        required: true
+        type: string
+      force:
+        description: 'Tag without a verified green branch-cut run (not recommended)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+  statuses: read
+
+jobs:
+  create-tag:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version format
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+((rc|\.post)[0-9]+)?$'; then
+            echo "::error::Invalid version: $VERSION (expected X.Y.Z, X.Y.ZrcN, or X.Y.Z.postN)"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+          fetch-depth: 0
+
+      - name: Verify version matches setup.py
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          # rc/postN tags share the branch with the base release and setup.py
+          # keeps the base version (hotfixes don't bump), so compare X.Y.Z only.
+          BASE_VERSION=$(echo "$VERSION" | sed -E 's/(rc[0-9]+|\.post[0-9]+)$//')
+          if ! grep -q "version=\"${BASE_VERSION}\"" setup.py; then
+            echo "::error::setup.py at '${{ github.event.inputs.ref }}' does not carry version=\"${BASE_VERSION}\" — merge the bump PR (release step ①) and get it onto this branch first"
+            grep -n 'version="' setup.py
+            exit 1
+          fi
+          echo "setup.py version matches ${BASE_VERSION}"
+
+      - name: Verify release CI on this exact commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ github.event.inputs.ref }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            echo "::warning::force=true — tagging without verified release CI"
+            exit 0
+          fi
+
+          SHA=$(git rev-parse HEAD)
+          # Latest status per context; stamped by release-branch-cut's finalizer.
+          STATE=$(gh api "repos/${{ github.repository }}/commits/$SHA/status" \
+            --jq '[.statuses[] | select(.context == "release-ci")][0].state // "absent"')
+          case "$STATE" in
+            success)
+              echo "release-ci on $SHA is success — tagging" ;;
+            absent)
+              echo "::error::No release-ci status on $SHA — this exact commit never completed full release CI (first cut still running, or a cherry-pick moved the tip). Dispatch: gh workflow run release-branch-cut.yml -f branch_name=$REF and wait for green."
+              exit 1 ;;
+            *)
+              echo "::error::release-ci on $SHA is '$STATE' — get the branch-cut run green, then tag."
+              exit 1 ;;
+          esac
+
+      - name: Create and push tag
+        env:
+          VERSION: ${{ github.event.inputs.version }}
+          REF: ${{ github.event.inputs.ref }}
+        run: |
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+          git config user.name "miles-bot"
+          git config user.email "miles-bot@users.noreply.github.com"
+          echo "Tagging $TAG at $(git rev-parse HEAD) (ref $REF)"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+      - name: Trigger release-docker build
+        # A tag pushed with GITHUB_TOKEN does not fire release-docker.yml's
+        # tag trigger (GitHub suppresses workflow-triggering events from
+        # GITHUB_TOKEN), so dispatch it explicitly. The tag trigger stays for
+        # manually pushed tags.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          gh workflow run release-docker.yml -f version="$VERSION" -f ref="v$VERSION"
+          echo "::notice::Dispatched release-docker.yml for v$VERSION"

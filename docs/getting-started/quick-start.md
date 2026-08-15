@@ -205,4 +205,4 @@ size 256.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
 - [Models](/models/index) — recipes for Qwen3.5, GLM5.2, DeepSeek V4, Kimi K2.6, and more.
 
-If you hit issues, the [FAQ](/faq) covers the common ones.
+If you hit issues, feel free to open an issue on [GitHub](https://github.com/radixark/miles/issues).
