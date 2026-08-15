@@ -153,6 +153,27 @@ class _TensorBackuperMainCast(TensorBackuper):
             out[name] = backup
         return out
 
+    @torch.no_grad()
+    def copy(self, *, src_tag: str, dst_tag: str) -> None:
+        """Copy one tag's contents into another tag's pinned backup.
+
+        Only non-actor tags exist as pinned copies under main-cast (the actor
+        tag is rebuilt from master weights, never stored), so dst_tag="actor"
+        is refused. src_tag="actor" reads the current actor weights through
+        get() -- the same asleep-window-safe assembly the weight updater reads
+        (extras from the pinned backup, DDP param buffers live and mapped).
+        """
+        if dst_tag == "actor":
+            raise NotImplementedError(
+                "cannot copy into the 'actor' tag under main-cast weight rebuild: "
+                "the actor has no pinned copy to write into"
+            )
+        src = self.get(src_tag) if src_tag == "actor" else self._others.get(src_tag)
+        dst = self._others.get(dst_tag)
+        for name in dst:
+            dst[name].copy_(src[name])
+        torch.cuda.synchronize()
+
     def _compute_hashes(self) -> dict[str, str]:
         return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}
 
