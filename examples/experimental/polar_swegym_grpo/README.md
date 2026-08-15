@@ -86,7 +86,7 @@ bash examples/polar_swegym_grpo/run.sh
 ```
 
 Override any default via env vars: `HF_CHECKPOINT`, `REF_LOAD`, `PROMPT_DATA`,
-`AGENT_CLI_DIR`, `NUM_ROLLOUT`, `ROLLOUT_BATCH_SIZE`, `N_SAMPLES_PER_PROMPT`,
+`AGENT_CLI_DIR`, `POLAR_AGENT_MODEL`, `NUM_ROLLOUT`, `ROLLOUT_BATCH_SIZE`, `N_SAMPLES_PER_PROMPT`,
 `LORA_RANK`, `KL_LOSS_COEF`, `LR`, and the `SGLANG_ROUTER_*` vars.
 
 ## Expected smoke criteria

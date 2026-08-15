@@ -110,7 +110,8 @@ CUSTOM_CONFIG_PATH="${CUSTOM_CONFIG_PATH:-${RUN_DIR}/polar_config_custom.yaml}"
 # scripts) is left untouched as long as it is not one of the listed vars.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
 mkdir -p "$(dirname "$CUSTOM_CONFIG_PATH")"
-envsubst '${ACCESS_TOKEN_SECRET} ${AGENT_CLI_DIR} ${JWT_SECRET}' \
+export POLAR_AGENT_MODEL="${POLAR_AGENT_MODEL:-gpt-5.4}"
+envsubst '${ACCESS_TOKEN_SECRET} ${AGENT_CLI_DIR} ${JWT_SECRET} ${POLAR_AGENT_MODEL}' \
     < "$POLAR_CONFIG_TEMPLATE" > "$CUSTOM_CONFIG_PATH"
 
 # cuDNN lib path for the runtime LD_LIBRARY_PATH.

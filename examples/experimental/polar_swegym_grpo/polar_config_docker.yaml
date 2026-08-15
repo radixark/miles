@@ -94,7 +94,7 @@ polar_task_template:
   # (dynamic-history); the model served to the agent is the Miles-SGLang router.
   agent:
     harness: "codex"
-    model_name: "gpt-5.4"
+    model_name: "${POLAR_AGENT_MODEL}"
   builder:
     strategy: "prefix_merging"
   evaluator:
