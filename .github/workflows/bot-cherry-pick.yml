@@ -1,0 +1,104 @@
+# doc-dev: docs/ci/04-release.md
+name: Bot Cherry Pick to Release Branch
+# Picks a merged main PR (or a raw commit) onto a release branch. Re-dispatch
+# release-branch-cut.yml on the branch afterwards to re-run the full CI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Merged PR number to cherry-pick (preferred). Provide either pr_number OR commit_sha.'
+        required: false
+        type: string
+      commit_sha:
+        description: 'Commit SHA to cherry-pick (alternative to pr_number).'
+        required: false
+        type: string
+      target_branch:
+        description: 'Target release branch (e.g., release/v0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  cherry-pick:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate inputs
+        env:
+          TARGET_BRANCH: ${{ github.event.inputs.target_branch }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          COMMIT_SHA: ${{ github.event.inputs.commit_sha }}
+        run: |
+          if [[ ! "$TARGET_BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Target branch must match 'release/vX.Y.Z'"
+            exit 1
+          fi
+          if [[ -z "$PR_NUMBER" && -z "$COMMIT_SHA" ]] || [[ -n "$PR_NUMBER" && -n "$COMMIT_SHA" ]]; then
+            echo "::error::Provide exactly one of pr_number or commit_sha"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cherry-pick and push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_BRANCH: ${{ github.event.inputs.target_branch }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          COMMIT_SHA: ${{ github.event.inputs.commit_sha }}
+        run: |
+          git config user.name "miles-bot"
+          git config user.email "miles-bot@users.noreply.github.com"
+
+          if [ -n "$PR_NUMBER" ]; then
+            COMMIT_SHA=$(gh pr view "$PR_NUMBER" --json mergeCommit,state -q '.mergeCommit.oid')
+            if [ -z "$COMMIT_SHA" ] || [ "$COMMIT_SHA" = "null" ]; then
+              echo "::error::PR #$PR_NUMBER has no merge commit (not merged?)"
+              exit 1
+            fi
+          fi
+
+          # Refuse to pick anything that is not on main: fixes land on main first
+          # (review + CI), then get picked. Covers both input paths — a PR merged
+          # into a non-main base also fails this check.
+          if ! git merge-base --is-ancestor "$COMMIT_SHA" origin/main; then
+            echo "::error::Commit $COMMIT_SHA is not on main; only merged main commits can be cherry-picked"
+            exit 1
+          fi
+
+          # The frozen release-v*-ci image is built from the Dockerfile at cut
+          # time: a pick that changes image layers would make CI test the old
+          # image while release-docker publishes an untested new one. Such
+          # fixes ship as a new release (bump + fresh cut), never as a hotfix.
+          # requirements.txt is exempt — CI installs it at runtime and the
+          # release build bakes it, so both sides pick the change up.
+          if git diff --name-only "${COMMIT_SHA}^1" "$COMMIT_SHA" \
+              | grep -qE '^docker/(Dockerfile|build\.py|install-kube-tools\.sh|verify_transformer_engine\.py)$|^docker/patch/'; then
+            echo "::error::Commit $COMMIT_SHA touches image-layer files; the frozen CI image cannot represent it. Ship this as a new release (bump + release-branch-cut) instead of a cherry-pick."
+            git diff --name-only "${COMMIT_SHA}^1" "$COMMIT_SHA" | grep -E '^docker/'
+            exit 1
+          fi
+
+          if ! git ls-remote --exit-code --heads origin "$TARGET_BRANCH" > /dev/null 2>&1; then
+            echo "::error::Target branch '$TARGET_BRANCH' does not exist"
+            exit 1
+          fi
+          git checkout -b work "origin/$TARGET_BRANCH"
+
+          # -m 1 handles merge commits (squash merges are plain commits, unaffected).
+          if git rev-parse "$COMMIT_SHA^2" >/dev/null 2>&1; then
+            git cherry-pick -m 1 -x "$COMMIT_SHA"
+          else
+            git cherry-pick -x "$COMMIT_SHA"
+          fi
+
+          git push origin "work:$TARGET_BRANCH"
+          echo "Cherry-picked $COMMIT_SHA onto $TARGET_BRANCH"
+          echo "Re-run CI: gh workflow run release-branch-cut.yml -f branch_name=$TARGET_BRANCH" >> "$GITHUB_STEP_SUMMARY"

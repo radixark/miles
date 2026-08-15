@@ -9,10 +9,9 @@ _ = rollout_env, generation_env
 
 
 @pytest.fixture(autouse=True)
-def enable_experimental_rollout_refactor():
-    os.environ["MILES_EXPERIMENTAL_ROLLOUT_REFACTOR"] = "1"
-    yield
-    os.environ.pop("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", None)
+def clear_legacy_rollout_gate(monkeypatch):
+    # an ambient value changes which arguments the parser registers
+    monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
 
 
 @pytest.fixture(scope="session")

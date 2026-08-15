@@ -1,0 +1,133 @@
+# doc-dev: docs/ci/04-release.md
+name: Release Docker Images
+#
+# release-tag.yml dispatches this workflow explicitly after its GITHUB_TOKEN
+# tag push; independently pushed matching tags and manual retries also run it.
+# Builds and publishes:
+#   - radixark/miles:v{version}        (cu13, amd64+arm64)
+#   - radixark/miles:v{version}-cu12   (cu12.9, amd64)
+# SGLANG_COMMIT and MEGATRON_COMMIT come from release-lock.json; MILES_COMMIT
+# is the checked-out SHA. Wheel release tags remain rolling inputs whose
+# lockfile fingerprints are audit records, not restored build inputs.
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, without v prefix (e.g., 0.3.0)'
+        required: true
+        type: string
+      ref:
+        description: 'Tag or branch to build from (defaults to v{version})'
+        required: false
+        type: string
+        default: ''
+
+# Publishing uses DOCKERHUB_* secrets, not GITHUB_TOKEN — checkout read is all it needs.
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    if: github.repository == 'radixark/miles'
+    runs-on: ["docker-build"]
+    timeout-minutes: 240
+    steps:
+      - name: Resolve version and ref
+        id: resolve
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            REF="${{ github.event.inputs.ref }}"
+            [ -z "$REF" ] && REF="v${VERSION}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+            REF="${GITHUB_REF_NAME}"
+          fi
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::Invalid version: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.ref }}
+
+      - name: Read release lockfile
+        id: lock
+        shell: bash
+        run: |
+          if [ ! -f release-lock.json ]; then
+            echo "::error::release-lock.json not found at ${{ steps.resolve.outputs.ref }} — was this tag cut via release-branch-cut.yml?"
+            exit 1
+          fi
+          echo "sglang_commit=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")" >> "$GITHUB_OUTPUT"
+          echo "megatron_commit=$(python3 -c "import json; print(json.load(open('release-lock.json'))['megatron_commit'])")" >> "$GITHUB_OUTPUT"
+          # github.sha is the default-branch HEAD on workflow_dispatch; the
+          # image must bake the checked-out release commit.
+          echo "miles_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+
+      - name: Install Python + dependencies
+        shell: bash
+        run: |
+          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=600 update
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
+          fi
+          # Older pip (<23) lacks --break-system-packages; newer PEP 668
+          # systems require it. Probe instead of assuming either.
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP --ignore-installed typer
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push cu13 (v${{ steps.resolve.outputs.version }})
+        shell: bash
+        run: |
+          python3 docker/build.py --variant cu13 --image-tag custom \
+            --custom-tag "v${{ steps.resolve.outputs.version }}" \
+            --build-arg "SGLANG_COMMIT=${{ steps.lock.outputs.sglang_commit }}" \
+            --build-arg "MEGATRON_COMMIT=${{ steps.lock.outputs.megatron_commit }}" \
+            --build-arg "MILES_COMMIT=${{ steps.lock.outputs.miles_commit }}" \
+            --push
+
+      - name: Build and push cu12-x86 (v${{ steps.resolve.outputs.version }}-cu12)
+        shell: bash
+        run: |
+          python3 docker/build.py --variant cu12-x86 --image-tag custom \
+            --custom-tag "v${{ steps.resolve.outputs.version }}" \
+            --build-arg "SGLANG_COMMIT=${{ steps.lock.outputs.sglang_commit }}" \
+            --build-arg "MEGATRON_COMMIT=${{ steps.lock.outputs.megatron_commit }}" \
+            --build-arg "MILES_COMMIT=${{ steps.lock.outputs.miles_commit }}" \
+            --push
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "## Released radixark/miles v${{ steps.resolve.outputs.version }}"
+            echo "- \`radixark/miles:v${{ steps.resolve.outputs.version }}\` (cu13, amd64+arm64)"
+            echo "- \`radixark/miles:v${{ steps.resolve.outputs.version }}-cu12\` (cu12.9, amd64)"
+            echo "- sglang: \`${{ steps.lock.outputs.sglang_commit }}\`"
+            echo "- Megatron-LM: \`${{ steps.lock.outputs.megatron_commit }}\`"
+            echo "- miles: \`${{ steps.lock.outputs.miles_commit }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

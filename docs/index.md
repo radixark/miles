@@ -1,5 +1,6 @@
 ---
-title: Miles Documentation
+title: Welcome
+sidebarTitle: Overview
 description: Miles is an open-source RL framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.
 ---
 Miles is a high-performance, enterprise-ready reinforcement learning framework for
@@ -57,10 +58,10 @@ the largest models all live on Megatron-LM. See
   MI355X via ROCm. See [Supported hardware](#supported-hardware).
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](/advanced/on-policy-distillation).
-- **Coding-agent environments.** Connectors for
-  [Harbor, NeMo Gym, OpenEnv, Verifiers, Strands Agents and tau-bench](/user-guide/environments),
-  each plugging into the rollout layer that fits it, with task sandboxes on AgentENV,
-  Daytona, E2B or Modal.
+- **Agentic environments.** Train coding and computer-use agents through connectors for
+  Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout
+  layer that fits it, with task sandboxes on AgentENV, Daytona, E2B or Modal. See
+  [Agentic Environments](/user-guide/environments).
 - **Comprehensive CI.** Unit suites run on every pull request, and tag-triggered end-to-end
   GPU training tests cover the supported model families on both NVIDIA and AMD runners.
 
@@ -107,7 +108,7 @@ and the container images for each.
 ## Start here
 
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
-2. **[Quick Start](/getting-started/quick-start)** — a working training run in under an hour.
+2. **[Quick Start](/getting-started/quick-start)** — a training job up and running in under an hour.
 3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
 4. **[Launch script](/user-guide/launch-script)** — what `python scripts/run_*.py` does
    and how to override a recipe.

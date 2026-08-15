@@ -1,5 +1,6 @@
 ---
 title: Thinking Machines
+sidebarTitle: Overview
 description: Miles recipes for Thinking Machines Lab models — Inkling (975 B), a multimodal MoE with short convolution, relative attention, and a shared-expert sink.
 ---
 Miles ships a native Megatron recipe for **Inkling**, Thinking Machines Lab's 975 B / 41 B-active multimodal mixture-of-experts model: local and global relative attention, the residual ShortConv, the shared-sink router and experts, and the image and audio encoders. The same backend drives both full-parameter and LoRA RL.

@@ -37,11 +37,11 @@ def _args() -> ScriptArgs:
         num_gpus_per_node=2,
         num_rollout=2,
         enable_optimizer_offload=True,
-        extra_env_vars="MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1",
         extra_args=(
             "--ci-test "
             "--ci-disable-logprobs-checker "
             "--use-rollout-indexer-replay "
+            "--skip-actor-forward-only "
             "--rollout-max-response-len 4096 "
             # preserve to avoid CPU OOM
             "--sglang-max-total-tokens 1900000 "

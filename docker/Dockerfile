@@ -1,6 +1,7 @@
 # doc-dev: docs/ci/02-docker-build.md
-# Build via docker/build.py (single source of truth for build-args, platforms,
-# and tags) — see docs/ci/02-docker-build.md. Examples:
+# Build via docker/build.py (single source of truth for variant defaults,
+# platforms, tags, and build-arg ordering); callers may append explicit
+# build-arg overrides. See docs/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
@@ -20,6 +21,8 @@ ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
+# Empty means the branch HEAD at build time; release builds set it to freeze one commit.
+ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
@@ -150,6 +153,7 @@ RUN pip install /tmp/wheels/apex-*.whl
 
 RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
     cd Megatron-LM && \
+    if [ -n "${MEGATRON_COMMIT}" ]; then git checkout -f ${MEGATRON_COMMIT} && git submodule update --init --recursive; fi && \
     pip install -e .
 
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz

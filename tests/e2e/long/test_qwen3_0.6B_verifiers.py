@@ -104,7 +104,7 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "0",
+            "MILES_USE_LEGACY_ROLLOUT_V1": "1",
             "PYTHONPATH": f"{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}",
             "VERIFIERS_CONFIG": str(config_path),
         },

@@ -1,5 +1,6 @@
 ---
 title: Qwen
+sidebarTitle: Overview
 description: Miles recipes for the full Qwen3, Qwen3.5, and Qwen3-Next line — dense and MoE.
 ---
 Miles ships ready-to-run RL recipes for every generation of the Qwen line: the dense Qwen3 series (0.6 B → 32 B), the Qwen3.5 family with its gated-attention architecture, the Qwen3 and Qwen3.5 MoE variants, and the Gated-Delta-Net Qwen3-Next-80B-A3B.

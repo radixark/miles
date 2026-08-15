@@ -1,5 +1,6 @@
 ---
 title: Supported Models
+sidebarTitle: Overview
 description: Per-family recipes covering weight conversion, launch flags, and parallelism choices.
 ---
 Miles ships ready-to-run recipes for every model family listed below. Each page covers

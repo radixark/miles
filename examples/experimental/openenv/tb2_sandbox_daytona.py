@@ -24,6 +24,7 @@ per task would only spend the org quota the declarative path exists to avoid.
 
 import os
 import shlex
+import threading
 from pathlib import Path
 
 import tb2_sandbox_recipe as recipe
@@ -157,15 +158,28 @@ def resolve_api_key() -> str:
     return recipe.resolve_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
-def make_daytona():
-    """Daytona client: key from resolve_api_key(), endpoint from optional
-    DAYTONA_API_URL. Public: callers driving create_task_sandbox() need a
-    client configured this way."""
-    from daytona import Daytona, DaytonaConfig
+_client_lock = threading.Lock()
+_client = None
 
-    return Daytona(
-        DaytonaConfig(
-            api_key=resolve_api_key(),
-            api_url=os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api"),
-        )
-    )
+
+def make_daytona():
+    """The process's Daytona client: key from resolve_api_key(), endpoint from
+    optional DAYTONA_API_URL. Public: callers driving create_task_sandbox() need
+    a client configured this way.
+
+    Built once and shared: the SDK owns a connection pool and exposes no
+    close(), and this runs once per sandbox-create attempt, retries included, so
+    a client per call turns a spell of API failures into a socket leak.
+    """
+    global _client
+    with _client_lock:
+        if _client is None:
+            from daytona import Daytona, DaytonaConfig
+
+            _client = Daytona(
+                DaytonaConfig(
+                    api_key=resolve_api_key(),
+                    api_url=os.getenv("DAYTONA_API_URL", "https://app.daytona.io/api"),
+                )
+            )
+        return _client

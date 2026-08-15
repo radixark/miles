@@ -40,7 +40,7 @@ class bdist_wheel(_bdist_wheel):
 setup(
     author="miles Team",
     name="miles",
-    version="0.2.1",
+    version="0.1.0",
     packages=find_packages(include=["miles*", "miles_plugins*"]),
     include_package_data=True,
     package_data={"miles.dashboard": ["static/*"]},
