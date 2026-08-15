@@ -90,9 +90,9 @@ fi
 # ── Data ────────────────────────────────────────────────────────────────────
 # Required JSONL shape (docker variant): each row has prompt / label / metadata,
 # and metadata.registry_image holds the SWE-Gym Docker image for the task.
-PROMPT_DATA="${PROMPT_DATA:-/data/siraj/xyne_s/xyne_qa_train.jsonl}"
+PROMPT_DATA="${PROMPT_DATA:-}"
 if [ ! -f "$PROMPT_DATA" ]; then
-    echo "ERROR: prompt data not found at $PROMPT_DATA"
+    echo "ERROR: set PROMPT_DATA to a Docker-JSONL dataset path"
     echo "  (docker-JSONL rows must carry metadata.registry_image)"
     exit 1
 fi
@@ -105,12 +105,12 @@ POLAR_CONFIG_TEMPLATE="${POLAR_CONFIG_TEMPLATE:-${SCRIPT_DIR}/polar_config_docke
 CUSTOM_CONFIG_PATH="${CUSTOM_CONFIG_PATH:-${RUN_DIR}/polar_config_custom.yaml}"
 
 # Render the YAML template: expand the host-path/auth placeholders used by the
-# templates (${AGENT_CLI_DIR} always; the XYNE_* trio for the xye-qa config).
+# selected Polar task configuration.
 # Literal ${...} inside the task template (e.g. ${VARS} in bash harness
 # scripts) is left untouched as long as it is not one of the listed vars.
 command -v envsubst >/dev/null || { echo "ERROR: envsubst not found (install gettext-base)"; exit 1; }
 mkdir -p "$(dirname "$CUSTOM_CONFIG_PATH")"
-envsubst '${ACCESS_TOKEN_SECRET} ${AGENT_CLI_DIR} ${JUSPAY_API_KEY} ${JWT_SECRET} ${XYNE_ACCESS_TOKEN} ${XYNE_API_KEY} ${XYNE_AUTH_EMAIL} ${XYNE_AUTH_ROLE} ${XYNE_AUTH_WORKSPACE} ${XYNE_AGENT_ID} ${XYNE_BASE_URL} ${XYNE_JUDGE_BASE_URL} ${XYNE_JUDGE_MAX_CONCURRENCY} ${XYNE_JUDGE_MAX_TOKENS} ${XYNE_JUDGE_MODEL} ${XYNE_RUNTIME_IMAGE} ${XYNE_SERVER_DIR}' \
+envsubst '${ACCESS_TOKEN_SECRET} ${AGENT_CLI_DIR} ${JWT_SECRET}' \
     < "$POLAR_CONFIG_TEMPLATE" > "$CUSTOM_CONFIG_PATH"
 
 # cuDNN lib path for the runtime LD_LIBRARY_PATH.

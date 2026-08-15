@@ -36,10 +36,9 @@ synced GPU-to-GPU into the engines every step.
   `run.sh` does **not** start them; it only renders the Polar custom config,
   boots Ray, and submits the Miles training job. The gateway must be pointed at
   the Miles SGLang router (`http://<host>:9000`).
-- **Xyne backend (optional).** If you want Node-based agent harnesses as an
-  alternative to the in-image Docker `codex` harness, prepare the shared Node/agent
-  CLI dir (`AGENT_CLI_DIR`) as the reference does; otherwise the Docker task image
-  already ships everything the `codex` harness needs.
+- **Agent CLI directory (optional).** If the selected task harness needs host-side
+  agent tooling, prepare the shared CLI directory (`AGENT_CLI_DIR`) as required by
+  that harness; otherwise the Docker task image should ship the required tooling.
 - **SWE-Gym Docker-JSONL data.** Each row must have `prompt`, `label`,
   `metadata`, and `metadata.registry_image` (the SWE-Gym Docker image reference)
   plus `metadata.instance` for the swebench harness. See `PROMPT_DATA`.
