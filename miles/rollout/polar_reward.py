@@ -3,8 +3,8 @@
 Thin Miles-side counterpart to ``slime_bridge/reward.py`` and
 ``slime_bridge/reward_post_process.py``.  A Polar trajectory already carries a
 per-trace scalar ``score`` (embedded into each converted sample); the reward
-module only needs to read it back.  No Polar core, slime_bridge, or Xyne code is
-touched or imported by this module.
+module only needs to read it back.  No Polar core, slime_bridge, or downstream
+harness code is touched or imported by this module.
 
 Canonical entrypoints
 ---------------------
