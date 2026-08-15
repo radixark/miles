@@ -26,6 +26,7 @@ from typing import Any, ClassVar
 import polars as pl
 import torch
 
+from miles.backends.training_utils.cp_utils import assemble_log_prob_from_cp, get_logits_and_tokens_offset_with_cp
 from miles.utils.types import Sample
 
 
@@ -97,6 +98,9 @@ class TrainRow:
     raw_reward: Any
     truncated: int | None
     weight_versions: list[str] | None
+    # set when a per-token field was dropped because its cp slices could not
+    # be placed; distinguishes 'not dumped' from 'dumped but unreadable'
+    alignment_failed: bool = False
 
     @classmethod
     def from_columns(cls, columns: dict, row: int, *, rank: int, raw_reward) -> TrainRow:
@@ -125,6 +129,190 @@ class TrainRow:
         )
 
 
+# Response-aligned per-token fields: full length at cp_size 1, this rank's slice
+# otherwise. Everything else a shard carries (tokens, masks, lengths, rewards) is
+# full-length on every rank.
+_CP_SHARDED_FIELDS = (
+    "log_probs",
+    "rollout_log_probs",
+    "ref_log_probs",
+    "entropy",
+    "ref_entropy",
+    "advantages",
+    "returns",
+)
+
+
+def _cp_layout(
+    handles: list[dict], locations: list[tuple[int, int]], total_length: int, response_length: int
+) -> tuple[int, dict[int, int], bool]:
+    """This sample's shard -> cp_rank mapping, and the group's cp size.
+
+    The layout is a property of the shards, not of any one field, so it is
+    resolved once and then applied to every field. Returns `(cp_size, {shard:
+    cp_rank}, ok)`; `ok` is False when slices exist but the layout could not be
+    established.
+    """
+    recorded = {
+        shard: int(handles[shard]["cp_rank"]) for shard, _ in locations if handles[shard].get("cp_rank") is not None
+    }
+    if recorded:
+        cp_size = int(handles[locations[0][0]].get("cp_size", 1) or 1)
+        return cp_size, recorded, len(set(recorded.values())) == cp_size
+    return _recover_cp_layout_legacy(handles, locations, total_length, response_length)
+
+
+def _recover_cp_layout_legacy(
+    handles: list[dict], locations: list[tuple[int, int]], total_length: int, response_length: int
+) -> tuple[int, dict[int, int], bool]:
+    """Infer the layout for dumps written before cp_rank/cp_size were recorded.
+
+    `rollout_log_probs` is the probe: every rank carries it, and its values vary
+    along the sequence, so equal slices really are the same slice. Fields that
+    are constant within a sample -- GRPO advantages, say -- could never be told
+    apart on their own, which is why the layout is established once here and
+    then reused rather than inferred per field.
+
+    Ranks are ordered tp-fastest then cp, so a group's lowest rank increases with
+    cp_rank and first appearance gives the order. The widths are then checked
+    against `get_logits_and_tokens_offset_with_cp`, the same function the
+    training side split with; a layout that does not reproduce them is refused.
+
+    Deletable once every dump in circulation carries the layout.
+    """
+    probe = "rollout_log_probs"
+    holders = sorted(
+        (int(handles[shard].get("rank", shard)), shard, row)
+        for shard, row in locations
+        if handles[shard]["rollout_data"].get(probe) is not None
+    )
+    if not holders:
+        return 1, {shard: 0 for shard, _ in locations}, True
+
+    layout: dict[int, int] = {}
+    seen: list[torch.Tensor] = []
+    for _rank, shard, row in holders:
+        values = handles[shard]["rollout_data"][probe][row]
+        match = next(
+            (i for i, other in enumerate(seen) if len(values) == len(other) and torch.equal(values, other)), None
+        )
+        if match is None:
+            match = len(seen)
+            seen.append(values)
+        layout[shard] = match
+    cp_size = len(seen)
+    if cp_size == 1:
+        return 1, layout, True
+    if not _cp_widths_match([len(v) for v in seen], total_length, response_length, cp_size):
+        return cp_size, {}, False
+    return cp_size, layout, True
+
+
+def _cp_widths_match(widths: list[int], total_length: int, response_length: int, cp_size: int) -> bool:
+    """Do the observed slice widths reproduce what this cp layout would produce?
+
+    The chunk size is derived from the *total* length, prompt included, so the
+    prompt cannot be elided here -- it is what makes rank 0's slice shorter
+    than its siblings'.
+    """
+    if sum(widths) != response_length:
+        return False
+    for cp_rank, width in enumerate(widths):
+        _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
+            total_length, response_length, "thd", None, cp_rank=cp_rank, cp_size=cp_size
+        )
+        if sum(max(0, hi - lo) for lo, hi in logits_offset) != width:
+            return False
+    return True
+
+
+def _build_train_row(handles: list[dict], locations: list[tuple[int, int]], *, raw_reward) -> TrainRow:
+    """One sample's train row, assembled across whatever parallelism wrote it.
+
+    Full-length columns come from any shard holding the sample -- every rank
+    records them identically. The per-token fields are resolved one at a time,
+    because which ranks carry a field depends on the field: pipeline parallelism
+    decides who computed it, context parallelism decides who holds which slice.
+    """
+    shard, row_no = locations[0]
+    columns = handles[shard]["rollout_data"]
+    for other_shard, other_row in locations[1:]:
+        other = handles[other_shard]["rollout_data"]
+        # Length is a property of the sample, identical on every rank that holds
+        # it whatever the parallelism; a disagreement means mixed or corrupt
+        # dumps, not a different slice.
+        assert (
+            other["response_lengths"][other_row] == columns["response_lengths"][row_no]
+            and other["total_lengths"][other_row] == columns["total_lengths"][row_no]
+        ), (
+            f"rank {handles[other_shard].get('rank', other_shard)} disagrees with "
+            f"rank {handles[shard].get('rank', shard)} on sample "
+            f"{columns['sample_indices'][row_no]} lengths"
+        )
+    row = TrainRow.from_columns(
+        columns,
+        row_no,
+        rank=int(handles[shard].get("rank", shard)),
+        raw_reward=raw_reward,
+    )
+    return _resolve_per_token_fields(row, handles, locations)
+
+
+def _resolve_per_token_fields(row: TrainRow, handles: list[dict], locations: list[tuple[int, int]]) -> TrainRow:
+    """Fill every per-token field of `row` at full response length.
+
+    One place decides which shard answers for a field, so pipeline parallelism
+    (who computed it), tensor parallelism (redundant copies) and context
+    parallelism (who holds which slice) are handled once instead of once per
+    view with a different accidental rule.
+    """
+    cp_size, layout, ok = _cp_layout(handles, locations, row.total_length, row.response_length)
+    row.alignment_failed = not ok
+
+    primary = handles[locations[0][0]]["rollout_data"]
+    qkv_format = handles[locations[0][0]].get("qkv_format", "thd")
+    max_seq_lens = primary.get("max_seq_lens")
+    max_seq_len = None if max_seq_lens is None else int(max_seq_lens[locations[0][1]])
+
+    for field in _CP_SHARDED_FIELDS:
+        holders = [
+            (shard, row_no) for shard, row_no in locations if handles[shard]["rollout_data"].get(field) is not None
+        ]
+        if not holders:
+            setattr(row, field, None)  # pipeline parallelism: only the last stage computes it
+            continue
+        chunks: dict[int, torch.Tensor] = {}
+        for shard, row_no in holders:
+            if shard in layout:
+                # setdefault, not assignment: tensor-parallel peers share a
+                # cp_rank, and which replica answers must not depend on the
+                # order the shards happened to be listed in.
+                chunks.setdefault(layout[shard], handles[shard]["rollout_data"][field][row_no])
+        if cp_size == 1:
+            setattr(row, field, next(iter(chunks.values()), None))
+            continue
+        if len(chunks) != cp_size:
+            setattr(row, field, None)
+            row.alignment_failed = True
+            continue
+        setattr(
+            row,
+            field,
+            assemble_log_prob_from_cp(
+                chunks, row.total_length, row.response_length, cp_size, qkv_format=qkv_format, max_seq_len=max_seq_len
+            ),
+        )
+
+    # Last guard: a field that is not response-aligned would be scored against a
+    # full-length mask.
+    for field in _CP_SHARDED_FIELDS:
+        values = getattr(row, field)
+        if values is not None and len(values) != row.response_length:
+            setattr(row, field, None)
+            row.alignment_failed = True
+    return row
+
+
 @dataclass
 class JoinedRollout:
     rollout_id: int
@@ -146,7 +334,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 2  # v2: staleness/turns/tool columns
+    SUMMARY_VERSION: ClassVar[int] = 4  # v4: per-sample staleness
 
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
@@ -186,7 +374,10 @@ class DumpReader:
 
         train_rows: dict[int, TrainRow] = {}
         if not evaluation:
-            for path in self._train_paths(rollout_id):
+            handles: list[dict] = []
+            index: dict[int, list[tuple[int, int]]] = {}
+            raw_reward_column = None
+            for shard, path in enumerate(self._train_paths(rollout_id)):
                 rank_pack = self._torch_load(path)
                 columns = rank_pack["rollout_data"]
                 raw_rewards = columns.get("raw_reward")
@@ -195,23 +386,19 @@ class DumpReader:
                         f"{path}: raw_reward must be batch-global "
                         f"(expected {len(samples)} entries, got {len(raw_rewards)})"
                     )
+                    raw_reward_column = raw_rewards
                 for row, sample_index in enumerate(columns["sample_indices"]):
                     assert (
                         sample_index in batch_position
                     ), f"{path} references sample_index {sample_index} absent from the rollout dump"
-                    if (existing := train_rows.get(sample_index)) is not None:
-                        # TP-duplicate rank carrying the same DP shard.
-                        assert existing.response_length == columns["response_lengths"][row], (
-                            f"rank {rank_pack['rank']} disagrees with rank {existing.rank} "
-                            f"on sample {sample_index} in rollout {rollout_id}"
-                        )
-                        continue
-                    train_rows[sample_index] = TrainRow.from_columns(
-                        columns,
-                        row,
-                        rank=rank_pack["rank"],
-                        raw_reward=None if raw_rewards is None else raw_rewards[batch_position[sample_index]],
-                    )
+                    index.setdefault(int(sample_index), []).append((shard, row))
+                handles.append(rank_pack)
+            for sample_index, locations in index.items():
+                train_rows[sample_index] = _build_train_row(
+                    handles,
+                    locations,
+                    raw_reward=None if raw_reward_column is None else raw_reward_column[batch_position[sample_index]],
+                )
 
         return JoinedRollout(rollout_id=rollout_id, evaluation=evaluation, samples=samples, train_rows=train_rows)
 
@@ -254,7 +441,10 @@ class DumpReader:
             return pl.read_parquet(cache_path)
 
         joined = self.joined(rollout_id, evaluation=evaluation)
-        df = pl.DataFrame([self._summary_row(s, joined.train_rows.get(s.index)) for s in joined.samples], strict=False)
+        df = pl.DataFrame(
+            [self._summary_row(s, joined.train_rows.get(s.index), rollout_id=rollout_id) for s in joined.samples],
+            strict=False,
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         df.write_parquet(cache_path)
         sources_path.write_text(json.dumps(sources))
@@ -356,22 +546,21 @@ class DumpReader:
         only its pickle graph; slicing a row faults in ~contiguous KBs."""
         if rollout_id not in self._shard_cache:
             handles: list[dict] = []
-            index: dict[int, tuple[int, int]] = {}
+            index: dict[int, list[tuple[int, int]]] = {}
             for shard_no, path in enumerate(self._train_paths(rollout_id)):
-                columns = self._torch_load(path, mmap=True)["rollout_data"]
-                for row_no, si in enumerate(columns["sample_indices"]):
-                    index[int(si)] = (shard_no, row_no)
-                handles.append(columns)
+                pack = self._torch_load(path, mmap=True)
+                for row_no, si in enumerate(pack["rollout_data"]["sample_indices"]):
+                    index.setdefault(int(si), []).append((shard_no, row_no))
+                handles.append(pack)
             self._shard_cache[rollout_id] = (handles, index)
             while len(self._shard_cache) > 4:
                 self._shard_cache.popitem(last=False)
         self._shard_cache.move_to_end(rollout_id)
         handles, index = self._shard_cache[rollout_id]
-        location = index.get(sample_index)
-        if location is None:
+        locations = index.get(sample_index)
+        if not locations:
             return None
-        shard_no, row_no = location
-        return TrainRow.from_columns(handles[shard_no], row_no, rank=shard_no, raw_reward=None)
+        return _build_train_row(handles, locations, raw_reward=None)
 
     # ------------------------------- L2 view --------------------------------
 
@@ -451,7 +640,7 @@ class DumpReader:
         paths = [rollout_path] + ([] if evaluation else self._train_paths(rollout_id))
         return {"_summary_version": self.SUMMARY_VERSION, **{p.name: p.stat().st_mtime for p in paths}}
 
-    def _summary_row(self, sample: Sample, row: TrainRow | None) -> dict:
+    def _summary_row(self, sample: Sample, row: TrainRow | None, *, rollout_id: int) -> dict:
         spec = sample.spec_info
         cache_info = sample.prefix_cache_info
         entry = dict(
@@ -465,6 +654,15 @@ class DumpReader:
             weight_version=sample.weight_versions[-1] if sample.weight_versions else None,
             weight_version_min=_min_numeric_version(sample.weight_versions),
             mixed_version=len(set(sample.weight_versions)) > 1 if sample.weight_versions else None,
+            # Weight updates between the policy that generated this sample's
+            # oldest turn and the rollout consuming it -- the same
+            # `current_version - group_oldest` the fully-async buffer reports as
+            # rollout/fully_async/avg_staleness, per sample rather than averaged.
+            # Verified against it: the mean of this column reproduces the metric
+            # exactly, which the rollout view's own box did not (it was +1).
+            staleness=(
+                None if (oldest := _min_numeric_version(sample.weight_versions)) is None else rollout_id - oldest
+            ),
             turns=len(sample.weight_versions) if sample.weight_versions else None,
             tool_calls=_tool_call_count(sample),
             non_generation_time=sample.non_generation_time,
@@ -492,6 +690,7 @@ class DumpReader:
                     "return_mean",
                 )
             )
+            train_columns["alignment_failed"] = False
             train_columns["truncated"] = sample.status == Sample.Status.TRUNCATED
             return entry | train_columns
 
@@ -516,6 +715,7 @@ class DumpReader:
             adv_mean=_mean(advantages),
             adv_std=_std(advantages),
             return_mean=_mean(_masked(row.returns, mask)),
+            alignment_failed=row.alignment_failed,
         )
 
     def _train_paths(self, rollout_id: int) -> list[Path]:

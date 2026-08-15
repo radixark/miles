@@ -3,17 +3,33 @@ from pathlib import Path
 
 import torch
 
+from miles.backends.training_utils.parallel import get_parallel_state
+
 logger = logging.getLogger(__name__)
 
 
 def save_debug_train_data(args, *, rollout_id, rollout_data):
     if args.save_debug_train_data is not None:
+        parallel_state = get_parallel_state()
         save_debug_train_data_for_rank(
-            args, rollout_id=rollout_id, rollout_data=rollout_data, rank=torch.distributed.get_rank()
+            args,
+            rollout_id=rollout_id,
+            rollout_data=rollout_data,
+            rank=torch.distributed.get_rank(),
+            cp_rank=parallel_state.cp.rank,
+            cp_size=parallel_state.cp.size,
         )
 
 
-def save_debug_train_data_for_rank(args, *, rollout_id, rollout_data, rank):
+def save_debug_train_data_for_rank(args, *, rollout_id, rollout_data, rank, cp_rank=0, cp_size=1):
+    """Write one rank's slice of a rollout.
+
+    ``cp_rank`` / ``cp_size`` describe how this rank's per-token tensors were
+    split, and are passed in for the same reason ``rank`` is: this runs outside
+    the process group in tests and offline tools. They are what an offline reader
+    cannot recover -- under context parallelism several ranks hold equal-length
+    pieces of the same sample, while the masks stay full-length everywhere.
+    """
     if (path_template := args.save_debug_train_data) is not None:
         path = Path(path_template.format(rollout_id=rollout_id, rank=rank))
         logger.info(f"Save debug train data to {path}")
@@ -23,6 +39,9 @@ def save_debug_train_data_for_rank(args, *, rollout_id, rollout_data, rank):
                 rollout_id=rollout_id,
                 rank=rank,
                 rollout_data=rollout_data,
+                cp_rank=cp_rank,
+                cp_size=cp_size,
+                qkv_format=args.qkv_format,
             ),
             path,
         )
