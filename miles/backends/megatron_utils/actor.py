@@ -378,11 +378,20 @@ class MegatronTrainRayActor(TrainRayActor):
         standard frozen-teacher setup for on-policy distillation.
 
         Under ``--offload-train`` the train loop sleeps the actor
-        (``torch_memory_saver.pause``, GPU memory unmapped) before update_weights.
-        ``backup()`` reads the LIVE parameters, so reading unmapped GPU memory is a
-        hard segfault with no Python exception: wake for the copy and sleep again.
-        Moving the call relative to ``torch_memory_saver.disable()`` does NOT help
-        -- disable() and pause()/resume() are different mechanisms.
+        (``torch_memory_saver.pause``, GPU memory unmapped) before update_weights,
+        and update_weights never wakes it -- so this site used to resume() the
+        actor and GPU-read its live params into the teacher backup. That is
+        silently wrong, not just risky: resume() does NOT reliably restore
+        parameter contents in the asleep window (parameters can come back
+        partially zeroed while other tensors survive), so the backup snapshots a
+        corrupt model. A corrupt teacher produces flat/uniform logits --
+        teacher_log_probs pinned at -ln(vocab_size) and opd_reverse_kl ~11-12 of
+        pure noise, i.e. the entire distillation signal destroyed while every
+        metric superficially "works". Never read self.model's GPU params inside
+        update_weights() (or any asleep-window code), not even after a resume().
+        The "actor" CPU tag is refreshed after every trained step while awake,
+        so it IS "the current actor weights" -- copy it CPU-side instead: no GPU
+        access, no resume/pause.
         """
         if not getattr(self.args, "opd_teacher_refresh_from_actor", False):
             return
@@ -391,17 +400,9 @@ class MegatronTrainRayActor(TrainRayActor):
                 "--opd-teacher-refresh-from-actor is set but no 'teacher' weight-backup tag "
                 "exists; it requires --opd-type=megatron with --opd-teacher-load."
             )
-        need_resume_for_backup = bool(self.args.offload_train and self._asleep)
-        tag = "default" if lora_rollout_enabled(self.args) else None
-        if need_resume_for_backup:
-            torch_memory_saver.resume(tag=tag)
-        try:
-            self.weights_backuper.backup("teacher")
-        finally:
-            # A failed backup must not leave the model resident: the train loop
-            # believes it is asleep and will not pause it again.
-            if need_resume_for_backup:
-                torch_memory_saver.pause(tag=tag)
+        if is_first_replica_megatron_main_rank():
+            logger.info("refreshing OPD teacher from the current actor weights (CPU copy)")
+        self.weights_backuper.copy(src_tag="actor", dst_tag="teacher")
 
     def _teacher_view_iterator(
         self, rollout_data: dict, extra_keys: tuple[str, ...] = ()
