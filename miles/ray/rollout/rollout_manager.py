@@ -112,13 +112,15 @@ class RolloutManager:
 
         # TODO will be replaced by full ft, thus temporarily leave it without modifications
         self._health_monitors = []
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
+        self._rollout_ft_enabled = self.args.use_fault_tolerance and "rollout" in self.args.ft_components
+        self._ci_fault_injection_pending = False
+        if not self.args.debug_train_only and self._rollout_ft_enabled:
             for srv in self.servers.values():
                 for group in srv.server_groups:
                     monitor = RolloutHealthMonitor(group, args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
+            self._ci_fault_injection_pending = self.args.ci_test
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
@@ -143,7 +145,7 @@ class RolloutManager:
         start_time = time.time()
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
-        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
+        if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
             self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:

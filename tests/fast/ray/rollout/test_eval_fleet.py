@@ -18,6 +18,7 @@ def make_args(**overrides):
         eval_num_gpus=1,
         eval_num_gpus_per_engine=1,
         use_fault_tolerance=False,
+        ft_components=[],
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
@@ -160,12 +161,22 @@ async def test_fleet_recovers_before_pinning(fleet_env):
 
 
 async def test_fleet_leaves_probing_to_the_health_monitor(fleet_env):
-    """With --use-fault-tolerance a RolloutHealthMonitor already probes these engines."""
-    fleet = make_fleet(make_args(use_fault_tolerance=True), [FakeEngine([])])
+    """Rollout FT leaves probing to the RolloutHealthMonitor."""
+    fleet = make_fleet(make_args(use_fault_tolerance=True, ft_components=["rollout"]), [FakeEngine([])])
 
     await fleet.pin("/snap/step_5", "5")
 
     assert fleet._srv.probe_calls == 0
+    assert fleet._srv.recover_calls == 1
+
+
+async def test_fleet_probes_with_train_only_fault_tolerance(fleet_env):
+    """Train-only FT has no RolloutHealthMonitor, so the fleet must probe itself."""
+    fleet = make_fleet(make_args(use_fault_tolerance=True, ft_components=["train"]), [FakeEngine([])])
+
+    await fleet.pin("/snap/step_5", "5")
+
+    assert fleet._srv.probe_calls == 1
     assert fleet._srv.recover_calls == 1
 
 

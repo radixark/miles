@@ -138,6 +138,52 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
 
 @pytest.mark.asyncio
 class TestRolloutManagerInit:
+    @pytest.mark.parametrize(
+        ("ft_components", "expected_monitor_count", "expected_injection_pending"),
+        [
+            (["train"], 0, False),
+            (["rollout"], 1, True),
+        ],
+    )
+    async def test_rollout_ft_lifecycle_follows_selected_component(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+        ft_components,
+        expected_monitor_count,
+        expected_injection_pending,
+    ):
+        import miles.ray.rollout.rollout_manager as rmgr
+
+        started_monitors = []
+
+        class FakeMonitor:
+            def __init__(self, group, args):
+                self.group = group
+
+            def start(self):
+                started_monitors.append(self)
+
+            def stop(self):
+                pass
+
+        monkeypatch.setattr(rmgr, "RolloutHealthMonitor", FakeMonitor)
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.use_fault_tolerance = True
+        args.ft_components = ft_components
+        args.ci_test = True
+        args.ci_metric_checker_key = None
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+
+        assert len(started_monitors) == expected_monitor_count
+        assert len(manager._health_monitors) == expected_monitor_count
+        assert manager._ci_fault_injection_pending is expected_injection_pending
+
     async def test_debug_rollout_replay_skips_class_based_rollout_construction(
         self,
         ray_local_mode,
