@@ -193,8 +193,8 @@ in `tests/ci/labels.py`, and a value outside it is a collection-time error.
 |---|---|
 | `run-ci-<x>` | Selects tests declaring `<x>` |
 | `run-ci-all` | Every enabled tag |
-| `nightly` | Nightly cadence: admits `nightly=True` tests, every tag except `long`, `ft-long`, and dedicated long-test selectors, fast-fail off |
-| `run-ci-image` | Every tag except `long`, `ft-short`, `ft-long`, and dedicated long-test selectors; for validating an image bump |
+| `nightly` | Nightly cadence: admits `nightly=True` tests, every tag except `long` and `ft-long`, fast-fail off |
+| `run-ci-image` | Every tag except `long`, `ft-short`, `ft-long`; for validating an image bump |
 | `bypass-fastfail` | Run GPU stages even if `stage-a-cpu` failed, and let each suite continue past the first failure |
 
 If your fork PR sits waiting for approval, that is GitHub holding first-time contributor

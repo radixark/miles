@@ -7,8 +7,8 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Kind | Example | Effect |
 |---|---|---|
 | Domain label | `run-ci-megatron` | selects which tests run |
-| Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, `ft-long`, and `verifiers` |
-| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long`, `ft-long`, and `verifiers`, with fast-fail disabled |
+| Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
+| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 
@@ -24,13 +24,12 @@ A test declares its labels: `register_cuda_ci(..., labels=["megatron"])`. The PR
 | `labels=["megatron"]` | PR has `run-ci-megatron` |
 | `labels=["sglang"]` | PR has `run-ci-sglang` |
 | `labels=["fsdp", "lora"]` | PR has `run-ci-fsdp` or `run-ci-lora` |
-| `labels=["long", "verifiers"]` | PR has `run-ci-long` or `run-ci-verifiers` |
 
 PR labels without the `run-ci-` prefix are ignored.
 
 ### The canonical label list
 
-Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `short`, `long`, `verifiers`, `ckpt`, `lora`, `precision`, `ft-short`, `ft-long`, `weight-update`, `replay`, `qwen35`, `mooncake`.
+Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `short`, `long`, `ckpt`, `lora`, `precision`, `ft-short`, `ft-long`, `weight-update`, `replay`, `qwen35`, `mooncake`.
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
@@ -49,8 +48,8 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts or a call
 | all | `run-ci-all` label | every enabled tag | — | determined by cadence |
 | weekly | exact weekly cron | every enabled tag | — | disabled on both levels |
 | release | `release-branch-cut.yml` calling with `cadence=release` | every enabled tag | — | disabled on both levels |
-| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long`, `ft-long`, and `verifiers`, incl. `ft-short` | `long`, `ft-long`, `verifiers` | disabled on both levels (within-stage only for local runs) |
-| image | `run-ci-image` label | every enabled tag except `long`, FT tags, and `verifiers` | `long`, `ft-short`, `ft-long`, `verifiers` | determined by cadence |
+| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long` and `ft-long`, incl. `ft-short` | `long`, `ft-long` | disabled on both levels (within-stage only for local runs) |
+| image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
 
 Release and weekly have the same selection and fast-fail policy. Release is separate because frozen release refs must never write the rolling performance baseline; see [Metric history & regression gate](/ci/03-metric-history-gate#trust-cleanup-who-writes).
 
@@ -60,7 +59,7 @@ The generic triggers carry no policy. All scheduled runs use UTC: nightly is ide
 
 A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
 
-A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long`, `run-ci-ft-short`, or `run-ci-verifiers`, and nightly plus `run-ci-long` or `run-ci-verifiers`, add the explicitly requested tests back rather than silently dropping the request.
+A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short`, and nightly plus `run-ci-long`, add the explicitly requested tests back rather than silently dropping the request.
 
 ## Registration and scan scope
 
