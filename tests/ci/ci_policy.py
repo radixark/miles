@@ -86,9 +86,8 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     - `run-ci-all` includes every registered label.
     - Weekly and release cadences include every registered label; release
       differs from weekly only in never writing the perf baseline.
-    - Nightly cadence excludes `long`, `ft-long`, and `fsdp-colocated`.
-    - `run-ci-image` excludes `long`, `ft-short`, `ft-long`, and
-      `fsdp-colocated`.
+    - Nightly cadence excludes `long` and `ft-long`.
+    - `run-ci-image` excludes `long`, `ft-short`, and `ft-long`.
 
     Branch order encodes the precedence `run-ci-all` > weekly > nightly >
     `run-ci-image`.
@@ -107,9 +106,9 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     if "run-ci-all" in raw_labels or cadence in {WEEKLY_CADENCE, RELEASE_CADENCE}:
         scope = set(KNOWN_LABELS)
     elif cadence == NIGHTLY_CADENCE:
-        scope = set(KNOWN_LABELS) - {"long", "ft-long", "fsdp-colocated"}
+        scope = set(KNOWN_LABELS) - {"long", "ft-long"}
     elif "run-ci-image" in raw_labels:
-        scope = set(KNOWN_LABELS) - {"long", "ft-short", "ft-long", "fsdp-colocated"}
+        scope = set(KNOWN_LABELS) - {"long", "ft-short", "ft-long"}
     else:
         scope = set()
     full_cadences = {NIGHTLY_CADENCE, WEEKLY_CADENCE, RELEASE_CADENCE}

@@ -16,7 +16,6 @@ def test_known_labels_initial_labels_present():
         "model-scripts",
         "sglang",
         "fsdp",
-        "fsdp-colocated",
         "short",
         "long",
         "ckpt",
