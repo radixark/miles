@@ -82,7 +82,7 @@ def execute():
         "--update-weight-buffer-size 536870912 "  # 512MB
     )
 
-    perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 9216 "
+    perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 32768 "
 
     ci_args = (
         "--ci-test "
