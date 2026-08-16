@@ -7,8 +7,8 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Kind | Example | Effect |
 |---|---|---|
 | Domain label | `run-ci-megatron` | selects which tests run |
-| Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
-| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
+| Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, `ft-long`, and `fsdp-colocated` |
+| Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long`, `ft-long`, and `fsdp-colocated`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
 
@@ -24,12 +24,13 @@ A test declares its labels: `register_cuda_ci(..., labels=["megatron"])`. The PR
 | `labels=["megatron"]` | PR has `run-ci-megatron` |
 | `labels=["sglang"]` | PR has `run-ci-sglang` |
 | `labels=["fsdp", "lora"]` | PR has `run-ci-fsdp` or `run-ci-lora` |
+| `labels=["long", "fsdp-colocated"]` | broad long scopes or explicit `run-ci-fsdp-colocated` |
 
 PR labels without the `run-ci-` prefix are ignored.
 
 ### The canonical label list
 
-Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `short`, `long`, `ckpt`, `lora`, `precision`, `ft-short`, `ft-long`, `weight-update`, `replay`, `qwen35`, `mooncake`.
+Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` value outside it is a hard error. Current set: `megatron`, `model-scripts`, `sglang`, `fsdp`, `fsdp-colocated`, `short`, `long`, `ckpt`, `lora`, `precision`, `ft-short`, `ft-long`, `weight-update`, `replay`, `qwen35`, `mooncake`.
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
@@ -48,8 +49,8 @@ The workflow's `resolve-ci-policy` job forwards trigger-specific facts or a call
 | all | `run-ci-all` label | every enabled tag | — | determined by cadence |
 | weekly | exact weekly cron | every enabled tag | — | disabled on both levels |
 | release | `release-branch-cut.yml` calling with `cadence=release` | every enabled tag | — | disabled on both levels |
-| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long` and `ft-long`, incl. `ft-short` | `long`, `ft-long` | disabled on both levels (within-stage only for local runs) |
-| image | `run-ci-image` label | every enabled tag except `long` and FT tags | `long`, `ft-short`, `ft-long` | determined by cadence |
+| nightly | resolved nightly cadence from the PR label, exact nightly cron, or local `--nightly` | every enabled tag except `long`, `ft-long`, and `fsdp-colocated`, incl. `ft-short` | `long`, `ft-long`, `fsdp-colocated` | disabled on both levels (within-stage only for local runs) |
+| image | `run-ci-image` label | every enabled tag except `long`, FT tags, and `fsdp-colocated` | `long`, `ft-short`, `ft-long`, `fsdp-colocated` | determined by cadence |
 
 Release and weekly have the same selection and fast-fail policy. Release is separate because frozen release refs must never write the rolling performance baseline; see [Metric history & regression gate](/ci/03-metric-history-gate#trust-cleanup-who-writes).
 
@@ -57,9 +58,9 @@ Rows are in precedence order: when scope signals overlap, the higher row wins (`
 
 The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 15 * * 0-5`, and weekly by `0 15 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels, so it receives only the ordinary always-on scope; its operation inputs do not imply all, nightly, weekly, or release. A called workflow instead supplies its cadence explicitly, which is how `release-branch-cut.yml` selects release.
 
-A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
+A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set. Dedicated selectors for long tests, such as `fsdp-colocated`, are therefore subtracted alongside `long` to preserve the standard nightly and image rosters.
 
-A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long` or `run-ci-ft-short`, and nightly plus `run-ci-long`, add the explicitly requested tests back rather than silently dropping the request.
+A domain label explicitly requested on the PR wins over a scope subtraction: `run-ci-image` plus `run-ci-long`, `run-ci-ft-short`, or `run-ci-fsdp-colocated`, and nightly plus `run-ci-long` or `run-ci-fsdp-colocated`, add the explicitly requested tests back rather than silently dropping the request.
 
 ## Registration and scan scope
 

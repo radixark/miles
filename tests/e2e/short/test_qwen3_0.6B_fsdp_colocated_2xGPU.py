@@ -7,7 +7,7 @@ import miles.utils.external_utils.command_utils as U
 register_cuda_ci(
     est_time=3000,
     suite="stage-c-2-gpu-h200",
-    labels=["long"],
+    labels=["long", "fsdp-colocated"],
 )
 register_rocm_ci(
     est_time=3900,
