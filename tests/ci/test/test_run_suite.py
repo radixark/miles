@@ -183,12 +183,12 @@ class TestResolvePolicy:
             (REGULAR_CADENCE, set(), set(), False),
             (REGULAR_CADENCE, {"run-ci-megatron"}, {"megatron"}, False),
             (REGULAR_CADENCE, {"bypass-fastfail"}, set(), True),
-            (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"long", "ft-short", "ft-long"}, False),
+            (REGULAR_CADENCE, {"run-ci-image"}, _ALL - {"long", "ft-short", "ft-long", "verifiers"}, False),
             (REGULAR_CADENCE, {"run-ci-all"}, _ALL, False),
             (REGULAR_CADENCE, {"run-ci-image", "run-ci-all"}, _ALL, False),
-            (NIGHTLY_CADENCE, set(), _ALL - {"long", "ft-long"}, True),
-            (NIGHTLY_CADENCE, {"nightly"}, _ALL - {"long", "ft-long"}, True),
-            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"long", "ft-long"}, True),
+            (NIGHTLY_CADENCE, set(), _ALL - {"long", "ft-long", "verifiers"}, True),
+            (NIGHTLY_CADENCE, {"nightly"}, _ALL - {"long", "ft-long", "verifiers"}, True),
+            (NIGHTLY_CADENCE, {"run-ci-image", "nightly"}, _ALL - {"long", "ft-long", "verifiers"}, True),
             (NIGHTLY_CADENCE, {"nightly", "run-ci-all"}, _ALL, True),
             (WEEKLY_CADENCE, set(), _ALL, True),
             (WEEKLY_CADENCE, {"run-ci-image"}, _ALL, True),
@@ -221,12 +221,18 @@ class TestResolvePolicy:
     @pytest.mark.parametrize(
         ("cadence", "labels", "expected"),
         [
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _ALL - {"ft-short", "ft-long"}),
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"long", "ft-long"}),
-            (NIGHTLY_CADENCE, {"nightly", "run-ci-long"}, _ALL - {"ft-long"}),
-            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL - {"long"}),
-            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"}, _ALL - {"long"}),
-            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL - {"long"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-long"}, _ALL - {"ft-short", "ft-long", "verifiers"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-ft-short"}, _ALL - {"long", "ft-long", "verifiers"}),
+            (REGULAR_CADENCE, {"run-ci-image", "run-ci-verifiers"}, _ALL - {"long", "ft-short", "ft-long"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-long"}, _ALL - {"ft-long", "verifiers"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-ft-long"}, _ALL - {"long", "verifiers"}),
+            (NIGHTLY_CADENCE, {"nightly", "run-ci-verifiers"}, _ALL - {"long", "ft-long"}),
+            (
+                REGULAR_CADENCE,
+                {"run-ci-image", "run-ci-ft-short", "run-ci-ft-long"},
+                _ALL - {"long", "verifiers"},
+            ),
+            (NIGHTLY_CADENCE, {"run-ci-ft-long"}, _ALL - {"long", "verifiers"}),
         ],
     )
     def test_explicit_domain_label_wins_over_scope_subtraction(self, cadence, labels, expected):
@@ -732,6 +738,7 @@ def broad_scope_tests():
         _make("tests/e2e/always.py", labels=[]),
         _make("tests/e2e/megatron.py", labels=["megatron"]),
         _make("tests/e2e/long.py", labels=["long"]),
+        _make("tests/e2e/verifiers.py", labels=["long", "verifiers"]),
         _make("tests/e2e/ft/short.py", labels=["ft-short"]),
         _make("tests/e2e/ft/long.py", labels=["ft-long", "long"]),
     ]
@@ -781,6 +788,18 @@ class TestFilterTestsBroadScopes:
         # including from the skip report.
         assert _names(enabled) == {"tests/e2e/always.py"}
         assert skipped == []
+
+    def test_verifiers_scope_selects_only_verifiers_and_always_on(self, broad_scope_tests):
+        enabled, _ = filter_tests(
+            broad_scope_tests,
+            HWBackend.CUDA,
+            "stage-c-8-gpu-h100",
+            labels=set(resolve_policy(REGULAR_CADENCE, {"run-ci-verifiers"}).include_labels),
+        )
+        assert _names(enabled) == {
+            "tests/e2e/always.py",
+            "tests/e2e/verifiers.py",
+        }
 
     def test_all_scope_includes_every_label(self, broad_scope_tests):
         enabled, _ = filter_tests(

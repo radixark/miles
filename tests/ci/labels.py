@@ -24,6 +24,7 @@ KNOWN_LABELS: dict[str, str] = {
     "fsdp": "FSDP training tests",
     "short": "Short 8-GPU smoke tests",
     "long": "Long-running training tests",
+    "verifiers": "Verifiers integration tests",
     "ckpt": "Checkpoint save / load tests",
     "lora": "LoRA training tests",
     "eval": "Evaluation machinery tests (shared-engine / fleet / external postures)",
