@@ -47,7 +47,7 @@ def prepare():
         CODE_GOLF_DIR,
         dirs_exist_ok=True,
     )
-    U.exec_command_cpu(f"cd {RUN_DIR} && prime --plain env install code-golf-v1")
+    U.exec_command_cpu(f'cd {RUN_DIR} && "$(uv tool dir --bin)/prime" --plain env install code-golf-v1')
     U.convert_checkpoint(
         model_name=MODEL_NAME,
         megatron_model_type=MODEL_TYPE,
