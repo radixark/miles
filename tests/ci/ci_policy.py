@@ -17,7 +17,11 @@ _SAFE_RUN_CI_LABEL = re.compile(r"^run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*$")
 REGULAR_CADENCE = "regular"
 NIGHTLY_CADENCE = "nightly"
 WEEKLY_CADENCE = "weekly"
-CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE, WEEKLY_CADENCE})
+# Release-branch CI: weekly's full scope, but never writes the rolling perf
+# baseline — release branches run frozen dependency SHAs, and letting them
+# write baselines would poison the nightly comparisons.
+RELEASE_CADENCE = "release"
+CI_CADENCES = frozenset({REGULAR_CADENCE, NIGHTLY_CADENCE, WEEKLY_CADENCE, RELEASE_CADENCE})
 
 # A scheduled trigger has no policy by itself. Each configured cron must map
 # explicitly so a future cadence cannot silently inherit nightly behavior.
@@ -80,7 +84,8 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
     Broad scopes are large include sets:
 
     - `run-ci-all` includes every registered label.
-    - Weekly cadence includes every registered label.
+    - Weekly and release cadences include every registered label; release
+      differs from weekly only in never writing the perf baseline.
     - Nightly cadence excludes `long` and `ft-long`.
     - `run-ci-image` excludes `long`, `ft-short`, and `ft-long`.
 
@@ -98,7 +103,7 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         raise ValueError("The nightly workflow label requires cadence='nightly'")
 
     requested = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
-    if "run-ci-all" in raw_labels or cadence == WEEKLY_CADENCE:
+    if "run-ci-all" in raw_labels or cadence in {WEEKLY_CADENCE, RELEASE_CADENCE}:
         scope = set(KNOWN_LABELS)
     elif cadence == NIGHTLY_CADENCE:
         scope = set(KNOWN_LABELS) - {"long", "ft-long"}
@@ -106,11 +111,12 @@ def resolve_policy(cadence: str, raw_labels: set[str]) -> RunPolicy:
         scope = set(KNOWN_LABELS) - {"long", "ft-short", "ft-long"}
     else:
         scope = set()
+    full_cadences = {NIGHTLY_CADENCE, WEEKLY_CADENCE, RELEASE_CADENCE}
     return RunPolicy(
         cadence=cadence,
         include_labels=frozenset(scope | requested),
-        admit_nightly_tests=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
-        bypass_fastfail=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE} or "bypass-fastfail" in raw_labels,
+        admit_nightly_tests=cadence in full_cadences,
+        bypass_fastfail=cadence in full_cadences or "bypass-fastfail" in raw_labels,
         write_baseline=cadence in {NIGHTLY_CADENCE, WEEKLY_CADENCE},
     )
 
@@ -128,9 +134,20 @@ def _canonical_pr_labels(pr_labels_json: str) -> tuple[str, ...]:
     )
 
 
-def resolve_workflow_inputs(event_name: str, schedule: str, pr_labels_json: str) -> WorkflowPolicy:
-    """Adapt GitHub trigger facts to the workflow's stable policy outputs."""
-    if event_name == "pull_request":
+def resolve_workflow_inputs(
+    event_name: str, schedule: str, pr_labels_json: str, cadence_override: str = ""
+) -> WorkflowPolicy:
+    """Adapt GitHub trigger facts to the workflow's stable policy outputs.
+
+    `cadence_override` carries an explicit workflow_call cadence input (e.g. a
+    release-branch cut requesting a full-scope `release` run). It must win over
+    trigger inference: a called workflow inherits the *caller's* event_name, so
+    inferring from the trigger would silently degrade a release run to
+    `regular` scope.
+    """
+    if cadence_override:
+        cadence, raw_labels = cadence_override, ()
+    elif event_name == "pull_request":
         raw_labels = _canonical_pr_labels(pr_labels_json)
         cadence = NIGHTLY_CADENCE if "nightly" in raw_labels else REGULAR_CADENCE
     elif event_name == "schedule":
@@ -167,6 +184,7 @@ def main() -> int:
             event_name=os.environ["EVENT_NAME"],
             schedule=os.environ.get("SCHEDULE", ""),
             pr_labels_json=os.environ.get("PR_LABELS_JSON", ""),
+            cadence_override=os.environ.get("CADENCE_OVERRIDE", ""),
         )
     except ValueError as exc:
         print(f"::error::{exc}", file=sys.stderr)

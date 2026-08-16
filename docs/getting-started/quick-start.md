@@ -1,16 +1,27 @@
 ---
 title: Quick Start
-description: A quick RL training job on Qwen3-4B in under an hour.
+description: Get an RL training job up and running in under an hour.
 ---
 **What you need**
 
 - A node with 8 GPUs (H100 / H200 / B-series).
-- Roughly 200 GB of free disk.
+- At least 500 GB of free disk.
 - Docker with GPU access.
+
+**Pre-flight checks**
+
+```bash
+# Driver up, all 8 GPUs listed?
+nvidia-smi -L
+# Docker can hand GPUs to a container?
+docker run --rm --gpus all ubuntu nvidia-smi
+# Enough free disk where Docker stores data?
+df -h $(docker info -f '{{.DockerRootDir}}')
+```
 
 **What you will accomplish**
 
-- Launch a GRPO run and watch the reward climb!
+- Launch a GRPO run on Qwen3-4B and watch the reward climb!
 
 Training a different model? The flow is the same — see [Models](/models/index) for
 the per-model recipes.
@@ -194,4 +205,4 @@ size 256.
 - [Customization](/user-guide/customization) — plug in custom rollout / reward.
 - [Models](/models/index) — recipes for Qwen3.5, GLM5.2, DeepSeek V4, Kimi K2.6, and more.
 
-If you hit issues, the [FAQ](/faq) covers the common ones.
+If you hit issues, feel free to open an issue on [GitHub](https://github.com/radixark/miles/issues).

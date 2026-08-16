@@ -204,7 +204,6 @@ def _run_variant(model_family: str, cfg: ModelConfig, variant: str) -> None:
         extra_env_vars={
             "PYTHONPATH": "/root/Megatron-LM",
             "MILES_ROUTER_EQ_DUMP_PATH": str(dump_path),
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         },
     )
 

@@ -28,8 +28,6 @@ registers `--custom-agent-function-path` and `--max-seq-len`, creates a TITO
 session for each rollout, invokes your agent, and collects the resulting samples.
 
 ```bash
-export MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1
-
 AGENTIC_ARGS=(
    --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
    --custom-agent-function-path    my_agent.run

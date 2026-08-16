@@ -124,6 +124,7 @@ Current sentinels, so you know when you have walked into one:
 | File | Governing document |
 |---|---|
 | `.github/workflows/pr-test.yml`, `pr-test-rocm.yml` | `docs/ci/00-stage.md`, `docs/ci/01-label.md` |
+| `.github/workflows/bot-bump-miles-version.yml`, `bot-cherry-pick.yml`, `release-*.yml` | `docs/ci/04-release.md` |
 | `docker/build.py` | `docs/ci/02-docker-build.md` |
 | `tests/ci/metric_history/**` | `docs/ci/03-metric-history-gate.md` |
 
@@ -161,10 +162,7 @@ register_cuda_ci(
 )
 ```
 
-`register_cpu_ci`, `register_cuda_ci` and `register_rocm_ci` share that signature, plus
-`nightly=True` (nightly and weekly cadence only) and `disabled="<reason + issue link>"` (reported as
-skipped rather than deleted). The calls are parsed from the AST, so they must be
-top-level, literal, and unaliased.
+`register_cpu_ci`, `register_cuda_ci` and `register_rocm_ci` share that signature, plus `nightly=True` (nightly, weekly, and release cadence only) and `disabled="<reason + issue link>"` (reported as skipped rather than deleted). The calls are parsed from the AST, so they must be top-level, literal, and unaliased.
 
 The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e` and `tests/ci` for
 `test_*.py`, and a file outside `tests/fast/` with no registration fails collection with

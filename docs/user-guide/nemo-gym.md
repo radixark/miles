@@ -33,8 +33,7 @@ In short:
    `download_and_process_data.py`; the task instance rides in each sample's
    `metadata`.
 3. **Training side** — point `NEMO_GYM_URL` at the agent server and launch
-   `run.py` (requires `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`, which the
-   launcher sets), wiring the chain:
+   `run.py`, wiring the chain:
 
 ```bash
 --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate

@@ -68,7 +68,7 @@ def make_manager(args, eval_fn=None, fleet=None):
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
     mgr._health_monitors = []
-    mgr.use_experimental_refactor = True
+    mgr.use_legacy_rollout_v1 = False
     mgr._metric_checker = None
     mgr.eval_generate_rollout = eval_fn
     mgr._eval_fleet = fleet

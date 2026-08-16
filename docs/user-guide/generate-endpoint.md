@@ -31,9 +31,8 @@ function automatically at load time:
 
 <Note>
 
-`MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` is off by default — set it yourself
-(through `runtime_env` when submitting via Ray). Both generate-function forms
-work with or without it.
+The class-based rollout path is the default; `MILES_USE_LEGACY_ROLLOUT_V1=1`
+selects the deprecated v1 path. Both generate-function forms work on either.
 
 </Note>
 

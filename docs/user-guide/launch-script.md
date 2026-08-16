@@ -1,5 +1,5 @@
 ---
-title: Structure and Usage
+title: Launch Script
 description: What a Miles launch script does when you run it, how it is structured, and the three ways to override a recipe.
 ---
 Every supported model ships as a python launch script under `scripts/`, and starting a

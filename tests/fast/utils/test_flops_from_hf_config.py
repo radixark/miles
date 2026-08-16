@@ -113,6 +113,43 @@ def test_dense_config_keeps_no_expert_width():
     assert flops_args_from_hf_config(hf_config()).moe_ffn_hidden_size is None
 
 
+def test_all_moe_config_without_a_dense_ffn_width():
+    hf = hf_config(num_experts=256, moe_intermediate_size=512, num_experts_per_tok=8)
+    del hf.intermediate_size
+    assert_same(
+        hf,
+        megatron_args(
+            ffn_hidden_size=None,
+            num_experts=256,
+            moe_ffn_hidden_size=512,
+            moe_router_topk=8,
+            moe_layer_freq=[1] * 8,
+        ),
+    )
+
+
+def test_shared_experts_sized_from_the_borrowed_expert_width():
+    hf = hf_config(n_routed_experts=256, num_experts_per_tok=6, n_shared_experts=2, intermediate_size=2048)
+    assert_same(
+        hf,
+        megatron_args(
+            ffn_hidden_size=2048,
+            num_experts=256,
+            moe_ffn_hidden_size=2048,
+            moe_router_topk=6,
+            moe_shared_expert_intermediate_size=2 * 2048,
+            moe_layer_freq=[1] * 8,
+        ),
+    )
+
+
+def test_a_config_that_hides_its_ffn_width_is_rejected_up_front():
+    hf = hf_config()
+    del hf.intermediate_size
+    with pytest.raises(ValueError, match="does not expose the FFN widths"):
+        flops_args_from_hf_config(hf)
+
+
 def test_deepseek_style_dense_prefix_matches():
     assert_same(
         hf_config(

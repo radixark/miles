@@ -1,5 +1,6 @@
 from copy import deepcopy
 from dataclasses import fields
+from typing import Any
 
 from miles.utils.types import Sample
 
@@ -219,3 +220,48 @@ def _startswith(*, short, long) -> bool:
     if isinstance(short, list) and isinstance(long, list):
         return (len(long) >= len(short)) and (long[: len(short)] == short)
     raise NotImplementedError
+
+
+def _len_or_value(value: Any) -> Any:
+    if isinstance(value, (dict, list, tuple, str)):
+        return {"type": type(value).__name__, "len": len(value)}
+    return value
+
+
+def sample_text_preview(sample: Sample, max_chars: int = 512) -> str:
+    text = (str(sample.prompt) + sample.response).replace("\n", "\\n")
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}...<truncated chars={len(text) - max_chars}>"
+
+
+def reward_log_summary(reward: Any) -> Any:
+    """Summarize a reward (which for OPD scoring can be a large nested dict of logprobs)
+    into shapes/lengths instead of dumping the whole thing into the log."""
+    if not isinstance(reward, dict):
+        return _len_or_value(reward)
+
+    summary: dict[str, Any] = {}
+    for key, value in reward.items():
+        if not isinstance(value, dict):
+            summary[key] = _len_or_value(value)
+            continue
+
+        entry: dict[str, Any] = {"keys": list(value.keys())}
+        meta_info = value.get("meta_info")
+        if isinstance(meta_info, dict):
+            entry["meta_info"] = {
+                meta_key: _len_or_value(meta_info[meta_key])
+                for meta_key in (
+                    "id",
+                    "finish_reason",
+                    "prompt_tokens",
+                    "weight_version",
+                    "input_token_logprobs",
+                    "input_token_ids_logprobs",
+                    "input_top_logprobs",
+                )
+                if meta_key in meta_info
+            }
+        summary[key] = entry
+    return summary

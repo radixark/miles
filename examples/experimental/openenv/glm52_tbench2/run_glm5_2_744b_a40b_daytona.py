@@ -299,7 +299,6 @@ def _execute_train(args: ScriptArgs):
 
     extra_env_vars = {
         # FullyAsyncRolloutFn is the class-based rollout API
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         # On a watchdog timeout every rank dumps its recent collectives, which
         # identifies the rank that never arrived. Must reach the train actors,
         # so it goes through the Ray env rather than the launcher shell.

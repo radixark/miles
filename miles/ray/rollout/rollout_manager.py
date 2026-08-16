@@ -33,7 +33,7 @@ from miles.utils import object_store
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import RolloutManagerProcessIdentity
-from miles.utils.environ import enable_experimental_rollout_refactor
+from miles.utils.environ import use_legacy_rollout_v1
 from miles.utils.health_monitor import RolloutHealthMonitor
 from miles.utils.hf_config import is_complete_hf_export
 from miles.utils.http_utils import init_http_client
@@ -69,8 +69,8 @@ class RolloutManager:
         data_source_cls = load_function(self.args.data_source_path)
         self.data_source = data_source_cls(args)
 
-        self.use_experimental_refactor = enable_experimental_rollout_refactor()
-        if self.use_experimental_refactor:
+        self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
+        if not self.use_legacy_rollout_v1:
             input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
             self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
             if self.args.eval_function_path == self.args.rollout_function_path:
@@ -177,7 +177,7 @@ class RolloutManager:
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
         with timer("eval_rollout"):
-            if self.use_experimental_refactor:
+            if not self.use_legacy_rollout_v1:
                 result = await asyncio.to_thread(
                     call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
                 )
@@ -238,7 +238,7 @@ class RolloutManager:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
         else:
-            if self.use_experimental_refactor:
+            if not self.use_legacy_rollout_v1:
                 data = await asyncio.to_thread(
                     call_rollout_function,
                     self.generate_rollout,

@@ -1,5 +1,6 @@
 ---
 title: Kimi
+sidebarTitle: Overview
 description: Miles recipes for the Moonshot family — Kimi K2.6 / K2.5 (multimodal, 1 T / 32 B-A) and Kimi K2 / K2-Thinking.
 ---
 Miles supports Moonshot's MoE line from top to bottom. The latest Kimi K2.6 and K2.5 are natively multimodal agentic models at 1 T total / 32 B active per token, and the text-only Kimi K2 (Instruct and Thinking variants) runs at the same 1 T / 32 B scale. K2-Thinking is the canonical INT4 QAT target, and the K2.5 / K2.6 recipe trains an INT4 actor under the same QAT path.

@@ -1,5 +1,6 @@
 ---
 title: User Guide
+sidebarTitle: Overview
 description: Concepts, launch scripts, customization hooks, and a complete CLI reference.
 ---
 | Page | What it covers |

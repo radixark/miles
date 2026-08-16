@@ -12,7 +12,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
+from miles.utils.environ import enable_experimental_ft_trainer, use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
-    if enable_experimental_rollout_refactor():
-        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-    else:
+    if use_legacy_rollout_v1():
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
+    else:
+        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
         rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
@@ -42,11 +42,15 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
 
 
 def _resolve_rollout_functions(args) -> None:
-    if args.fully_async:
-        assert enable_experimental_rollout_refactor(), (
-            "--fully-async needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
-            "(and propagate it through runtime_env when submitting via Ray)"
+    if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
+        raise ValueError(
+            "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
+            "class-based rollout path yet; set MILES_USE_LEGACY_ROLLOUT_V1=1"
         )
+    if args.fully_async:
+        assert (
+            not use_legacy_rollout_v1()
+        ), "--fully-async needs the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         # Runs after validate_multi_lora_args, which selects a rollout function of its own.
         assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
         assert (
@@ -480,7 +484,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "so its signature should be "
                     "`def generate_rollout(args, rollout_id, data_source, evaluation=False) "
                     "-> RolloutFnTrainOutput | RolloutFnEvalOutput` "
-                    "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
+                    "(see `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` "
+                    "for the default class-based implementation). "
                     "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
                 ),
@@ -493,7 +498,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Run fully async rollout: a persistent worker keeps generating while the trainer "
                     "drains completed groups. Selects `FullyAsyncRolloutFn` as the rollout function; "
                     "evaluation keeps the standard rollout function, which fully async does not serve. "
-                    "Requires train_async.py and MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1."
+                    "Requires train_async.py."
                 ),
             )
             parser.add_argument(
@@ -1516,6 +1521,17 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Whether to use the rollout logprobs when calculating the importance sampling ratios. "
                     "If not set, we will use the logprobs from the actor model."
+                ),
+            )
+            parser.add_argument(
+                "--skip-actor-forward-only",
+                action="store_true",
+                default=False,
+                help=(
+                    "Skip the standalone Megatron actor forward-only pass. With --use-rollout-logprobs, "
+                    "those log-probs remain the old-policy baseline; otherwise detached training log-probs "
+                    "are reused and the actor importance log-ratio is exactly 0. This requires a single "
+                    "optimizer step. The skipped pass's rollout/log_probs metric is not emitted."
                 ),
             )
             # Off-Policy Correction using Importance Sampling: https://fengyao.notion.site/off-policy-rl
@@ -2628,7 +2644,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        if enable_experimental_rollout_refactor():
+        if not use_legacy_rollout_v1():
             parser = add_user_provided_function_arguments(parser)
 
         reset_arg(
@@ -2974,6 +2990,11 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        if args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-teacher" and not use_legacy_rollout_v1():
+            raise ValueError(
+                "--opd-log-prob-top-k with a student-side strategy needs opd_student_top_logprobs, "
+                "which only the v1 rollout produces; set MILES_USE_LEGACY_ROLLOUT_V1=1"
+            )
         if args.opd_teacher_urls:
             if args.opd_type != "sglang":
                 raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")
@@ -3126,7 +3147,7 @@ def miles_validate_args(args):
             args.custom_tis_function_path is not None
         ), "custom_tis_function_path must be set when get_mismatch_metrics is set"
 
-        if args.use_rollout_logprobs:
+        if args.use_rollout_logprobs and not args.skip_actor_forward_only:
             logger.info(
                 "get_mismatch_metrics is set; For metrics calculation, the log probs will still be recomputed by training engine. One more forward pass will be applied."
             )
@@ -3315,27 +3336,29 @@ def miles_validate_args(args):
 
     _validate_rematerialize_param_from_master_weight(args)
 
+    if (args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk) and (
+        args.offload_train_disk_dir is None
+    ):
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}")
+
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
             args.train_backend == "megatron"
         ), "--offload-train-target=disk is only supported on the megatron backend"
         assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
-        if args.offload_train_disk_dir is None:
-            uid = os.getuid() if hasattr(os, "getuid") else 0
-            args.offload_train_disk_dir = os.path.join(
-                os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}"
-            )
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"
         )
 
     if args.stream_optimizer_state_to_disk:
-        assert args.offload_train_target == "disk", (
-            "--stream-optimizer-state-to-disk requires --offload-train-target=disk. Both answer the "
-            "same pressure and are only ever deployed as a pair, so that is the only combination "
-            "validated; streaming alone runs but is untested."
+        assert args.offload_train_target == "disk" or not args.offload_train, (
+            "--stream-optimizer-state-to-disk with --offload-train requires "
+            "--offload-train-target=disk: a run that cannot hold the optimizer state on GPU for "
+            "the duration of the step will not hold a pinned host copy of the whole actor either. "
+            "Disaggregated runs do not offload the trainer at all, and the target is unused there."
         )
         assert not args.indep_dp, (
             "--stream-optimizer-state-to-disk does not support --indep-dp: each cell has its own "
@@ -3387,8 +3410,8 @@ def miles_validate_args(args):
     # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)
     if args.eval_uses_snapshots:
         assert (
-            enable_experimental_rollout_refactor()
-        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+            not use_legacy_rollout_v1()
+        ), "Snapshot eval requires the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
         assert args.eval_hf_dir is not None or args.save_hf is not None, (
             "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "
@@ -3494,7 +3517,75 @@ def miles_validate_args(args):
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
 
+    if args.skip_actor_forward_only:
+        validate_skip_actor_forward_only(args)
+
     _maybe_apply_dumper_overrides(args)
+
+
+def validate_skip_actor_forward_only(args) -> None:
+    option = "--skip-actor-forward-only"
+    assert args.train_backend == "megatron", f"{option} only supports --train-backend megatron"
+    assert args.loss_type == "policy_loss", f"{option} only supports --loss-type policy_loss"
+    assert args.compute_advantages_and_returns, f"{option} requires actor advantage computation"
+
+    incompatible_options = [
+        name
+        for name, enabled in (
+            ("--keep-old-actor", args.keep_old_actor),
+            ("--kl-coef", args.kl_coef != 0),
+            ("--use-opd", args.use_opd),
+            ("--hidden-dropout", args.hidden_dropout != 0),
+            ("--attention-dropout", args.attention_dropout != 0),
+            ("--lora-dropout", args.lora_dropout != 0),
+            ("--moe-input-jitter-eps", args.moe_input_jitter_eps not in (None, 0)),
+            ("--moe-router-force-load-balancing", args.moe_router_force_load_balancing),
+            ("--moe-router-force-biased", args.moe_router_force_biased is not None),
+            (
+                "--moe-router-load-balancing-type sinkhorn",
+                "sinkhorn" in args.moe_router_load_balancing_type,
+            ),
+            ("--use-rollout-entropy", args.use_rollout_entropy),
+            ("--true-on-policy-mode", args.true_on_policy_mode),
+            ("--log-correct-samples", args.log_correct_samples),
+            ("--rollout-data-postprocess-path", args.rollout_data_postprocess_path is not None),
+            (
+                "--custom-megatron-before-log-prob-hook-path",
+                args.custom_megatron_before_log_prob_hook_path is not None,
+            ),
+            (
+                "--custom-megatron-before-train-step-hook-path",
+                args.custom_megatron_before_train_step_hook_path is not None,
+            ),
+            ("--custom-model-provider-path", args.custom_model_provider_path is not None),
+            (
+                "--dumper-source-patcher-config-train",
+                args.dumper_source_patcher_config_train is not None,
+            ),
+            ("--save-debug-train-data", args.save_debug_train_data is not None and args.dump_details is None),
+            (
+                "--use-routing-replay",
+                args.use_routing_replay and not args.use_rollout_routing_replay,
+            ),
+            (
+                "--use-indexer-replay",
+                args.use_indexer_replay and not args.use_rollout_indexer_replay,
+            ),
+        )
+        if enabled
+    ]
+    assert not incompatible_options, f"{option} is incompatible with: {', '.join(incompatible_options)}"
+
+    assert args.num_steps_per_rollout in (None, 1), (
+        f"{option} requires exactly one optimizer step per rollout; "
+        f"got --num-steps-per-rollout {args.num_steps_per_rollout}"
+    )
+    if not args.use_dynamic_global_batch_size and not args.multi_lora:
+        samples_per_rollout = args.rollout_batch_size * args.n_samples_per_prompt
+        assert args.global_batch_size == samples_per_rollout, (
+            f"{option} requires exactly one optimizer step for {samples_per_rollout} rollout samples; "
+            f"got --global-batch-size {args.global_batch_size}"
+        )
 
 
 def validate_async_off_policy_correction(args) -> None:
