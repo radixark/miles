@@ -218,6 +218,38 @@ class TestTypedCalls:
                 await handle.demo_raises()
 
 
+class TestSubmitWithoutResult:
+    async def test_a_call_is_submitted_and_never_polled(self):
+        """Some calls kill the process that would answer them, so waiting for a result waits for ever."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                await handle.submit_without_result("demo_default_arg", a=1, b=2)
+
+                assert transport.polls() == []
+                assert transport.requests == 1
+
+    async def test_a_method_the_worker_does_not_define_fails_locally(self):
+        """A typo would otherwise be submitted as a call nobody ever runs and nobody ever waits for."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                with pytest.raises(AttributeError, match="no rpc method"):
+                    await handle.submit_without_result("demo_defualt_arg")
+
+                assert transport.requests == 0
+
+    async def test_locally_invalid_arguments_fail_before_any_request(self):
+        """The result is never read, so an argument the worker rejects would fail where nobody is looking."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                with pytest.raises(ValidationError):
+                    await handle.submit_without_result("demo_default_arg", a="not-an-int")
+
+                assert transport.requests == 0
+
+
 class TestLocalValidation:
     async def test_worker_shadowing_handle_method_rejected(self):
         """A worker exposing a reserved handle method name fails at client creation."""
