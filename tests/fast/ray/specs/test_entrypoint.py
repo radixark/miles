@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
+from tests.fast.ray.rollout.conftest import make_args, make_args_with_sglang_config, make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.workers.worker_spec import BaseWorkerSpec
@@ -31,7 +31,6 @@ class TestComputeSpecs:
             "session-server",
             "inference-engine-0-0",
             "inference-engine-0-2",
-            "rollout-executor",
             "trainer-controller-actor",
             "trainer-engine-actor",
         ]
@@ -119,3 +118,58 @@ def _debug_train_only_specs(tmp_path) -> list[BaseWorkerSpec]:
         debug_train_only=True,
     )
     return compute_specs(args)
+
+
+class TestDeployComponentFiltering:
+    @staticmethod
+    def _args(tmp_path, **overrides):
+        return make_args_with_sglang_config(
+            tmp_path,
+            server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}],
+            **{
+                "rollout_num_gpus": 4,
+                "use_session_server": True,
+                "use_critic": True,
+                "critic_num_nodes": 1,
+                "critic_num_gpus_per_node": 2,
+                **overrides,
+            },
+        )
+
+    def test_a_trainer_deployment_holds_the_trainer_controllers_and_their_ranks_only(self, tmp_path):
+        """A trainer release that also installed engines would double the run's gpu bill."""
+        specs = compute_specs(self._args(tmp_path, deploy_component="trainer"))
+
+        assert [spec.name for spec in specs] == [
+            "trainer-controller-actor",
+            "trainer-controller-critic",
+            "trainer-engine-actor",
+            "trainer-engine-critic",
+        ]
+
+    def test_the_primary_deployment_holds_everything_the_other_two_do_not(self, tmp_path):
+        """primary is defined by subtraction, so anything unclaimed has to land here rather than nowhere."""
+        names = [spec.name for spec in compute_specs(self._args(tmp_path, deploy_component="primary"))]
+
+        assert not [name for name in names if name.startswith("trainer-")]
+        assert not [name for name in names if name.startswith("inference-engine")]
+        assert "inference-controller" in names
+        assert "inference-router-0" in names
+
+    def test_an_inference_deployment_holds_the_engines_only(self, tmp_path):
+        """The controller and the routers drive the run, and a second copy of them would serve nobody."""
+        names = [spec.name for spec in compute_specs(self._args(tmp_path, deploy_component="inference"))]
+
+        assert names
+        assert all(name.startswith("inference-engine") for name in names)
+
+    def test_the_three_subsets_partition_the_whole_run(self, tmp_path):
+        """A worker in no subset would never be deployed, and one in two would be deployed twice."""
+        whole = [spec.name for spec in compute_specs(self._args(tmp_path, deploy_component="all"))]
+        parts = [
+            spec.name
+            for component in ("primary", "trainer", "inference")
+            for spec in compute_specs(self._args(tmp_path, deploy_component=component))
+        ]
+
+        assert sorted(whole) == sorted(parts)

@@ -6,6 +6,7 @@ from pydantic import ConfigDict, model_validator
 from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
+from miles.utils.workers.types import DeployComponent
 
 RPC_PORT_NAME = "rpc"
 MASTER_PORT_NAME = "master"
@@ -95,6 +96,7 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     env_var: Callable[[WorkerLaunchContext], dict[str, str]]
     scheduling: SchedulingSpec
     meta: SpecMetaFn | None = None
+    deploy_component: DeployComponent = DeployComponent.PRIMARY
 
 
 class HostAndPort(FrozenStrictBaseModel):
