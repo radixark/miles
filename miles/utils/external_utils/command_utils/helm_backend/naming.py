@@ -28,8 +28,12 @@ class RunNames:
         return f"{name}.{namespace}.svc.cluster.local"
 
     @staticmethod
+    def orchestrator_object(*, release: str) -> str:
+        return component_name(release, ORCHESTRATOR_COMPONENT)
+
+    @staticmethod
     def orchestrator_host(*, release: str, namespace: str) -> str:
-        return RunNames.service_fqdn(name=component_name(release, ORCHESTRATOR_COMPONENT), namespace=namespace)
+        return RunNames.service_fqdn(name=RunNames.orchestrator_object(release=release), namespace=namespace)
 
     @staticmethod
     def uninstall_job(*, release: str) -> str:
