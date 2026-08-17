@@ -152,20 +152,23 @@ class _RecoveryStage(enum.Enum):
 
 
 def _compute_recovery_tally(events: list[_CellEvent]) -> _RecoveryTally:
-    pending: list[_RecoveryStage] = []
+    num_outstanding = 0
     num_completed = 0
+    stage = _RecoveryStage.AWAITING_RELAUNCH
     for event in events:
         if event.kind == "injected":
-            pending.append(_RecoveryStage.AWAITING_RELAUNCH)
+            num_outstanding += 1
+            stage = _RecoveryStage.AWAITING_RELAUNCH
             continue
-        if not pending:
+        if num_outstanding == 0:
             continue
-        if pending[0] is _RecoveryStage.AWAITING_RELAUNCH and event.state in _RELAUNCH_STATES:
-            pending[0] = _RecoveryStage.AWAITING_SERVING
-        elif pending[0] is _RecoveryStage.AWAITING_SERVING and event.state is ObservedCellState.SERVING:
-            pending.pop(0)
-            num_completed += 1
-    return _RecoveryTally(num_completed=num_completed, num_unfinished=len(pending))
+        if stage is _RecoveryStage.AWAITING_RELAUNCH and event.state in _RELAUNCH_STATES:
+            stage = _RecoveryStage.AWAITING_SERVING
+        elif stage is _RecoveryStage.AWAITING_SERVING and event.state is ObservedCellState.SERVING:
+            num_completed += num_outstanding
+            num_outstanding = 0
+            stage = _RecoveryStage.AWAITING_RELAUNCH
+    return _RecoveryTally(num_completed=num_completed, num_unfinished=num_outstanding)
 
 
 def _compute_distinct_states(events: list[_CellEvent]) -> list[ObservedCellState]:
