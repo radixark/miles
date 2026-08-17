@@ -133,6 +133,7 @@ def _make_trainer_args(*model_ids: str, **overrides: Any) -> Namespace:
         no_load_rng=False,
         finetune=False,
         start_rollout_id=None,
+        trainer_controller_addrs=None,
     )
     defaults.update(overrides)
     return Namespace(**{**parser_defaults(), **defaults})

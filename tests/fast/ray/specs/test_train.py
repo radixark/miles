@@ -1,3 +1,4 @@
+import asyncio
 import builtins
 import sys
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from tests.fast.fixtures.args_fixtures import parser_defaults
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
+from tests.fast.ray.rollout.conftest import make_args_with_sglang_config
 
 from miles.backends.megatron_utils.megatron_config import compute_trainer_args
 from miles.ray.placement_group import _get_placement_group_layout
@@ -16,12 +18,14 @@ from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
     TRAINER_METHOD_CONCURRENCY_GROUPS,
-    compute_actor_args,
+    _compute_trainer_controller_provider,
     compute_trainer_configs,
     compute_trainer_controller_pool_id,
+    compute_trainer_ids,
     compute_trainer_pool_id,
     specs_trainer,
     specs_trainer_controller,
+    external_trainer_controller_addrs,
     trainer_controller_cell_id,
     trainer_controller_worker_name,
 )
@@ -869,3 +873,109 @@ class TestTrainerConfigs:
             "trainer-controller-alpha-actor",
             "trainer-controller-alpha-critic",
         ]
+
+
+_TRAINER_IDS = ["actor", "critic"]
+
+
+def _addressed_args(tmp_path, **overrides):
+    return make_args_with_sglang_config(
+        tmp_path,
+        server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 4}],
+        rollout_num_gpus=8,
+        **overrides,
+    )
+
+
+class TestStaticTrainerControllerAddrs:
+    def test_a_run_without_the_flag_names_no_controller(self, tmp_path):
+        """An all-in-one run finds its own controller, so nothing may be invented for it."""
+        assert external_trainer_controller_addrs(_addressed_args(tmp_path), trainer_ids=_TRAINER_IDS) is None
+
+    def test_the_one_trainer_of_a_run_is_named_by_its_own_entry(self, tmp_path):
+        """The trainer id is what tells the entry apart from the next run's, so even one trainer writes it."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000"])
+
+        addrs = external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+        assert (addrs["actor"].host, addrs["actor"].port) == ("10.0.0.1", 8000)
+
+    def test_each_trainer_is_addressed_separately(self, tmp_path):
+        """A critic is its own controller in its own pod, and calling the actor's would train the wrong model."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000", "critic=10.0.0.2:9000"])
+
+        addrs = external_trainer_controller_addrs(args, trainer_ids=_TRAINER_IDS)
+
+        assert [(addrs[trainer_id].host, addrs[trainer_id].port) for trainer_id in _TRAINER_IDS] == [
+            ("10.0.0.1", 8000),
+            ("10.0.0.2", 9000),
+        ]
+
+    def test_refuses_an_entry_that_names_no_trainer(self, tmp_path):
+        """A bare address belongs to whichever trainer the reader guesses, and a run may drive several."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="host:port"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+    def test_refuses_a_trainer_id_that_is_not_one_of_the_run_s(self, tmp_path):
+        """A typo would otherwise leave the trainer it meant to name silently unaddressed."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actro=10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="exactly once"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+    def test_refuses_a_run_whose_second_trainer_was_left_unaddressed(self, tmp_path):
+        """A trainer named by nothing would be reached at the first one's controller and train the wrong model."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="exactly once"):
+            external_trainer_controller_addrs(args, trainer_ids=_TRAINER_IDS)
+
+    def test_refuses_two_controllers_for_one_trainer_id(self, tmp_path):
+        """One trainer id is one trainer, and silently using one of the two would drop the other."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000", "actor=10.0.0.2:8000"])
+
+        with pytest.raises(AssertionError, match="exactly once"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+    def test_refuses_an_address_written_as_a_url(self, tmp_path):
+        """The flag takes host:port, and a pasted url would otherwise be read as a host named 'http'."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=http://10.0.0.1:8000"])
+
+        with pytest.raises(AssertionError, match="host:port"):
+            external_trainer_controller_addrs(args, trainer_ids=["actor"])
+
+
+class TestTrainerIds:
+    def test_a_single_policy_run_drives_one_trainer(self, tmp_path):
+        """The flag keys on trainer ids, so the ids a run drives are exactly the entries it takes."""
+        assert compute_trainer_ids(_addressed_args(tmp_path)) == ["actor"]
+
+    def test_a_critic_run_drives_a_trainer_per_trainer_id(self, tmp_path):
+        """A critic is deployed as its own trainer and so takes its own entry of the flag."""
+        assert compute_trainer_ids(_addressed_args(tmp_path, use_critic=True)) == ["actor", "critic"]
+
+
+class TestProviderSelection:
+    def test_a_given_trainer_controller_address_is_used_instead_of_the_backend_s(self, tmp_path):
+        """The trainer lives in another deployment, whose names this one's backend cannot resolve."""
+        args = _addressed_args(tmp_path, trainer_controller_addrs=["actor=10.0.0.1:8000"])
+        capability = FakeBackendCapability(static_provider=object())
+
+        provider = _compute_trainer_controller_provider(args, capability=capability, trainer_id="actor")
+
+        addrs = asyncio.run(provider.get_addrs("trainer-controller-actor-0-0"))
+        assert addrs["rpc"].addr == "http://10.0.0.1:8000"
+        assert capability.requested_static_pool_ids == []
+
+    def test_an_all_in_one_run_still_asks_its_own_backend_for_the_trainer_controller(self, tmp_path):
+        """Nothing addresses a ray actor statically, so the all-in-one path must be untouched."""
+        capability = FakeBackendCapability(static_provider=object())
+
+        provider = _compute_trainer_controller_provider(
+            _addressed_args(tmp_path), capability=capability, trainer_id="actor"
+        )
+
+        assert provider is capability.static_provider
+        assert capability.requested_static_pool_ids == ["trainer-controller-actor"]

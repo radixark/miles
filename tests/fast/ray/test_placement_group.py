@@ -287,7 +287,7 @@ class TestUpdateWeights:
 class TestCreateTrainingModels:
     @staticmethod
     def _patched(monkeypatch, requested: list[str]) -> None:
-        def _create_handle(*, capability, trainer_id: str):
+        def _create_handle(args, *, capability, trainer_id: str):
             requested.append(trainer_id)
             handle = MagicMock()
             handle.init = AsyncMock(return_value=[0])
@@ -360,7 +360,7 @@ class TestCreateTrainingModels:
 class TestCreateTrainingModel:
     @staticmethod
     def _patch_handle(monkeypatch, *, restored: list[int]) -> None:
-        def _create_handle(*, capability, trainer_id: str):
+        def _create_handle(args, *, capability, trainer_id: str):
             handle = MagicMock()
             handle.init = AsyncMock(return_value=restored)
             return handle

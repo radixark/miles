@@ -15,14 +15,18 @@ from miles.utils.megatron_args_utils import compute_megatron_world_size_except_d
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
     MASTER_PORT_NAME,
+    HostAndPort,
     PortInfo,
     SchedulingSpec,
     ServeWorkerSpec,
     WorkerLaunchContext,
 )
 
+TRAINER_CONTROLLER_ADDRS_FLAG = "--trainer-controller-addrs"
 POOL_CATEGORY_TRAINER_ENGINE = "trainer_engine"
 
 TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
@@ -62,10 +66,35 @@ def compute_trainer_configs(args) -> list[MegatronTrainerConfig]:
     return resolve_megatron_config(args).trainers
 
 
-def create_trainer_controller_handle(*, capability: BackendCapability, trainer_id: str) -> BaseWorkerHandle:
-    worker_name = trainer_controller_worker_name(trainer_id)
-    provider = capability.static_worker_provider(pool_id=compute_trainer_controller_pool_id(trainer_id))
-    return provider.get_handle(worker_name)
+def external_trainer_controller_addrs(args, *, trainer_ids: list[str]) -> dict[str, HostAndPort] | None:
+    if (entries := args.trainer_controller_addrs) is None:
+        return None
+    addrs = {prefix: parse_host_and_port(rest) for prefix, _, rest in (entry.partition("=") for entry in entries)}
+    assert sorted(addrs) == sorted(trainer_ids) and len(addrs) == len(entries), (
+        f"{TRAINER_CONTROLLER_ADDRS_FLAG} must name each of {trainer_ids} exactly once as "
+        f"'<trainer_id>=<host:port>' (got {entries})"
+    )
+    return addrs
+
+
+def compute_trainer_ids(args) -> list[str]:
+    return [config.trainer_id for config in compute_trainer_configs(args)]
+
+
+def create_trainer_controller_handle(args, *, capability: BackendCapability, trainer_id: str) -> BaseWorkerHandle:
+    provider = _compute_trainer_controller_provider(args, capability=capability, trainer_id=trainer_id)
+    return provider.get_handle(trainer_controller_worker_name(trainer_id))
+
+
+def _compute_trainer_controller_provider(
+    args, *, capability: BackendCapability, trainer_id: str
+) -> BaseWorkerProvider:
+    pool_id = compute_trainer_controller_pool_id(trainer_id)
+    if (addrs := external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))) is None:
+        return capability.static_worker_provider(pool_id=pool_id)
+    return StaticWorkerProvider.of_rpc_addrs(
+        pool_id=pool_id, addrs=[addrs[trainer_id]], worker_class=TRAINER_CONTROLLER_WORKER_CLASS
+    )
 
 
 def compute_trainer_controller_pool_id(trainer_id: str) -> str:
