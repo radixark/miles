@@ -14,9 +14,11 @@ from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.registration.reporter import RegistrationReporter
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
 from miles.utils.workers.worker_spec import (
     CommandWorkerSpec,
     LaunchCommandContext,
@@ -29,9 +31,12 @@ logger = logging.getLogger(__name__)
 
 POOL_CATEGORY_INFERENCE_ENGINE = "inference_engine"
 
+INFERENCE_CONTROLLER_ADDR_FLAG = "--inference-controller-addr"
 INFERENCE_CONTROLLER_POOL_ID = "inference-controller"
 SESSION_SERVER_POOL_ID = "session-server"
 INFERENCE_CONTROLLER_WORKER_CLASS = "miles.ray.rollout.inference_controller.InferenceController"
+INFERENCE_REGISTRATION_REPORTER_POOL_ID = "inference-registration-reporter"
+INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS = "miles.utils.workers.registration.reporter.RegistrationReporterWorker"
 
 
 def spec_inference_controller(args) -> ServeWorkerSpec:
@@ -52,6 +57,41 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
             engine_provider=compute_engine_provider(args, capability=ctx.capability),
             router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
+    )
+
+
+def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
+    if DeployComponent(args.deploy_component) is not DeployComponent.INFERENCE:
+        return []
+
+    return [
+        ServeWorkerSpec(
+            name=INFERENCE_REGISTRATION_REPORTER_POOL_ID,
+            deploy_component=DeployComponent.INFERENCE,
+            port_infos=[],
+            env_var=lambda _ctx: {},
+            scheduling=SchedulingSpec(
+                num_cells=1,
+                num_workers_per_cell=1,
+                num_gpus_per_worker=0,
+                num_cpus_per_worker=1,
+                pin_to_head=args.pin_rollout_manager_to_head,
+            ),
+            worker_class=INFERENCE_REGISTRATION_REPORTER_WORKER_CLASS,
+            ctor_kwargs=lambda ctx: dict(
+                args=args, reporter=_create_inference_registration_reporter(args, capability=ctx.capability)
+            ),
+        )
+    ]
+
+
+def _create_inference_registration_reporter(args, *, capability: BackendCapability) -> RegistrationReporter:
+    controller_provider = compute_inference_controller_provider(args, capability=capability)
+    return RegistrationReporter(
+        run_uuid=args.run_uuid,
+        reporter_id=args.deploy_instance_id,
+        hub_endpoint=controller_provider.get_handle(inference_controller_worker_name()),
+        worker_provider=compute_engine_provider(args, capability=capability),
     )
 
 
@@ -78,6 +118,12 @@ def create_inference_controller_handle(*, capability: BackendCapability) -> Base
 
 
 def compute_inference_controller_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
+    if (entry := args.inference_controller_addr) is not None:
+        return StaticWorkerProvider.of_rpc_addrs(
+            pool_id=INFERENCE_CONTROLLER_POOL_ID,
+            addrs=[parse_host_and_port(entry)],
+            worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
+        )
     return capability.static_worker_provider(pool_id=INFERENCE_CONTROLLER_POOL_ID)
 
 
