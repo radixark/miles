@@ -2968,6 +2968,12 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
     _validate_shared_object_store(args, component=component)
 
     if not component.deploys_orchestration_script():
+        unservable = sorted(set(args.ft_components) - {"train"})
+        assert not unservable, (
+            f"--deploy-component {component.value} installs no inference engines, and {unservable} cells are "
+            f"suspended and resumed through the controller of the deployment that owns them, so this launch cannot "
+            f"answer for them; pass --ft-components train"
+        )
         return
 
     assert (
