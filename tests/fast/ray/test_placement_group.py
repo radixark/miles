@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ def _make_args(**overrides) -> Namespace:
         cluster_backend="ray",
         eval_num_gpus=0,
         debug_train_only=False,
+        debug_rollout_only=False,
         use_session_server=False,
     )
     defaults.update(overrides)
@@ -73,6 +75,22 @@ def fake_components():
             capability=capability,
             events=events,
         )
+
+
+class TestFrozenInferenceChecksums:
+    async def test_no_updatable_engines_skips_the_checksum_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Frozen inference fleets have no weight update checksums to flatten or record."""
+        monkeypatch.setattr(placement_group_module, "is_event_logger_initialized", lambda: True)
+        event_logger = MagicMock()
+        monkeypatch.setattr(placement_group_module, "get_event_logger", lambda: event_logger)
+        controller = SimpleNamespace(check_weights=AsyncMock(return_value=[]))
+
+        await placement_group_module._maybe_log_inference_engine_weight_checksums(
+            _make_args(), inference_controller=controller, rollout_id=None, trainer_model_id=None
+        )
+
+        controller.check_weights.assert_awaited_once()
+        event_logger.log.assert_not_called()
 
 
 class TestCreateRolloutComponents:
@@ -261,15 +279,22 @@ class TestUpdateWeights:
         rollout_executor.set_weight_version = AsyncMock()
         return actor_model, rollout_executor
 
+    @staticmethod
+    def _args():
+        return Namespace(debug_train_only=True, debug_rollout_only=False)
+
     async def test_the_executor_is_told_which_version_the_engines_now_serve(self):
         """Without this the executor stamps every sample it collects with weight_version=None."""
         from miles.ray.placement_group import update_weights
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
 
-        await update_weights(actor_model, rollout_executor, rollout_id=3)
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
 
-        actor_model.update_weights.assert_awaited_once_with(rollout_id=3)
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3)
+
+        info = inference_controller.start_update_weights.await_args.kwargs["model_id"]
+        assert info is None
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
 
     async def test_the_published_version_names_the_policy_it_belongs_to(self):
@@ -278,7 +303,11 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=7)
 
-        await update_weights(actor_model, rollout_executor, rollout_id=3, trainer_model_id="alpha")
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(
+            self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3, trainer_model_id="alpha"
+        )
 
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id="alpha")
 
@@ -288,8 +317,27 @@ class TestUpdateWeights:
 
         actor_model, rollout_executor = self._fakes(weight_version=None)
 
-        await update_weights(actor_model, rollout_executor)
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
 
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+        rollout_executor.set_weight_version.assert_not_awaited()
+
+    async def test_a_trainer_that_fails_mid_sync_still_closes_the_controllers_lock_window(self):
+        """Leaving the window open blocks every later controller call, so a failed sync turns into a hang."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=None)
+        actor_model.update_weights = AsyncMock(side_effect=RuntimeError("weight sync failed"))
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), abort_update_weights=AsyncMock(), end_update_weights=AsyncMock()
+        )
+
+        with pytest.raises(RuntimeError, match="weight sync failed"):
+            await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+        inference_controller.abort_update_weights.assert_awaited_once_with()
+        inference_controller.end_update_weights.assert_not_awaited()
         rollout_executor.set_weight_version.assert_not_awaited()
 
 
