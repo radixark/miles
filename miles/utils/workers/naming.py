@@ -1,5 +1,9 @@
 from typing import NamedTuple
 
+POOL_NAME_MAX_LENGTH = 40
+_LONGEST_ENGINE_POOL_ID_AROUND_THE_INSTANCE_ID = "inference-engine--99-99"
+DEPLOY_INSTANCE_ID_MAX_LENGTH = POOL_NAME_MAX_LENGTH - len(_LONGEST_ENGINE_POOL_ID_AROUND_THE_INSTANCE_ID)
+
 
 class ParsedCellId(NamedTuple):
     pool_id: str

@@ -9,6 +9,7 @@ from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.naming import POOL_NAME_MAX_LENGTH
 
 _DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
 _OPTIONAL_DNS_LABEL = r"^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$"
@@ -23,13 +24,12 @@ _ENV_KEYS = {
     }
 }
 
-_POOL_NAME_MAX = 40
 _OBJECT_NAME_MAX = 63
 _PORT_NAME_MAX = 15
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
 
-_PoolName = Annotated[str, Field(min_length=1, max_length=_POOL_NAME_MAX, pattern=_DNS_LABEL)]
+_PoolName = Annotated[str, Field(min_length=1, max_length=POOL_NAME_MAX_LENGTH, pattern=_DNS_LABEL)]
 _ObjectName = Annotated[str, Field(min_length=1, max_length=_OBJECT_NAME_MAX, pattern=_DNS_LABEL)]
 _Port = Annotated[int, Field(ge=1, le=65535)]
 _AbsolutePath = Annotated[str, Field(pattern="^/", json_schema_extra=_NO_PARENT_TRAVERSAL)]
@@ -125,7 +125,7 @@ class CommandJobValues(ValuesModel):
     )
 
     enabled: bool | None = None
-    name: Annotated[str, Field(max_length=_POOL_NAME_MAX, pattern=_OPTIONAL_DNS_LABEL)] | None = None
+    name: Annotated[str, Field(max_length=POOL_NAME_MAX_LENGTH, pattern=_OPTIONAL_DNS_LABEL)] | None = None
     object_name: Annotated[str, Field(max_length=_OBJECT_NAME_MAX, pattern=_OPTIONAL_DNS_LABEL)] | None = None
     command: list[str] | None = None
     completions: Annotated[int, Field(ge=1)] | None = None
