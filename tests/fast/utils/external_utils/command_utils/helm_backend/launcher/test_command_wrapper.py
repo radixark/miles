@@ -233,6 +233,25 @@ class TestComponentName:
         for length in range(1, 60):
             assert "--" not in naming.component_name("b" * length, "orchestrator")
 
+    def test_a_component_longer_than_its_own_budget_is_hashed(self):
+        """Letting it eat the whole budget leaves no room for the release digest, so two runs collide."""
+        name = naming.component_name("a" * 200, "trainer-controller-" + "m" * 60)
+        appended = len(naming.LONGEST_CELL_INDEX_SUFFIX) + len(naming.LONGEST_REVISION_HASH_SUFFIX)
+
+        assert len(name) + appended <= naming.MAX_OBJECT_NAME_LENGTH
+
+    def test_two_long_components_of_one_run_never_collapse_onto_the_same_name(self):
+        """Truncation alone maps every long component onto one name; the digest is what keeps them apart."""
+        prefix = "trainer-controller-" + "m" * 60
+
+        assert naming.component_name("myrun", f"{prefix}-a") != naming.component_name("myrun", f"{prefix}-b")
+
+    def test_a_long_component_leaves_the_release_its_digest(self):
+        """Two releases whose names are truncated to the same prefix are only told apart by that digest."""
+        long_component = "trainer-controller-" + "m" * 60
+
+        assert naming.component_name("a" * 200, long_component) != naming.component_name("b" * 200, long_component)
+
     def test_the_same_release_and_component_always_name_the_same_object(self):
         """helm upgrade replaces an object in place only while its name is unchanged."""
         assert naming.component_name("miles-run-x", "trainer-engine-actor") == naming.component_name(

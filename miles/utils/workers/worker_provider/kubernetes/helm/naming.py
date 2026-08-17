@@ -13,6 +13,7 @@ LONGEST_REVISION_HASH_SUFFIX = "-0123456789"
 COMPONENT_NAME_BUDGET = MAX_OBJECT_NAME_LENGTH - len(LONGEST_CELL_INDEX_SUFFIX) - len(LONGEST_REVISION_HASH_SUFFIX)
 
 RELEASE_DIGEST_LENGTH = 6
+MIN_RELEASE_PREFIX_LENGTH = len("x-") + 2 * RELEASE_DIGEST_LENGTH
 
 
 def static_cell_addrs(
@@ -33,16 +34,22 @@ def static_worker_host(release: str, component: str, cell_index: int) -> str:
 
 
 def component_name(release: str, component: str) -> str:
+    component_budget = COMPONENT_NAME_BUDGET - MIN_RELEASE_PREFIX_LENGTH - 1
+    component = _fit_to_budget(component, budget=component_budget, digest_of=component)
     budget = COMPONENT_NAME_BUDGET - (len(component) + 1)
     return f"{release_prefix(release, chart_name=CHART_NAME, budget=budget)}-{component}"
 
 
 def release_prefix(release: str, *, chart_name: str, budget: int) -> str:
     name = release if chart_name in release else f"{release}-{chart_name}"
-    if len(name) <= budget:
-        return name
-    digest = hashlib.blake2b(release.encode(), digest_size=RELEASE_DIGEST_LENGTH).hexdigest()
-    return f"{_trim_suffix(name[: budget - (len(digest) + 1)], '-')}-{digest}"
+    return _fit_to_budget(name, budget=budget, digest_of=release)
+
+
+def _fit_to_budget(value: str, *, budget: int, digest_of: str) -> str:
+    if len(value) <= budget:
+        return value
+    digest = hashlib.blake2b(digest_of.encode(), digest_size=RELEASE_DIGEST_LENGTH).hexdigest()
+    return f"{_trim_suffix(value[: budget - (len(digest) + 1)], '-')}-{digest}"
 
 
 def _trim_suffix(value: str, suffix: str) -> str:
