@@ -52,6 +52,7 @@ export function drawChart(canvas, points, opts = {}) {
       buckets.push({
         x: bucket[0].x,
         y,
+        gap: bucket.some((p) => p.gap),
         label: `${fmt(bucket[0].x)}–${fmt(bucket.at(-1).x)}\nmean = ${fmt(y)} (${bucket.length} pts)`,
       });
     }
@@ -74,12 +75,19 @@ export function drawChart(canvas, points, opts = {}) {
     return;
   }
 
+  const bands = opts.bands ?? [];
   let xMin, xMax;
   if (zoom?.x) {
     [xMin, xMax] = zoom.x;
   } else {
     const xs = pts.map((p) => p.x);
     [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
+    // bands mark regions without points (prompt, masked turns): widen the
+    // domain so they render as visible space instead of being cropped away
+    for (const b of bands) {
+      xMin = Math.min(xMin, b.x0);
+      xMax = Math.max(xMax, b.x1);
+    }
   }
   if (xMin === xMax) [xMin, xMax] = [xMin - 0.5, xMax + 0.5];
   let yMin, yMax;
@@ -116,12 +124,24 @@ export function drawChart(canvas, points, opts = {}) {
   ctx.beginPath();
   ctx.rect(MARGIN.left, MARGIN.top, plotW, plotH);
   ctx.clip();
+  for (const b of bands) {
+    ctx.globalAlpha = b.strong ? 0.3 : 0.14;
+    ctx.fillStyle = colBorder;
+    ctx.fillRect(X(b.x0), MARGIN.top, Math.max(X(b.x1) - X(b.x0), 1), plotH);
+    ctx.globalAlpha = 1;
+    if (b.label && X(b.x1) - X(b.x0) > 44) {
+      ctx.fillStyle = colText;
+      ctx.fillText(b.label, X(b.x0) + 4, MARGIN.top + 12);
+    }
+  }
   if (opts.line !== false) {
     const linePts = bucketed ? pts : points;
     ctx.strokeStyle = colMain;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    linePts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
+    // a gap marks the first point after a null run: lift the pen so masked
+    // spans read as holes instead of being bridged by a fake segment
+    linePts.forEach((p, i) => (i && !p.gap ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
     ctx.stroke();
   }
   if (!bucketed) {
