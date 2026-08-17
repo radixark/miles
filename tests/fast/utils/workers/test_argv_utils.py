@@ -16,6 +16,7 @@ from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers import argv_utils
 from miles.utils.workers.argv_utils import (
     CONFIG_JSON_FLAG,
+    coerce_dict_to_args,
     config_to_argv,
     dataclass_to_values,
     parse_config_argv,
@@ -714,3 +715,65 @@ def _run_prefix_printing_command(
         env={**os.environ, "PYTHONPATH": os.pathsep.join(python_path_entries)},
     )
     return json.loads(completed.stdout)
+
+
+class TestCoerceDictToArgs:
+    def _parser(self) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--swiglu", action="store_true")
+        parser.add_argument("--bias", action=argparse.BooleanOptionalAction)
+        parser.add_argument("--normalization")
+        parser.add_argument("--num-layers", type=int)
+        parser.add_argument("--lr", type=float)
+        parser.add_argument("--megatron-to-hf-mode", choices=["raw", "bridge"])
+        parser.add_argument("--disable-bias-linear", dest="add_bias_linear", action="store_false")
+        return parser
+
+    def _coerce(self, values: dict, *, allowed: set[str] | None = None) -> dict:
+        allowed_names = frozenset(allowed if allowed is not None else values)
+        return coerce_dict_to_args(values, parser=self._parser(), allowed_names=allowed_names, context="the overlay")
+
+    def test_a_yaml_scalar_is_coerced_the_way_the_command_line_would(self):
+        """The overlay never reaches argparse, so this is the only place its strings become typed values."""
+        assert self._coerce({"num_layers": "12", "lr": "1e-5", "normalization": "RMSNorm"}) == {
+            "num_layers": 12,
+            "lr": 1e-5,
+            "normalization": "RMSNorm",
+        }
+
+    def test_a_float_written_where_an_int_is_declared_is_refused(self):
+        """int(1.9) would silently train 1 layer fewer than the config asked for."""
+        with pytest.raises(AssertionError, match="would reject"):
+            self._coerce({"num_layers": 1.9})
+
+    def test_a_value_outside_the_declared_choices_is_refused(self):
+        """argparse would reject it on the command line, and the overlay must not be the softer door."""
+        with pytest.raises(AssertionError, match="only accepts"):
+            self._coerce({"megatron_to_hf_mode": "bridged"})
+
+    @pytest.mark.parametrize("flag", ["swiglu", "bias"])
+    def test_a_boolean_flag_takes_a_boolean(self, flag):
+        """store_true and BooleanOptionalAction both carry no value on the command line."""
+        assert self._coerce({flag: True}) == {flag: True}
+
+        with pytest.raises(AssertionError, match="not a boolean"):
+            self._coerce({flag: "yes"})
+
+    def test_an_option_spelled_unlike_its_destination_is_keyed_by_the_destination(self):
+        """--disable-bias-linear writes add_bias_linear, and setting the spelling would reach no argument."""
+        assert self._coerce({"disable_bias_linear": False}) == {"add_bias_linear": False}
+
+    def test_a_name_outside_the_allowed_set_is_refused(self):
+        """Everything else is read from the base command line, so overriding it here would be ignored."""
+        with pytest.raises(AssertionError, match="may not override"):
+            self._coerce({"lr": 1.0}, allowed={"num_layers"})
+
+    def test_a_name_the_parser_does_not_declare_is_refused(self):
+        """An allowed name with no argument behind it cannot be typed, and would land as a stray attribute."""
+        with pytest.raises(AssertionError, match="declares no such argument"):
+            self._coerce({"made_up": 1})
+
+    def test_a_value_of_none_is_refused(self):
+        """A yaml key with no value is a typo, not a request to unset the argument."""
+        with pytest.raises(AssertionError, match="no value"):
+            self._coerce({"lr": None})
