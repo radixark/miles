@@ -2,12 +2,17 @@ import argparse
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import yaml
 from sglang_router.launch_router import RouterArgs
 
-from miles.backends.megatron_utils.megatron_config import resolve_args_checkpoint_load
+from miles.backends.megatron_utils.megatron_config import (
+    CRITIC_ROLE,
+    resolve_args_checkpoint_load,
+    resolve_megatron_config,
+)
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
@@ -29,6 +34,7 @@ from miles.utils.object_store_config import MOONCAKE_MASTER_ADDRESS_KEY, compute
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import with_relax_parser_required_args
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 
 logger = logging.getLogger(__name__)
@@ -158,10 +164,25 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 choices=tuple(component.value for component in DeployComponent),
                 help=(
                     "Which part of the run this launch deploys: `all` deploys every worker, `trainer` the trainer "
-                    "controllers and their megatron ranks, `inference` the sglang engines, and `primary` "
-                    "everything else (orchestration script, rollout executor, session servers, inference "
-                    "controller and routers). Deploying a subset takes one launch per subset, and the launch that "
-                    "carries the orchestration script reaches the trainer through the addresses it is given."
+                    "controllers and their megatron ranks, `inference` a group of inference engines that registers "
+                    "itself into the run, and `primary` everything else (orchestration script, rollout executor, "
+                    "session servers, inference controller and routers). Deploying a subset takes one launch per "
+                    "subset, and the launch that carries the orchestration script reaches the trainer through the "
+                    "addresses it is given."
+                ),
+            )
+            parser.add_argument(
+                "--deploy-instance-id",
+                type=str,
+                default=None,
+                help=(
+                    "Id of this deployment, telling it apart from the other deployments of the same component "
+                    "in the same run: a trainer id such as `trainer-a` under `--deploy-component trainer`, or an "
+                    "engine group id such as `inf-east` under `--deploy-component inference`. A deployment's "
+                    "arguments describe only what it carries, so this id selects nothing; it is required under "
+                    "`--deploy-component inference`, which names its engine pools by it, optional under "
+                    "`--deploy-component trainer`, whose config already declares the one trainer id it carries, and "
+                    "refused for `all` and `primary`, which a run has exactly one of."
                 ),
             )
             parser.add_argument(
@@ -173,6 +194,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Address of every independently deployed trainer controller, one "
                     "<trainer_id>=<host:port> entry per trainer the run drives. Required when this launch "
                     "carries the orchestration script but not the trainer."
+                ),
+            )
+            parser.add_argument(
+                "--inference-controller-addr",
+                type=str,
+                default=None,
+                help=(
+                    "Address of the one inference controller of the run, as host:port. Given "
+                    "to a `--deploy-component inference` launch, whose reporter registers the engines it deploys "
+                    "into that controller."
                 ),
             )
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -2944,9 +2975,9 @@ def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> 
 def _validate_deploy_component(args: argparse.Namespace) -> None:
     component = DeployComponent(args.deploy_component)
 
-    assert not (
-        component.selects(DeployComponent.TRAINER) and args.trainer_controller_addrs is not None
-    ), f"--deploy-component {component.value} deploys the trainer itself, so drop --trainer-controller-addrs"
+    _validate_deploy_instance_id(args, component=component)
+    _validate_static_addrs_external_launch(args, component=component)
+    _validate_registration(args, component=component)
 
     if not component.is_split():
         return
@@ -2965,8 +2996,96 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
         not args.colocate
     ), f"--deploy-component {component.value} cannot be combined with --colocate, which shares gpus across the two"
 
-    _validate_shared_object_store(args, component=component)
+    if component.deploys_orchestration_script():
+        assert (
+            args.trainer_controller_addrs is not None
+        ), f"--deploy-component {component.value} deploys no trainer, so it needs --trainer-controller-addrs"
+        _validate_trainer_controller_addrs(args)
 
+    if component is DeployComponent.TRAINER:
+        _validate_single_deployed_trainer(args)
+
+    if component is not DeployComponent.INFERENCE:
+        _validate_shared_object_store(args, component=component)
+    _validate_watched_cells_deployed_locally(args, component=component)
+
+
+def _validate_deploy_instance_id(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if (instance_id := args.deploy_instance_id) is None:
+        return
+
+    assert component.takes_instance_id(), (
+        f"--deploy-instance-id {instance_id!r} names one deployment of {component.value} apart from the others, and "
+        f"a run has exactly one {component.value}; only "
+        f"{[one.value for one in DeployComponent if one.takes_instance_id()]} are deployed more than once"
+    )
+
+    if component is not DeployComponent.INFERENCE:
+        return
+
+    assert _DEPLOY_INSTANCE_ID_PATTERN.fullmatch(instance_id), (
+        f"--deploy-instance-id {instance_id!r} names the release this launch installs and the pool ids of the "
+        f"engines it deploys, so it has to match {_DEPLOY_INSTANCE_ID_PATTERN.pattern}"
+    )
+    assert len(instance_id) <= DEPLOY_INSTANCE_ID_MAX_LENGTH, (
+        f"--deploy-instance-id {instance_id!r} is {len(instance_id)} characters, and it is carried inside every "
+        f"engine pool id this deployment names, which kubernetes bounds; it takes at most "
+        f"{DEPLOY_INSTANCE_ID_MAX_LENGTH}"
+    )
+
+
+def _validate_single_deployed_trainer(args: argparse.Namespace) -> None:
+    trainers = resolve_megatron_config(args).trainers
+    assert len(trainers) == 1, (
+        f"--deploy-component trainer deploys one trainer and its arguments describe {len(trainers)} "
+        f"({[t.trainer_id for t in trainers]}); give this deployment the config of the one trainer it carries, "
+        f"and launch every other trainer as a deployment of its own"
+    )
+    assert not args.use_critic, (
+        "--use-critic grows this run by a critic trainer, and --deploy-component trainer carries exactly the "
+        "one trainer its config describes; deploy the critic separately with an explicit single-trainer config"
+    )
+    assert trainers[0].role != CRITIC_ROLE, (
+        f"--deploy-component trainer carries the trainer {trainers[0].trainer_id!r}, whose role is "
+        f"{CRITIC_ROLE!r}; a critic is deployed together with the run that drives it, and deploying one on its own "
+        f"is not supported yet"
+    )
+    assert args.deploy_instance_id is None or args.deploy_instance_id == trainers[0].trainer_id, (
+        f"--deploy-instance-id {args.deploy_instance_id!r} names this deployment, but its config describes trainer "
+        f"{trainers[0].trainer_id!r}; the run reaches a trainer by the id its config declares, so the two must "
+        f"agree"
+    )
+
+
+def _validate_static_addrs_external_launch(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    assert component.deploys_orchestration_script() or args.trainer_controller_addrs is None, (
+        f"--trainer-controller-addrs describes the trainer side the orchestration script drives, but "
+        f"--deploy-component {component.value} carries no orchestration script, so nothing here would call those "
+        f"addresses"
+    )
+    assert not (
+        component.selects(DeployComponent.TRAINER) and args.trainer_controller_addrs is not None
+    ), f"--deploy-component {component.value} deploys the trainer itself, so drop --trainer-controller-addrs"
+
+
+def _validate_registration(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if component is DeployComponent.INFERENCE:
+        assert args.deploy_instance_id is not None, (
+            f"--deploy-component {component.value} needs --deploy-instance-id: it names the engine pools this "
+            f"deployment reports and tells it apart from the other engine deployments of the run"
+        )
+        assert args.inference_controller_addr is not None, (
+            f"--deploy-component {component.value} deploys engines and nothing that drives them, so the one "
+            f"inference controller of the run has to be named by --inference-controller-addr"
+        )
+    else:
+        assert args.inference_controller_addr is None, (
+            f"--deploy-component {component.value} holds the one inference controller of the run, so it reaches it "
+            f"in its own process rather than through --inference-controller-addr"
+        )
+
+
+def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, component: DeployComponent) -> None:
     if not component.deploys_orchestration_script():
         unservable = sorted(set(args.ft_components) - {"train"})
         assert not unservable, (
@@ -2977,9 +3096,8 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
         return
 
     assert (
-        args.trainer_controller_addrs is not None
-    ), f"--deploy-component {component.value} deploys no trainer, so it needs --trainer-controller-addrs"
-    _validate_trainer_controller_addrs(args)
+        not args.api_server_port
+    ), f"--deploy-component {component.value} watches cells it does not deploy; pass --api-server-port 0"
 
 
 def _validate_trainer_controller_addrs(args: argparse.Namespace) -> None:
