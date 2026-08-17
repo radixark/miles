@@ -312,31 +312,31 @@ async def test_the_next_window_puts_the_replacement_engine_back_in_the_router(ha
 
 async def test_the_observed_sequence_satisfies_the_soak_recovery_witness(harness: _Harness) -> None:
     """The fast-layer stand-in is only worth anything if the e2e witness accepts the sequence it produces."""
-    witness = fi.RecoveryWitness()
-    witness.observe(list((await harness.observe()).values()))
-    witness.note_injected(_CELL_IDS[0])
+    log = fi.EventLog()
+    log.observe(list((await harness.observe()).values()))
+    log.note_injected(_CELL_IDS[0])
     harness.crash(_CELL_IDS[0])
 
     await harness.run_ft_controller_once()
-    witness.observe(list((await harness.observe()).values()))
+    log.observe(list((await harness.observe()).values()))
     await harness.open_weight_update_window()
-    witness.observe(list((await harness.observe()).values()))
+    log.observe(list((await harness.observe()).values()))
 
-    assert witness.num_completed_recoveries(cell_type="rollout") == 1
-    assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {}
+    assert fi.compute_num_completed_recoveries(log.events, cell_type="rollout") == 1
+    assert fi.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {}
 
 
 async def test_the_witness_rejects_a_replacement_that_never_reaches_the_router(harness: _Harness) -> None:
     """A weight update that silently skips the replaced cell leaves it Running forever, and must fail the soak."""
-    witness = fi.RecoveryWitness()
-    witness.observe(list((await harness.observe()).values()))
-    witness.note_injected(_CELL_IDS[0])
+    log = fi.EventLog()
+    log.observe(list((await harness.observe()).values()))
+    log.note_injected(_CELL_IDS[0])
     harness.crash(_CELL_IDS[0])
 
     await harness.run_ft_controller_once()
-    witness.observe(list((await harness.observe()).values()))
+    log.observe(list((await harness.observe()).values()))
     await harness.open_weight_update_window(mark_weights_ready=False)
-    witness.observe(list((await harness.observe()).values()))
+    log.observe(list((await harness.observe()).values()))
 
-    assert witness.num_completed_recoveries(cell_type="rollout") == 0
-    assert witness.cells_with_unfinished_recovery(cell_type="rollout") == {_CELL_IDS[0]: 1}
+    assert fi.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
+    assert fi.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {_CELL_IDS[0]: 1}
