@@ -28,6 +28,8 @@ from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import SimpleTicker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -82,6 +84,22 @@ class InferenceController:
         dashboard_hooks.register_router(self.args)
 
         await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+
+    # -------------------------- registration -----------------------------
+
+    @lock_exempt
+    async def registration_ingest(self, *, snapshot: RegistrationSnapshot) -> None:
+        assert isinstance(provider := self._engine_provider, RegistrationHub), (
+            f"run {self.args.run_uuid} deploys its own engines and takes no registration "
+            f"(reporter {snapshot.reporter_id})"
+        )
+        for cell in snapshot.cells:
+            assert (
+                model_id := cell.info.meta.get("model_id")
+            ) in self.servers, (
+                f"cell {cell.info.cell_id} serves model {model_id!r}, this run serves {sorted(self.servers)}"
+            )
+        await provider.ingest(snapshot)
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 

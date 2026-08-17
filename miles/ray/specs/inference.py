@@ -14,6 +14,7 @@ from miles.utils.workers.argv_utils import config_to_argv, python_argv_prefix
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.launch_gate import GATE_PORT_NAME
 from miles.utils.workers.naming import compute_worker_name
+from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.reporter import RegistrationReporter
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 POOL_CATEGORY_INFERENCE_ENGINE = "inference_engine"
 
+ENGINE_POOL_ID_PREFIX = "inference-engine"
 INFERENCE_CONTROLLER_ADDR_FLAG = "--inference-controller-addr"
 INFERENCE_CONTROLLER_POOL_ID = "inference-controller"
 SESSION_SERVER_POOL_ID = "session-server"
@@ -54,7 +56,7 @@ def spec_inference_controller(args) -> ServeWorkerSpec:
         worker_class=INFERENCE_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
             args=args,
-            engine_provider=compute_engine_provider(args, capability=ctx.capability),
+            engine_provider=_compute_controller_engine_provider(args, capability=ctx.capability),
             router_providers=compute_router_providers(args, capability=ctx.capability),
         ),
     )
@@ -83,6 +85,12 @@ def specs_inference_registration_reporter(args) -> list[ServeWorkerSpec]:
             ),
         )
     ]
+
+
+def _compute_controller_engine_provider(args, *, capability: BackendCapability) -> BaseWorkerProvider:
+    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
+        return compute_engine_provider(args, capability=capability)
+    return RegistrationHub(run_uuid=args.run_uuid)
 
 
 def _create_inference_registration_reporter(args, *, capability: BackendCapability) -> RegistrationReporter:
@@ -250,8 +258,9 @@ def compute_session_server_instance_id(args, instance_index: int) -> str:
     return f"{args.run_uuid}-{instance_index}"
 
 
-def compute_engine_pool_id(model_idx: int, group_index: int) -> str:
-    return f"inference-engine-{model_idx}-{group_index}"
+def compute_engine_pool_id(args, *, model_idx: int, group_index: int) -> str:
+    segment = args.deploy_instance_id or DeployComponent(args.deploy_component).value
+    return f"{ENGINE_POOL_ID_PREFIX}-{segment}-{model_idx}-{group_index}"
 
 
 def specs_inference_engine(args) -> list[CommandWorkerSpec]:
@@ -340,7 +349,7 @@ def _compute_spec_inference_engine(
     )
 
     return CommandWorkerSpec(
-        name=compute_engine_pool_id(model_idx=model_idx, group_index=group_index),
+        name=compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index),
         category=POOL_CATEGORY_INFERENCE_ENGINE,
         deploy_component=DeployComponent.INFERENCE,
         port_infos=[
