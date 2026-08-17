@@ -10,6 +10,12 @@ from typing import Any
 import yaml
 
 from miles.ray.specs.entrypoint import compute_specs
+from miles.ray.specs.train import (
+    TRAINER_CONTROLLER_ADDRS_FLAG,
+    compute_trainer_controller_pool_id,
+    compute_trainer_ids,
+    specs_trainer_controller,
+)
 from miles.utils.arguments import parse_args
 from miles.utils.external_utils.command_utils.base_backend import (
     CLUSTER_BACKEND_FLAG,
@@ -48,6 +54,8 @@ from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.workers.serving.utils import override_argv, override_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
+from miles.utils.workers.worker_spec import RPC_PORT_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +112,14 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         prepare_cmd=request.prepare_cmd,
         extra_manifests=request.extra_manifests,
     )
+    reachable_at = (
+        _compute_trainer_controller_addrs(args, release=release, namespace=namespace)
+        if deploy_component is DeployComponent.TRAINER
+        else {}
+    )
+
     values_path = RunFiles.new_values_file(run_directory=run_directory)
-    record = LaunchRecord.compute(plan=plan, values_file=values_path)
+    record = LaunchRecord.compute(plan=plan, values_file=values_path, reachable_at=reachable_at)
     record_path = RunFiles.new_record_file(run_directory=run_directory)
     plan = plan.model_copy(
         update={
@@ -143,6 +157,8 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             f"Installed {release}, which carries no orchestration script: it has no training to finish, so it stays "
             f"up until you uninstall it with `helm uninstall {release} --namespace {namespace}`"
         )
+        if reachable_at:
+            logger.info(f"Reach it with {_describe_trainer_controller_addrs(reachable_at)}")
         return
 
     if deploy_component.is_split():
@@ -152,6 +168,22 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         )
 
     _follow_until_finished(release=release, namespace=namespace, state_file=state_file)
+
+
+def _compute_trainer_controller_addrs(args: Any, *, release: str, namespace: str) -> dict[str, str]:
+    specs_by_pool_id = {spec.name: spec for spec in specs_trainer_controller(args)}
+    addrs = {}
+    for trainer_id in compute_trainer_ids(args):
+        spec = specs_by_pool_id[compute_trainer_controller_pool_id(trainer_id)]
+        addr = static_cell_addrs(spec=spec, release=release, cell_index=0)[RPC_PORT_NAME]
+        host = RunNames.service_fqdn(name=addr.host, namespace=namespace)
+        addrs[trainer_id] = f"{host}:{addr.port}"
+    return addrs
+
+
+def _describe_trainer_controller_addrs(reachable_at: dict[str, str]) -> str:
+    entries = " ".join(f"{trainer_id}={addr}" for trainer_id, addr in reachable_at.items())
+    return f"{TRAINER_CONTROLLER_ADDRS_FLAG} {entries}"
 
 
 def _describe_shared_object_store(plan: MooncakePlan | None, *, release: str, namespace: str) -> str:
