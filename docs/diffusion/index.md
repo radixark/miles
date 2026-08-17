@@ -1,14 +1,16 @@
 ---
 title: Miles-Diffusion Documentation
 ---
-Miles-diffusion is a reinforcement learning (RL) post-training framework for **diffusion models** — text-to-image and
-text-to-video. It couples [sglang-diffusion](https://github.com/sgl-project/sglang) for high-throughput rollout with
-**FSDP2 + diffusers** for training, and inherits the modular, minimal-core design of
-[Miles](https://github.com/radixark/miles).
+Miles-diffusion is [Miles](https://github.com/radixark/miles) for **diffusion models** — RL post-training for any
+diffusion process, across image generation, video generation, and robotics.
+[sglang-diffusion](https://github.com/sgl-project/sglang) serves the rollout, and the DiT trains under **FSDP2** on a
+backend that co-evolves with Miles' own. Models load from a diffusers pipeline, or from a native package when a family
+brings its own modeling. The shipped recipes are tuned and validated end to end. Custom rewards, losses, or rollout
+functions plug in through a flag.
 
 *"A journey of a thousand miles begins with a single rollout."* — For DiT models the rollout is a full denoising
-trajectory, and miles-diffusion focuses on the system work that makes trajectory-level RL stable, efficient, and
-reproducible.
+trajectory, and miles-diffusion focuses on the system work that makes trajectory-level RL stable at scale, efficient,
+and reproducible.
 
 ## Core features
 
