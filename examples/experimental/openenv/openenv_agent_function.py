@@ -300,6 +300,9 @@ async def multi_turn(
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
 
+            if completion.choices[0].finish_reason == "length":
+                break
+
             command = _strip_fence(reply) if "```" in reply else reply.strip()
             if not command or command.upper().startswith("TASK_COMPLETE"):
                 break
@@ -413,7 +416,7 @@ async def run_for_training(
     session_url = _resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
-    policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
+    policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY", timeout=3600.0, max_retries=0)
     messages = _extract_messages(prompt)
 
     try:
