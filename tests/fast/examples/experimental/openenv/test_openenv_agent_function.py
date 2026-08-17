@@ -160,9 +160,8 @@ class _TruncatedPolicy:
 
 def test_truncated_turn_ends_the_episode(monkeypatch):
     """A finish_reason="length" turn closes the trainable sample — collection
-    keeps nothing past it, so the loop must stop instead of burning up to
-    max_turns of engine time on discarded tokens. The cut-off command must not
-    be executed either; scoring still runs."""
+    keeps nothing past it, so the loop stops there. The cut-off command is not
+    executed; scoring still runs."""
     monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
 
     async def spying_with_env(env_cls, env_url, body):
