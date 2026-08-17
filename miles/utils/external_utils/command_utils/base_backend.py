@@ -22,7 +22,7 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.typer_utils import dataclass_from_env
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ class ExecuteTrainConfig:
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
     cluster_backend: ClusterBackend = ClusterBackend.RAY
+    deploy_component: DeployComponent = DeployComponent.ALL
     run_id: str = field(default_factory=create_run_id)
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
@@ -71,6 +72,7 @@ class ExecuteTrainRequest(FrozenStrictBaseModel):
 
 
 CLUSTER_BACKEND_FLAG = "--cluster-backend"
+_DEPLOY_COMPONENT_FLAG = "--deploy-component"
 
 TRAINER_ROLE = "trainer"
 _PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
@@ -108,6 +110,10 @@ class BaseCommandBackend(ABC):
         train_backend_fsdp = "fsdp" in ArgvManipulator.values_of(train_argv, "--train-backend")
         assert train_backend_fsdp == (megatron_model_type is None)
         _assert_train_args_name_no_other_backend(train_argv, cluster_backend=self.config.cluster_backend.value)
+        _assert_train_args_name_no_other_deploy_component(
+            train_argv, deploy_component=self.config.deploy_component.value
+        )
+        train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {self.config.deploy_component.value}"
 
         self._execute_train_inner(
             ExecuteTrainRequest(
@@ -253,6 +259,15 @@ def resolve_hardware(config: ExecuteTrainConfig) -> str:
     supported = get_args(config.__dataclass_fields__["hardware"].type)
     assert hardware in supported, f"{type(config).__name__} has no verified profile for {hardware}"
     return hardware
+
+
+def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, deploy_component: str) -> None:
+    conflicting = sorted(set(ArgvManipulator.values_of(train_argv, _DEPLOY_COMPONENT_FLAG)) - {deploy_component})
+    assert not conflicting, (
+        f"This launch deploys the {deploy_component} part of the run, and everything it installs is named after "
+        f"that, so its pods cannot be told {_DEPLOY_COMPONENT_FLAG} {conflicting}; set "
+        f"ExecuteTrainConfig.deploy_component instead of naming it in the train arguments"
+    )
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:
