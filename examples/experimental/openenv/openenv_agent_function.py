@@ -300,6 +300,9 @@ async def multi_turn(
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
 
+            if completion.choices[0].finish_reason == "length":
+                break
+
             command = _strip_fence(reply) if "```" in reply else reply.strip()
             if not command or command.upper().startswith("TASK_COMPLETE"):
                 break
