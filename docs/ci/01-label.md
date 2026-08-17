@@ -37,17 +37,21 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 ## Manage CI from PR comments
 
-After the comment gateway is enabled, post `/<label>` as the entire comment on an open PR to append that exact label. The label must be a supported `run-ci-*` label or `bypass-fastfail` and must be listed in `.github/workflows/policies/ci-label-access.json`; for example, `/run-ci-short` appends only `run-ci-short`, while `/bypass-fastfail` appends only `bypass-fastfail`.
+The PR-comment entrypoint is a command gateway rather than a label handler. Each recognized comment becomes a typed request, and a code-defined static registry selects its fixed handler, policy key, and token capability. The JSON policy controls only access groups and per-command resource allowlists. The registry currently implements add-label, clear-labels, and rerun-failed-ci requests; it does not implement the planned test-case command.
+
+After the comment gateway is enabled, post `/<label>` as the entire comment on an open PR to append that exact label. The label must be a supported `run-ci-*` label or `bypass-fastfail` and must be listed in `.github/workflows/policies/comment-command-access.json`; for example, `/run-ci-short` appends only `run-ci-short`, while `/bypass-fastfail` appends only `bypass-fastfail`.
 
 The command permits leading and trailing whitespace only; it cannot include arguments, prose, or a second command. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
-`.github/workflows/policies/ci-label-access.json` is an exact, default-deny ACL. Its `labels` array controls which exact labels can be added through comments; adding a `KNOWN_LABELS` entry does not expose it automatically.
+`.github/workflows/policies/comment-command-access.json` is an exact, default-deny ACL. Its `commands.add_label.allowed_labels` array controls which exact labels can be added through comments; adding a `KNOWN_LABELS` entry does not expose it automatically. Other command entries select an access group but cannot select a handler, token capability, workflow, API endpoint, or shell command.
 
 The `add_label_access` group controls every command that adds a label. A caller belongs to this group when either their live legacy permission on `radixark/miles` appears in `repository_permissions` or their stable numeric GitHub user ID appears in `user_ids`.
 
 The initial policy accepts `write` and `admin` and starts with no explicit user IDs. Workflow owners can grant a contributor label-command access by adding only that numeric ID to the JSON policy, without granting repository write access. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access.
 
-`clear_permissions` and `rerun_permissions` separately restrict `/clear-labels` and `/rerun-failed-ci` to live `write` or `admin` permission. Membership in `add_label_access.user_ids` does not grant either operation.
+The `repo_write_access` group restricts `/clear-labels` and `/rerun-failed-ci` to live `write` or `admin` permission. Only `add_label_access` can contain explicit `user_ids`; those IDs do not grant either non-label operation.
+
+Unrecognized comments exit after trusted parsing with capability `none`; they do not load the access policy, call the GitHub API, or mint an App token. A malformed comment containing one of the recognized command markers still fails instead of being treated as an unrelated comment.
 
 The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
 
@@ -59,11 +63,11 @@ Successful, skipped, cancelled, queued, or in-progress runs are not rerun, and a
 
 GitHub can omit `pull_requests` from fork workflow-run payloads. For a fork, the handler therefore also requires an all-state lookup by exact head owner and ref to identify only the current open PR, then binds each run to the same head ref, SHA, and repository ID. An absent, reused, or otherwise ambiguous fork head fails without a rerun.
 
-The workflow is disabled by default. Workflow owners may set the repository variable `CI_LABEL_APP_ENABLED=true` only after completing these steps:
+The workflow is disabled by default. Workflow owners may set the repository variable `CI_COMMAND_APP_ENABLED=true` only after completing these steps:
 
 1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read`, `Issues: write`, and `Actions: write`; do not grant `Contents: write`. Each request mints only one capability-specific token: label commands request `Issues: write`, while rerun commands request `Actions: write`.
-2. Store the App client ID in the repository variable `CI_LABEL_APP_CLIENT_ID` and its private key in the repository secret `CI_LABEL_APP_PRIVATE_KEY`.
-3. Protect the final bytes of `.github/workflows/comment-ci-label.yml`, the handler, and the policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
+2. Store the App client ID in the repository variable `CI_COMMAND_APP_CLIENT_ID` and its private key in the repository secret `CI_COMMAND_APP_PRIVATE_KEY`.
+3. Protect the final bytes of `.github/workflows/comment-ci-command.yml`, the handler, and the policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
 4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers.
    Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
    Finally, create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.

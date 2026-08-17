@@ -1,5 +1,5 @@
-name: Comment CI command
-run-name: Comment CI command by ${{ github.event.comment.user.login }}
+name: Comment command gateway
+run-name: Comment command by ${{ github.event.comment.user.login }}
 
 on:
   issue_comment:
@@ -11,13 +11,9 @@ permissions:
 jobs:
   handle-command:
     if: >-
-      vars.CI_LABEL_APP_ENABLED == 'true' &&
+      vars.CI_COMMAND_APP_ENABLED == 'true' &&
       github.event.issue.pull_request != null &&
-      github.event.comment.user.type == 'User' &&
-      (contains(github.event.comment.body, '/run-ci-') ||
-       contains(github.event.comment.body, '/bypass-fastfail') ||
-       contains(github.event.comment.body, '/clear-labels') ||
-       contains(github.event.comment.body, '/rerun-failed-ci'))
+      github.event.comment.user.type == 'User'
     outputs:
       capability: ${{ steps.authorize.outputs.capability }}
     runs-on: ubuntu-latest
@@ -29,40 +25,41 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           sparse-checkout: |
-            .github/workflows/scripts/comment_ci_label.py
-            .github/workflows/policies/ci-label-access.json
+            .github/workflows/scripts/comment_ci_command.py
+            .github/workflows/policies/comment-command-access.json
           sparse-checkout-cone-mode: false
 
-      - name: Validate the command and live repository permission
+      - name: Validate and authorize the command
         id: authorize
         env:
-          CI_LABEL_API_TOKEN: ${{ github.token }}
-          CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
-          CI_LABEL_PREFLIGHT: "true"
-        run: python3 .github/workflows/scripts/comment_ci_label.py
+          CI_COMMAND_API_TOKEN: ${{ github.token }}
+          CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+          CI_COMMAND_PREFLIGHT: "true"
+        run: python3 .github/workflows/scripts/comment_ci_command.py
 
       - name: Reject an unknown capability
         if: >-
+          steps.authorize.outputs.capability != 'none' &&
           steps.authorize.outputs.capability != 'issues' &&
           steps.authorize.outputs.capability != 'actions'
         run: exit 1
 
-      - name: Mint the label-scoped App token
+      - name: Mint the issues-scoped App token
         if: steps.authorize.outputs.capability == 'issues'
-        id: label-token
+        id: issues-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_LABEL_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
           permission-issues: write
           permission-pull-requests: read
 
-      - name: Authorize and mutate CI labels
+      - name: Authorize and run the issues command
         if: steps.authorize.outputs.capability == 'issues'
         env:
-          CI_LABEL_API_TOKEN: ${{ steps.label-token.outputs.token }}
-          CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
-        run: python3 .github/workflows/scripts/comment_ci_label.py
+          CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}
+          CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+        run: python3 .github/workflows/scripts/comment_ci_command.py
 
   rerun-failed-ci:
     needs: handle-command
@@ -79,21 +76,21 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
           sparse-checkout: |
-            .github/workflows/scripts/comment_ci_label.py
-            .github/workflows/policies/ci-label-access.json
+            .github/workflows/scripts/comment_ci_command.py
+            .github/workflows/policies/comment-command-access.json
           sparse-checkout-cone-mode: false
 
       - name: Mint the rerun-scoped App token
         id: rerun-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_LABEL_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
           permission-actions: write
           permission-pull-requests: read
 
       - name: Authorize and rerun failed CI
         env:
-          CI_LABEL_API_TOKEN: ${{ steps.rerun-token.outputs.token }}
-          CI_LABEL_POLICY_PATH: .github/workflows/policies/ci-label-access.json
-        run: python3 .github/workflows/scripts/comment_ci_label.py
+          CI_COMMAND_API_TOKEN: ${{ steps.rerun-token.outputs.token }}
+          CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+        run: python3 .github/workflows/scripts/comment_ci_command.py

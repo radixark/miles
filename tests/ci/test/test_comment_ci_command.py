@@ -11,9 +11,9 @@ from tests.ci.labels import KNOWN_LABELS
 register_cpu_ci(est_time=1, suite="stage-a-cpu", labels=[])
 
 ROOT = Path(__file__).parents[3]
-HANDLER_PATH = ROOT / ".github/workflows/scripts/comment_ci_label.py"
-POLICY_PATH = ROOT / ".github/workflows/policies/ci-label-access.json"
-WORKFLOW_PATH = ROOT / ".github/workflows/comment-ci-label.yml"
+HANDLER_PATH = ROOT / ".github/workflows/scripts/comment_ci_command.py"
+POLICY_PATH = ROOT / ".github/workflows/policies/comment-command-access.json"
+WORKFLOW_PATH = ROOT / ".github/workflows/comment-ci-command.yml"
 
 
 def load_module(name, path):
@@ -23,7 +23,7 @@ def load_module(name, path):
     return module
 
 
-HANDLER = load_module("comment_ci_label", HANDLER_PATH)
+HANDLER = load_module("comment_ci_command", HANDLER_PATH)
 ACTOR_ID = 1234
 HEAD_SHA = "a" * 40
 HEAD_REF = "feature/test"
@@ -124,17 +124,27 @@ def policy(
     permissions=("write", "admin"),
     user_ids=(),
     labels=("run-ci-short", "bypass-fastfail"),
-    clear_permissions=("write", "admin"),
-    rerun_permissions=("write", "admin"),
+    repo_permissions=("write", "admin"),
 ):
     return {
-        "add_label_access": {
-            "repository_permissions": frozenset(permissions),
-            "user_ids": frozenset(user_ids),
+        "groups": {
+            "add_label_access": {
+                "repository_permissions": frozenset(permissions),
+                "user_ids": frozenset(user_ids),
+            },
+            "repo_write_access": {
+                "repository_permissions": frozenset(repo_permissions),
+                "user_ids": frozenset(),
+            },
         },
-        "clear_permissions": frozenset(clear_permissions),
-        "labels": frozenset(labels),
-        "rerun_permissions": frozenset(rerun_permissions),
+        "commands": {
+            "add_label": {
+                "group": "add_label_access",
+                "allowed_labels": frozenset(labels),
+            },
+            "clear_labels": {"group": "repo_write_access"},
+            "rerun_failed_ci": {"group": "repo_write_access"},
+        },
     }
 
 
@@ -178,28 +188,73 @@ def workflow_run(
         "/clear-labels extra",
         "/clear-labels\n/run-ci-short",
         "please /clear-labels",
-        "/Clear-labels",
     ],
 )
 def test_command_parser_rejects_non_exact_commands(body):
-    with pytest.raises(HANDLER.CommentLabelError, match="one exact /<label>"):
+    with pytest.raises(HANDLER.CommentCommandError, match="one exact /<label>"):
         HANDLER.parse_command(body)
 
 
 def test_command_parser_accepts_one_exact_command_with_outer_whitespace():
-    assert HANDLER.parse_command(" \n/run-ci-a_B.c-d\t") == "run-ci-a_B.c-d"
+    assert HANDLER.parse_command(" \n/run-ci-a_B.c-d\t") == HANDLER.AddLabel("run-ci-a_B.c-d")
 
 
 def test_command_parser_accepts_exact_bypass_fastfail_command():
-    assert HANDLER.parse_command("/bypass-fastfail") == "bypass-fastfail"
+    assert HANDLER.parse_command("/bypass-fastfail") == HANDLER.AddLabel("bypass-fastfail")
 
 
 def test_command_parser_accepts_exact_clear_command_with_outer_whitespace():
-    assert HANDLER.parse_command(" \n/clear-labels\t") == HANDLER.CLEAR_COMMAND
+    assert HANDLER.parse_command(" \n/clear-labels\t") == HANDLER.ClearLabels()
 
 
 def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
-    assert HANDLER.parse_command(" \n/rerun-failed-ci\t") == HANDLER.RERUN_COMMAND
+    assert HANDLER.parse_command(" \n/rerun-failed-ci\t") == HANDLER.RerunFailedCI()
+
+
+@pytest.mark.parametrize("body", ["", "ordinary review comment", "/Clear-labels", "/unknown-command"])
+def test_command_parser_ignores_unrelated_comments(body):
+    assert HANDLER.parse_command(body) is None
+
+
+def test_static_registry_owns_policy_capability_and_handler_routing():
+    expected = {
+        HANDLER.AddLabel: ("add_label", "issues", HANDLER._handle_add_label),
+        HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels),
+        HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci),
+    }
+    assert set(HANDLER.COMMAND_REGISTRY) == set(expected)
+    for request_type, (policy_key, capability, handler) in expected.items():
+        spec = HANDLER.COMMAND_REGISTRY[request_type]
+        assert (spec.policy_key, spec.capability, spec.handler) == (policy_key, capability, handler)
+
+
+def test_unknown_request_type_fails_closed():
+    class UnknownRequest:
+        pass
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not registered"):
+        HANDLER._command_spec(UnknownRequest())
+
+
+def raw_policy():
+    return {
+        "version": 2,
+        "groups": {
+            "add_label_access": {
+                "repository_permissions": ["write", "admin"],
+                "user_ids": [],
+            },
+            "repo_write_access": {"repository_permissions": ["write", "admin"]},
+        },
+        "commands": {
+            "add_label": {
+                "group": "add_label_access",
+                "allowed_labels": ["run-ci-short", "bypass-fastfail"],
+            },
+            "clear_labels": {"group": "repo_write_access"},
+            "rerun_failed_ci": {"group": "repo_write_access"},
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -280,26 +335,81 @@ def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
         ),
     ],
 )
-def test_policy_parser_rejects_ambiguous_or_expanded_schema(tmp_path, text, message):
+def test_policy_parser_rejects_legacy_or_nonstandard_schema(tmp_path, text, message):
     path = tmp_path / "policy.json"
     path.write_text(text)
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    expected = message if "duplicate JSON" in message or "non-standard JSON" in message else "only version, groups"
+    with pytest.raises(HANDLER.CommentCommandError, match=expected):
+        HANDLER.load_policy(path)
+
+
+@pytest.mark.parametrize(
+    ("path_parts", "value", "message"),
+    [
+        (("version",), 1, "version must be 2"),
+        (("groups", "add_label_access", "repository_permissions"), [True], "only write or admin"),
+        (("groups", "add_label_access", "repository_permissions"), ["read"], "only write or admin"),
+        (("groups", "add_label_access", "repository_permissions"), ["write", "write"], "duplicate permissions"),
+        (("groups", "add_label_access", "user_ids"), [True], "only positive integers"),
+        (("groups", "add_label_access", "user_ids"), [123, 123], "duplicate user IDs"),
+        (("commands", "add_label", "allowed_labels"), ["unsafe label"], "invalid exact CI label"),
+        (("commands", "add_label", "allowed_labels"), ["run-ci-short", "run-ci-short"], "duplicate labels"),
+        (("commands", "add_label", "group"), "missing", "unknown group"),
+        (("commands", "clear_labels", "unexpected"), True, "invalid fields"),
+        (("groups", "repo_write_access", "user_ids"), [123], "invalid fields"),
+    ],
+)
+def test_policy_parser_rejects_invalid_group_command_or_resource(tmp_path, path_parts, value, message):
+    raw = raw_policy()
+    target = raw
+    for part in path_parts[:-1]:
+        target = target[part]
+    target[path_parts[-1]] = value
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.load_policy(path)
+
+
+@pytest.mark.parametrize("section", ["groups", "commands"])
+def test_policy_parser_rejects_unknown_group_or_command(tmp_path, section):
+    raw = raw_policy()
+    raw[section]["unexpected"] = {}
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+    expected = "groups must contain only" if section == "groups" else "commands do not match"
+    with pytest.raises(HANDLER.CommentCommandError, match=expected):
+        HANDLER.load_policy(path)
+
+
+def test_non_label_commands_cannot_use_a_group_with_explicit_user_ids(tmp_path):
+    raw = raw_policy()
+    raw["groups"]["add_label_access"]["user_ids"] = [ACTOR_ID]
+    raw["commands"]["clear_labels"]["group"] = "add_label_access"
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(HANDLER.CommentCommandError, match="cannot grant access by user ID"):
         HANDLER.load_policy(path)
 
 
 def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     loaded = HANDLER.load_policy(POLICY_PATH)
-    assert loaded["labels"] == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
+    labels = loaded["commands"]["add_label"]["allowed_labels"]
+    assert labels == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
         "bypass-fastfail",
         "run-ci-image",
     }
-    assert loaded["add_label_access"] == {
+    assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
         "user_ids": frozenset(),
     }
-    assert loaded["clear_permissions"] == WRITE_PERMISSIONS
-    assert loaded["rerun_permissions"] == WRITE_PERMISSIONS
-    assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in loaded["labels"])
+    assert loaded["groups"]["repo_write_access"] == {
+        "repository_permissions": WRITE_PERMISSIONS,
+        "user_ids": frozenset(),
+    }
+    assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
+    assert loaded["commands"]["rerun_failed_ci"] == {"group": "repo_write_access"}
+    assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
 
 @pytest.mark.parametrize("permission", ["write", "admin"])
@@ -364,7 +474,8 @@ def test_add_label_access_user_id_preflight_does_not_require_repository_permissi
     assert HANDLER.authorize_policy(event(), policy(user_ids=(ACTOR_ID,)), api) == (
         123,
         ACTOR_ID,
-        "run-ci-short",
+        HANDLER.AddLabel("run-ci-short"),
+        HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel],
     )
     assert api.calls == []
 
@@ -373,7 +484,7 @@ def test_add_label_access_user_id_preflight_does_not_require_repository_permissi
 def test_add_label_access_user_id_cannot_clear_or_rerun(body):
     api = FakeAPI(pull(labels=("run-ci-short",)), permission="read")
 
-    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
         HANDLER.process_event(event(body=body), policy(user_ids=(ACTOR_ID,)), api)
 
     assert api.add_calls == []
@@ -388,7 +499,7 @@ def test_add_label_access_group_can_require_admin(permission, allowed):
     if allowed:
         assert HANDLER.process_event(event(), policy(permissions=("admin",)), api)["decision"] == "ALLOW_ADDED"
     else:
-        with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+        with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
             HANDLER.process_event(event(), policy(permissions=("admin",)), api)
 
 
@@ -451,7 +562,7 @@ def test_clear_is_an_authorized_no_op_when_no_ci_control_label_exists():
 
 def test_unknown_request_does_not_call_github_api():
     api = FakeAPI(pull())
-    with pytest.raises(HANDLER.CommentLabelError, match="not exposed"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not exposed"):
         HANDLER.process_event(event(body="/run-ci-unknown"), policy(), api)
     assert api.calls == []
 
@@ -459,7 +570,7 @@ def test_unknown_request_does_not_call_github_api():
 @pytest.mark.parametrize("permission", ["read", "none", "unknown"])
 def test_caller_without_write_permission_cannot_mutate(permission):
     api = FakeAPI(pull(), permission=permission)
-    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
         HANDLER.process_event(event(), policy(), api)
     assert api.calls == [("get_pull", 123), ("get_permission", "actor")]
     assert api.add_calls == []
@@ -468,7 +579,12 @@ def test_caller_without_write_permission_cannot_mutate(permission):
 def test_preflight_checks_permission_without_reading_pull_request():
     api = FakeAPI(pull())
 
-    assert HANDLER.authorize_policy(event(), policy(), api) == (123, ACTOR_ID, "run-ci-short")
+    assert HANDLER.authorize_policy(event(), policy(), api) == (
+        123,
+        ACTOR_ID,
+        HANDLER.AddLabel("run-ci-short"),
+        HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel],
+    )
     assert api.calls == [("get_permission", "actor")]
 
 
@@ -477,19 +593,24 @@ def test_clear_preflight_uses_its_own_permission_policy_without_reading_pull_req
 
     assert HANDLER.authorize_policy(
         event(body="/clear-labels"),
-        policy(clear_permissions=("admin",)),
+        policy(repo_permissions=("admin",)),
         api,
-    ) == (123, ACTOR_ID, HANDLER.CLEAR_COMMAND)
+    ) == (
+        123,
+        ACTOR_ID,
+        HANDLER.ClearLabels(),
+        HANDLER.COMMAND_REGISTRY[HANDLER.ClearLabels],
+    )
     assert api.calls == [("get_permission", "actor")]
 
 
 def test_clear_requires_its_exact_live_permission_policy():
     api = FakeAPI(pull(labels=("run-ci-short",)), permission="write")
 
-    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
         HANDLER.process_event(
             event(body="/clear-labels"),
-            policy(clear_permissions=("admin",)),
+            policy(repo_permissions=("admin",)),
             api,
         )
 
@@ -624,7 +745,7 @@ def test_rerun_fails_closed_on_mismatched_run_identity(change, message):
     workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
     api.workflow_runs[workflow_file] = [{**workflow_run(workflow_path), **change}]
 
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
 
     assert api.rerun_calls == []
@@ -635,10 +756,10 @@ def test_rerun_requires_its_exact_live_permission_policy():
     workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
     api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
 
-    with pytest.raises(HANDLER.CommentLabelError, match="not authorized"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
         HANDLER.process_event(
             event(body="/rerun-failed-ci"),
-            policy(rerun_permissions=("admin",)),
+            policy(repo_permissions=("admin",)),
             api,
         )
 
@@ -650,9 +771,14 @@ def test_rerun_preflight_uses_its_own_policy_without_reading_pull_request():
 
     assert HANDLER.authorize_policy(
         event(body="/rerun-failed-ci"),
-        policy(rerun_permissions=("admin",)),
+        policy(repo_permissions=("admin",)),
         api,
-    ) == (123, ACTOR_ID, HANDLER.RERUN_COMMAND)
+    ) == (
+        123,
+        ACTOR_ID,
+        HANDLER.RerunFailedCI(),
+        HANDLER.COMMAND_REGISTRY[HANDLER.RerunFailedCI],
+    )
     assert api.calls == [("get_permission", "actor")]
 
 
@@ -675,7 +801,7 @@ def test_fork_rerun_requires_one_unique_head_pull(head_pulls):
     workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
     api.workflow_runs[workflow_file] = [workflow_run(workflow_path, head_repository_id=999, pull_requests=[])]
 
-    with pytest.raises(HANDLER.CommentLabelError, match="exactly one pull request"):
+    with pytest.raises(HANDLER.CommentCommandError, match="exactly one pull request"):
         HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
 
     assert api.rerun_calls == []
@@ -685,7 +811,7 @@ def test_fork_rerun_rejects_mismatched_unique_head_pull():
     api = FakeAPI(pull(head_repository_id=999))
     api.head_pulls = [pull(head_repository_id=999, head_sha="b" * 40)]
 
-    with pytest.raises(HANDLER.CommentLabelError, match="identity does not match"):
+    with pytest.raises(HANDLER.CommentCommandError, match="identity does not match"):
         HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
 
     assert api.rerun_calls == []
@@ -703,7 +829,7 @@ def test_rerun_stops_if_pr_head_changes_before_post():
 
     api.get_pull = get_pull
 
-    with pytest.raises(HANDLER.CommentLabelError, match="head changed"):
+    with pytest.raises(HANDLER.CommentCommandError, match="head changed"):
         HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
 
     assert api.rerun_calls == []
@@ -726,7 +852,7 @@ def test_rerun_stops_if_latest_run_state_changes_before_post():
 
     api.list_workflow_runs = list_workflow_runs
 
-    with pytest.raises(HANDLER.CommentLabelError, match="state changed"):
+    with pytest.raises(HANDLER.CommentCommandError, match="state changed"):
         HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
 
     assert api.rerun_calls == []
@@ -740,11 +866,11 @@ def test_rerun_stops_after_partial_failure_without_retry_or_rollback():
     def rerun_failed_jobs(run_id):
         api.rerun_calls.append(run_id)
         if run_id == 20:
-            raise HANDLER.CommentLabelError("GitHub API request timed out")
+            raise HANDLER.CommentCommandError("GitHub API request timed out")
 
     api.rerun_failed_jobs = rerun_failed_jobs
 
-    with pytest.raises(HANDLER.CommentLabelError, match="workflow run 20"):
+    with pytest.raises(HANDLER.CommentCommandError, match="workflow run 20"):
         HANDLER.process_event(event(body="/rerun-failed-ci"), policy(), api)
 
     assert api.rerun_calls == [10, 20]
@@ -773,7 +899,7 @@ def test_rerun_stops_after_partial_failure_without_retry_or_rollback():
 )
 def test_untrusted_event_identity_fails_before_api_access(bad_event, message):
     api = FakeAPI(pull())
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.process_event(bad_event, policy(), api)
     assert api.calls == []
 
@@ -792,7 +918,7 @@ def test_invalid_permission_response_fails_before_mutation(permission_result, me
     api = FakeAPI(pull())
     api.permission = permission_result
 
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.process_event(event(), policy(), api)
 
     assert api.calls == [("get_pull", 123), ("get_permission", "actor")]
@@ -810,7 +936,7 @@ def test_invalid_permission_response_fails_before_mutation(permission_result, me
 )
 def test_unverifiable_live_pull_fails_before_mutation(bad_pull, message):
     api = FakeAPI(bad_pull)
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.process_event(event(), policy(), api)
     assert api.calls == [("get_pull", 123)]
 
@@ -950,7 +1076,7 @@ def test_list_workflow_runs_fails_closed_on_invalid_pagination(monkeypatch, page
         lambda _request, timeout: Response(next(page_iterator)),
     )
 
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.GitHubAPI("secret-token").list_workflow_runs("pr-test.yml", HEAD_SHA)
 
 
@@ -1043,7 +1169,7 @@ def test_rerun_failed_jobs_rejects_unconfirmed_response_without_retry(monkeypatc
         return response
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.GitHubAPI("secret-token").rerun_failed_jobs(987)
     assert attempts == 1
 
@@ -1092,7 +1218,7 @@ def test_permission_api_failure_is_not_retried(monkeypatch, exception, message):
         raise exception
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         HANDLER.GitHubAPI("secret-token").get_permission("actor")
     assert attempts == [15]
 
@@ -1117,7 +1243,7 @@ def test_permission_api_invalid_json_is_not_retried(monkeypatch):
         return Response()
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
-    with pytest.raises(HANDLER.CommentLabelError, match="invalid JSON"):
+    with pytest.raises(HANDLER.CommentCommandError, match="invalid JSON"):
         HANDLER.GitHubAPI("secret-token").get_permission("actor")
     assert attempts == 1
 
@@ -1138,7 +1264,7 @@ def test_label_mutation_api_failure_is_not_retried(monkeypatch, operation, excep
         raise exception
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
-    with pytest.raises(HANDLER.CommentLabelError, match=message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
         api = HANDLER.GitHubAPI("secret-token")
         if operation == "add":
             api.add_label(123, "run-ci-short")
@@ -1150,7 +1276,7 @@ def test_label_mutation_api_failure_is_not_retried(monkeypatch, operation, excep
 def test_unconfirmed_mutation_response_fails_without_rollback():
     api = FakeAPI(pull())
     api.add_label = lambda _pull_number, _label: []
-    with pytest.raises(HANDLER.CommentLabelError, match="did not confirm"):
+    with pytest.raises(HANDLER.CommentCommandError, match="did not confirm"):
         HANDLER.process_event(event(), policy(), api)
 
 
@@ -1161,7 +1287,7 @@ def test_unconfirmed_label_removal_fails_without_rollback():
         {"name": "documentation"},
     ]
 
-    with pytest.raises(HANDLER.CommentLabelError, match="did not confirm removal"):
+    with pytest.raises(HANDLER.CommentCommandError, match="did not confirm removal"):
         HANDLER.process_event(event(body="/clear-labels"), policy(), api)
 
 
@@ -1172,13 +1298,13 @@ def test_clear_stops_after_partial_failure_without_retry_or_rollback():
         api.calls.append(("remove_label", pull_number, label))
         api.remove_calls.append((pull_number, label))
         if label == "run-ci-b":
-            raise HANDLER.CommentLabelError("GitHub API request timed out")
+            raise HANDLER.CommentCommandError("GitHub API request timed out")
         api.pull["labels"] = [item for item in api.pull["labels"] if item["name"] != label]
         return api.pull["labels"]
 
     api.remove_label = remove_label
 
-    with pytest.raises(HANDLER.CommentLabelError, match="could not remove CI label run-ci-b"):
+    with pytest.raises(HANDLER.CommentCommandError, match="could not remove CI label run-ci-b"):
         HANDLER.process_event(event(body="/clear-labels"), policy(), api)
 
     assert api.remove_calls == [(123, "run-ci-a"), (123, "run-ci-b")]
@@ -1189,7 +1315,7 @@ def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
     api = FakeAPI(pull(labels=("run-ci-short",)))
     api.remove_label = lambda _pull_number, _label: [{"name": "nightly"}]
 
-    with pytest.raises(HANDLER.CommentLabelError, match="all CI labels were removed"):
+    with pytest.raises(HANDLER.CommentCommandError, match="all CI labels were removed"):
         HANDLER.process_event(event(body="/clear-labels"), policy(), api)
 
 
@@ -1209,9 +1335,9 @@ def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, c
     monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
     monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
     monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
-    monkeypatch.setenv("CI_LABEL_POLICY_PATH", "policy.json")
-    monkeypatch.setenv("CI_LABEL_API_TOKEN", "token")
-    monkeypatch.setenv("CI_LABEL_PREFLIGHT", "true")
+    monkeypatch.setenv("CI_COMMAND_POLICY_PATH", "policy.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "token")
+    monkeypatch.setenv("CI_COMMAND_PREFLIGHT", "true")
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     assert HANDLER.main() == 0
@@ -1219,28 +1345,58 @@ def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, c
     assert api.calls == [("get_permission", "actor")]
 
 
+def test_preflight_rejects_an_unknown_registry_capability(monkeypatch, tmp_path):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    spec = HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel]
+    monkeypatch.setitem(HANDLER.COMMAND_REGISTRY, HANDLER.AddLabel, spec._replace(capability="unknown"))
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event())
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_POLICY_PATH", "policy.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "token")
+    monkeypatch.setenv("CI_COMMAND_PREFLIGHT", "true")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert HANDLER.main() == 1
+    assert not output_path.exists()
+
+
+def test_unrelated_comment_preflight_uses_no_policy_or_api(monkeypatch, tmp_path):
+    output_path = tmp_path / "github-output"
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body="ordinary review comment"))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: pytest.fail("API must not be initialized"))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_PREFLIGHT", "true")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert HANDLER.main() == 0
+    assert output_path.read_text() == "capability=none\n"
+
+
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
-    assert "vars.CI_LABEL_APP_ENABLED == 'true'" in workflow
-    assert "contains(github.event.comment.body, '/bypass-fastfail')" in workflow
-    assert "contains(github.event.comment.body, '/clear-labels')" in workflow
-    assert "contains(github.event.comment.body, '/rerun-failed-ci')" in workflow
+    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" in workflow
+    assert "github.event.comment.body" not in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
     assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 2
-    assert "client-id: ${{ vars.CI_LABEL_APP_CLIENT_ID }}" in workflow
-    assert "private-key: ${{ secrets.CI_LABEL_APP_PRIVATE_KEY }}" in workflow
+    assert "client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}" in workflow
+    assert "private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}" in workflow
     assert "permission-issues: write" in workflow
     assert workflow.count("permission-actions: write") == 1
     assert "permission-pull-requests: read" in workflow
-    assert "CI_LABEL_API_TOKEN: ${{ github.token }}" in workflow
-    assert "CI_LABEL_API_TOKEN: ${{ steps.label-token.outputs.token }}" in workflow
-    assert "CI_LABEL_API_TOKEN: ${{ steps.rerun-token.outputs.token }}" in workflow
-    assert "CI_LABEL_APP_TOKEN" not in workflow
-    assert workflow.index("CI_LABEL_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
+    assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
+    assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
+    assert "CI_COMMAND_API_TOKEN: ${{ steps.rerun-token.outputs.token }}" in workflow
+    assert "CI_COMMAND_APP_TOKEN" not in workflow
+    assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
+    assert "steps.authorize.outputs.capability != 'none'" in workflow
     assert "steps.authorize.outputs.capability != 'issues'" in workflow
     assert "steps.authorize.outputs.capability != 'actions'" in workflow
     assert "capability: ${{ steps.authorize.outputs.capability }}" in workflow
@@ -1248,14 +1404,14 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "if: needs.handle-command.outputs.capability == 'actions'" in workflow
     assert "group: comment-ci-rerun-${{ github.event.issue.number }}" in workflow
     assert "cancel-in-progress: false" in workflow
-    label_token = workflow.split("- name: Mint the label-scoped App token", 1)[1].split(
-        "- name: Authorize and mutate CI labels", 1
+    issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
+        "- name: Authorize and run the issues command", 1
     )[0]
     rerun_token = workflow.split("- name: Mint the rerun-scoped App token", 1)[1].split(
         "- name: Authorize and rerun failed CI", 1
     )[0]
-    assert "permission-issues: write" in label_token
-    assert "permission-actions: write" not in label_token
+    assert "permission-issues: write" in issues_token
+    assert "permission-actions: write" not in issues_token
     assert "permission-actions: write" in rerun_token
     assert "permission-issues: write" not in rerun_token
     assert "pull_request_target" not in workflow
