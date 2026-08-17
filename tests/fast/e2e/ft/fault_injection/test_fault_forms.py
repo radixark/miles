@@ -38,17 +38,6 @@ def test_kubernetes_draws_the_kills_plus_pod_deletion_for_a_trainer_cell() -> No
     ]
 
 
-def test_kubernetes_draws_pod_deletion_only_for_a_rollout_cell() -> None:
-    """A k8s engine pod runs sglang as its entrypoint with no rpc server, so a kill would blow up at runtime."""
-    forms_of = fault_forms.create_cell_fault_forms(
-        base_url="http://control", config=config_of(ClusterBackend.KUBERNETES)
-    )
-
-    forms = forms_of["rollout"]
-
-    assert [form.name for form in forms] == [fault_forms.DELETE_POD_FORM_NAME]
-
-
 def test_every_kill_is_its_own_form_so_the_draw_stays_uniform() -> None:
     """Folding the kills into one form would make pod deletion half of every trainer injection."""
     forms_of = fault_forms.create_cell_fault_forms(
@@ -99,3 +88,20 @@ def test_the_delete_pod_form_never_reaches_the_api_server(monkeypatch) -> None:
     assert [one["release"] for one in seen] == [RunNames.release(run_id=RUN_ID)]
     assert [one["namespace"] for one in seen] == [NAMESPACE]
     requests.post.assert_not_called()
+
+
+def test_a_kubernetes_engine_can_be_crashed_in_place_as_well_as_deleted() -> None:
+    """An engine pod has no rpc server to take a kill, so it is reached with kubectl exec or by deletion."""
+    forms = fault_forms.create_cell_fault_forms(base_url="http://control", config=config_of(ClusterBackend.KUBERNETES))
+
+    assert [form.name for form in forms[fault_forms.ROLLOUT_CELL_TYPE]] == [
+        fault_forms.EXEC_SIGKILL_FORM_NAME,
+        fault_forms.DELETE_POD_FORM_NAME,
+    ]
+
+
+def test_ray_gains_no_exec_form() -> None:
+    """There is no pod to reach into, and its engines already take an in-process kill."""
+    forms = fault_forms.create_cell_fault_forms(base_url="http://control", config=config_of(ClusterBackend.RAY))
+
+    assert fault_forms.EXEC_SIGKILL_FORM_NAME not in [form.name for form in forms[fault_forms.ROLLOUT_CELL_TYPE]]
