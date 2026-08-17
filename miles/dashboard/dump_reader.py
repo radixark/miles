@@ -98,8 +98,7 @@ class TrainRow:
     raw_reward: Any
     truncated: int | None
     weight_versions: list[str] | None
-    # set when a per-token field was dropped because its cp slices could not
-    # be placed; distinguishes 'not dumped' from 'dumped but unreadable'
+    # cp slices could not be placed: dumped but unreadable, not merely absent
     alignment_failed: bool = False
 
     @classmethod
@@ -129,9 +128,7 @@ class TrainRow:
         )
 
 
-# Response-aligned per-token fields: full length at cp_size 1, this rank's slice
-# otherwise. Everything else a shard carries (tokens, masks, lengths, rewards) is
-# full-length on every rank.
+# Per-token fields stored as the rank's cp slice; everything else is full-length.
 _CP_SHARDED_FIELDS = (
     "log_probs",
     "rollout_log_probs",
@@ -146,13 +143,8 @@ _CP_SHARDED_FIELDS = (
 def _cp_layout(
     handles: list[dict], locations: list[tuple[int, int]], total_length: int, response_length: int
 ) -> tuple[int, dict[int, int], bool]:
-    """This sample's shard -> cp_rank mapping, and the group's cp size.
-
-    The layout is a property of the shards, not of any one field, so it is
-    resolved once and then applied to every field. Returns `(cp_size, {shard:
-    cp_rank}, ok)`; `ok` is False when slices exist but the layout could not be
-    established.
-    """
+    """Resolve `(cp_size, {shard: cp_rank}, ok)` once per sample and reuse it for
+    every field; `ok` is False when slices exist but could not be placed."""
     recorded = {
         shard: int(handles[shard]["cp_rank"]) for shard, _ in locations if handles[shard].get("cp_rank") is not None
     }
@@ -167,18 +159,9 @@ def _recover_cp_layout_legacy(
 ) -> tuple[int, dict[int, int], bool]:
     """Infer the layout for dumps written before cp_rank/cp_size were recorded.
 
-    `rollout_log_probs` is the probe: every rank carries it, and its values vary
-    along the sequence, so equal slices really are the same slice. Fields that
-    are constant within a sample -- GRPO advantages, say -- could never be told
-    apart on their own, which is why the layout is established once here and
-    then reused rather than inferred per field.
-
-    Ranks are ordered tp-fastest then cp, so a group's lowest rank increases with
-    cp_rank and first appearance gives the order. The widths are then checked
-    against `get_logits_and_tokens_offset_with_cp`, the same function the
-    training side split with; a layout that does not reproduce them is refused.
-
-    Deletable once every dump in circulation carries the layout.
+    `rollout_log_probs` is the probe (present on every rank, varies along the
+    sequence); slice widths must reproduce `get_logits_and_tokens_offset_with_cp`
+    or the layout is refused. Deletable once all dumps carry the fields.
     """
     probe = "rollout_log_probs"
     holders = sorted(
@@ -209,12 +192,8 @@ def _recover_cp_layout_legacy(
 
 
 def _cp_widths_match(widths: list[int], total_length: int, response_length: int, cp_size: int) -> bool:
-    """Do the observed slice widths reproduce what this cp layout would produce?
-
-    The chunk size is derived from the *total* length, prompt included, so the
-    prompt cannot be elided here -- it is what makes rank 0's slice shorter
-    than its siblings'.
-    """
+    """Chunk size derives from the total length, prompt included -- which is what
+    makes rank 0's slice shorter than its siblings'."""
     if sum(widths) != response_length:
         return False
     for cp_rank, width in enumerate(widths):
@@ -227,20 +206,13 @@ def _cp_widths_match(widths: list[int], total_length: int, response_length: int,
 
 
 def _build_train_row(handles: list[dict], locations: list[tuple[int, int]], *, raw_reward) -> TrainRow:
-    """One sample's train row, assembled across whatever parallelism wrote it.
-
-    Full-length columns come from any shard holding the sample -- every rank
-    records them identically. The per-token fields are resolved one at a time,
-    because which ranks carry a field depends on the field: pipeline parallelism
-    decides who computed it, context parallelism decides who holds which slice.
-    """
+    """One sample's train row: per-token fields resolve per field, since PP decides
+    who computed a field and CP who holds which slice."""
     shard, row_no = locations[0]
     columns = handles[shard]["rollout_data"]
     for other_shard, other_row in locations[1:]:
         other = handles[other_shard]["rollout_data"]
-        # Length is a property of the sample, identical on every rank that holds
-        # it whatever the parallelism; a disagreement means mixed or corrupt
-        # dumps, not a different slice.
+        # lengths are identical on every rank; disagreement means mixed or corrupt dumps
         assert (
             other["response_lengths"][other_row] == columns["response_lengths"][row_no]
             and other["total_lengths"][other_row] == columns["total_lengths"][row_no]
@@ -284,9 +256,7 @@ def _resolve_per_token_fields(row: TrainRow, handles: list[dict], locations: lis
         chunks: dict[int, torch.Tensor] = {}
         for shard, row_no in holders:
             if shard in layout:
-                # setdefault, not assignment: tensor-parallel peers share a
-                # cp_rank, and which replica answers must not depend on the
-                # order the shards happened to be listed in.
+                # setdefault: TP peers share a cp_rank; keep the replica choice order-independent
                 chunks.setdefault(layout[shard], handles[shard]["rollout_data"][field][row_no])
         if cp_size == 1:
             setattr(row, field, next(iter(chunks.values()), None))
@@ -303,8 +273,7 @@ def _resolve_per_token_fields(row: TrainRow, handles: list[dict], locations: lis
             ),
         )
 
-    # Last guard: a field that is not response-aligned would be scored against a
-    # full-length mask.
+    # a field that is not response-aligned would be scored against a full-length mask
     for field in _CP_SHARDED_FIELDS:
         values = getattr(row, field)
         if values is not None and len(values) != row.response_length:
@@ -573,9 +542,8 @@ class DumpReader:
         cover only its overlap with the response region (stat ``i`` maps to
         token position ``prompt_len + a + i``). ``response_offset`` is the
         index within the returned token slice where the response begins.
-        Stat values are null at loss-masked positions (tool output, injected
-        turns): the engine never scored those tokens and the dump stores
-        placeholders, so only mask=1 entries carry real numbers.
+        Stat values are null at loss-masked positions: the engine never scored
+        those tokens.
         """
         columns = self._rollout_columns(rollout_id, sample_index, evaluation=evaluation)
         row = None if evaluation else self._train_row_lazy(rollout_id, sample_index)
@@ -589,12 +557,7 @@ class DumpReader:
         a = max(0, start - prompt_len)
         b = max(0, end - prompt_len)
 
-        # A dump carries no rollout log-prob for positions the loss ignores (tool
-        # output, masked turns): the inference engine never generated them, so
-        # 0.0 is stored and every per-token stat is undefined there. Those
-        # positions serialize as null — a placeholder rendered as 0 (imp_ratio
-        # 1) is indistinguishable from a genuinely small value on a generated
-        # token.
+        # mask=0 positions hold 0.0 placeholders the engine never scored; serialize as null
         mask = None if row is None else row.loss_mask > 0
 
         def response_slice(values) -> list[float | None] | None:
@@ -661,12 +624,7 @@ class DumpReader:
             weight_version=sample.weight_versions[-1] if sample.weight_versions else None,
             weight_version_min=_min_numeric_version(sample.weight_versions),
             mixed_version=len(set(sample.weight_versions)) > 1 if sample.weight_versions else None,
-            # Weight updates between the policy that generated this sample's
-            # oldest turn and the rollout consuming it -- the same
-            # `current_version - group_oldest` the fully-async buffer reports as
-            # rollout/fully_async/avg_staleness, per sample rather than averaged.
-            # Verified against it: the mean of this column reproduces the metric
-            # exactly, which the rollout view's own box did not (it was +1).
+            # rollout_id - oldest weight version: rollout/fully_async/avg_staleness per sample
             staleness=(
                 None if (oldest := _min_numeric_version(sample.weight_versions)) is None else rollout_id - oldest
             ),

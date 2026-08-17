@@ -116,12 +116,8 @@ def test_tokens_full_range(reader):
 
 
 def test_tokens_null_the_stats_where_the_loss_is_masked(reader):
-    """A real dump holds no rollout log-prob for positions the loss ignores
-    (tool output, masked turns) — 0.0 placeholders. Every per-token stat is
-    undefined there and serializes as null: a placeholder rendered as 0
-    (imp_ratio 1) is indistinguishable from a genuinely small value on a
-    generated token. The removed sample is masked end to end; an ordinary
-    sample keeps every dumped value."""
+    """mask=0 positions hold placeholders the engine never scored: they serialize
+    as null, never as numbers a chart would mistake for data."""
     masked = reader.tokens(0, REMOVED[0])
     assert masked["loss_mask"] and set(masked["loss_mask"]) == {0}
     for key in ("train_log_probs", "rollout_log_probs", "lp_diff", "imp_ratio", "ref_log_probs", "advantages"):

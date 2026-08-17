@@ -332,12 +332,7 @@ class _PartitionReader:
         return added
 
     def _block(self, key: str, path: Path) -> Any:
-        # Serialized: the offset read, the parse, and the append back are one
-        # transaction. Reading and parsing release the GIL, so an unlocked
-        # follow tick racing a request handler re-reads from the same stale
-        # offset and appends the same byte range twice — duplicate records with
-        # identical timestamps, which every downstream aggregate silently
-        # double-counts.
+        # read+parse release the GIL; two fills from one stale offset append the bytes twice
         with self._lock:
             offset = self._offsets.get(key, 0)
             if key in self._blocks and path.stat().st_size <= offset:

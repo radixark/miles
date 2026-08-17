@@ -46,8 +46,7 @@ export function drawChart(canvas, points, opts = {}) {
     bucketed = true;
     const size = Math.ceil(pts.length / MAX_RAW_POINTS);
     const buckets = [];
-    // a bucket never spans a gap: merging points from both sides of a null
-    // run would put the bucket-to-bucket line straight across the hole
+    // a bucket spanning a gap would draw the line straight across the hole
     let cur = [];
     const flush = () => {
       if (!cur.length) return;
@@ -91,8 +90,7 @@ export function drawChart(canvas, points, opts = {}) {
   } else {
     const xs = pts.map((p) => p.x);
     [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
-    // bands mark regions without points (prompt, masked turns): widen the
-    // domain so they render as visible space instead of being cropped away
+    // bands cover point-free regions: widen the domain so they stay visible
     for (const b of bands) {
       xMin = Math.min(xMin, b.x0);
       xMax = Math.max(xMax, b.x1);
@@ -148,8 +146,7 @@ export function drawChart(canvas, points, opts = {}) {
     ctx.strokeStyle = colMain;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    // a gap marks the first point after a null run: lift the pen so masked
-    // spans read as holes instead of being bridged by a fake segment
+    // gap = first point after a null run: lift the pen
     linePts.forEach((p, i) => (i && !p.gap ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
     ctx.stroke();
   }

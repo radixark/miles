@@ -21,8 +21,7 @@ const DEFAULT_COLUMNS = [
   "non_generation_time",
 ];
 
-// staleness span rendered as one sortable-ish string column; mixed-version
-// samples are exactly what --use-tis corrects, so they must not blend in
+// one string column so mixed-version samples stay visibly distinct
 function versionSpan(row) {
   if (row.weight_version === null || row.weight_version === undefined) return null;
   const lo = row.weight_version_min;

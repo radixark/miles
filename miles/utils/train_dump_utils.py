@@ -24,11 +24,8 @@ def save_debug_train_data(args, *, rollout_id, rollout_data):
 def save_debug_train_data_for_rank(args, *, rollout_id, rollout_data, rank, cp_rank=0, cp_size=1):
     """Write one rank's slice of a rollout.
 
-    ``cp_rank`` / ``cp_size`` describe how this rank's per-token tensors were
-    split, and are passed in for the same reason ``rank`` is: this runs outside
-    the process group in tests and offline tools. They are what an offline reader
-    cannot recover -- under context parallelism several ranks hold equal-length
-    pieces of the same sample, while the masks stay full-length everywhere.
+    ``cp_rank`` / ``cp_size`` are passed in for the same reason ``rank`` is:
+    this runs outside the process group in tests and offline tools.
     """
     if (path_template := args.save_debug_train_data) is not None:
         path = Path(path_template.format(rollout_id=rollout_id, rank=rank))

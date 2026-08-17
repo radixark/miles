@@ -1,10 +1,4 @@
-"""`assemble_log_prob_from_cp` must invert the CP split exactly.
-
-The split is what a training rank applies before dumping its slice; the assembly
-is what an offline reader (the dashboard) applies to put a sample back together.
-Both sides call `get_logits_and_tokens_offset_with_cp`, so this pins that they
-stay in step.
-"""
+"""`assemble_log_prob_from_cp` must invert the CP split exactly."""
 
 import pytest
 import torch

@@ -88,10 +88,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     if args.follow:
-        # Sync handlers run in a threadpool, so this races them. Safe for the
-        # append-only streams (GIL-atomic appends; a reader may just miss the
-        # newest records) and for the partitioned block caches, which take
-        # their own lock.
+        # races the threadpool handlers: list appends are GIL-atomic, partition caches lock
         def _tail() -> None:
             while True:
                 time.sleep(FOLLOW_INTERVAL_SECONDS)

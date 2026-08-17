@@ -190,8 +190,7 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
       points.push({ x: pos, y: v, gap: afterGap, label: `pos ${pos}\n${chartMetric} = ${fmtNum(v)}` });
       afterGap = false;
     });
-    // shade what the policy did not generate: the prompt, and mask=0 runs
-    // inside the response (tool output, injected turns)
+    // shade the prompt and mask=0 runs: regions the policy did not generate
     const bands = [{ x0: 0, x1: chartData.prompt_len, strong: true, label: "prompt" }];
     const mask = chartData.loss_mask;
     if (mask) {

@@ -27,9 +27,8 @@ def get_logits_and_tokens_offset_with_cp(
     """
     All offsets start from the begining of the prompt.
 
-    ``cp_rank`` / ``cp_size`` default to this process's parallel state. Pass them
-    explicitly to compute another rank's offsets outside the process group, which
-    is how an offline reader reassembles a sample from per-rank dumps.
+    ``cp_rank`` / ``cp_size`` default to this process's parallel state; pass them
+    explicitly to compute another rank's offsets outside the process group.
     """
     if cp_rank is None or cp_size is None:
         parallel_state = get_parallel_state()
@@ -448,10 +447,8 @@ def assemble_log_prob_from_cp(
 ) -> torch.Tensor:
     """Inverse of `slice_log_prob_with_cp`: per-rank slices back to one response.
 
-    `chunks` maps cp_rank to that rank's slice. Every rank of the group must be
-    present -- a partial group cannot be filled, since the missing positions are
-    not zeros but unknowns. Offsets come from the same helper the forward split
-    uses, so the two stay in step by construction.
+    `chunks` maps cp_rank to that rank's slice; every rank must be present.
+    Offsets come from the same helper the forward split uses.
     """
     assert cp_size > 1, "no reassembly needed at cp_size=1"
     missing = sorted(set(range(cp_size)) - set(chunks))
