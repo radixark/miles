@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import math
@@ -350,3 +351,36 @@ class TestEventLoggerContextDecorator:
         assert seen == [(3, 8)]
         parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
         assert (parsed["rollout_id"], parsed["attempt"]) == (3, 8)
+
+    async def test_initialized_injects_fields_into_events_an_async_method_logs(self, tmp_path: Path) -> None:
+        """An awaited method keeps the context across its suspension points, or its events lose their identity."""
+        logger = _make_logger(tmp_path)
+        set_event_logger(logger)
+
+        class Worker:
+            @event_logger_context(lambda self, rollout_id: {"rollout_id": rollout_id})
+            async def run(self, rollout_id: int) -> None:
+                await asyncio.sleep(0)
+                get_event_logger().log(MetricEvent, dict(metrics={"ok": True}))
+
+        try:
+            await Worker().run(42)
+            logger.close()
+        finally:
+            set_event_logger(None)
+
+        parsed = json.loads((tmp_path / "events.jsonl").read_text().strip())
+        assert parsed["rollout_id"] == 42
+
+    async def test_uninitialized_awaits_an_async_method_without_context(self) -> None:
+        """Decorating a method must not make it fail wherever the event logger was never set up."""
+        set_event_logger(None)
+
+        @event_logger_context(lambda obj, x: {"rollout_id": x})
+        async def method(obj: object, x: int) -> int:
+            return x * 2
+
+        try:
+            assert await method(object(), 3) == 6
+        finally:
+            set_event_logger(None)

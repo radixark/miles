@@ -100,20 +100,35 @@ def event_logger_context(ctx_fn: Callable[..., dict[str, Any]]) -> Callable:
     """
 
     def decorator(method: Callable) -> Callable:
-        assert not inspect.iscoroutinefunction(method), "event_logger_context does not support async methods"
+        if inspect.iscoroutinefunction(method):
+
+            @functools.wraps(method)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                with _maybe_with_context(ctx_fn, args=args, kwargs=kwargs):
+                    return await method(*args, **kwargs)
+
+            return async_wrapper
 
         @functools.wraps(method)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            if not is_event_logger_initialized():
-                return method(*args, **kwargs)
-
-            ctx_value = ctx_fn(*args, **kwargs)
-            with get_event_logger().with_context(ctx_value):
+            with _maybe_with_context(ctx_fn, args=args, kwargs=kwargs):
                 return method(*args, **kwargs)
 
         return wrapper
 
     return decorator
+
+
+@contextmanager
+def _maybe_with_context(
+    ctx_fn: Callable[..., dict[str, Any]], *, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> Generator[None, None, None]:
+    if not is_event_logger_initialized():
+        yield
+        return
+
+    with get_event_logger().with_context(ctx_fn(*args, **kwargs)):
+        yield
 
 
 def read_events(log_dir: Path) -> list[Event]:

@@ -1,9 +1,19 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.test_utils.comparisons.metrics import _check_single_metric, _keep_only_final_attempt
+from miles.utils.test_utils.comparisons.metrics import (
+    _check_events_line_up,
+    _check_single_metric,
+    _keep_only_final_attempt,
+    read_rollout_completion_times,
+    read_rollout_completion_times,
+)
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _FIXED_SOURCE = SimpleProcessIdentity(component="main")
@@ -111,3 +121,77 @@ class TestCheckSingleMetric:
         issues = _check_single_metric(0, "k", 0.0, 5e-13, rtol=0.1, atol=0.0)
         assert len(issues) == 1
         assert "rel_diff" in issues[0]
+
+
+class TestCheckEventsLineUp:
+    def test_two_sides_describing_different_rollouts_are_reported(self) -> None:
+        """Comparing by read order passes silently when the sides are offset but the numbers happen to agree."""
+        baseline = [_metric_event(rollout_id=0, attempt=0), _metric_event(rollout_id=1, attempt=0)]
+        target = [_metric_event(rollout_id=1, attempt=0), _metric_event(rollout_id=2, attempt=0)]
+
+        issues = _check_events_line_up(baseline, target)
+
+        assert len(issues) == 2
+
+    def test_a_retried_rollout_still_lines_up_with_its_baseline(self) -> None:
+        """The target retries a crashed rollout, and comparing its winning attempt is the point of the run."""
+        baseline = [_metric_event(rollout_id=3, attempt=0)]
+        target = [_metric_event(rollout_id=3, attempt=1)]
+
+        assert _check_events_line_up(baseline, target) == []
+
+
+class TestReadRolloutCompletionTimes:
+    def test_only_rollout_executor_events_are_completion_times(self, dump_dir: str) -> None:
+        """Trainer metrics sharing a rollout id must not be mistaken for rollout completion."""
+        events_dir = Path(dump_dir) / "events"
+        rollout_logger = EventLogger(
+            log_dir=events_dir,
+            source=SimpleProcessIdentity(component="rollout_executor"),
+            file_name="rollout.jsonl",
+        )
+        trainer_logger = EventLogger(log_dir=events_dir, source=_FIXED_SOURCE, file_name="trainer.jsonl")
+        rollout_logger.log(MetricEvent, dict(rollout_id=3, attempt=0, metrics={}), print_log=False)
+        trainer_logger.log(MetricEvent, dict(rollout_id=4, attempt=0, metrics={}), print_log=False)
+        rollout_logger.close()
+        trainer_logger.close()
+
+        completion_times = read_rollout_completion_times(dump_dir)
+
+        assert [rollout_id for rollout_id, _timestamp in completion_times] == [3]
+
+
+class TestReadRolloutCompletionTimes:
+    def test_final_identified_rollouts_are_sorted_by_completion_time(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Completion times contain identified final attempts ordered by their timestamps."""
+        timestamps = iter(
+            [
+                datetime(2026, 1, 1, 0, 0, 4, tzinfo=timezone.utc),
+                datetime(2026, 1, 1, 0, 0, 1, tzinfo=timezone.utc),
+                datetime(2026, 1, 1, 0, 0, 3, tzinfo=timezone.utc),
+                datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc),
+            ]
+        )
+
+        class _SequencedDatetime(datetime):
+            @classmethod
+            def now(cls, tz: tzinfo | None = None) -> datetime:
+                return next(timestamps)
+
+        monkeypatch.setattr("miles.utils.audit_utils.event_logger.logger.datetime", _SequencedDatetime)
+        dump_dir = tmp_path / "run"
+        event_logger = EventLogger(log_dir=dump_dir / "events", source=_FIXED_SOURCE, file_name="main.jsonl")
+        for rollout_id, attempt in [(20, 0), (None, 0), (10, 0), (20, 1)]:
+            event_logger.log(
+                MetricEvent,
+                {"rollout_id": rollout_id, "attempt": attempt, "metrics": {}},
+                print_log=False,
+            )
+        event_logger.close()
+
+        assert read_rollout_completion_times(str(dump_dir)) == [
+            (20, datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)),
+            (10, datetime(2026, 1, 1, 0, 0, 3, tzinfo=timezone.utc)),
+        ]
