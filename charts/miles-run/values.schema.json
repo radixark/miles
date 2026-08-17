@@ -47,8 +47,7 @@
         }
       },
       "required": [
-        "enabled",
-        "serviceAccount"
+        "enabled"
       ],
       "type": "object"
     },
@@ -589,7 +588,6 @@
       },
       "required": [
         "id",
-        "stateFile",
         "objectNames"
       ],
       "type": "object"
