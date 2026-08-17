@@ -7,7 +7,7 @@ from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from tests.fast.ray.rollout.conftest import make_args, make_args_with_sglang_config, make_sglang_config_yaml
 
 from miles.ray.specs.entrypoint import compute_specs
-from miles.ray.specs.inference import INFERENCE_REGISTRATION_REPORTER_POOL_ID
+from miles.ray.specs.inference import INFERENCE_REGISTRATION_REPORTER_POOL_ID, compute_router_providers
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.builder import compute_helm_backend_capability
 from miles.utils.workers.worker_provider.kubernetes.helm.env import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
@@ -45,8 +45,8 @@ class TestComputeSpecs:
             "inference-controller",
             "inference-router-0",
             "session-server",
-            "inference-engine-0-0",
-            "inference-engine-0-2",
+            "inference-engine-all-0-0",
+            "inference-engine-all-0-2",
             "trainer-controller-actor",
             "trainer-engine-actor",
         ]
@@ -77,7 +77,7 @@ class TestComputeSpecs:
         specs = {spec.name: spec for spec in compute_specs(args)}
 
         assert specs["session-server"].scheduling.num_cells == 0
-        assert specs["inference-engine-0-0"].scheduling.num_cells == 2
+        assert specs["inference-engine-all-0-0"].scheduling.num_cells == 2
 
     def test_debug_train_only_lists_no_inference_engine(self, tmp_path):
         """--debug-train-only must instantiate no sglang engine, since its bundles are the trainer's own gpus."""
@@ -227,7 +227,7 @@ class TestDeployComponentFiltering:
             )
         )
 
-        assert [spec.name for spec in specs] == ["inference-registration-reporter", "inference-engine-0-0"]
+        assert [spec.name for spec in specs] == ["inference-registration-reporter", "inference-engine-inference-0-0"]
 
     @pytest.mark.parametrize("component", ["all", "primary", "trainer"])
     def test_only_an_inference_deployment_carries_a_reporter(self, tmp_path, component):
