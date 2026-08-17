@@ -6,10 +6,13 @@ from argparse import Namespace
 
 import torch
 
+from miles.utils.metric_utils import strip_metrics_namespace
+
 logger = logging.getLogger(__name__)
 
 
 def check_kl(args: Namespace, log_dict: dict[str, float], step_id: int, accumulated_step_id: int) -> None:
+    log_dict = strip_metrics_namespace(log_dict, trainer_model_id=args.trainer_model_id)
     if step_id == 0 and "train/ppo_kl" in log_dict and "train/pg_clipfrac" in log_dict:
         if args.multi_latent_attention:
             # TODO: mla currently have non-zero kl, need further investigation
