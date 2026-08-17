@@ -94,6 +94,34 @@ class TestPlacementGroupLayout:
         assert _get_placement_group_layout(args) == (6, 2)
 
 
+class TestWhichFlagWinsWhenTwoAreSet:
+    """The layout is one if-chain, and reordering it changes only which engines land outside the group."""
+
+    def test_training_only_outranks_every_rollout_flag(self):
+        """It is the one flag that says there are no engines at all, so nothing below it can add any."""
+        args = _layout_args(debug_train_only=True, rollout_external=True, debug_rollout_only=True, colocate=True)
+
+        assert _get_placement_group_layout(args) == (2, 2)
+
+    def test_an_external_rollout_outranks_colocation(self):
+        """Colocation shares gpus with engines this run does not own, so it has nothing left to share."""
+        args = _layout_args(rollout_external=True, colocate=True)
+
+        assert _get_placement_group_layout(args) == (2, 2)
+
+    def test_an_external_rollout_that_is_also_rollout_only_reserves_nothing(self):
+        """No trainer of ours and no engine of ours leaves an empty group, not a trainer-sized one."""
+        args = _layout_args(rollout_external=True, debug_rollout_only=True, colocate=True)
+
+        assert _get_placement_group_layout(args) == (0, 0)
+
+    def test_a_rollout_only_run_outranks_colocation(self):
+        """There is no trainer to colocate with, so taking the max would size the group off a dead operand."""
+        args = _layout_args(debug_rollout_only=True, colocate=True, eval_num_gpus=3)
+
+        assert _get_placement_group_layout(args) == (7, 0)
+
+
 class _RecordingRolloutExecutor:
     def __init__(self):
         self.train_parallel_config = None
