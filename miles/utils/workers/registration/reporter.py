@@ -4,6 +4,7 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import random
 from dataclasses import dataclass, field
 
 from miles.utils.async_utils import AsyncLoopThread
@@ -14,6 +15,8 @@ from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInf
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_INTERVAL_SECONDS = 15.0
+SNAPSHOT_JITTER_RATIO = 0.2
+SNAPSHOT_DEBOUNCE_SECONDS = 1.0
 HUB_READY_TIMEOUT_SECONDS = 3600.0
 INGEST_TIMEOUT_SECONDS = 60.0
 
@@ -24,6 +27,13 @@ class RegistrationReporter:
     reporter_id: str
     hub_endpoint: BaseWorkerHandle
     worker_provider: BaseWorkerProvider
+    _trigger: _DebouncedIntervalTrigger = field(
+        default_factory=lambda: _DebouncedIntervalTrigger(
+            interval_seconds=SNAPSHOT_INTERVAL_SECONDS,
+            jitter_ratio=SNAPSHOT_JITTER_RATIO,
+            debounce_seconds=SNAPSHOT_DEBOUNCE_SECONDS,
+        )
+    )
     _info_of_cell_id: dict[str, CellInfo] = field(init=False, default_factory=dict)
     _sequence_number: int = field(init=False, default=0)
 
@@ -34,10 +44,10 @@ class RegistrationReporter:
         try:
             logger.info(
                 f"Reporter {self.reporter_id} observes {len(self._info_of_cell_id)} cells of its own deployment and "
-                f"reports them every {SNAPSHOT_INTERVAL_SECONDS}s"
+                f"reports them every {self._trigger.interval_seconds}s"
             )
             while True:
-                await asyncio.sleep(SNAPSHOT_INTERVAL_SECONDS)
+                await self._trigger.wait()
                 try:
                     await self._send_once()
                 except Exception:
@@ -57,6 +67,7 @@ class RegistrationReporter:
             self._info_of_cell_id.pop(cell_id, None)
         else:
             self._info_of_cell_id[cell_id] = observed
+        self._trigger.notify()
 
     def _compute_snapshot(self) -> RegistrationSnapshot:
         return RegistrationSnapshot(
@@ -73,6 +84,30 @@ class RegistrationReporterWorker:
     def __init__(self, *, reporter: RegistrationReporter) -> None:
         self._loop_thread = AsyncLoopThread()
         self._loop_thread.submit(reporter.run()).add_done_callback(_exit_on_reporter_stop)
+
+
+@dataclass(kw_only=True)
+class _DebouncedIntervalTrigger:
+    interval_seconds: float
+    jitter_ratio: float
+    debounce_seconds: float
+    rng: random.Random = field(default_factory=random.Random)
+    _changed: asyncio.Event = field(init=False, default_factory=asyncio.Event)
+
+    def notify(self) -> None:
+        self._changed.set()
+
+    async def wait(self) -> None:
+        try:
+            await asyncio.wait_for(self._changed.wait(), timeout=self._compute_next_interval_seconds())
+        except (TimeoutError, asyncio.TimeoutError):
+            return
+        self._changed.clear()
+        await asyncio.sleep(self.debounce_seconds)
+        self._changed.clear()
+
+    def _compute_next_interval_seconds(self) -> float:
+        return self.interval_seconds * (1.0 + self.rng.uniform(-self.jitter_ratio, self.jitter_ratio))
 
 
 def _compute_cells(

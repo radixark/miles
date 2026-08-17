@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import random
 
 import pytest
 
 from miles.utils.workers.registration.models import RegistrationSnapshot
-from miles.utils.workers.registration.reporter import RegistrationReporter, RegistrationReporterWorker
+from miles.utils.workers.registration.reporter import (
+    SNAPSHOT_INTERVAL_SECONDS,
+    RegistrationReporter,
+    RegistrationReporterWorker,
+    _DebouncedIntervalTrigger,
+)
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
@@ -75,12 +81,30 @@ def _cell_info(cell_index: int, *, workers_hash: str = "hash-1", worker_type: st
     )
 
 
+class _FakeTrigger:
+    """Fires as soon as anything asks, so a reporter test never waits on a real interval."""
+
+    def __init__(self) -> None:
+        self.interval_seconds = SNAPSHOT_INTERVAL_SECONDS
+        self.notified = 0
+
+    def notify(self) -> None:
+        self.notified += 1
+
+    async def wait(self) -> None:
+        # answering without ever suspending starves the loop this runs in: the reporter sends in a
+        # tight cycle and nothing else gets a turn, the cancellation that ends the test included.
+        # python 3.12 stopped wrapping wait_for's awaitable in a task, so nothing else yields either
+        await asyncio.sleep(0)
+
+
 def _reporter(*, provider: _FakeEngineProvider, hub_endpoint: _FakeHub):
     return RegistrationReporter(
         run_uuid=_RUN_UUID,
         reporter_id=_REPORTER_ID,
         hub_endpoint=hub_endpoint,
         worker_provider=provider,
+        _trigger=_FakeTrigger(),
     )
 
 
@@ -188,6 +212,19 @@ class TestSnapshotSequencing:
         ]
 
 
+class TestObservingItsOwnCells:
+    async def test_a_cell_that_came_or_went_wakes_the_reporter(self):
+        """Waiting out the whole period would leave the run without engines its deployment already has."""
+        reporter, provider, _hub_endpoint = await _synced()
+        assert reporter._trigger.notified == 1
+
+        await provider.reconcile(f"{_POOL_ID}-1", _cell_info(1))
+        await provider.reconcile(f"{_POOL_ID}-1", None)
+
+        assert reporter._trigger.notified == 3
+        assert sorted(reporter._info_of_cell_id) == [f"{_POOL_ID}-0"]
+
+
 class TestReporterWorker:
     def test_the_worker_the_engine_release_serves_answers_no_call(self):
         """Its whole value is the reporting loop its constructor starts, so it exposes nothing to call."""
@@ -211,3 +248,59 @@ class TestReporterLifecycle:
 
         assert hub_endpoint.ready_timeouts
         assert provider.stopped
+
+
+def _trigger(*, interval_seconds: float = 0.05, jitter_ratio: float = 0.0, debounce_seconds: float = 0.0):
+    return _DebouncedIntervalTrigger(
+        interval_seconds=interval_seconds,
+        jitter_ratio=jitter_ratio,
+        debounce_seconds=debounce_seconds,
+        rng=random.Random(0),
+    )
+
+
+class TestDebouncedIntervalTrigger:
+    async def test_it_fires_on_its_own_when_nothing_notified_it(self):
+        """A membership nobody changed still has to be re-announced, or the run forgets this reporter."""
+        await asyncio.wait_for(_trigger().wait(), timeout=5.0)
+
+    async def test_a_notification_fires_it_before_the_interval_is_up(self):
+        """A cell that came or went has to reach the run now, not up to a whole period later."""
+        trigger = _trigger(interval_seconds=1000.0)
+        trigger.notify()
+
+        await asyncio.wait_for(trigger.wait(), timeout=5.0)
+
+    async def test_it_settles_before_firing_so_a_burst_of_changes_sends_once(self):
+        """Cells arrive in bursts, and one snapshot per cell would be a snapshot storm."""
+        trigger = _trigger(interval_seconds=1000.0, debounce_seconds=0.05)
+        trigger.notify()
+
+        await asyncio.wait_for(trigger.wait(), timeout=5.0)
+
+        assert not trigger._changed.is_set()
+
+    async def test_a_change_during_the_settling_window_is_not_carried_into_the_next_wait(self):
+        """It is already part of the snapshot this wait is about to send, so firing again would send a duplicate."""
+        trigger = _trigger(interval_seconds=1000.0, debounce_seconds=0.05)
+        trigger.notify()
+
+        waiting = asyncio.ensure_future(trigger.wait())
+        await asyncio.sleep(0)
+        trigger.notify()
+        await asyncio.wait_for(waiting, timeout=5.0)
+
+        assert not trigger._changed.is_set()
+
+    async def test_the_period_it_waits_is_jittered_around_the_interval(self):
+        """Every reporter of a run wakes on its own schedule, so they never pile onto the hub_endpoint together."""
+        trigger = _trigger(interval_seconds=10.0, jitter_ratio=0.2)
+
+        periods = {trigger._compute_next_interval_seconds() for _ in range(20)}
+
+        assert len(periods) > 1
+        assert all(8.0 <= period <= 12.0 for period in periods)
+
+    async def test_no_jitter_asks_for_exactly_the_interval(self):
+        """The jitter is a spread around the configured period, not a replacement for it."""
+        assert _trigger(interval_seconds=10.0, jitter_ratio=0.0)._compute_next_interval_seconds() == 10.0
