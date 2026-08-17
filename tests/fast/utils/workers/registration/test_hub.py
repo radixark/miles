@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.registration.hub import REPORTER_TTL_SECONDS, RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
@@ -63,6 +63,20 @@ def _snapshot(
     )
 
 
+@pytest.fixture(autouse=True)
+def _poll_without_delay():
+    with patch(f"{_PROVIDER_MODULE}.REGISTERED_CELLS_POLL_INTERVAL_SECONDS", _POLL_INTERVAL_SECONDS):
+        yield
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 class _Watcher:
     def __init__(self) -> None:
         self.observations: list[tuple[str, CellInfo | None]] = []
@@ -81,9 +95,8 @@ async def _watched(**kwargs) -> tuple[RegistrationHub, _Watcher]:
     return provider, watcher
 
 
-async def _start_watch(provider: RegistrationHub, watcher: _Watcher) -> None:
-    with patch(f"{_PROVIDER_MODULE}.REGISTERED_CELLS_POLL_INTERVAL_SECONDS", _POLL_INTERVAL_SECONDS):
-        await provider.watch_cells(watcher.reconcile)
+async def _start_watch(provider: RegistrationHub, watcher: _Watcher):
+    return await provider.watch_cells(watcher.reconcile)
 
 
 async def _apply(provider: RegistrationHub, snapshot: RegistrationSnapshot) -> None:
@@ -333,6 +346,95 @@ class TestFailedReconciliation:
         assert [cell_id for cell_id, _observed in watcher.observations] == [f"{_POOL_ID}-0"]
 
 
+class TestDroppingAReporterThatStoppedReporting:
+    async def test_a_reporter_that_stopped_reporting_loses_every_cell_it_announced(self):
+        """Its deployment is gone or unreachable, and a request routed to those engines answers nothing."""
+        clock = _FakeClock()
+        provider, watcher = await _watched(clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        await _drain()
+
+        assert sorted(provider._cell_of_id) == []
+        assert watcher.observations[-1] == (f"{_POOL_ID}-0", None)
+
+    async def test_a_reporter_still_inside_its_deadline_keeps_its_cells(self):
+        """A reporter reports far more often than this, so dropping one early would flap a healthy deployment."""
+        clock = _FakeClock()
+        provider, _watcher = await _watched(clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await _drain()
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+
+    async def test_an_accepted_snapshot_renews_the_reporter_deadline(self) -> None:
+        """A newer accepted snapshot keeps its reporter and cells alive past the original deadline."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await provider.ingest(_snapshot([_cell(0)], sequence_number=2))
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert sorted(provider._state_of_reporter_id) == [_REPORTER]
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]
+
+    async def test_a_reporter_that_comes_back_is_taken_in_again(self):
+        """Being dropped is not a verdict on the deployment; it announces itself anew like any first time."""
+        clock = _FakeClock()
+        provider, _watcher = await _watched(clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        await _drain()
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=9))
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+
+    async def test_a_snapshot_dropped_as_late_does_not_keep_its_reporter_alive(self):
+        """A reporter that restarted resends from sequence 1, and only the deadline ends that stalemate."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=5))
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await provider.ingest(_snapshot([_cell(0)], sequence_number=1))
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert sorted(provider._state_of_reporter_id) == []
+        assert sorted(provider._cell_of_id) == []
+
+    async def test_dropping_a_reporter_forgets_the_reporter_itself(self):
+        """A state left behind keeps the reporter's sequence number, which would refuse its fresh snapshots."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        await _apply(provider, _snapshot([_cell(0)]))
+        assert sorted(provider._state_of_reporter_id) == [_REPORTER]
+
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        provider._remove_stale_reporters()
+
+        assert sorted(provider._state_of_reporter_id) == []
+
+    async def test_the_sweep_stops_with_the_watcher_it_was_started_for(self):
+        """A hub nobody watches serves nobody, and a task outliving it would keep the whole hub alive."""
+        clock = _FakeClock()
+        provider = RegistrationHub(run_uuid=_RUN_UUID, clock=clock)
+        stop_watch = await _start_watch(provider, _Watcher())
+
+        await stop_watch()
+        clock.now += REPORTER_TTL_SECONDS + 1.0
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+
+
 def _announcing(cell: RegisteredCellInfo, worker_names: list[str]) -> RegisteredCellInfo:
     return cell.model_copy(update={"info": cell.info.model_copy(update={"worker_names": worker_names})})
 
@@ -378,3 +480,66 @@ class TestACellAnnouncingTheWorkersItCarries:
             await provider.ingest(_snapshot([_announcing(_cell(1), [])], sequence_number=2))
 
         assert sorted(provider._cell_of_id) == [_cell_id(0)]
+
+
+async def _hub_with_two_reporters(clock: _FakeClock) -> RegistrationHub:
+    provider, _watcher = await _watched(clock=clock)
+    await _apply(provider, _snapshot([_cell(0)]))
+    await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER))
+    return provider
+
+
+class TestRenewingAReporterOnTheSnapshotsTakenIn:
+    async def test_a_snapshot_claiming_another_reporters_cells_does_not_renew_its_sender(self):
+        """A reporter that keeps sending such snapshots was never dropped, so its stale cells stayed."""
+        clock = _FakeClock()
+        provider = await _hub_with_two_reporters(clock)
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        with pytest.raises(AssertionError, match="is reported by both"):
+            await provider.ingest(
+                _snapshot([_cell(0, reporter_id=_OTHER_REPORTER)], reporter_id=_OTHER_REPORTER, sequence_number=2)
+            )
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert _OTHER_REPORTER not in provider._state_of_reporter_id
+
+    async def test_the_cells_such_a_reporter_registered_before_are_dropped_with_it(self):
+        """Those engines may long be gone, and the run keeps routing requests to them until they are."""
+        clock = _FakeClock()
+        provider = await _hub_with_two_reporters(clock)
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        with pytest.raises(AssertionError, match="is reported by both"):
+            await provider.ingest(
+                _snapshot([_cell(0, reporter_id=_OTHER_REPORTER)], reporter_id=_OTHER_REPORTER, sequence_number=2)
+            )
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert _cell_id(0, pool_id=_OTHER_POOL_ID) not in provider._cell_of_id
+
+    async def test_a_snapshot_that_was_taken_in_renews_its_sender(self):
+        """A healthy reporter is kept alive by exactly this stamp, and dropping it would flap the fleet."""
+        clock = _FakeClock()
+        provider = await _hub_with_two_reporters(clock)
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=2))
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert _OTHER_REPORTER in provider._state_of_reporter_id
+
+    async def test_a_snapshot_refused_as_late_still_leaves_the_reporter_to_its_deadline(self):
+        """Only the deadline ends the stalemate with a reporter that restarted and resends from sequence 1."""
+        clock = _FakeClock()
+        provider = await _hub_with_two_reporters(clock)
+
+        clock.now += REPORTER_TTL_SECONDS - 1.0
+        await provider.ingest(_snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=1))
+        clock.now += 2.0
+        provider._remove_stale_reporters()
+
+        assert _OTHER_REPORTER not in provider._state_of_reporter_id
