@@ -10,8 +10,8 @@ from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
-from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.rollout import external_engine_provider as external_engine_provider_module
+from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
     INFERENCE_CONTROLLER_POOL_ID,
@@ -1248,3 +1248,19 @@ class TestTheEngineEnvironment:
     def test_every_engine_is_told_to_report_its_own_env_vars(self) -> None:
         """Without the gate the engine answers /server_info with no env_vars, and the audit is empty."""
         assert compute_inference_engine_env_vars(make_args())["SGLANG_EXPOSE_OWN_ENV_VARS"] == "1"
+
+
+class TestRegistrationWiring:
+    @staticmethod
+    def _args(tmp_path, **overrides) -> Namespace:
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 4}]
+            )
+        )
+        return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
+
+    @staticmethod
+    def _ctor_context(capability: FakeBackendCapability) -> WorkerCtorContext:
+        return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
