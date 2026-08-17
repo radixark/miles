@@ -3,7 +3,7 @@ import dataclasses
 import json
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from typing import TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
@@ -26,6 +26,9 @@ def python_argv_prefix() -> list[str]:
         if token in _INTERPRETER_FLAGS_TAKING_A_VALUE:
             prefix.append(next(tokens))
     return prefix
+
+
+# ==================== config argv ====================
 
 
 def config_to_argv(config: FrozenStrictBaseModel) -> list[str]:
@@ -186,3 +189,88 @@ def _boolean_option_string(action: argparse.Action, *, value: bool) -> str:
         return positive[0]
     assert negative, f"{action.dest!r} cannot be rendered: no negative option string"
     return negative[0]
+
+
+# ==================== parser reflection ====================
+
+
+def coerce_dict_to_args(
+    values: Mapping[str, Any], *, parser: argparse.ArgumentParser, allowed_names: frozenset[str], context: str
+) -> dict[str, Any]:
+    dest_of_option_name = _compute_dest_of_option_names(parser)
+    arg_specs = _compute_arg_specs(parser)
+    allowed_dests = frozenset(dest_of_option_name.get(name, name) for name in allowed_names)
+    return {
+        (dest := dest_of_option_name.get(name, name)): _coerce_value(
+            value, dest=dest, spec=arg_specs.get(dest), allowed_dests=allowed_dests, context=context
+        )
+        for name, value in values.items()
+    }
+
+
+def _coerce_value(
+    value: Any, *, dest: str, spec: "_ArgSpec | None", allowed_dests: frozenset[str], context: str
+) -> Any:
+    assert dest in allowed_dests, (
+        f"{context} sets {dest!r}, which it may not override; only these are allowed: {sorted(allowed_dests)}. "
+        f"Everything else is read from the base command line, so setting it here would be silently ignored"
+    )
+    assert value is not None, f"{context} sets {dest!r} with no value"
+    assert spec is not None, (
+        f"{dest!r} is allowed, but the argument parser declares no such argument, so the value {value!r} "
+        f"of {context} cannot be typed"
+    )
+
+    if spec.type is bool:
+        assert isinstance(value, bool), f"{context} sets {dest!r} to {value!r}, which is not a boolean"
+        return value
+
+    assert not isinstance(value, bool) and isinstance(
+        value, (int, float, str)
+    ), f"{context} sets {dest!r} to {value!r}, which is not a {spec.type.__name__}"
+    coerced = _coerce_scalar(value, dest=dest, spec=spec, context=context)
+    assert (
+        spec.choices is None or coerced in spec.choices
+    ), f"{context} sets {dest!r} to {value!r}, but the command line only accepts {list(spec.choices)}"
+    return coerced
+
+
+def _coerce_scalar(value: int | float | str, *, dest: str, spec: "_ArgSpec", context: str) -> Any:
+    try:
+        return spec.type(str(value))
+    except ValueError as exception:
+        raise AssertionError(
+            f"{context} sets {dest!r} to {value!r}, which the command line would reject: {exception}"
+        ) from exception
+
+
+class _ArgSpec(NamedTuple):
+    dest: str
+    type: type
+    choices: tuple[Any, ...] | None
+
+
+def _compute_arg_specs(parser: argparse.ArgumentParser) -> dict[str, _ArgSpec]:
+    return {action.dest: _compute_arg_spec(action) for action in parser._actions}
+
+
+def _compute_dest_of_option_names(parser: argparse.ArgumentParser) -> dict[str, str]:
+    return {
+        option.removeprefix("--").replace("-", "_"): action.dest
+        for action in parser._actions
+        for option in action.option_strings
+        if option.startswith("--")
+    }
+
+
+def _compute_arg_spec(action: argparse.Action) -> _ArgSpec:
+    choices = None if action.choices is None else tuple(action.choices)
+    return _ArgSpec(dest=action.dest, type=_compute_arg_type(action), choices=choices)
+
+
+def _compute_arg_type(action: argparse.Action) -> type:
+    if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction)):
+        return bool
+    if action.type is None:
+        return str
+    return action.type
