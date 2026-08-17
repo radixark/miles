@@ -4,13 +4,11 @@ import logging
 import random
 import threading
 import time
-from collections.abc import Callable
-
 import requests
 
-from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
-from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog, cell_type_of
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_genuinely_alive
+from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm, CellFaultForms
+from tests.e2e.ft.conftest_ft.fault_injection.state import Event, EventLog, cell_type_of
+from tests.e2e.ft.conftest_ft.fault_injection.views import compute_genuinely_alive, compute_successful_form_names
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +25,6 @@ def run_fault_injection_loop(
     seed: int,
     mean_interval_seconds: float,
     stop_event: threading.Event,
-    on_successful_injection: Callable[[], None],
     cell_type: str | None,
     event_log: EventLog,
     cell_fault_forms: CellFaultForms,
@@ -66,15 +63,26 @@ def run_fault_injection_loop(
 
         target = rng.choice(alive_of_type[rng.choice(spare_types)])
         cell_name = target["metadata"]["name"]
-        form = rng.choice(cell_fault_forms[cell_type_of(target)])
+        target_type = cell_type_of(target)
+        form = _draw_form(cell_fault_forms[target_type], events=event_log.events, cell_type=target_type, rng=rng)
         try:
             form.inject(target, rng)
-            event_log.note_injected(cell_name)
-            on_successful_injection()
-            next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
-            logger.info("Injected fault %s into %s", form.name, cell_name)
         except Exception:
+            event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=False)
             logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
+            continue
+
+        event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=True)
+        next_injection_time = _compute_next_injection_time(rng, mean_interval_seconds)
+        logger.info("Injected fault %s into %s", form.name, cell_name)
+
+
+def _draw_form(
+    forms: list[BaseFaultForm], *, events: list[Event], cell_type: str, rng: random.Random
+) -> BaseFaultForm:
+    worked = compute_successful_form_names(events, cell_type=cell_type)
+    unproven = [form for form in forms if form.name not in worked]
+    return rng.choice(unproven or forms)
 
 
 def list_cells(*, base_url: str, cell_type: str | None) -> list[dict] | None:

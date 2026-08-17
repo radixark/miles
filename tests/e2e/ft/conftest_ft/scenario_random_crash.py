@@ -23,6 +23,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import create_cell_fault_forms
 from tests.e2e.ft.conftest_ft.fault_injection.views import (
     compute_cells_with_unfinished_recovery,
+    compute_forms_drawn_without_success,
     compute_num_completed_recoveries,
     compute_num_injections,
     compute_states_of_cell_name,
@@ -104,6 +105,7 @@ def compute_injected_cell_type(ft_mode: FTTestMode) -> str | None:
 
 def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_dir: str) -> None:
     assert_min_soak_injections(injector.num_successful_injections, context=f"{TEST_NAME} {ft_mode.ft_components}")
+    _assert_drawn_fault_forms_worked(injector)
 
     if "train" in ft_mode.ft_components:
         assert_soak_reconfigure_events(
@@ -113,6 +115,11 @@ def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_d
 
     if "rollout" in ft_mode.ft_components:
         assert_every_rollout_injection_recovered(injector)
+
+
+def _assert_drawn_fault_forms_worked(injector: FaultInjectorHandle) -> None:
+    never_worked = compute_forms_drawn_without_success(injector.event_log.events)
+    assert not never_worked, f"Fault forms drawn but never once successful: {never_worked}"
 
 
 def assert_every_rollout_injection_recovered(injector: FaultInjectorHandle) -> None:
