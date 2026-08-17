@@ -94,8 +94,8 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
 
         return _stop
 
-    def expected_num_cells(self, *, model_id: str) -> int:
-        return sum(1 for cell in self._initialized_cells.values() if cell.cell_info.meta["model_id"] == model_id)
+    def expected_num_cells(self, *, group_id: str) -> int:
+        return sum(1 for cell in self._initialized_cells.values() if cell.cell_info.meta["model_id"] == group_id)
 
     @property
     def _initialized_cells(self) -> dict[str, _ExternalCell]:
