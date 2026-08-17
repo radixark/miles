@@ -644,7 +644,7 @@ class SGLangEngine(RayActor):
     def update_weight_version(self, weight_version: str):
         return self._make_request(
             "update_weight_version",
-            {"new_version": weight_version},
+            {"new_version": weight_version, "abort_all_requests": False},
         )
 
     def start_profile(
