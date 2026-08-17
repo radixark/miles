@@ -8,7 +8,6 @@ from miles.backends.megatron_utils.megatron_config import (
     compute_trainer_args,
     resolve_megatron_config,
 )
-from miles.ray.specs.inference import create_inference_controller_handle
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
@@ -136,9 +135,6 @@ def _compute_spec_trainer_controller(
             with_opd_teacher=with_opd_teacher,
             cell_provider=ctx.capability.dynamic_worker_provider(pool_ids=[compute_trainer_pool_id(trainer_id)]),
             cell_operations=ctx.capability.cell_operations(),
-            inference_controller=(
-                None if config.role == CRITIC_ROLE else create_inference_controller_handle(capability=ctx.capability)
-            ),
         ),
     )
 

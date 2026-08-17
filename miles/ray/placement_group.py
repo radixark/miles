@@ -7,6 +7,7 @@ from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.backends.megatron_utils.megatron_config import compute_trainer_args
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
     SESSION_SERVER_POOL_ID,
@@ -23,6 +24,9 @@ from miles.ray.specs.train import (
     external_trainer_controller_addrs,
 )
 from miles.ray.wiring import get_backend_capability
+from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
+from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
+from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
@@ -209,10 +213,40 @@ async def wait_external_trainers(args) -> None:
 
 # TODO: move (when reorganizing files)
 async def update_weights(
-    actor_model, rollout_executor, *, rollout_id: int | None = None, trainer_model_id: str | None = None
+    args,
+    actor_model,
+    rollout_executor,
+    inference_controller: BaseWorkerHandle,
+    *,
+    rollout_id: int | None = None,
+    trainer_model_id: str | None = None,
 ) -> None:
-    if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
+    info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
+    weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+    await _maybe_log_inference_engine_weight_checksums(
+        args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
+    )
+
+    if weight_version is not None:
         await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
+
+
+async def _maybe_log_inference_engine_weight_checksums(
+    args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
+) -> None:
+    if not is_event_logger_initialized():
+        return
+    if args.debug_train_only or args.debug_rollout_only:
+        return
+
+    check_weights_result = await inference_controller.check_weights(action="checksum", model_id=trainer_model_id)
+    engine_checksums = flatten_inference_engine_checksums(check_weights_result)
+    get_event_logger().log(
+        InferenceEngineWeightChecksumEvent,
+        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+    )
 
 
 # TODO: move (when reorganizing files)
