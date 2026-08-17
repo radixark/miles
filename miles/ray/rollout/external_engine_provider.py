@@ -13,7 +13,7 @@ from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
             for cell_id in cell_ids
         ]
 
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         for cell_id, cell in self._initialized_cells.items():
             await reconcile(cell_id, cell.cell_info)
 

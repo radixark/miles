@@ -6,7 +6,7 @@ from tests.fast.ray.train import conftest as train_conftest
 
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train.group import TrainerController
-from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.base import CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 pytestmark = pytest.mark.asyncio
@@ -22,18 +22,16 @@ class _RecordingWorkerProvider(RayWorkerProvider):
             pool_ids=pool_ids,
             poll_interval_seconds=_POLL_INTERVAL_SECONDS,
         )
-        self.watch_calls: list[tuple[ReconcileFn, list[str]]] = []
+        self.watch_calls: list[tuple[CellReconcileFn, list[str]]] = []
         self.poll_count: int = 0
 
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         self.watch_calls.append((reconcile, list(self._watched_pool_ids())))
         return await super().watch_cells(reconcile)
 
-    async def _poll_once(
-        self, reconcile: ReconcileFn, seen_infos: dict[str, CellInfo], *, pool_ids: list[str]
-    ) -> None:
+    async def _list_alive_cells(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         self.poll_count += 1
-        await super()._poll_once(reconcile, seen_infos=seen_infos, pool_ids=pool_ids)
+        return await super()._list_alive_cells(pool_ids=pool_ids)
 
 
 def _make_args(*, num_cells: int) -> SimpleNamespace:

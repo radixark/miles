@@ -25,7 +25,7 @@ from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
-from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts, WorkerMetaContext
 
 
@@ -172,7 +172,7 @@ class _FakeWorkerProvider(BaseWorkerProvider):
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]:
         return [[] for _ in cell_ids]
 
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         assert self.initialized, "the controller must init the provider before observing its cells"
         self.watched_pool_ids = list(self._pools)
         for info in self._cell_infos:
@@ -529,7 +529,7 @@ class TestInitSubscription:
                 order.append("init")
                 await super().init()
 
-            async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+            async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
                 order.append("watch_cells")
                 return await super().watch_cells(reconcile)
 

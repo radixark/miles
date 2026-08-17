@@ -21,7 +21,7 @@ class CellInfo:
 
 
 # args: (cell_id, CellInfo)
-ReconcileFn = Callable[[str, CellInfo | None], Awaitable[None]]
+CellReconcileFn = Callable[[str, CellInfo | None], Awaitable[None]]
 StopWatchFn = Callable[[], Awaitable[None]]
 
 
@@ -35,7 +35,7 @@ class BaseWorkerProvider(abc.ABC):
     @abc.abstractmethod
     def get_worker_infos(self, *, cell_ids: list[str]) -> list[list[WorkerInfo]]: ...
 
-    async def watch_cells(self, reconcile: ReconcileFn) -> StopWatchFn:
+    async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
 
     def expected_num_cells(self, *, model_id: str) -> int | None:
