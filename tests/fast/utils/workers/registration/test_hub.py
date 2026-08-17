@@ -53,8 +53,10 @@ def _other_cell(cell_index: int, *, host: str = "10.0.0.5") -> RegisteredCellInf
     return _cell(cell_index, host=host, reporter_id=_OTHER_REPORTER, pool_id=_OTHER_POOL_ID)
 
 
-def _snapshot(cells: list[RegisteredCellInfo], *, reporter_id: str = _REPORTER) -> RegistrationSnapshot:
-    return RegistrationSnapshot(reporter_id=reporter_id, cells=cells)
+def _snapshot(
+    cells: list[RegisteredCellInfo], *, reporter_id: str = _REPORTER, sequence_number: int = 1
+) -> RegistrationSnapshot:
+    return RegistrationSnapshot(reporter_id=reporter_id, sequence_number=sequence_number, cells=cells)
 
 
 class _Watcher:
@@ -104,8 +106,8 @@ class TestSnapshotMembership:
         """The run adds a cell once; announcing it again would tear down a serving engine to rebuild it."""
         provider, watcher = await _watched()
 
-        await _apply(provider, _snapshot([_cell(0)]))
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=2))
 
         assert len(watcher.observations) == 1
 
@@ -113,8 +115,8 @@ class TestSnapshotMembership:
         """A cell rebuilt on another host serves from another address, and the old one answers nothing."""
         provider, watcher = await _watched()
 
-        await _apply(provider, _snapshot([_cell(0)]))
-        await _apply(provider, _snapshot([_cell(0, host="10.0.0.6")]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
+        await _apply(provider, _snapshot([_cell(0, host="10.0.0.6")], sequence_number=2))
 
         (_first, (cell_id, observed)) = watcher.observations
         assert cell_id == f"{_POOL_ID}-0"
@@ -124,11 +126,20 @@ class TestSnapshotMembership:
         """Membership is level, so omission is how a deployment says a cell is gone; there is no death message."""
         provider, watcher = await _watched()
 
-        await _apply(provider, _snapshot([_cell(0), _cell(1)]))
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0), _cell(1)], sequence_number=1))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=2))
 
         assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
         assert watcher.observations[-1] == (f"{_POOL_ID}-1", None)
+
+    async def test_a_late_snapshot_is_ignored(self):
+        """A snapshot that crossed the wan slowly would otherwise resurrect cells the run already dropped."""
+        provider, _watcher = await _watched()
+
+        await _apply(provider, _snapshot([_cell(0), _cell(1)], sequence_number=5))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=4))
+
+        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0", f"{_POOL_ID}-1"]
 
 
 class TestPartitioningCellsByReporter:
@@ -138,29 +149,38 @@ class TestPartitioningCellsByReporter:
         await _apply(provider, _snapshot([_cell(0), _cell(1)]))
         await _apply(provider, _snapshot([_other_cell(0), _other_cell(1)], reporter_id=_OTHER_REPORTER))
 
-        await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER))
+        await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=2))
 
         assert sorted(provider._cell_of_id) == sorted([f"{_POOL_ID}-0", f"{_POOL_ID}-1", f"{_OTHER_POOL_ID}-0"])
+
+    async def test_each_reporter_is_sequenced_on_its_own(self):
+        """Deployments count their own snapshots, so one that has run for longer must not silence a fresh one."""
+        provider, _watcher = await _watched()
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=7))
+
+        await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=1))
+
+        assert sorted(provider._cell_of_id) == sorted([f"{_POOL_ID}-0", f"{_OTHER_POOL_ID}-0"])
 
 
 class TestResendingTheSameMembership:
     async def test_the_same_snapshot_sent_again_leaves_the_membership_as_it_was(self):
         """Every tick carries the whole membership, so the steady state has to be idempotent."""
         provider, _watcher = await _watched()
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
 
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=2))
 
         assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
 
     async def test_resending_it_announces_no_change_to_the_watcher(self):
         """A membership that did not move must not churn the cells the run reconciles."""
         provider, watcher = await _watched()
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
         await _drain()
         watcher.observations.clear()
 
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=2))
         await _drain()
 
         assert watcher.observations == []
@@ -202,7 +222,7 @@ class TestFailedReconciliation:
         provider, watcher = await _watched()
         watcher.failing_cell_ids = {f"{_POOL_ID}-0"}
 
-        await _apply(provider, _snapshot([_cell(0)]))
+        await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
 
         assert watcher.observations == []
         assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]

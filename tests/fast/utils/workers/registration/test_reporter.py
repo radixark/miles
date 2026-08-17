@@ -145,6 +145,15 @@ class TestSnapshotContents:
 
 
 class TestSnapshotSequencing:
+    async def test_every_snapshot_carries_a_higher_sequence_than_the_last(self):
+        """The run drops a snapshot that arrived late, and only the sequence number tells it which one that is."""
+        reporter, _provider, hub_endpoint = await _synced()
+
+        await reporter._send_once()
+        await reporter._send_once()
+
+        assert [snapshot.sequence_number for snapshot in hub_endpoint.snapshots] == [1, 2]
+
     async def test_an_unchanged_membership_is_sent_whole_again(self):
         """Every tick declares the whole membership, so the run never depends on a message it may have missed."""
         reporter, _provider, hub_endpoint = await _synced()
