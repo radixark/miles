@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
-from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.http_utils import wrap_ipv6
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
@@ -181,7 +181,7 @@ def _parse_external_engine_url(url: str, *, source: str | None = None) -> HostAn
         f"invalid external engine address {source or url!r}: use host:port or http://host:port "
         f"(bracket IPv6 literals)"
     )
-    return HostAndPort(host=_wrap_ipv6(_canonicalize_host(parsed.hostname)), port=parsed.port)
+    return HostAndPort(host=wrap_ipv6(_canonicalize_host(parsed.hostname)), port=parsed.port)
 
 
 def _canonicalize_host(hostname: str) -> str:
