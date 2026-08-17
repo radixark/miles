@@ -489,7 +489,11 @@ class TestKubernetesDriverAssembly:
             async with httpx.AsyncClient(transport=transport) as client:
                 monkeypatch.setattr(http_utils.GeneralHttpClientProvider, "client", classmethod(lambda cls: client))
                 await app.router.lifespan_context(app).__aenter__()
-                handle = specs_train.create_trainer_controller_handle(capability=capability, trainer_id="actor")
+                handle = specs_train.create_trainer_controller_handle(
+                    Namespace(trainer_controller_addrs=None, megatron_config=None),
+                    capability=capability,
+                    trainer_id="actor",
+                )
                 assert await handle.init(Namespace(num_rollout=7)) == [5]
                 await handle.train(rollout_id=3, rollout_data_pack=_data_pack(3))
                 return handle, await handle.get_train_parallel_config()
