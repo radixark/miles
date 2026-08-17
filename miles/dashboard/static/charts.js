@@ -46,16 +46,25 @@ export function drawChart(canvas, points, opts = {}) {
     bucketed = true;
     const size = Math.ceil(pts.length / MAX_RAW_POINTS);
     const buckets = [];
-    for (let i = 0; i < pts.length; i += size) {
-      const bucket = pts.slice(i, i + size);
-      const y = bucket.reduce((sum, p) => sum + p.y, 0) / bucket.length;
+    // a bucket never spans a gap: merging points from both sides of a null
+    // run would put the bucket-to-bucket line straight across the hole
+    let cur = [];
+    const flush = () => {
+      if (!cur.length) return;
+      const y = cur.reduce((sum, p) => sum + p.y, 0) / cur.length;
       buckets.push({
-        x: bucket[0].x,
+        x: cur[0].x,
         y,
-        gap: bucket.some((p) => p.gap),
-        label: `${fmt(bucket[0].x)}–${fmt(bucket.at(-1).x)}\nmean = ${fmt(y)} (${bucket.length} pts)`,
+        gap: cur[0].gap,
+        label: `${fmt(cur[0].x)}–${fmt(cur.at(-1).x)}\nmean = ${fmt(y)} (${cur.length} pts)`,
       });
+      cur = [];
+    };
+    for (const p of pts) {
+      if (cur.length && (p.gap || cur.length >= size)) flush();
+      cur.push(p);
     }
+    flush();
     pts = buckets;
   }
   const { ctx, width, height } = setupCanvas(canvas);
