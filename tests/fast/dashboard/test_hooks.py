@@ -230,8 +230,16 @@ def test_dashboard_log_without_handle_is_noop():
 # ----------------------------- router registration --------------------------
 
 
-def _router_args(ip="10.0.0.5", port=3333):
-    return type("Args", (), {"sglang_router_ip": ip, "sglang_router_port": port})()
+def _router_args(ip="10.0.0.5", port=3333, use_miles_dashboard=True):
+    return type(
+        "Args",
+        (),
+        {
+            "sglang_router_ip": ip,
+            "sglang_router_port": port,
+            "use_miles_dashboard": use_miles_dashboard,
+        },
+    )()
 
 
 def test_register_router_pushes_resolved_addr(monkeypatch):
@@ -243,14 +251,29 @@ def test_register_router_pushes_resolved_addr(monkeypatch):
     assert kwargs == {}
 
 
+def test_register_router_resolves_the_collector_itself(monkeypatch):
+    """register_router works in a process that never ran init_tracking."""
+    handle = FakeHandle()
+    monkeypatch.setattr(backend, "_handle", None)
+    monkeypatch.setattr(backend, "resolve_collector", lambda: handle)
+    hooks.register_router(_router_args())
+    assert len(handle.set_router.calls) == 1
+
+
 def test_register_router_before_router_start_is_a_wiring_bug(monkeypatch):
     monkeypatch.setattr(backend, "_handle", FakeHandle())
     with pytest.raises(AssertionError, match="after start_rollout_servers"):
         hooks.register_router(_router_args(ip=None))
 
 
-def test_register_router_without_collector_is_noop():
-    hooks.register_router(_router_args())  # must not raise
+def test_register_router_without_dashboard_is_noop(monkeypatch):
+    """With the dashboard off the hook returns before resolve_collector, which would block."""
+    monkeypatch.setattr(backend, "resolve_collector", _never_resolve)
+    hooks.register_router(_router_args(use_miles_dashboard=False))
+
+
+def _never_resolve():
+    raise AssertionError("resolve_collector must not be called when the dashboard is disabled")
 
 
 # ---------------------------- data buffer report ----------------------------
