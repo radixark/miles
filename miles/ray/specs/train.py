@@ -131,7 +131,11 @@ def _compute_spec_trainer_controller(
         ),
         worker_class=TRAINER_CONTROLLER_WORKER_CLASS,
         ctor_kwargs=lambda ctx: dict(
-            deployment_identity=DeploymentIdentity(run_uuid=args.run_uuid, deploy_component=args.deploy_component),
+            deployment_identity=DeploymentIdentity(
+                run_uuid=args.run_uuid,
+                deploy_component=args.deploy_component,
+                deploy_instance_id=args.deploy_instance_id,
+            ),
             trainer_id=trainer_id,
             role=config.role,
             with_ref=with_ref,

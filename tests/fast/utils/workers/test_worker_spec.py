@@ -3,6 +3,7 @@ from pydantic import ValidationError
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import _assert_worker_ports_fit
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import (
     DEFAULT_RPC_PORT,
     RPC_PORT_NAME,
@@ -102,6 +103,14 @@ class TestPortInfoCellOffset:
 
 
 class TestBaseWorkerSpec:
+    def test_the_all_selector_cannot_be_stored_as_a_pool_component(self) -> None:
+        """A worker pool must name one concrete deployment component rather than the all-components selector."""
+        concrete = BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.TRAINER))
+
+        assert concrete.deploy_component is DeployComponent.TRAINER
+        with pytest.raises(ValidationError, match="must name the one component.*not the selector"):
+            BaseWorkerSpec(**_make_base_kwargs(deploy_component=DeployComponent.ALL))
+
     def test_constructs_and_exposes_fields(self):
         """A spec keeps its name, ports, and scheduling as provided."""
         spec = BaseWorkerSpec(**_make_base_kwargs())
