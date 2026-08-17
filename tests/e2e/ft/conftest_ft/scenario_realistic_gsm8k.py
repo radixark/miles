@@ -85,7 +85,7 @@ def run_ci(
             },
         )
     finally:
-        injector.stop_and_join(timeout_seconds=5)
+        injector.stop_and_join()
 
     assert_soak_reconfigure_events(
         Path(dump_dir) / "events",
