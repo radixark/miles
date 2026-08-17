@@ -77,9 +77,6 @@ def _collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
             continue
         specs[name] = _build_method_spec(worker_cls=worker_cls, name=name, attr=static_attr)
 
-    if len(specs) == 0:
-        raise TypeError(f"{worker_cls.__name__} exposes no public rpc methods")
-
     return specs
 
 
