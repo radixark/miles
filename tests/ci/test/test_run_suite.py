@@ -316,8 +316,8 @@ class TestWorkflowScopeSeam:
         assert "github.event.action != 'closed'" in caller
         assert "needs.resolve-ci-policy.result == 'success'" in caller
         assert "needs.stage-a-cpu.result == 'success'" in caller
-        assert "needs.stage-a-cpu.result == 'failure'" in caller
         assert "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'" in caller
+        assert "needs.stage-a-cpu.result == 'failure'" not in caller
         assert "stage-b-cpu" not in caller
         assert "uses: ./.github/workflows/_build-pr-ci-image.yml" in caller
         assert "secrets: inherit" in caller
@@ -401,6 +401,7 @@ class TestWorkflowScopeSeam:
         assert gpu_stages.count(bypass_gate) == 5
         assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 5
         assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 5
+        assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
         workflow = self._workflow()
