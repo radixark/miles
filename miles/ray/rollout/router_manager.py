@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Sequence
 
@@ -94,8 +95,9 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     ]
     _assert_hosts_keep_their_own_external_host(args.session_server_instances)
 
-    for addr in addrs:
-        await wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
+    await asyncio.gather(
+        *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS) for addr in addrs]
+    )
     logger.info(
         f"Session servers ready at {[instance.addr for instance in args.session_server_instances]} "
         f"({len(addrs)} instances), "
