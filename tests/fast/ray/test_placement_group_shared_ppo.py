@@ -5,7 +5,10 @@ from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.ray import placement_group as placement_group_module
-from miles.ray.placement_group import _get_placement_group_layout
+from miles.ray.placement_group import _assert_external_trainer_in_run, _get_placement_group_layout
+from miles.utils.workers.types import DeploymentIdentity
+
+_RUN_UUID = "0" * 16
 
 
 def _layout_args(**overrides):
@@ -24,6 +27,7 @@ def _layout_args(**overrides):
         "critic_save": None,
         "critic_lr": None,
         "critic_lr_warmup_iters": None,
+        "deploy_component": "all",
     }
     values.update(overrides)
     return Namespace(**values)
@@ -43,6 +47,12 @@ def test_shared_ppo_counts_actor_bundles_once(colocate, expected):
 def test_debug_train_only_counts_actor_bundles_once_and_leaves_the_rollout_entry_empty():
     """No engine is deployed, so every bundle belongs to the trainer and the rollout slice starts past the end."""
     assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 2)
+
+
+def test_debug_train_only_never_reads_the_rollout_size_it_was_not_given():
+    """A train-only run is launched without --rollout-num-gpus, so naming the rollout contribution
+    before returning makes every one of them die on None at startup."""
+    assert _get_placement_group_layout(_layout_args(debug_train_only=True, rollout_num_gpus=None)) == (2, 2)
 
 
 def test_debug_rollout_only_bundles_the_eval_engines_too():
@@ -122,6 +132,33 @@ class TestWhichFlagWinsWhenTwoAreSet:
         assert _get_placement_group_layout(args) == (7, 0)
 
 
+class TestTheLayoutOfASplitDeployment:
+    def test_a_trainer_deployment_bundles_the_trainer_gpus_and_leaves_the_rollout_entry_empty(self):
+        """This release installs no engine, so a rollout slice over its bundles would hand them out twice."""
+        assert _get_placement_group_layout(_layout_args(deploy_component="trainer")) == (2, 2)
+
+    def test_an_inference_deployment_bundles_the_engine_gpus_alone(self):
+        """The trainer serves out of its own release's group, so reserving its gpus here strands them."""
+        assert _get_placement_group_layout(_layout_args(deploy_component="inference")) == (4, 0)
+
+    def test_an_inference_deployment_counts_the_eval_engines_too(self):
+        """--eval-num-gpus buys engines that live in this release, so its group has to hold them."""
+        assert _get_placement_group_layout(_layout_args(deploy_component="inference", eval_num_gpus=3)) == (7, 0)
+
+    @pytest.mark.parametrize("overrides", [{"debug_train_only": True}, {"rollout_external": True}])
+    def test_an_inference_deployment_without_local_engines_bundles_nothing(self, overrides):
+        """Neither flag leaves an engine inside ray, and an empty group is what asks the cluster for nothing."""
+        assert _get_placement_group_layout(_layout_args(deploy_component="inference", **overrides)) == (0, 0)
+
+    def test_a_primary_deployment_bundles_nothing(self):
+        """It holds no engine and no rank of its own, so every gpu it reserved would sit idle."""
+        assert _get_placement_group_layout(_layout_args(deploy_component="primary")) == (0, 0)
+
+    def test_a_trainer_deployment_of_a_rollout_only_run_bundles_nothing(self):
+        """--debug-rollout-only trains nothing, so this release has no rank to place."""
+        assert _get_placement_group_layout(_layout_args(deploy_component="trainer", debug_rollout_only=True)) == (0, 0)
+
+
 class _RecordingRolloutExecutor:
     def __init__(self):
         self.train_parallel_config = None
@@ -155,6 +192,14 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
         async def get_train_parallel_config(self):
             calls.append((self.trainer_id, "get_train_parallel_config"))
             return {"dp_size": 2 if self.trainer_id == "actor" else 99}
+
+        async def is_initialized(self) -> bool:
+            return False
+
+        async def get_deployment_identity(self) -> DeploymentIdentity:
+            return DeploymentIdentity(
+                run_uuid=_RUN_UUID, deploy_component="trainer", deploy_instance_id=self.trainer_id
+            )
 
     monkeypatch.setattr(
         placement_group_module,
@@ -366,3 +411,102 @@ class TestTheRunWaitsForEveryTrainerItReachesByAddress:
         )
 
         assert dialled == []
+
+
+class _IdentifyingHandle:
+    def __init__(self, *, trainer_id: str, run_uuid: str, deploy_component: str, calls: list[tuple[str, str]]) -> None:
+        self.trainer_id = trainer_id
+        self.identity = DeploymentIdentity(run_uuid=run_uuid, deploy_component=deploy_component)
+        self.calls = calls
+
+    async def get_deployment_identity(self) -> DeploymentIdentity:
+        self.calls.append((self.trainer_id, "get_deployment_identity"))
+        return self.identity
+
+    async def init(self, args) -> list[int]:
+        self.calls.append((self.trainer_id, "init"))
+        return [0]
+
+
+def _split_run_args(**overrides):
+    return _training_models_args(
+        megatron_config=None,
+        run_uuid="0" * 16,
+        trainer_controller_addrs=["actor=10.0.0.1:8000", "critic=10.0.0.2:8000"],
+        **overrides,
+    )
+
+
+def _patch_identifying_handles(monkeypatch, *, identities: dict[str, tuple[str, str]]) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: FakeBackendCapability())
+
+    async def _dial(addrs) -> None:
+        return None
+
+    monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", _dial)
+    monkeypatch.setattr(
+        placement_group_module,
+        "create_trainer_controller_handle",
+        lambda args, *, capability, trainer_id: _IdentifyingHandle(
+            trainer_id=trainer_id,
+            run_uuid=identities[trainer_id][0],
+            deploy_component=identities[trainer_id][1],
+            calls=calls,
+        ),
+    )
+    return calls
+
+
+class TestEveryAddressedTrainerIsCheckedBeforeAnyInitRuns:
+    async def test_a_second_controller_of_another_run_is_caught_before_the_first_is_inited(self, monkeypatch):
+        """init runs once per deployment, so an init before the check leaves a trainer nothing can re-init."""
+        calls = _patch_identifying_handles(
+            monkeypatch, identities={"actor": ("0" * 16, "trainer"), "critic": ("f" * 16, "trainer")}
+        )
+
+        with pytest.raises(AssertionError, match="drives run"):
+            await placement_group_module.create_training_models(
+                _split_run_args(), rollout_executor=_RecordingRolloutExecutor()
+            )
+
+        assert sorted(calls) == [("actor", "get_deployment_identity"), ("critic", "get_deployment_identity")]
+
+    async def test_a_deployment_that_carries_an_orchestration_script_of_its_own_is_refused(self, monkeypatch):
+        """Its own script drives that trainer too, so both runs would train one model from two rollout streams."""
+        calls = _patch_identifying_handles(
+            monkeypatch, identities={"actor": ("0" * 16, "all"), "critic": ("0" * 16, "trainer")}
+        )
+
+        with pytest.raises(AssertionError, match="nothing but the trainer"):
+            await placement_group_module.create_training_models(
+                _split_run_args(), rollout_executor=_RecordingRolloutExecutor()
+            )
+
+        assert ("actor", "init") not in calls
+
+
+class TestTheAddressesNameOneRun:
+    @staticmethod
+    def _identity(*, run_uuid: str, deploy_component: str = "trainer") -> DeploymentIdentity:
+        return DeploymentIdentity(run_uuid=run_uuid, deploy_component=deploy_component)
+
+    def test_a_deployment_of_this_run_is_accepted(self):
+        """Every deployment of one run carries the same run uuid, so the usual case must pass silently."""
+        args = _training_models_args(run_uuid="0123456789abcdef")
+
+        _assert_external_trainer_in_run(self._identity(run_uuid=args.run_uuid), args=args)
+
+    def test_a_deployment_of_another_run_stops_the_launch(self):
+        """Pointing at last run's release trains weights this run never updates, and looks like bad rewards."""
+        args = _training_models_args(run_uuid="0123456789abcdef")
+
+        with pytest.raises(AssertionError, match="drives run"):
+            _assert_external_trainer_in_run(self._identity(run_uuid="ffffffffffffffff"), args=args)
+
+    def test_an_unsplit_release_of_this_run_stops_the_launch(self):
+        """It carries an orchestration script of its own, which drives the very trainer this launch would drive."""
+        args = _training_models_args(run_uuid="0123456789abcdef")
+
+        with pytest.raises(AssertionError, match="nothing but the trainer"):
+            _assert_external_trainer_in_run(self._identity(run_uuid=args.run_uuid, deploy_component="all"), args=args)

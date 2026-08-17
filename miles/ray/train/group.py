@@ -31,6 +31,7 @@ from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecuto
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.rpc.common.wire_types import Pickled
+from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
@@ -51,6 +52,7 @@ class TrainerController:
     def __init__(
         self,
         *,
+        deployment_identity: DeploymentIdentity,
         cell_provider: BaseWorkerProvider,
         cell_operations: BaseCellOperations,
         trainer_id: str,
@@ -58,6 +60,7 @@ class TrainerController:
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
+        self._deployment_identity = deployment_identity
         self._trainer_id = trainer_id
         self._role = role
         self._with_ref = with_ref
@@ -374,6 +377,9 @@ class TrainerController:
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
         return weight_versions[0]
+
+    async def get_deployment_identity(self) -> DeploymentIdentity:
+        return self._deployment_identity
 
     async def onload(self) -> None:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
