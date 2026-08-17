@@ -125,7 +125,7 @@ def _compute_train_argv(monkeypatch: pytest.MonkeyPatch, train_args: str) -> tup
         prepare_cmd={},
         extra_manifests=[],
     )
-    return entrypoint._compute_train_argv(request, run_id="260101-000000-000", release="r", namespace="rl", env={})
+    return entrypoint._compute_train_argv(request, run_uuid="0123456789abcdef", release="r", namespace="rl", env={})
 
 
 def _record_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, ci_run: bool) -> list[list[str]]:
