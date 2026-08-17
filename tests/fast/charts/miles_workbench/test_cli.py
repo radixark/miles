@@ -7,6 +7,7 @@ from tests.fast.charts.utils import CHART_DIR, REPO_ROOT, run_workbench
 
 from miles.utils.external_utils.miles_workbench import __main__ as workbench_main
 from miles.utils.external_utils.miles_workbench.naming import DEFAULT_RELEASE, PACKAGE, object_name, run_release_name
+from miles.utils.workers.types import DeployComponent
 
 
 @pytest.fixture
@@ -254,6 +255,32 @@ class TestStop:
         run_cli("stop", "-n", "rl", "demo")
 
         assert f"helm uninstall {run_release_name('demo')} --namespace rl" in calls_of(fake_tools)
+
+    def test_it_stops_the_component_it_was_asked_for(self, fake_tools):
+        """A split run installs one release per component, and each is uninstalled on its own."""
+        run_cli("stop", "-n", "rl", "demo", "--deploy-component", "trainer")
+
+        assert f"helm uninstall {run_release_name('demo', DeployComponent.TRAINER)} --namespace rl" in calls_of(
+            fake_tools
+        )
+
+    def test_stopping_one_component_names_no_other_release(self, fake_tools):
+        """Uninstalling a sibling of the release the user asked for would take down a run that is still training."""
+        run_cli("stop", "-n", "rl", "demo", "--deploy-component", "trainer")
+
+        uninstalled = [call for call in calls_of(fake_tools) if "helm uninstall" in call]
+        others = [
+            run_release_name("demo", component)
+            for component in DeployComponent
+            if component is not DeployComponent.TRAINER
+        ]
+        assert not [call for call in uninstalled for release in others if release in call]
+
+    def test_two_runs_whose_ids_share_a_prefix_are_stopped_separately(self, fake_tools):
+        """helm is given one exact name, so a prefix match here would end a second user's run."""
+        run_cli("stop", "-n", "rl", "demo")
+
+        assert run_release_name("demo-2") not in "".join(calls_of(fake_tools))
 
 
 class TestCollectDiagnosis:

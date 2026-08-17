@@ -21,21 +21,26 @@ from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state im
     OrchestratorStatus,
 )
 from miles.utils.workers.k8s_types import ContainerState, ContainerStatus, Pod, PodMetadata, PodStatus
+from miles.utils.workers.types import DeployComponent
 
 
 def _write(path: Path, status: OrchestratorStatus, exit_code: int | None = None) -> None:
     OrchestratorState(status=status, exit_code=exit_code).write(path)
 
 
-def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
+def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False, deploy_component: str = "all") -> list[dict]:
+    followed: list[dict] = []
     monkeypatch.setattr(entrypoint, "compute_specs", lambda args: specs)
     monkeypatch.setattr(
         entrypoint,
         "parse_args",
-        lambda: SimpleNamespace(colocate=colocate, argv=[], use_wandb=False, wandb_run_id=None),
+        lambda: SimpleNamespace(
+            colocate=colocate, deploy_component=deploy_component, argv=[], use_wandb=False, wandb_run_id=None
+        ),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
-    monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
+    monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: followed.append(kwargs))
+    return followed
 
 
 class TestPerLaunchExitFile:
@@ -137,6 +142,28 @@ class TestAutoUninstallValues:
         assert "autoUninstall" not in _written_values(tmp_path)["run"]
 
 
+class TestADeploymentWithoutTheOrchestrationScript:
+    def test_installs_a_release_of_its_own_so_the_parts_of_a_run_never_replace_each_other(self, monkeypatch, tmp_path):
+        """Both launches carry the same run id, and one release name would make the second uninstall the first."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+
+        _launch(monkeypatch, tmp_path, recorded, installed=False, deploy_component="trainer")
+
+        assert recorded.upgraded == [f"{_RELEASE}-trainer"]
+
+    def test_installs_no_orchestrator_and_waits_for_no_verdict(self, monkeypatch, tmp_path):
+        """It carries no training to finish, so a launcher waiting for an exit file would hang forever."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+
+        followed = _launch(monkeypatch, tmp_path, recorded, installed=False, deploy_component="trainer")
+
+        built = _written_values(tmp_path)["run"]
+        assert followed == []
+        assert built["orchestrator"] == {"command": []}
+        assert "stateFile" not in built
+        assert built["autoUninstall"] == {"enabled": False}
+
+
 class TestDefusingAPendingUninstall:
     def test_a_first_install_deletes_a_job_an_earlier_run_of_this_id_left_behind(self, monkeypatch, tmp_path):
         """A relaunch of a run id whose uninstall is still sleeping would be uninstalled by that job."""
@@ -198,6 +225,21 @@ class TestTheRelaunchKeepsThePodsItAttachesTo:
 
         assert _written_values(tmp_path)["run"]["launchRecord"] == _INSTALLED_RECORD
 
+    def test_a_release_without_an_orchestrator_keeps_the_record_its_own_workers_carry(self, monkeypatch, tmp_path):
+        """A trainer release has no orchestrator container, and a lost record makes a resize restart every pod."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+
+        _launch(
+            monkeypatch,
+            tmp_path,
+            recorded,
+            installed=True,
+            rendered=_RENDERED_TRAINER_WITH_RECORD,
+            deploy_component="trainer",
+        )
+
+        assert _written_values(tmp_path)["run"]["launchRecord"] == _INSTALLED_RECORD
+
     def test_a_first_install_points_the_pods_at_the_record_of_this_launch(self, monkeypatch, tmp_path):
         recorded = _Recorded()
 
@@ -226,7 +268,8 @@ def _launch(
     proposed_differs: bool = False,
     delete_fails: bool = False,
     rendered: str | None = None,
-) -> None:
+    deploy_component: str = "all",
+) -> list[dict]:
     def fake_run_process(command, **kwargs):
         arguments = [str(part) for part in command]
         recorded.kubectl.append(arguments)
@@ -255,14 +298,18 @@ def _launch(
     monkeypatch.setattr(Manifest, "state_file", lambda self, container: tmp_path / "attached.state")
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
 
-    _stub_launch_inputs(monkeypatch, specs=[])
+    followed = _stub_launch_inputs(monkeypatch, specs=[], deploy_component=deploy_component)
 
-    return entrypoint.execute_train(
+    entrypoint.execute_train(
         request=_train_request(),
         config=ExecuteTrainConfig(
-            namespace="rl", run_id=_RUN_ID, helm_values=(str(_launchable_infra_file(tmp_path)),)
+            namespace="rl",
+            run_id=_RUN_ID,
+            helm_values=(str(_launchable_infra_file(tmp_path)),),
+            deploy_component=DeployComponent(deploy_component),
         ),
     )
+    return followed
 
 
 def _written_values(tmp_path) -> dict:
@@ -304,6 +351,21 @@ spec:
     spec:
       containers:
         - name: orchestrator
+          command: [python]
+          env:
+            - name: MILES_SCRIPT_ENV_REPORT
+              value: '{_INSTALLED_RECORD}'
+"""
+_RENDERED_TRAINER_WITH_RECORD = f"""---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: myrun-trainer-trainer-controller-actor
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
           command: [python]
           env:
             - name: MILES_SCRIPT_ENV_REPORT

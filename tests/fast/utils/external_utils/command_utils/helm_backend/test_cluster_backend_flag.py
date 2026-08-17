@@ -94,6 +94,7 @@ def launch_argv(
     train_args: str,
     run_id: str = RUN_ID,
     deploy_component: DeployComponent = DeployComponent.ALL,
+    recorded_releases: list[str] | None = None,
 ) -> list[str]:
     recorded: list[list[str]] = []
 
@@ -101,18 +102,35 @@ def launch_argv(
         recorded.append(list(args.argv))
         return [_router()]
 
+    def fake_parse_args() -> SimpleNamespace:
+        argv = list(sys.argv[1:])
+        declared = declared_deploy_components(argv)
+        return SimpleNamespace(
+            colocate=False,
+            deploy_component=declared[-1] if declared else DeployComponent.ALL.value,
+            deploy_instance_id=None,
+            argv=argv,
+            use_wandb=False,
+            wandb_run_id=None,
+        )
+
+    def fake_upgrade(**kwargs: Any) -> None:
+        if recorded_releases is not None:
+            recorded_releases.append(kwargs["release"])
+
+    def fake_render_upgrade(*, release: str, namespace: str, chart: Any, values_files: list[Any]) -> Manifest:
+        return Manifest.parse("", namespace=namespace)
+
     monkeypatch.setattr(entrypoint, "compute_specs", fake_compute_specs)
-    monkeypatch.setattr(
-        entrypoint,
-        "parse_args",
-        lambda: SimpleNamespace(colocate=False, argv=list(sys.argv[1:]), use_wandb=False, wandb_run_id=None),
-    )
+    monkeypatch.setattr(entrypoint, "parse_args", fake_parse_args)
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
     monkeypatch.setattr(entrypoint, "_write_helm_values", lambda path, values: None)
+    monkeypatch.setattr(entrypoint, "_compute_trainer_controller_addrs", lambda args, *, release, namespace: {})
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))
+    monkeypatch.setattr(Helm, "render_upgrade", staticmethod(fake_render_upgrade))
     monkeypatch.setattr(entrypoint, "_remove_pending_uninstall", lambda release, *, namespace: None)
     monkeypatch.setattr(Helm, "build_dependencies", lambda chart: None)
-    monkeypatch.setattr(Helm, "upgrade", lambda **kwargs: None)
+    monkeypatch.setattr(Helm, "upgrade", staticmethod(fake_upgrade))
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
 
     KubernetesCommandBackend(_config(run_id, deploy_component)).execute_train(
@@ -234,6 +252,36 @@ class TestExecuteTrainTellsThePodsWhichPartOfTheRunTheyAre:
 
         assert declared_deploy_components(argv) == ["trainer"]
 
+    def test_the_release_is_named_after_the_part_it_installs(self, monkeypatch: pytest.MonkeyPatch):
+        """Two parts of one run id share a release name unless the part is in it, and would uninstall each other."""
+        releases: list[str] = []
+
+        launch_argv(
+            monkeypatch,
+            train_args="--rollout-num-gpus 8",
+            deploy_component=DeployComponent.TRAINER,
+            recorded_releases=releases,
+        )
+
+        assert releases == [f"miles-run-{RUN_ID}-trainer"]
+
+    def test_every_object_of_a_split_release_is_named_after_that_release(self, monkeypatch: pytest.MonkeyPatch):
+        """The chart computes no names, so an object named after the whole run would collide with the whole run."""
+        run_id = RUN_ID_SHORT_ENOUGH_FOR_FULL_OBJECT_NAMES
+        releases: list[str] = []
+        argv = launch_argv(
+            monkeypatch,
+            train_args="--rollout-num-gpus 8",
+            run_id=run_id,
+            deploy_component=DeployComponent.TRAINER,
+            recorded_releases=releases,
+        )
+
+        run = _values_of_release(argv, run_id=run_id, release=releases[0])["run"]
+
+        assert run["objectNames"]["orchestrator"] == f"miles-run-{run_id}-trainer-orchestrator"
+        assert run["staticWorkers"][0]["objectName"] == f"miles-run-{run_id}-trainer-inference-router-0"
+
     def test_a_user_supplied_agreeing_flag_is_appended_over_rather_than_detected(self, monkeypatch):
         """A relaunch from a recorded command line repeats the flag, and the last one argparse reads still wins."""
         argv = launch_argv(
@@ -248,3 +296,33 @@ class TestExecuteTrainTellsThePodsWhichPartOfTheRunTheyAre:
         """Everything this launch installs is named after its own part, so pods told another part are orphans."""
         with pytest.raises(AssertionError, match="deploy-component"):
             launch_argv(monkeypatch, train_args="--deploy-component trainer --rollout-num-gpus 8")
+
+
+class TestApiServerHost:
+    def test_a_whole_run_answers_on_its_own_orchestrator(self):
+        """The api server runs beside the orchestration script, which is a pod of the run's only release."""
+        host = KubernetesCommandBackend(_config()).api_server_host()
+
+        assert host == f"{_release()}-orchestrator.{NAMESPACE}.svc.cluster.local"
+
+    @pytest.mark.parametrize("component", [DeployComponent.PRIMARY, DeployComponent.TRAINER])
+    def test_no_deployment_of_a_split_run_has_an_api_server_to_name(self, component):
+        """A split run is refused an api server, so any host answered here would only ever time out."""
+        backend = KubernetesCommandBackend(_config(deploy_component=component))
+
+        with pytest.raises(AssertionError, match="--api-server-port 0"):
+            backend.api_server_host()
+
+
+def _values_of_release(train_argv: list[str], *, run_id: str, release: str) -> dict[str, Any]:
+    return build_values(
+        [_router()],
+        LaunchPlan(
+            run_id=run_id,
+            state_file="",
+            release=release,
+            namespace=NAMESPACE,
+            orchestrator_command=[],
+            worker_argv=train_argv,
+        ),
+    ).as_values()

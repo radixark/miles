@@ -38,9 +38,9 @@ class LaunchRecord(FrozenStrictBaseModel):
         atomic_write_text(path, self.model_dump_json(indent=2))
 
 
-def installed_launch_record_file(*, manifest: Manifest, container: str) -> str | None:
+def installed_launch_record_file(*, manifest: Manifest) -> str | None:
     for described in manifest.objects:
-        for found in described.containers_named(container):
+        for found in described.containers:
             for entry in found.env:
                 if entry.name == LAUNCHER_REPORT_ENV_VAR:
                     return entry.value

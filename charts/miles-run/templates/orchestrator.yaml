@@ -1,6 +1,7 @@
 {{- $name := .Values.run.objectNames.orchestrator }}
-{{- if not .Values.run.orchestrator.command }}
-{{- fail "a run needs run.orchestrator.command: nothing else starts the training script, so a run installed without it would bring up every pod and then sit there forever" }}
+{{- if .Values.run.orchestrator.command }}
+{{- if not .Values.run.stateFile }}
+{{- fail "a run that carries the orchestration script needs run.stateFile: the launcher learns the run's outcome by reading it" }}
 {{- end }}
 {{- if eq ((.Values.infra.sharedStorage | default dict).type | default "none") "none" }}
 {{- fail "a run needs infra.sharedStorage: the launcher learns the run's outcome by reading its exit file, and without a shared volume the wrapper writes that file where nobody can read it" }}
@@ -69,3 +70,4 @@ spec:
       volumes:
         {{- . | nindent 8 }}
       {{- end }}
+{{- end }}
