@@ -27,7 +27,7 @@ from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import with_relax_parser_required_args
-from miles.utils.workers.types import ClusterBackend, WorkerCommBackend, resolve_worker_comm_backend
+from miles.utils.workers.types import ClusterBackend, DeployComponent, WorkerCommBackend, resolve_worker_comm_backend
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,19 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "How the driver calls its workers: `ray` sends actor calls, `rpc` calls the http server "
                     "every worker serves. Unset picks the default of the cluster backend, today `ray` under "
                     "`--cluster-backend ray` and `rpc` under `--cluster-backend kubernetes`."
+                ),
+            )
+            parser.add_argument(
+                "--deploy-component",
+                type=str,
+                default=DeployComponent.ALL.value,
+                choices=tuple(component.value for component in DeployComponent),
+                help=(
+                    "Which part of the run this launch deploys: `all` deploys every worker, `trainer` the trainer "
+                    "controllers and their megatron ranks, `inference` the sglang engines, and `primary` "
+                    "everything else (orchestration script, rollout executor, session servers, inference "
+                    "controller and routers). Deploying a subset takes one launch per subset, and the launch that "
+                    "carries the orchestration script reaches the trainer through the addresses it is given."
                 ),
             )
             parser.add_argument(
