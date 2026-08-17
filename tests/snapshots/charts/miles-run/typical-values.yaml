@@ -8,7 +8,7 @@ run:
         num_pods_per_inference_cell: 2
         num_pods_per_trainer_cell: 4
         num_trainer_cells: 1
-      pool_id: inference-engine-0-0
+      pool_id: inference-engine-all-0-0
     - layout:
         gpu_offset: 16
         num_gpus_per_node: 8
@@ -16,7 +16,7 @@ run:
         num_pods_per_inference_cell: 1
         num_pods_per_trainer_cell: 4
         num_trainer_cells: 1
-      pool_id: inference-engine-0-1
+      pool_id: inference-engine-all-0-1
     namespace: rl
     release: myrun
     trainer_pool_id: trainer-engine-actor
@@ -91,9 +91,9 @@ run:
       SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
-    name: inference-engine-0-0
-    objectName: myrun-miles-run-inference-engine-0-0
-    poolId: inference-engine-0-0
+    name: inference-engine-all-0-0
+    objectName: myrun-miles-run-inference-engine-all-0-0
+    poolId: inference-engine-all-0-0
     ports:
     - name: primary
       port: 8000
@@ -172,9 +172,9 @@ run:
       SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2: '1'
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
-    name: inference-engine-0-1
-    objectName: myrun-miles-run-inference-engine-0-1
-    poolId: inference-engine-0-1
+    name: inference-engine-all-0-1
+    objectName: myrun-miles-run-inference-engine-all-0-1
+    poolId: inference-engine-all-0-1
     ports:
     - name: primary
       port: 8000

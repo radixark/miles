@@ -365,7 +365,7 @@ spec:
             - -m
             - miles.utils.external_utils.colocate_pairing
             - --config
-            - "{\"inference_pools\":[{\"layout\":{\"gpu_offset\":0,\"num_gpus_per_node\":8,\"num_inference_cells\":1,\"num_pods_per_inference_cell\":2,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-0-0\"},{\"layout\":{\"gpu_offset\":16,\"num_gpus_per_node\":8,\"num_inference_cells\":2,\"num_pods_per_inference_cell\":1,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-0-1\"}],\"namespace\":\"rl\",\"release\":\"myrun\",\"trainer_pool_id\":\"trainer-engine-actor\"}"
+            - "{\"inference_pools\":[{\"layout\":{\"gpu_offset\":0,\"num_gpus_per_node\":8,\"num_inference_cells\":1,\"num_pods_per_inference_cell\":2,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-0\"},{\"layout\":{\"gpu_offset\":16,\"num_gpus_per_node\":8,\"num_inference_cells\":2,\"num_pods_per_inference_cell\":1,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-1\"}],\"namespace\":\"rl\",\"release\":\"myrun\",\"trainer_pool_id\":\"trainer-engine-actor\"}"
           env:
             - name: "CUDA_DEVICE_MAX_CONNECTIONS"
               value: "1"
@@ -1041,13 +1041,13 @@ spec:
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-  name: "myrun-miles-run-inference-engine-0-0"
+  name: "myrun-miles-run-inference-engine-all-0-0"
   namespace: "myns"
   labels:
     helm.sh/chart: "miles-run-0.1.0"
     app.kubernetes.io/name: "miles-run"
     app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "inference-engine-0-0"
+    app.kubernetes.io/component: "inference-engine-all-0-0"
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 spec:
@@ -1062,10 +1062,10 @@ spec:
           helm.sh/chart: "miles-run-0.1.0"
           app.kubernetes.io/name: "miles-run"
           app.kubernetes.io/instance: "myrun"
-          app.kubernetes.io/component: "inference-engine-0-0"
+          app.kubernetes.io/component: "inference-engine-all-0-0"
           app.kubernetes.io/version: "0.1.0"
           app.kubernetes.io/managed-by: "Helm"
-          miles.radixark.io/pool: "inference-engine-0-0"
+          miles.radixark.io/pool: "inference-engine-all-0-0"
         annotations:
           miles.radixark.io/meta-gpu_ids: "0,1,2,3,4,5,6,7"
       spec:
@@ -1233,13 +1233,13 @@ spec:
 apiVersion: leaderworkerset.x-k8s.io/v1
 kind: LeaderWorkerSet
 metadata:
-  name: "myrun-miles-run-inference-engine-0-1"
+  name: "myrun-miles-run-inference-engine-all-0-1"
   namespace: "myns"
   labels:
     helm.sh/chart: "miles-run-0.1.0"
     app.kubernetes.io/name: "miles-run"
     app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "inference-engine-0-1"
+    app.kubernetes.io/component: "inference-engine-all-0-1"
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 spec:
@@ -1254,10 +1254,10 @@ spec:
           helm.sh/chart: "miles-run-0.1.0"
           app.kubernetes.io/name: "miles-run"
           app.kubernetes.io/instance: "myrun"
-          app.kubernetes.io/component: "inference-engine-0-1"
+          app.kubernetes.io/component: "inference-engine-all-0-1"
           app.kubernetes.io/version: "0.1.0"
           app.kubernetes.io/managed-by: "Helm"
-          miles.radixark.io/pool: "inference-engine-0-1"
+          miles.radixark.io/pool: "inference-engine-all-0-1"
         annotations:
           miles.radixark.io/meta-gpu_ids: "0,1,2,3,4,5,6,7"
       spec:

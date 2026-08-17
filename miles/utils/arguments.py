@@ -2978,6 +2978,7 @@ def _validate_deploy_component(args: argparse.Namespace) -> None:
     _validate_deploy_instance_id(args, component=component)
     _validate_static_addrs_external_launch(args, component=component)
     _validate_registration(args, component=component)
+    _validate_single_engine_source(args, component=component)
 
     if not component.is_split():
         return
@@ -3083,6 +3084,20 @@ def _validate_registration(args: argparse.Namespace, *, component: DeployCompone
             f"--deploy-component {component.value} holds the one inference controller of the run, so it reaches it "
             f"in its own process rather than through --inference-controller-addr"
         )
+
+
+def _validate_single_engine_source(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if component is not DeployComponent.PRIMARY:
+        return
+
+    assert args.rollout_external_engine_addrs is None, (
+        f"--deploy-component {component.value} serves the engines that register into it, so "
+        f"--rollout-external-engine-addrs would be dropped and the run would wait for registrations forever"
+    )
+    assert (path := args.custom_inference_engine_provider_path) in (None, _BACKEND_ENGINE_PROVIDER_PATH), (
+        f"--deploy-component {component.value} serves the engines that register into it, so "
+        f"--custom-inference-engine-provider-path {path!r} would be dropped and never asked for an engine"
+    )
 
 
 def _validate_watched_cells_deployed_locally(args: argparse.Namespace, *, component: DeployComponent) -> None:

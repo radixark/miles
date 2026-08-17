@@ -925,6 +925,32 @@ class TestEngineRegistrationArguments:
             )
 
 
+class TestAPrimaryTakesItsEnginesFromRegistrations:
+    def test_a_primary_told_where_the_engines_already_are_is_refused(self):
+        """The addresses are dropped for a primary, leaving it waiting an hour for registrations nobody sends."""
+        with pytest.raises(AssertionError, match="--rollout-external-engine-addrs"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--rollout-external-engine-addrs", "10.0.0.9:8000"]
+                )
+            )
+
+    def test_a_primary_given_an_engine_provider_of_its_own_is_refused(self):
+        """A primary reads its engines out of the registration hub, so the provider would never be asked."""
+        with pytest.raises(AssertionError, match="--custom-inference-engine-provider-path"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--custom-inference-engine-provider-path", "pkg.mod.fn"]
+                )
+            )
+
+    def test_a_run_deploying_its_own_engines_still_takes_both(self):
+        """An unsplit run runs the provider it is given, and this check must not narrow that."""
+        _validate_deploy_component(
+            _parse_deploy_args(["--rollout-external-engine-addrs", "10.0.0.9:8000", *_SHARED_STORE_ARGS])
+        )
+
+
 class TestRunUuidOfASplitRun:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

@@ -22,11 +22,15 @@ from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_po
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, CellReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts, WorkerMetaContext
+
+_RUN_UUID = "run-uuid-1"
 
 
 def _make_cell_info(
@@ -195,12 +199,22 @@ class _RecordingInferenceControllerEvalFleet:
         return EvalFleetPin(skip_reason=None)
 
 
-def _make_controller(servers: dict, *, engine_provider: _FakeWorkerProvider | None = None) -> InferenceController:
+def _make_controller(
+    servers: dict,
+    *,
+    engine_provider: BaseWorkerProvider | None = None,
+    registration_hub: RegistrationHub | None = None,
+) -> InferenceController:
+    engines = registration_hub if registration_hub is not None else engine_provider
+    engines = engines if engines is not None else _FakeWorkerProvider([])
+
     controller = InferenceController.__new__(InferenceController)
-    controller.args = SimpleNamespace(debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False)
+    controller.args = SimpleNamespace(
+        debug_train_only=False, use_fault_tolerance=False, ci_test=False, colocate=False, run_uuid=_RUN_UUID
+    )
     controller.servers = servers
     controller.context_lock = ContextLock("InferenceController")
-    controller._engine_provider = engine_provider if engine_provider is not None else _FakeWorkerProvider([])
+    controller._engine_provider = engines
     controller._router_providers = [_FakeWorkerProvider([])]
     return controller
 
@@ -1351,3 +1365,115 @@ class TestEvalFleetSurface:
             skip_reason=None
         )
         assert controller._eval_fleet.pins == [dict(checkpoint_dir="/snap/step_5", weight_version="5")]
+
+
+class TestCellsReadyIsScopedToTheTargetedModel:
+    @pytest.mark.asyncio
+    async def test_a_named_model_does_not_wait_for_another_models_cells(self):
+        """Different model ids are independent, so a sick engine of B must not stall A's weight update."""
+        a = _RecordingServer(model_name="a", update_weights=True)
+        a.api_clients = ["a-client"]
+        a.server_cells = {
+            "a-0": SimpleNamespace(
+                is_pending_weights_or_serving=True,
+                is_uninitialized=False,
+                meta=SimpleNamespace(workers_hash="hash-a"),
+            )
+        }
+        b = _RecordingServer(model_name="b", update_weights=True)
+        b.server_cells = {
+            "b-0": SimpleNamespace(
+                is_pending_weights_or_serving=False,
+                is_uninitialized=False,
+                meta=SimpleNamespace(workers_hash="hash-b"),
+            )
+        }
+        controller = _make_controller({"a": a, "b": b})
+
+        updatable = await controller.start_update_weights(model_id="a")
+
+        assert updatable.rollout_engines == ["a-client"]
+
+    @pytest.mark.asyncio
+    async def test_an_unnamed_update_still_waits_for_every_model(self):
+        """A single policy run has one server, so scoping must not change what it waits for."""
+        srv = _RecordingServer(model_name="a", update_weights=True)
+        controller = _make_controller({"a": srv})
+
+        async with controller.context_lock:
+            assert controller._get_servers_of_model_id(None) == [srv]
+            assert controller._get_servers_of_model_id("a") == [srv]
+
+
+def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UUID) -> RegistrationSnapshot:
+    meta = dict(
+        model_id=model_id,
+        worker_type="regular",
+        num_gpus_per_engine=1,
+        gpu_offset=0,
+        sglang_api_key=None,
+        needs_offload=False,
+        update_weights=True,
+    )
+
+    cell = RegisteredCellInfo(
+        reporter_id="west",
+        info=CellInfo(
+            cell_id="west-inference-engine-0-0-0",
+            pool_id="west-inference-engine-0-0",
+            alive=True,
+            worker_names=["west-inference-engine-0-0-0-0"],
+            workers_hash="hash-1",
+            meta=meta,
+        ),
+        workers=[
+            WorkerInfo(
+                name="west-inference-engine-0-0-0-0",
+                generation=0,
+                self_addrs={"primary": HostAndPort(host="10.0.0.5", port=8000)},
+                gpu_ids=[0],
+            )
+        ],
+    )
+    return RegistrationSnapshot(
+        run_uuid=run_uuid,
+        reporter_id="west",
+        sequence_number=1,
+        cells=[cell],
+    )
+
+
+class TestRegistrationSnapshotEndpoint:
+    def test_a_snapshot_survives_the_wire(self):
+        """The reporter is in another cluster, so the whole membership has to be wire typed both ways."""
+        spec = collect_rpc_method_specs(InferenceController)["registration_ingest"]
+        query = dict(snapshot=_registration_snapshot())
+
+        assert spec.serializer.decode_query(spec.serializer.encode_query(query)) == query
+
+    @pytest.mark.asyncio
+    async def test_a_run_holding_a_registry_takes_the_snapshot_in(self):
+        """This endpoint is the only way an engine of another deployment ever joins the run."""
+        registry = RegistrationHub(run_uuid=_RUN_UUID)
+        controller = _make_controller({"model-a": _RecordingServer(model_name="model-a")}, registration_hub=registry)
+
+        await controller.registration_ingest(snapshot=_registration_snapshot())
+
+        assert sorted(registry._cell_of_id) == ["west-inference-engine-0-0-0"]
+
+    @pytest.mark.asyncio
+    async def test_a_run_serving_engines_of_its_own_refuses_a_snapshot(self):
+        """It would take the cells in and never wait for them, so the reporter has to hear that it is unwanted."""
+        controller = _make_controller({"model-a": _RecordingServer(model_name="model-a")})
+
+        with pytest.raises(AssertionError, match="takes no registration"):
+            await controller.registration_ingest(snapshot=_registration_snapshot())
+
+    @pytest.mark.asyncio
+    async def test_a_cell_serving_a_model_this_run_does_not_serve_is_refused(self):
+        """No router of this run would ever send it a request, so counting it would stall the wait for cells."""
+        registry = RegistrationHub(run_uuid=_RUN_UUID)
+        controller = _make_controller({"model-a": _RecordingServer(model_name="model-a")}, registration_hub=registry)
+
+        with pytest.raises(AssertionError, match="serves model 'other'"):
+            await controller.registration_ingest(snapshot=_registration_snapshot(model_id="other"))
