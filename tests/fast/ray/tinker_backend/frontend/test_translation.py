@@ -65,6 +65,23 @@ class TestDatumToSample:
         assert sample["advantages"] == [0.0, 1.0]
         assert "loss_weights" not in sample
 
+    def test_gspo_requires_and_maps_sequence_mask(self):
+        d = datum(
+            [1, 2],
+            [2, 5],
+            logprobs=[-0.5, -0.5],
+            advantages=[0.0, 1.0],
+            weights=[0.0, 1.0],
+        )
+        sample = translation.datum_to_sample(0, d, "gspo")
+        assert sample["rollout_log_probs"] == [-0.5, -0.5]
+        assert sample["advantages"] == [0.0, 1.0]
+        assert sample["loss_weights"] == [0.0, 1.0]
+
+        del d.loss_fn_inputs["weights"]
+        with pytest.raises(UserInputError, match="requires loss_fn_inputs\\['weights'\\]"):
+            translation.datum_to_sample(0, d, "gspo")
+
     def test_missing_required_channel_is_rejected(self):
         with pytest.raises(UserInputError, match="requires loss_fn_inputs\\['weights'\\]"):
             translation.datum_to_sample(0, datum([1, 2], [2, 3]), "cross_entropy")

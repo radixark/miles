@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # v1 compatibility matrix (README table mirrors this): anything outside is a
 # typed user error at enqueue time, never a GPU-side crash.
-SUPPORTED_LOSS_FNS = ("cross_entropy", "importance_sampling", "ppo")
+SUPPORTED_LOSS_FNS = ("cross_entropy", "importance_sampling", "ppo", "gspo")
 _ADAM_FIELDS = ("learning_rate", "beta1", "beta2", "eps", "weight_decay", "grad_clip_norm")
 _SAMPLE_TENSOR_FIELDS = ("loss_mask", "loss_weights", "advantages", "rollout_log_probs")
 # Channels each loss reads per token; a missing one must fail at enqueue, not
@@ -36,6 +36,7 @@ _LOSS_REQUIRED_CHANNELS = {
     "cross_entropy": ("loss_weights",),
     "importance_sampling": ("rollout_log_probs", "advantages"),
     "ppo": ("rollout_log_probs", "advantages"),
+    "gspo": ("rollout_log_probs", "advantages", "loss_weights"),
 }
 
 
@@ -553,6 +554,22 @@ def operation_result_metrics(payload: dict, logprobs: list[list[float]]) -> dict
         if loss_fn == "cross_entropy":
             weights = sample.get("loss_weights") or []
             total += sum(-lp * w * m for lp, w, m in zip(sample_logprobs, weights, mask, strict=False))
+        elif loss_fn == "gspo":
+            old = sample.get("rollout_log_probs") or []
+            advantages = sample.get("advantages") or []
+            weights = sample.get("loss_weights") or []
+            active = [m * w for m, w in zip(mask, weights, strict=False)]
+            denominator = max(sum(active), 1.0)
+            sequence_log_ratio = (
+                sum((lp - old_lp) * weight for lp, old_lp, weight in zip(sample_logprobs, old, active, strict=False))
+                / denominator
+            )
+            ratio = math.exp(min(sequence_log_ratio, 10.0))
+            low = config.get("clip_low_threshold", 0.8)
+            high = config.get("clip_high_threshold", 1.2)
+            for advantage, weight in zip(advantages, active, strict=False):
+                surrogate = min(ratio * advantage, min(max(ratio, low), high) * advantage)
+                total += -surrogate * weight
         else:
             old = sample.get("rollout_log_probs") or []
             advantages = sample.get("advantages") or []

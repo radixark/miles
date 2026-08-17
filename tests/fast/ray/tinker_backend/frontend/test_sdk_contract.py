@@ -157,7 +157,7 @@ class TestTrainingChain:
         assert len(result.loss_fn_outputs) == count
         assert result.metrics["unmasked_tokens:sum"] == pytest.approx(2.0 * count)
 
-    def test_importance_sampling_and_ppo(self, service_client):
+    def test_importance_sampling_ppo_and_gspo(self, service_client):
         client = service_client.create_lora_training_client(base_model=BASE, rank=4)
         datum = types.Datum(
             model_input=types.ModelInput.from_ints([1, 2, 3]),
@@ -173,6 +173,14 @@ class TestTrainingChain:
             [datum], "ppo", loss_fn_config={"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
         ).result()
         assert "loss:sum" in ppo_result.metrics
+        gspo_datum = types.Datum(
+            model_input=datum.model_input,
+            loss_fn_inputs={**datum.loss_fn_inputs, "weights": [0.0, 1.0, 1.0]},
+        )
+        gspo_result = client.forward_backward(
+            [gspo_datum], "gspo", loss_fn_config={"clip_low_threshold": 0.8, "clip_high_threshold": 1.2}
+        ).result()
+        assert "loss:sum" in gspo_result.metrics
 
     def test_user_error_is_typed_and_leaves_no_gap(self, service_client):
         client = service_client.create_lora_training_client(base_model=BASE, rank=4)

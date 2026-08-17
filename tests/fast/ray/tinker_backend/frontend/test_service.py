@@ -635,6 +635,12 @@ class TestLifecycle:
             assert stack.frontend.health() == {"status": "ok"}
             capabilities = stack.frontend.capabilities()
             assert capabilities["supported_models"][0]["model_name"] == BASE
+            assert capabilities["supported_loss_fns"] == [
+                "cross_entropy",
+                "importance_sampling",
+                "ppo",
+                "gspo",
+            ]
             config = stack.frontend.client_config(wire.ClientConfigRequest(sdk_version="0.24.1"))
             assert config["proto_write_fwdbwd"] is False and config["pjwt_auth_enabled"] is False
             assert stack.frontend.session_heartbeat(wire.SessionHeartbeatRequest(session_id=stack.session_id)) == {

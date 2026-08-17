@@ -1,5 +1,5 @@
 """Tinker per-operation-lane loss dispatch: linear CE / importance sampling /
-PPO, sum-reduction (chunk-additive), per-sample lane correlation, channel
+PPO / GSPO, sum-reduction (chunk-additive), per-sample lane correlation, channel
 validation, and homogeneous forward-only collection. The physical
 ``adapter_slots`` never appear here: they route the Multi-LoRA forward only."""
 
@@ -103,6 +103,45 @@ def test_importance_sampling_and_ppo_clip():
     assert torch.allclose(loss_ppo, expected_ppo)
     # Clipping binds somewhere, otherwise this test proves nothing.
     assert not torch.allclose(loss_ppo, loss)
+
+
+def test_gspo_uses_sequence_ratio_with_token_local_gradients():
+    args, batch, logits = make_batch(prompt_lens=(4,), response_lens=(3,))
+    batch["rollout_log_probs"] = [torch.tensor([-2.0, -1.0, -3.0])]
+    batch["advantages"] = [torch.tensor([1.0, -2.0, 0.5])]
+    batch["loss_weights"] = [torch.tensor([1.0, 1.0, 0.0])]
+    batch["tinker_loss_by_lane"] = {
+        0: {"loss_fn": "gspo", "loss_fn_config": {"clip_low_threshold": 0.5, "clip_high_threshold": 2.0}}
+    }
+
+    loss, _ = run(args, batch, logits)
+    logp = reference_log_probs(args, batch, logits)[0]
+    active = batch["loss_weights"][0]
+    sequence_log_ratio = ((logp.detach() - batch["rollout_log_probs"][0]) * active).sum() / active.sum()
+    token_log_ratio = logp - logp.detach() + sequence_log_ratio
+    ratio = torch.exp(token_log_ratio.clamp(max=10))
+    advantages = batch["advantages"][0]
+    expected = -(torch.minimum(ratio * advantages, ratio.clamp(0.5, 2.0) * advantages) * active).sum()
+
+    assert torch.allclose(loss, expected)
+    actual_grad = torch.autograd.grad(loss, logits, retain_graph=True)[0]
+    expected_grad = torch.autograd.grad(expected, logits)[0]
+    assert torch.allclose(actual_grad, expected_grad)
+
+
+def test_gspo_differs_from_token_ratio_ppo():
+    args, batch, logits = make_batch(prompt_lens=(4,), response_lens=(3,))
+    batch["rollout_log_probs"] = [torch.tensor([-5.0, 0.0, -1.0])]
+    batch["advantages"] = [torch.ones(3)]
+    batch["loss_weights"] = [torch.ones(3)]
+    config = {"clip_low_threshold": 0.9, "clip_high_threshold": 1.1}
+
+    batch["tinker_loss_by_lane"] = {0: {"loss_fn": "gspo", "loss_fn_config": config}}
+    gspo_loss, _ = run(args, batch, logits)
+    batch["tinker_loss_by_lane"] = {0: {"loss_fn": "ppo", "loss_fn_config": config}}
+    ppo_loss, _ = run(args, batch, logits)
+
+    assert not torch.allclose(gspo_loss, ppo_loss)
 
 
 def test_mixed_lanes_dispatch_independently():

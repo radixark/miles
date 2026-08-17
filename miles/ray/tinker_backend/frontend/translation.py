@@ -26,7 +26,7 @@ import math
 
 from miles.ray.tinker_backend.frontend import wire
 
-SUPPORTED_LOSS_FNS = ("cross_entropy", "importance_sampling", "ppo")
+SUPPORTED_LOSS_FNS = ("cross_entropy", "importance_sampling", "ppo", "gspo")
 
 # Official loss_fn_inputs channel -> backend per-token channel.
 _CHANNEL_TO_BACKEND = {
@@ -38,10 +38,16 @@ _REQUIRED_CHANNELS = {
     "cross_entropy": ("weights",),
     "importance_sampling": ("logprobs", "advantages"),
     "ppo": ("logprobs", "advantages"),
+    "gspo": ("logprobs", "advantages", "weights"),
 }
 # Which channel decides whether a position contributes loss (and therefore
 # must be a true next-token target).
-_ACTIVE_CHANNEL = {"cross_entropy": "weights", "importance_sampling": "advantages", "ppo": "advantages"}
+_ACTIVE_CHANNEL = {
+    "cross_entropy": "weights",
+    "importance_sampling": "advantages",
+    "ppo": "advantages",
+    "gspo": "weights",
+}
 
 
 class UserInputError(ValueError):
