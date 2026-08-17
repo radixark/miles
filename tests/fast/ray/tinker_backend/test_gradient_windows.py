@@ -1,0 +1,81 @@
+"""GradientWindowTracker: registration-keyed step/dirty stream state
+(codex-rollout-fullparameter-design-0810 §3.4). Parameterization-neutral —
+these tests never construct a SlotPool or a registry; poison stays the
+ledger's job and never appears here."""
+
+from tests.ci.ci_register import register_cpu_ci
+
+register_cpu_ci(est_time=60, suite="stage-a-cpu")
+
+from miles.ray.tinker_backend.gradient_windows import GradientWindowTracker
+
+KEY_A = ("A", "reg-1")
+KEY_A2 = ("A", "reg-2")  # same name, new registration: a different stream
+KEY_B = ("B", "reg-1")
+
+
+class TestDirtyFlag:
+    def test_successful_fb_sets_dirty_and_forward_never_calls_in(self):
+        tracker = GradientWindowTracker()
+        tracker.open(KEY_A)
+        assert not tracker.is_dirty(KEY_A)
+        tracker.mark_forward_backward_succeeded(KEY_A)
+        assert tracker.is_dirty(KEY_A)
+        # forward operations have no transition here by design: nothing to call.
+
+    def test_committed_step_consumes_the_window(self):
+        tracker = GradientWindowTracker()
+        tracker.mark_forward_backward_succeeded(KEY_A)
+        assert tracker.commit_step(KEY_A) == 1
+        assert not tracker.is_dirty(KEY_A)
+        assert tracker.step_of(KEY_A) == 1
+
+    def test_executed_optim_without_commit_clears_without_advancing(self):
+        # Veto and poison-discard both execute (clear grads on every rank)
+        # but never move the clock.
+        tracker = GradientWindowTracker()
+        tracker.mark_forward_backward_succeeded(KEY_A)
+        tracker.clear_after_executed_optim(KEY_A)
+        assert not tracker.is_dirty(KEY_A)
+        assert tracker.step_of(KEY_A) == 0
+
+    def test_clean_commit_needs_no_prior_fb(self):
+        # Current behavior: a clean optim_step is legal and advances the clock.
+        tracker = GradientWindowTracker()
+        assert tracker.commit_step(KEY_A) == 1
+
+
+class TestStreamIdentity:
+    def test_registrations_of_the_same_name_are_different_streams(self):
+        tracker = GradientWindowTracker()
+        tracker.mark_forward_backward_succeeded(KEY_A)
+        assert not tracker.is_dirty(KEY_A2)
+        assert tracker.commit_step(KEY_A2) == 1
+        assert tracker.is_dirty(KEY_A)  # untouched by the other stream
+
+    def test_streams_are_independent_across_names(self):
+        tracker = GradientWindowTracker()
+        tracker.commit_step(KEY_A)
+        tracker.commit_step(KEY_A)
+        tracker.mark_forward_backward_succeeded(KEY_B)
+        assert tracker.step_of(KEY_A) == 2 and not tracker.is_dirty(KEY_A)
+        assert tracker.step_of(KEY_B) == 0 and tracker.is_dirty(KEY_B)
+
+    def test_close_drops_the_stream_and_queries_go_inert(self):
+        tracker = GradientWindowTracker()
+        tracker.commit_step(KEY_A)
+        tracker.mark_forward_backward_succeeded(KEY_A)
+        tracker.close(KEY_A)
+        assert tracker.step_of(KEY_A) == 0
+        assert not tracker.is_dirty(KEY_A)
+
+
+class TestRestore:
+    def test_restore_moves_the_clock(self):
+        # The num_step baseline (start_step) is the registry's authority;
+        # the tracker deliberately keeps no duplicate copy of it.
+        tracker = GradientWindowTracker()
+        tracker.restore_step(KEY_A, 42)
+        assert tracker.step_of(KEY_A) == 42
+        # The next commit counts from the restored clock.
+        assert tracker.commit_step(KEY_A) == 43

@@ -205,9 +205,14 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
                 "num_rollouts",
                 "n_adapters",
                 "adapter_slots",
-                "step_slots",
-                "step_adapter_names",
-                "step_adapter_batch_sizes",
+                "tinker_operation_lanes",
+                "tinker_loss_by_lane",
+                "operation_by_lane",
+                "registration_by_lane",
+                "batch_execution_lease",
+                "batch_kind",
+                "tinker_forward_only",
+                "tinker_logprob_collector",
                 "prompt_group_sizes",
             ]:
                 continue

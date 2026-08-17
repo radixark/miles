@@ -33,6 +33,54 @@ def _ensure_model_list(model):
     return model if isinstance(model, list) else [model]
 
 
+def _ignore_packed_sequence_boundaries(module) -> None:
+    """Let one-sample GDN microbatches use the THD tensor layout.
+
+    Megatron's GDN rejects ``PackedSeqParams`` even when the packed row contains
+    only one real sample followed by masked padding. In that exact case the
+    boundaries do not affect any trained token, so the recurrent layer can run
+    its ordinary dense path while full-attention layers keep the THD metadata.
+    """
+    if getattr(module, "_miles_ignores_packed_sequence_boundaries", False):
+        return
+
+    original_forward = module.forward
+
+    def forward(*forward_args, **forward_kwargs):
+        forward_kwargs["packed_seq_params"] = None
+        return original_forward(*forward_args, **forward_kwargs)
+
+    module.forward = forward
+    module._miles_ignores_packed_sequence_boundaries = True
+
+
+def _enable_single_sample_gdn_thd(model, args: Namespace) -> int:
+    """Enable the safe GDN fallback only for fixed, one-sample THD batches."""
+    if not (
+        getattr(args, "qkv_format", "thd") == "thd"
+        and getattr(args, "micro_batch_size", None) == 1
+        and not getattr(args, "use_dynamic_batch_size", False)
+        and getattr(args, "context_parallel_size", 1) == 1
+    ):
+        return 0
+
+    from megatron.core.ssm.gated_delta_net import GatedDeltaNet
+
+    patched = 0
+    for model_chunk in _ensure_model_list(model):
+        for module in model_chunk.modules():
+            if isinstance(module, GatedDeltaNet):
+                _ignore_packed_sequence_boundaries(module)
+                patched += 1
+    if patched:
+        logger.info(
+            "Enabled the single-sample THD fallback for %d GatedDeltaNet layers; "
+            "full-attention layers retain packed sequence boundaries.",
+            patched,
+        )
+    return patched
+
+
 def _make_value_model_hook(hidden_size: int, sequence_parallel: bool):
     """Create a pre-wrap hook that replaces the output layer with a value head."""
     from megatron.core import parallel_state
@@ -131,6 +179,13 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
+    # LoRA models use this separate Bridge construction path, so apply the
+    # same explicit runtime overrides as the non-LoRA provider before the
+    # LoRA-specific settings below are finalized.
+    from .model_provider import _apply_bridge_runtime_config
+
+    _apply_bridge_runtime_config(provider, args)
+
     provider.tensor_model_parallel_size = args.tensor_model_parallel_size
     provider.pipeline_model_parallel_size = args.pipeline_model_parallel_size
     provider.expert_model_parallel_size = args.expert_model_parallel_size
@@ -168,7 +223,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args):
         _validate_multi_lora_moe_support(args, provider)
 
-        from miles.backends.megatron_utils.multi_lora_utils import create_multi_lora_instance
+        from miles.backends.megatron_utils.tinker_backend.model import create_multi_lora_instance
 
         lora = create_multi_lora_instance(args)
     else:
@@ -206,4 +261,5 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         patch_param_grad_buffer_for_colocate_mode_lora()
 
     model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
+    _enable_single_sample_gdn_thd(model, args)
     return model

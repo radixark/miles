@@ -87,6 +87,28 @@ class TestBuildCpuPytestCmd:
         assert cmd[0] == "pytest"
         assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
 
+    def test_files_sorted_so_package_args_stay_contiguous(self):
+        # pytest 9.1 re-collects a package's children (clobbering the
+        # collection cache) when an argument is a file directly inside it,
+        # while conftest fixtures stay bound to the original collector
+        # instance. The order "pkg file, ancestor-level file, pkg file" then
+        # errors at setup with "fixture not found". Sorting keeps each
+        # package's arguments contiguous, so that interleave cannot occur.
+        cmd = build_cpu_pytest_cmd(
+            [
+                "tests/fast/ray/rollout/test_z.py",
+                "tests/fast/test_mid.py",
+                "tests/fast/ray/rollout/test_a.py",
+            ],
+            continue_on_error=False,
+        )
+        files = [part for part in cmd if part.endswith(".py")]
+        assert files == [
+            "tests/fast/ray/rollout/test_a.py",
+            "tests/fast/ray/rollout/test_z.py",
+            "tests/fast/test_mid.py",
+        ]
+
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
 

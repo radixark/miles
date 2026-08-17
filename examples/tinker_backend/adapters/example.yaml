@@ -1,0 +1,7 @@
+# Tinker registration config: the public fields only. No dataset, no reward,
+# no batch shape — the client drives training through operations. alpha is
+# deployment-configured (--lora-alpha) and rejected if set here.
+rank: 16
+num_step: 100          # optional: auto-deregister after 100 optimizer steps
+metadata:
+  team: example

@@ -24,7 +24,10 @@ class _FakeIterator:
         self.rollout_data = {"n_adapters": n_adapters}
 
     def get_next(self, keys):
-        return {key: self._batch[key] for key in keys}
+        # The real DataIterator contract: absent keys come back as None
+        # (get_batch auto-fetches keys like adapter_slots and
+        # tinker_operation_lanes that non-tinker batches never carry).
+        return {key: self._batch.get(key) for key in keys}
 
 
 KEYS = ["tokens", "loss_masks", "total_lengths", "response_lengths", "adapter_slots"]

@@ -1,7 +1,7 @@
 """Small multi-LoRA helpers shared across the rollout, trainer, and controller.
 
-The controller-side machinery (AdapterRegistry, MultiLoRABackend,
-MultiLoRAHTTPServer) lives in ``miles/ray/multi_lora/``.
+The controller-side machinery (AdapterRegistry, TinkerBackend,
+TinkerHTTPServer) lives in ``miles/ray/tinker_backend/``.
 """
 
 import logging
@@ -11,14 +11,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "EmptyBatchTimeoutError",
     "RID_SEPARATOR",
-    "define_new_adapter_metrics",
     "is_multi_lora_enabled",
     "make_rid",
-    "min_groups_per_dp_split",
-    "parse_adapter",
     "slot_lora_name",
+    "targets_expert_leaves",
     "validate_multi_lora_args",
 ]
 
@@ -27,23 +24,8 @@ __all__ = [
 RID_SEPARATOR = "::"
 
 
-class EmptyBatchTimeoutError(RuntimeError):
-    """No trainable groups arrived before empty-wait timeout."""
-
-
 def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
-
-
-def define_new_adapter_metrics(snapshot: dict) -> None:
-    """Declare metric axes for new adapters ({name}/* -> {name}/step, {name}/perf/* -> rollout/step); must run
-    in the primary tracking writer. Already-declared adapters are skipped, so calling every snapshot is free."""
-    # lazy import tracking deps
-    from miles.utils.tracking_utils.tracking import define_step_key_metric_group
-
-    for name in {**snapshot["pending"], **snapshot["active"], **snapshot["retiring"]}:
-        define_step_key_metric_group(prefix=name, step_key=f"{name}/step")
-        define_step_key_metric_group(prefix=f"{name}/perf", step_key="rollout/step")
 
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP
@@ -63,6 +45,40 @@ def targets_expert_leaves(target_modules: Any) -> bool:
     return any(entry.split(".")[-1] in _EXPERT_LEAF_NAMES for entry in entries)
 
 
+def _recompute_source_recognizes_adapters(recompute_module: Any) -> bool:
+    """Whether a bridge ``peft.recompute`` module's input-grad patch classifies
+    multi-LoRA ``.adapters.<slot>.`` parameter names as adapter parameters.
+    Source inspection, separated from the import so tests can probe real
+    module files without touching the installed bridge."""
+    import inspect
+
+    try:
+        source = inspect.getsource(recompute_module.maybe_enable_recompute_inputs_grad)
+    except (AttributeError, OSError, TypeError):
+        return False
+    return ".adapters." in source
+
+
+def _bridge_recompute_patch_recognizes_multi_lora() -> bool:
+    """Whether the installed Megatron-Bridge can replay checkpointed regions
+    grad-enabled for multi-LoRA.
+
+    Adapter-only training leaves every layer input grad-free, so activation
+    recompute only works because the bridge's PEFT patch
+    (``megatron.bridge.peft.recompute.maybe_enable_recompute_inputs_grad``)
+    forces TransformerBlock inputs to require grad when only adapters train.
+    Bridges before radixark/Megatron-Bridge#27 (branch ``bridge`` @ 688d34b8)
+    matched only single-LoRA ``.adapter.`` names, classified multi-LoRA
+    ``.adapters.<slot>.`` params as trainable base weights, and skipped the
+    patch — full recompute then silently zeroed every adapter gradient. An
+    unimportable or unreadable bridge fails closed (treated as unfixed)."""
+    try:
+        from megatron.bridge.peft import recompute
+    except Exception:
+        return False
+    return _recompute_source_recognizes_adapters(recompute)
+
+
 def validate_multi_lora_args(args: Any) -> None:
     """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
     surface. Called from ``miles_validate_args``; a no-op for normal runs."""
@@ -70,11 +86,9 @@ def validate_multi_lora_args(args: Any) -> None:
     if not args.multi_lora:
         return
 
-    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags elsewhere.
-    if args.rollout_function_path is None:
-        args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-    if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
-        args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+    assert getattr(
+        args, "tinker_backend", False
+    ), "multi-LoRA now requires --tinker-backend: the dataset-driven adapter-sample-level path was removed"
     # The per-adapter data source is inherently global (the controller owns
     # what is sampleable); rollout workers must not shard it.
     args.rollout_global_dataset = True
@@ -87,6 +101,45 @@ def validate_multi_lora_args(args: Any) -> None:
         "complete adapter to push to the rollout engines, and a pipelined schedule would "
         "recompute activations against a later micro-batch's adapter routing."
     )
+    # Activation recompute: a checkpointed region is only replayed grad-enabled
+    # when its INPUT requires grad. Multi-LoRA trains adapter-only (frozen
+    # base), so recompute shapes that checkpoint the adapters themselves —
+    # 'full' granularity always, selective 'moe' when the expert leaves are
+    # the targets — depend on the bridge's PEFT input-grad patch forcing
+    # TransformerBlock inputs to require grad. On a bridge without the
+    # multi-LoRA fix (radixark/Megatron-Bridge#27), no layer is ever replayed,
+    # every adapter gradient is identically zero, and training is a silent
+    # no-op under a truthful grad_norm=0.0 (reproduced: GPT-OSS 20B
+    # expert-only LoRA, TP=2+SP, 4xH200, 2026-08-12). Refuse those shapes at
+    # launch unless the installed bridge carries the fix.
+    recompute_modules = list(getattr(args, "recompute_modules", None) or [])
+    risky_full = getattr(args, "recompute_granularity", None) == "full"
+    risky_moe = "moe" in recompute_modules and targets_expert_leaves(args.target_modules)
+    if risky_full or risky_moe:
+        bridge_fixed = _bridge_recompute_patch_recognizes_multi_lora()
+        assert not risky_full or bridge_fixed, (
+            "Multi-LoRA with --recompute-granularity full requires a Megatron-Bridge "
+            "whose PEFT recompute patch recognizes multi-LoRA '.adapters.<slot>.' "
+            "params (radixark/Megatron-Bridge#27, branch bridge @ 688d34b8). The "
+            "installed bridge does not: maybe_enable_recompute_inputs_grad matches "
+            "only single-LoRA '.adapter.' names, so the TransformerBlock input-grad "
+            "hook is skipped, no checkpointed layer is ever replayed, and every "
+            "adapter gradient is silently zero (grad_norm=0.0 on every step while "
+            "the job keeps 'training'). Upgrade the bridge, or use "
+            "--recompute-granularity selective (default recompute-modules core_attn; "
+            "add moe_act for MoE activation memory)."
+        )
+        assert not risky_moe or bridge_fixed, (
+            "Multi-LoRA with expert-module targets and 'moe' in --recompute-modules "
+            "requires a Megatron-Bridge whose PEFT recompute patch recognizes "
+            "multi-LoRA '.adapters.<slot>.' params (radixark/Megatron-Bridge#27, "
+            "branch bridge @ 688d34b8): the checkpointed MoE region contains the "
+            "expert adapters themselves, so with expert-only targets their replay "
+            "depends entirely on the bridge's TransformerBlock input-grad hook — "
+            "without it every adapter gradient is silently zero (grad_norm=0.0 on "
+            "every step). Upgrade the bridge, or recompute the expert activation "
+            "instead: --recompute-modules core_attn moe_act."
+        )
     # Per-slot token spans assume sequence-major contiguous sample packing, which only 'thd' provides.
     assert getattr(args, "qkv_format", "thd") == "thd", (
         "Multi-LoRA requires --qkv-format thd: per-adapter token spans assume the "
@@ -129,47 +182,17 @@ def validate_multi_lora_args(args: Any) -> None:
         "(sample-mean); per-token loss normalization would make adapter batch weights "
         "depend on batch contents. Drop --calculate-per-token-loss."
     )
-    assert args.multi_lora_max_coalesce_wait_s >= 0, "--multi-lora-max-coalesce-wait-s must be non-negative"
     assert (getattr(args, "optimizer", "adam") or "adam").lower() == "adam", (
         "Multi-LoRA requires --optimizer adam: the per-slot optimizer isolation "
-        "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
+        "(slot optimizer construction, slot retirement state cleanup) only implements "
         f"Adam semantics; got --optimizer {args.optimizer}"
     )
     from miles.utils.environ import enable_experimental_ft_trainer
 
     assert not enable_experimental_ft_trainer(), (
         "Multi-LoRA is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
-        "train group has no reconcile_adapters and does not return train outcomes"
+        "train group has no adapter reconcile verbs and does not return train outcomes"
     )
-    # --global-batch-size may legitimately be unset (Megatron derives it later);
-    # leave the adapter cap unset too rather than multiplying None.
-    if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:
-        args.multi_lora_max_adapter_global_batch_size = 4 * args.global_batch_size
-    if args.multi_lora_max_adapter_global_batch_size is not None:
-        assert (
-            args.multi_lora_max_adapter_global_batch_size > 0
-        ), "--multi-lora-max-adapter-global-batch-size must be positive"
-
-    # Trainer DP size, used to validate adapter batch shapes; guarded for harnesses without megatron args set.
-    if all(
-        hasattr(args, name)
-        for name in (
-            "world_size",
-            "tensor_model_parallel_size",
-            "pipeline_model_parallel_size",
-            "context_parallel_size",
-        )
-    ):
-        from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-
-        model_parallel = compute_megatron_world_size_except_dp(args)
-        assert (
-            args.world_size % model_parallel == 0
-        ), f"actor world size {args.world_size} is not divisible by tp*pp*cp {model_parallel}"
-        args.multi_lora_dp_size = args.world_size // model_parallel
-    else:
-        args.multi_lora_dp_size = None
-
     # Batches are variable-sized; carry the exact sample
     # count through rollout conversion instead of trimming to --global-batch-size.
     assert not args.disable_rollout_trim_samples, (
@@ -184,31 +207,7 @@ def make_rid(adapter_name: str) -> str:
     return f"{adapter_name}{RID_SEPARATOR}{uuid.uuid4().hex}"
 
 
-def parse_adapter(rid: str) -> str:
-    return rid.rsplit(RID_SEPARATOR, 1)[0]
-
-
 def slot_lora_name(slot: int) -> str:
     """Engine-side LoRA adapter name for a controller slot. Weight pushes and
     every inference request (rollout and prefill scoring) must agree on this."""
     return f"__miles_slot_{slot}"
-
-
-def min_groups_per_dp_split(n_samples_per_prompt: int, dp_size: int) -> int:
-    """Minimum prompt-group count that splits cleanly across data-parallel
-    ranks.
-
-    Train batches only pop groups in multiples of this value, so each popped
-    slice has a sample count divisible by ``dp_size`` with no trimming.
-
-    Requires ``n_samples_per_prompt`` and ``dp_size`` to divide each other
-    (one must be a multiple of the other).
-    """
-    larger = max(dp_size, n_samples_per_prompt)
-    smaller = min(dp_size, n_samples_per_prompt)
-    if larger % smaller == 0:
-        return larger // n_samples_per_prompt
-    raise ValueError(
-        f"n_samples_per_prompt={n_samples_per_prompt} must be a divisor or a multiple of "
-        f"the data-parallel size {dp_size} so whole prompt groups can split evenly across ranks"
-    )

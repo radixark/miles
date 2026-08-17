@@ -1796,6 +1796,30 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
             parser.add_argument(
+                "--tinker-backend",
+                action="store_true",
+                default=False,
+                help="Serve the multi-LoRA slots through the tinker-compatible operation backend "
+                "(client-driven forward_backward/optim_step; no dataset or reward on the server). "
+                "Requires --multi-lora-n-adapters > 0.",
+            )
+            parser.add_argument(
+                "--tinker-max-coalesce-wait-s",
+                type=float,
+                default=2.0,
+                help="After the first child batch is selected, keep coalescing further ready "
+                "batches into the same train call for this long (default: 2.0)",
+            )
+            parser.add_argument(
+                "--tinker-max-empty-wait-s",
+                type=float,
+                default=5.0,
+                help="End generate with EmptyBatchTimeoutError when no adapter produces a "
+                "batch within this window. Deliberately short: the driver treats it as a "
+                "yield back to the control phase, so queued optim_step/save/load operations "
+                "never wait behind an idle data queue (default: 5.0)",
+            )
+            parser.add_argument(
                 "--multi-lora-adapter",
                 nargs=2,
                 action="append",
@@ -1834,38 +1858,26 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
             )
             parser.add_argument(
+                "--tinker-frontend",
+                action="store_true",
+                default=False,
+                help="Serve the official tinker SDK REST protocol (/api/v1) on the tinker "
+                "controller's HTTP server: an unmodified `tinker` client pointed at it "
+                "(base_url + api_key) drives training and sampling",
+            )
+            parser.add_argument(
+                "--tinker-api-key",
+                type=str,
+                default=None,
+                help="API key the tinker frontend requires in X-API-Key (single-tenant; the SDK "
+                "needs a 'tml-' prefix). Falls back to $MILES_TINKER_API_KEY. Required for a "
+                "non-loopback bind (fail closed)",
+            )
+            parser.add_argument(
                 "--multi-lora-disable-service-mode",
                 action="store_false",
                 dest="multi_lora_service_mode",
                 help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
-            )
-            parser.add_argument(
-                "--multi-lora-max-adapter-global-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "Registration-time upper bound on an adapter's samples per optimizer "
-                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
-                    "--global-batch-size."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-coalesce-wait-s",
-                type=float,
-                default=0.5,
-                help=(
-                    "Maximum time ready groups wait for the batch to fill toward "
-                    "--global-batch-size before training starts on what is ready (default: 0.5)."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-empty-wait-s",
-                type=float,
-                default=30.0,
-                help=(
-                    "How long a generate call waits for the first poppable group before "
-                    "failing with an empty-batch timeout (default: 30)."
-                ),
             )
             return parser
 
@@ -3130,6 +3142,10 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+
+    from miles.utils.tinker_backend import validate_tinker_args
+
+    validate_tinker_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

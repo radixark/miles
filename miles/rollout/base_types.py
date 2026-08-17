@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -49,11 +49,34 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+@dataclass(frozen=True)
+class RolloutPostprocessOptions:
+    """Postprocess policy the rollout fn declares for its own output, so the
+    generic manager never has to recognize fn-specific metadata keys.
+
+    pad_to_dp: zero-weight pad the flat sample list up to the DP grid instead
+    of trimming — for whole-batch selections (e.g. tinker client operations)
+    where dropping samples would corrupt the result plane.
+    """
+
+    pad_to_dp: bool = False
+
+
 # TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
+    # Fn-internal control plane (e.g. the tinker child's per-operation info);
+    # the rollout manager does not read it.
+    metadata: dict[str, Any] | None = None
+    # Conversion-metadata contribution: the rollout manager merges this dict
+    # verbatim into the postprocess metadata handed to train-data conversion
+    # (e.g. the tinker adapter ships its BatchPlan already converted), never
+    # interpreting individual keys.
+    conversion_metadata: dict[str, Any] | None = None
+    # How the manager postprocesses samples before conversion.
+    postprocess: RolloutPostprocessOptions = field(default_factory=RolloutPostprocessOptions)
 
 
 # TODO make it frozen

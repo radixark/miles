@@ -186,8 +186,7 @@ class Qwen3_5Bridge(Qwen2MoEBridge):
     def _get_gptmodel_args(self) -> dict:
         """Override to add MTP block spec if needed."""
         ret = super()._get_gptmodel_args()
-        text_config = self._get_text_config()
-        if getattr(text_config, "mtp_num_hidden_layers", None) is not None:
+        if getattr(self.config, "mtp_num_layers", None):
             transformer_layer_spec = getattr(self, "_last_transformer_layer_spec", None)
             if transformer_layer_spec is None:
                 transformer_layer_spec = self._get_transformer_layer_spec()
