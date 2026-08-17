@@ -4,9 +4,14 @@ import random
 import time
 from pathlib import Path
 
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME, component_name
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
+
+_HELM_RELEASE_NAME_MAX = 53
+_LONGEST_COMPONENT_SUFFIX = max(len(f"-{component.value}") for component in DeployComponent)
+RUN_ID_MAX_LENGTH = _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-") - _LONGEST_COMPONENT_SUFFIX
 
 _UNINSTALL_COMPONENT = "uninstall"
 _UNINSTALL_MANIFEST_COMPONENT = "uninstall-manifest"
@@ -20,8 +25,13 @@ _STATE_FILE_GLOB = "orchestrator-*.state"
 
 class RunNames:
     @staticmethod
-    def release(*, run_id: str) -> str:
-        return f"{CHART_NAME}-{run_id}"
+    def release(*, run_id: str, deploy_component: DeployComponent = DeployComponent.ALL) -> str:
+        assert len(run_id) <= RUN_ID_MAX_LENGTH, (
+            f"run_id {run_id!r} is {len(run_id)} characters, but helm bounds a release name at "
+            f"{_HELM_RELEASE_NAME_MAX}, and a run id has to name a legal release under every component this run "
+            f"may be split into, so it takes at most {RUN_ID_MAX_LENGTH}"
+        )
+        return f"{CHART_NAME}-{run_id}-{deploy_component.value}"
 
     @staticmethod
     def service_fqdn(*, name: str, namespace: str) -> str:

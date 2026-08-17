@@ -15,6 +15,7 @@ from miles.utils.external_utils.miles_workbench.actions import (
 )
 from miles.utils.external_utils.miles_workbench.naming import DEFAULT_RELEASE, PROGRAM_NAME, run_release_name
 from miles.utils.external_utils.miles_workbench.options import DiagnosisArgs, ExecArgs, InstallArgs, ReleaseArgs
+from miles.utils.workers.types import DeployComponent
 
 app = typer.Typer(
     name=PROGRAM_NAME,
@@ -80,8 +81,11 @@ def exec_command(
 def stop_command(
     namespace: Namespace,
     run_id: Annotated[str, typer.Argument(help="Run id the release is named after")],
+    deploy_component: Annotated[
+        DeployComponent, typer.Option(help="Which deployment of the run to stop, when it was deployed in parts")
+    ] = DeployComponent.ALL,
 ) -> None:
-    uninstall(ReleaseArgs(namespace=namespace, release=run_release_name(run_id)))
+    uninstall(ReleaseArgs(namespace=namespace, release=run_release_name(run_id, deploy_component)))
 
 
 @app.command(name="uninstall", help="helm uninstall the release, keeping the namespace")
