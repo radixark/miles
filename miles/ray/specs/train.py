@@ -14,6 +14,7 @@ from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.workers.backend_capability.base import BackendCapability
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_provider.static import StaticWorkerProvider, parse_host_and_port
@@ -118,6 +119,7 @@ def _compute_spec_trainer_controller(
     trainer_id = config.trainer_id
     return ServeWorkerSpec(
         name=compute_trainer_controller_pool_id(trainer_id),
+        deploy_component=DeployComponent.TRAINER,
         port_infos=[],
         env_var=lambda _ctx: {},
         scheduling=SchedulingSpec(
@@ -202,6 +204,7 @@ def _compute_spec_trainer(
     return ServeWorkerSpec(
         name=compute_trainer_pool_id(trainer_id),
         category=POOL_CATEGORY_TRAINER_ENGINE,
+        deploy_component=DeployComponent.TRAINER,
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
         env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
         scheduling=SchedulingSpec(
