@@ -573,6 +573,9 @@ class DumpReader:
         cover only its overlap with the response region (stat ``i`` maps to
         token position ``prompt_len + a + i``). ``response_offset`` is the
         index within the returned token slice where the response begins.
+        Stat values are null at loss-masked positions (tool output, injected
+        turns): the engine never scored those tokens and the dump stores
+        placeholders, so only mask=1 entries carry real numbers.
         """
         columns = self._rollout_columns(rollout_id, sample_index, evaluation=evaluation)
         row = None if evaluation else self._train_row_lazy(rollout_id, sample_index)
@@ -586,19 +589,23 @@ class DumpReader:
         a = max(0, start - prompt_len)
         b = max(0, end - prompt_len)
 
-        def response_slice(values) -> list[float] | None:
-            return None if values is None else [float(v) for v in values[a:b]]
-
-        token_ids = [int(t) for t in columns["tokens"][start:end]]
         # A dump carries no rollout log-prob for positions the loss ignores (tool
         # output, masked turns): the inference engine never generated them, so
-        # 0.0 is stored. Blank the trainer side the same way, otherwise lp_diff
-        # and imp_ratio score a real log-prob against that placeholder and report
-        # a disagreement of tens of nats on tokens that never train.
-        train_log_probs = None if row is None else _zero_masked(row.log_probs, row.loss_mask > 0)
+        # 0.0 is stored and every per-token stat is undefined there. Those
+        # positions serialize as null — a placeholder rendered as 0 (imp_ratio
+        # 1) is indistinguishable from a genuinely small value on a generated
+        # token.
+        mask = None if row is None else row.loss_mask > 0
+
+        def response_slice(values) -> list[float | None] | None:
+            if values is None:
+                return None
+            return [float(values[i]) if mask is None or bool(mask[i]) else None for i in range(a, b)]
+
+        token_ids = [int(t) for t in columns["tokens"][start:end]]
         lp_diff = (
-            train_log_probs - row.rollout_log_probs
-            if row is not None and train_log_probs is not None and row.rollout_log_probs is not None
+            row.log_probs - row.rollout_log_probs
+            if row is not None and row.log_probs is not None and row.rollout_log_probs is not None
             else None
         )
         return dict(
@@ -618,7 +625,7 @@ class DumpReader:
                 else response_slice(row.rollout_log_probs) if row is not None else None
             ),
             loss_mask=None if row is None else [int(v) for v in row.loss_mask[a:b]],
-            train_log_probs=response_slice(train_log_probs),
+            train_log_probs=None if row is None else response_slice(row.log_probs),
             ref_log_probs=None if row is None else response_slice(row.ref_log_probs),
             lp_diff=response_slice(lp_diff),
             imp_ratio=None if lp_diff is None else response_slice(lp_diff.exp()),
@@ -747,13 +754,6 @@ def _masked(values: torch.Tensor | None, mask: torch.Tensor) -> torch.Tensor | N
         return None
     selected = values[mask]
     return selected.float() if selected.numel() else None
-
-
-def _zero_masked(values: torch.Tensor | None, mask: torch.Tensor) -> torch.Tensor | None:
-    """Zero the loss-masked positions of a per-token array, keeping its length so
-    it stays aligned with the token slice it annotates (the token view needs
-    every position; only the summary statistics can drop them)."""
-    return None if values is None else torch.where(mask, values, torch.zeros_like(values))
 
 
 def _mean(values: torch.Tensor | None) -> float | None:
