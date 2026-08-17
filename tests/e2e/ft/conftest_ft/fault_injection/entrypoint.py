@@ -9,6 +9,8 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_injection
 
 API_SERVER_PORT: int = 18080
 MEAN_INTERVAL_SECONDS: float = 60.0
+# A pod deletion, the slowest form, cannot be cancelled and is two kubectl calls bounded at a minute.
+STOP_AND_JOIN_TIMEOUT_SECONDS: float = 180.0
 
 
 class FaultInjectorHandle:
@@ -47,9 +49,9 @@ class FaultInjectorHandle:
     def start(self) -> None:
         self._thread.start()
 
-    def stop_and_join(self, *, timeout_seconds: float) -> None:
+    def stop_and_join(self) -> None:
         self._stop_event.set()
-        self._thread.join(timeout=timeout_seconds)
+        self._thread.join(timeout=STOP_AND_JOIN_TIMEOUT_SECONDS)
         self._observe_final_snapshot()
 
     def _observe_final_snapshot(self) -> None:
