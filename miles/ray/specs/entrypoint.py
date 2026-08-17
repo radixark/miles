@@ -15,6 +15,7 @@ def _compute_all_specs(args) -> list[BaseWorkerSpec]:
         rollout.spec_rollout_executor(args),
         inference.spec_inference_controller(args),
         *inference.specs_router(args),
+        *inference.specs_inference_registration_reporter(args),
         inference.spec_session_server(args),
         *inference.specs_inference_engine(args),
         *train.specs_trainer_controller(args),
