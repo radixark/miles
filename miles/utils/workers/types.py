@@ -26,6 +26,9 @@ class DeployComponent(Enum):
     def deploys_orchestration_script(self) -> bool:
         return self.selects(DeployComponent.PRIMARY)
 
+    def deploys_own_inference_engines(self) -> bool:
+        return self.selects(DeployComponent.INFERENCE)
+
     def is_split(self) -> bool:
         return self is not DeployComponent.ALL
 
