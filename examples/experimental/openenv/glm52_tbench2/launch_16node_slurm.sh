@@ -25,8 +25,7 @@ COMMON="export PYTHONNOUSERSITE=1 RAY_memory_monitor_refresh_ms=0 PYTHONPATH=$MI
 
 nodes=( $(scontrol show hostnames "$SLURM_JOB_NODELIST") )
 # Compute-fabric IP: `hostname -I` ordering varies and the management subnet
-# is not routable between nodes; the prefix is required rather than defaulted
-# because a wrong one costs a silent hang (workers never reach the head GCS).
+# is not routable between nodes; a wrong prefix hangs silently at Ray startup.
 head_ip=$(srun --nodes=1 --ntasks=1 -w "${nodes[0]}" hostname -I | tr ' ' '\n' | grep -E "^$FABRIC_PREFIX" | head -1)
 : "${head_ip:?no address matching $FABRIC_PREFIX on ${nodes[0]}}"
 ngpu_total=$(( ${#nodes[@]} * 4 ))

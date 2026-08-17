@@ -74,14 +74,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
     openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
     openenv_tb2_tasks_dir: str = os.environ.get("OPENENV_TB2_TASKS_DIR", "")
     openenv_daytona_create_concurrency: int = int(os.environ.get("OPENENV_DAYTONA_CREATE_CONCURRENCY", "8"))
-    # jittered-backoff attempts (~30s cap); 8 is ~2 min, short next to a 30-turn episode
+    # jittered-backoff attempts (~30s cap)
     openenv_daytona_create_max_retries: int = int(os.environ.get("OPENENV_DAYTONA_CREATE_MAX_RETRIES", "8"))
     openenv_launcher: str = os.environ.get("OPENENV_LAUNCHER", os.environ.get("USER", "miles"))
     openenv_run_id: str = os.environ.get("OPENENV_RUN_ID", "")
 
     # Eval over a held-out tbench2 split on the shared rollout engines (the
-    # producer pauses for the duration). A dedicated fleet would need GPUs
-    # this 8+8 split has none of. 0 disables.
+    # producer pauses for the duration). 0 disables.
     eval_interval: int = 10
     eval_prompt_data: str = ""  # default: <data_dir>/tbench2_eval.jsonl
     n_samples_per_eval_prompt: int = 2
