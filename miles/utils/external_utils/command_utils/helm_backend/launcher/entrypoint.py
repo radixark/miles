@@ -45,7 +45,7 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import RunFile
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.object_store import ObjectStoreBackend
-from miles.utils.run_uuid import derive_run_uuid
+from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.workers.serving.utils import override_argv, override_env
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 
@@ -65,8 +65,10 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
     namespace = config.namespace
     release = RunNames.release(run_id=run_id, deploy_component=config.deploy_component)
+    installed_manifest = Helm.get_manifest(release, namespace)
+    run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
     env = train_env_vars(request, {}, config=config)
-    pod_argv, args = _compute_train_argv(request, run_id=run_id, release=release, namespace=namespace, env=env)
+    pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
     deploy_component = DeployComponent(args.deploy_component)
     assert deploy_component is config.deploy_component, (
         f"the run's pods are told {deploy_component.value} while everything this launch installs is named after "
@@ -83,7 +85,6 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         _uninstall_leftover_ci_releases(namespace, keep_run_id=run_id)
     Helm.build_dependencies(chart)
 
-    installed_manifest = Helm.get_manifest(release, namespace)
     state_file = (
         _compute_state_file(installed_manifest=installed_manifest, run_directory=run_directory, release=release)
         if deploys_orchestration_script
@@ -183,17 +184,40 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         raise SystemExit(outcome.exit_code)
 
 
+def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifest | None, release: str) -> str:
+    if (given := config.run_uuid) is not None:
+        return validate_run_uuid(given)
+
+    assert not config.deploy_component.is_split(), (
+        f"--deploy-component {config.deploy_component.value} installs one part of a run whose other parts are "
+        f"installed by other launches, and they are joined by nothing but the run uuid, so the layer that deploys "
+        f"them all has to name it with --run-uuid"
+    )
+
+    if installed_manifest is not None:
+        installed = installed_manifest.flag_value(
+            _RUN_UUID_FLAG,
+            stateful_set=RunNames.orchestrator_object(release=release),
+            container=naming.ORCHESTRATOR_COMPONENT,
+        )
+        if installed is not None:
+            return installed
+
+    return generate_run_uuid()
+
+
 def _compute_train_argv(
-    request: ExecuteTrainRequest, *, run_id: str, release: str, namespace: str, env: dict[str, str]
+    request: ExecuteTrainRequest, *, run_uuid: str, release: str, namespace: str, env: dict[str, str]
 ) -> tuple[list[str], Any]:
     argv = [*shlex.split(shell_safe_model_args(request.megatron_model_type)), *shlex.split(request.train_args)]
-    assert not ArgvManipulator.declares(argv, _ENV_REPORT_FLAG), (
+    assert not ArgvManipulator.is_defined(argv, _ENV_REPORT_FLAG), (
         f"{_ENV_REPORT_FLAG} is what this launcher tells the pods about the launch that installed them, and an "
         f"argument of that name outranks it, so the pods would report a launch that never happened; drop it"
     )
-    argv = ArgvManipulator.with_flag(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
-    # TODO: generate different run_uuid even for same run_id, but at the same time allow helm upgrading
-    argv = ArgvManipulator.with_flag(argv, _RUN_UUID_FLAG, derive_run_uuid(run_id))
+    if not ArgvManipulator.is_defined(argv, CLUSTER_BACKEND_FLAG):
+        argv = ArgvManipulator.set(argv, CLUSTER_BACKEND_FLAG, ClusterBackend.KUBERNETES.value)
+    if not ArgvManipulator.is_defined(argv, _RUN_UUID_FLAG):
+        argv = ArgvManipulator.set(argv, _RUN_UUID_FLAG, run_uuid)
 
     with override_argv(argv), override_env(env):
         args = parse_args()
@@ -201,7 +225,7 @@ def _compute_train_argv(
     # TODO: remove after args refactor handles wandb ids
     if args.use_wandb and args.wandb_run_id is None:
         args.wandb_run_id = _generate_wandb_run_id()
-        argv = ArgvManipulator.with_flag(argv, _WANDB_RUN_ID_FLAG, args.wandb_run_id)
+        argv = ArgvManipulator.set(argv, _WANDB_RUN_ID_FLAG, args.wandb_run_id)
 
     pod_argv = MooncakeInfo.with_cluster_master(
         argv, plan=_compute_mooncake_plan(args), host=MooncakeInfo.master_service_host(release, namespace)

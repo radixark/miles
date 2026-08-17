@@ -135,7 +135,7 @@ def get_env_enable_infinite_run():
 
 class ArgvManipulator:
     @staticmethod
-    def values_of(argv: list[str], flag: str) -> list[str]:
+    def get(argv: list[str], flag: str) -> list[str]:
         values: list[str] = []
         for index, token in enumerate(argv):
             if token == flag:
@@ -146,18 +146,14 @@ class ArgvManipulator:
         return values
 
     @staticmethod
-    def declares(argv: list[str], flag: str) -> bool:
+    def is_defined(argv: list[str], flag: str) -> bool:
         return any(token == flag or token.startswith(f"{flag}=") for token in argv)
 
     @staticmethod
-    def with_flag(argv: list[str], flag: str, value: str) -> list[str]:
-        if ArgvManipulator.declares(argv, flag):
-            return list(argv)
-        return [*argv, flag, value]
-
-    @staticmethod
-    def replacing_value(argv: list[str], flag: str, value: str) -> list[str]:
-        assert flag in argv, f"{flag} is not among the arguments, so there is no value of it to replace"
+    def set(argv: list[str], flag: str, value: str) -> list[str]:
+        if not ArgvManipulator.is_defined(argv, flag):
+            return [*argv, flag, value]
+        assert flag in argv, f"{flag} is written as {flag}=..., so there is no value token of it to replace"
         rewritten = list(argv)
         rewritten[rewritten.index(flag) + 1] = value
         return rewritten

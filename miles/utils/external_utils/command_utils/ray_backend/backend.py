@@ -37,9 +37,7 @@ class RayCommandBackend(BaseCommandBackend):
                 f"ray start --head --node-ip-address {master_addr} --num-gpus {request.num_gpus_per_node} --disable-usage-stats"
             )
 
-        if MOONCAKE_BACKEND_NAME in ArgvManipulator.values_of(
-            shlex.split(request.train_args), OBJECT_STORE_BACKEND_FLAG
-        ):
+        if MOONCAKE_BACKEND_NAME in ArgvManipulator.get(shlex.split(request.train_args), OBJECT_STORE_BACKEND_FLAG):
             start_mooncake_master()
 
         for cmd in request.prepare_cmd.values():
