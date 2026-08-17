@@ -1,0 +1,288 @@
+import threading
+from unittest.mock import MagicMock, patch
+
+from tests.e2e.ft.conftest_ft.fault_injection import core, state, views
+from tests.fast.e2e.ft.fault_injection.utils import SERVING, cell, mock_response, staged
+
+
+def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
+    """Regression: a perpetually-stale 'all healthy' view yields at most one kill (2 cells)."""
+    cell_names = ["actor-0", "actor-1"]
+    injected: list[str] = []
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 6:
+            stop_event.set()
+        # Worst case: the injected cell's death is never detected (every cell always Healthy).
+        return mock_response({"items": [cell(n, healthy=True) for n in cell_names]})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+        return mock_response({})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        mock_requests.post.side_effect = fake_post
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-6,
+            stop_event=stop_event,
+            on_successful_injection=lambda: None,
+            cell_type=None,
+            event_log=state.EventLog(),
+            poll_interval_seconds=1e-6,
+        )
+
+    assert len(injected) == 1, f"expected at most one injection, got {injected}"
+
+
+def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
+    """Polling tracks a cell's down->up cycle between injections, so a second injection follows."""
+    cell_names = ["actor-0", "actor-1"]
+    injected: list[str] = []
+    stop_event = threading.Event()
+    down = {"name": None, "polls_left": 0}
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if len(injected) >= 2 or polls["n"] >= 100:
+            stop_event.set()
+        items = [cell(n, healthy=not (down["name"] == n and down["polls_left"] > 0)) for n in cell_names]
+        if down["polls_left"] > 0:
+            down["polls_left"] -= 1
+        return mock_response({"items": items})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        name = url.rsplit("/cells/", 1)[1].split("/")[0]
+        injected.append(name)
+        down["name"], down["polls_left"] = name, 3  # crashed cell reads unhealthy for a few polls, then heals
+        return mock_response({})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        mock_requests.post.side_effect = fake_post
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-6,
+            stop_event=stop_event,
+            on_successful_injection=lambda: None,
+            cell_type=None,
+            event_log=state.EventLog(),
+            poll_interval_seconds=1e-6,
+        )
+
+    assert len(injected) >= 2, f"expected a second injection after recovery, got {injected}"
+
+
+def _typed_cell(name: str, cell_type: str, *, healthy: bool = True) -> dict:
+    return cell(name, healthy=healthy, cell_type=cell_type)
+
+
+def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> list[str]:
+    injected: list[str] = []
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 6:
+            stop_event.set()
+        return mock_response({"items": cells})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+        return mock_response({})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        mock_requests.post.side_effect = fake_post
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-6,
+            stop_event=stop_event,
+            on_successful_injection=lambda: None,
+            cell_type=cell_type,
+            event_log=state.EventLog(),
+            poll_interval_seconds=1e-6,
+        )
+
+    return injected
+
+
+def test_injection_can_be_restricted_to_one_kind_of_cell() -> None:
+    """Rollout and trainer cells share one api server, so a run targets one kind at a time."""
+    injected = _run_typed_injection_loop(
+        [
+            _typed_cell("actor-0", "actor"),
+            _typed_cell("actor-1", "actor"),
+            _typed_cell("rollout-engine-0", "rollout"),
+            _typed_cell("rollout-engine-1", "rollout"),
+        ],
+        cell_type="rollout",
+    )
+
+    assert injected
+    assert all(name.startswith("rollout-") for name in injected), injected
+
+
+def test_the_live_replica_count_only_considers_the_targeted_kind() -> None:
+    """A single rollout cell must not be killed just because trainer cells are also alive."""
+    injected = _run_typed_injection_loop(
+        [
+            _typed_cell("actor-0", "actor"),
+            _typed_cell("actor-1", "actor"),
+            _typed_cell("rollout-engine-0", "rollout"),
+        ],
+        cell_type="rollout",
+    )
+
+    assert injected == []
+
+
+def test_an_untyped_run_sees_every_cell() -> None:
+    """A mixed-ft soak declares no cell type, and must be able to crash either kind."""
+    injected = _run_typed_injection_loop(
+        [
+            _typed_cell("actor-0", "actor"),
+            _typed_cell("actor-1", "actor"),
+            _typed_cell("rollout-engine-0", "rollout"),
+            _typed_cell("rollout-engine-1", "rollout"),
+        ],
+        cell_type=None,
+    )
+
+    assert injected
+
+
+def test_an_untyped_run_still_keeps_one_replica_of_each_kind() -> None:
+    """Counting kinds together would let the trainer cells license killing the last engine."""
+    injected = _run_typed_injection_loop(
+        [
+            _typed_cell("actor-0", "actor"),
+            _typed_cell("actor-1", "actor"),
+            _typed_cell("rollout-engine-0", "rollout"),
+        ],
+        cell_type=None,
+    )
+
+    assert all(name.startswith("actor-") for name in injected), injected
+
+
+class TestFaultInjectionLoopErrorHandling:
+    def test_list_cells_failure_is_retried_without_recording_recovery(self) -> None:
+        """A transient outage after injection must preserve pending recovery debt and retry."""
+        cells = [staged("rollout-engine-0", SERVING), staged("rollout-engine-1", SERVING)]
+        log = state.EventLog()
+        injected: list[str] = []
+        debt_around_failure: list[dict[str, int]] = []
+        stop_event = threading.Event()
+        polls = {"n": 0}
+
+        def fake_get(url: str, timeout: float) -> MagicMock:
+            polls["n"] += 1
+            if polls["n"] in {2, 3}:
+                debt_around_failure.append(
+                    views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout")
+                )
+            if polls["n"] == 2:
+                raise RuntimeError("api server unreachable")
+            if polls["n"] >= 6:
+                stop_event.set()
+            return mock_response({"items": cells})
+
+        def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+            injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+            return mock_response({})
+
+        with patched_requests() as mock_requests:
+            mock_requests.get.side_effect = fake_get
+            mock_requests.post.side_effect = fake_post
+            core.run_fault_injection_loop(
+                base_url="http://control",
+                seed=0,
+                mean_interval_seconds=1e-12,
+                stop_event=stop_event,
+                on_successful_injection=lambda: None,
+                cell_type=None,
+                event_log=log,
+                cell_fault_forms=api_server_fault_forms(),
+                poll_interval_seconds=1e-6,
+            )
+
+        assert len(injected) == 1, injected
+        expected_debt: dict[str, int] = {injected[0]: 1}
+        assert debt_around_failure == [expected_debt, expected_debt]
+        assert views.compute_states_of_cell_name(log.events) == {
+            "rollout-engine-0": [SERVING],
+            "rollout-engine-1": [SERVING],
+        }
+        assert views.compute_num_injections(log.events, cell_type="rollout") == 1
+        assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
+        assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == expected_debt
+
+    def test_failed_fault_post_is_not_counted_and_is_retried(self) -> None:
+        """A rejected inject-fault call must leave the soak free to try again, and must not inflate the tally."""
+        cells = [staged("rollout-engine-0", SERVING), staged("rollout-engine-1", SERVING)]
+        log = state.EventLog()
+        attempts: list[str] = []
+        successes = {"n": 0}
+        stop_event = threading.Event()
+        polls = {"n": 0}
+
+        def fake_get(url: str, timeout: float) -> MagicMock:
+            polls["n"] += 1
+            if polls["n"] >= 5:
+                stop_event.set()
+            return mock_response({"items": cells})
+
+        def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+            attempts.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+            if len(attempts) == 1:
+                raise RuntimeError("inject-fault refused")
+            stop_event.set()
+            return mock_response({})
+
+        def note_success() -> None:
+            successes["n"] += 1
+
+        with patched_requests() as mock_requests:
+            mock_requests.get.side_effect = fake_get
+            mock_requests.post.side_effect = fake_post
+            core.run_fault_injection_loop(
+                base_url="http://control",
+                seed=0,
+                mean_interval_seconds=1e-6,
+                stop_event=stop_event,
+                on_successful_injection=note_success,
+                cell_type=None,
+                event_log=log,
+                cell_fault_forms=api_server_fault_forms(),
+                poll_interval_seconds=1e-6,
+            )
+
+        assert len(attempts) == 2, attempts
+        assert successes["n"] == 1
+        assert views.compute_num_injections(log.events, cell_type="rollout") == 1
+
+
+class TestUntypedInjectionSelection:
+    def test_untyped_run_injects_rollout_when_only_rollout_has_a_spare(self) -> None:
+        """The mirror of the trainer case: untyped selection must not be hard-coded to actor cells."""
+        injected = _run_typed_injection_loop(
+            [
+                _typed_cell("actor-0", "actor"),
+                _typed_cell("rollout-engine-0", "rollout"),
+                _typed_cell("rollout-engine-1", "rollout"),
+            ],
+            cell_type=None,
+        )
+
+        assert injected
+        assert all(name.startswith("rollout-engine-") for name in injected), injected
