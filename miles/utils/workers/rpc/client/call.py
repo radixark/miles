@@ -67,7 +67,7 @@ class RpcCall:
         log_structured(logger.debug, op="call", phase="start", **self._log_fields, args=sorted(self._kwargs))
 
         started_at = time.monotonic()
-        await self._submit()
+        await self.submit()
         outcome = await self._poll_until_done()
         elapsed = time.monotonic() - started_at
 
@@ -77,7 +77,7 @@ class RpcCall:
             raise RpcWorkerCallError(f"{self._method_label} failed remotely:\n{outcome.error}")
         return self._spec.serializer.decode_result(outcome.result)
 
-    async def _submit(self) -> None:
+    async def submit(self) -> None:
         request = SubmitRequest(call_id=self._call_id, query=self._query)
 
         try:
