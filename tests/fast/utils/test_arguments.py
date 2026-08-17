@@ -20,6 +20,7 @@ from miles.utils.arguments import (
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
+    _resolve_run_uuid,
     _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -783,6 +784,39 @@ class TestDeployComponent:
                     ]
                 )
             )
+
+
+class TestRunUuidOfASplitRun:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args([*extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+
+    def test_a_ray_split_launch_has_to_be_told_the_run_uuid(self):
+        """Each launch would otherwise invent its own, and the handshake would refuse the other deployment."""
+        args = self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer"])
+
+        with pytest.raises(AssertionError, match="--run-uuid"):
+            _resolve_run_uuid(args)
+
+    def test_a_ray_split_launch_that_was_told_one_keeps_it(self):
+        """The two launches are joined by nothing else, so the value has to survive verbatim."""
+        args = self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", "--run-uuid", "0123456789abcdef"])
+
+        assert _resolve_run_uuid(args) == "0123456789abcdef"
+
+    def test_an_unsplit_run_still_invents_its_own(self):
+        """One launch is the whole run, so nothing else has to agree with it."""
+        args = self._parse([])
+
+        assert len(_resolve_run_uuid(args)) == RUN_UUID_LENGTH
+
+    def test_a_kubernetes_split_launch_has_to_be_told_it_too(self):
+        """Its launcher is given the uuid and stamps it on every part, so no backend mints one of its own."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--deploy-component", "trainer"])
+
+        with pytest.raises(AssertionError, match="--run-uuid"):
+            _resolve_run_uuid(args)
 
 
 class TestEvalSglangOverrides:

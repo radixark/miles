@@ -37,6 +37,7 @@ class ExecuteTrainConfig:
     cluster_backend: ClusterBackend = ClusterBackend.RAY
     deploy_component: DeployComponent = DeployComponent.ALL
     run_id: str = field(default_factory=create_run_id)
+    run_uuid: str | None = None
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
     skip_upgrade_check: bool = False
@@ -107,7 +108,7 @@ class BaseCommandBackend(ABC):
             train_script = f"{repo_base_dir}/{train_script}"
 
         train_argv = shlex.split(train_args)
-        train_backend_fsdp = "fsdp" in ArgvManipulator.values_of(train_argv, "--train-backend")
+        train_backend_fsdp = "fsdp" in ArgvManipulator.get(train_argv, "--train-backend")
         assert train_backend_fsdp == (megatron_model_type is None)
         _assert_train_args_name_no_other_backend(train_argv, cluster_backend=self.config.cluster_backend.value)
         _assert_train_args_name_no_other_deploy_component(
@@ -262,7 +263,7 @@ def resolve_hardware(config: ExecuteTrainConfig) -> str:
 
 
 def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, deploy_component: str) -> None:
-    conflicting = sorted(set(ArgvManipulator.values_of(train_argv, _DEPLOY_COMPONENT_FLAG)) - {deploy_component})
+    conflicting = sorted(set(ArgvManipulator.get(train_argv, _DEPLOY_COMPONENT_FLAG)) - {deploy_component})
     assert not conflicting, (
         f"This launch deploys the {deploy_component} part of the run, and everything it installs is named after "
         f"that, so its pods cannot be told {_DEPLOY_COMPONENT_FLAG} {conflicting}; set "
@@ -271,7 +272,7 @@ def _assert_train_args_name_no_other_deploy_component(train_argv: list[str], *, 
 
 
 def _declared_cluster_backends(train_argv: list[str]) -> list[str]:
-    return ArgvManipulator.values_of(train_argv, CLUSTER_BACKEND_FLAG)
+    return ArgvManipulator.get(train_argv, CLUSTER_BACKEND_FLAG)
 
 
 def _assert_train_args_name_no_other_backend(train_argv: list[str], *, cluster_backend: str) -> None:

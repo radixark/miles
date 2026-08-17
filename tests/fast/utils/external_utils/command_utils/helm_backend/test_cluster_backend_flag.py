@@ -18,20 +18,21 @@ from miles.utils.external_utils.command_utils.common import ArgvManipulator
 from miles.utils.external_utils.command_utils.helm_backend.backend import KubernetesCommandBackend
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan, MooncakeInfo
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
-from miles.utils.run_uuid import derive_run_uuid
+from miles.utils.run_uuid import RUN_UUID_LENGTH
 from miles.utils.workers.types import ClusterBackend, DeployComponent
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec
 
 
 def declared_cluster_backends(argv: list[str]) -> list[str]:
-    return ArgvManipulator.values_of(argv, CLUSTER_BACKEND_FLAG)
+    return ArgvManipulator.get(argv, CLUSTER_BACKEND_FLAG)
 
 
 def declared_deploy_components(argv: list[str]) -> list[str]:
-    return ArgvManipulator.values_of(argv, _DEPLOY_COMPONENT_FLAG)
+    return ArgvManipulator.get(argv, _DEPLOY_COMPONENT_FLAG)
 
 
 NAMESPACE = "rl"
@@ -43,11 +44,15 @@ def _release(deploy_component: DeployComponent = DeployComponent.ALL) -> str:
     return ReleaseName(run_id=RUN_ID, deploy_component=deploy_component, deploy_instance_id=None).serialize()
 
 
+SPLIT_RUN_UUID = "0123456789abcdef"
+
+
 def _config(run_id: str = RUN_ID, deploy_component: DeployComponent = DeployComponent.ALL) -> ExecuteTrainConfig:
     return ExecuteTrainConfig(
         cluster_backend=ClusterBackend.KUBERNETES,
         namespace=NAMESPACE,
         run_id=run_id,
+        run_uuid=SPLIT_RUN_UUID if deploy_component.is_split() else None,
         deploy_component=deploy_component,
     )
 
@@ -212,17 +217,25 @@ class TestARunIsNamedBeforeAnythingIsInstalled:
 
 
 class TestEveryPodOfARunSharesOneRunUuid:
-    def test_the_launcher_stamps_the_uuid_the_run_id_derives(self, monkeypatch: pytest.MonkeyPatch):
+    def test_the_launcher_stamps_one_uuid_on_every_pod(self, monkeypatch: pytest.MonkeyPatch):
         """Left unset, every pod mints its own uuid at parse time and nothing about the run can be joined up."""
         argv = launch_argv(monkeypatch, train_args="--rollout-num-gpus 8")
 
-        assert ArgvManipulator.values_of(argv, "--run-uuid") == [derive_run_uuid(RUN_ID)]
+        [stamped] = ArgvManipulator.get(argv, "--run-uuid")
+        assert len(stamped) == RUN_UUID_LENGTH
+
+    def test_two_launches_of_one_run_id_are_two_trainings(self, monkeypatch: pytest.MonkeyPatch):
+        """A run id is reused to resume, so deriving the uuid from it would let a stale deployment pass the handshake."""
+        first = launch_argv(monkeypatch, train_args="--rollout-num-gpus 8")
+        second = launch_argv(monkeypatch, train_args="--rollout-num-gpus 8")
+
+        assert ArgvManipulator.get(first, "--run-uuid") != ArgvManipulator.get(second, "--run-uuid")
 
     def test_a_uuid_the_train_args_already_carry_is_left_alone(self, monkeypatch: pytest.MonkeyPatch):
         """Relaunching from a recorded command line must keep the uuid its artefacts were written under."""
         argv = launch_argv(monkeypatch, train_args="--run-uuid 0123456789abcdef --rollout-num-gpus 8")
 
-        assert ArgvManipulator.values_of(argv, "--run-uuid") == ["0123456789abcdef"]
+        assert ArgvManipulator.get(argv, "--run-uuid") == ["0123456789abcdef"]
 
 
 class TestThePodDispatchesOnThatFlag:
@@ -326,3 +339,51 @@ def _values_of_release(train_argv: list[str], *, run_id: str, release: str) -> d
             worker_argv=train_argv,
         ),
     ).as_values()
+
+
+_INSTALLED_MANIFEST = """
+kind: StatefulSet
+metadata:
+  name: miles-run-260101-000000-000-all-orchestrator
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: orchestrator
+          command: ["python", "train.py", "--run-uuid", "aaaabbbbccccdddd"]
+"""
+
+
+class TestTheRunUuidALaunchStamps:
+    def test_a_split_launch_has_to_be_given_one(self):
+        """The parts of a run are joined by nothing else, so a launcher inventing one would split the run in two."""
+        config = _config(deploy_component=DeployComponent.TRAINER)
+        config.run_uuid = None
+
+        with pytest.raises(AssertionError, match="--run-uuid"):
+            entrypoint._resolve_run_uuid(config, installed_manifest=None, release=_release(DeployComponent.TRAINER))
+
+    def test_a_split_launch_keeps_the_one_it_was_given(self):
+        """It is the value the layer deploying every part chose, and changing it would fail the handshake."""
+        config = _config(deploy_component=DeployComponent.TRAINER)
+
+        assert (
+            entrypoint._resolve_run_uuid(config, installed_manifest=None, release=_release(DeployComponent.TRAINER))
+            == SPLIT_RUN_UUID
+        )
+
+    def test_a_first_install_mints_one(self):
+        """A single deployment is the whole run, so nothing outside it has to agree on the value."""
+        stamped = entrypoint._resolve_run_uuid(_config(), installed_manifest=None, release=_release())
+
+        assert len(stamped) == RUN_UUID_LENGTH
+
+    def test_an_upgrade_in_place_keeps_the_uuid_the_pods_already_carry(self):
+        """Resizing is the same training, and a fresh uuid would change every pod argv and trip the upgrade guard."""
+        installed = Manifest.parse(_INSTALLED_MANIFEST, namespace=NAMESPACE)
+
+        assert (
+            entrypoint._resolve_run_uuid(_config(), installed_manifest=installed, release=_release())
+            == "aaaabbbbccccdddd"
+        )

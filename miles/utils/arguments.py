@@ -3073,6 +3073,19 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
     return bool(args.ft_components) and args.api_server_port != 0
 
 
+def _resolve_run_uuid(args: argparse.Namespace) -> str:
+    if (given := args.run_uuid) is not None:
+        return validate_run_uuid(given)
+
+    component = DeployComponent(args.deploy_component)
+    assert not component.is_split(), (
+        f"--deploy-component {component.value} installs one part of a run whose other parts are installed by other "
+        f"launches, and nothing but the run uuid joins them, so the layer that deploys them all has to name it "
+        f"with --run-uuid"
+    )
+    return generate_run_uuid()
+
+
 def miles_validate_args(args):
     if args.custom_config_path:
         data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
@@ -3724,7 +3737,7 @@ def miles_validate_args(args):
         ):
             args.mooncake_store_init_kwargs = compute_mooncake_init_kwargs()
 
-    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
+    args.run_uuid = _resolve_run_uuid(args)
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

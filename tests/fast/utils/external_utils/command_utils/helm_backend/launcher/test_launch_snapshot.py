@@ -22,6 +22,7 @@ SNAPSHOT_DIR = REPO_ROOT / "tests" / "snapshots" / "helm_backend"
 
 FROZEN_RUN_ID = "260101-000000-000"
 FROZEN_LAUNCH_TOKEN = "260101-000000-000001"
+FROZEN_RUN_UUID = "f52ecf8e9d7d4889"
 NAMESPACE = "rl"
 PYTHON_PLACEHOLDER = "<PYTHON>"
 
@@ -138,6 +139,7 @@ def record_launch(monkeypatch, sandbox: Path, **request_overrides) -> list[str]:
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
     monkeypatch.setattr(naming, "_new_launch_token", lambda: FROZEN_LAUNCH_TOKEN)
+    monkeypatch.setattr(entrypoint, "generate_run_uuid", lambda: FROZEN_RUN_UUID)
 
     _stub_launch_inputs(monkeypatch, specs=[_router(), _engine(), _trainer()])
 
