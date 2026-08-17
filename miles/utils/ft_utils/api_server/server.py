@@ -30,7 +30,7 @@ def start_api_server(
     *,
     args,
     trainer_models: dict[str, BaseWorkerHandle],
-    inference_controller: BaseWorkerHandle,
+    inference_controller: BaseWorkerHandle | None,
     host: str = "127.0.0.1",
     port: int,
     ft_components: list[str],
@@ -49,6 +49,10 @@ def start_api_server(
         )
 
     if "rollout" in ft_components:
+        assert inference_controller is not None, (
+            "rollout cells are suspended and resumed through the inference controller, so a deployment that runs "
+            "none of its own cannot answer for them"
+        )
         handlers.append(
             _CellHandler(
                 cell_type="rollout",
