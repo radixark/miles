@@ -66,13 +66,13 @@ class TestAssertHealing:
     def test_rollout_soak_rejects_unfinished_engine_recovery(self, tmp_path: Path) -> None:
         """A rollout-only soak that ends with an accepted injection still relaunching must fail."""
         injector = _injector(cell_type="rollout", num_successful_injections=2)
-        witness = injector.recovery_witness
-        witness.observe([_rollout_cell(fi.ObservedCellState.SERVING)])
-        witness.note_injected(_ROLLOUT_CELL_NAME)
-        witness.observe([_rollout_cell(fi.ObservedCellState.PENDING)])
-        witness.observe([_rollout_cell(fi.ObservedCellState.SERVING)])
-        witness.note_injected(_ROLLOUT_CELL_NAME)
-        witness.observe([_rollout_cell(fi.ObservedCellState.PENDING)])
+        log = injector.event_log
+        log.observe([_rollout_cell(fi.ObservedCellState.SERVING)])
+        log.note_injected(_ROLLOUT_CELL_NAME)
+        log.observe([_rollout_cell(fi.ObservedCellState.PENDING)])
+        log.observe([_rollout_cell(fi.ObservedCellState.SERVING)])
+        log.note_injected(_ROLLOUT_CELL_NAME)
+        log.observe([_rollout_cell(fi.ObservedCellState.PENDING)])
 
         with pytest.raises(AssertionError, match="Rollout recovery witness failed"):
             assert_healing(_mode("rollout"), injector=injector, dump_dir=str(tmp_path))
