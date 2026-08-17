@@ -1,12 +1,12 @@
-"""Qwen3 / Qwen3.5 / Qwen3.6 dense GRPO training script.
+"""Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3.8 dense GRPO training script.
 
 =====================
 
 One recipe covers the whole dense line. The variants differ only in tensor parallelism,
 the dynamic-batch token budget, the SGLang engine size and memory fraction, whether the
 optimizer state is offloaded to host RAM, and the default rollout count. Everything else
--- rollout dataset, GRPO constants, optimizer schedule, eval -- is shared. Qwen3.6-27B is
-architecturally identical to Qwen3.5-27B and takes the same knobs.
+-- rollout dataset, GRPO constants, optimizer schedule, eval -- is shared. Qwen3.6-27B and
+Qwen3.8-27B are architecturally identical to Qwen3.5-27B and take the same knobs.
 
 The checkpoint must already be converted to Megatron `torch_dist`; this script only
 submits the training job.
@@ -47,6 +47,7 @@ _MODEL_NAMES = Literal[
     "Qwen3.5-9B",
     "Qwen3.5-27B",
     "Qwen3.6-27B",
+    "Qwen3.8-27B",
 ]
 
 
@@ -85,6 +86,7 @@ _RECIPES: dict[str, _Recipe] = {
     "Qwen3.5-9B": _Recipe("qwen3.5-9B", 2, 9216, 1, 0.6, False),
     "Qwen3.5-27B": _Recipe("qwen3.5-27B", 4, 8192, 1, 0.5, True),
     "Qwen3.6-27B": _Recipe("qwen3.6-27B", 4, 8192, 1, 0.5, True),
+    "Qwen3.8-27B": _Recipe("qwen3.8-27B", 4, 8192, 1, 0.8, True),
 }
 
 

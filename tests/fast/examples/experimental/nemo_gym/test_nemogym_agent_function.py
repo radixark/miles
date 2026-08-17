@@ -1,9 +1,8 @@
 """Offline unit tests for the NeMo Gym adapter (no network, no GPU).
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the adapter:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/nemo-gym/tests/ -q
+    pytest tests/fast/examples/experimental/nemo_gym -q
 
 Covers the /run request contract the mini_swe_agent_2 server expects (instance
 fields at the top level, policy_base_url override, sampling mapped onto
@@ -13,12 +12,9 @@ responses_create_params), the response mapping, and the failure semantics
 
 import asyncio
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import download_and_process_data  # noqa: E402
-import nemogym_agent_function as naf  # noqa: E402
+import download_and_process_data
+import nemogym_agent_function as naf
 
 
 def run_async(coro):

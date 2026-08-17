@@ -1,9 +1,8 @@
 """Offline unit tests for the shared sandbox layer (no network, no GPU).
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the adapter:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 
 Covers what every backend inherits, so it is proven once rather than once per
 provider:
@@ -25,15 +24,13 @@ import logging
 import sys
 import threading
 from contextlib import asynccontextmanager
-from pathlib import Path
 
+import openenv_agent_function as oaf
+import openenv_sandbox_common as common
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import openenv_agent_function as oaf  # noqa: E402
-import openenv_sandbox_common as common  # noqa: E402
-from test_openenv_agent_function import _CLASSES, _FakeEnv, _FakePolicy, _FakeResult  # noqa: E402
+from . import EXAMPLE_DIR
+from .test_openenv_agent_function import _CLASSES, _FakeEnv, _FakePolicy, _FakeResult
 
 logger = logging.getLogger("test-backend")
 
@@ -100,7 +97,7 @@ def test_every_registered_backend_names_an_importable_target():
         module, _, func = path.rpartition(".")
         assert func == "run", backend
         assert module == common.AGENT_MODULES[backend], backend
-        assert (Path(__file__).resolve().parent.parent / f"{module}.py").is_file(), backend
+        assert (EXAMPLE_DIR / f"{module}.py").is_file(), backend
 
 
 @pytest.mark.parametrize("name", sorted(common.AGENT_MODULES))
@@ -121,8 +118,7 @@ def test_operator_facing_help_names_every_backend(name):
     it is generated from the registry where it can be, and asserted where it
     cannot."""
     assert name in common.backend_names()
-    root = Path(__file__).resolve().parent.parent
-    assert name in (root / "eval_tbench2_via_api.py").read_text().split('"""')[1]
+    assert name in (EXAMPLE_DIR / "eval_tbench2_via_api.py").read_text().split('"""')[1]
 
 
 def test_backend_knobs_read_the_providers_own_prefix(monkeypatch):

@@ -1,10 +1,9 @@
 """Tests for the E2B sandbox half: template aliasing, key supply, and the
 orphan-TTL keepalive lifecycle.
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the recipe:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 """
 
 import concurrent.futures
@@ -16,8 +15,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import tb2_sandbox_e2b as sandbox  # noqa: E402
+import tb2_sandbox_e2b as sandbox
 
 
 # --- template aliasing -------------------------------------------------------

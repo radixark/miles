@@ -20,12 +20,14 @@ A test declares its labels: `register_cuda_ci(..., labels=["megatron"])`. The PR
 
 | Test declares | Runs when |
 |---|---|
-| `labels=[]` (or omitted) | every run whose cadence admits the test (always-on within that cadence) |
+| CPU `labels=[]` (or omitted) | every run whose cadence admits the test (always-on within that cadence) |
 | `labels=["megatron"]` | PR has `run-ci-megatron` |
 | `labels=["sglang"]` | PR has `run-ci-sglang` |
 | `labels=["fsdp", "lora"]` | PR has `run-ci-fsdp` or `run-ci-lora` |
 
 PR labels without the `run-ci-` prefix are ignored.
+
+CUDA and ROCm registrations must declare at least one domain label. GPU runners are scarce and expensive, so an always-on GPU test would defeat the purpose of selecting only the GPU coverage a PR requests.
 
 ### The canonical label list
 
@@ -55,7 +57,7 @@ Release and weekly have the same selection and fast-fail policy. Release is sepa
 
 Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > weekly/release full scope > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; regular cadence still does not admit `nightly=True` registrations.
 
-The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 15 * * 0-5`, and weekly by `0 15 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels, so it receives only the ordinary always-on scope; its operation inputs do not imply all, nightly, weekly, or release. A called workflow instead supplies its cadence explicitly, which is how `release-branch-cut.yml` selects release.
+The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 15 * * 0-5`, and weekly by `0 15 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels; the GPU workflow commands explicitly add `--match-all-labels` so that operation runs the full regular GPU suites without changing cadence. A called workflow instead supplies its cadence explicitly, which is how `release-branch-cut.yml` selects release.
 
 A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
 
@@ -63,9 +65,10 @@ A domain label explicitly requested on the PR wins over a scope subtraction: `ru
 
 ## Registration and scan scope
 
-Labels are optional; registration is not. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
+Labels are optional for CPU registrations and required for GPU registrations; registration itself is not optional. The runner scans `tests/fast`, `tests/fast-gpu`, `tests/e2e`, `tests/ci` recursively for `test_*.py`. Every file must resolve to a registration or collection fails:
 
 - A file outside `tests/fast/` with no `register_*_ci()` call → `No CI registry found`.
+- A CUDA or ROCm registration with missing, `None`, or empty `labels` → `labels ... must contain at least one domain label`.
 - A `labels=[...]` value not in `KNOWN_LABELS` → `unknown labels [...]`.
 
 ## `tests/fast/` auto-registers as CPU

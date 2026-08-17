@@ -1,9 +1,8 @@
 """Offline unit tests for the openenv tbench2 adapter (no network, no GPU).
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the adapter:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 
 Covers the shared-server leg of the agent loop (this module's run_episode):
 its exec form, scoring path, and cleanup. The sandbox leg's dispatch and
@@ -12,12 +11,9 @@ below are shared with it.
 """
 
 import asyncio
-import sys
 import types
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import openenv_agent_function as oaf  # noqa: E402
+import openenv_agent_function as oaf
 
 
 def run_async(coro):

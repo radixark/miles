@@ -116,6 +116,13 @@
         "pages": [
          "models/qwen/index",
          {
+          "group": "Qwen3.8",
+          "pages": [
+           "models/qwen/qwen3-8"
+          ],
+          "expanded": false
+         },
+         {
           "group": "Qwen3.6",
           "pages": [
            "models/qwen/qwen3-6",

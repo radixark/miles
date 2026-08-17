@@ -18,7 +18,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=600,                  # rough seconds the test takes; used to balance + time-out
     suite="stage-c-4-gpu-h200",    # which hardware bucket runs it (table below)
-    labels=["megatron"],           # see "Will it run on my PR?"; use [] for always-on
+    labels=["megatron"],           # required; see "Will it run on my PR?"
 )
 ```
 
@@ -51,9 +51,7 @@ If your file does **not** show up, check, in order:
 
 ### Will it run on my PR?
 
-`labels` gates *which PRs* trigger your test within its eligible cadence:
-
-- `labels=[]` (or omitted) → **always-on** within the eligible cadence; with the default `nightly=False`, this includes every PR.
+`labels` gates *which PRs* trigger your test within its eligible cadence. GPU registrations require at least one domain label:
 - `labels=["megatron"]` → runs only when the PR carries the GitHub label **`run-ci-megatron`** (the `run-ci-` prefix is added on the PR side). This keeps the heavy GPU matrix off unrelated PRs.
 
 Cadence is independent of labels: `nightly=True` excludes a registration from regular cadence, while nightly, weekly, and release runs include both ordinary and `nightly=True` registrations.

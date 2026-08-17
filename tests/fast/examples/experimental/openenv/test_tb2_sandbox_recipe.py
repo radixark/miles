@@ -1,19 +1,16 @@
 """Tests for the per-task sandbox recipe's verifier-asset hygiene.
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the recipe:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 """
 
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import tb2_sandbox_recipe as recipe  # noqa: E402
+import tb2_sandbox_recipe as recipe
 
 
 def _make_tasks_repo(root: Path, task_name: str = "some-task") -> Path:

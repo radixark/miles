@@ -66,6 +66,7 @@ def test_trigger_facts_resolve_to_stable_workflow_outputs(
     assert policy.cadence == cadence
     assert policy.raw_labels == raw_labels
     assert policy.bypass_fastfail is bypass_fastfail
+    assert policy.skipped_stages == ()
 
 
 @pytest.mark.parametrize("labels_json", ["{", "{}", "null", '["run-ci-megatron", 1]'])
@@ -108,13 +109,14 @@ def test_weekly_schedule_resolves_to_independent_full_policy():
     [
         (
             "[]",
-            "existing=value\ncadence=regular\nraw_labels=\nbypass_fastfail=false\n",
+            "existing=value\ncadence=regular\nraw_labels=\nbypass_fastfail=false\nskipped_stages=[]\n",
         ),
         (
             '["run-ci-megatron", "nightly", "run-ci-megatron", "ignored"]',
             "existing=value\ncadence=nightly\n"
             "raw_labels=run-ci-megatron nightly run-ci-megatron\n"
-            "bypass_fastfail=true\n",
+            "bypass_fastfail=true\n"
+            "skipped_stages=[]\n",
         ),
     ],
 )

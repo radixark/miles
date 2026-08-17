@@ -1,9 +1,8 @@
 """Offline unit tests for the launcher's sandbox-credential wiring.
 
-Not collected by the repo-level pytest run (testpaths = ./tests); run manually
-when touching the launcher:
+Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 
-    pytest examples/experimental/openenv/tests/ -q
+    pytest tests/fast/examples/experimental/openenv -q
 
 The launcher is the only place that can turn a missing credential into a
 launch-time error instead of a rollout that aborts every sample and refills
@@ -12,14 +11,9 @@ either supply (file path or worker env), and treat a partially-supplied
 credential (Modal's token pair) as missing rather than usable.
 """
 
-import sys
-from pathlib import Path
-
+import openenv_launch_common as launch
+import openenv_sandbox_common as common
 import pytest
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import openenv_launch_common as launch  # noqa: E402
-import openenv_sandbox_common as common  # noqa: E402
 
 _SPEC_KEYS = {
     "provider",
