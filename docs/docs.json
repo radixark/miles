@@ -1,405 +1,457 @@
 {
- "$schema": "https://mintlify.com/docs.json",
- "name": "Miles",
- "description": "Miles is an open-source reinforcement learning framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.",
- "theme": "mint",
- "logo": {
-  "light": "/assets/images/brand/miles_logo_light.png",
-  "dark": "/assets/images/brand/miles_logo_dark.png",
-  "href": "/",
-  "width": 130
- },
- "favicon": "/assets/images/brand/miles_square.png",
- "seo": {
-  "metatags": {
-   "og:site_name": "Miles Documentation"
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "Miles",
+  "description": "Miles is an open-source reinforcement learning framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.",
+  "theme": "mint",
+  "logo": {
+    "light": "/assets/images/brand/miles_logo_light.png",
+    "dark": "/assets/images/brand/miles_logo_dark.png",
+    "href": "/",
+    "width": 130
   },
-  "organization": {
-   "name": "RadixArk",
-   "url": "https://www.radixark.com",
-   "sameAs": [
-    "https://github.com/radixark"
-   ]
-  }
- },
- "colors": {
-  "primary": "#d55816",
-  "light": "#e8722a",
-  "dark": "#b84a12"
- },
- "navbar": {
-  "links": [
-   {
-    "type": "github",
-    "href": "https://github.com/radixark/miles"
-   }
-  ]
- },
- "navigation": {
-  "tabs": [
-   {
-    "tab": "User Guide",
-    "pages": [
-     {
-      "group": "Welcome",
-      "pages": [
-       "index",
-       "getting-started/index",
-       "getting-started/installation",
-       "getting-started/quick-start"
+  "favicon": "/assets/images/brand/miles_square.png",
+  "seo": {
+    "metatags": {
+      "og:site_name": "Miles Documentation"
+    },
+    "organization": {
+      "name": "RadixArk",
+      "url": "https://www.radixark.com",
+      "sameAs": [
+        "https://github.com/radixark"
       ]
-     },
-     {
-      "group": "User Guide",
-      "pages": [
-       "user-guide/index",
-       "user-guide/concepts",
-       "user-guide/launch-script",
-       "user-guide/argument-groups",
-       "user-guide/fully-async",
-       "user-guide/training-backend",
-       "user-guide/monitoring",
-       "user-guide/dashboard",
-       "user-guide/customization",
-       "user-guide/generate-endpoint",
-       "user-guide/agentic-rollout",
-       {
-        "group": "Agentic Environments",
+    }
+  },
+  "colors": {
+    "primary": "#d55816",
+    "light": "#e8722a",
+    "dark": "#b84a12"
+  },
+  "navbar": {
+    "links": [
+      {
+        "type": "github",
+        "href": "https://github.com/radixark/miles"
+      }
+    ]
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "User Guide",
         "pages": [
-         "user-guide/environments",
-         "user-guide/harbor",
-         "user-guide/openenv",
-         "user-guide/nemo-gym",
-         "user-guide/verifiers"
+          {
+            "group": "Welcome",
+            "pages": [
+              "index",
+              "getting-started/index",
+              "getting-started/installation",
+              "getting-started/quick-start"
+            ]
+          },
+          {
+            "group": "User Guide",
+            "pages": [
+              "user-guide/index",
+              "user-guide/concepts",
+              "user-guide/launch-script",
+              "user-guide/argument-groups",
+              "user-guide/fully-async",
+              "user-guide/training-backend",
+              "user-guide/monitoring",
+              "user-guide/dashboard",
+              "user-guide/customization",
+              "user-guide/generate-endpoint",
+              "user-guide/agentic-rollout",
+              {
+                "group": "Agentic Environments",
+                "pages": [
+                  "user-guide/environments",
+                  "user-guide/harbor",
+                  "user-guide/openenv",
+                  "user-guide/nemo-gym",
+                  "user-guide/verifiers"
+                ]
+              }
+            ]
+          },
+          "user-guide/cli-reference"
         ]
-       }
-      ]
-     },
-     "user-guide/cli-reference"
+      },
+      {
+        "tab": "Models",
+        "groups": [
+          {
+            "group": "Models",
+            "pages": [
+              "models/index",
+              {
+                "group": "DeepSeek",
+                "pages": [
+                  "models/deepseek/index",
+                  {
+                    "group": "DeepSeek-V4",
+                    "pages": [
+                      "models/deepseek/deepseek-v4-flash",
+                      "models/deepseek/deepseek-v4-pro"
+                    ],
+                    "expanded": false
+                  },
+                  "models/deepseek/deepseek-v3-2",
+                  "models/deepseek/deepseek"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Thinking Machines",
+                "pages": [
+                  "models/thinkingmachines/index",
+                  "models/thinkingmachines/inkling",
+                  "models/thinkingmachines/inkling-small"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Qwen",
+                "pages": [
+                  "models/qwen/index",
+                  {
+                    "group": "Qwen3.8",
+                    "pages": [
+                      "models/qwen/qwen3-8"
+                    ],
+                    "expanded": false
+                  },
+                  {
+                    "group": "Qwen3.6",
+                    "pages": [
+                      "models/qwen/qwen3-6",
+                      "models/qwen/qwen3-6-moe"
+                    ],
+                    "expanded": false
+                  },
+                  {
+                    "group": "Qwen3.5",
+                    "pages": [
+                      "models/qwen/qwen3-5",
+                      "models/qwen/qwen3-5-moe"
+                    ],
+                    "expanded": false
+                  },
+                  "models/qwen/qwen3-next",
+                  {
+                    "group": "Qwen3",
+                    "pages": [
+                      "models/qwen/qwen3",
+                      "models/qwen/qwen3-moe"
+                    ],
+                    "expanded": false
+                  }
+                ],
+                "expanded": false
+              },
+              {
+                "group": "GLM",
+                "pages": [
+                  "models/glm/index",
+                  "models/glm/glm5-2",
+                  "models/glm/glm5",
+                  "models/glm/glm4-7-flash",
+                  "models/glm/glm4-5"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Kimi",
+                "pages": [
+                  "models/kimi/index",
+                  "models/kimi/kimi-k3",
+                  "models/kimi/kimi-k2.5",
+                  "models/kimi/kimi-k2"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Nemotron",
+                "pages": [
+                  "models/nemotron/index",
+                  {
+                    "group": "Nemotron-3-Nano",
+                    "pages": [
+                      "models/nemotron/nemotron-3-nano",
+                      "models/nemotron/nemotron-3-nano-moe"
+                    ],
+                    "expanded": false
+                  },
+                  "models/nemotron/nemotron-3-super",
+                  "models/nemotron/nemotron-3-ultra"
+                ],
+                "expanded": false
+              },
+              {
+                "group": "Gemma",
+                "pages": [
+                  "models/gemma/index",
+                  "models/gemma/gemma-4"
+                ],
+                "expanded": false
+              },
+              "models/gpt-oss/gpt-oss"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Advanced Features",
+        "pages": [
+          "advanced/index",
+          {
+            "group": "Performance",
+            "pages": [
+              "advanced/low-precision",
+              "advanced/int4-qat",
+              "advanced/speculative-decoding",
+              "advanced/lora",
+              "advanced/on-policy-distillation"
+            ]
+          },
+          {
+            "group": "Scale & Reliability",
+            "pages": [
+              "advanced/fault-tolerance",
+              "advanced/pd-disaggregation",
+              "advanced/p2p-weight-transfer",
+              "advanced/disaggregated-rollout",
+              "advanced/disk-offload"
+            ]
+          },
+          {
+            "group": "MoE & Routing",
+            "pages": [
+              "advanced/miles-router"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "pages": [
+          "examples/index",
+          {
+            "group": "Recipes",
+            "pages": [
+              "examples/geo3k-vlm",
+              "examples/geo3k-vlm/multi-turn",
+              "examples/multi-lora",
+              "examples/on-policy-distillation",
+              "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
+              "examples/ppo",
+              "examples/retool-v2",
+              "examples/swe-agent-harbor-docker"
+            ]
+          },
+          {
+            "group": "Infra Features",
+            "pages": [
+              "examples/infra-features",
+              "examples/infra-features/fully-async",
+              "examples/infra-features/low-precision",
+              "examples/infra-features/p2p-weight-transfer",
+              "examples/infra-features/random-async",
+              "examples/infra-features/train-infer-mismatch-helper",
+              "examples/infra-features/true-on-policy"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "pages": [
+          "developer/index",
+          "developer/contributor-guide",
+          "developer/architecture",
+          "developer/versions",
+          "developer/debug",
+          {
+            "group": "CI",
+            "pages": [
+              "ci/contributor-guide",
+              "ci/00-stage",
+              "ci/01-label",
+              "ci/02-docker-build",
+              "ci/03-metric-history-gate",
+              "ci/04-release"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Diffusion",
+        "pages": [
+          "diffusion/index",
+          {
+            "group": "Getting Started",
+            "pages": [
+              "diffusion/getting-started/installation",
+              "diffusion/getting-started/quick-start"
+            ]
+          },
+          {
+            "group": "User Guide",
+            "pages": [
+              "diffusion/user-guide/cli-reference",
+              "diffusion/user-guide/concepts",
+              "diffusion/user-guide/customization",
+              "diffusion/user-guide/launch-script",
+              "diffusion/user-guide/recipe-verification",
+              "diffusion/user-guide/rewards"
+            ]
+          },
+          {
+            "group": "Models",
+            "pages": [
+              "diffusion/models/cosmos/cosmos3",
+              "diffusion/models/h3/h3",
+              "diffusion/models/ltx/ltx2",
+              "diffusion/models/qwen-image/qwen-image",
+              "diffusion/models/sd3/sd3",
+              "diffusion/models/wan/wan2-2"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "diffusion/advanced/deterministic",
+              "diffusion/advanced/dtype-control",
+              "diffusion/advanced/lora",
+              "diffusion/advanced/sde-backend",
+              "diffusion/advanced/single-prompt-multi-gen",
+              "diffusion/advanced/streaming-reward"
+            ]
+          },
+          {
+            "group": "Developer",
+            "pages": [
+              "diffusion/developer/contributor-guide"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "pages": [
+          "blog/index",
+          "subscribe"
+        ]
+      }
     ]
-   },
-   {
-    "tab": "Models",
-    "groups": [
-     {
-      "group": "Models",
-      "pages": [
-       "models/index",
-       {
-        "group": "DeepSeek",
-        "pages": [
-         "models/deepseek/index",
-         {
-          "group": "DeepSeek-V4",
-          "pages": [
-           "models/deepseek/deepseek-v4-flash",
-           "models/deepseek/deepseek-v4-pro"
-          ],
-          "expanded": false
-         },
-         "models/deepseek/deepseek-v3-2",
-         "models/deepseek/deepseek"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Thinking Machines",
-        "pages": [
-         "models/thinkingmachines/index",
-         "models/thinkingmachines/inkling",
-         "models/thinkingmachines/inkling-small"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Qwen",
-        "pages": [
-         "models/qwen/index",
-         {
-          "group": "Qwen3.8",
-          "pages": [
-           "models/qwen/qwen3-8"
-          ],
-          "expanded": false
-         },
-         {
-          "group": "Qwen3.6",
-          "pages": [
-           "models/qwen/qwen3-6",
-           "models/qwen/qwen3-6-moe"
-          ],
-          "expanded": false
-         },
-         {
-          "group": "Qwen3.5",
-          "pages": [
-           "models/qwen/qwen3-5",
-           "models/qwen/qwen3-5-moe"
-          ],
-          "expanded": false
-         },
-         "models/qwen/qwen3-next",
-         {
-          "group": "Qwen3",
-          "pages": [
-           "models/qwen/qwen3",
-           "models/qwen/qwen3-moe"
-          ],
-          "expanded": false
-         }
-        ],
-        "expanded": false
-       },
-       {
-        "group": "GLM",
-        "pages": [
-         "models/glm/index",
-         "models/glm/glm5-2",
-         "models/glm/glm5",
-         "models/glm/glm4-7-flash",
-         "models/glm/glm4-5"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Kimi",
-        "pages": [
-         "models/kimi/index",
-         "models/kimi/kimi-k3",
-         "models/kimi/kimi-k2.5",
-         "models/kimi/kimi-k2"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Nemotron",
-        "pages": [
-         "models/nemotron/index",
-         {
-          "group": "Nemotron-3-Nano",
-          "pages": [
-           "models/nemotron/nemotron-3-nano",
-           "models/nemotron/nemotron-3-nano-moe"
-          ],
-          "expanded": false
-         },
-         "models/nemotron/nemotron-3-super",
-         "models/nemotron/nemotron-3-ultra"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Gemma",
-        "pages": [
-         "models/gemma/index",
-         "models/gemma/gemma-4"
-        ],
-        "expanded": false
-       },
-       "models/gpt-oss/gpt-oss"
-      ]
-     }
+  },
+  "redirects": [
+    {
+      "source": "/user-guide/rollout-endpoints",
+      "destination": "/user-guide/generate-endpoint"
+    },
+    {
+      "source": "/user-guide/agentic-chat-template",
+      "destination": "/user-guide/agentic-rollout"
+    },
+    {
+      "source": "/user-guide/usage",
+      "destination": "/user-guide/training-backend"
+    },
+    {
+      "source": "/advanced/architecture-support",
+      "destination": "/user-guide/training-backend#going-deeper-bringing-in-a-new-architecture"
+    },
+    {
+      "source": "/developer/experimental-features",
+      "destination": "/user-guide/training-backend#fsdp"
+    },
+    {
+      "source": "/platforms/index",
+      "destination": "/getting-started/installation",
+      "permanent": true
+    },
+    {
+      "source": "/platforms/nvidia",
+      "destination": "/getting-started/installation",
+      "permanent": true
+    },
+    {
+      "source": "/platforms/amd",
+      "destination": "/getting-started/installation",
+      "permanent": true
+    },
+    {
+      "source": "/advanced/fp8-low-precision",
+      "destination": "/advanced/low-precision",
+      "permanent": true
+    },
+    {
+      "source": "/examples/search-r1",
+      "destination": "/examples",
+      "permanent": true
+    },
+    {
+      "source": "/examples/multi-agent",
+      "destination": "/examples",
+      "permanent": true
+    },
+    {
+      "source": "/examples/reproducibility",
+      "destination": "/examples",
+      "permanent": true
+    },
+    {
+      "source": "/examples/openhermes-sft",
+      "destination": "/models/qwen/qwen3",
+      "permanent": true
+    }
+  ],
+  "background": {
+    "dark": "#0c0b0a",
+    "light": "#faf7f4"
+  },
+  "contextual": {
+    "options": [
+      {
+        "title": "Raise a docs issue",
+        "description": "Flag a wording, formatting, or accuracy issue on this page.",
+        "icon": "github",
+        "href": "https://github.com/radixark/miles/issues/new"
+      }
     ]
-   },
-   {
-    "tab": "Advanced Features",
-    "pages": [
-     "advanced/index",
-     {
-      "group": "Performance",
-      "pages": [
-       "advanced/low-precision",
-       "advanced/int4-qat",
-       "advanced/speculative-decoding",
-       "advanced/lora",
-       "advanced/on-policy-distillation"
-      ]
-     },
-     {
-      "group": "Scale & Reliability",
-      "pages": [
-       "advanced/fault-tolerance",
-       "advanced/pd-disaggregation",
-       "advanced/p2p-weight-transfer",
-       "advanced/disaggregated-rollout",
-       "advanced/disk-offload"
-      ]
-     },
-     {
-      "group": "MoE & Routing",
-      "pages": [
-       "advanced/miles-router"
-      ]
-     }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/radixark/miles"
+    },
+    "links": [
+      {
+        "header": "Contribute",
+        "items": [
+          {
+            "label": "Raise a docs issue",
+            "href": "https://github.com/radixark/miles/issues/new"
+          },
+          {
+            "label": "Source on GitHub",
+            "href": "https://github.com/radixark/miles"
+          }
+        ]
+      }
     ]
-   },
-   {
-    "tab": "Examples",
-    "pages": [
-     "examples/index",
-     {
-      "group": "Recipes",
-      "pages": [
-       "examples/geo3k-vlm",
-       "examples/geo3k-vlm/multi-turn",
-       "examples/multi-lora",
-       "examples/on-policy-distillation",
-       "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
-       "examples/ppo",
-       "examples/retool-v2",
-       "examples/swe-agent-harbor-docker"
-      ]
-     },
-     {
-      "group": "Infra Features",
-      "pages": [
-       "examples/infra-features",
-       "examples/infra-features/fully-async",
-       "examples/infra-features/low-precision",
-       "examples/infra-features/p2p-weight-transfer",
-       "examples/infra-features/random-async",
-       "examples/infra-features/train-infer-mismatch-helper",
-       "examples/infra-features/true-on-policy"
-      ]
-     }
-    ]
-   },
-   {
-    "tab": "Developer Guide",
-    "pages": [
-     "developer/index",
-     "developer/contributor-guide",
-     "developer/architecture",
-     "developer/versions",
-     "developer/debug",
-     {
-      "group": "CI",
-      "pages": [
-       "ci/contributor-guide",
-       "ci/00-stage",
-       "ci/01-label",
-       "ci/02-docker-build",
-       "ci/03-metric-history-gate",
-       "ci/04-release"
-      ]
-     }
-    ]
-   },
-   {
-    "tab": "Resources",
-    "pages": [
-     "blog/index",
-     "subscribe"
-    ]
-   }
-  ]
- },
- "redirects": [
-  {
-   "source": "/user-guide/rollout-endpoints",
-   "destination": "/user-guide/generate-endpoint"
   },
-  {
-   "source": "/user-guide/agentic-chat-template",
-   "destination": "/user-guide/agentic-rollout"
-  },
-  {
-   "source": "/user-guide/usage",
-   "destination": "/user-guide/training-backend"
-  },
-  {
-   "source": "/advanced/architecture-support",
-   "destination": "/user-guide/training-backend#going-deeper-bringing-in-a-new-architecture"
-  },
-  {
-   "source": "/developer/experimental-features",
-   "destination": "/user-guide/training-backend#fsdp"
-  },
-  {
-   "source": "/platforms/index",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/nvidia",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/platforms/amd",
-   "destination": "/getting-started/installation",
-   "permanent": true
-  },
-  {
-   "source": "/advanced/fp8-low-precision",
-   "destination": "/advanced/low-precision",
-   "permanent": true
-  },
-  {
-   "source": "/examples/search-r1",
-   "destination": "/examples",
-   "permanent": true
-  },
-  {
-   "source": "/examples/multi-agent",
-   "destination": "/examples",
-   "permanent": true
-  },
-  {
-   "source": "/examples/reproducibility",
-   "destination": "/examples",
-   "permanent": true
-  },
-  {
-   "source": "/examples/openhermes-sft",
-   "destination": "/models/qwen/qwen3",
-   "permanent": true
+  "font": {
+    "headings": {
+      "family": "Hanken Grotesk",
+      "weight": 600,
+      "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400,
+      "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
+    }
   }
- ],
- "background": {
-  "dark": "#0c0b0a",
-  "light": "#faf7f4"
- },
- "contextual": {
-  "options": [
-   {
-    "title": "Raise a docs issue",
-    "description": "Flag a wording, formatting, or accuracy issue on this page.",
-    "icon": "github",
-    "href": "https://github.com/radixark/miles/issues/new"
-   }
-  ]
- },
- "footer": {
-  "socials": {
-   "github": "https://github.com/radixark/miles"
-  },
-  "links": [
-   {
-    "header": "Contribute",
-    "items": [
-     {
-      "label": "Raise a docs issue",
-      "href": "https://github.com/radixark/miles/issues/new"
-     },
-     {
-      "label": "Source on GitHub",
-      "href": "https://github.com/radixark/miles"
-     }
-    ]
-   }
-  ]
- },
- "font": {
-  "headings": {
-   "family": "Hanken Grotesk",
-   "weight": 600,
-   "url": "https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@100..900&display=swap"
-  },
-  "body": {
-   "family": "Inter",
-   "weight": 400,
-   "url": "https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&display=swap"
-  }
- }
 }
