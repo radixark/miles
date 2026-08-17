@@ -65,7 +65,7 @@ async def main(args):
         # and only then does the data source sample them. The actor pushes only
         # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
-        await update_weights(actor_model, rollout_executor)
+        await update_weights(args, actor_model, rollout_executor, inference_controller)
 
         # With nothing active, generate would wait forever.
         post_update = await get_multi_lora_controller().snapshot()

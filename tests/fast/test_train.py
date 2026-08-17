@@ -51,7 +51,9 @@ def _install_driver_fakes(
     async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, components.critic_model
 
-    async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
+    async def update_weights(
+        _args: Any, _model: Any, _executor: Any, _inference_controller: Any, *, rollout_id: int | None = None
+    ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
     monkeypatch.setattr(train_driver, "configure_logger", lambda *_args, **_kwargs: None)

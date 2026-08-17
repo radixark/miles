@@ -23,9 +23,9 @@ from miles.ray.specs.train import (
     compute_trainer_controller_pool_id,
     compute_trainer_ids,
     compute_trainer_pool_id,
+    external_trainer_controller_addrs,
     specs_trainer,
     specs_trainer_controller,
-    external_trainer_controller_addrs,
     trainer_controller_cell_id,
     trainer_controller_worker_name,
 )
@@ -647,18 +647,15 @@ class TestSpecTrainerController:
         assert capability.requested_pool_ids == [["trainer-engine-actor"], ["trainer-engine-critic"]]
         assert [entry["cell_provider"] for entry in kwargs] == [capability.cells_provider] * 2
 
-    def test_only_the_actor_controller_drives_the_inference_controller(self):
-        """Weight updates flow from the actor; a critic asking for engines would fight it."""
+    def test_no_controller_is_built_with_a_handle_on_the_inference_controller(self):
+        """The orchestration script drives the update window, so a trainer never reaches the engines itself."""
         capability = _controller_providers()
 
         args = _make_args(use_critic=True)
-        actor_spec, critic_spec = specs_trainer_controller(args)[0], specs_trainer_controller(args)[1]
-        actor_kwargs = actor_spec.ctor_kwargs(_controller_context(capability))
-        critic_kwargs = critic_spec.ctor_kwargs(_controller_context(capability))
+        kwargs = [spec.ctor_kwargs(_controller_context(capability)) for spec in specs_trainer_controller(args)]
 
-        assert capability.requested_static_pool_ids == ["inference-controller"]
-        assert actor_kwargs["inference_controller"] is capability.static_provider
-        assert critic_kwargs["inference_controller"] is None
+        assert capability.requested_static_pool_ids == []
+        assert all("inference_controller" not in entry for entry in kwargs)
 
     def test_the_run_shape_flags_are_resolved_by_the_spec(self):
         """These are functions of args, so the worker can answer them from the argv it parses itself."""
@@ -784,15 +781,14 @@ class TestTrainerConfigs:
             reserved = spec.scheduling.num_cells * spec.scheduling.gpus_per_cell()
             assert spec.scheduling.pg_slot_offset + reserved <= actor_num_gpus
 
-    def test_each_policy_controller_drives_the_inference_controller(self, tmp_path):
-        """A policy that cannot reach the engines can never publish its weights."""
+    def test_each_policy_gets_a_controller_of_its_own(self, tmp_path):
+        """A policy whose controller is another policy's would train the wrong ranks."""
         args = _make_args(megatron_config=write_megatron_config(tmp_path, "alpha", "beta"))
 
         specs = specs_trainer_controller(args)
         kwargs = [spec.ctor_kwargs(_controller_context(_controller_providers())) for spec in specs]
 
         assert [entry["trainer_id"] for entry in kwargs] == ["alpha-actor", "beta-actor"]
-        assert all(entry["inference_controller"] is not None for entry in kwargs)
         assert [entry["role"] for entry in kwargs] == ["actor", "actor"]
 
     def test_a_worker_is_told_which_policy_it_serves_through_its_args(self, tmp_path):
