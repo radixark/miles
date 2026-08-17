@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 
 from miles.utils.pydantic_utils import StrictBaseModel
-from miles.utils.workers.naming import cell_id_of_worker
+from miles.utils.workers.naming import cell_id_of_worker, parse_cell_id
 from miles.utils.workers.polling_reconcile_loop import PollingReconcileLoop
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.worker_info import WorkerInfo
@@ -18,6 +19,7 @@ REGISTERED_CELLS_POLL_INTERVAL_SECONDS = 5.0
 
 @dataclass(kw_only=True)
 class RegistrationHub(BaseWorkerProvider):
+    run_uuid: str
     _state_of_reporter_id: dict[str, _ReporterState] = field(init=False, default_factory=dict)
     _cell_of_id: dict[str, RegisteredCellInfo] = field(init=False, default_factory=dict)
     _watched: bool = field(init=False, default=False)
@@ -25,6 +27,10 @@ class RegistrationHub(BaseWorkerProvider):
     # ========================== Taking in snapshots ===========================
 
     async def ingest(self, snapshot: RegistrationSnapshot) -> None:
+        assert (
+            snapshot.run_uuid == self.run_uuid
+        ), f"reporter {snapshot.reporter_id} carries run_uuid {snapshot.run_uuid!r}, expected {self.run_uuid!r}"
+        _assert_snapshot_addressable(snapshot)
         cell_of_id = {cell.info.cell_id: cell for cell in snapshot.cells}
 
         state = self._state_of_reporter_id.setdefault(snapshot.reporter_id, _ReporterState())
@@ -39,6 +45,13 @@ class RegistrationHub(BaseWorkerProvider):
         state.sequence_number = snapshot.sequence_number
 
     def _replace_cells_of_reporter(self, *, reporter_id: str, cell_of_id: dict[str, RegisteredCellInfo]) -> None:
+        for cell_id in cell_of_id:
+            assert (
+                owner := self._cell_of_id.get(cell_id)
+            ) is None or owner.reporter_id == reporter_id, (
+                f"cell {cell_id} is reported by both {owner.reporter_id} and {reporter_id}"
+            )
+
         held = {cell_id for cell_id, cell in self._cell_of_id.items() if cell.reporter_id == reporter_id}
         for cell_id in held - set(cell_of_id):
             del self._cell_of_id[cell_id]
@@ -74,3 +87,33 @@ class RegistrationHub(BaseWorkerProvider):
 
 class _ReporterState(StrictBaseModel):
     sequence_number: int = -1
+
+
+def _assert_snapshot_addressable(snapshot: RegistrationSnapshot) -> None:
+    occurrences = Counter(cell.info.cell_id for cell in snapshot.cells)
+    repeated = sorted(cell_id for cell_id, count in occurrences.items() if count > 1)
+    assert not repeated, f"reporter {snapshot.reporter_id} carries the cells {repeated} more than once"
+
+    for cell in snapshot.cells:
+        _assert_cell_addressable(cell, reporter_id=snapshot.reporter_id)
+
+
+def _assert_cell_addressable(cell: RegisteredCellInfo, *, reporter_id: str) -> None:
+    assert (
+        cell.reporter_id == reporter_id
+    ), f"snapshot of reporter {reporter_id} carries cell {cell.info.cell_id} of reporter {cell.reporter_id}"
+
+    prefix = f"cell {cell.info.cell_id} of reporter {cell.reporter_id} is not addressable:"
+    try:
+        pool_id = parse_cell_id(cell.info.cell_id).pool_id
+        worker_cell_ids = {cell_id_of_worker(worker.name) for worker in cell.workers}
+    except ValueError as cause:
+        raise AssertionError(
+            f"{prefix} its cell id or a worker name does not read as <pool id>-<cell index>"
+        ) from cause
+
+    assert pool_id == cell.info.pool_id, f"{prefix} its cell id names pool {pool_id}, not {cell.info.pool_id}"
+    assert cell.workers, f"{prefix} it carries no worker"
+    assert worker_cell_ids == {
+        cell.info.cell_id
+    }, f"{prefix} its workers {sorted(one.name for one in cell.workers)} name cells {sorted(worker_cell_ids)}"

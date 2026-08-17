@@ -13,6 +13,7 @@ from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 _POOL_ID = "inference-engine-0-0"
 _REPORTER_ID = "miles-run-r1-inference"
+_RUN_UUID = "run-uuid-1"
 
 
 class _FakeEngineProvider(BaseWorkerProvider):
@@ -76,6 +77,7 @@ def _cell_info(cell_index: int, *, workers_hash: str = "hash-1", worker_type: st
 
 def _reporter(*, provider: _FakeEngineProvider, hub_endpoint: _FakeHub):
     return RegistrationReporter(
+        run_uuid=_RUN_UUID,
         reporter_id=_REPORTER_ID,
         hub_endpoint=hub_endpoint,
         worker_provider=provider,
@@ -124,6 +126,14 @@ class TestSnapshotContents:
 
         (cell,) = hub_endpoint.snapshots[0].cells
         assert cell.workers[0].self_addrs["primary"] == HostAndPort(host="10.0.0.5", port=8000)
+
+    async def test_it_names_the_run_it_was_deployed_for(self):
+        """The deployment script gives every component the same --run-uuid, and the run refuses any other."""
+        reporter, _provider, hub_endpoint = await _synced()
+
+        await reporter._send_once()
+
+        assert hub_endpoint.snapshots[0].run_uuid == _RUN_UUID
 
     async def test_it_reports_the_generation_its_own_deployment_observed(self):
         """A restarted engine is a new engine to the run, and only its own deployment counts the restarts."""

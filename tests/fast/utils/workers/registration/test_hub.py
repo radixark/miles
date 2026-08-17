@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import pytest
 
 from miles.utils.workers.registration.hub import RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
@@ -15,6 +16,7 @@ _POOL_ID = f"{_REPORTER}-inference-engine-0-0"
 _OTHER_REPORTER = "miles-run-r1-inference-b"
 _OTHER_POOL_ID = f"{_OTHER_REPORTER}-inference-engine-0-0"
 _PROVIDER_MODULE = "miles.utils.workers.registration.hub"
+_RUN_UUID = "run-uuid-1"
 _POLL_INTERVAL_SECONDS = 0.001
 
 
@@ -56,7 +58,9 @@ def _other_cell(cell_index: int, *, host: str = "10.0.0.5") -> RegisteredCellInf
 def _snapshot(
     cells: list[RegisteredCellInfo], *, reporter_id: str = _REPORTER, sequence_number: int = 1
 ) -> RegistrationSnapshot:
-    return RegistrationSnapshot(reporter_id=reporter_id, sequence_number=sequence_number, cells=cells)
+    return RegistrationSnapshot(
+        run_uuid=_RUN_UUID, reporter_id=reporter_id, sequence_number=sequence_number, cells=cells
+    )
 
 
 class _Watcher:
@@ -72,7 +76,7 @@ class _Watcher:
 
 async def _watched(**kwargs) -> tuple[RegistrationHub, _Watcher]:
     watcher = _Watcher()
-    provider = RegistrationHub(**kwargs)
+    provider = RegistrationHub(run_uuid=_RUN_UUID, **kwargs)
     await _start_watch(provider, watcher)
     return provider, watcher
 
@@ -141,6 +145,54 @@ class TestSnapshotMembership:
 
         assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0", f"{_POOL_ID}-1"]
 
+    async def test_a_cell_reported_by_two_deployments_is_refused(self):
+        """One cell id names one cell, and the second owner could remove the cell of the first."""
+        provider, _watcher = await _watched()
+        await _apply(provider, _snapshot([_cell(0)]))
+
+        with pytest.raises(AssertionError, match="is reported by both"):
+            await provider.ingest(_snapshot([_cell(0, reporter_id="other")], reporter_id="other"))
+
+    async def test_a_snapshot_of_another_run_is_refused(self):
+        """A resume reusing a run id leaves the reporter of the previous training announcing into this one."""
+        provider, _watcher = await _watched()
+
+        with pytest.raises(AssertionError, match="carries run_uuid"):
+            await provider.ingest(_snapshot([_cell(0)]).model_copy(update=dict(run_uuid="another-run")))
+
+    async def test_a_snapshot_carrying_a_cell_of_another_reporter_is_refused(self):
+        """A snapshot is the membership of one deployment, so a cell of another one was assembled in by mistake."""
+        provider, _watcher = await _watched()
+
+        with pytest.raises(AssertionError, match="snapshot of reporter"):
+            await provider.ingest(_snapshot([_cell(0, reporter_id="other")]))
+
+    async def test_a_cell_carried_twice_by_one_snapshot_is_refused(self):
+        """Either entry could be the truth, so holding one would hold a membership nobody announced."""
+        provider, _watcher = await _watched()
+
+        with pytest.raises(AssertionError, match="more than once"):
+            await provider.ingest(_snapshot([_cell(0), _cell(0, host="10.0.0.6")]))
+
+        assert sorted(provider._cell_of_id) == []
+
+    async def test_a_cell_that_does_not_name_its_own_pool_is_refused(self):
+        """The run parses a cell id to address the workers of that cell."""
+        provider, _watcher = await _watched()
+        cell = _cell(0)
+        cell = cell.model_copy(update=dict(info=cell.info.model_copy(update=dict(cell_id="not-a-cell-id"))))
+
+        with pytest.raises(AssertionError, match="does not read as"):
+            await provider.ingest(_snapshot([cell]))
+
+    async def test_a_cell_whose_workers_belong_to_another_cell_is_refused(self):
+        """The run addresses a worker by parsing its name, so a name from another cell would route nowhere."""
+        provider, _watcher = await _watched()
+        cell = _cell(0).model_copy(update=dict(workers=_cell(1).workers))
+
+        with pytest.raises(AssertionError, match="name cells"):
+            await provider.ingest(_snapshot([cell]))
+
 
 class TestPartitioningCellsByReporter:
     async def test_a_snapshot_replaces_only_the_cells_of_the_reporter_that_sent_it(self):
@@ -207,7 +259,7 @@ class TestAddressingRegisteredCells:
 
     async def test_a_watcher_that_starts_late_is_replayed_the_cells_already_reported(self):
         """A snapshot may land before the run watches, and nothing announces that cell a second time."""
-        provider = RegistrationHub()
+        provider = RegistrationHub(run_uuid=_RUN_UUID)
         await _apply(provider, _snapshot([_cell(0)]))
 
         watcher = _Watcher()

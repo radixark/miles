@@ -13,6 +13,7 @@ class RegisteredCellInfo(FrozenStrictBaseModel):
 
 
 class RegistrationSnapshot(FrozenStrictBaseModel):
+    run_uuid: str
     reporter_id: str
     sequence_number: int
     cells: list[RegisteredCellInfo]
