@@ -1,3 +1,4 @@
+import random
 import threading
 from unittest.mock import MagicMock
 
@@ -41,7 +42,6 @@ def test_loop_never_kills_the_last_live_cell_under_stale_liveness() -> None:
             seed=0,
             mean_interval_seconds=1e-6,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
             cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
@@ -82,7 +82,6 @@ def test_loop_injects_again_after_an_injected_cell_recovers() -> None:
             seed=0,
             mean_interval_seconds=1e-6,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
             cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
@@ -115,7 +114,6 @@ def _run_typed_injection_loop(cells: list[dict], *, cell_type: str | None) -> li
             seed=0,
             mean_interval_seconds=1e-6,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
             cell_type=cell_type,
             event_log=state.EventLog(),
             cell_fault_forms=api_server_fault_forms(),
@@ -218,7 +216,6 @@ class TestFaultInjectionLoopErrorHandling:
                 seed=0,
                 mean_interval_seconds=1e-12,
                 stop_event=stop_event,
-                on_successful_injection=lambda: None,
                 cell_type=None,
                 event_log=log,
                 cell_fault_forms=api_server_fault_forms(),
@@ -241,7 +238,6 @@ class TestFaultInjectionLoopErrorHandling:
         cells = [staged("rollout-engine-0", SERVING), staged("rollout-engine-1", SERVING)]
         log = state.EventLog()
         attempts: list[str] = []
-        successes = {"n": 0}
         stop_event = threading.Event()
         polls = {"n": 0}
 
@@ -258,9 +254,6 @@ class TestFaultInjectionLoopErrorHandling:
             stop_event.set()
             return mock_response({})
 
-        def note_success() -> None:
-            successes["n"] += 1
-
         with patched_requests() as mock_requests:
             mock_requests.get.side_effect = fake_get
             mock_requests.post.side_effect = fake_post
@@ -269,7 +262,6 @@ class TestFaultInjectionLoopErrorHandling:
                 seed=0,
                 mean_interval_seconds=1e-6,
                 stop_event=stop_event,
-                on_successful_injection=note_success,
                 cell_type=None,
                 event_log=log,
                 cell_fault_forms=api_server_fault_forms(),
@@ -277,7 +269,6 @@ class TestFaultInjectionLoopErrorHandling:
             )
 
         assert len(attempts) == 2, attempts
-        assert successes["n"] == 1
         assert views.compute_num_injections(log.events, cell_type="rollout") == 1
 
 
@@ -316,7 +307,6 @@ def test_the_loop_injects_through_the_forms_of_the_cell_it_picked() -> None:
             seed=0,
             mean_interval_seconds=1e-12,
             stop_event=stop_event,
-            on_successful_injection=lambda: None,
             cell_type=None,
             event_log=state.EventLog(),
             cell_fault_forms=fixed_fault_forms(
@@ -332,3 +322,72 @@ def test_the_loop_injects_through_the_forms_of_the_cell_it_picked() -> None:
 
         assert drawn == [fault_forms.DELETE_POD_FORM_NAME, fault_forms.DELETE_POD_FORM_NAME], drawn
         mock_requests.post.assert_not_called()
+
+
+def test_the_loop_draws_a_form_that_has_never_worked_before_repeating_a_proven_one() -> None:
+    """Uniform sampling can leave the rarest fault untried for a whole soak, which is the one worth trying."""
+    drawn: list[str] = []
+    log = state.EventLog()
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 6:
+            stop_event.set()
+        return mock_response({"items": [typed_cell(f"actor-{i}", "actor") for i in range(4)]})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-12,
+            stop_event=stop_event,
+            cell_type=None,
+            event_log=log,
+            cell_fault_forms=fixed_fault_forms(
+                [StubFaultForm(name, lambda cell, rng, n=name: drawn.append(n)) for name in ("a", "b", "c")]
+            ),
+            poll_interval_seconds=1e-6,
+        )
+
+    assert set(drawn[:3]) == {"a", "b", "c"}, drawn
+
+
+def test_a_form_that_always_refuses_keeps_being_drawn_so_the_soak_can_see_it() -> None:
+    """A form that rides on the ones that did work would end the run green while never having fired."""
+    log = state.EventLog()
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 8:
+            stop_event.set()
+        return mock_response({"items": [typed_cell(f"actor-{i}", "actor") for i in range(3)]})
+
+    with patched_requests() as mock_requests:
+        mock_requests.get.side_effect = fake_get
+        core.run_fault_injection_loop(
+            base_url="http://control",
+            seed=0,
+            mean_interval_seconds=1e-12,
+            stop_event=stop_event,
+            cell_type=None,
+            event_log=log,
+            cell_fault_forms=fixed_fault_forms(
+                [StubFaultForm("works", _do_nothing), StubFaultForm("broken", _always_refuse)]
+            ),
+            poll_interval_seconds=1e-6,
+        )
+
+    assert views.compute_forms_drawn_without_success(log.events) == [("actor", "broken")]
+
+
+def _always_refuse(cell: dict, rng: random.Random) -> None:
+    raise RuntimeError("this form never works")
+
+
+def _do_nothing(cell: dict, rng: random.Random) -> None:
+    return None
