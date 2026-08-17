@@ -7,6 +7,7 @@ from pydantic.alias_generators import to_camel
 
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
+from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 _DNS_LABEL = r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
@@ -74,7 +75,7 @@ class ObjectNames(ValuesModel):
 
 class AutoUninstallSection(ValuesModel):
     enabled: bool
-    service_account: _ObjectName
+    service_account: _ObjectName | None = None
 
 
 class OrchestratorSection(ValuesModel):
@@ -90,8 +91,8 @@ class MooncakeSection(ValuesModel):
 
 
 class RunValues(ValuesModel):
-    id: Annotated[str, Field(max_length=_POOL_NAME_MAX, pattern=_DNS_LABEL)]
-    state_file: Annotated[str, Field(min_length=1, pattern="^/")]
+    id: Annotated[str, Field(max_length=RUN_ID_MAX_LENGTH, pattern=_DNS_LABEL)]
+    state_file: Annotated[str, Field(min_length=1, pattern="^/")] | None = None
     launch_record: Annotated[str, Field(min_length=1, pattern="^/")] | None = None
     object_names: ObjectNames
     orchestrator: OrchestratorSection | None = None
