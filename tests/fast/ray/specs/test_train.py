@@ -772,6 +772,7 @@ class TestTrainerConfigs:
                 colocate=False,
                 use_critic=False,
                 megatron_config=megatron_config,
+                deploy_component="all",
             )
         )
 
