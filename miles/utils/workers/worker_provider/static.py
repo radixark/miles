@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import wait_tcp_ready, wrap_ipv6
+from miles.utils.http_utils import wait_tcp_ready_async, wrap_ipv6
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
@@ -86,9 +87,10 @@ class StaticWorkerProvider(BaseWorkerProvider):
         return addrs
 
 
-def wait_static_addrs_ready(addrs: Iterable[HostAndPort]) -> None:
-    for addr in addrs:
-        wait_tcp_ready(addr.host, addr.port, timeout=_STATIC_ADDRS_READY_TIMEOUT_SECONDS)
+async def wait_static_addrs_ready(addrs: Iterable[HostAndPort]) -> None:
+    await asyncio.gather(
+        *[wait_tcp_ready_async(addr.host, addr.port, timeout=_STATIC_ADDRS_READY_TIMEOUT_SECONDS) for addr in addrs]
+    )
 
 
 def parse_host_and_port(addr: str) -> HostAndPort:

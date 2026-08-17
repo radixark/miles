@@ -158,17 +158,13 @@ class TestWaitRouterReady:
             async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
                 return {"primary": HostAndPort(host="10.0.0.9", port=12345)}
 
-        async def _refuse(host: str, port: int, timeout: float) -> None:
+        async def _refuse(host: str, port: int, *, timeout: float) -> None:
             raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready_async", _refuse)
 
         with pytest.raises(RuntimeError, match="10.0.0.9:12345 not ready"):
-            await wait_router_ready(model_idx=1)
+            await wait_router_ready(model_idx=1, provider=_FakeProvider())
 
     async def test_a_failed_router_addr_lookup_fails_before_any_tcp_wait(self, monkeypatch):
         """A router the worker manager cannot resolve must abort startup, not be probed anyway."""
@@ -295,7 +291,7 @@ class TestWaitSessionServerReady:
                 self._counter += 1
                 return {"primary": HostAndPort(host="10.0.0.9", port=5004 + self._counter)}
 
-        async def _refuse_one(host: str, port: int, timeout: float) -> None:
+        async def _refuse_one(host: str, port: int, *, timeout: float) -> None:
             if port == 5006:
                 raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 

@@ -163,13 +163,30 @@ class TestAddressesGivenExplicitly:
 
 
 class TestWaitStaticAddrsReady:
-    def test_dials_every_address_before_the_run_calls_it(self):
+    async def test_dials_every_address_before_the_run_calls_it(self):
         """A deployment installed a moment earlier is not yet listening, and the first call would simply fail."""
         dialled: list[tuple[str, int]] = []
-        with patch.object(static, "wait_tcp_ready", lambda host, port, timeout: dialled.append((host, port))):
-            static.wait_static_addrs_ready([parse_host_and_port("a:1"), parse_host_and_port("b:2")])
 
-        assert dialled == [("a", 1), ("b", 2)]
+        async def _dial(host, port, *, timeout):
+            dialled.append((host, port))
+
+        with patch.object(static, "wait_tcp_ready_async", _dial):
+            await static.wait_static_addrs_ready([parse_host_and_port("a:1"), parse_host_and_port("b:2")])
+
+        assert sorted(dialled) == [("a", 1), ("b", 2)]
+
+    async def test_a_slow_address_does_not_hold_up_the_others(self):
+        """Waiting serially would multiply one ready budget by the number of deployments a run reaches."""
+        order: list[str] = []
+
+        async def _dial(host, port, *, timeout):
+            await asyncio.sleep(0.02 if host == "slow" else 0)
+            order.append(host)
+
+        with patch.object(static, "wait_tcp_ready_async", _dial):
+            await static.wait_static_addrs_ready([parse_host_and_port("slow:1"), parse_host_and_port("fast:2")])
+
+        assert order == ["fast", "slow"]
 
 
 class TestParseHostAndPort:
