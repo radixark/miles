@@ -195,6 +195,7 @@ class TestCreatePlacementGroups:
             critic_save=None,
             critic_lr=None,
             critic_lr_warmup_iters=None,
+            deploy_component="all",
         )
         defaults.update(overrides)
         return Namespace(**defaults)
@@ -242,6 +243,20 @@ class TestCreatePlacementGroups:
         assert sorted(pgs) == ["actor", "rollout"]
         assert requested == [5]
         assert pgs["rollout"].pg_reordered_gpu_ids == [102, 103, 104]
+
+    def test_a_trainer_deployment_hands_the_rollout_entry_no_bundle(self, monkeypatch):
+        """Its release installs no engine, so a rollout entry over the trainer's bundles would double-book them."""
+        from miles.ray.placement_group import create_placement_groups
+
+        requested: list[int] = []
+        self._patched(monkeypatch, requested)
+
+        pgs = create_placement_groups(self._args(deploy_component="trainer"))
+
+        assert requested == [2]
+        assert pgs["actor"].pg_reordered_gpu_ids == [100, 101]
+        assert pgs["rollout"].pg_reordered_gpu_ids == []
+        assert pgs["rollout"].pg_reordered_bundle_indices == []
 
 
 class TestUpdateWeights:
@@ -322,7 +337,10 @@ class TestCreateTrainingModels:
         requested: list[str] = []
         self._patched(monkeypatch, requested)
         args = Namespace(
-            megatron_config=write_megatron_config(tmp_path, "alpha"), use_critic=False, start_rollout_id=None
+            megatron_config=write_megatron_config(tmp_path, "alpha"),
+            use_critic=False,
+            start_rollout_id=None,
+            trainer_controller_addrs=None,
         )
 
         await create_training_models(args, self._rollout_executor())
@@ -349,6 +367,7 @@ class TestCreateTrainingModels:
             critic_save=None,
             critic_lr=None,
             critic_lr_warmup_iters=None,
+            trainer_controller_addrs=None,
         )
 
         await create_training_models(args, self._rollout_executor())
@@ -373,7 +392,7 @@ class TestCreateTrainingModels:
 class TestCreateTrainingModel:
     @staticmethod
     def _patch_handle(monkeypatch, *, restored: list[int]) -> None:
-        def _create_handle(args, *, capability, trainer_id: str):
+        def _create_handle(*, capability, trainer_id: str):
             handle = MagicMock()
             handle.init = AsyncMock(return_value=restored)
             return handle
