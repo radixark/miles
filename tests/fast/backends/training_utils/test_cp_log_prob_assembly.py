@@ -2,11 +2,8 @@
 
 import pytest
 import torch
-from tests.ci.ci_register import register_cpu_ci
 
 from miles.backends.training_utils.cp_utils import assemble_log_prob_from_cp, get_logits_and_tokens_offset_with_cp
-
-register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
 
 def _split(
