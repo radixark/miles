@@ -5,6 +5,7 @@ import threading
 from tests.e2e.ft.conftest_ft.fault_injection.core import list_cells, run_fault_injection_loop
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog
+from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_injections
 
 API_SERVER_PORT: int = 18080
 MEAN_INTERVAL_SECONDS: float = 60.0
@@ -20,8 +21,8 @@ class FaultInjectorHandle:
         cell_type: str | None,
         cell_fault_forms: CellFaultForms,
     ) -> None:
-        self.num_successful_injections: int = 0
         self.event_log = EventLog()
+        self.cell_fault_forms = cell_fault_forms
         self._base_url = base_url
         self._cell_type = cell_type
         self._stop_event = threading.Event()
@@ -32,7 +33,6 @@ class FaultInjectorHandle:
                 "seed": seed,
                 "mean_interval_seconds": mean_interval_seconds,
                 "stop_event": self._stop_event,
-                "on_successful_injection": self._on_successful_injection,
                 "cell_type": cell_type,
                 "event_log": self.event_log,
                 "cell_fault_forms": cell_fault_forms,
@@ -40,6 +40,10 @@ class FaultInjectorHandle:
             daemon=True,
             name="ft-random-fault-injector",
         )
+
+    @property
+    def num_successful_injections(self) -> int:
+        return compute_num_injections(self.event_log.events)
 
     def start(self) -> None:
         self._thread.start()
@@ -54,9 +58,6 @@ class FaultInjectorHandle:
         if cells is None:
             return
         self.event_log.observe(cells)
-
-    def _on_successful_injection(self) -> None:
-        self.num_successful_injections += 1
 
 
 def spawn_fault_injector(
