@@ -29,10 +29,14 @@ class DeployComponent(Enum):
     def is_split(self) -> bool:
         return self is not DeployComponent.ALL
 
+    def takes_instance_id(self) -> bool:
+        return self in (DeployComponent.TRAINER, DeployComponent.INFERENCE)
+
 
 class DeploymentIdentity(FrozenStrictBaseModel):
     run_uuid: str
     deploy_component: str
+    deploy_instance_id: str | None = None
 
 
 _SUPPORTED_WORKER_COMM_BACKENDS = {
