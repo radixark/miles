@@ -1,5 +1,5 @@
 from argparse import Namespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
@@ -114,43 +114,75 @@ async def test_start_update_weights_initializes_colocated_cells_before_snapshott
     assert init_counts_at_snapshot == [1]
 
 
-def _make_controller(order: list[str]):
-    from miles.ray.train.group import TrainerController
+def _orchestration_args(**overrides) -> Namespace:
+    values = dict(debug_train_only=False, debug_rollout_only=False)
+    values.update(overrides)
+    return Namespace(**values)
 
-    group = TrainerController.__new__(TrainerController)
-    group.args = Namespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
-    group._inference_controller = _OrderRecordingInferenceController(order)
 
-    async def _record_execute_first_alive(*args: object, **kwargs: object) -> list[int]:
-        order.append("execute_first_alive")
-        return [1]
+def _actor_model(order: list[str]) -> MagicMock:
+    async def _record_update_weights(*, info: object, rollout_id: int | None = None) -> int:
+        order.append("trainer_update_weights")
+        return 11
 
-    group._execute_first_alive = AsyncMock(side_effect=_record_execute_first_alive)
-    group._maybe_log_inference_engine_weight_checksums = AsyncMock()
-    return group
+    actor_model = MagicMock()
+    actor_model.update_weights = AsyncMock(side_effect=_record_update_weights)
+    return actor_model
 
 
 @pytest.mark.asyncio
-async def test_the_trainer_brackets_the_broadcast_with_start_and_end_update_weights():
+async def test_the_script_brackets_the_broadcast_with_start_and_end_update_weights():
     """The fault-tolerant trainer runs the actual update RPC strictly inside the update window."""
+    from miles.ray.placement_group import update_weights
+
     order: list[str] = []
-    group = _make_controller(order)
+    inference_controller = _OrderRecordingInferenceController(order)
 
-    await group.update_weights()
+    await update_weights(
+        _orchestration_args(), _actor_model(order), MagicMock(set_weight_version=AsyncMock()), inference_controller
+    )
 
-    assert order == ["start_update_weights", "execute_first_alive", "end_update_weights"]
-    group._execute_first_alive.assert_awaited_once()
+    assert order[:3] == ["start_update_weights", "trainer_update_weights", "end_update_weights"]
 
 
 @pytest.mark.asyncio
-async def test_the_trainer_hands_end_update_weights_the_snapshot_start_returned():
+async def test_the_script_hands_end_update_weights_the_snapshot_start_returned():
     """The snapshot start_update_weights returned is handed back to end_update_weights unchanged."""
+    from miles.ray.placement_group import update_weights
+
     order: list[str] = []
-    group = _make_controller(order)
+    inference_controller = _OrderRecordingInferenceController(order)
 
-    await group.update_weights()
+    await update_weights(
+        _orchestration_args(), _actor_model(order), MagicMock(set_weight_version=AsyncMock()), inference_controller
+    )
 
-    _assert_the_snapshot_is_handed_back_unchanged(group._inference_controller)
+    _assert_the_snapshot_is_handed_back_unchanged(inference_controller)
+
+
+@pytest.mark.asyncio
+async def test_the_window_is_scoped_to_the_policy_the_script_is_publishing():
+    """Without the scope, one policy's trainer broadcasts its weights into another policy's engines."""
+    from miles.ray.placement_group import update_weights
+
+    order: list[str] = []
+    inference_controller = _OrderRecordingInferenceController(order)
+
+    with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=True), patch(
+        "miles.ray.placement_group.get_event_logger"
+    ), patch("miles.ray.placement_group.flatten_inference_engine_checksums", return_value=[]):
+        await update_weights(
+            _orchestration_args(),
+            _actor_model(order),
+            MagicMock(set_weight_version=AsyncMock()),
+            inference_controller,
+            rollout_id=3,
+            trainer_model_id="alpha",
+        )
+
+    calls = {name: kwargs for name, _args, kwargs in inference_controller.calls}
+    assert calls["start_update_weights"] == dict(model_id="alpha")
+    assert calls["check_weights"] == dict(action="checksum", model_id="alpha")
 
 
 def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
@@ -200,3 +232,62 @@ def test_fsdp_updater_flushes_only_after_every_engine_is_paused():
     assert set(order[6:8]) == {"end-0", "end-1"}
     assert set(order[8:]) == {"continue-0", "continue-1"}
     assert pause_modes == ["retract", "retract"]
+
+
+def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
+    """Build a flat per-engine check_weights('checksum') response."""
+    return [
+        {
+            "success": True,
+            "message": "ok",
+            "ranks": [{"checksums": cs, "parallelism_info": [{"role": "target", "rank": 0}]}],
+        }
+        for cs in engine_checksums
+    ]
+
+
+class TestTheScriptLogsTheChecksumsTheEnginesNowServe:
+    @staticmethod
+    async def _log(args: Namespace, *, response=None, initialized: bool = True) -> tuple[MagicMock, MagicMock]:
+        from miles.ray.placement_group import _maybe_log_inference_engine_weight_checksums
+
+        inference_controller = MagicMock()
+        inference_controller.check_weights = AsyncMock(return_value=response) if response is not None else MagicMock()
+        event_logger = MagicMock()
+        with patch("miles.ray.placement_group.is_event_logger_initialized", return_value=initialized), patch(
+            "miles.ray.placement_group.get_event_logger", return_value=event_logger
+        ):
+            await _maybe_log_inference_engine_weight_checksums(
+                args, inference_controller=inference_controller, rollout_id=0, trainer_model_id=None
+            )
+        return inference_controller, event_logger
+
+    async def test_no_event_logger_does_not_call_check_weights(self):
+        """Without an initialized event logger, no check_weights request is issued."""
+        inference_controller, _ = await self._log(_orchestration_args(), initialized=False)
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_debug_train_only_skips_collection(self):
+        """Without real rollout engines (debug_train_only), no check_weights request is issued."""
+        inference_controller, _ = await self._log(_orchestration_args(debug_train_only=True))
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_debug_rollout_only_skips_collection(self):
+        """Without real train engines pushing weights (debug_rollout_only), no check_weights request is issued."""
+        inference_controller, _ = await self._log(_orchestration_args(debug_rollout_only=True))
+
+        inference_controller.check_weights.assert_not_called()
+
+    async def test_enabled_logs_one_event_per_rollout(self):
+        """With event logger on and real engines, one event holds every engine's checksums."""
+        response = _checksum_response([{"w": "e0"}, {"w": "e1"}])
+
+        inference_controller, event_logger = await self._log(_orchestration_args(), response=response)
+
+        inference_controller.check_weights.assert_awaited_once_with(action="checksum", model_id=None)
+        event_logger.log.assert_called_once()
+        assert event_logger.log.call_args.args[1] == dict(
+            rollout_id=0, engine_checksums=[{"rank0/w": "e0"}, {"rank0/w": "e1"}]
+        )
