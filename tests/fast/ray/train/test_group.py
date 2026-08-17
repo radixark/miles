@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import ray
 from tests.fast.ray.train import conftest as train_conftest
-from tests.fast.ray.train.conftest import get_raw_actor_handles, make_provider
+from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment_identity, make_provider
 
+import miles.ray.train.group as group_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train.group import TrainerController, compute_trainer_health_checker_config
 from miles.utils import object_store
@@ -37,6 +38,9 @@ def _make_mock_args(
     # passes self.args through Ray to the remote actor; pickling a MagicMock blows the
     # recursion limit because its __getattr__ creates new sub-mocks indefinitely.
     return SimpleNamespace(
+        deploy_component="all",
+        trainer_controller_addrs=None,
+        api_server_port=0,
         indep_dp=indep_dp,
         enable_witness=enable_witness,
         witness_buffer_size=100,
@@ -72,6 +76,7 @@ def _make_controller(
     train_conftest.fake_worker_manager.num_cells = num_cells
     train_conftest.fake_worker_manager.actor_count_per_cell = actor_count_per_cell
     group = TrainerController(
+        deployment_identity=make_deployment_identity(),
         trainer_id="actor",
         role="actor",
         with_ref=with_ref,

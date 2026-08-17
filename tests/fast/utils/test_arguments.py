@@ -16,9 +16,11 @@ from miles.utils.arguments import (
     _compute_custom_inference_engine_provider_path,
     _compute_rollout_external,
     _maybe_apply_dumper_overrides,
+    _resolve_api_server_port,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
+    _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -574,6 +576,206 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     assert args.sglang_pp_size == 3
     assert args.sglang_ep_size == 4
     assert args.sglang_attn_cp_size == 5
+
+
+_SHARED_STORE_ARGS = [
+    "--object-store-backend",
+    "mooncake",
+    "--mooncake-store-init-kwargs",
+    '{"master_server_address": "the-master:50051"}',
+]
+
+_PRIMARY_ARGS = ["--deploy-component", "primary", "--trainer-controller-addrs", "actor=10.0.0.1:8000"]
+
+_SPLIT_RUN_UUID_ARGS = ["--run-uuid", "0123456789abcdef"]
+
+_RAY_RPC_ARGS = ["--cluster-backend", "ray", "--worker-comm-backend", "rpc"]
+
+_RAY_ACTOR_ARGS = ["--cluster-backend", "ray", "--worker-comm-backend", "ray"]
+
+
+class TestDeployComponent:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+        args.ft_components = []
+        args.mini_ft_controller_enable = False
+        args.use_critic = False
+        return args
+
+    def _parse_validated(self, extra):
+        return _parse_deploy_args(extra, resolve_fault_tolerance=True)
+
+    def test_defaults_to_deploying_the_whole_run(self):
+        """A run that does not mention the flag is one deployment, exactly as before the flag existed."""
+        assert self._parse([]).deploy_component == "all"
+
+    def test_rejects_a_component_that_is_not_one_of_the_four(self):
+        """The four values partition the run, so a fifth name would deploy an undefined subset."""
+        with pytest.raises(SystemExit):
+            self._parse(["--deploy-component", "rollout"])
+
+    def test_an_unsplit_run_is_validated_exactly_as_it_was_before_the_flag(self):
+        """`all` must stay free of every split-only requirement, or it would break every existing launch."""
+        _validate_deploy_component(self._parse([]))
+
+    def test_a_trainer_deployment_needs_no_addresses(self):
+        """It calls nobody: the orchestration script calls it, so it has nothing to be told."""
+        _validate_deploy_component(self._parse(["--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
+
+    def test_an_inference_deployment_needs_no_addresses_either(self):
+        """It serves the engines the run calls into, so nothing addresses anything from here."""
+        _validate_deploy_component(self._parse(["--deploy-component", "inference", *_SHARED_STORE_ARGS]))
+
+    def test_an_inference_deployment_has_to_share_an_object_store_too(self):
+        """Its engines write rollout data the orchestration script of another deployment reads."""
+        with pytest.raises(AssertionError, match="--object-store-backend"):
+            _validate_deploy_component(
+                self._parse(["--deploy-component", "inference", "--object-store-backend", "ray"])
+            )
+
+    def test_a_trainer_deployment_has_to_share_an_object_store(self):
+        """A ray reference is redeemable only inside the deployment that made it, and the data crosses deployments."""
+        with pytest.raises(AssertionError, match="--object-store-backend"):
+            _validate_deploy_component(self._parse(["--deploy-component", "trainer", "--object-store-backend", "ray"]))
+
+    def test_a_trainer_deployment_has_to_be_told_where_the_store_master_is(self):
+        """It runs no master of its own, so an unnamed one leaves it writing into a store nobody else reads."""
+        with pytest.raises(AssertionError, match="master_server_address"):
+            _validate_deploy_component(
+                self._parse(["--deploy-component", "trainer", "--object-store-backend", "mooncake"])
+            )
+
+    def test_the_store_master_address_has_to_carry_a_port(self):
+        """A host without a port cannot be dialed, and the failure would surface as a hang much later."""
+        with pytest.raises(AssertionError, match="master_server_address"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "trainer",
+                        "--object-store-backend",
+                        "mooncake",
+                        "--mooncake-store-init-kwargs",
+                        '{"master_server_address": "the-master"}',
+                    ]
+                )
+            )
+
+    def test_a_trainer_deployment_is_still_asked_where_the_store_master_is(self):
+        """The kubernetes default that spares a whole run from naming its own store must not answer for a
+        deployment that runs no master, or the assert above never fires again and the trainer quietly dials
+        a master that is not there."""
+        args = _parse_deploy_args(
+            ["--deploy-component", "trainer", "--object-store-backend", "mooncake", *_SPLIT_RUN_UUID_ARGS]
+        )
+
+        with pytest.raises(AssertionError, match="master_server_address"):
+            miles_validate_args(args)
+
+    def test_a_primary_deployment_is_still_given_the_store_it_starts(self):
+        """It runs the master itself, so the launcher's assert on these kwargs must still find them."""
+        args = _parse_deploy_args([*_PRIMARY_ARGS, *_SPLIT_RUN_UUID_ARGS])
+
+        miles_validate_args(args)
+
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs())
+
+    def test_a_primary_deployment_has_to_be_told_where_the_trainer_is(self):
+        """Nothing derives another release's pod names, so an unnamed trainer is unreachable."""
+        with pytest.raises(AssertionError, match="--trainer-controller-addrs"):
+            _validate_deploy_component(self._parse(["--deploy-component", "primary", *_SHARED_STORE_ARGS]))
+
+    def test_a_fully_addressed_primary_deployment_validates(self):
+        """The address is what makes an orchestration script able to run without its own trainer."""
+        _validate_deploy_component(self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
+
+    def test_a_primary_deployment_shares_an_object_store_too(self):
+        """It writes the rollout data the trainer deployment reads, which its own store alone cannot carry."""
+        with pytest.raises(AssertionError, match="--object-store-backend"):
+            _validate_deploy_component(self._parse([*_PRIMARY_ARGS, "--object-store-backend", "ray"]))
+
+    @pytest.mark.parametrize("component", ["trainer", "all"])
+    def test_refuses_a_static_address_for_the_trainer_this_launch_deploys_itself(self, component):
+        """A static address describes what another launch deploys, so one for our own release is a contradiction."""
+        with pytest.raises(AssertionError, match="--trainer-controller-addrs"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        component,
+                        "--trainer-controller-addrs",
+                        "10.0.0.1:8000",
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_a_split_run_keeps_the_api_server_of_the_half_that_drives_it(self):
+        """Its api server answers for the cells it deploys, which is a smaller set, not an empty one."""
+        args = self._parse_validated([*_PRIMARY_ARGS, "--use-fault-tolerance", *_SHARED_STORE_ARGS])
+
+        assert args.api_server_port
+
+    def test_a_trainer_deployment_keeps_the_fault_tolerance_of_its_own_cells(self):
+        """Its controller watches its own ranks, and it runs no api server to be blind with."""
+        _validate_deploy_component(
+            self._parse_validated(
+                [
+                    "--deploy-component",
+                    "trainer",
+                    "--use-fault-tolerance",
+                    "--ft-components",
+                    "train",
+                    *_SHARED_STORE_ARGS,
+                ]
+            )
+        )
+
+    def test_refuses_to_split_a_colocated_run(self):
+        """Colocated trainers and engines share gpus, so they can only be installed as one unit."""
+        with pytest.raises(AssertionError, match="--colocate"):
+            _validate_deploy_component(self._parse(["--deploy-component", "trainer", "--colocate"]))
+
+    @pytest.mark.parametrize("component", ["trainer", "primary"])
+    def test_refuses_to_split_a_ray_run_whose_workers_are_actor_handles(self, component):
+        """A ray-comm worker is reached by a handle of its own launch, so the other half could never dial it."""
+        with pytest.raises(AssertionError, match="--worker-comm-backend ray"):
+            _validate_deploy_component(
+                self._parse([*_RAY_ACTOR_ARGS, "--deploy-component", component, *_SHARED_STORE_ARGS])
+            )
+
+    def test_splits_a_ray_run_whose_workers_speak_rpc(self):
+        """Its trainer controllers listen on rpc ports, which a launch against another ray cluster can dial."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
+
+    def test_the_dialing_half_of_a_ray_run_splits_too(self):
+        """The primary half runs the script, and rpc is what lets it call a trainer it never deployed."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, *_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
+
+    def test_refuses_a_primary_deployment_that_leaves_one_of_its_roles_unaddressed(self):
+        """Installing the release first and finding the critic missing at init leaves a broken run running."""
+        args = self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS])
+        args.use_critic = True
+
+        with pytest.raises(AssertionError, match=r"--trainer-controller-addrs must name each of .* exactly once"):
+            _validate_deploy_component(args)
+
+    def test_refuses_an_address_that_is_not_a_host_and_port(self):
+        """An unparseable address is found by the launch that installs the release, not by the one that dials it."""
+        with pytest.raises(AssertionError, match="host:port"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "primary",
+                        "--trainer-controller-addrs",
+                        "actor=10.0.0.1",
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
 
 
 class TestEvalSglangOverrides:

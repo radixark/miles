@@ -11,6 +11,7 @@ from miles.backends.megatron_utils.megatron_config import resolve_args_checkpoin
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
+from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
@@ -24,6 +25,7 @@ from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.object_store_config import MOONCAKE_MASTER_ADDRESS_KEY, compute_mooncake_init_kwargs
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 from miles.utils.workers.argv_utils import with_relax_parser_required_args
@@ -2939,6 +2941,62 @@ def _compute_custom_inference_engine_provider_path(args: argparse.Namespace) -> 
     return _BACKEND_ENGINE_PROVIDER_PATH
 
 
+def _validate_deploy_component(args: argparse.Namespace) -> None:
+    component = DeployComponent(args.deploy_component)
+
+    assert not (
+        component.selects(DeployComponent.TRAINER) and args.trainer_controller_addrs is not None
+    ), f"--deploy-component {component.value} deploys the trainer itself, so drop --trainer-controller-addrs"
+
+    if not component.is_split():
+        return
+
+    cluster_backend = ClusterBackend(args.cluster_backend)
+    assert cluster_backend is ClusterBackend.KUBERNETES or (
+        cluster_backend is ClusterBackend.RAY and WorkerCommBackend(args.worker_comm_backend) is WorkerCommBackend.RPC
+    ), (
+        f"--deploy-component {component.value} needs --cluster-backend {ClusterBackend.KUBERNETES.value}, or "
+        f"{ClusterBackend.RAY.value} with --worker-comm-backend {WorkerCommBackend.RPC.value} and a ray cluster "
+        f"per deployment; got --cluster-backend {args.cluster_backend} --worker-comm-backend "
+        f"{args.worker_comm_backend}"
+    )
+
+    assert (
+        not args.colocate
+    ), f"--deploy-component {component.value} cannot be combined with --colocate, which shares gpus across the two"
+
+    _validate_shared_object_store(args, component=component)
+
+    if not component.deploys_orchestration_script():
+        return
+
+    assert (
+        args.trainer_controller_addrs is not None
+    ), f"--deploy-component {component.value} deploys no trainer, so it needs --trainer-controller-addrs"
+    _validate_trainer_controller_addrs(args)
+
+
+def _validate_trainer_controller_addrs(args: argparse.Namespace) -> None:
+    external_trainer_controller_addrs(args, trainer_ids=compute_trainer_ids(args))
+
+
+def _validate_shared_object_store(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    assert ObjectStoreBackend(args.object_store_backend) == ObjectStoreBackend.MOONCAKE, (
+        f"--deploy-component {component.value} needs --object-store-backend "
+        f"{ObjectStoreBackend.MOONCAKE.value}, shared by every deployment of the run"
+    )
+
+    if component.deploys_orchestration_script():
+        return
+
+    address = (args.mooncake_store_init_kwargs or {}).get(MOONCAKE_MASTER_ADDRESS_KEY)
+    assert isinstance(address, str) and ":" in address, (
+        f"--deploy-component {component.value} runs no object store master, so it needs "
+        f'--mooncake-store-init-kwargs \'{{"{MOONCAKE_MASTER_ADDRESS_KEY}": "<host>:<port>"}}\' '
+        f"(got {address!r})"
+    )
+
+
 _FT_DEFAULT_COMPONENTS: list[str] = ["rollout"]
 
 
@@ -3654,6 +3712,11 @@ def miles_validate_args(args):
                 f"{ObjectStoreBackend.MOONCAKE.value} under --cluster-backend {ClusterBackend.KUBERNETES.value}."
             )
             args.object_store_backend = ObjectStoreBackend.MOONCAKE.value
+        if (
+            not args.mooncake_store_init_kwargs
+            and DeployComponent(args.deploy_component).deploys_orchestration_script()
+        ):
+            args.mooncake_store_init_kwargs = compute_mooncake_init_kwargs()
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 
@@ -3709,6 +3772,8 @@ def miles_validate_args(args):
 
     if args.mini_ft_controller_enable and args.api_server_port == 0:
         raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
+
+    _validate_deploy_component(args)
 
 
 def validate_skip_actor_forward_only(args) -> None:
