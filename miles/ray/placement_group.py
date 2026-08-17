@@ -221,11 +221,11 @@ async def wait_external_trainers(args) -> None:
         for trainer_id in trainer_ids
     ]
     identities = await asyncio.gather(*[handle.get_deployment_identity() for handle in handles])
-    for identity in identities:
-        _assert_external_trainer_in_run(identity, args=args)
+    for trainer_id, identity in zip(trainer_ids, identities, strict=True):
+        _assert_external_trainer_in_run(identity, args=args, trainer_id=trainer_id)
 
 
-def _assert_external_trainer_in_run(identity: DeploymentIdentity, *, args) -> None:
+def _assert_external_trainer_in_run(identity: DeploymentIdentity, *, args, trainer_id: str | None = None) -> None:
     assert identity.run_uuid == args.run_uuid, (
         f"{TRAINER_CONTROLLER_ADDRS_FLAG} names the {identity.deploy_component} deployment of run "
         f"{identity.run_uuid}, but this launch drives run {args.run_uuid}: every deployment a split run reaches has "
@@ -236,6 +236,10 @@ def _assert_external_trainer_in_run(identity: DeploymentIdentity, *, args) -> No
         f"{identity.run_uuid}, and only a deployment that carries nothing but the trainer is reached by address: "
         f"an {DeployComponent.ALL.value} release of this run runs an orchestration script of its own, so both "
         f"scripts would drive the same trainer"
+    )
+    assert identity.deploy_instance_id is None or identity.deploy_instance_id == trainer_id, (
+        f"trainer {trainer_id!r} answers as deployment {identity.deploy_instance_id!r}; "
+        f"{TRAINER_CONTROLLER_ADDRS_FLAG} entries are keyed by trainer id"
     )
 
 

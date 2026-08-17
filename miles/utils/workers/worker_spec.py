@@ -98,6 +98,13 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     meta: SpecMetaFn | None = None
     deploy_component: DeployComponent = DeployComponent.PRIMARY
 
+    @model_validator(mode="after")
+    def _reject_selector_component(self) -> "BaseWorkerSpec":
+        assert (
+            self.deploy_component is not DeployComponent.ALL
+        ), f"pool {self.name} must name the one component it is deployed with, not the selector for all of them"
+        return self
+
 
 class HostAndPort(FrozenStrictBaseModel):
     host: str

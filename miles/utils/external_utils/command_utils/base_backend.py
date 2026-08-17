@@ -36,6 +36,7 @@ class ExecuteTrainConfig:
     output_dir: str = "/root/shared_data"
     cluster_backend: ClusterBackend = ClusterBackend.RAY
     deploy_component: DeployComponent = DeployComponent.ALL
+    deploy_instance_id: str | None = None
     run_id: str = field(default_factory=create_run_id)
     run_uuid: str | None = None
     namespace: str = ""
@@ -115,6 +116,8 @@ class BaseCommandBackend(ABC):
             train_argv, deploy_component=self.config.deploy_component.value
         )
         train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {self.config.deploy_component.value}"
+        if self.config.deploy_instance_id is not None:
+            train_args = f"{train_args} --deploy-instance-id {self.config.deploy_instance_id}"
 
         self._execute_train_inner(
             ExecuteTrainRequest(
