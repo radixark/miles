@@ -26,12 +26,12 @@ ranks at `--async-max-concurrent-samples 128`).
 
 | | |
 |---|---|
-| Training | 8 nodes, TP2 / CP4 / PP4 (18-20-20-20 layer split) / EP8. CP4 splits `--max-seq-len` (default 131k) to ~33k per rank; DP1 leaves optimizer state unsharded, so `--stream-optimizer-state-to-disk` is mandatory, not an optimization |
+| Training | 8 nodes, TP2 / CP4 / PP4 (18-20-20-20 layer split) / EP8. CP4 splits `--max-seq-len` (default 65k) to ~16k per rank; DP1 leaves optimizer state unsharded, so `--stream-optimizer-state-to-disk` is mandatory, not an optimization |
 | Inference | 8 nodes, one 4-GPU engine each: dp-attention (dp=4) + deepep, EAGLE 1/1/2, fp8 KV. `--sglang-config low-latency` switches to one TP8 engine per node pair with EAGLE 5/1/6 |
 | KV budget | `--sglang-mem-fraction-static 0.85` → ~553k KV tokens per dp rank. At the older 0.75 the pool was 26k tokens: trajectories hard-failed past ~26k input, 84% of samples truncated, and one long trajectory saturated a rank |
 | Async | `train_async.py` + `FullyAsyncRolloutFn`; 128 in-flight trajectories decoupled from the 64-sample train batch; `--rollout-submission-granularity sample` frees a submission slot per finished sample rather than per finished group |
 | Routing | dp-attention implies dp-aware routing (set automatically); without it, requests pile onto one dp rank per engine while the other three idle |
-| Episodes | 30 turns, 3600 s wall clock, 16k tokens/turn, 131k session (`--max-seq-len`); thinking at GLM-5.2's default `Reasoning Effort: Max` |
+| Episodes | 30 turns, 3600 s wall clock, 8k tokens/turn, 65k session (`--max-seq-len`); thinking at GLM-5.2's default `Reasoning Effort: Max` |
 | Eval | every 10 rollouts over a held-out tbench2 split, on the shared rollout engines (the producer pauses). 20 tasks x 2 samples has σ≈0.08 — single-eval movements below that are noise; raise `--n-samples-per-eval-prompt` to tighten |
 | Sandboxes | one per episode, deleted at episode end; labelled `openenv-tbench2-task` / `openenv-launcher` / `openenv-run-id` |
 

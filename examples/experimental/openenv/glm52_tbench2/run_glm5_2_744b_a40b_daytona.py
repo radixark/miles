@@ -57,7 +57,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     global_batch_size: int = 64
     rollout_max_response_len: int = 8192
     # whole-session budget; CP splits it, so it also sets per-rank activations
-    max_seq_len: int = 131072
+    max_seq_len: int = 65536
     # Max concurrently generating trajectories, decoupled from the train batch;
     # also sizes the Daytona pool so every in-flight trajectory has a sandbox.
     async_max_concurrent_samples: int = 128
