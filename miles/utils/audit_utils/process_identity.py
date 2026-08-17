@@ -19,6 +19,7 @@ class SimpleProcessIdentity(_ProcessIdentityBase):
         "inference_controller",
         "multi_lora_controller",
         "worker_manager",
+        "registration_reporter",
     ]
 
 
