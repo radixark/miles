@@ -316,7 +316,7 @@ Recipe: Qwen2.5-0.5B-Instruct, GRPO, 250 rollouts, over the gsm8k RL recipe of
         reference wandb curves
 Layout: mirrors kill_train__dp2_cp2__moe_5layer - 2 cells x CP2 on 4 train GPUs + 4 rollout engines
         x 1 GPU, disaggregated
-Faults: scenario_random_crash's external injection loop (shared conftest_ft/fault_injection.py),
+Faults: scenario_random_crash's external injection loop (shared conftest_ft/fault_injection/),
         against "actor" cells
 
 Assertions:
