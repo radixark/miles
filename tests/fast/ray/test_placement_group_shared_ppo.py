@@ -120,7 +120,7 @@ def _patch_train_controller_handles(monkeypatch, *, restored: dict[str, list[int
     monkeypatch.setattr(
         placement_group_module,
         "create_trainer_controller_handle",
-        lambda *, capability, trainer_id: _Handle(trainer_id),
+        lambda args, *, capability, trainer_id: _Handle(trainer_id),
     )
     return handles
 
@@ -149,6 +149,7 @@ def _training_models_args(**overrides):
         "critic_save": "/ckpt/run_critic",
         "critic_lr": 2e-6,
         "critic_lr_warmup_iters": 3,
+        "trainer_controller_addrs": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -292,3 +293,37 @@ async def test_train_parallel_config_comes_from_the_actor_not_the_critic(monkeyp
     )
 
     assert rollout_executor.train_parallel_config == {"dp_size": 2}
+
+
+class TestTheRunWaitsForEveryTrainerItReachesByAddress:
+    @staticmethod
+    def _patched(monkeypatch) -> list[list[tuple[str, int]]]:
+        dialled: list[list[tuple[str, int]]] = []
+        _patch_train_controller_handles(monkeypatch)
+
+        async def _dial(addrs) -> None:
+            dialled.append([(addr.host, addr.port) for addr in addrs])
+
+        monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", _dial)
+        return dialled
+
+    async def test_it_dials_every_addressed_controller_before_any_of_them_is_inited(self, monkeypatch):
+        """A deployment installed a moment earlier is not listening yet, and init would simply fail against it."""
+        dialled = self._patched(monkeypatch)
+        args = _training_models_args(
+            megatron_config=None, trainer_controller_addrs=["actor=10.0.0.1:8000", "critic=10.0.0.2:9000"]
+        )
+
+        await placement_group_module.create_training_models(args, rollout_executor=_RecordingRolloutExecutor())
+
+        assert dialled == [[("10.0.0.1", 8000), ("10.0.0.2", 9000)]]
+
+    async def test_a_run_that_deploys_its_own_trainer_waits_for_nobody(self, monkeypatch):
+        """It installs the trainer itself, so there is no other deployment whose readiness it could dial."""
+        dialled = self._patched(monkeypatch)
+
+        await placement_group_module.create_training_models(
+            _training_models_args(), rollout_executor=_RecordingRolloutExecutor()
+        )
+
+        assert dialled == []

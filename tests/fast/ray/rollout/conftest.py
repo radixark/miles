@@ -110,6 +110,7 @@ def make_args(**overrides: Any) -> Namespace:
         session_server_port=None,
         session_server_workers=1,
         run_uuid="0123456789abcdef",
+        trainer_controller_addrs=None,
         # external rollout
         rollout_external=False,
         rollout_external_engine_addrs=None,
@@ -239,6 +240,13 @@ def make_sglang_config_yaml(
         if "num_gpus_per_engine" in g:
             lines.append(f"        num_gpus_per_engine: {g['num_gpus_per_engine']}")
     return "\n".join(lines) + "\n"
+
+
+def make_args_with_sglang_config(tmp_path, *, server_groups: list[dict] | None = None, **overrides: Any) -> Namespace:
+    """Args namespace pointed at a freshly written sglang config file."""
+    config_path = tmp_path / "sglang.yaml"
+    config_path.write_text(make_sglang_config_yaml(server_groups=server_groups))
+    return make_args(sglang_config=str(config_path), **overrides)
 
 
 # --------------------------- server cell fixtures ---------------------------
