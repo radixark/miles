@@ -2,10 +2,10 @@
 helm dependency build <REPO_ROOT>/charts/miles-run
 
 ### 1
-kubectl delete job miles-run-260101-000000-000-uninstall --namespace rl --ignore-not-found
+kubectl delete job miles-run-260101-000000-000-all-uninstall --namespace rl --ignore-not-found
 
 ### 2
-helm upgrade --install miles-run-260101-000000-000 <REPO_ROOT>/charts/miles-run --namespace rl --values <SANDBOX>/infra.yaml --values <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/values/values-260101-000000-000001.yaml
+helm upgrade --install miles-run-260101-000000-000-all <REPO_ROOT>/charts/miles-run --namespace rl --values <SANDBOX>/infra.yaml --values <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/values/values-260101-000000-000001.yaml
 
 ### pseudo file 1
 run:
@@ -27,7 +27,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: inference-engine-0-0
-    objectName: miles-run-260101-000000-000-inference-engine-0-0
+    objectName: miles-run-2601-98cf6da492ec-inference-engine-0-0
     poolId: inference-engine-0-0
     ports:
     - name: primary
@@ -41,11 +41,11 @@ run:
     size: 2
   launchRecord: <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/launches/launch-260101-000000-000001.json
   objectNames:
-    colocatePairing: miles-run-260101-000000-000-colocate-pairing
-    mooncakeMaster: miles-run-260101-000000-000-mooncake-master
-    orchestrator: miles-run-260101-000000-000-orchestrator
-    uninstall: miles-run-260101-000000-000-uninstall
-    uninstallManifest: miles-run-260101-000000-000-uninstall-manifest
+    colocatePairing: miles-run-260101-000000-000-all-colocate-pairing
+    mooncakeMaster: miles-run-260101-000000-000-all-mooncake-master
+    orchestrator: miles-run-260101-000000-000-all-orchestrator
+    uninstall: miles-run-260101-000000-000-all-uninstall
+    uninstallManifest: miles-run-260101-98cf6da492ec-uninstall-manifest
   orchestrator:
     command:
     - python
@@ -67,7 +67,7 @@ run:
     - --port
     - '30000'
     name: inference-router-0
-    objectName: miles-run-260101-000000-000-inference-router-0
+    objectName: miles-run-260101-98cf6da492ec-inference-router-0
     poolId: inference-router-0
     ports:
     - name: primary
@@ -98,7 +98,7 @@ run:
     meta:
       gpu_ids: 0,1,2,3,4,5,6,7
     name: trainer-engine-actor
-    objectName: miles-run-260101-000000-000-trainer-engine-actor
+    objectName: miles-run-2601-98cf6da492ec-trainer-engine-actor
     poolId: trainer-engine-actor
     ports:
     - name: master

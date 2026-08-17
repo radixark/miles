@@ -529,7 +529,7 @@
       "additionalProperties": false,
       "properties": {
         "id": {
-          "maxLength": 40,
+          "maxLength": 33,
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "type": "string"
         },
