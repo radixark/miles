@@ -50,7 +50,7 @@ async def create_rollout_servers(
 
 
 def _compute_expected_num_cells(engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
-    if (n := engine_provider.expected_num_cells(model_id=model_cfg.name)) is not None:
+    if (n := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
         return n
     return model_cfg.num_server_cells
 

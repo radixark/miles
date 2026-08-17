@@ -308,8 +308,8 @@ class TestStaticInferenceEngineWorkerProvider:
         }
         provider = await self._make_provider(monkeypatch, args, payloads)
 
-        assert provider.expected_num_cells(model_id="default") == 2
-        assert provider.expected_num_cells(model_id="ghost") == 0
+        assert provider.expected_num_cells(group_id="default") == 2
+        assert provider.expected_num_cells(group_id="ghost") == 0
 
     async def test_the_first_announcement_completes_before_the_watch_is_established(self, monkeypatch):
         """The controller treats a returned watch as the initial sync being done."""
