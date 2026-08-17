@@ -24,7 +24,8 @@ def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
     state_of_cell_name: dict[str, _CellState] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
-            state_of_cell_name[event.cell_name] = _CellState.INJECTED
+            if event.succeeded:
+                state_of_cell_name[event.cell_name] = _CellState.INJECTED
             continue
         for name, state in list(state_of_cell_name.items()):
             info = event.cell_infos.get(name)
@@ -57,6 +58,31 @@ def compute_cells_with_unfinished_recovery(events: list[Event], *, cell_type: st
     }
 
 
+def compute_successful_form_names(events: list[Event], *, cell_type: str) -> set[str]:
+    cell_type_of_name = _compute_cell_type_of_name(events)
+    return {
+        event.form_name
+        for event in events
+        if isinstance(event, InjectionEvent)
+        and event.succeeded
+        and cell_type_of_name.get(event.cell_name) == cell_type
+    }
+
+
+def compute_forms_drawn_without_success(events: list[Event]) -> list[tuple[str, str]]:
+    cell_type_of_name = _compute_cell_type_of_name(events)
+    drawn: set[tuple[str, str]] = set()
+    worked: set[tuple[str, str]] = set()
+    for event in events:
+        if not isinstance(event, InjectionEvent):
+            continue
+        key = (cell_type_of_name.get(event.cell_name, ""), event.form_name)
+        drawn.add(key)
+        if event.succeeded:
+            worked.add(key)
+    return sorted(drawn - worked)
+
+
 def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedCellState]]:
     return {
         name: states
@@ -80,7 +106,8 @@ def _compute_cell_events(events: list[Event]) -> dict[str, list[_CellEvent]]:
     cell_events_of_name: dict[str, list[_CellEvent]] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
-            cell_events_of_name.setdefault(event.cell_name, []).append(_CellEvent(kind="injected"))
+            if event.succeeded:
+                cell_events_of_name.setdefault(event.cell_name, []).append(_CellEvent(kind="injected"))
             continue
         for name, info in event.cell_infos.items():
             cell_events_of_name.setdefault(name, []).append(_CellEvent(kind="observed", state=info.state))
