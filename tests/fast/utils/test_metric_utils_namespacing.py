@@ -1,4 +1,4 @@
-from miles.utils.metric_utils import namespace_metrics
+from miles.utils.metric_utils import namespace_metrics, strip_metrics_namespace
 
 
 class TestNamespaceMetrics:
@@ -19,3 +19,15 @@ class TestNamespaceMetrics:
 
         assert log_dict == {"alpha/rollout/reward": 1.0, "alpha/rollout/step": 7}
         assert step_key == "alpha/rollout/step"
+
+
+class TestStripMetricsNamespace:
+    def test_another_policys_namespace_is_left_unchanged(self) -> None:
+        """Normalizing one policy must preserve every key owned by another policy."""
+        metrics = {"alpha/train/loss": 1.0, "beta/train/loss": 2.0, "beta/train/step": 7}
+
+        assert strip_metrics_namespace(metrics, trainer_model_id="alpha") == {
+            "train/loss": 1.0,
+            "beta/train/loss": 2.0,
+            "beta/train/step": 7,
+        }
