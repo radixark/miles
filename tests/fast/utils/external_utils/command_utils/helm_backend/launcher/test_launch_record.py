@@ -24,8 +24,8 @@ def _plan(**overrides) -> LaunchPlan:
     return LaunchPlan(**fields)
 
 
-def _record(**overrides):
-    return LaunchRecord.compute(plan=_plan(**overrides), values_file=VALUES_FILE)
+def _record(*, reachable_at=None, **overrides):
+    return LaunchRecord.compute(plan=_plan(**overrides), values_file=VALUES_FILE, reachable_at=reachable_at or {})
 
 
 class TestComputeLaunchRecord:
@@ -85,3 +85,15 @@ class TestWriteLaunchRecord:
         """One file per launch is what keeps a relaunched run's earlier launches readable."""
         assert RunFiles.new_record_file(run_directory=tmp_path) != RunFiles.new_record_file(run_directory=tmp_path)
         assert RunFiles.new_record_file(run_directory=tmp_path).parent == tmp_path / "launches"
+
+
+class TestRecordsHowOtherDeploymentsReachThisOne:
+    def test_a_trainer_release_records_the_address_the_driving_launch_has_to_be_given(self) -> None:
+        """Nothing else prints it, and the digest in the name makes it impossible to derive by hand."""
+        record = _record(reachable_at={"actor": "host-0.host.rl.svc.cluster.local:8000"})
+
+        assert record.reachable_at == {"actor": "host-0.host.rl.svc.cluster.local:8000"}
+
+    def test_a_release_nobody_dials_records_no_address(self) -> None:
+        """A primary release is reached by nothing, so an address there would be a name without a reader."""
+        assert _record().reachable_at == {}

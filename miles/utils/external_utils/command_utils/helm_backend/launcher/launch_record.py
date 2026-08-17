@@ -19,9 +19,10 @@ class LaunchRecord(FrozenStrictBaseModel):
     worker_argv: list[str]
     orchestrator_command: list[str]
     env: dict[str, str]
+    reachable_at: dict[str, str]
 
     @classmethod
-    def compute(cls, *, plan: LaunchPlan, values_file: Path) -> LaunchRecord:
+    def compute(cls, *, plan: LaunchPlan, values_file: Path, reachable_at: dict[str, str]) -> LaunchRecord:
         return cls(
             run_id=plan.run_id,
             release=plan.release,
@@ -31,6 +32,7 @@ class LaunchRecord(FrozenStrictBaseModel):
             worker_argv=redact_argv(plan.worker_argv),
             orchestrator_command=redact_argv(plan.orchestrator_command),
             env=redact_env_vars(plan.env),
+            reachable_at=reachable_at,
         )
 
     def write(self, *, path: Path) -> None:
