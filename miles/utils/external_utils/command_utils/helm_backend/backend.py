@@ -45,6 +45,12 @@ class KubernetesCommandBackend(BaseCommandBackend):
             "The api server of a kubernetes run answers on the orchestrator's pod, which is named after the "
             "release; set ExecuteTrainConfig.run_id and .namespace before asking where that pod is"
         )
+        assert not self.config.deploy_component.is_split(), (
+            f"The api server, and the mini ft controller polling it, answer for the cells of their own deployment, "
+            f"so a split run is refused one (--api-server-port 0) and nothing listens on the "
+            f"{self.config.deploy_component.value} deployment for this host to name"
+        )
         return RunNames.orchestrator_host(
-            release=RunNames.release(run_id=self.config.run_id), namespace=self.config.namespace
+            release=RunNames.release(run_id=self.config.run_id, deploy_component=self.config.deploy_component),
+            namespace=self.config.namespace,
         )
