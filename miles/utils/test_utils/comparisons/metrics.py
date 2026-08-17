@@ -1,6 +1,7 @@
 import logging
 import math
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -33,6 +34,7 @@ def compare_metrics(
 
     issues: list[str] = []
     issues += _check_event_counts(baseline_events, target_events, baseline_dir, target_dir)
+    issues += _check_events_line_up(baseline_events, target_events)
 
     if not issues:
         for step_idx, (b_event, t_event) in enumerate(zip(baseline_events, target_events, strict=True)):
@@ -47,6 +49,23 @@ def compare_metrics(
         f"  - {i}" for i in issues
     )
     print(f"MetricEvent comparison passed: {len(baseline_events)} steps compared")
+
+
+def read_rollout_completion_times(dump_dir: str) -> list[tuple[int, datetime]]:
+    events = _keep_only_final_attempt(_read_metric_events(Path(dump_dir)))
+    return sorted(
+        ((event.rollout_id, event.timestamp) for event in events if event.rollout_id is not None),
+        key=lambda one: one[1],
+    )
+
+
+def _check_events_line_up(baseline_events: list[MetricEvent], target_events: list[MetricEvent]) -> list[str]:
+    return [
+        f"step {index}: baseline is rollout {b.rollout_id} while target is rollout {t.rollout_id}, so the two "
+        f"sides are not describing the same step"
+        for index, (b, t) in enumerate(zip(baseline_events, target_events, strict=False))
+        if b.rollout_id != t.rollout_id
+    ]
 
 
 def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:
