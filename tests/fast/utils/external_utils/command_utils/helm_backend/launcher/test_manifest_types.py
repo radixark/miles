@@ -78,24 +78,47 @@ class TestIdentity:
             assert _parse(_rendered(service, service)).by_identity
 
 
+class TestFlagValue:
+    def test_reads_what_the_installed_release_was_told(self):
+        """The pod command line is the only place a launch can read back what the one before it decided."""
+        manifest = _parse(_rendered(_stateful_set(command=["python", "--state-file", "/runs/a.state"])))
+
+        assert (
+            manifest.flag_value("--state-file", stateful_set=ORCHESTRATOR, container="orchestrator") == "/runs/a.state"
+        )
+
+    def test_reads_only_the_object_it_was_asked_about(self):
+        """Every pod of a run is launched by the same image, so a flag found elsewhere means something else."""
+        manifest = _parse(_rendered(_stateful_set(command=["python", "--state-file", "/runs/a.state"])))
+
+        assert manifest.flag_value("--state-file", stateful_set="another-run", container="orchestrator") is None
+
+    def test_reads_only_the_container_it_was_asked_about(self):
+        """One pod can carry a sidecar, and its command line answers for the sidecar only."""
+        manifest = _parse(_rendered(_stateful_set(command=["python", "--state-file", "/runs/a.state"])))
+
+        assert manifest.flag_value("--state-file", stateful_set=ORCHESTRATOR, container="worker") is None
+
+    def test_refuses_a_flag_the_command_leaves_unanswered(self):
+        """Reading past the end would crash with an index, which says nothing about which release is malformed."""
+        manifest = _parse(_rendered(_stateful_set(command=["python", "--state-file"])))
+
+        with pytest.raises(AssertionError, match="takes a value"):
+            manifest.flag_value("--state-file", stateful_set=ORCHESTRATOR, container="orchestrator")
+
+
 class TestStateFile:
     def test_finds_the_file_the_installed_orchestrator_already_writes(self):
         """Re-attaching means waiting on the verdict of the launch that is running, not opening a second one."""
         manifest = _parse(_rendered(_stateful_set(command=["python", "--state-file", "/runs/a.state"])))
 
-        assert str(manifest.state_file(container="orchestrator")) == "/runs/a.state"
+        assert str(manifest.state_file(stateful_set=ORCHESTRATOR, container="orchestrator")) == "/runs/a.state"
 
     def test_names_nothing_when_no_container_of_that_name_carries_the_flag(self):
         """A release installed without an orchestrator has no verdict to inherit."""
         manifest = _parse(_rendered(_stateful_set(command=["python", "-m", "something"])))
 
-        assert manifest.state_file(container="orchestrator") is None
-
-    def test_reads_only_the_container_it_was_asked_about(self):
-        """Every pod of a run is launched by the same image, and the flag only means this on the orchestrator."""
-        manifest = _parse(_rendered(_stateful_set(command=["python", "--state-file", "/runs/a.state"])))
-
-        assert manifest.state_file(container="worker") is None
+        assert manifest.state_file(stateful_set=ORCHESTRATOR, container="orchestrator") is None
 
 
 class TestKindsItDoesNotModel:
@@ -172,4 +195,4 @@ class TestKindsItDoesNotModel:
             )
         )
 
-        assert manifest.state_file(container="orchestrator") is None
+        assert manifest.state_file(stateful_set="engine", container="orchestrator") is None

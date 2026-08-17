@@ -183,7 +183,9 @@ def _compute_state_file(*, installed_manifest: Manifest | None, run_directory: P
     if installed_manifest is None:
         return RunFiles.new_state_file(run_directory=run_directory)
 
-    attached_state_file = installed_manifest.state_file(container=naming.ORCHESTRATOR_COMPONENT)
+    attached_state_file = installed_manifest.state_file(
+        stateful_set=RunNames.orchestrator_object(release=release), container=naming.ORCHESTRATOR_COMPONENT
+    )
     assert attached_state_file is not None, (
         f"Run {release} is installed but its orchestrator names no state file, so this launch cannot tell what it "
         f"is watching; uninstall it, or launch under a new run id"
