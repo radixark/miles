@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 REQUIRED_NAMESPACED_PERMISSIONS: tuple[tuple[str, str], ...] = (
     ("list", "pods"),
     ("delete", "pods"),
+    ("create", "pods/exec"),
     ("list", "leaderworkersets.leaderworkerset.x-k8s.io"),
 )
 
@@ -62,7 +63,7 @@ def kubernetes_availability_of_namespace(namespace: str, *, namespace_source: st
         return BackendAvailability(False, "LeaderWorkerSet is not served by this cluster; an admin has to add it")
 
     for verb, resource in REQUIRED_NAMESPACED_PERMISSIONS:
-        allowed = _run_kubectl(["auth", "can-i", verb, resource, "--namespace", namespace])
+        allowed = _run_kubectl(["auth", "can-i", verb, *_compute_can_i_target(resource), "--namespace", namespace])
         if allowed.stdout.strip() != "yes":
             return BackendAvailability(False, f"this account may not {verb} {resource} in namespace {namespace}")
 
@@ -75,6 +76,11 @@ def ray_availability() -> BackendAvailability:
     except ImportError:
         return BackendAvailability(False, "ray is not installed")
     return BackendAvailability(True, "ray is importable")
+
+
+def _compute_can_i_target(resource: str) -> list[str]:
+    target, _, subresource = resource.partition("/")
+    return [target, f"--subresource={subresource}"] if subresource else [target]
 
 
 def _run_kubectl(args: list[str]) -> subprocess.CompletedProcess[str]:
