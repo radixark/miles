@@ -31,7 +31,7 @@ from miles.utils.arguments import (
 from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
-from miles.utils.object_store_config import compute_mooncake_init_kwargs
+from miles.utils.object_store_config import compute_mooncake_init_kwargs_vanilla
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
@@ -68,6 +68,19 @@ _NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
 )
 _SGLANG_ARG_PREFIXES = ("sglang_", "eval_sglang_")
 _INHERITED_CREDENTIAL_PATTERN = re.compile(r"^(eval_)?(sglang|router)_(.*_)?(api_keys?|password)$")
+
+
+def _clear_mooncake_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "MOONCAKE_LOCAL_HOSTNAME",
+        "MOONCAKE_TE_META_DATA_SERVER",
+        "MOONCAKE_LOCAL_BUFFER_SIZE",
+        "MOONCAKE_PROTOCOL",
+        "MOONCAKE_DEVICE",
+        "MOONCAKE_MASTER",
+        "MOONCAKE_GLOBAL_SEGMENT_SIZE",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def make_class_with_add_arguments():
@@ -705,7 +718,7 @@ class TestClusterBackend:
         miles_validate_args(args)
 
         assert ":" in args.mooncake_store_init_kwargs["master_server_address"]
-        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs())
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs_vanilla())
 
     def test_a_named_store_configuration_is_left_alone(self):
         """A run that configured the store itself knows something the default cannot."""
@@ -717,6 +730,52 @@ class TestClusterBackend:
         miles_validate_args(args)
 
         assert args.mooncake_store_init_kwargs == {"master_server_address": "10.0.0.2:60000", "protocol": "rdma"}
+
+    def test_the_platform_environment_answers_the_store_defaults_of_a_kubernetes_run(self, monkeypatch):
+        """The invented defaults outranked the variables the platform configures its pods through."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.1.1.2:50051")
+        monkeypatch.setenv("MOONCAKE_PROTOCOL", "rdma")
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs["master_server_address"] == "10.1.1.2:50051"
+        assert args.mooncake_store_init_kwargs["protocol"] == "rdma"
+
+    def test_a_field_the_platform_environment_leaves_alone_keeps_the_launcher_default(self, monkeypatch):
+        """The launcher asserts every one of these kwargs exists, so none of them may go missing."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.1.1.2:50051")
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs_vanilla())
+        assert args.mooncake_store_init_kwargs["protocol"] == "tcp"
+
+    def test_a_named_store_configuration_still_outranks_the_environment(self, monkeypatch):
+        """A run that configured the store itself knows more than the pod's platform does."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.9.9.9:50051")
+        named = '{"master_server_address": "10.0.0.2:60000"}'
+        args = self._parse(
+            ["--cluster-backend", "kubernetes", "--mooncake-store-init-kwargs", named, "--num-rollout", "1"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs == {"master_server_address": "10.0.0.2:60000"}
+
+    def test_a_ray_run_is_given_no_store_configuration_by_the_environment(self, monkeypatch):
+        """The ray store reads none of these variables, and inventing kwargs would misreport the run."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.1.1.2:50051")
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs is None
 
     def test_a_ray_run_is_not_given_a_store_it_does_not_use(self):
         """The ray store needs none of this, and inventing kwargs would misreport what the run uses."""
@@ -970,7 +1029,7 @@ class TestDeployComponent:
 
         miles_validate_args(args)
 
-        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs())
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs_vanilla())
 
     def test_a_primary_deployment_has_to_be_told_where_the_trainer_is(self):
         """Nothing derives another release's pod names, so an unnamed trainer is unreachable."""
@@ -1009,7 +1068,7 @@ class TestDeployComponent:
         assert args.api_server_port
 
     def test_a_trainer_deployment_keeps_the_fault_tolerance_of_its_own_cells(self):
-        """Its controller watches its own ranks, and it runs no api server to be blind with."""
+        """Its controller watches its own ranks, and it serves them from an api server of its own."""
         _validate_deploy_component(
             self._parse_validated(
                 [
@@ -1022,6 +1081,13 @@ class TestDeployComponent:
                 ]
             )
         )
+
+    def test_refuses_a_trainer_deployment_asked_to_answer_for_cells_it_does_not_deploy(self):
+        """rollout defaults on, and its engines live in another release, which this launch cannot suspend."""
+        with pytest.raises(AssertionError, match="--ft-components train"):
+            _validate_deploy_component(
+                self._parse_validated(["--deploy-component", "trainer", "--use-fault-tolerance", *_SHARED_STORE_ARGS])
+            )
 
     def test_refuses_to_split_a_colocated_run(self):
         """Colocated trainers and engines share gpus, so they can only be installed as one unit."""
