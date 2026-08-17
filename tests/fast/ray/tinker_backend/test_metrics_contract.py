@@ -56,6 +56,23 @@ class TestMetricsValues:
         assert metrics_ppo["loss:sum"] == pytest.approx(expected)
         assert metrics_ppo["loss:sum"] != pytest.approx(metrics["loss:sum"])
 
+    def test_gspo_uses_one_sequence_ratio_and_weights(self):
+        sample = {
+            "tokens": [1, 1, 1, 1],
+            "response_length": 3,
+            "rollout_log_probs": [-1.0, -1.0, -1.0],
+            "advantages": [1.0, -2.0, 4.0],
+            "loss_weights": [1.0, 1.0, 0.0],
+        }
+        logprobs = [[-0.5, -1.5, 4.0]]
+        spec = {"loss_fn": "gspo", "loss_fn_config": {"clip_low_threshold": 0.9, "clip_high_threshold": 1.1}}
+
+        metrics = operation_result_metrics({"samples": [sample], "loss": spec}, logprobs)
+
+        ratio = math.exp(0.0)
+        expected = -min(ratio, 1.1) - min(ratio * -2.0, 0.9 * -2.0)
+        assert metrics["loss:sum"] == pytest.approx(expected)
+
     def test_degenerate_ratio_cannot_overflow_the_recompute(self):
         # exp(1000) would raise OverflowError AFTER the GPU work landed,
         # leaving the operation without a terminal result; the recompute clamps.

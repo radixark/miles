@@ -517,7 +517,7 @@ def tinker_loss_function(
     BatchPlan, keyed by the sample's batch-local ``operation lane`` (never by
     trainer slot — ``adapter_slots`` only routes the Multi-LoRA forward):
     linear cross-entropy ``Σ(-logp·w)``, importance sampling ``-Σ(ratio·A)``,
-    or the PPO clipped surrogate. Reduction is a plain token sum — chunk
+    PPO, or GSPO-token clipped surrogates. Reduction is a plain token sum — chunk
     additive, so K accumulated forward_backward operations produce the same
     gradient as one, and the client's ``loss_weights`` own the scale (no
     1/count normalization ever applies to tinker operations).
@@ -580,15 +580,32 @@ def tinker_loss_function(
         mask = local_masks[i].to(device=logp.device, dtype=logp.dtype)
         if loss_fn == "cross_entropy":
             sample_loss = -(logp * channel("loss_weights", i, loss_fn) * mask).sum()
-        elif loss_fn in ("importance_sampling", "ppo"):
-            ratio = torch.exp(logp - channel("rollout_log_probs", i, loss_fn))
+        elif loss_fn in ("importance_sampling", "ppo", "gspo"):
+            old_log_probs = channel("rollout_log_probs", i, loss_fn)
+            active_mask = mask
+            if loss_fn == "gspo":
+                active_mask = active_mask * channel("loss_weights", i, loss_fn)
+                full_logp = logp.detach()
+                full_old_log_probs = old_log_probs
+                full_active_mask = active_mask
+                if get_parallel_state().cp.size > 1:
+                    full_logp = all_gather_with_cp(full_logp, total_lengths[i], response_lengths[i])
+                    full_old_log_probs = all_gather_with_cp(old_log_probs, total_lengths[i], response_lengths[i])
+                    full_active_mask = all_gather_with_cp(active_mask, total_lengths[i], response_lengths[i])
+                sequence_log_ratio = (
+                    (full_logp - full_old_log_probs) * full_active_mask
+                ).sum() / full_active_mask.sum().clamp_min(1)
+                log_ratio = logp - logp.detach() + sequence_log_ratio.detach()
+                ratio = torch.exp(log_ratio.clamp(max=10))
+            else:
+                ratio = torch.exp(logp - old_log_probs)
             advantages = channel("advantages", i, loss_fn)
             surrogate = ratio * advantages
-            if loss_fn == "ppo":
+            if loss_fn in ("ppo", "gspo"):
                 low = config.get("clip_low_threshold", 0.8)
                 high = config.get("clip_high_threshold", 1.2)
                 surrogate = torch.minimum(surrogate, ratio.clamp(low, high) * advantages)
-            sample_loss = -(surrogate * mask).sum()
+            sample_loss = -(surrogate * active_mask).sum()
         else:
             raise ValueError(f"tinker operation in lane {operation_lanes[i]} requests unknown loss_fn '{loss_fn}'")
         loss = sample_loss if loss is None else loss + sample_loss

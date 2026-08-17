@@ -190,8 +190,9 @@ quotas are future work.
 ## v1 compatibility matrix
 
 Supported: text-only input; the synchronous training loop; 1-D shifted
-targets; `loss_fn ∈ {cross_entropy, importance_sampling, ppo}` (per-op clip
-config); per-call AdamParams; multi-chunk gradient accumulation with
+targets; `loss_fn ∈ {cross_entropy, importance_sampling, ppo, gspo}` (per-op
+clip config; GSPO-token uses sequence-level ratios and requires `weights`);
+per-call AdamParams; multi-chunk gradient accumulation with
 independent `optim_step`; latest-only sampler weights behind the publish
 barrier; named immutable `save_state` / `load_state` (create-from-checkpoint
 included, shape-fenced); optional `num_step` auto-retirement.
