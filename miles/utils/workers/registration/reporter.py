@@ -8,6 +8,8 @@ import random
 from dataclasses import dataclass, field
 
 from miles.utils.async_utils import AsyncLoopThread
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.logging_utils import configure_logger
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo
@@ -81,7 +83,9 @@ class RegistrationReporter:
 
 
 class RegistrationReporterWorker:
-    def __init__(self, *, reporter: RegistrationReporter) -> None:
+    def __init__(self, *, args, reporter: RegistrationReporter) -> None:
+        configure_logger(args, source=SimpleProcessIdentity(component="registration_reporter"))
+
         self._loop_thread = AsyncLoopThread()
         self._loop_thread.submit(reporter.run()).add_done_callback(_exit_on_reporter_stop)
 
