@@ -13,7 +13,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.http_utils import wrap_ipv6
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
@@ -340,9 +340,9 @@ class _BaseActorManager(Generic[SpecT]):
                 port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
                 await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
             allocated[port_info.name] = HostAndPort(
-                host=_wrap_ipv6(node_ip),
+                host=wrap_ipv6(node_ip),
                 port=port,
-                external_host=_wrap_ipv6(external_ip) if external_ip else None,
+                external_host=wrap_ipv6(external_ip) if external_ip else None,
             )
 
         self.self_addrs = allocated

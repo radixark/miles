@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING, Any
 
-from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.http_utils import wrap_ipv6
 from miles.utils.misc import merge_asserting_consistency
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.naming import compute_worker_name
@@ -113,7 +113,7 @@ def _ports_of_pool(pool_id: str, *, run: KubernetesRunInfo) -> dict[str, int]:
 
 def _host_of_pod(pod: pod_view.ParsedPod, *, namespace: str) -> str:
     if pod.pod_ip:
-        return _wrap_ipv6(pod.pod_ip)
+        return wrap_ipv6(pod.pod_ip)
     assert pod.subdomain, f"worker {pod.name} has neither a pod ip nor a headless service"
     return f"{pod.name}.{pod.subdomain}.{namespace}.svc"
 
