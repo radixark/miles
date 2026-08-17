@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Sequence
 
@@ -94,6 +95,7 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     # The per-address map OpenAIEndpointTracer.create reads instance ids from,
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
-    for addr in addrs:
-        await wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
+    await asyncio.gather(
+        *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS) for addr in addrs]
+    )
     logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
