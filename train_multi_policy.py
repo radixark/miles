@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import logging
 import os
 from pathlib import Path
@@ -9,7 +10,7 @@ from miles.ray.specs.train import compute_trainer_configs
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
-from miles.utils.async_utils import wait_cancelling_pending_on_first_exception
+from miles.utils.async_utils import wait_cancelling_pending_on_first_completion
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
@@ -86,7 +87,7 @@ async def train_multi_policy(args) -> None:
         )
         for trainer in trainers.values()
     ]
-    await wait_cancelling_pending_on_first_exception(tasks)
+    await wait_cancelling_pending_on_first_completion(tasks)
 
     await rollout_executor.dispose()
     await inference_controller.dispose()
@@ -108,7 +109,10 @@ async def _run_policy(
 ) -> None:
     model_id = trainer.model_id
 
-    for rollout_id in range(trainer.start_rollout_id, args.num_rollout):
+    rollout_ids_iter = (
+        range(trainer.start_rollout_id, args.num_rollout) if is_leader else itertools.count(trainer.start_rollout_id)
+    )
+    for rollout_id in rollout_ids_iter:
         rollout_ids[model_id] = rollout_id
         await inference_controller.prepare_rollout(rollout_id, model_id=model_id)
         rollout_data_pack = await rollout_executor.get(rollout_id, trainer_model_id=model_id)
@@ -132,7 +136,11 @@ async def _run_policy(
         if (rollout_id + 1) % args.update_weights_interval == 0:
             await update_weights(trainer.handle, rollout_executor, rollout_id=rollout_id, trainer_model_id=model_id)
 
-        if (x := args.debug_exit_after_rollout) is not None and (rollout_id - trainer.start_rollout_id + 1) >= x:
+        if (
+            is_leader
+            and (x := args.debug_exit_after_rollout) is not None
+            and (rollout_id - trainer.start_rollout_id + 1) >= x
+        ):
             logger.info(f"debug_exit_after_rollout={x} reached at rollout_id={rollout_id}, exiting")
             break
 

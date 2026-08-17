@@ -12,7 +12,7 @@ from miles.utils.async_utils import (
     AsyncioGatherUtils,
     AsyncLoopThread,
     eager_create_task,
-    wait_cancelling_pending_on_first_exception,
+    wait_cancelling_pending_on_first_completion,
 )
 
 
@@ -417,18 +417,27 @@ class TestWaitFutures:
 
 
 @pytest.mark.asyncio
-class TestWaitCancellingPendingOnFirstException:
-    async def test_every_task_is_awaited_when_none_of_them_fails(self):
-        """The happy path must still run the whole fan-out to completion."""
-        finished: list[int] = []
+class TestWaitCancellingPendingOnFirstCompletion:
+    async def test_the_first_task_to_return_cancels_the_rest(self):
+        """The leader owns the length of a multi policy run, and its followers loop until it is over."""
+        cancelled = False
 
-        async def work(index: int):
-            await asyncio.sleep(0.01 * index)
-            finished.append(index)
+        async def leader():
+            await asyncio.sleep(0.01)
 
-        await wait_cancelling_pending_on_first_exception([asyncio.create_task(work(i)) for i in range(3)])
+        async def follower():
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
 
-        assert sorted(finished) == [0, 1, 2]
+        await wait_cancelling_pending_on_first_completion(
+            [asyncio.create_task(leader()), asyncio.create_task(follower())]
+        )
+
+        assert cancelled
 
     async def test_the_failure_reaches_the_caller(self):
         """A member that raises must fail the whole fan-out instead of being swallowed."""
@@ -440,7 +449,7 @@ class TestWaitCancellingPendingOnFirstException:
             await asyncio.sleep(30)
 
         with pytest.raises(ValueError, match="boom"):
-            await wait_cancelling_pending_on_first_exception(
+            await wait_cancelling_pending_on_first_completion(
                 [asyncio.create_task(failing()), asyncio.create_task(slow())]
             )
 
@@ -460,7 +469,7 @@ class TestWaitCancellingPendingOnFirstException:
                 raise
 
         with pytest.raises(ValueError, match="boom"):
-            await wait_cancelling_pending_on_first_exception(
+            await wait_cancelling_pending_on_first_completion(
                 [asyncio.create_task(failing()), asyncio.create_task(slow())]
             )
 
@@ -472,13 +481,13 @@ class TestWaitCancellingPendingOnFirstException:
         async def failing(message: str):
             raise ValueError(message)
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             with pytest.raises(ValueError, match="first"):
-                await wait_cancelling_pending_on_first_exception(
+                await wait_cancelling_pending_on_first_completion(
                     [asyncio.create_task(failing("first")), asyncio.create_task(failing("second"))]
                 )
 
-        assert any("also failed" in record.getMessage() for record in caplog.records)
+        assert len([record for record in caplog.records if record.getMessage() == "task failed"]) == 2
 
     async def test_a_member_that_fails_while_being_cancelled_is_not_lost(self):
         """Cleanup that raises is the second root cause of a run that is already failing."""
@@ -494,7 +503,7 @@ class TestWaitCancellingPendingOnFirstException:
                 raise RuntimeError("cleanup exploded") from None
 
         with pytest.raises(ValueError, match="boom"):
-            await wait_cancelling_pending_on_first_exception(
+            await wait_cancelling_pending_on_first_completion(
                 [asyncio.create_task(failing()), asyncio.create_task(slow())]
             )
 
@@ -514,7 +523,7 @@ class TestWaitCancellingPendingOnFirstException:
                 cleaned_up = True
 
         with pytest.raises(ValueError, match="boom"):
-            await wait_cancelling_pending_on_first_exception(
+            await wait_cancelling_pending_on_first_completion(
                 [asyncio.create_task(failing()), asyncio.create_task(slow())]
             )
 

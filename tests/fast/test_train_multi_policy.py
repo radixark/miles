@@ -131,8 +131,10 @@ class TestRunPolicies:
         context = await _run(_make_args())
 
         drained = [call.kwargs["trainer_model_id"] for call in context["rollout_executor"].get.await_args_list]
-        assert sorted(drained) == ["a", "a", "b", "b"]
-        assert sorted(updated) == [("a", None), ("a", 0), ("a", 1), ("b", None), ("b", 0), ("b", 1)]
+        assert drained.count("a") == 2
+        assert set(drained) == {"a", "b"}
+        assert [rollout_id for model_id, rollout_id in updated if model_id == "a"] == [None, 0, 1]
+        assert {model_id for model_id, _ in updated} == {"a", "b"}
 
     async def test_a_policy_only_resumes_the_health_probing_of_its_own_engines(self):
         """Resuming the whole fleet here un-pauses probing of a policy that is mid weight broadcast."""
@@ -186,7 +188,8 @@ class TestRunPolicies:
         await _run(_make_args(num_rollout=3), trainers=trainers, start_rollout_ids=dict(a=0, b=2))
 
         assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0, 1, 2]
-        assert [call.args[0] for call in trainers["b"].train.await_args_list] == [2]
+        rounds_of_b = [call.args[0] for call in trainers["b"].train.await_args_list]
+        assert rounds_of_b == list(range(2, 2 + len(rounds_of_b)))
 
     async def test_a_policy_updates_its_weights_on_its_own_interval(self, monkeypatch):
         """The rhythm is counted on the absolute rollout id, so publishing every round would be wrong."""
@@ -203,9 +206,11 @@ class TestRunPolicies:
 
         await _run(_make_args(num_rollout=4, update_weights_interval=2))
 
-        assert sorted(updated) == [("a", None), ("a", 1), ("a", 3), ("b", None), ("b", 1), ("b", 3)]
+        assert [rollout_id for model_id, rollout_id in updated if model_id == "a"] == [None, 1, 3]
+        rounds_of_b = [rollout_id for model_id, rollout_id in updated if model_id == "b" and rollout_id is not None]
+        assert all(rollout_id % 2 == 1 for rollout_id in rounds_of_b)
 
-    async def test_a_debug_run_stops_each_policy_after_its_own_rounds(self):
+    async def test_a_debug_run_stops_the_leader_after_its_own_rounds(self):
         """--debug-exit-after-rollout counts from where the policy resumed, not from rollout zero."""
         trainers = {"a": AsyncMock(), "b": AsyncMock()}
 
@@ -214,7 +219,33 @@ class TestRunPolicies:
         )
 
         assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0]
-        assert [call.args[0] for call in trainers["b"].train.await_args_list] == [5]
+
+    async def test_a_debug_run_leaves_the_followers_running(self):
+        """A follower's rounds are the leader's to end, so honouring the flag there would retire it
+        from the checkpoint every remaining round waits at."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["a"].train = _slow_train
+
+        await _run(_make_args(num_rollout=10, debug_exit_after_rollout=1), trainers=trainers)
+
+        assert len(trainers["b"].train.await_args_list) >= 2
+
+    async def test_the_run_ends_when_the_leader_runs_out_of_rounds(self):
+        """The leader owns --num-rollout; a follower resuming further back must not extend the run."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+
+        await _run(_make_args(num_rollout=2), trainers=trainers, start_rollout_ids=dict(a=0, b=0))
+
+        assert [call.args[0] for call in trainers["a"].train.await_args_list] == [0, 1]
+
+    async def test_a_follower_is_never_the_one_that_ends_the_run(self):
+        """Followers train unbounded rounds, so the run must not stop because one of them reached num_rollout."""
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        trainers["a"].train = _slow_train
+
+        await _run(_make_args(num_rollout=2), trainers=trainers)
+
+        assert len(trainers["b"].train.await_args_list) >= 2
 
 
 class TestSaving:
@@ -228,7 +259,7 @@ class TestSaving:
         state = MultiPolicyCheckpointState.load(tmp_path, leader_rollout_id=1)
         assert state.leader_model_id == "a"
         assert state.rollout_ids["a"] == 1
-        assert state.rollout_ids["b"] <= 1
+        assert state.rollout_ids["b"] == [call.args[0] for call in trainers["b"].save_model.await_args_list][-1]
 
     async def test_a_parked_follower_is_saved_at_the_round_it_reached(self):
         """A record naming a policy at a rollout it never checkpointed cannot be resumed."""
@@ -236,7 +267,8 @@ class TestSaving:
 
         await _run(_make_args(num_rollout=1, save=None, save_interval=1), trainers=trainers)
 
-        assert [call.args[0] for call in trainers["b"].save_model.await_args_list] == [0]
+        [saved_at] = [call.args[0] for call in trainers["b"].save_model.await_args_list]
+        assert saved_at == trainers["b"].train.await_args_list[-1].args[0]
 
     async def test_every_policy_is_on_disk_before_the_record_claims_the_checkpoint_exists(self):
         """An asynchronous follower save still running would leave the record pointing at files nobody wrote."""
@@ -268,7 +300,8 @@ class TestSaving:
         await _run(_make_args(num_rollout=2, save=None, save_interval=1), trainers=trainers)
 
         assert [call.args[0] for call in trainers["a"].save_model.await_args_list] == [0, 1]
-        assert [call.args[0] for call in trainers["b"].save_model.await_args_list] == [0, 1]
+        rounds_of_b = [call.args[0] for call in trainers["b"].save_model.await_args_list]
+        assert len(rounds_of_b) == 2 and rounds_of_b[0] <= rounds_of_b[1]
 
     async def test_a_run_without_a_save_directory_records_nothing(self, tmp_path):
         """--save is what asks for checkpoints on disk; the record must not invent a directory."""
