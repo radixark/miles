@@ -38,7 +38,7 @@ class BaseWorkerProvider(abc.ABC):
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         raise NotImplementedError(f"{type(self).__name__} answers addresses, it does not observe cells")
 
-    def expected_num_cells(self, *, model_id: str) -> int | None:
+    def expected_num_cells(self, *, group_id: str) -> int | None:
         return None
 
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
