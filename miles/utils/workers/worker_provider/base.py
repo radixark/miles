@@ -1,17 +1,16 @@
 import abc
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
 
-from miles.utils.workers.naming import compute_cell_id, parse_worker_name
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.workers.naming import cell_id_of_worker
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.utils import build_rpc_handle_of_worker_info
 from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 
-@dataclass(frozen=True)
-class CellInfo:
+class CellInfo(FrozenStrictBaseModel):
     cell_id: str
     pool_id: str
     alive: bool
@@ -42,9 +41,7 @@ class BaseWorkerProvider(abc.ABC):
         return None
 
     def get_handle(self, worker_name: str) -> BaseWorkerHandle:
-        pool_id, cell_index, _worker_in_cell_index = parse_worker_name(worker_name)
-        cell_id = compute_cell_id(pool_id=pool_id, cell_index=cell_index)
-        (infos,) = self.get_worker_infos(cell_ids=[cell_id])
+        (infos,) = self.get_worker_infos(cell_ids=[cell_id_of_worker(worker_name)])
         handles = self.get_handles_of_worker_infos(infos)
         assert worker_name in handles, f"{worker_name=} is not one of {sorted(handles)}"
         return handles[worker_name]
