@@ -3,7 +3,11 @@ from typing import Any
 
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
-from miles.utils.test_utils.comparisons.metrics import _check_single_metric, _keep_only_final_attempt
+from miles.utils.test_utils.comparisons.metrics import (
+    _check_events_line_up,
+    _check_single_metric,
+    _keep_only_final_attempt,
+)
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _FIXED_SOURCE = SimpleProcessIdentity(component="main")
@@ -111,3 +115,21 @@ class TestCheckSingleMetric:
         issues = _check_single_metric(0, "k", 0.0, 5e-13, rtol=0.1, atol=0.0)
         assert len(issues) == 1
         assert "rel_diff" in issues[0]
+
+
+class TestCheckEventsLineUp:
+    def test_two_sides_describing_different_rollouts_are_reported(self) -> None:
+        """Comparing by read order passes silently when the sides are offset but the numbers happen to agree."""
+        baseline = [_metric_event(rollout_id=0, attempt=0), _metric_event(rollout_id=1, attempt=0)]
+        target = [_metric_event(rollout_id=1, attempt=0), _metric_event(rollout_id=2, attempt=0)]
+
+        issues = _check_events_line_up(baseline, target)
+
+        assert len(issues) == 2
+
+    def test_a_retried_rollout_still_lines_up_with_its_baseline(self) -> None:
+        """The target retries a crashed rollout, and comparing its winning attempt is the point of the run."""
+        baseline = [_metric_event(rollout_id=3, attempt=0)]
+        target = [_metric_event(rollout_id=3, attempt=1)]
+
+        assert _check_events_line_up(baseline, target) == []
