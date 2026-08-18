@@ -889,6 +889,30 @@ class TestDeployComponent:
             )
 
 
+class TestInitExpectedNumCells:
+    def test_a_run_told_nothing_names_no_number_and_is_left_to_the_default(self):
+        """A split run reaches its first rollout on one engine, so the flag is optional for the simplest split."""
+        assert _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]).init_expected_num_cells is None
+
+    def test_a_run_deploying_its_own_engines_is_refused_the_flag(self):
+        """It launches every cell it waits for, so a number here would contradict what it deploys."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--init-expected-num-cells", "2"]))
+
+    def test_a_run_waits_for_as_many_registered_cells_as_it_was_told_to(self):
+        """Nothing here can derive the number: the engines are deployed by launches this one never sees."""
+        args = _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "4"])
+
+        assert args.init_expected_num_cells == 4
+
+    def test_a_run_waiting_for_no_cell_at_all_is_refused(self):
+        """It would start the first rollout against an empty fleet and fail on every request it routes."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(
+                _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "0"])
+            )
+
+
 class TestEngineRegistrationArguments:
     def test_a_fully_told_engine_deployment_validates(self):
         """The controller address is all it needs; it redeems no object store reference of the run."""

@@ -96,7 +96,7 @@ class _RecordingServer:
         self.offload_tags: list = []
         self.onload_tags: list = []
         self.check_weights_kwargs: list[dict] = []
-        self.waited_expected_num_cells = 0
+        self.waited_init_expected_num_cells = 0
         self.dispose_count = 0
         self._cells_gate = cells_gate
 
@@ -125,10 +125,10 @@ class _RecordingServer:
         self.calls.append(("remove", cell_id))
         del self.server_cells[cell_id]
 
-    async def wait_expected_num_cells(self) -> None:
+    async def wait_init_expected_num_cells(self) -> None:
         if self._cells_gate is not None:
             await self._cells_gate.wait()
-        self.waited_expected_num_cells += 1
+        self.waited_init_expected_num_cells += 1
 
 
 class _FakeUpdatableCell:
@@ -1031,14 +1031,14 @@ class TestInitLifecycle:
         for _ in range(20):
             await asyncio.sleep(0)
         assert not task.done()
-        assert ready.waited_expected_num_cells == 1
+        assert ready.waited_init_expected_num_cells == 1
         gate.set()
         await asyncio.wait_for(task, timeout=5)
         await controller.dispose()
 
         assert registered == [args]
         assert waited_session == [args]
-        assert blocked.waited_expected_num_cells == 1
+        assert blocked.waited_init_expected_num_cells == 1
 
     @pytest.mark.asyncio
     async def test_init_and_dispose_own_the_cell_watch_and_ticker_lifetimes(self, monkeypatch: pytest.MonkeyPatch):

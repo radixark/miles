@@ -186,6 +186,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--init-expected-num-cells",
+                type=int,
+                default=None,
+                help=(
+                    "How many engine cells per model this run waits for before it starts, when the engines are "
+                    "deployed elsewhere and register themselves into it. The run cannot derive the number, because "
+                    "the engine deployments are launched separately and may arrive late; declare here how many "
+                    "cells the first rollout needs. It gates startup only, and the run keeps serving whatever "
+                    "registers or leaves afterwards."
+                ),
+            )
+            parser.add_argument(
                 "--trainer-controller-addrs",
                 type=str,
                 default=None,
@@ -3070,6 +3082,14 @@ def _validate_static_addrs_external_launch(args: argparse.Namespace, *, componen
 
 
 def _validate_registration(args: argparse.Namespace, *, component: DeployComponent) -> None:
+    if (init_expected := args.init_expected_num_cells) is not None:
+        assert (
+            not component.deploys_own_inference_engines()
+        ), f"--deploy-component {component.value} deploys its own engines, so drop --init-expected-num-cells"
+        assert (
+            init_expected >= 1
+        ), f"--init-expected-num-cells {init_expected} lets the run start before a single engine registered into it"
+
     if component is DeployComponent.INFERENCE:
         assert args.deploy_instance_id is not None, (
             f"--deploy-component {component.value} needs --deploy-instance-id: it names the engine pools this "
