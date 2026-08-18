@@ -25,6 +25,7 @@ class SimpleProcessIdentity(_ProcessIdentityBase):
 class TrainerControllerProcessIdentity(_ProcessIdentityBase):
     component: Literal["trainer_controller"] = "trainer_controller"
     trainer_id: str
+    model_id: str | None = None
 
     def to_name(self) -> str:
         return f"{self.component}_{self.trainer_id}"

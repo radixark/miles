@@ -13,6 +13,7 @@ from tests.fast.ray.rollout.conftest import make_args as make_rollout_args
 
 from miles.ray.rollout.server_cell import compute_pending_rollout_cell_status
 from miles.utils.ft_utils.api_server import server
+from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.fault_injector import FailureMode
@@ -285,7 +286,7 @@ class TestStartApiServerRegistration:
 
         server.start_api_server(
             args=make_rollout_args(),
-            actor_model=make_mock_controller(actor_cells if actor_cells is not None else []),
+            trainer_models={"actor": make_mock_controller(actor_cells if actor_cells is not None else [])},
             inference_controller=MockInferenceController(
                 {cell_id: compute_pending_rollout_cell_status() for cell_id in cell_ids}
             ),
@@ -379,7 +380,7 @@ class TestStartApiServerRegistration:
 
         server.start_api_server(
             args=make_rollout_args(),
-            actor_model=make_mock_controller([MockTrainerCell()]),
+            trainer_models={"actor": make_mock_controller([MockTrainerCell()])},
             inference_controller=MockInferenceController(),
             port=19137,
             ft_components=["train"],
@@ -617,6 +618,43 @@ class TestRequestValidation:
         assert (cell.suspend_calls, cell.resume_calls) == (0, 0)
         assert rollout_handler.injected == []
 
+
+class TestSeveralTrainers:
+    def test_every_trainer_pool_is_listed_under_the_actor_cell_type(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A run of several trainer models heals none of them if the api server only knows the legacy actor pool."""
+        registries: list[_CellRegistry] = []
+        monkeypatch.setattr(server, "compute_trainer_pool_id", lambda trainer_id: f"trainer-engine-{trainer_id}")
+        monkeypatch.setattr(server, "compute_engine_pool_ids", lambda args: ["engine"])
+        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
+
+        server.start_api_server(
+            args=SimpleNamespace(),
+            trainer_models={
+                "a-actor": make_mock_controller([], pool_id="trainer-engine-a-actor"),
+                "b-actor": make_mock_controller([], pool_id="trainer-engine-b-actor"),
+            },
+            inference_controller=MockInferenceController(),
+            port=1234,
+            ft_components=["train"],
+            cell_operations=object(),
+        )
+
+        [handler] = registries[0]._handlers
+        assert handler._pool_ids == ["trainer-engine-a-actor", "trainer-engine-b-actor"]
+
+    @pytest.mark.asyncio
+    async def test_the_cell_statuses_of_every_trainer_are_merged(self) -> None:
+        """Each trainer answers only about its own cells, and a cell missing from the merge reads as pending."""
+        first = make_mock_controller([MockTrainerCell()], pool_id="trainer-engine-a-actor")
+        second = make_mock_controller([MockTrainerCell()], pool_id="trainer-engine-b-actor")
+
+        statuses = await _CellHandler(
+            cell_type="actor", operations=object(), controllers=[first, second], pool_ids=[]
+        )._get_cell_statuses()
+
+        assert sorted(statuses) == ["trainer-engine-a-actor-0", "trainer-engine-b-actor-0"]
+
+
 class TestOperationsSelection:
     def test_every_handler_gets_the_operations_of_the_process_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Under Kubernetes the api server must act on pods, not on a Ray worker manager."""
@@ -628,7 +666,7 @@ class TestOperationsSelection:
 
         server.start_api_server(
             args=SimpleNamespace(),
-            actor_model=make_mock_controller([]),
+            trainer_models={"actor": make_mock_controller([])},
             inference_controller=MockInferenceController(),
             port=1234,
             ft_components=["train", "rollout"],

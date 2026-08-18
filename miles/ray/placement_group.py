@@ -192,13 +192,15 @@ async def update_weights(
 
 
 # TODO: move (when reorganizing files)
-def maybe_start_api_server(args, *, actor_model: BaseWorkerHandle, inference_controller: BaseWorkerHandle) -> None:
+def maybe_start_api_server(
+    args, *, trainer_models: dict[str, BaseWorkerHandle], inference_controller: BaseWorkerHandle
+) -> None:
     if not args.api_server_port:
         return
 
     start_api_server(
         args=args,
-        actor_model=actor_model,
+        trainer_models=trainer_models,
         inference_controller=inference_controller,
         port=args.api_server_port,
         ft_components=args.ft_components,
