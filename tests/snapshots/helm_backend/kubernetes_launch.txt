@@ -2,9 +2,12 @@
 helm dependency build <REPO_ROOT>/charts/miles-run
 
 ### 1
-kubectl delete job miles-run-260101-000000-000-all-uninstall --namespace rl --ignore-not-found
+helm upgrade --install miles-run-260101-000000-000-all <REPO_ROOT>/charts/miles-run --namespace rl --values <SANDBOX>/infra.yaml --values <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/values/values-260101-000000-000001.yaml --dry-run --output json
 
 ### 2
+kubectl delete job miles-run-260101-000000-000-all-uninstall --namespace rl --ignore-not-found
+
+### 3
 helm upgrade --install miles-run-260101-000000-000-all <REPO_ROOT>/charts/miles-run --namespace rl --values <SANDBOX>/infra.yaml --values <SANDBOX>/cluster-storage/miles_data/miles-runs/260101-000000-000/values/values-260101-000000-000001.yaml
 
 ### pseudo file 1
