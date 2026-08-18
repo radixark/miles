@@ -4,7 +4,7 @@ index 9d258e733..55c4647fd 100644
 +++ b/miles/backends/fsdp_utils/actor.py
 @@ -124,6 +124,3 @@ class FSDPTrainRayActor(TrainRayActor):
 -        with init_context():
--            model = self.get_model_cls().from_pretrained(
+-            model = self._get_model_cls().from_pretrained(
 -                self.args.hf_checkpoint,
 -                trust_remote_code=True,
 -                attn_implementation=self.args.attn_implementation,
@@ -20,7 +20,7 @@ index 9d258e733..55c4647fd 100644
 +        effective_attn = "eager" if use_triton_bridge else self.args.attn_implementation
 +
 +        with init_context():
-+            model = self.get_model_cls().from_pretrained(
++            model = self._get_model_cls().from_pretrained(
 +                checkpoint_path,
 +                trust_remote_code=True,
 +                attn_implementation=effective_attn,
@@ -37,7 +37,7 @@ index 9d258e733..55c4647fd 100644
 +
 @@ -600,5 +619,4 @@ class FSDPTrainRayActor(TrainRayActor):
 -            with init_context():
--                ref_model = self.get_model_cls().from_pretrained(
+-                ref_model = self._get_model_cls().from_pretrained(
 -                    ref_load_path,
 -                    trust_remote_code=True,
 -                    attn_implementation=self.args.attn_implementation,

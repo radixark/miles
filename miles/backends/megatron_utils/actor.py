@@ -5,7 +5,6 @@ import os
 import random
 import shutil
 from contextlib import ExitStack, nullcontext
-from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -14,6 +13,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
+from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import async_utils, object_store, train_dump_utils
@@ -26,9 +26,8 @@ from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
-from miles.utils.object_store import ValueSpec
+from miles.utils.object_store import StoreObjectRef, ValueSpec
 from miles.utils.processing_utils import load_tokenizer
-from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
 from miles.utils.replay_base import all_replay_managers, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
@@ -65,9 +64,6 @@ from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
 from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
 from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
-
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -107,7 +103,7 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> int | None:
         monkey_patch_torch_dist()
 
-        super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -365,7 +361,7 @@ class MegatronTrainRayActor(TrainRayActor):
             m.stage = stage
 
     @with_logs
-    def compute_log_prob(
+    def _compute_log_prob(
         self,
         data_iterator: list[DataIterator],
         num_microbatches: list[int],
@@ -393,11 +389,11 @@ class MegatronTrainRayActor(TrainRayActor):
     def train(
         self,
         rollout_id: int,
-        rollout_data_ref: Box,
+        rollout_data_ref: StoreObjectRef | list[StoreObjectRef],
         witness_info: WitnessInfo | None = None,
         attempt: int = 0,
-        external_data=None,
-    ):
+        external_data: TrainStepOutput | None = None,
+    ) -> TrainStepOutput:
         self._heartbeat.bump()
         self._last_rollout_id = rollout_id
         if self.args.offload_train and self._asleep:
@@ -415,9 +411,9 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if self.role == "critic":
                 with timer("critic_train"):
-                    result = self.train_critic(rollout_id, rollout_data)
+                    result = self._train_critic(rollout_id, rollout_data)
             else:
-                result = self.train_actor(
+                result = self._train_actor(
                     rollout_id,
                     rollout_data,
                     external_data=external_data,
@@ -428,7 +424,7 @@ class MegatronTrainRayActor(TrainRayActor):
             return result
 
     @with_logs
-    def train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:
+    def _train_critic(self, rollout_id: int, rollout_data: RolloutBatch) -> TrainStepOutput:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
         rollout_data.update(
@@ -471,7 +467,7 @@ class MegatronTrainRayActor(TrainRayActor):
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     @with_logs
-    def train_actor(
+    def _train_actor(
         self,
         rollout_id: int,
         rollout_data: RolloutBatch,
@@ -510,7 +506,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")
                     rollout_data.update(
-                        self.compute_log_prob(
+                        self._compute_log_prob(
                             data_iterator,
                             num_microbatches,
                             rollout_id=rollout_id,
@@ -522,7 +518,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self._set_replay_stage("fallthrough")
                     self._switch_model("teacher")
                     rollout_data.update(
-                        self.compute_log_prob(
+                        self._compute_log_prob(
                             data_iterator,
                             num_microbatches,
                             rollout_id=rollout_id,
@@ -540,7 +536,7 @@ class MegatronTrainRayActor(TrainRayActor):
                             else:
                                 m.stage = "record"
                     rollout_data.update(
-                        self.compute_log_prob(
+                        self._compute_log_prob(
                             data_iterator,
                             num_microbatches,
                             rollout_id=rollout_id,
@@ -739,7 +735,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:
+    def update_weights(self, info: UpdatableEngines) -> int | None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
