@@ -52,6 +52,10 @@ class DummyTrainActor:
     def configure_master_addr_and_port(self, *args: Any, **kwargs: Any) -> None:
         self._record("configure_master_addr_and_port", args, kwargs)
 
+    def load_state(self, *args: Any, **kwargs: Any) -> int:
+        self._record("load_state", args, kwargs)
+        return 7
+
     def reconfigure_indep_dp(self, *args: Any, **kwargs: Any) -> None:
         self._record("reconfigure_indep_dp", args, kwargs)
 
