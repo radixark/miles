@@ -1,6 +1,10 @@
 import pytest
 
-from miles.utils.external_utils.command_utils.helm_backend.launcher.hot_restart import HotRestartPlan, plan_hot_restart
+from miles.utils.external_utils.command_utils.helm_backend.launcher.hot_restart import (
+    HotRestartPlan,
+    compute_orchestrator_object_key,
+    plan_hot_restart,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
     RESTART_AT_ANNOTATION,
     STATEFUL_SET_KIND,
@@ -162,3 +166,17 @@ class TestTheStampAnOrdinaryRelaunchRenders:
     def test_a_first_install_has_no_manifest_to_read(self):
         """Every launch calls this, including the one that installs the release."""
         assert _plan(installed_manifest=None).restart_at is None
+
+
+class TestTheOrchestratorObjectKey:
+    def test_it_names_the_stateful_set_of_the_release(self):
+        """The entrypoint looks this key up in a rendered manifest, so a wrong name would observe nothing."""
+        assert compute_orchestrator_object_key(_RELEASE) == ManifestObjectKey(
+            kind=STATEFUL_SET_KIND, name=_ORCHESTRATOR_OBJECT
+        )
+
+    def test_it_is_one_of_the_objects_a_hot_restart_replaces(self):
+        """A hot restart that did not relax the gate for exactly this object could never be applied."""
+        plan = _plan(components=_BOTH, installed_manifest=_installed_manifest(stamped=False))
+
+        assert compute_orchestrator_object_key(_RELEASE) in plan.allow_diff_object_keys
