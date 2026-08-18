@@ -114,6 +114,35 @@ def test_shared_leg_dispatch(monkeypatch):
     assert metrics["turns"] == 2 and metrics["tool_calls"] == 1
 
 
+class _TruncatingPolicy(_FakePolicy):
+    """Emits a command the model never finished writing."""
+
+    async def _create(self, **kw):
+        completion = await super()._create(**kw)
+        completion.choices[0].finish_reason = "length"
+        return completion
+
+
+def test_length_capped_turn_ends_the_episode(monkeypatch):
+    """A turn cut off by the token cap must not be executed: the command is
+    truncated, so running it would send an arbitrary prefix to the sandbox."""
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
+
+    async def spying_with_env(env_cls, env_url, body):
+        return await body(env_cls())
+
+    monkeypatch.setattr(oaf, "_with_env", spying_with_env)
+
+    _, metrics = run_async(
+        oaf.run_episode(_TruncatingPolicy(), "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"})
+    )
+
+    assert metrics["turns"] == 1
+    assert metrics["tool_calls"] == 0
+    execs = [a for a in _FakeEnv.last_actions if a.action_type == "exec"]
+    assert not [a for a in execs if "echo hi" in (a.command or "")], "ran a command the model never finished"
+
+
 def test_old_server_reward_is_not_trusted(monkeypatch):
     """A server without the canonical contract (e.g. an out-of-date install)
     answers `evaluate` with a plausible-looking reward but no harness marker
