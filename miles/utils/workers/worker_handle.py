@@ -16,7 +16,7 @@ class WorkerUnreachableError(Exception):
 
 class BaseWorkerHandle(abc.ABC):
     @abc.abstractmethod
-    async def wait_ready(self, *, timeout: float) -> None: ...
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None: ...
 
     async def wait_dead(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
