@@ -47,6 +47,7 @@ def fake_components():
     controller_handle = MagicMock(name="inference_controller")
     controller_handle.check_weights = AsyncMock()
     controller_handle.offload = AsyncMock()
+    controller_handle.is_initialized = AsyncMock(return_value=False)
     controller_handle.init = AsyncMock(side_effect=lambda: events.append("controller_init"))
     controller_handle.get_eval_fleet_info = AsyncMock(return_value=None)
 
@@ -126,15 +127,6 @@ class TestCreateRolloutComponents:
         assert controller is fake_components.controller_handle
         assert executor is fake_components.executor_handle
 
-    async def test_both_workers_are_told_to_init(self, fake_components):
-        """Their constructors cannot await anything, so nothing runs until the driver starts them."""
-        args = _make_args(num_rollout=1)
-
-        await create_rollout_components(args)
-
-        fake_components.controller_handle.init.assert_awaited_once_with()
-        fake_components.executor_handle.init.assert_awaited_once_with()
-
     async def test_the_router_addresses_are_resolved_before_the_workers_are_initialized(self, fake_components):
         """The driver's args copy must carry the contract before anything downstream reads it."""
         args = _make_args(num_rollout=1)
@@ -163,25 +155,6 @@ class TestCreateRolloutComponents:
         assert num_rollout_per_epoch is None
         assert args.num_rollout == 3
 
-    async def test_the_eval_fleet_reaches_the_executor_through_an_rpc_call(self, fake_components):
-        """The controller is a worker: its fleet is only knowable by calling it, never by reading it."""
-        args = _make_args(num_rollout=1, eval_num_gpus=2)
-        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
-        fake_components.controller_handle.get_eval_fleet_info = AsyncMock(return_value=info)
-
-        await create_rollout_components(args)
-
-        fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
-
-    async def test_a_run_without_an_eval_fleet_wires_nothing_up(self, fake_components):
-        """The controller answers that it deploys no fleet, and the executor is left alone."""
-        args = _make_args(num_rollout=1)
-
-        await create_rollout_components(args)
-
-        fake_components.controller_handle.get_eval_fleet_info.assert_awaited_once_with()
-        fake_components.executor_handle.set_eval_fleet_info.assert_not_awaited()
-
     async def test_a_train_only_run_resolves_no_inference_addresses(self, fake_components):
         """--debug-train-only deploys no routers or session servers, so nothing can be waited on."""
         args = _make_args(num_rollout=1, debug_train_only=True)
@@ -191,9 +164,60 @@ class TestCreateRolloutComponents:
         assert fake_components.capability.requested_static_pool_ids == []
         assert args.sglang_router_ip is None
 
+
+class TestTakeOverInference:
+    @staticmethod
+    async def _take_over(fake_components) -> None:
+        await create_rollout_components(_make_args(num_rollout=1))
+
+    async def test_a_cold_run_builds_the_controller_it_found_uninitialized(self, fake_components):
+        """A cold start reaches plain init() and none of the reset, so the whole call sequence is pinned."""
+        await self._take_over(fake_components)
+
+        controller = fake_components.controller_handle
+        assert [name for name, _args, _kwargs in controller.mock_calls] == [
+            "is_initialized",
+            "init",
+            "get_eval_fleet_info",
+        ]
+
+    async def test_a_surviving_controller_is_reset_instead_of_built_again(self, fake_components):
+        """Initializing it a second time would rebuild the fleet this run just adopted."""
+        fake_components.controller_handle.is_initialized = AsyncMock(return_value=True)
+        for name in ("wait_idle", "wait_expected_num_cells", "abort_all"):
+            setattr(fake_components.controller_handle, name, AsyncMock(return_value=False))
+
+        await self._take_over(fake_components)
+
+        assert [name for name, _args, _kwargs in fake_components.controller_handle.mock_calls] == [
+            "is_initialized",
+            "wait_idle",
+            "wait_expected_num_cells",
+            "abort_all",
+            "get_eval_fleet_info",
+        ]
+
+        fake_components.controller_handle.init.assert_not_awaited()
+        fake_components.controller_handle.abort_all.assert_awaited_once_with()
+
+    async def test_the_eval_fleet_reaches_the_executor_through_an_rpc_call(self, fake_components):
+        """The controller is a worker: its fleet is only knowable by calling it, never by reading it."""
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        fake_components.controller_handle.get_eval_fleet_info = AsyncMock(return_value=info)
+
+        await self._take_over(fake_components)
+
+        fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
+
+    async def test_a_run_without_an_eval_fleet_wires_nothing_up(self, fake_components):
+        """The controller answers that it deploys no fleet, and the executor is left alone."""
+        await self._take_over(fake_components)
+
+        fake_components.controller_handle.get_eval_fleet_info.assert_awaited_once_with()
+        fake_components.executor_handle.set_eval_fleet_info.assert_not_awaited()
+
     async def test_the_executor_is_handed_the_fleet_the_controller_just_built(self, fake_components):
         """Checkpoint eval pins snapshots to these engines, so publishing a pre-init fleet evaluates nothing."""
-        args = _make_args(num_rollout=1)
         info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
 
         async def _publish_fleet_on_init():
@@ -201,7 +225,7 @@ class TestCreateRolloutComponents:
 
         fake_components.controller_handle.init = AsyncMock(side_effect=_publish_fleet_on_init)
 
-        await create_rollout_components(args)
+        await self._take_over(fake_components)
 
         fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
 

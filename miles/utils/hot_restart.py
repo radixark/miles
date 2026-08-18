@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 TAKE_OVER_GATE_TIMEOUT_SECONDS = 600.0
 _TRAINER_RELOAD_TIMEOUT_SECONDS = 3600.0
+_INFERENCE_IDLE_TIMEOUT_SECONDS = 3600.0
 _WORKER_NOT_INITIALIZED_TIMEOUT_SECONDS = 1800.0
 _WORKER_POLL_INTERVAL_SECONDS = 5.0
 _WORKER_POLL_ATTEMPT_TIMEOUT_SECONDS = 120.0
@@ -75,3 +76,25 @@ async def trainer_init_or_load_state(
     start_rollout_ids = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
     logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at rollout ids {start_rollout_ids}")
     return start_rollout_ids
+
+
+# ============================ inference take-over =============================
+
+
+async def init_or_reset_inference_controller(inference_controller: BaseWorkerHandle, *, args: Namespace) -> None:
+    if not await inference_controller.is_initialized():
+        await inference_controller.init()
+        return
+
+    assert (
+        args.update_weight_transfer_mode != "disk-delta"
+    ), "Hot restart does not support disk-delta weight transfer because its first update only captures a baseline"
+
+    logger.info("The inference controller outlived a previous orchestration script; taking it over as it is")
+
+    await inference_controller.wait_idle(timeout=_INFERENCE_IDLE_TIMEOUT_SECONDS)
+
+    await inference_controller.wait_expected_num_cells(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
+
+    await asyncio.wait_for(inference_controller.abort_all(), timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
+    logger.info("Asked every engine of the fleet to abort the generations it was still running")

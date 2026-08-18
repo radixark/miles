@@ -1,22 +1,44 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
+import threading
 import time
 from argparse import Namespace
+from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.rollout_executor import RolloutExecutor
+from miles.ray.rollout.rollout_server import RolloutServer
+from miles.ray.train.group import TrainerController
 from miles.utils import hot_restart as hot_restart_module
-from miles.utils.hot_restart import trainer_init_or_load_state, wait_trainers_idle, wait_until_worker_not_initialized
+from miles.utils.context_lock import ContextLock
+from miles.utils.hot_restart import (
+    init_or_reset_inference_controller,
+    trainer_init_or_load_state,
+    wait_trainers_idle,
+    wait_until_worker_not_initialized,
+)
+from miles.utils.workers.rpc.client import handle as rpc_handle_module
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
+from miles.utils.workers.rpc.server.app import create_rpc_app
 from miles.utils.workers.worker_handle import WorkerUnreachableError
+from miles.utils.workers.worker_spec import NamedHostAndPorts
 
 _TRAINER_ID = "policy_a-actor"
 _OTHER_TRAINER_ID = "policy_b-actor"
 _STALLED_SECONDS = 5.0
 _SHORT_BUDGET_SECONDS = 0.05
+_BROADCAST_ARGS = Namespace(update_weight_transfer_mode="broadcast")
+_DISK_DELTA_ARGS = Namespace(update_weight_transfer_mode="disk-delta")
 
 
 class _FakeTrainer:
@@ -59,6 +81,55 @@ class _FakeTrainer:
         self.calls.append(call)
         if self.fleet_calls is not None:
             self.fleet_calls.append(f"{self.trainer_id}.{call}")
+
+
+class _FakeInferenceController:
+    def __init__(
+        self,
+        *,
+        initialized: bool,
+        busy: bool = False,
+        wedged: bool = False,
+        abort_error: Exception | None = None,
+        fleet_incomplete: bool = False,
+    ) -> None:
+        self.initialized = initialized
+        self.busy = busy
+        self.wedged = wedged
+        self.abort_error = abort_error
+        self.fleet_incomplete = fleet_incomplete
+        self.calls: list[str] = []
+        self.idle_timeouts: list[float] = []
+        self.fleet_timeouts: list[float] = []
+
+    async def is_initialized(self) -> bool:
+        self.calls.append("is_initialized")
+        return self.initialized
+
+    async def init(self) -> None:
+        self.calls.append("init")
+
+    async def wait_idle(self, *, timeout: float) -> None:
+        self.calls.append("wait_idle")
+        self.idle_timeouts.append(timeout)
+        if self.busy:
+            raise TimeoutError("InferenceController was still busy")
+
+    async def wait_expected_num_cells(self, timeout: float) -> None:
+        self.calls.append("wait_expected_num_cells")
+        self.fleet_timeouts.append(timeout)
+        if self.fleet_incomplete:
+            raise TimeoutError("the fleet is short of engines")
+
+    async def abort_all(self) -> None:
+        self.calls.append("abort_all")
+        await self._maybe_hang()
+        if self.abort_error is not None:
+            raise self.abort_error
+
+    async def _maybe_hang(self) -> None:
+        if self.wedged:
+            await asyncio.sleep(_STALLED_SECONDS)
 
 
 class _FakeWorker:
@@ -327,3 +398,304 @@ class TestTheReloadHasABudgetOfItsOwn:
 
         with pytest.raises(asyncio.TimeoutError):
             await trainer_init_or_load_state(trainer, Namespace(), trainer_id=_TRAINER_ID, resumed=True)
+
+
+class TestTheInferenceSideIsInitedOrReset:
+    async def test_a_fresh_controller_is_simply_initialized(self):
+        """A cold start must be untouched by the take-over protocol it shares this entry point with."""
+        controller = _FakeInferenceController(initialized=False)
+
+        await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert controller.calls == ["is_initialized", "init"]
+
+    async def test_a_surviving_controller_is_reset_in_the_order_that_leaves_a_quiet_fleet(self):
+        """A cell away during the abort would rejoin still generating, so the fleet is completed first."""
+        controller = _FakeInferenceController(initialized=True)
+
+        await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert controller.calls == [
+            "is_initialized",
+            "wait_idle",
+            "wait_expected_num_cells",
+            "abort_all",
+        ]
+
+    async def test_a_surviving_controller_rejects_disk_delta_weight_transfer(self):
+        """Disk-delta cannot adopt an engine because its first update only captures a baseline."""
+        controller = _FakeInferenceController(initialized=True)
+
+        with pytest.raises(AssertionError, match="does not support disk-delta weight transfer"):
+            await init_or_reset_inference_controller(controller, args=_DISK_DELTA_ARGS)
+
+        assert controller.calls == ["is_initialized"]
+
+    async def test_a_call_of_the_previous_script_that_never_ends_fails_loud(self):
+        """The script that died inside start_update_weights is exactly the case this wait exists for."""
+        controller = _FakeInferenceController(initialized=True, busy=True)
+
+        with pytest.raises(TimeoutError, match="still busy"):
+            await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert "abort_all" not in controller.calls
+
+    async def test_each_step_after_the_drain_is_bounded_on_its_own(self):
+        """A step that runs long must fail on its own timeout rather than eat what the next one gets."""
+        controller = _FakeInferenceController(initialized=True)
+
+        await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert controller.fleet_timeouts == [hot_restart_module.TAKE_OVER_GATE_TIMEOUT_SECONDS]
+
+    async def test_the_drain_of_the_previous_script_gets_a_budget_of_its_own(self):
+        """A cell being healed keeps a legitimate generation in flight for an hour, and that is not a gate step."""
+        controller = _FakeInferenceController(initialized=True)
+
+        await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert controller.idle_timeouts == [hot_restart_module._INFERENCE_IDLE_TIMEOUT_SECONDS]
+        assert hot_restart_module._INFERENCE_IDLE_TIMEOUT_SECONDS > hot_restart_module.TAKE_OVER_GATE_TIMEOUT_SECONDS
+
+    async def test_a_controller_that_never_answers_fails_loud(self, short_take_over_budget: None):
+        """Hanging here would leave the operator with a silent hot restart that never starts training."""
+        controller = _FakeInferenceController(initialized=True, wedged=True)
+
+        started = time.monotonic()
+        with pytest.raises(asyncio.TimeoutError):
+            await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert time.monotonic() - started < _STALLED_SECONDS
+
+    async def test_a_take_over_waits_for_the_whole_fleet_just_as_a_cold_start_does(self):
+        """Generating on half a fleet because an engine was being rescheduled is not what the command asked for."""
+        controller = _FakeInferenceController(initialized=True, fleet_incomplete=True)
+
+        with pytest.raises(TimeoutError, match="short of engines"):
+            await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert "abort_all" not in controller.calls
+
+    async def test_a_cell_that_refused_the_abort_fails_the_take_over(self):
+        """The whole fleet was already there, so a refusal is a sick engine that may still be generating."""
+        controller = _FakeInferenceController(
+            initialized=True, abort_error=RuntimeError("west-engine-0-0-0 refused the abort")
+        )
+
+        with pytest.raises(RuntimeError, match="west-engine-0-0-0"):
+            await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+
+class TestAbortInflightRollouts:
+    async def test_a_refusing_cell_stops_the_run_instead_of_being_logged_past(self):
+        """A cell that kept generating pollutes this run's data, so the take-over cannot continue over it."""
+        controller = _FakeInferenceController(initialized=True, abort_error=RuntimeError("the cell refused"))
+
+        with pytest.raises(RuntimeError, match="the cell refused"):
+            await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+    async def test_a_fleet_that_answered_every_abort_is_logged_as_asked_rather_than_as_quiet(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """Nothing here confirms the generations stopped, so the line may only claim the aborts were accepted."""
+        controller = _FakeInferenceController(initialized=True)
+
+        with caplog.at_level(logging.INFO):
+            await init_or_reset_inference_controller(controller, args=_BROADCAST_ARGS)
+
+        assert "Asked every engine of the fleet to abort" in caplog.text
+
+
+class _AbortingCell:
+    def __init__(self, *, cell_id: str, failure: Exception | None = None) -> None:
+        self.meta = SimpleNamespace(cell_id=cell_id, needs_offload=False, num_gpus_per_engine=1, gpu_offset=0)
+        self.is_pending_weights_or_serving = True
+        self.failure = failure
+        self.aborted = False
+
+    async def abort_all(self) -> None:
+        self.aborted = True
+        if self.failure is not None:
+            raise self.failure
+
+
+class _UnaddressedEngineProvider:
+    async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+        raise AssertionError(f"aborting a fleet never addresses a cell ({worker_name=})")
+
+
+class TestEveryCellOfAServerIsAborted:
+    @staticmethod
+    def _server(cells: list[_AbortingCell]) -> RolloutServer:
+        return RolloutServer(
+            server_cells={cell.meta.cell_id: cell for cell in cells},
+            args=SimpleNamespace(colocate=True),
+            context_lock=ContextLock("InferenceController"),
+            engine_provider=_UnaddressedEngineProvider(),
+        )
+
+    async def test_a_fleet_that_answered_every_abort_reports_no_refusal(self):
+        """The ordinary take-over aborts every cell, and the gate above it has nothing to act on."""
+        cells = [_AbortingCell(cell_id="west-0"), _AbortingCell(cell_id="west-1")]
+        server = self._server(cells)
+
+        async with server.context_lock:
+            assert await server.abort_all() is None
+
+        assert all(cell.aborted for cell in cells)
+
+    async def test_every_refusing_cell_is_logged_before_the_run_stops(self, caplog: pytest.LogCaptureFixture):
+        """An operator has to see every sick engine, not only the one the gather happened to order first."""
+        cells = [
+            _AbortingCell(cell_id="west-0", failure=RuntimeError("west-0 refused")),
+            _AbortingCell(cell_id="west-1", failure=RuntimeError("west-1 refused")),
+        ]
+        server = self._server(cells)
+
+        with caplog.at_level(logging.ERROR):
+            async with server.context_lock:
+                with pytest.raises(RuntimeError, match="west-0 refused"):
+                    await server.abort_all()
+
+        assert "west-0" in caplog.text and "west-1" in caplog.text
+        assert all(cell.aborted for cell in cells)
+
+
+class TestEveryServerOfTheFleetIsAborted:
+    @staticmethod
+    def _controller(cells: dict[str, _AbortingCell]) -> InferenceController:
+        context_lock = ContextLock("InferenceController")
+        controller = InferenceController.__new__(InferenceController)
+        controller.context_lock = context_lock
+        controller.servers = {
+            model_name: RolloutServer(
+                server_cells={cell.meta.cell_id: cell},
+                args=SimpleNamespace(colocate=True),
+                context_lock=context_lock,
+                engine_provider=_UnaddressedEngineProvider(),
+                model_name=model_name,
+            )
+            for model_name, cell in cells.items()
+        }
+        return controller
+
+    async def test_a_fleet_whose_every_server_answered_reports_no_refusal(self):
+        """One abort per model is the ordinary take-over, and the gate above it has nothing to act on."""
+        cells = {"actor": _AbortingCell(cell_id="actor-0"), "ref": _AbortingCell(cell_id="ref-0")}
+
+        assert await self._controller(cells).abort_all() is None
+
+        assert all(cell.aborted for cell in cells.values())
+
+    async def test_a_refusing_cell_of_every_server_is_logged_before_the_run_stops(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """One raising server must not hide the sick engines of the servers beside it, nor orphan their failures."""
+        cells = {
+            "actor": _AbortingCell(cell_id="actor-0", failure=RuntimeError("actor-0 refused")),
+            "ref": _AbortingCell(cell_id="ref-0", failure=RuntimeError("ref-0 refused")),
+        }
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(RuntimeError, match="refused"):
+                await self._controller(cells).abort_all()
+
+        assert "actor-0" in caplog.text and "ref-0" in caplog.text
+        assert all(cell.aborted for cell in cells.values())
+
+
+class _WaitingServer:
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    async def wait_init_expected_num_cells(self, timeout: float) -> None:
+        self.timeouts.append(timeout)
+
+
+class TestTheWholeFleetIsWaitedForUnderTheCallersBudget:
+    async def test_every_server_is_waited_for_under_the_budget_the_take_over_had_left(self):
+        """One 3600s wait per model would blow the take-over budget the gate above promised to honour."""
+        controller = InferenceController.__new__(InferenceController)
+        controller.servers = {"actor": _WaitingServer(), "ref": _WaitingServer()}
+
+        await controller.wait_expected_num_cells(timeout=12.5)
+
+        assert [srv.timeouts for srv in controller.servers.values()] == [[12.5], [12.5]]
+
+
+class _WireInferenceController:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.release_previous_call = threading.Event()
+        self.previous_call_started = threading.Event()
+
+    async def is_initialized(self) -> bool:
+        self.calls.append("is_initialized")
+        return True
+
+    def demo_previous_script_call(self) -> None:
+        self.previous_call_started.set()
+        assert self.release_previous_call.wait(timeout=30.0)
+        self.calls.append("previous_script_call_end")
+
+    async def wait_expected_num_cells(self, timeout: float) -> None:
+        self.calls.append("wait_expected_num_cells")
+
+    async def abort_all(self) -> None:
+        self.calls.append("abort_all")
+
+
+@contextlib.asynccontextmanager
+async def _handle_onto_running_worker(worker: object, worker_cls: type) -> AsyncIterator[RpcWorkerHandle]:
+    app = create_rpc_app(worker)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app)) as http_client:
+            yield RpcWorkerHandle(worker_cls, server_url="http://testserver", http_client=http_client)
+
+
+class TestTheTakeOverSurfaceCrossesTheWire:
+    @pytest.mark.parametrize(
+        "worker_cls, methods",
+        [
+            (TrainerController, {"is_initialized", "load_state"}),
+            (RolloutExecutor, {"is_initialized"}),
+            (InferenceController, {"is_initialized", "abort_all", "wait_expected_num_cells"}),
+        ],
+    )
+    def test_the_take_over_surface_is_exposed_over_rpc(self, worker_cls: type, methods: set[str]):
+        """A restarted orchestration script drives the whole take-over through exactly these rpc methods."""
+        assert methods <= set(collect_rpc_method_specs(worker_cls))
+
+
+class TestATakeOverDrivesARealInferenceControllerOverTheWire:
+    async def test_the_whole_gate_runs_against_a_worker_a_previous_script_left_initialized(self):
+        """Every step of this gate is an rpc call, so its real wire order is pinned against a real server."""
+        worker = _WireInferenceController()
+
+        async with _handle_onto_running_worker(worker, _WireInferenceController) as handle:
+            await init_or_reset_inference_controller(handle, args=_BROADCAST_ARGS)
+
+        assert worker.calls == ["is_initialized", "wait_expected_num_cells", "abort_all"]
+
+    async def test_the_call_the_previous_script_left_running_is_waited_out_before_the_fleet_is_aborted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Aborting while the previous script is still generating would leave its requests to finish after the reset."""
+        monkeypatch.setattr(rpc_handle_module, "_IDLE_POLL_INTERVAL_SECONDS", 0.02)
+        worker = _WireInferenceController()
+
+        async def _release_soon() -> None:
+            await asyncio.sleep(0.2)
+            worker.release_previous_call.set()
+
+        async with _handle_onto_running_worker(worker, _WireInferenceController) as handle:
+            previous_call = asyncio.create_task(handle.demo_previous_script_call())
+            assert await asyncio.to_thread(worker.previous_call_started.wait, 5.0)
+            releaser = asyncio.create_task(_release_soon())
+
+            await init_or_reset_inference_controller(handle, args=_BROADCAST_ARGS)
+
+            await previous_call
+            await releaser
+
+        assert worker.calls.index("previous_script_call_end") < worker.calls.index("abort_all")
