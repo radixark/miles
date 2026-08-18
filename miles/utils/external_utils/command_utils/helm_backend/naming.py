@@ -4,14 +4,19 @@ import random
 import time
 from pathlib import Path
 
+from pydantic import model_validator
+
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME, component_name
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
 
 _HELM_RELEASE_NAME_MAX = 53
-_LONGEST_COMPONENT_SUFFIX = max(len(f"-{component.value}") for component in DeployComponent)
+_LONGEST_COMPONENT_VALUE = max((component.value for component in DeployComponent), key=len)
+_LONGEST_COMPONENT_SUFFIX = len(f"-{_LONGEST_COMPONENT_VALUE}")
 RUN_ID_MAX_LENGTH = _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-") - _LONGEST_COMPONENT_SUFFIX
+_COMPONENT_VALUES = frozenset(component.value for component in DeployComponent)
 
 _UNINSTALL_COMPONENT = "uninstall"
 _UNINSTALL_MANIFEST_COMPONENT = "uninstall-manifest"
@@ -23,16 +28,61 @@ _RECORDS_DIR_NAME = "launches"
 _STATE_FILE_GLOB = "orchestrator-*.state"
 
 
-class RunNames:
-    @staticmethod
-    def release(*, run_id: str, deploy_component: DeployComponent = DeployComponent.ALL) -> str:
-        assert len(run_id) <= RUN_ID_MAX_LENGTH, (
-            f"run_id {run_id!r} is {len(run_id)} characters, but helm bounds a release name at "
-            f"{_HELM_RELEASE_NAME_MAX}, and a run id has to name a legal release under every component this run "
-            f"may be split into, so it takes at most {RUN_ID_MAX_LENGTH}"
-        )
-        return f"{CHART_NAME}-{run_id}-{deploy_component.value}"
+class ReleaseName(FrozenStrictBaseModel):
+    run_id: str
+    deploy_component: DeployComponent
+    deploy_instance_id: str | None
 
+    @model_validator(mode="after")
+    def _fits_helm_release(self) -> ReleaseName:
+        assert (
+            len(self.run_id) <= RUN_ID_MAX_LENGTH
+        ), f"run_id {self.run_id!r} is {len(self.run_id)} characters, at most {RUN_ID_MAX_LENGTH}"
+        if self.deploy_instance_id is not None:
+            assert self.deploy_instance_id, "deploy_instance_id is empty; a component deployed once carries None"
+            budget = _deploy_instance_id_budget(run_id=self.run_id)
+            assert len(self.deploy_instance_id) <= budget, (
+                f"deploy_instance_id {self.deploy_instance_id!r} is {len(self.deploy_instance_id)} characters, and "
+                f"run_id {self.run_id!r} leaves {budget} for it in the release name"
+            )
+            intersected = sorted(_COMPONENT_VALUES.intersection(self.deploy_instance_id.split("-")))
+            assert not intersected, (
+                f"--deploy-instance-id {self.deploy_instance_id!r} carries the component name(s) {intersected}, "
+                f"which a release name could not be parsed back apart on"
+            )
+        assert (
+            len(name := self.serialize()) <= _HELM_RELEASE_NAME_MAX
+        ), f"release {name!r} is {len(name)} characters, at most {_HELM_RELEASE_NAME_MAX}"
+        return self
+
+    def serialize(self) -> str:
+        parts = [CHART_NAME, self.run_id, self.deploy_component.value]
+        if self.deploy_instance_id is not None:
+            parts.append(self.deploy_instance_id)
+        return "-".join(parts)
+
+    @classmethod
+    def parse(cls, release: str) -> ReleaseName | None:
+        if not release.startswith(f"{CHART_NAME}-"):
+            return None
+
+        tokens = release.removeprefix(f"{CHART_NAME}-").split("-")
+        index = max((i for i, token in enumerate(tokens) if token in _COMPONENT_VALUES), default=0)
+        if index == 0:
+            return None
+
+        return cls(
+            run_id="-".join(tokens[:index]),
+            deploy_component=DeployComponent(tokens[index]),
+            deploy_instance_id="-".join(tokens[index + 1 :]) or None,
+        )
+
+
+def _deploy_instance_id_budget(*, run_id: str) -> int:
+    return _HELM_RELEASE_NAME_MAX - len(f"{CHART_NAME}-{run_id}-{_LONGEST_COMPONENT_VALUE}-")
+
+
+class RunNames:
     @staticmethod
     def service_fqdn(*, name: str, namespace: str) -> str:
         return f"{name}.{namespace}.svc.cluster.local"

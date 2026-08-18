@@ -114,15 +114,14 @@ class TestUninstallLeftoverCiReleases:
         assert removed == ["ci-of-another-run"]
         assert cluster.uninstalled() == ["ci-of-another-run"]
 
-    def test_recognizes_every_release_this_run_installs_by_the_name_they_share(self):
-        """One component release missed here is one release of this run that its own next launch uninstalls."""
+    def test_recognizes_every_release_this_run_installs_by_the_run_id_they_share(self):
+        """One release missed here is one release of this run that its own next launch uninstalls."""
         run_id = "260101-000000-000"
 
-        assert entrypoint._releases_of_run(run_id) == {
-            f"miles-run-{run_id}",
-            f"miles-run-{run_id}-primary",
-            f"miles-run-{run_id}-trainer",
-        }
+        assert entrypoint._belongs_to_run(f"miles-run-{run_id}-all", run_id=run_id)
+        assert entrypoint._belongs_to_run(f"miles-run-{run_id}-trainer-a", run_id=run_id)
+        assert not entrypoint._belongs_to_run(f"miles-run-{run_id}9-all", run_id=run_id)
+        assert not entrypoint._belongs_to_run("helm-release-of-something-else", run_id=run_id)
 
     def test_a_release_of_a_run_whose_id_starts_with_this_one_is_still_cleaned(self, monkeypatch):
         """A prefix test reads another run's releases as this run's siblings and leaves them behind forever."""

@@ -47,7 +47,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     MooncakeInfo,
     MooncakePlan,
 )
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles, RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunFiles, RunNames
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.object_store import ObjectStoreBackend
@@ -72,15 +72,19 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
     ), f"run_id {run_id!r} names every object this run installs, so it has to match {_RUN_ID_PATTERN.pattern}"
 
     namespace = config.namespace
-    release = RunNames.release(run_id=run_id, deploy_component=config.deploy_component)
+    release = ReleaseName(
+        run_id=run_id,
+        deploy_component=config.deploy_component,
+        deploy_instance_id=config.deploy_instance_id,
+    ).serialize()
     installed_manifest = Helm.get_manifest(release, namespace)
     run_uuid = _resolve_run_uuid(config, installed_manifest=installed_manifest, release=release)
     env = train_env_vars(request, {}, config=config)
     pod_argv, args = _compute_train_argv(request, run_uuid=run_uuid, release=release, namespace=namespace, env=env)
     deploy_component = DeployComponent(args.deploy_component)
-    assert deploy_component is config.deploy_component, (
-        f"the run's pods are told {deploy_component.value} while everything this launch installs is named after "
-        f"{config.deploy_component.value}"
+    assert (deploy_component, args.deploy_instance_id) == (config.deploy_component, config.deploy_instance_id), (
+        f"the run's pods are told {deploy_component.value}/{args.deploy_instance_id!r}, the release is named "
+        f"{config.deploy_component.value}/{config.deploy_instance_id!r}"
     )
     deploys_orchestration_script = deploy_component.deploys_orchestration_script()
 
@@ -325,14 +329,13 @@ def _assert_upgrade_only_resizes(
     logger.warning(f"upgrade check skipped: {message}")
 
 
-def _releases_of_run(run_id: str) -> set[str]:
-    return {RunNames.release(run_id=run_id, deploy_component=component) for component in DeployComponent}
+def _belongs_to_run(release: str, *, run_id: str) -> bool:
+    return (parsed := ReleaseName.parse(release)) is not None and parsed.run_id == run_id
 
 
 def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list[str]:
-    kept = _releases_of_run(keep_run_id)
     listed = Helm.list_releases(namespace=namespace, selector=f"{CI_LABEL}=true")
-    releases = [release for release in listed if release not in kept]
+    releases = [release for release in listed if not _belongs_to_run(release, run_id=keep_run_id)]
     for release in releases:
         logger.info(f"Uninstalling the leftover ci release {release} before this run installs its own")
         Helm.uninstall(release=release, namespace=namespace)

@@ -13,13 +13,14 @@ from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainCo
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator import state as orchestrator_state
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_spec import CommandWorkerSpec, PortInfo, SchedulingSpec, ServeWorkerSpec
 
 RUN_ID = "260101-000000-000"
 NAMESPACE = "myns"
-RELEASE = RunNames.release(run_id=RUN_ID)
+RELEASE = ReleaseName(run_id=RUN_ID, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
 
 
 def _engine(
@@ -140,7 +141,12 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
         entrypoint,
         "parse_args",
         lambda: SimpleNamespace(
-            colocate=colocate, deploy_component="all", argv=[], use_wandb=False, wandb_run_id=None
+            colocate=colocate,
+            deploy_component="all",
+            deploy_instance_id=None,
+            argv=[],
+            use_wandb=False,
+            wandb_run_id=None,
         ),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
