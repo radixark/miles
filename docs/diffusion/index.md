@@ -11,9 +11,8 @@ through flags.
 
 ## Core features
 
-- **Recipes for supported diffusion models.** Launchers for Wan2.2-T2V-A14B, Qwen-Image,
-  LTX-2.3, the Cosmos3 MoT omni family, and SD3.5. A per-family `TrainPipelineConfig` isolates model quirks so new
-  architectures plug in without touching the trainer.
+- **Verified Recipes for Latest Diffusion Models.** Launchers for Wan2.2-T2V-A14B, Qwen-Image,
+  LTX-2.3, the Cosmos3 MoT omni family, and SD3.5. `TrainPipelineConfig` allows for easy model support.
 - **LoRA training with IPC-handle weight sync.** With `--lora-ipc-weight-sync`, PEFT LoRA on the FSDP2 actor ships only
   `lora_A`/`lora_B` pairs to colocated rollout engines over CUDA IPC and merges them engine-side. See
   [LoRA Training and Weight Sync](/diffusion/advanced/lora).
