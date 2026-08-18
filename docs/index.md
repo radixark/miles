@@ -84,6 +84,11 @@ of the box, including older generations of the families below.
 | **Nemotron** | [Nemotron-3-Ultra-550B-A55B](/models/nemotron/nemotron-3-ultra)<br/>[Nemotron-3-Super-120B-A12B-FP8](/models/nemotron/nemotron-3-super)<br/>[Nemotron-3-Nano MoE](/models/nemotron/nemotron-3-nano-moe)<br/>[Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) |
 | **Gemma** | [Gemma-4 26B-A4B](/models/gemma/gemma-4)<br/>[Gemma-4 31B](/models/gemma/gemma-4) |
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
+| **Stable Diffusion** | [SD3.5](/diffusion/models/sd3/sd3) |
+| **Qwen-Image** | [Qwen-Image](/diffusion/models/qwen-image/qwen-image) |
+| **Wan** | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2) |
+| **LTX** | [LTX-2.3](/diffusion/models/ltx/ltx2) |
+| **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
 
 See [Models](/models/index) for the full family lists, exact conversion commands, launch
 scripts, and parallelism settings.

@@ -1,14 +1,14 @@
 ---
 title: Cosmos3
-description: The Cosmos3 MoT omni family (UND + GEN towers) — token-level conditioning, packed single-sample forward, Flow-GRPO + PickScore recipe.
+description: Cosmos3-Nano Flow-GRPO and PickScore recipe with token-level conditioning and packed single-sample forwards.
 ---
 
 ## 1. Model introduction
 
 [Cosmos3](https://huggingface.co/collections/nvidia/cosmos3) is NVIDIA's Mixture-of-Transformers (MoT) omni family: an
 **UND** (understanding) tower and a **GEN** (generation) tower over a joint text+vision packed sequence, with the Wan2.2
-VAE (4× temporal compression). All sizes share this architecture and differ only in layer count and hidden dim, so
-everything below applies family-wide; the canonical recipes are validated on **Cosmos3-Nano**.
+VAE (4× temporal compression). This guide covers **Cosmos3-Nano**, the variant validated by the canonical recipe and
+training curve.
 
 **Key highlights for RL training:**
 
@@ -26,14 +26,9 @@ everything below applies family-wide; the canonical recipes are validated on **C
 
 ## 2. Supported variants
 
-All sizes resolve to the same family config — detection matches any checkpoint name containing `cosmos3` / `cosmos-3`.
-
-
-| Size  | Composition              | HF checkpoints                                                                                                                                                                                                                         | Status                              |
-| ----- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Nano  | 16 B (8 B UND + 8 B GEN) | [Cosmos3-Nano](https://huggingface.co/nvidia/Cosmos3-Nano), [Cosmos3-Nano-Policy-DROID](https://huggingface.co/nvidia/Cosmos3-Nano-Policy-DROID)                                                                                       | **Validated** — canonical recipes   |
-| Edge  | 4 B (2 B + 2 B)          | [Cosmos3-Edge](https://huggingface.co/nvidia/Cosmos3-Edge), [Cosmos3-Edge-Policy-DROID](https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID)                                                                                       | Untested                            |
-| Super | 64 B (32 B + 32 B)       | [Cosmos3-Super](https://huggingface.co/nvidia/Cosmos3-Super), [Cosmos3-Super-Text2Image](https://huggingface.co/nvidia/Cosmos3-Super-Text2Image), [Cosmos3-Super-Image2Video](https://huggingface.co/nvidia/Cosmos3-Super-Image2Video) | Untested; needs a larger GPU layout |
+| Size  | Composition              | HF checkpoints                                                                                                                                                                                                   | Status                            |
+| ----- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| Nano  | 16 B (8 B UND + 8 B GEN) | [Cosmos3-Nano](https://huggingface.co/nvidia/Cosmos3-Nano), [Cosmos3-Nano-Policy-DROID](https://huggingface.co/nvidia/Cosmos3-Nano-Policy-DROID)                                                                 | **Validated** — canonical recipes |
 
 
 
