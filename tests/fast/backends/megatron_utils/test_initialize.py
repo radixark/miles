@@ -1,3 +1,11 @@
+import logging
+import random
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+import torch
+
 from miles.backends.megatron_utils import initialize
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState
 
@@ -28,6 +36,32 @@ def _parallel_state(
 
 def _patch_state(monkeypatch, state: ParallelState) -> None:
     monkeypatch.setattr(initialize, "get_parallel_state", lambda: state)
+
+
+class TestSetRandomSeedFromArgs:
+    def test_it_reseeds_rngs_and_only_rank_zero_logs(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Repeated setup reproduces CPU RNG streams while only rank zero announces the seed."""
+        _patch_state(monkeypatch, _parallel_state())
+        monkeypatch.setattr(initialize.tensor_parallel, "model_parallel_cuda_manual_seed", lambda *args: None)
+        args = SimpleNamespace(
+            rank=0,
+            seed=1729,
+            data_parallel_random_init=True,
+            te_rng_tracker=False,
+            inference_rng_tracker=True,
+        )
+
+        with caplog.at_level(logging.INFO, logger=initialize.__name__):
+            initialize.set_random_seed_from_args(args)
+            first_values = (random.random(), np.random.random(), torch.rand(1).item())
+            args.rank = 1
+            initialize.set_random_seed_from_args(args)
+            second_values = (random.random(), np.random.random(), torch.rand(1).item())
+
+        assert second_values == first_values
+        assert [record.message for record in caplog.records] == ["> setting random seeds to 1729 ..."]
 
 
 def test_intra_mode_first_inner_rank_is_main_rank(monkeypatch):
