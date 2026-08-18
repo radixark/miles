@@ -120,6 +120,20 @@ class TestConvertSamplesToTrainData:
         )
         assert out["rollout_log_probs"][0] == [-0.1, -0.2, -0.3, -0.4]
 
+    def test_non_finite_rollout_log_probs_rejected(self):
+        args = make_args(rewards_normalization=False)
+        sample = make_sample()
+        sample.rollout_log_probs = [-0.1, float("nan"), -0.3, -0.4]
+
+        with pytest.raises(ValueError, match="Non-finite rollout_log_probs"):
+            convert_samples_to_train_data(
+                args,
+                [sample],
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
     def test_optional_field_round_number_from_metadata(self):
         args = make_args(rewards_normalization=False)
         s = make_sample()
