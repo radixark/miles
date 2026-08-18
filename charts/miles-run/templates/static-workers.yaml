@@ -38,6 +38,10 @@ spec:
       labels:
         {{- include "miles-run.labels" $labels | nindent 8 }}
         miles.radixark.io/pool: {{ default $worker.name $worker.poolId | quote }}
+      {{- with $worker.restartAt }}
+      annotations:
+        miles.radixark.io/restart-at: {{ . | quote }}
+      {{- end }}
     spec:
       {{- include "miles-run.podDefaults" $context | nindent 6 }}
       restartPolicy: Always

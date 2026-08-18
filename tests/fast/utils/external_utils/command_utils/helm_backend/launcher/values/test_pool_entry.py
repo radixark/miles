@@ -7,10 +7,17 @@ from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.
     trainer,
 )
 
+from miles.ray.specs.rollout import ROLLOUT_EXECUTOR_POOL_ID
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values import pool_entry
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.workers.worker_spec import BaseWorkerSpec
+
+STAMP = "2026-08-12T09:00:00+00:00"
+
+RESTARTED_LAYOUT = LAYOUT.model_copy(
+    update=dict(restart_at=STAMP, stamped_components=frozenset({ROLLOUT_EXECUTOR_POOL_ID}))
+)
 
 PREPARE_CMD = "mkdir -p /scratch/dataset && rsync -a /cluster-storage/dataset/ /scratch/dataset"
 
@@ -110,3 +117,39 @@ class TestPrepareCmd:
         command = build_values([trainer()], LAYOUT).as_values()["run"]["trainerEngines"][0]["command"]
 
         assert command[:2] != ["bash", "-c"]
+
+
+class TestTheRestartStamp:
+    @staticmethod
+    def _entry(spec: BaseWorkerSpec, *, plan: LaunchPlan) -> dict:
+        return build_values([spec], plan).as_values()["run"]["staticWorkers"][0]
+
+    @staticmethod
+    def _executor() -> BaseWorkerSpec:
+        return router().model_copy(update={"name": ROLLOUT_EXECUTOR_POOL_ID})
+
+    def test_a_pool_the_launch_replaces_carries_the_stamp(self):
+        """This is the only path from the plan to the annotation whose change rolls the executor pod."""
+        assert self._entry(self._executor(), plan=RESTARTED_LAYOUT)["restartAt"] == STAMP
+
+    def test_a_pool_the_launch_does_not_replace_carries_none(self):
+        """Stamping any other pool would roll pods this launch promises to keep alive."""
+        assert "restartAt" not in self._entry(router(), plan=RESTARTED_LAYOUT)
+
+    def test_an_ordinary_launch_stamps_no_pool_at_all(self):
+        """A stamp appearing without a restart would roll the executor of every run that relaunches."""
+        assert "restartAt" not in self._entry(self._executor(), plan=LAYOUT)
+
+    def test_stamping_a_pool_whose_template_renders_no_annotation_is_refused(self):
+        """The engine template carries no annotation, so a stamp there rolls nothing while the launch believes it did."""
+        plan = LAYOUT.model_copy(update=dict(restart_at=STAMP, stamped_components=frozenset({"inference-engine-0-0"})))
+
+        with pytest.raises(AssertionError, match="renders a restart stamp"):
+            build_values([engine()], plan).as_values()
+
+    def test_stamping_a_trainer_pool_is_refused(self):
+        """A trainer pool a hot restart promises to keep alive must never be handed a stamp at all."""
+        plan = LAYOUT.model_copy(update=dict(restart_at=STAMP, stamped_components=frozenset({"trainer-engine-actor"})))
+
+        with pytest.raises(AssertionError, match="renders a restart stamp"):
+            build_values([trainer()], plan).as_values()

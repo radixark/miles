@@ -10,10 +10,17 @@ from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values.
 )
 from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import _RELEASE, make_engine_spec, make_trainer_spec
 
+from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values import builder
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
 from miles.utils.workers.worker_spec import BaseWorkerSpec
+
+_STAMP = "2026-08-12T09:00:00+00:00"
+
+
+def _stamped(*components: str) -> LaunchPlan:
+    return LAYOUT.model_copy(update=dict(restart_at=_STAMP, stamped_components=frozenset(components)))
 
 
 class TestBuildValues:
@@ -30,6 +37,24 @@ class TestBuildValues:
         built = build_values([], LAYOUT).as_values()
 
         assert built["run"]["orchestrator"] == {"command": ["python", "train.py"]}
+
+    def test_hands_the_orchestrator_the_restart_stamp_the_plan_carries(self):
+        """This is the only path from the plan to the annotation whose change rolls the orchestrator pod."""
+        built = build_values([], _stamped(naming.ORCHESTRATOR_COMPONENT)).as_values()
+
+        assert built["run"]["orchestrator"]["restartAt"] == _STAMP
+
+    def test_an_orchestrator_the_launch_does_not_stamp_is_given_no_stamp(self):
+        """A launch that carries a stamp for another component must not roll the orchestrator pod as well."""
+        built = build_values([], _stamped("rollout-executor")).as_values()
+
+        assert "restartAt" not in built["run"]["orchestrator"]
+
+    def test_an_orchestrator_of_a_launch_that_restarts_nothing_is_given_no_stamp(self):
+        """A stamp on an ordinary launch would roll the pods of every run that relaunches."""
+        built = build_values([], LAYOUT).as_values()
+
+        assert "restartAt" not in built["run"]["orchestrator"]
 
     def test_files_every_spec_under_its_own_section(self):
         """Each section renders a different workload kind, so a misfiled spec deploys the wrong shape."""
