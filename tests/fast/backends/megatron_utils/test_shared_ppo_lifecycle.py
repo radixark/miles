@@ -212,10 +212,8 @@ def test_force_sync_save_overlaps_hf_export_with_async_checkpoint(actor_module, 
 
     monkeypatch.setattr(actor_module, "save", lambda *_args, **_kwargs: events.append("save"))
 
-    from megatron.training import async_utils
-
     monkeypatch.setattr(
-        async_utils,
+        actor_module,
         "maybe_finalize_async_save",
         lambda **_kwargs: events.append("finalize"),
     )
