@@ -922,7 +922,7 @@ def initialize_model_and_optimizer(
     args: Namespace,
     role: str = "actor",
     checkpointing_context=None,
-) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, int]:
+) -> tuple[list[DDP], MegatronOptimizer | None, OptimizerParamScheduler | None, LoadCheckpointOutput]:
     """Initialize model(s), optimizer, scheduler, and load from checkpoint.
 
     Args:
@@ -931,12 +931,12 @@ def initialize_model_and_optimizer(
         checkpointing_context: pass-through checkpointing context
 
     Returns:
-        tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, int]:
-            DDP-wrapped model chunks, optimizer, scheduler, and iteration index.
+        tuple[list[DDP], MegatronOptimizer, OptimizerParamScheduler, LoadCheckpointOutput]:
+            DDP-wrapped model chunks, optimizer, scheduler, and what the load answered.
     """
     model, optimizer, opt_param_scheduler = build_model_and_optimizer(args, role=role)
 
-    iteration = load_model_state(
+    load_output = load_model_state(
         args,
         model=model,
         optimizer=optimizer,
@@ -944,7 +944,7 @@ def initialize_model_and_optimizer(
         role=role,
         checkpointing_context=checkpointing_context,
     )
-    return model, optimizer, opt_param_scheduler, iteration
+    return model, optimizer, opt_param_scheduler, load_output
 
 
 def build_model_and_optimizer(
@@ -956,6 +956,11 @@ def build_model_and_optimizer(
     return model, optimizer, opt_param_scheduler
 
 
+@dataclasses.dataclass(frozen=True)
+class LoadCheckpointOutput:
+    loaded_rollout_id: int
+
+
 def load_model_state(
     args: Namespace,
     *,
@@ -964,7 +969,7 @@ def load_model_state(
     opt_param_scheduler: OptimizerParamScheduler | None,
     role: str,
     checkpointing_context: dict | None,
-) -> int:
+) -> LoadCheckpointOutput:
     if is_multi_lora_enabled(args):
         # Hide adapter params so the bridge's conversion-task walk doesn't see them
         # while loading the base checkpoint.
@@ -1016,4 +1021,4 @@ def load_model_state(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    return iteration
+    return LoadCheckpointOutput(loaded_rollout_id=iteration)
