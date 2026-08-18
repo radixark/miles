@@ -123,8 +123,8 @@ class ServerGroup:
             }
             env_vars.update(dumper_utils.get_sglang_env(self.args))
 
-            # The node-0 rank launches the sglang server (RayEngine), which
-            # spawns the SchedulerActors for ALL of the engine's ranks — so it
+            # The node-0 facade launches SGLangServerActor (same job), which
+            # spawns SchedulerActors for ALL of the engine's ranks — so it
             # gets the full engine's bundle list, spanning every node.
             rdt_pg_kwargs = {}
             if rdt_reuse_pg and i % self.nodes_per_engine == 0:

@@ -6,12 +6,12 @@ import os
 import time
 from urllib.parse import quote
 
+import ray
 import requests
 import sglang_router
 from packaging.version import parse
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.environ import envs
-from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
-from sglang.srt.ray import get_scheduler_actor_name
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -22,6 +22,7 @@ from miles.backends.megatron_utils.lora_utils import (
     sglang_lora_target_all_sentinel,
 )
 from miles.ray.ray_actor import RayActor
+from miles.ray.rollout.sglang_server_actor import SGLangServerActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
@@ -71,12 +72,7 @@ def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
 
 
 def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    if server_args.use_ray:
-        # entrypoints.http_server ignores use_ray and starts mp.Process schedulers,
-        # which have no SchedulerActor for RDT to pull from.
-        from sglang.srt.ray.http_server import launch_server
-    else:
-        from sglang.srt.entrypoints.http_server import launch_server
+    from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
     server_args.host = server_args.host.strip("[]")
@@ -93,6 +89,29 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     )
 
     return p
+
+
+def _launch_sglang_server(server_args: ServerArgs, bundle_index: int):
+    """Host the Ray HTTP server in a same-job child actor. Returns (actor, scheduler_actors)."""
+    server_args.host = server_args.host.strip("[]")
+    placement_group = ray.util.get_current_placement_group()
+    assert placement_group is not None
+    http_actor = ray.remote(SGLangServerActor).options(
+        num_cpus=0.2,
+        num_gpus=0,
+        scheduling_strategy=PlacementGroupSchedulingStrategy(
+            placement_group=placement_group,
+            placement_group_capture_child_tasks=True,
+            placement_group_bundle_index=bundle_index,
+        ),
+    ).remote()
+    scheduler_actors = ray.get(http_actor.start.remote(server_args))
+    _wait_server_healthy(
+        base_url=server_args.url(),
+        api_key=server_args.api_key,
+        is_process_alive=lambda: ray.get(http_actor.is_alive.remote()),
+    )
+    return http_actor, scheduler_actors
 
 
 def _wait_server_healthy(base_url, api_key, is_process_alive):
@@ -150,6 +169,8 @@ class SGLangEngine(RayActor):
         self.num_gpus_per_engine = num_gpus_per_engine
         self.pg_bundles = pg_bundles
         self._scheduler_actors = []
+        self._sglang_server_actor = None
+        self.process = None
 
     def get_topology_info(self) -> dict:
         """Placement facts for the dashboard timeline. ``base_gpu_id`` is
@@ -261,7 +282,6 @@ class SGLangEngine(RayActor):
                 # For a multi-node engine, the node-0 server's RayEngine spawns
                 # the SchedulerActors of ALL ranks (placed cross-node via the
                 # placement group), so non-zero node ranks launch nothing.
-                self.process = None
                 return
             server_args_dict["use_ray"] = True
             server_args_dict["enable_rdt_weight_sync"] = True
@@ -272,18 +292,18 @@ class SGLangEngine(RayActor):
         )
         server_args = ServerArgs(**server_args_dict)
         if use_rdt:
-            import ray
-
             placement_group = ray.util.get_current_placement_group()
             assert placement_group is not None
             envs.SGLANG_RAY_BUNDLE_INDICES.set(",".join(str(bundle) for bundle in self.pg_bundles))
             server_args.override(
                 "miles.rdt.ray_context",
                 placement_group=placement_group,
-                ray_runtime_env=dict(ray.get_runtime_context().runtime_env),
-                ray_namespace=ray.get_runtime_context().namespace,
             )
-        self.process = launch_server_process(server_args)
+            self._sglang_server_actor, self._scheduler_actors = _launch_sglang_server(
+                server_args, bundle_index=self.pg_bundles[0]
+            )
+        else:
+            self.process = launch_server_process(server_args)
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
@@ -503,7 +523,7 @@ class SGLangEngine(RayActor):
     def shutdown(self):
         if self.args.rollout_external:
             return
-        if getattr(self, "process", None) is None:
+        if self._sglang_server_actor is None and self.process is None:
             # Non-zero node ranks of an RDT multi-node engine launch no server.
             return
 
@@ -535,6 +555,11 @@ class SGLangEngine(RayActor):
 
             if response is not None:
                 response.raise_for_status()
+        if self._sglang_server_actor is not None:
+            ray.kill(self._sglang_server_actor)
+            self._sglang_server_actor = None
+            self._scheduler_actors = []
+            return
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):
@@ -556,48 +581,8 @@ class SGLangEngine(RayActor):
         )
 
     def get_scheduler_actors(self) -> list:
-        """Return this engine's SchedulerActor handles (RDT mode, use_ray=True).
-
-        Reconstructs each actor name with ``get_scheduler_actor_name`` from the
-        bundle list handed to RayEngine at launch.
-        """
-        if self._scheduler_actors:
-            return self._scheduler_actors
-
-        assert self.pg_bundles, "get_scheduler_actors requires the RDT bundle list"
-
-        import ray
-
-        tp_size = self.num_gpus_per_engine or self.args.rollout_num_gpus_per_engine
-        enable_dp_attention = bool(getattr(self.args, "sglang_enable_dp_attention", False))
-        dp_size = getattr(self.args, "sglang_dp_size", 1)
-        attn_cp_size = getattr(self.args, "sglang_attn_cp_size", 1)
-        rank0_node_ip = ray.util.get_node_ip_address()
-
-        actors = []
-        for rank, bundle_idx in enumerate(self.pg_bundles):
-            tp_rank = rank % tp_size
-            _, _, dp_rank, _ = compute_dp_attention_world_info(
-                enable_dp_attention, tp_rank, tp_size, dp_size, attn_cp_size
-            )
-            name = get_scheduler_actor_name(
-                rank0_node_ip=rank0_node_ip,
-                dp_rank=dp_rank,
-                pp_rank=rank // tp_size,
-                tp_rank=tp_rank,
-                port=self.server_port,
-                bundle_idx=bundle_idx,
-            )
-            try:
-                actors.append(ray.get_actor(name))
-            except ValueError as e:
-                raise RuntimeError(
-                    f"SchedulerActor {name!r} not found for engine "
-                    f"{self.server_host}:{self.server_port} rank={rank}"
-                ) from e
-
-        self._scheduler_actors = actors
-        return actors
+        """Return this engine's SchedulerActor handles (RDT mode, use_ray=True)."""
+        return self._scheduler_actors
 
     def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""

@@ -12,8 +12,6 @@ from .rollout.rollout_manager import RolloutManager
 
 logger = logging.getLogger(__name__)
 
-MILES_RDT_PG_NAME = "miles_rdt_pg"
-
 
 def _select_train_group_class():
     if enable_experimental_ft_trainer():
@@ -56,18 +54,7 @@ def _create_placement_group(num_gpus, is_rdt: bool = False):
         return None, [], []
 
     bundles = [{"GPU": 1, "CPU": 1} for _ in range(num_gpus)]
-    if is_rdt:
-        # Reusing this PG for the rollout SchedulerActors avoids double-booking the
-        # rollout GPUs, but sglang's engine is a separate Ray job, so the PG must be
-        # detached to be schedulable there. Other modes keep the job-scoped lifetime.
-        pg = placement_group(
-            bundles,
-            strategy="PACK",
-            name=MILES_RDT_PG_NAME,
-            lifetime="detached",
-        )
-    else:
-        pg = placement_group(bundles, strategy="PACK")
+    pg = placement_group(bundles, strategy="PACK")
     num_bundles = len(bundles)
 
     ray.get(pg.ready())
