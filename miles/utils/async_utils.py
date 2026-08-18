@@ -13,7 +13,7 @@ __all__ = [
     "run",
     "submit",
     "wait_futures",
-    "wait_cancelling_pending_on_first_exception",
+    "wait_cancelling_pending_on_first_completion",
     "eager_create_task",
 ]
 
@@ -81,8 +81,8 @@ def wait_futures(futures: Sequence[concurrent.futures.Future]) -> list[Any]:
     return results
 
 
-async def wait_cancelling_pending_on_first_exception(tasks: Sequence[asyncio.Task]) -> None:
-    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+async def wait_cancelling_pending_on_first_completion(tasks: Sequence[asyncio.Task]) -> None:
+    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
     for task in pending:
         task.cancel()
