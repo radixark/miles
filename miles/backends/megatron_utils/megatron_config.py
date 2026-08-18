@@ -164,23 +164,35 @@ def _compute_trainers(args) -> list[MegatronTrainerConfig]:
         trainers = [MegatronTrainerConfig.resolve(raw=t) for t in raw.trainers]
         assert trainers, "--megatron-config must declare at least one trainer"
 
-    if getattr(args, "use_critic", False) and not any(trainer.role == CRITIC_ROLE for trainer in trainers):
+    if getattr(args, "use_critic", False):
         assert (
             len({trainer.model_id for trainer in trainers}) == 1
         ), "training several policy models does not support --use-critic"
-        trainers = [*trainers, _compute_critic_trainer(policy=trainers[0])]
+        trainers = [*trainers, _compute_critic_trainer(args, policy=trainers[0])]
 
     return trainers
 
 
-def _compute_critic_trainer(*, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
+def _compute_critic_trainer(args, *, policy: MegatronTrainerConfig) -> MegatronTrainerConfig:
     model_id = policy.model_id
     return MegatronTrainerConfig(
         trainer_id=CRITIC_ROLE if model_id is None else f"{model_id}-{CRITIC_ROLE}",
         model_id=model_id,
         role=CRITIC_ROLE,
-        overrides=dict(policy.overrides),
+        overrides={**policy.overrides, **_compute_critic_overrides(args)},
     )
+
+
+def _compute_critic_overrides(args) -> dict[str, Any]:
+    return {
+        "kl_coef": 0,
+        "use_opd": False,
+        "disable_param_buffers_cpu_backup": False,
+        "load": args.critic_load,
+        "save": args.critic_save,
+        "lr": args.critic_lr,
+        "lr_warmup_iters": args.critic_lr_warmup_iters,
+    }
 
 
 def _resolve_raw_megatron_config(value: str | None) -> "_RawMegatronConfig | None":

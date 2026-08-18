@@ -100,6 +100,15 @@ def _training_models_args(**overrides):
         "start_rollout_id": None,
         "rollout_global_dataset": False,
         "megatron_config": None,
+        "trainer_model_id": None,
+        "load": "/ckpt/run",
+        "save": "/ckpt/run",
+        "lr": 1e-6,
+        "lr_warmup_iters": 10,
+        "critic_load": "/ckpt/critic",
+        "critic_save": "/ckpt/run_critic",
+        "critic_lr": 2e-6,
+        "critic_lr_warmup_iters": 3,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -133,6 +142,23 @@ async def test_the_critic_controller_is_inited_with_neutralized_args(monkeypatch
         False,
     )
     assert (args.kl_coef, args.use_opd, args.disable_param_buffers_cpu_backup) == (0.1, True, True)
+
+
+async def test_the_critic_controller_is_inited_with_the_critic_checkpoint_and_schedule(monkeypatch):
+    """The worker no longer swaps critic_* onto the standard fields, so the args must arrive remapped."""
+    handles = _patch_train_controller_handles(monkeypatch)
+    args = _training_models_args()
+
+    await placement_group_module.create_training_models(args, rollout_executor=_RecordingRolloutExecutor())
+
+    _actor_args, critic_args = (handle.inited_with for handle in handles)
+    assert (critic_args.load, critic_args.save, critic_args.lr, critic_args.lr_warmup_iters) == (
+        "/ckpt/critic",
+        "/ckpt/run_critic",
+        2e-6,
+        3,
+    )
+    assert (args.load, args.save, args.lr, args.lr_warmup_iters) == ("/ckpt/run", "/ckpt/run", 1e-6, 10)
 
 
 async def test_the_controllers_are_inited_before_the_driver_calls_them(monkeypatch):
