@@ -20,7 +20,7 @@ fields depend on backend and config):
 ```
 
 When `--use-wandb` is set, metrics also go to wandb under the `train/`, `rollout/`,
-and `perf/` namespaces (see `miles/utils/wandb_utils.py`).
+and `perf/` namespaces (see `miles/utils/tracking_utils/wandb_utils.py`).
 
 ## Enabling wandb
 

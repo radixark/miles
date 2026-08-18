@@ -326,9 +326,8 @@ Every skipped point is logged at the step it would have landed on, with the reas
 | `eval/skipped_busy` | At `--eval-max-in-flight` under `--eval-overflow-policy skip` |
 | `eval/skipped_export_failed` | The snapshot export raised |
 | `eval/skipped_ckpt_missing` | No `.complete` marker in the snapshot directory |
-| `eval/skipped_unhealthy` | The fleet or its router was unreachable |
-| `eval/skipped_pin_violation` | The engines did not all report the expected weight version |
 | `eval/skipped_crashed` | Anything else the eval raised |
+| `eval/skipped_<reason>` | A `CheckpointEvalFn` raised `EvalSkip(reason)` |
 
 For a point that did run, `eval/{dataset}/weight_version/mean == eval/step` and
 `eval/{dataset}/weight_version/mixed_version_ratio == 0` together confirm it measured

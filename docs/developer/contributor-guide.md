@@ -29,7 +29,7 @@ miles/
 │   ├── mbridge/              # per-architecture weight bridges
 │   ├── megatron_bridge/      # megatron.bridge shims
 │   └── optimizers/           # optimizer plugins (NVMe streaming store)
-├── scripts/                  # launchers, one per recipe; scripts/models/ holds MODEL_ARGS
+├── scripts/                  # launchers, one per recipe; scripts/models/ holds the architecture flags
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
 ├── docker/                   # Dockerfile, Dockerfile.rocm, build.py, patches

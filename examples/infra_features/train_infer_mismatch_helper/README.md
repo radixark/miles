@@ -92,13 +92,15 @@ Advantages:
 
 ## APIs of Algorithms
 
-You may choose from above algorithms by specifying arguments below:
+You may choose from above algorithms with the two command-line flags below. They are the
+only CLI flags this feature adds; everything in **Configs and Recommended Settings** is a
+key in the YAML file you pass to `--custom-config-path`.
 
 `--use-rollout-logprobs`: True if only use `rollout_log_probs` to compute the loss, bypassing old_log_probs calculated by training engine;
 
-`--use-rollout-correction`: True if apply importance sampling/rejection sampling to loss.
+`--use-tis`: True if apply importance sampling/rejection sampling to loss.
 
-| `use_rollout_logprobs` | `use_rollout_correction` | Algorithm | Policies |Compute old_log_probs | Batch Invariant | Recommended TIS Mode |
+| `use_rollout_logprobs` | `use_tis` | Algorithm | Policies |Compute old_log_probs | Batch Invariant | Recommended TIS Mode |
 |-----------------|-------------|-----------|--------------|---------------|-----------------|----------------------|
 | False | False | Standard PPO (Algorithm 0) | 2 ($\pi_\theta$, $\pi_{\textcolor{blue}{\text{old}}}$)|Yes | No | N/A |
 | True | False | Bypassing PPO (Algorithm 3) | 2 ($\pi_\theta$, $\pi_{\textcolor{red}{\text{SGLang}}}$) |🚀 Skipped | No | N/A |
@@ -106,23 +108,34 @@ You may choose from above algorithms by specifying arguments below:
 
 ## Configs and Recommended Settings
 
-When choosing to use importance sampling or rejection sampling for mismatch correction (`use-rollout-correction` enabled, Algorithm 2 & 3), you may specify the IS modes and applied levels. 
+When choosing to use importance sampling or rejection sampling for mismatch correction
+(`--use-tis` enabled, Algorithm 2 & 3), you may specify the IS modes and applied levels.
 
-### Arguments
+### Config keys
 
-`use-tis`: Enable importance sampling. The IS weight will be multiplied by the policy gradient loss. 
+These are **not command-line flags**. They live in the YAML file the run points at with
+`--custom-config-path`, and `mis.py` reads them off the parsed config. The reference file
+is [`mis.yaml`](mis.yaml), wired up like this:
 
-- `--tis-mode`: Mode for IS. Allowed mode: **truncate**, **clip**.
-- `--tis-lower-bound`, `--tis-upper-bound`: Bounds for IS weights.
-- `--tis-level`: Allowed levels: **token**, **sequence**, **geometric**. See explanations below.
-- `--tis-batch-normalize`: Normalize IS weights to mean=1.0 across batch
+```bash
+--use-tis
+--custom-config-path examples/infra_features/train_infer_mismatch_helper/mis.yaml
+--custom-tis-function-path examples.infra_features.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp
+```
+
+`use_tis`: Enable importance sampling. The IS weight will be multiplied by the policy gradient loss.
+
+- `tis_mode`: Mode for IS. Allowed mode: **truncate**, **clip**, **mask**.
+- `tis_lower_bound`, `tis_upper_bound`: Bounds for IS weights.
+- `tis_level`: Allowed levels: **token**, **sequence**, **geometric**. See explanations below.
+- `tis_batch_normalize`: Normalize IS weights to mean=1.0 across batch
 
 
-`use-rs`: Enable rejection sampling. When choosing to use rejection sampling, the tokens/sequences with an IS weight out of threshold will be directly masked. Those rejected tokens/sequences will not be considered for loss averaging.
+`use_rs`: Enable rejection sampling. When choosing to use rejection sampling, the tokens/sequences with an IS weight out of threshold will be directly masked. Those rejected tokens/sequences will not be considered for loss averaging.
 
-- `--rs-lower-bound`, `--rs-upper-bound`: Bounds for RS
-- `--rs-level`: Allowed levels: **token**, **sequence**, **geometric**. See explanations below.
-- `--rs-veto-threshold`: Sequence-level rejection threshold for catastrophic mismatches
+- `rs_lower_bound`, `rs_upper_bound`: Bounds for RS. Unset falls back to the `tis_` bounds.
+- `rs_level`: Allowed levels: **token**, **sequence**, **geometric**. See explanations below.
+- `rs_veto_threshold`: Sequence-level rejection threshold for catastrophic mismatches
 
 ### Importance Sampling
 
@@ -178,18 +191,21 @@ When rollout log probabilities are available, MILES automatically tracks compreh
 
 These metrics quantify the difference between training and rollout policies. They are computed automatically when `rollout_log_probs` are provided, regardless of whether TIS/MIS correction is enabled.
 
+All names below are logged under the `train/` namespace.
+
 | Metric Name | Description |
 |------------|-------------|
-| `mismatch_training_log_ppl` | Negative mean log probability under training policy: $-\mathbb{E}[\log \pi_{\text{train}}]$ |
-| `mismatch_training_ppl` | Perplexity of training policy: $\exp(-\mathbb{E}[\log \pi_{\text{train}}])$ |
-| `mismatch_rollout_log_ppl` | Negative mean log probability under rollout policy: $-\mathbb{E}[\log \pi_{\text{rollout}}]$ |
-| `mismatch_rollout_ppl` | Perplexity of rollout policy: $\exp(-\mathbb{E}[\log \pi_{\text{rollout}}])$ |
-| `mismatch_kl` | Forward KL divergence estimator: $\mathbb{E}[\log \pi_{\text{rollout}} - \log \pi_{\text{train}}]$ |
-| `mismatch_k3_kl` | K3 KL estimator: $\mathbb{E}[\exp(r) - r - 1]$ where $r = \log \pi_{\text{train}} - \log \pi_{\text{rollout}}$ |
-| `mismatch_log_ppl_diff` | Log perplexity difference|
-| `mismatch_log_ppl_abs_diff` | Absolute log perplexity difference |
-| `mismatch_ppl_ratio` | Perplexity ratio |
-| `train_rollout_logprob_abs_diff` | Token-level absolute log probability difference |
+| `training_log_ppl` | Negative mean log probability under training policy: $-\mathbb{E}[\log \pi_{\text{train}}]$ |
+| `training_ppl` | Perplexity of training policy: $\exp(-\mathbb{E}[\log \pi_{\text{train}}])$ |
+| `rollout_log_ppl` | Negative mean log probability under rollout policy: $-\mathbb{E}[\log \pi_{\text{rollout}}]$ |
+| `rollout_ppl` | Perplexity of rollout policy: $\exp(-\mathbb{E}[\log \pi_{\text{rollout}}])$ |
+| `kl` | Forward KL divergence estimator: $\mathbb{E}[\log \pi_{\text{rollout}} - \log \pi_{\text{train}}]$ |
+| `k3_kl` | K3 KL estimator: $\mathbb{E}[\exp(r) - r - 1]$ where $r = \log \pi_{\text{train}} - \log \pi_{\text{rollout}}$ |
+| `log_ppl_diff` | Log perplexity difference|
+| `log_ppl_abs_diff` | Absolute log perplexity difference |
+| `ppl_ratio` | Perplexity ratio |
+| `chi2_token`, `chi2_seq` | Token- and sequence-level $\chi^2$ divergence between the two policies |
+| `train_rollout_logprob_abs_diff` | Token-level absolute log probability difference (emitted by miles, not `mis.py`) |
 
 **Usage**: These metrics help you monitor policy drift. Large values indicate a significant mismatch between the training and rollout engines.
 
@@ -197,21 +213,22 @@ These metrics quantify the difference between training and rollout policies. The
 
 These metrics track importance sampling weights and corrections. They are only computed when `--use-tis` is enabled.
 
-When using `--custom-tis-function-path` pointing to MIS implementation (e.g., `mis.py`), additional fine-grained metrics become available:
+When using `--custom-tis-function-path` pointing to MIS implementation (e.g., `mis.py`), additional fine-grained metrics become available. The `tis_` and `rs_` prefixes say which stage produced the number.
 
-| Metric Name | Description | Required Args | Optional Control Args |
-|------------|-------------|---------------|----------------------|
-| `ois` | On-policy importance sampling ratio: $\exp(\log \pi_{\text{train}} - \log \pi_{\text{old}})$ | `--use-tis` | Only for Algorithm 2 (Decoupled PPO) |
-| `mis_mean_is_weight_before_clip` | Raw IS weights before any correction: $\exp(\text{log-ratio})$ | `--use-tis` | `--mis-level` (token/sequence/geometric) |
-| `mis_ratio_mean_after_mis` | IS weights after correction (bounded or masked) | `--use-tis` | `--mis-mode`, bounds |
-| `mis_truncate_fraction` | Fraction of weights truncated (mode-specific) | `--use-tis`, `--mis-mode=truncate` | `--mis-upper-bound` |
-| `mis_clip_fraction_low` | Fraction of weights clipped below lower bound | `--use-tis`, `--mis-mode=clip` | `--mis-lower-bound`, `--mis-upper-bound` |
-| `mis_clip_fraction_high` | Fraction of weights clipped above upper bound | `--use-tis`, `--mis-mode=clip` | `--mis-lower-bound`, `--mis-upper-bound` |
-| `mis_mask_fraction_low` | Fraction of tokens rejected (below lower bound) | `--use-tis`, `--mis-mode=mask` | `--mis-lower-bound`, `--mis-upper-bound` |
-| `mis_mask_fraction_high` | Fraction of tokens rejected (above upper bound) | `--use-tis`, `--mis-mode=mask` | `--mis-lower-bound`, `--mis-upper-bound` |
-| `mis_catastrophic_token_fraction` | Fraction of catastrophic tokens (veto-specific) | `--use-tis`, `--mis-veto-threshold` set | Sequence-level rejection |
-| `mis_catastrophic_seq_fraction` | Fraction of sequences with catastrophic tokens | `--use-tis`, `--mis-veto-threshold` set | Sequence-level rejection |
-| `mis_batch_norm_factor` | Batch normalization factor applied to weights | `--use-tis`, `--mis-batch-normalize` | Normalizes mean to 1.0 |
+| Metric Name | Description | Emitted when |
+|------------|-------------|--------------|
+| `ois` | On-policy importance sampling ratio: $\exp(\log \pi_{\text{train}} - \log \pi_{\text{old}})$ | `--use-tis` (Algorithm 2 only) |
+| `tis_weight_before_bound` | Raw IS weights before any bounding: $\exp(\text{log-ratio})$ | `use_tis` |
+| `tis_weight_after_bound` | IS weights after the `tis_mode` bounding | `use_tis` |
+| `tis_truncate_fraction` | Fraction of weights truncated | `tis_mode: truncate` |
+| `tis_clip_fraction_low` / `tis_clip_fraction_high` | Fraction of weights clipped below / above the bound | `tis_mode: clip` |
+| `tis_mask_fraction_low` / `tis_mask_fraction_high` | Fraction of tokens rejected below / above the bound | `tis_mode: mask` |
+| `rs_mask_fraction_low` / `rs_mask_fraction_high` | Fraction of tokens rejected by rejection sampling | `use_rs` |
+| `rs_catastrophic_token_fraction` | Fraction of catastrophic tokens (below the veto threshold) | `rs_veto_threshold` set |
+| `rs_catastrophic_seq_fraction` | Fraction of sequences holding a catastrophic token | `rs_veto_threshold` set |
+| `is_ratio_mean_after_tis_rs` | Mean IS weight after both TIS and RS | `use_tis` |
+| `batch_norm_factor` | Batch normalization factor applied to weights (1.0 when off) | `use_tis` |
+| `is_ratio_mean_final` / `is_ratio_min_final` / `is_ratio_max_final` | Final IS weight statistics actually multiplied into the loss | `use_tis` |
 
 ## Reference
 

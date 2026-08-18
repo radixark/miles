@@ -140,8 +140,10 @@ async def batched_custom_rm(args, samples: list[Sample]) -> list[float]:
     ...
 ```
 
-**Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `f1`, `gpqa`,
-`ifbench`, `remote_rm` (with `--rm-url`), `random`.
+**Built-in `--rm-type` options:** `math`, `dapo`, `deepscaler`, `gemma_math`, `f1`,
+`gpqa`, `ifbench`, `remote_rm` (with `--rm-url`), `random`, `deterministic_random`.
+Prefixing any of them with `boxed_` (for example `boxed_math`) extracts `\boxed{}`
+from the response before grading.
 
 ### `--custom-reward-post-process-path`
 

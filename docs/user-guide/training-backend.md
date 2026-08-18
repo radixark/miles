@@ -49,7 +49,7 @@ The rest follows from that split:
 |---|---|---|
 | Model splitting | TP × PP × CP × EP × ETP, plus DP | `dp_replicate` × `dp_shard` |
 | Model input | `torch_dist` checkpoint (offline conversion step) | HF directory, loaded as-is |
-| Architecture definition | `MODEL_ARGS` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec |
+| Architecture definition | `scripts/models/<megatron_model_type>.py` plus a Megatron spec for anything non-standard | HF `config.json`, plus an optional adaptation spec |
 | Checkpoints written | Megatron `torch_dist` | PyTorch Distributed Checkpoint |
 | Activation recompute | `--recompute-granularity / method / num-layers` | `--gradient-checkpointing` |
 | Optimizer on CPU | `--optimizer-cpu-offload` | `--fsdp-cpu-offload` |
@@ -85,8 +85,8 @@ That import is also why you export the Megatron source before launching:
 export PYTHONPATH=/root/Megatron-LM
 ```
 
-In a launch script the architecture flags live in `MODEL_ARGS`, generated from
-`scripts/models/<family>.py`. Most models need nothing beyond the stock
+In a launch script the architecture flags come from `scripts/models/<family>.py`,
+selected by the `megatron_model_type` the script hands to `execute_train`. Most models need nothing beyond the stock
 `--num-layers / --hidden-size / ...`. For the ones that do, see
 [bringing in a new architecture](#going-deeper-bringing-in-a-new-architecture) below.
 
@@ -110,7 +110,7 @@ tested combination, then change one dimension at a time.**
 Do not assume TP, CP, EP and ETP can all be raised independently for a new model. The exact
 set of supported combinations depends on the Megatron Core kernels and model spec in use.
 [Argument Groups](/user-guide/argument-groups#perf-args) lists the flags that belong in
-`PERF_ARGS`.
+`perf_args`.
 
 ### 3. Choosing the GPU layout
 
@@ -309,7 +309,7 @@ HuggingFace `config.json`, weights load through `AutoModelForCausalLM.from_pretr
 and sharding, the distributed optimizer and mixed precision all come from PyTorch FSDP2
 rather than from Miles.
 
-So there is no conversion step, no `MODEL_ARGS`, and no spec to write for a model that
+So there is no conversion step, no architecture flag block, and no spec to write for a model that
 `transformers` already implements. The bill comes due on parallelism, which is why large
 models and complex layouts belong on [Megatron-LM](#megatron-lm).
 
@@ -322,7 +322,7 @@ models and complex layouts belong on [Megatron-LM](#megatron-lm).
 
 `--hf-checkpoint` is the whole model input: tokenizer, config and weights. Layer count is
 read from the HF config, so Megatron's architecture flags (`--num-layers`, `--hidden-size`,
-`--spec`, `MODEL_ARGS`) simply do not apply here.
+`--spec`, and the rest of `scripts/models/`) simply do not apply here.
 
 ### 2. Sharding it
 
@@ -462,7 +462,7 @@ fit.
 Any flag `python -m sglang.launch_server` accepts, Miles accepts with a `--sglang-` prefix:
 
 ```bash
---sglang-enable-ep-moe
+--sglang-ep-size 8
 --sglang-enable-dp-attention
 --sglang-dp-size 8
 --sglang-mem-fraction-static 0.7

@@ -39,7 +39,7 @@ Both broadcast and P2P modes share the same bucketed weight-update pipeline in `
 | Component | Description |
 |---|---|
 | **TP/EP all-gather** | Megatron TP shards are all-gathered within each PP stage; EP shards are gathered per-bucket when the accumulated expert data exceeds `buffer_size * ep_size`. Both modes perform this identically via `common.py`. |
-| **Bucketed update** | Weights are not transferred one parameter at a time. Instead, converted tensors are accumulated into a fixed-size buffer (`--update-weight-buffer-size`, default 1 GB). When the buffer is full, the entire bucket is flushed — via NCCL broadcast or RDMA write depending on the mode. This amortizes per-transfer overhead. Non-expert and expert weights use separate buckets. |
+| **Bucketed update** | Weights are not transferred one parameter at a time. Instead, converted tensors are accumulated into a fixed-size buffer (`--update-weight-buffer-size`, default 512 MB). When the buffer is full, the entire bucket is flushed — via NCCL broadcast or RDMA write depending on the mode. This amortizes per-transfer overhead. Non-expert and expert weights use separate buckets. |
 | **PP independence** | Each pipeline-parallel stage updates its own weights independently. In broadcast mode, each PP rank has its own NCCL group (`miles-pp_{pp_rank}`). In P2P mode, each PP rank has its own transfer plan. No cross-PP synchronization is needed during weight transfer, which is key to scaling. |
 | **HF format conversion** | After all-gather, Megatron-format tensors (with custom naming and sharding) are converted to HuggingFace-format names expected by the sglang rollout engine. |
 

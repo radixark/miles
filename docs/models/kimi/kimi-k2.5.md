@@ -85,11 +85,11 @@ The launcher builds the flags it passes to `train.py` as one f-string group per 
 
 That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and YaRN RoPE (`--rope-type yarn`, `--rotary-base 50000`, `--rotary-scaling-factor 64.0`, `--original-max-position-embeddings 4096`, `--beta-fast 32`, `--beta-slow 1`). The K2.5 recipe then layers the following on top:
 
-- **`CKPT_ARGS`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
-- **`ROLLOUT_ARGS`** and **`EVAL_ARGS`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).
-- **`PERF_ARGS`** sets the parallelism layout and recomputation (§5.1).
-- **`GRPO_ARGS`** and **`OPTIMIZER_ARGS`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
-- **`SGLANG_ARGS`** configures the colocated rollout engine (§5.3).
+- **`ckpt_args`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
+- **`rollout_args`** and **`eval_args`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).
+- **`perf_args`** sets the parallelism layout and recomputation (§5.1).
+- **`grpo_args`** and **`optimizer_args`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
+- **`sglang_args`** configures the colocated rollout engine (§5.3).
 
 The job runs colocated (`--colocate`) across 32 nodes (`--actor-num-nodes 32 --actor-num-gpus-per-node 8`) with `--update-weight-buffer-size $((4*512*1024*1024))`.
 
