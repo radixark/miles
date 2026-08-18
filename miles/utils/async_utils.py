@@ -8,7 +8,14 @@ from typing import Any, TypeVar
 logger = logging.getLogger(__name__)
 
 
-__all__ = ["get_async_loop", "run", "submit", "wait_futures", "eager_create_task"]
+__all__ = [
+    "get_async_loop",
+    "run",
+    "submit",
+    "wait_futures",
+    "wait_cancelling_pending_on_first_exception",
+    "eager_create_task",
+]
 
 _T = TypeVar("_T")
 
@@ -72,6 +79,27 @@ def wait_futures(futures: Sequence[concurrent.futures.Future]) -> list[Any]:
     if errors:
         raise errors[0]
     return results
+
+
+async def wait_cancelling_pending_on_first_exception(tasks: Sequence[asyncio.Task]) -> None:
+    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    errors = [error for task in tasks if (error := _compute_task_error(task)) is not None]
+    for error in errors:
+        logger.error("task failed", exc_info=error)
+    if errors:
+        raise errors[0]
+
+
+def _compute_task_error(task: asyncio.Task) -> BaseException | None:
+    if task.cancelled():
+        return None
+    return task.exception()
 
 
 async def eager_create_task(coro: Coroutine[object, object, _T]) -> asyncio.Task[_T]:
