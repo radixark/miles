@@ -207,14 +207,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         verify_megatron_parallel_state(self.model)
 
-        start_rollout_id = load_output.loaded_rollout_id + 1
         self._asleep = False
         self._grad_buffer_paused = False
 
         if role == "critic":
             if self.args.offload_train:
                 self.sleep()
-            return start_rollout_id
+            return load_output.start_rollout_id
 
         main_cast_ctx = None
         if args.rematerialize_param_from_master_weight:
@@ -247,7 +246,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
-        return start_rollout_id
+        return load_output.start_rollout_id
 
     def _init_training_state(self) -> None:
         args = self.args
