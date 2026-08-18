@@ -68,17 +68,8 @@ Each entry point with a `deterministic` parameter is replaced by
 
 ## What it does not cover
 
-`--deterministic-mode` is **train-actor only**. It does not make the rollout engine deterministic.
+Rollout determinism is guaranteed by sglang-d and its post-training support.
 
-- **The rollout engine.** `--rollout-seed` fixes only the sampling draws; the engine *forward* is
-pinned separately, through `--sglang-attention-backend`, `--sglang-dit-precision`, and the
-batch-invariant-op environment the engine actors are launched with. Rewards are computed on
-engine outputs, so with an unpinned engine a fully deterministic train actor still will not
-reproduce the same reward curve — it only guarantees the same training computation *given* the
-same rollout data.
-- **Different rank counts.** With `--fsdp-reduce-dtype bf16`, gradient sums are non-associative
-across ranks, so a 4-rank and an 8-rank run will not match even in deterministic mode. Setting
-`--fsdp-reduce-dtype bf16` is **strongly not recommended**; keep the `fp32` default.
 - **Train/rollout agreement.** Determinism removes run-to-run variance; it does not make the two
 forwards equal. That is a precision problem — see [Dtype Control](/diffusion/advanced/dtype-control).
 
