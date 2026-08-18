@@ -14,6 +14,8 @@ REPOSITORY = "radixark/miles"
 REPOSITORY_ID = 1072725553
 CLEAR_COMMAND = "clear-labels"
 RERUN_COMMAND = "rerun-failed-ci"
+RUN_FILE_COMMAND = "run-ci"
+RUN_FILE_WORKFLOW = "run-ci-file.yml"
 CLEAR_EXACT_LABELS = frozenset({"nightly", "bypass-fastfail"})
 RERUN_WORKFLOWS = (
     ("pre-commit.yml", ".github/workflows/pre-commit.yml"),
@@ -21,7 +23,35 @@ RERUN_WORKFLOWS = (
     ("pr-test-rocm.yml", ".github/workflows/pr-test-rocm.yml"),
 )
 COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
-COMMAND_MARKERS = ("/run-ci-", "/bypass-fastfail", "/clear-labels", "/rerun-failed-ci")
+# "/run-ci" subsumes the former "/run-ci-" label marker: any comment touching
+# the run-ci family must parse as one exact command or fail loudly.
+COMMAND_MARKERS = ("/run-ci", "/bypass-fastfail", "/clear-labels", "/rerun-failed-ci")
+# Registered test files only: fixed roots, path segments that cannot form
+# ".." or an absolute path, and a test_*.py basename. The dispatched workflow
+# re-validates the same shape before the path reaches any shell command.
+TEST_FILE_PATTERN = re.compile(
+    r"tests/(?:e2e|fast|fast-gpu|ci)(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*/test_[A-Za-z0-9_][A-Za-z0-9_.-]*\.py"
+)
+RUN_FILE_COMMAND_PATTERN = re.compile(rf"/{RUN_FILE_COMMAND} +({TEST_FILE_PATTERN.pattern})")
+# PR-body dependency pins, mirroring the exact patterns the pr-test.yml
+# resolve steps grep for; each match is forwarded as one dispatch input.
+PR_BODY_PINS = (
+    (
+        "ci_image_tag",
+        re.compile(r"^ci-image-tag:\s+(\S+)", re.MULTILINE),
+        re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"),
+    ),
+    (
+        "ci_megatron_pr",
+        re.compile(r"^ci-megatron-pr:\s+(\S+)", re.MULTILINE),
+        re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
+    ),
+    (
+        "ci_sglang_pr",
+        re.compile(r"^ci-sglang-pr:\s+(\S+)", re.MULTILINE),
+        re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
+    ),
+)
 LABEL_PATTERN = re.compile(r"(?:run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
@@ -42,6 +72,10 @@ class ClearLabels(NamedTuple):
 
 class RerunFailedCI(NamedTuple):
     pass
+
+
+class RunTestFile(NamedTuple):
+    test_file: str
 
 
 class CommandSpec(NamedTuple):
@@ -68,6 +102,7 @@ class CommandContext(NamedTuple):
     head_repository_id: int
     head_owner_login: str
     head_ref: str
+    body: str
 
 
 def _strict_object(pairs):
@@ -195,9 +230,13 @@ def parse_command(body):
     match = COMMAND_PATTERN.fullmatch(command)
     if match is not None:
         return AddLabel(match.group(1))
+    match = RUN_FILE_COMMAND_PATTERN.fullmatch(command)
+    if match is not None:
+        return RunTestFile(match.group(1))
     if any(marker in command for marker in COMMAND_MARKERS):
         raise CommentCommandError(
-            "comment must contain one exact /<label>, /clear-labels, or /rerun-failed-ci command"
+            "comment must contain one exact /<label>, /run-ci <test-file>, /clear-labels, "
+            "or /rerun-failed-ci command"
         )
     return None
 
@@ -365,6 +404,16 @@ class GitHubAPI:
             expect_json=False,
         )
 
+    def create_workflow_dispatch(self, workflow_file, ref, inputs):
+        encoded_workflow = urllib.parse.quote(workflow_file, safe="")
+        self._request(
+            f"/repos/{REPOSITORY}/actions/workflows/{encoded_workflow}/dispatches",
+            method="POST",
+            payload={"ref": ref, "inputs": inputs},
+            expected_status=204,
+            expect_json=False,
+        )
+
 
 def _validate_live_pull(pull, pull_number):
     if not isinstance(pull, dict) or pull.get("number") != pull_number:
@@ -407,6 +456,15 @@ def _validate_live_pull(pull, pull_number):
         raise CommentCommandError("pull request head SHA is invalid")
 
     return frozenset(names), head_sha, head_repository_id, head_owner_login, head_ref
+
+
+def _pull_body(pull):
+    body = pull.get("body")
+    if body is None:
+        return ""
+    if not isinstance(body, str):
+        raise CommentCommandError("pull request body is invalid")
+    return body
 
 
 def _command_spec(request):
@@ -565,6 +623,7 @@ def _handle_rerun_failed_ci(context, request):
         head_repository_id,
         head_owner_login,
         head_ref,
+        _,
     ) = context
     is_fork = head_repository_id != REPOSITORY_ID
     if is_fork:
@@ -707,6 +766,53 @@ def _handle_clear_labels(context, request):
     }
 
 
+def _pr_body_pins(body):
+    pins = {}
+    for input_name, body_pattern, value_pattern in PR_BODY_PINS:
+        match = body_pattern.search(body)
+        if match is None:
+            continue
+        value = match.group(1)
+        if value_pattern.fullmatch(value) is None:
+            raise CommentCommandError(
+                f"PR body pin {input_name.replace('_', '-')} has an unsupported value: {value!r}"
+            )
+        pins[input_name] = value
+    return pins
+
+
+def _handle_run_test_file(context, request):
+    if type(request) is not RunTestFile:
+        raise CommentCommandError("run-ci file handler received the wrong request type")
+    # The dispatch runs run-ci-file.yml from the PR head ref, so the head
+    # branch must live in this repository; write access on a same-repo head
+    # already permits dispatching branch workflows directly, so the command
+    # delegates convenience, not a new privilege.
+    if context.head_repository_id != REPOSITORY_ID:
+        raise CommentCommandError("/run-ci supports only same-repository pull requests")
+    require_access(
+        context.api,
+        context.actor_id,
+        context.actor_login,
+        context.allowed_permissions,
+        context.allowed_user_ids,
+    )
+    inputs = {
+        "pull_number": str(context.pull_number),
+        "head_sha": context.head_sha,
+        "test_file": request.test_file,
+    }
+    inputs.update(_pr_body_pins(context.body))
+    context.api.create_workflow_dispatch(RUN_FILE_WORKFLOW, context.head_ref, inputs)
+    return {
+        "actor_id": context.actor_id,
+        "decision": "ALLOW_FILE_RUN_DISPATCHED",
+        "head_sha": context.head_sha,
+        "pull_number": context.pull_number,
+        "test_file": request.test_file,
+    }
+
+
 def _add_label_resource(request):
     if type(request) is not AddLabel:
         raise CommentCommandError("add-label resource received the wrong request type")
@@ -723,6 +829,12 @@ def _rerun_command_value(request):
     if type(request) is not RerunFailedCI:
         raise CommentCommandError("rerun audit received the wrong request type")
     return f"/{RERUN_COMMAND}"
+
+
+def _run_file_value(request):
+    if type(request) is not RunTestFile:
+        raise CommentCommandError("run-ci file audit received the wrong request type")
+    return request.test_file
 
 
 COMMAND_REGISTRY = {
@@ -759,6 +871,17 @@ COMMAND_REGISTRY = {
         "command",
         _rerun_command_value,
     ),
+    RunTestFile: CommandSpec(
+        "run_test_file",
+        "actions",
+        _handle_run_test_file,
+        None,
+        None,
+        None,
+        False,
+        "test_file",
+        _run_file_value,
+    ),
 }
 
 
@@ -792,6 +915,7 @@ def process_event(event, policy, api):
         head_repository_id,
         head_owner_login,
         head_ref,
+        _pull_body(pull),
     )
     return spec.handler(context, request)
 

@@ -61,11 +61,12 @@ jobs:
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
         run: python3 .github/workflows/scripts/comment_ci_command.py
 
-  rerun-failed-ci:
+  # Actions-capability commands: /rerun-failed-ci and /run-ci <test-file>.
+  actions-command:
     needs: handle-command
     if: needs.handle-command.outputs.capability == 'actions'
     concurrency:
-      group: comment-ci-rerun-${{ github.event.issue.number }}
+      group: comment-ci-actions-${{ github.event.issue.number }}
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-latest
@@ -81,8 +82,8 @@ jobs:
             .github/workflows/policies/comment-command-access.json
           sparse-checkout-cone-mode: false
 
-      - name: Mint the rerun-scoped App token
-        id: rerun-token
+      - name: Mint the actions-scoped App token
+        id: actions-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
           client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
@@ -90,8 +91,8 @@ jobs:
           permission-actions: write
           permission-pull-requests: read
 
-      - name: Authorize and rerun failed CI
+      - name: Authorize and run the actions command
         env:
-          CI_COMMAND_API_TOKEN: ${{ steps.rerun-token.outputs.token }}
+          CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
         run: python3 .github/workflows/scripts/comment_ci_command.py

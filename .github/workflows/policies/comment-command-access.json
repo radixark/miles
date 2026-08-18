@@ -41,6 +41,9 @@
     },
     "rerun_failed_ci": {
       "group": "repo_write_access"
+    },
+    "run_test_file": {
+      "group": "repo_write_access"
     }
   }
 }

@@ -28,6 +28,8 @@ ACTOR_ID = 1234
 HEAD_SHA = "a" * 40
 HEAD_REF = "feature/test"
 WRITE_PERMISSIONS = frozenset({"write", "admin"})
+RUN_FILE_BODY = "/run-ci tests/e2e/megatron/test_qwen3_0.6B.py"
+RUN_FILE_PATH = "tests/e2e/megatron/test_qwen3_0.6B.py"
 
 
 class FakeAPI:
@@ -46,6 +48,7 @@ class FakeAPI:
         self.list_run_calls = []
         self.rerun_calls = []
         self.list_pull_calls = []
+        self.dispatch_calls = []
         self.head_pulls = [pull]
 
     def get_pull(self, pull_number):
@@ -82,6 +85,10 @@ class FakeAPI:
         self.calls.append(("list_pulls_for_head", owner_login, head_ref))
         self.list_pull_calls.append((owner_login, head_ref))
         return self.head_pulls
+
+    def create_workflow_dispatch(self, workflow_file, ref, inputs):
+        self.calls.append(("create_workflow_dispatch", workflow_file, ref, inputs))
+        self.dispatch_calls.append((workflow_file, ref, inputs))
 
 
 def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
@@ -144,6 +151,7 @@ def policy(
             },
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "repo_write_access"},
+            "run_test_file": {"group": "repo_write_access"},
         },
     }
 
@@ -183,6 +191,18 @@ def workflow_run(
         "please /run-ci-short",
         "/run-ci-",
         "/run-ci-/unsafe",
+        "/run-ci",
+        "/run-ci ",
+        "/run-ci tests/e2e/test_a.py extra",
+        "/run-ci tests/e2e/test_a.py\n/run-ci-short",
+        "please /run-ci tests/e2e/test_a.py",
+        "/run-ci tests/unit/test_a.py",
+        "/run-ci tests/e2e/helper.py",
+        "/run-ci /tests/e2e/test_a.py",
+        "/run-ci ../tests/e2e/test_a.py",
+        "/run-ci tests/e2e/../fast/test_a.py",
+        "/run-ci tests/e2e/test_a.py;rm",
+        "/run-ci tests/e2e/test_a.py tests/e2e/test_b.py",
         "/rerun-failed-ci extra",
         "/rerun-failed-ci\n/run-ci-short",
         "/clear-labels extra",
@@ -211,6 +231,20 @@ def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
     assert HANDLER.parse_command(" \n/rerun-failed-ci\t") == HANDLER.RerunFailedCI()
 
 
+@pytest.mark.parametrize(
+    ("body", "test_file"),
+    [
+        ("/run-ci tests/e2e/megatron/test_qwen3_0.6B.py", "tests/e2e/megatron/test_qwen3_0.6B.py"),
+        (" \n/run-ci tests/e2e/test_a.py\t", "tests/e2e/test_a.py"),
+        ("/run-ci   tests/fast/rollout/test_b.py", "tests/fast/rollout/test_b.py"),
+        ("/run-ci tests/fast-gpu/test_c.py", "tests/fast-gpu/test_c.py"),
+        ("/run-ci tests/ci/test/test_d.py", "tests/ci/test/test_d.py"),
+    ],
+)
+def test_command_parser_accepts_run_file_command(body, test_file):
+    assert HANDLER.parse_command(body) == HANDLER.RunTestFile(test_file)
+
+
 @pytest.mark.parametrize("body", ["", "ordinary review comment", "/Clear-labels", "/unknown-command"])
 def test_command_parser_ignores_unrelated_comments(body):
     assert HANDLER.parse_command(body) is None
@@ -221,6 +255,7 @@ def test_static_registry_owns_policy_capability_and_handler_routing():
         HANDLER.AddLabel: ("add_label", "issues", HANDLER._handle_add_label),
         HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels),
         HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci),
+        HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file),
     }
     assert set(HANDLER.COMMAND_REGISTRY) == set(expected)
     for request_type, (policy_key, capability, handler) in expected.items():
@@ -253,6 +288,7 @@ def raw_policy():
             },
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "repo_write_access"},
+            "run_test_file": {"group": "repo_write_access"},
         },
     }
 
@@ -409,6 +445,7 @@ def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     }
     assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
     assert loaded["commands"]["rerun_failed_ci"] == {"group": "repo_write_access"}
+    assert loaded["commands"]["run_test_file"] == {"group": "repo_write_access"}
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
 
@@ -1326,6 +1363,7 @@ def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
         ("/bypass-fastfail", "issues"),
         ("/clear-labels", "issues"),
         ("/rerun-failed-ci", "actions"),
+        (RUN_FILE_BODY, "actions"),
     ],
 )
 def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, capability):
@@ -1376,6 +1414,154 @@ def test_unrelated_comment_preflight_uses_no_policy_or_api(monkeypatch, tmp_path
     assert output_path.read_text() == "capability=none\n"
 
 
+@pytest.mark.parametrize("permission", ["write", "admin"])
+def test_repository_writer_dispatches_a_file_run(permission):
+    api = FakeAPI(pull(), permission=permission)
+
+    result = HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            HEAD_REF,
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_FILE_RUN_DISPATCHED",
+        "head_sha": HEAD_SHA,
+        "pull_number": 123,
+        "test_file": RUN_FILE_PATH,
+    }
+
+
+def test_file_run_forwards_validated_pr_body_pins():
+    target = pull()
+    target["body"] = "Summary line\nci-image-tag: pr-42\nci-megatron-pr: #77\nci-sglang-pr: feature/pin-x\n"
+    api = FakeAPI(target)
+
+    HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+
+    (_, _, inputs) = api.dispatch_calls[0]
+    assert inputs == {
+        "pull_number": "123",
+        "head_sha": HEAD_SHA,
+        "test_file": RUN_FILE_PATH,
+        "ci_image_tag": "pr-42",
+        "ci_megatron_pr": "#77",
+        "ci_sglang_pr": "feature/pin-x",
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    ["ci-image-tag: -bad", "ci-megatron-pr: $(reboot)", "ci-sglang-pr: bad;ref"],
+)
+def test_file_run_rejects_an_invalid_pr_body_pin(line):
+    target = pull()
+    target["body"] = f"{line}\n"
+    api = FakeAPI(target)
+
+    with pytest.raises(HANDLER.CommentCommandError, match="unsupported value"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+    assert api.dispatch_calls == []
+
+
+def test_file_run_rejects_fork_prs_before_authorization():
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+
+    with pytest.raises(HANDLER.CommentCommandError, match="same-repository"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+    assert api.permission_calls == []
+    assert api.dispatch_calls == []
+
+
+@pytest.mark.parametrize("permission", ["read", "triage", "none"])
+def test_file_run_requires_live_write_permission(permission):
+    api = FakeAPI(pull(), permission=permission)
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+    assert api.dispatch_calls == []
+
+
+def test_add_label_access_user_id_cannot_dispatch_a_file_run():
+    api = FakeAPI(pull(), permission="read")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY), policy(user_ids=(ACTOR_ID,)), api)
+    assert api.dispatch_calls == []
+
+
+def test_create_workflow_dispatch_uses_exact_endpoint_and_accepts_empty_204(monkeypatch):
+    requests = []
+
+    class Response:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b""
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    HANDLER.GitHubAPI("secret-token").create_workflow_dispatch(
+        "run-ci-file.yml", "feature/test", {"test_file": "tests/e2e/test_a.py"}
+    )
+
+    request, timeout = requests[0]
+    assert request.full_url == (
+        "https://api.github.com/repos/radixark/miles/actions/workflows/run-ci-file.yml/dispatches"
+    )
+    assert request.method == "POST"
+    assert json.loads(request.data.decode("utf-8")) == {
+        "ref": "feature/test",
+        "inputs": {"test_file": "tests/e2e/test_a.py"},
+    }
+    assert timeout == 15
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [(200, b"", "expected 204"), (204, b"{}", "unexpected response body")],
+)
+def test_create_workflow_dispatch_rejects_unconfirmed_response(monkeypatch, status, body, message):
+    attempts = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return body
+
+    response = Response()
+    response.status = status
+
+    def urlopen(_request, *, timeout):
+        nonlocal attempts
+        attempts += 1
+        assert timeout == 15
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").create_workflow_dispatch("run-ci-file.yml", "feature/test", {})
+    assert attempts == 1
+
+
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
@@ -1393,7 +1579,7 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "permission-pull-requests: read" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_API_TOKEN: ${{ steps.rerun-token.outputs.token }}" in workflow
+    assert "CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}" in workflow
     assert "CI_COMMAND_APP_TOKEN" not in workflow
     assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
     assert "steps.authorize.outputs.capability != 'none'" in workflow
@@ -1402,19 +1588,19 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "capability: ${{ steps.authorize.outputs.capability }}" in workflow
     assert "needs: handle-command" in workflow
     assert "if: needs.handle-command.outputs.capability == 'actions'" in workflow
-    assert "group: comment-ci-rerun-${{ github.event.issue.number }}" in workflow
+    assert "group: comment-ci-actions-${{ github.event.issue.number }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
-    rerun_token = workflow.split("- name: Mint the rerun-scoped App token", 1)[1].split(
-        "- name: Authorize and rerun failed CI", 1
+    actions_token = workflow.split("- name: Mint the actions-scoped App token", 1)[1].split(
+        "- name: Authorize and run the actions command", 1
     )[0]
     assert "permission-issues: write" in issues_token
     assert "permission-actions: write" not in issues_token
-    assert "permission-actions: write" in rerun_token
-    assert "permission-issues: write" not in rerun_token
+    assert "permission-actions: write" in actions_token
+    assert "permission-issues: write" not in actions_token
     assert "pull_request_target" not in workflow
     assert "github.event.pull_request.head" not in workflow
     assert "pip install" not in workflow
