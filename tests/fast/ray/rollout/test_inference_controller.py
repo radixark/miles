@@ -10,6 +10,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout import inference_controller as inference_controller_module
+from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin
 from miles.ray.rollout.inference_controller import (
     InferenceController,
     UpdatableEngines,
@@ -20,6 +21,8 @@ from miles.ray.rollout.server_cell import ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
+from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts, WorkerMetaContext
@@ -176,6 +179,16 @@ class _FakeWorkerProvider(BaseWorkerProvider):
             return None
 
         return _stop_watch
+
+
+class _RecordingInferenceControllerEvalFleet:
+    def __init__(self, info: EvalFleetInfo):
+        self.info = info
+        self.pins: list[dict] = []
+
+    async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
+        self.pins.append(dict(checkpoint_dir=checkpoint_dir, weight_version=weight_version))
+        return EvalFleetPin(skip_reason=None)
 
 
 def _make_controller(servers: dict, *, engine_provider: _FakeWorkerProvider | None = None) -> InferenceController:
@@ -712,7 +725,7 @@ class TestInitLifecycle:
         await controller.init()
 
         assert controller.servers == {}
-        assert controller.eval_fleet is None
+        assert controller._eval_fleet is None
         assert controller._watcher_disposers == []
         assert controller._ticker is None
 
@@ -741,7 +754,7 @@ class TestInitLifecycle:
     @pytest.mark.asyncio
     async def test_init_creates_the_eval_fleet_from_the_eval_server(self, monkeypatch: pytest.MonkeyPatch):
         """The eval fleet drives the dedicated eval engines, so it must be handed that server and no other."""
-        monkeypatch.setattr(inference_controller_module, "EvalFleet", _RecordingEvalFleet)
+        monkeypatch.setattr(inference_controller_module, "InferenceControllerEvalFleet", _RecordingEvalFleet)
         default, eval_srv = _RecordingServer(model_name="default"), _RecordingServer(model_name="eval")
         _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": default, "eval": eval_srv})
         controller = InferenceController(make_args(eval_num_gpus=2))
@@ -749,16 +762,16 @@ class TestInitLifecycle:
         await controller.init()
         await controller.dispose()
 
-        assert isinstance(controller.eval_fleet, _RecordingEvalFleet)
-        assert controller.eval_fleet.srv is eval_srv
-        assert controller.eval_fleet.args is controller.args
+        assert isinstance(controller._eval_fleet, _RecordingEvalFleet)
+        assert controller._eval_fleet.srv is eval_srv
+        assert controller._eval_fleet.args is controller.args
 
     @pytest.mark.asyncio
     async def test_init_without_eval_gpus_creates_no_eval_fleet(self, monkeypatch: pytest.MonkeyPatch):
         """A run without dedicated eval engines has no eval server to build a fleet from."""
         monkeypatch.setattr(
             inference_controller_module,
-            "EvalFleet",
+            "InferenceControllerEvalFleet",
             lambda *args, **kwargs: pytest.fail("no eval fleet without eval gpus"),
         )
         _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": _RecordingServer()})
@@ -767,7 +780,7 @@ class TestInitLifecycle:
         await controller.init()
         await controller.dispose()
 
-        assert controller.eval_fleet is None
+        assert controller._eval_fleet is None
 
     @pytest.mark.asyncio
     async def test_init_registers_routing_and_waits_for_every_startup_gate(self, monkeypatch: pytest.MonkeyPatch):
@@ -822,3 +835,61 @@ class TestInitLifecycle:
         assert controller._watcher_disposers == []
         assert controller._ticker is None
         assert cell.tick_count == ticks_at_dispose
+
+
+class TestEvalFleetSurface:
+    def test_the_eval_fleet_is_an_rpc_method_rather_than_an_attribute(self):
+        """A handle resolves rpc methods only, so reading the fleet off it reaches nothing."""
+        handle = RpcWorkerHandle(InferenceController, server_url="http://10.0.0.1:1234")
+
+        assert callable(handle.get_eval_fleet_info)
+        assert callable(handle.pin_eval_fleet)
+        with pytest.raises(AttributeError, match="no rpc method 'eval_fleet'"):
+            handle.eval_fleet()
+
+    def test_the_fleet_description_survives_the_wire(self):
+        """The executor retargets its eval args to what it decodes, so every field must round-trip."""
+        serializer = collect_rpc_method_specs(InferenceController)["get_eval_fleet_info"].serializer
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+
+        assert serializer.decode_result(serializer.encode_result(info)) == info
+        assert serializer.decode_result(serializer.encode_result(None)) is None
+
+    def test_a_pin_and_its_skip_reason_survive_the_wire(self):
+        """A skipped point must arrive as a skip with its reason, not as a remote crash."""
+        spec = collect_rpc_method_specs(InferenceController)["pin_eval_fleet"]
+        query = dict(checkpoint_dir="/snap/step_5", weight_version="5")
+
+        assert spec.serializer.decode_query(spec.serializer.encode_query(query)) == query
+        for pin in (EvalFleetPin(skip_reason=None), EvalFleetPin(skip_reason="unhealthy")):
+            assert spec.serializer.decode_result(spec.serializer.encode_result(pin)) == pin
+
+    @pytest.mark.asyncio
+    async def test_a_run_without_a_fleet_answers_nothing_to_wire_up(self):
+        """--eval-num-gpus 0 deploys no fleet, and the executor must be told so rather than guess."""
+        controller = _make_controller({})
+        controller._eval_fleet = None
+
+        assert await controller.get_eval_fleet_info() is None
+
+    @pytest.mark.asyncio
+    async def test_pinning_a_fleet_that_is_not_deployed_is_refused(self):
+        """Nobody can reach this call without a fleet, so answering a skip would hide a wiring bug."""
+        controller = _make_controller({})
+        controller._eval_fleet = None
+
+        with pytest.raises(AssertionError, match="no eval fleet"):
+            await controller.pin_eval_fleet(checkpoint_dir="/snap/step_5", weight_version="5")
+
+    @pytest.mark.asyncio
+    async def test_the_fleet_answers_and_pins_through_the_controller(self):
+        """The fleet lives beside its engines: the executor only ever addresses it through the controller."""
+        controller = _make_controller({})
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        controller._eval_fleet = _RecordingInferenceControllerEvalFleet(info)
+
+        assert await controller.get_eval_fleet_info() == info
+        assert await controller.pin_eval_fleet(checkpoint_dir="/snap/step_5", weight_version="5") == EvalFleetPin(
+            skip_reason=None
+        )
+        assert controller._eval_fleet.pins == [dict(checkpoint_dir="/snap/step_5", weight_version="5")]

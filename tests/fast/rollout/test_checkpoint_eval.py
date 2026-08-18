@@ -258,7 +258,7 @@ class TestEvalFleetSerialization:
         mgr = make_manager(args, eval_fn=eval_generate_rollout)
         args.eval_uses_snapshots = True
         fleet = BlockingFleet()
-        mgr.set_eval_fleet(fleet)
+        mgr._eval_fleet = fleet
 
         first = asyncio.create_task(mgr.eval(5, hf_dir=str(tmp_path / "step_5")))
         second = asyncio.create_task(mgr.eval(6, hf_dir=str(tmp_path / "step_6")))

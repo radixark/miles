@@ -9,7 +9,7 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.eval_fleet import EvalFleet
+from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceControllerEvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
@@ -53,7 +53,7 @@ class InferenceController(NodeProbeMixin):
         self._router_providers = router_providers
         self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self.eval_fleet: EvalFleet | None = None
+        self._eval_fleet: InferenceControllerEvalFleet | None = None
         self._watcher_disposers: list[StopWatchFn] = []
         self._health_checker_activeness = ActivenessTracker(active=True)
         self._ticker: SimpleTicker | None = None
@@ -75,7 +75,7 @@ class InferenceController(NodeProbeMixin):
             router_addrs=router_addrs,
         )
         if self.args.eval_num_gpus > 0:
-            self.eval_fleet = EvalFleet(self.args, srv=self.servers["eval"])
+            self._eval_fleet = InferenceControllerEvalFleet(self.args, srv=self.servers["eval"])
 
         self._watcher_disposers.append(await self._engine_provider.watch_cells(self._reconcile))
         self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
@@ -203,6 +203,19 @@ class InferenceController(NodeProbeMixin):
                     f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
                     f"Only one updatable server is supported."
                 )
+
+    # -------------------------- eval fleet -----------------------------
+
+    @lock_exempt
+    async def get_eval_fleet_info(self) -> EvalFleetInfo | None:
+        return self._eval_fleet.info if self._eval_fleet is not None else None
+
+    @lock_exempt
+    async def pin_eval_fleet(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
+        assert (
+            self._eval_fleet is not None
+        ), "this run deploys no eval fleet, so nothing asked this controller to pin one"
+        return await self._eval_fleet.pin(checkpoint_dir=checkpoint_dir, weight_version=weight_version)
 
     # -------------------------- misc APIs -----------------------------
 

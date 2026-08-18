@@ -71,7 +71,12 @@ class _NeverUsedProvider:
 
 
 async def _make_executor(args):
-    executor = RolloutExecutor(args=args, router_providers=[_NeverUsedProvider()], session_server_provider=None)
+    executor = RolloutExecutor(
+        args=args,
+        router_providers=[_NeverUsedProvider()],
+        session_server_provider=None,
+        inference_controller_provider=_NeverUsedProvider(),
+    )
     await executor.init()
     return executor
 

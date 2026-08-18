@@ -168,7 +168,7 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
     """RolloutManager (not the fn) decides fleet-vs-shared and builds the fleet's
     GenerateState; it hands it in via RolloutFnEvalInput.generate_state. The fn must
     use that state as-is (not self.state) and must not touch the producer/data_source.
-    Building/caching the fleet state itself is EvalFleetSession's job, covered in
+    Building/caching the fleet state itself is RolloutExecutorEvalFleet's job, covered in
     tests/fast/rollout/test_checkpoint_eval.py.
     """
     args = make_args(eval_num_gpus=1, eval_num_gpus_per_engine=1)
