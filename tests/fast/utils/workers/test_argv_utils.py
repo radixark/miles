@@ -17,6 +17,7 @@ from miles.utils.workers.argv_utils import (
     config_to_argv,
     dataclass_to_values,
     parse_config_argv,
+    parse_declared_args,
     render_cli_argv,
 )
 
@@ -648,3 +649,38 @@ class TestCoerceDictToArgs:
         """A yaml key with no value is a typo, not a request to unset the argument."""
         with pytest.raises(AssertionError, match="no value"):
             self._coerce({"lr": None})
+
+
+class TestParseDeclaredArgs:
+    @staticmethod
+    def _parser() -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--num-layers", type=int)
+        parser.add_argument("--norm-epsilon", type=float)
+        parser.add_argument("--normalization", type=str)
+        parser.add_argument("--swiglu", action="store_true")
+        parser.add_argument("--add-qkv-bias", action="store_true")
+        return parser
+
+    def test_every_argument_a_model_script_names_becomes_an_override(self):
+        """A policy names its architecture in full, so nothing a model script declares may be dropped."""
+        parsed = parse_declared_args("--swiglu --num-layers 24 --normalization RMSNorm", parser=self._parser())
+
+        assert parsed == {"swiglu": True, "num_layers": 24, "normalization": "RMSNorm"}
+
+    def test_a_value_is_typed_by_the_parser_rather_than_by_its_spelling(self):
+        """The overrides travel through yaml, where "1e-6" would otherwise arrive at megatron as a string."""
+        parsed = parse_declared_args("--norm-epsilon 1e-6 --num-layers 24", parser=self._parser())
+
+        assert parsed == {"norm_epsilon": 1e-6, "num_layers": 24}
+
+    def test_an_argument_the_model_script_leaves_out_is_not_an_override(self):
+        """Overriding an argument to its default would claim the model script names it when it does not."""
+        parsed = parse_declared_args("--num-layers 24", parser=self._parser())
+
+        assert parsed == {"num_layers": 24}
+
+    def test_an_argument_no_parser_declares_fails_loudly(self):
+        """A model script this run cannot parse must not quietly yield a shorter override set."""
+        with pytest.raises(AssertionError, match="does not declare"):
+            parse_declared_args("--rotary-base 1000000", parser=self._parser())
