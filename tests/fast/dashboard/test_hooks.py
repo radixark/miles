@@ -200,11 +200,15 @@ class FlakyWorkerHandle(BaseWorkerHandle):
 
 
 class FakeWorkerProvider:
-    def __init__(self, infos_by_cell):
+    def __init__(self, infos_by_cell, handles_by_name=None):
         self._infos_by_cell = infos_by_cell
+        self._handles_by_name = handles_by_name or {}
 
     def get_worker_infos(self, *, cell_ids):
         return [self._infos_by_cell[cell_id] for cell_id in cell_ids]
+
+    def get_handles_of_worker_infos(self, infos):
+        return {info.name: self._handles_by_name.get(info.name, FakeWorkerHandle()) for info in infos}
 
 
 class FakeCell:
@@ -227,13 +231,12 @@ class FakeCell:
         self.is_pending_weights_or_serving = alive
 
 
-def _worker_info(name, node, gpus, generation=1, handle=None):
+def _worker_info(name, node, gpus, generation=1):
     return WorkerInfo(
         name=name,
         generation=generation,
         self_addrs={"primary": HostAndPort(host=node, port=30001)},
         gpu_ids=gpus,
-        handle=handle if handle is not None else FakeWorkerHandle(),
     )
 
 
@@ -301,6 +304,9 @@ async def test_register_engines_survives_missing_worker_manager(monkeypatch, cap
         def get_worker_infos(self, *, cell_ids):
             raise ValueError("worker manager actor not found")
 
+        def get_handles_of_worker_infos(self, infos):
+            raise AssertionError("nothing to build a handle for")
+
     hooks._warner.reset_window_for_test()
     with caplog.at_level(logging.WARNING):
         await hooks.register_engines(_servers([FakeCell("http://a:1")]), provider=_UnreachableProvider())
@@ -338,13 +344,21 @@ async def test_compute_engine_infos_projects_cells_and_workers_exactly():
     ]
     worker_infos_per_cell = [
         [
-            _worker_info("engine-0-0", "[2001:db8::7]", [4, 5], handle=UuidWorkerHandle({4: "GPU-a", 5: "GPU-b"})),
-            _worker_info("engine-0-1", "node-b", [0], handle=UuidWorkerHandle({0: "GPU-c"})),
+            _worker_info("engine-0-0", "[2001:db8::7]", [4, 5]),
+            _worker_info("engine-0-1", "node-b", [0]),
         ],
-        [_worker_info("engine-1-0", "node-c", [3], handle=UuidWorkerHandle({3: "GPU-d"}))],
+        [_worker_info("engine-1-0", "node-c", [3])],
     ]
+    provider = FakeWorkerProvider(
+        {},
+        {
+            "engine-0-0": UuidWorkerHandle({4: "GPU-a", 5: "GPU-b"}),
+            "engine-0-1": UuidWorkerHandle({0: "GPU-c"}),
+            "engine-1-0": UuidWorkerHandle({3: "GPU-d"}),
+        },
+    )
 
-    engines = await hooks._compute_engine_infos(cells, worker_infos_per_cell)
+    engines = await hooks._compute_engine_infos(cells, worker_infos_per_cell, provider=provider)
 
     assert engines == [
         EngineInfo(
@@ -367,12 +381,18 @@ async def test_compute_engine_infos_projects_cells_and_workers_exactly():
 async def test_compute_engine_infos_probes_workers_concurrently():
     """The first worker's probe only finishes once the second one started, so serial probing would hang."""
     second_started = asyncio.Event()
-    worker_infos = [
-        _worker_info("engine-0-0", "node-a", [0], handle=GatedWorkerHandle("GPU-a", wait_for=second_started)),
-        _worker_info("engine-0-1", "node-b", [1], handle=GatedWorkerHandle("GPU-b", signal=second_started)),
-    ]
+    worker_infos = [_worker_info("engine-0-0", "node-a", [0]), _worker_info("engine-0-1", "node-b", [1])]
+    provider = FakeWorkerProvider(
+        {},
+        {
+            "engine-0-0": GatedWorkerHandle("GPU-a", wait_for=second_started),
+            "engine-0-1": GatedWorkerHandle("GPU-b", signal=second_started),
+        },
+    )
 
-    engines = await asyncio.wait_for(hooks._compute_engine_infos([FakeCell("http://a:1")], [worker_infos]), timeout=5)
+    engines = await asyncio.wait_for(
+        hooks._compute_engine_infos([FakeCell("http://a:1")], [worker_infos], provider=provider), timeout=5
+    )
 
     assert engines[0].gpu_uuids == ["GPU-a", "GPU-b"]
 
@@ -382,8 +402,8 @@ async def test_register_engines_retries_after_gpu_uuid_probe_failure(monkeypatch
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
     probe = FlakyWorkerHandle()
-    infos_by_cell = {"inference-engine-0-0-0": [_worker_info("inference-engine-0-0-0", "node-a", [0], handle=probe)]}
-    provider = FakeWorkerProvider(infos_by_cell)
+    infos_by_cell = {"inference-engine-0-0-0": [_worker_info("inference-engine-0-0-0", "node-a", [0])]}
+    provider = FakeWorkerProvider(infos_by_cell, {"inference-engine-0-0-0": probe})
     hooks._warner.reset_window_for_test()
     servers = _servers([FakeCell("http://a:1")])
 

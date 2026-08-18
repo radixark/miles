@@ -1,7 +1,9 @@
 import pytest
 
+from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
-from miles.utils.workers.worker_provider.utils import apply_cell_observation
+from miles.utils.workers.worker_provider.utils import apply_cell_observation, build_rpc_handle_of_worker_info
+from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.asyncio
 
@@ -111,3 +113,26 @@ class TestApplyCellObservation:
         )
 
         assert recorder.calls == []
+
+
+class _DemoWorker:
+    def report(self) -> str:
+        return "ok"
+
+
+def _info(*, generation: int, port: int = 15000) -> WorkerInfo:
+    return WorkerInfo(
+        name="trainer-engine-actor-0-0",
+        generation=generation,
+        self_addrs={"rpc": HostAndPort(host="10.0.0.7", port=port)},
+        gpu_ids=[],
+        worker_class=f"{__name__}._DemoWorker",
+    )
+
+
+class TestBuildRpcHandleFor:
+    def test_the_handle_points_at_the_address_the_worker_serves_on(self):
+        """A handle aimed anywhere else silently drives another worker on the same node."""
+        handle = build_rpc_handle_of_worker_info(_info(generation=1, port=15001))
+
+        assert handle._transport._server_url == "http://10.0.0.7:15001"

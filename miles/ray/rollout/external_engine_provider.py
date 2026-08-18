@@ -79,7 +79,6 @@ class StaticInferenceEngineWorkerProvider(BaseWorkerProvider):
                     generation=0,
                     self_addrs=cells[cell_id].addrs,
                     gpu_ids=[],
-                    handle=None,
                 )
                 for worker_name in cells[cell_id].cell_info.worker_names
             ]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING, Any
 
-from miles.utils.function_registry import load_function
 from miles.utils.http_utils import _wrap_ipv6
 from miles.utils.misc import merge_asserting_consistency
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -11,7 +10,6 @@ from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_provider.kubernetes.core import pod_view
-from miles.utils.workers.worker_provider.utils import build_rpc_handle
 from miles.utils.workers.worker_spec import (
     RPC_PORT_NAME,
     HostAndPort,
@@ -75,20 +73,13 @@ def addrs_of_worker(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo) -> 
 def _compute_worker_info(worker: KubernetesWorkerInfo, *, run: KubernetesRunInfo) -> WorkerInfo:
     pool_id = worker.pod.pool_id
     spec = run.specs[pool_id]
-    addrs = addrs_of_worker(worker, run=run)
-
-    handle = (
-        build_rpc_handle(worker_class=load_function(spec.worker_class), addrs=addrs, pool_id=pool_id)
-        if isinstance(spec, ServeWorkerSpec)
-        else None
-    )
 
     return WorkerInfo(
         name=worker.name,
         generation=worker.pod.restart_count,
-        self_addrs=addrs,
+        self_addrs=addrs_of_worker(worker, run=run),
         gpu_ids=list(worker.gpu_ids),
-        handle=handle,
+        worker_class=spec.worker_class if isinstance(spec, ServeWorkerSpec) else None,
     )
 
 

@@ -145,13 +145,13 @@ class TestWorkerInfos:
 
         assert [info.self_addrs["rpc"].port for info in infos] == [8000, 8001]
 
-    def test_a_command_worker_is_reported_without_a_handle(self):
+    def test_a_command_worker_is_reported_without_a_class_to_call_it_by(self):
         """An engine pod runs no rpc server, so the dashboard reads its addresses but cannot call it."""
         run = make_run(worker_class=None)
 
         (info,) = compute_worker_infos(CELL_ID, pods=[make_parsed_pod(pod_in_cell_index=0, cell_size=1)], run=run)
 
-        assert info.handle is None
+        assert info.worker_class is None
         assert info.self_addrs["rpc"].host == "10.0.0.1"
 
     def test_an_ipv6_pod_is_addressed_in_brackets(self):

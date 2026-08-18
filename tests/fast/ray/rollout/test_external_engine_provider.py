@@ -289,9 +289,7 @@ class TestStaticInferenceEngineWorkerProvider:
 
     async def test_a_declared_pd_fleet_carries_roles_and_bootstrap_ports(self, monkeypatch):
         """External PD needs the discovered role and bootstrap port on every cell."""
-        args = _make_args(
-            ["host1:8000", "host2:8000"], rollout_num_gpus=6, rollout_external_router_pd=True
-        )
+        args = _make_args(["host1:8000", "host2:8000"], rollout_num_gpus=6, rollout_external_router_pd=True)
         payloads = {
             "http://host1:8000": _prefill_payload(num_gpus=2, bootstrap_port=12090),
             "http://host2:8000": _decode_payload(num_gpus=4),
@@ -368,7 +366,7 @@ class TestStaticInferenceEngineWorkerProvider:
         ((worker_info,),) = provider.get_worker_infos(cell_ids=[info.cell_id])
 
         assert worker_info.name == info.worker_names[0]
-        assert worker_info.handle is None
+        assert worker_info.worker_class is None
         assert worker_info.self_addrs["primary"].port == 8000
 
     async def test_an_ipv6_engine_address_stays_bracketed(self, monkeypatch):
