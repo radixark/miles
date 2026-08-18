@@ -68,8 +68,7 @@ Each entry point with a `deterministic` parameter is replaced by
 
 ## What it does not cover
 
-Rollout determinism is guaranteed by sglang-d and its post-training support.
-
+- **Rollout determinism.** Guaranteed by sglang-d and its post-training support.
 - **Train/rollout agreement.** Determinism removes run-to-run variance; it does not make the two
 forwards equal. That is a precision problem — see [Dtype Control](/diffusion/advanced/dtype-control).
 
