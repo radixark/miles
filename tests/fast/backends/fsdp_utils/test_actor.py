@@ -9,6 +9,7 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOu
 from miles.utils import distributed_utils
 from miles.utils.ft_utils.heartbeat_utils import SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.init_once import InitOnce
 
 
 class TestFSDPInit:
@@ -50,7 +51,7 @@ class TestFSDPInit:
         actor = object.__new__(actor_module.FSDPTrainRayActor)
         actor._rank = 0
         actor._heartbeat = SimpleHeartbeat()
-        actor._init_called = False
+        actor._init_once = InitOnce(type(actor).__name__)
         args = Namespace(
             debug_deterministic_collective=False,
             distributed_backend="nccl",

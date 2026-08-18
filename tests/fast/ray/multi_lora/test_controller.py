@@ -86,3 +86,14 @@ class TestInit:
         controller = MultiLoRAController(args=_make_args(), router_providers=[object()])
 
         assert await controller.init() == 8123
+
+    async def test_a_second_init_is_refused_without_starting_another_server(self, events: list[str]) -> None:
+        """A stale controller refuses reinitialization without duplicating backend or server startup."""
+        controller = MultiLoRAController(args=_make_args(), router_providers=[object()])
+        await controller.init()
+        first_init_events: list[str] = events.copy()
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            await controller.init()
+
+        assert events == first_init_events
