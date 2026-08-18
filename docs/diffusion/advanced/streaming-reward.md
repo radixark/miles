@@ -27,7 +27,7 @@ Nothing waits for the full batch.
 ## 2. Deserialization: msgpack + parser-actor pool
 
 Trajectory tensors are large — for video models the response for one microgroup can be gigabytes, and encoding tensors
-into base64 further increases the size. In an naive implementation, tensors were base64-encoded inside a JSON body and
+into base64 further increases the size. In a naive implementation, tensors were base64-encoded inside a JSON body and
 parsed on the main asyncio event loop, one sample at a time.
 
 The current path:

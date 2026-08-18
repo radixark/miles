@@ -3,9 +3,9 @@ title: Deterministic Training
 description: What --deterministic-mode covers, which attention backends it accepts, and what it deliberately does not fix.
 ---
 
-`--deterministic-mode` makes the **training actor's** forward and backward bit-reproducible across
-runs. Most shipped recipes keep it on: when chasing a train/rollout numeric gap, run-to-run noise
-has to be zero before any measurement means anything.
+`--deterministic-mode` configures the **training actor's** forward and backward for repeatable execution with the same
+hardware, topology, software stack, and inputs. However, some argument gates are still incomplete, so configurations
+that do not support deterministic execution may still pass validation.
 
 ## What it turns on
 
@@ -91,8 +91,8 @@ Recipes that need reproducibility more than throughput keep it on permanently.
 ## In CI
 
 The e2e suite is built on this flag. Each test under `tests/e2e/short/` runs a real recipe with
-`--deterministic-mode` for two rollouts and compares every logged metric series — reward
-statistics, old/new log-probs, grad norm — **bit for bit** against a standard committed under
+`--deterministic-mode` for its registered short run (currently two or four rollouts) and compares every registered
+metric series — reward statistics, old/new log-probs, grad norm — **bit for bit** against a standard committed under
 `tests/ci/fixtures/e2e_standards/` (strict unless the test registers a per-metric tolerance).
 Determinism is what makes strict comparison viable: a tolerance wide enough to absorb run-to-run
 noise would also absorb small regressions. Standards are re-recorded by the PR author

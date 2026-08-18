@@ -2,17 +2,18 @@
 title: Installation
 description: Get a working miles-diffusion environment — Docker (recommended) or from source.
 ---
-miles-diffusion trains a diffusion DiT with FSDP2 while [sglang-diffusion](https://github.com/sgl-project/sglang)
-serves the rollout. The two halves must agree numerically, so the pinned versions matter more
-than usual: the rollout engine tracks **sglang main**, not a release tag, and the training side
-pins **torch 2.11.0** (an FSDP monkey patch is version-gated on it).
+miles-diffusion trains a diffusion DiT with FSDP2 while
+[sglang-diffusion](https://github.com/sgl-project/sglang/tree/main/python/sglang/multimodal_gen) serves the rollout.
+The two halves must agree numerically, so the pinned versions matter more than usual: the rollout engine tracks
+**sglang main**, not a release tag, and the training side pins **torch 2.11.0** (an FSDP monkey patch is version-gated
+on it). A future update will upgrade the training stack to **torch 2.13**.
 
 Use Docker unless you have a reason not to.
 
 ## Method 1: Docker (recommended)
 
 ```bash
-docker pull rockdu/miles_diffusion:latest
+docker pull radixark/miles_diffusion:latest
 ```
 
 `latest` tracks sglang main and is rebuilt every few days; dated tags
@@ -47,7 +48,7 @@ docker run --rm \
   --network=host \
   -v /your/datasets:/root/datasets \
   -e HF_TOKEN=$HF_TOKEN \
-  -it rockdu/miles_diffusion:latest /bin/bash
+  -it radixark/miles_diffusion:latest /bin/bash
 ```
 
 The image ships with:
@@ -64,7 +65,7 @@ The image ships with:
 To run your own working tree instead of the baked copy, bind-mount it and reinstall:
 
 ```bash
-docker run ... -v $PWD:/root/miles_diffusion -it rockdu/miles_diffusion:latest /bin/bash
+docker run ... -v $PWD:/root/miles_diffusion -it radixark/miles_diffusion:latest /bin/bash
 cd /root/miles_diffusion && pip install -e . --no-deps
 ```
 
@@ -102,9 +103,8 @@ Written against a CUDA 12.9 / Ubuntu 24.04 host, to match the image. Nothing enf
 but the apt versions are unpinned, so another release hands out different versions of the
 apt-sourced dists and the verify step reports drift.
 
-About 20 minutes cold, ~4 with a warm pip cache; six idempotent steps, and `--from STEP`
-resumes a failed run. The last step diffs every installed package against the image's
-snapshot — a clean run ends with:
+The installer has six idempotent steps, and `--from STEP` resumes a failed run. The last step diffs every installed
+package against the image's snapshot — a clean run ends with:
 
 ```
 matched 369   mismatched 0   missing 0   expected-absent 4   extra 0
@@ -149,7 +149,7 @@ On a machine with no sglang GPU kernels installed, install the CPU stubs first, 
 
 | | |
 |---|---|
-| Validated GPUs | H200 — what the CI runners are, and what every shipped recipe was tuned on. The default image pulls a Hopper FlashAttention-3 wheel. |
+| Validated GPUs | H200 — what the CI runners are, and what every shipped recipe was tuned on. |
 | Minimum for a real run | 2 GPUs — SD3.5-medium LoRA GRPO colocated (`scripts/run_diffusion_grpo_sd3_ocr_sglang.py`) |
 | Typical | 4 train GPUs + 1 dedicated reward GPU (the Qwen-Image / Wan2.2 / LTX recipes) |
 
@@ -163,7 +163,7 @@ so the floor is set by whichever of the two needs more memory, not by their sum.
 | `HF_TOKEN` | Gated checkpoints. SD3.5 needs it **even when the weights are cached** — sglang still fetches `model_index.json` from the hub at startup. |
 | `WANDB_API_KEY` | Without it the launch scripts silently drop all `--use-wandb` flags. |
 | `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` | Set by every launch script; reduces fragmentation OOMs. |
-| `MILES_DIFFUSION_MODEL_FAMILY` | Escape hatch for family auto-detection. Prefer the `--diffusion-model-family` flag; the env var still wins over both. |
+| `MILES_DIFFUSION_MODEL_FAMILY` | Escape hatch when `--diffusion-model-family` is unset. It overrides checkpoint-name auto-detection, but an explicit CLI family takes precedence. |
 
 ## Next
 

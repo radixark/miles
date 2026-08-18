@@ -39,7 +39,7 @@ Registered in `miles/backends/fsdp_utils/configs/wan2_2.py`:
 | Condition inputs | `encoder_hidden_states` only (fixed-length UMT5 embeds) | Concat-collate, no padding needed |
 | CFG combine | `neg + scale × (pos − neg)` | Standard |
 | CFG batching | Off | |
-| fp32 param islands | `scale_shift_table`, `time_embedder`, `norm2` kept fp32 under FSDP mixed precision | `models/diffusers/wan2_2/parallel_plan.py` |
+| FSDP fp32 param map | `norm2` parameters only | `models/diffusers/wan2_2/parallel_plan.py`; the separate rollout patch group aligns selected norm and `scale_shift_table` arithmetic engine-side |
 
 ## 4. Launch
 ### 4.1 Flow-GRPO + PickScore (4 train GPUs + 1 reward GPU)

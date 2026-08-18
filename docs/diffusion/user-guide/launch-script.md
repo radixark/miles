@@ -241,9 +241,10 @@ Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`
 
 ### Verify the run is healthy
 
-- `train/model_output_mean_abs_diff` must be exactly `0.0` from the first optimizer step — with
-  `--rollout-patch-group wan` and `--sglang-attention-backend torch_sdpa` the trainer recompute and
-  the engine forward are the same function. Any nonzero value means a patch missed some rank.
+- With `--rollout-patch-group wan` and `--sglang-attention-backend torch_sdpa`,
+  `train/model_output_mean_abs_diff` is expected to be exactly `0.0` from the first optimizer step. The 4-GPU proxy E2E
+  standard records `0.0`, and the documented 17-GPU runs sustained it over 200 rollouts. Any nonzero value indicates a
+  train/rollout parity regression; check the patch group, backend, dtype, and versions on every rank.
 - Both training nodes near 100% GPU util during rollout; a 100%-vs-idle split between nodes means
   the reward workers were packed onto one node.
 
@@ -253,7 +254,7 @@ Reward workers (`--pickscore-num-workers 4 --pickscore-num-gpus-per-worker 0.25`
 |---|---|
 | Stale engine hijacks the port | Killing a driver by name leaves its spawned engine alive; the next driver's health check talks to the old, unpatched server while the new one dies on `EADDRINUSE`. Between runs kill by GPU pid and check `nvidia-smi` shows no compute processes |
 | Version strings lie under editable installs | `pip show sglang` reports the install-time commit; trust `git rev-parse HEAD` in the checkout (or the `-e git+...@<sha>` line in `pip freeze`) |
-| Weight-sync bucket | `--update-weight-buffer-size 4294967296` (4 GiB): the sync is latency-bound on per-bucket round-trips — 512 MiB costs ~92 s for the A14B pair, 4 GiB ~15 s; output diff stays 0 at any size |
+| Weight-sync bucket | `--update-weight-buffer-size 4294967296` (4 GiB). In one documented A14B run, 512 MiB took ~92 s and 4 GiB ~15 s; these are run-specific observations, not a benchmark guarantee. |
 | Determinism env vars are trainer-side | `--deterministic-mode` sets `NCCL_DETERMINISTIC` and `CUBLAS_WORKSPACE_CONFIG` on the FSDP actors; check rollout parity with `train/model_output_mean_abs_diff` |
 
 ## Next

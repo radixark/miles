@@ -45,13 +45,15 @@ Replace the entire train rollout. Diffusion recipes use
 `miles.rollout.sglang_diffusion_rollout.generate_rollout` (not the LLM default).
 
 ```python
-def generate_rollout(args, rollout_id, data_source, evaluation=False):
+def generate_rollout(
+    args, rollout_id, data_source, evaluation=False
+) -> RolloutFnTrainOutput | RolloutFnEvalOutput:
     ...
 ```
 
-Help text also documents
-`def generate_rollout(args, rollout_id, *, evaluation=False) -> list[list[Sample]]`
-— follow the call site in `miles/ray/rollout.py` (`call_rollout_fn`).
+`miles/ray/rollout.py` passes the data source positionally through `call_rollout_fn`.
+Legacy list/dict returns are still wrapped into the corresponding output dataclass by
+`miles.rollout.base_types.call_rollout_fn`.
 
 ### `--eval-function-path`
 

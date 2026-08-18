@@ -4,9 +4,8 @@ description: A working Flow-GRPO training job on SD3.5 + OCR — default script 
 ---
 This page takes you from `docker pull` to a running **Flow-GRPO** job on
 **Stable Diffusion 3.5 Medium** with **OCR** reward. The launch script below
-targets **2 GPUs** (colocate train + rollout); a single GPU also works if you
-override the GPU layout. You need Hugging Face access to the gated SD3.5
-checkpoint.
+targets **2 GPUs** (colocate train + rollout). A single-GPU topology is not
+provided or verified. You need Hugging Face access to the gated SD3.5 checkpoint.
 
 Installation and environment setup are documented separately — this page starts
 inside a ready container or machine.
@@ -19,13 +18,13 @@ recipe are in the [SD3 model guide](/diffusion/models/sd3/sd3).
 On the **host** (experimental image — see `docker/README.md`):
 
 ```bash
-docker pull rockdu/miles_diffusion:latest
+docker pull radixark/miles_diffusion:latest
 
 docker run --rm \
   --gpus all --ipc=host --shm-size=32g \
   --ulimit memlock=-1 --ulimit stack=67108864 \
   --network=host \
-  -it rockdu/miles_diffusion:latest /bin/bash
+  -it radixark/miles_diffusion:latest /bin/bash
 ```
 
 Refresh the editable install inside the container:
@@ -93,7 +92,7 @@ FSDP actor with LoRA, syncs weights via CUDA IPC (`--lora-ipc-weight-sync`),
 and runs the Flow-GRPO rollout / train loop. With `WANDB_API_KEY` set, images
 and metrics are logged to project `miles-diffusion-grpo`.
 
-After a minute or two you should see rollout/train metrics such as
+Once rollout begins, you should see rollout/train metrics such as
 `rollout/reward/raw_mean`, `train/loss`, and `train/log_prob_mean_abs_diff`
 (stdout and WandB when configured).
 
@@ -133,8 +132,8 @@ flowchart LR
 4. Push updated LoRA weights to rollout engines via `--lora-ipc-weight-sync`.
 
 This recipe uses **Flow-GRPO** (`--loss-type policy_loss`, the default) with
-LoRA-base KL (`--diffusion-kl-beta 0.04`), noise level 0.7, and CFG 4.5.
-`--deterministic-mode` and `--global-batch-size 64` match the CI e2e recipe.
+LoRA-base KL (`--diffusion-kl-beta 0.04`), noise level 0.7, CFG 4.5, and batch-wide reward-standard-deviation
+normalization (`--globalize-reward-std`). `--deterministic-mode` and `--global-batch-size 64` match the CI e2e recipe.
 
 Which denoising steps enter the loss is selected by a **step strategy**
 (`--diffusion-step-strategy-path` in `miles/rollout/step_strategy_hub.py`):

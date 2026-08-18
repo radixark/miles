@@ -118,16 +118,13 @@ python3 scripts/run_diffusion_grpo_sd3_ocr_sglang.py \
 
 Walkthrough: [Quick Start](/diffusion/getting-started/quick-start).
 
-This script prepends `master_sglang` to `PYTHONPATH` for native SD3
-`/rollout/generate` support. See the module docstring for details.
-
 E2E test: `tests/e2e/short/test_sd3_ocr_grpo_2xGPU.py`.
 
 ### 5.3 DiffusionNFT + PickScore (3 GPU)
 
 Script: `scripts/run_diffusion_nft_sd3_pickscore.py`
 
-**Status:** [📈 V — Verified](/diffusion/user-guide/recipe-verification#v)
+**Status:** [🛡️ FG — Fully gated](/diffusion/user-guide/recipe-verification#fg)
 
 ```bash
 export HF_TOKEN=...
@@ -150,7 +147,7 @@ MILES_SCRIPT_SMOKE=1 python3 scripts/run_diffusion_nft_sd3_pickscore.py
 | SDE | Full window, noise=0.7, CFG=4.5 | ODE, noise=0 |
 | Reference | LoRA base KL | EMA (`--use-ema`) |
 | Reward GPU | None (CPU OCR) | Dedicated (3 GPU total) |
-| Deterministic e2e | `test_sd3_ocr_grpo_2xGPU` | — (smoke via `MILES_SCRIPT_SMOKE=1`) |
+| Deterministic e2e | `test_sd3_ocr_grpo_2xGPU` | `test_sd3_nft_pickscore_3xGPU` |
 
 ## 6. Recipe configuration
 
@@ -235,8 +232,9 @@ Train/rollout dtype alignment for Flow-GRPO is covered in
 
 ### Flow-GRPO + OCR
 
-`rollout/reward/raw_mean` from `scripts/run_diffusion_grpo_sd3_ocr_sglang.py`
-(default batch, 600 rollouts):
+Observed `rollout/reward/raw_mean` from one
+`scripts/run_diffusion_grpo_sd3_ocr_sglang.py` run (default batch, 600 rollouts). The curve is an example, not a CI
+acceptance range:
 
 ![Flow-GRPO OCR raw reward](/diffusion/assets/images/sd3/grpo-ocr-raw-reward.png)
 
@@ -244,14 +242,13 @@ Online runs: wandb project **`miles-diffusion-grpo`**.
 
 ### DiffusionNFT + PickScore
 
-`rollout/reward/raw_mean` from `scripts/run_diffusion_nft_sd3_pickscore.py` (100
-rollouts):
+Observed `rollout/reward/raw_mean` from one `scripts/run_diffusion_nft_sd3_pickscore.py` run (100 rollouts):
 
 ![DiffusionNFT PickScore raw reward](/diffusion/assets/images/sd3/nft-pickscore-raw-reward.png)
 
-Online runs: wandb project **`miles-diffusion-nft`**. Held-out
-**`eval/pickscore_test` ≈ 0.78** on the default eval config (`--eval-interval 30`,
-50 denoise steps at eval time).
+Online runs: wandb project **`miles-diffusion-nft`**. That run observed held-out
+**`eval/pickscore_test` ≈ 0.78** with `--eval-interval 30` and 50 denoise steps at eval time; this value is not asserted
+by the E2E fixture.
 
 ## 10. Pairs well with
 

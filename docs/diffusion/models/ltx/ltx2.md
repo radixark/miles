@@ -45,8 +45,8 @@ Registered in `miles/backends/fsdp_utils/configs/ltx.py`:
 
 ## 4. Launch
 
-Canonical recipe: `scripts/run_diffusion_grpo_ltx23_sglang.py` — 4 colocate GPUs + 1 PickScore
-GPU, 57 frames @ 24 fps, 512×768, PickScore reward.
+Canonical recipe: `scripts/run_diffusion_grpo_ltx23_sglang.py` — a 5-GPU Ray node with 4 GPUs shared by FSDP and
+rollout plus 1 separately scheduled PickScore GPU, 57 frames @ 24 fps, 512×768.
 
 **Status:** [🛡️ FG — Fully gated](/diffusion/user-guide/recipe-verification#fg)
 

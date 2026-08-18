@@ -1,10 +1,10 @@
 ---
 title: Core Concepts
-description: The four objects that make up every miles-diffusion job, the trajectory-level training loop, and where every flag goes.
+description: The four objects that make up every miles-diffusion job and the trajectory-level training loop.
 ---
 
 A miles-diffusion training job is a loop over four objects. Once you understand what each one *is* and how data flows
-between them, every flag in the system has an obvious home.
+between them, the major flag groups are easier to place.
 
 ## The four objects
 
@@ -22,7 +22,7 @@ flowchart LR
 | Object                                 | Role                                                           | Lives in                                                                                            |
 | -------------------------------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | **Prompt dataset**                     | Source of prompts (plus optional metadata)                     | JSONL on disk (`--prompt-data`, `--input-key`)                                                      |
-| **Rollout (sglang-diffusion engines)** | Denoises prompts into images/videos and records the trajectory | One engine per `--rollout-num-gpus-per-engine` GPUs, behind the miles router (`--use-miles-router`) |
+| **Rollout (sglang-diffusion engines)** | Denoises prompts into images/videos and records the trajectory | One engine per `--rollout-num-gpus-per-engine` GPUs; shipped diffusion recipes explicitly enable the miles router with `--use-miles-router` |
 | **Reward workers**                     | Map `(prompt, generated output) → score`                       | Built-in `rm_hub` (`--rm-type ocr / pickscore`) or custom (`--custom-rm-path`) — Ray actor pools    |
 | **Actor (FSDP2 + diffusers)**          | The DiT being trained, usually via LoRA                        | HF checkpoint (`--hf-checkpoint`), family resolved by `TrainPipelineConfig`                         |
 
@@ -103,10 +103,6 @@ flowchart TD
     classDef op fill:#f3f3f3,stroke:none
     style T fill:#fdf6d8,stroke:#b8a23e
 ```
-
-## Where every flag goes
-
-tbd
 
 ## Next
 

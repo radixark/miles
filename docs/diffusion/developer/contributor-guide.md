@@ -65,7 +65,7 @@ Four tiers, by what they need:
 |---|---|---|
 | `tests/fast/` | CPU only | Argument validation, config registry, dtype-map compilation, loss math, data splitting. The bulk of the suite. |
 | `tests/fast-gpu/` | 1-2 GPUs | FSDP behaviour that only exists on device: param-dtype maps, hybrid shard, SP attention parity, LoRA weight sync. Includes ported upstream PyTorch FSDP tests. |
-| `tests/e2e/short/` | 2-4 GPUs | Runs an actual launch script for a couple of rollouts and compares its **metric series** against a recorded standard. |
+| `tests/e2e/short/` | 2-5 GPUs | Runs an actual launch script for a few rollouts and compares its **metric series** against a recorded standard. |
 | `tests/ci/` | — | The harness itself: registry, label filter, suite runner, e2e standards. |
 
 Run the CPU tier before every push; it is fast and catches most regressions. On a CPU-only box
@@ -123,7 +123,6 @@ them. The canonical registry is `tests/ci/labels.py`:
 | `ray` | Actors and placement groups |
 | `router` | Routing decisions |
 | `arguments` | Top-level argparse / `validate_args` |
-| `model-scripts` | `train_diffusion.py` + `scripts/*.py` smoke tests |
 
 Two meta-labels bypass the filter and run everything: `run-ci-all` and `run-ci-image`.
 
@@ -183,7 +182,7 @@ YAML / large-file / private-key checks.
 ## Docker changes
 
 A PR touching `docker/Dockerfile` or `requirements.txt` triggers an image build; every GPU suite
-then runs inside `rockdu/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
+then runs inside `radixark/miles_diffusion:pr-<num>` instead of `latest`, and a failed build stops
 the matrix. The fresh build outranks a `ci-image-tag:` directive in the PR body. Fork PRs skip
 the build and stay on `latest`. The tag is deleted when the PR closes.
 
@@ -216,4 +215,3 @@ The body explains **why**; the diff already shows what.
 
 - Design discussion: open a GitHub Issue or Discussion on
   [radixark/miles_diffusion](https://github.com/radixark/miles_diffusion).
-- Security: email security@radixark.ai — do not open a public issue.

@@ -50,7 +50,7 @@ do not.
 | `--rollout-num-gpus` | – | GPUs for rollout-side work. Forced to the train world size under `--colocate`. |
 | `--rollout-num-gpus-per-engine` | `1` | GPUs per sglang-d engine (its TP × SP). |
 | `--num-gpus-per-node` | `8` | Total GPUs the job may use per node. **Set this when using fewer than 8.** |
-| `--colocate` | on | Time-share GPUs between trainer and engines; forces `--offload-train` and `--offload-rollout` on. **Effectively required for RL** — the only weight-sync transport is CUDA IPC over shared GPUs. Every GRPO recipe sets it; only `--debug-rollout-only` / train-only SFT run without. |
+| `--colocate` | off | Required: CUDA IPC weight sync currently supports only colocated trainer and rollout execution. |
 
 ### Batch sizing
 
@@ -116,7 +116,7 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | `--rollout-num-gpus` | int | – | For train-only SFT, unset colocates encoders with training; set it to reserve dedicated encoder GPUs. |
 | `--rollout-num-gpus-per-engine` | int | `1` | Like sglang's `tp_size`. |
 | `--num-gpus-per-node` | int | `8` | |
-| `--colocate` | flag | on | Also sets `--offload`. Effectively required for RL: weight sync is CUDA-IPC-only and assumes trainer and engines share GPU ids. Non-colocate layouts exist only for `--debug-rollout-only` and train-only SFT. |
+| `--colocate` | flag | off | Required: CUDA IPC weight sync currently supports only colocated trainer and rollout execution. |
 | `--offload` | flag | off | `--offload-train` + `--offload-rollout`. |
 | `--offload-train` / `--no-offload-train` | tri-state | – | Always on under `--colocate`. |
 | `--offload-rollout` / `--no-offload-rollout` | tri-state | – | Always on under `--colocate`. |
@@ -167,8 +167,8 @@ See [Dtype Control](/diffusion/advanced/dtype-control).
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--hf-checkpoint` | str | – | **Required.** Pipeline to train and to serve; also the family source. |
-| `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`. Overrides name matching. |
-| `--rollout-function-path` | str | – | Use `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
+| `--diffusion-model-family` | str | – | Registered family key: `sd3`, `wan2_2`, `ltx`, `qwen_image`, `cosmos3`. Overrides name matching. |
+| `--rollout-function-path` | str | `miles.rollout.sglang_rollout.generate_rollout` | Generic Miles default. Diffusion recipes explicitly set `miles.rollout.sglang_diffusion_rollout.generate_rollout`. |
 | `--train-pipeline-config-path` | str | – | Your own `TrainPipelineConfig` for an unregistered family. Mutually exclusive with `--diffusion-model-family`. |
 | `--model-backend-path` | str | – | Override the family's model loader. |
 | `--diffusion-num-steps` | int | `10` | |
@@ -336,7 +336,7 @@ Every one takes a dotted path.
 | `--wandb-group` / `--wandb-run-id` / `--wandb-team` / `--wandb-host` / `--wandb-key` | str | – | |
 | `--wandb-mode` | enum | – | `online` / `offline` / `disabled`. Overrides `WANDB_MODE`. |
 | `--wandb-dir` | str | – | Defaults to `./wandb`. |
-| `--disable-wandb-random-suffix` | flag | off | |
+| `--disable-wandb-random-suffix` | flag | off | Run names include a random suffix by default; pass this flag to disable it. |
 | `--wandb-log-num-images` | int | `0` | Images/videos per rollout; `0` disables. |
 | `--wandb-log-image-interval` | int | `1` | Send media every N rollouts. |
 | `--use-miles-dashboard` | flag | off | Async phase/trajectory telemetry. |
