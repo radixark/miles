@@ -225,6 +225,27 @@ class TestInit:
         assert _cell(group, 2).indep_dp_info.alive_rank == 2
 
 
+class TestInitRunsExactlyOnce:
+    async def test_a_controller_that_never_ran_init_reports_itself_uninitialized(self):
+        """A restarted script asks the controller it found running whether to initialize it or to resume it."""
+        group = _make_controller(num_cells=1)
+
+        assert await group.is_initialized() is False
+
+    async def test_a_controller_that_ran_init_reports_itself_initialized(self):
+        """The take-over path resumes exactly the controllers that answer this way."""
+        group = await _make_alive_controller(num_cells=1)
+
+        assert await group.is_initialized() is True
+
+    async def test_a_second_init_is_refused(self):
+        """Initializing trainers a previous script already built would throw away the state they hold."""
+        group = await _make_alive_controller(num_cells=1)
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            await _init_controller(group)
+
+
 class TestStopStartCell:
     async def test_stopping_a_cell_reaches_the_worker_manager(self):
         group = await _make_alive_controller(num_cells=2)
