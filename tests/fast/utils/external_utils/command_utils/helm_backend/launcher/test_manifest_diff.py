@@ -5,7 +5,11 @@ from typing import Any
 import yaml
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest, ManifestObjectKey
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
+    STATEFUL_SET_KIND,
+    Manifest,
+    ManifestObjectKey,
+)
 
 NAMESPACE = "rl"
 
@@ -268,3 +272,61 @@ class TestTheStructureBehindTheRenderedViews:
 
         [change] = diff.changes
         assert change.allowed_by is None
+
+
+_ORCHESTRATOR_KEY = ManifestObjectKey(kind=STATEFUL_SET_KIND, name="myrun-miles-run-orchestrator")
+
+
+class TestTheObjectsAHotRestartRebuilds:
+    def test_a_rebuilt_object_may_change_in_any_field(self):
+        """Changing the orchestration script's arguments is the whole point of a hot restart."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+        )
+
+        assert diff.is_allowed
+        assert diff.allowed_changed == [
+            "apps/v1/StatefulSet/rl/myrun-miles-run-orchestrator: spec.template.spec.containers.[0].image"
+        ]
+
+    def test_a_rebuilt_object_says_the_whitelist_is_what_allowed_it(self):
+        """The observation side asks why a change was allowed, and only scaling means the object stayed up."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+        )
+
+        [change] = diff.changes
+        assert change.allowed_by == "whitelist"
+
+    def test_every_other_object_is_still_refused(self):
+        """A hot restart that also changed the trainer has to stop the launch."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(lambda objects: _worker_container(objects).update(image="miles:other")),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+        )
+
+        assert not diff.is_allowed
+        assert diff.disallowed_changed == [
+            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: "
+            "spec.leaderWorkerTemplate.workerTemplate.spec.containers.[0].image"
+        ]
+
+    def test_an_ordinary_relaunch_exempts_nothing(self):
+        """The default is the strict gate every run that is not being hot restarted keeps."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+        )
+
+        assert not diff.is_allowed
