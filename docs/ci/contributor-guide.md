@@ -96,7 +96,7 @@ When a re-run still shows an infra signal from the table above, open a **GitHub 
 - A short **log snippet** of the error (the infra signal line).
 - What you already tried (e.g. "re-ran twice, same `ENOSPC`").
 
-A maintainer maps the runner to its host and fixes the machine; you don't need runner access. For a fast sanity check before filing, you can ask in the Miles channel of the [SGLang Slack](https://slack.sglang.ai), but the **GitHub Issue is the tracked record**.
+A maintainer maps the runner to its host and fixes the machine; you don't need runner access. For a fast sanity check before filing, you can ask in the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai), but the **GitHub Issue is the tracked record**.
 
 ## Report a flaky test
 

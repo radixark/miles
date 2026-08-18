@@ -135,5 +135,5 @@ from hardware and cloud to model labs, agent infrastructure, and academia:
 ## Contribute
 
 - GitHub: [github.com/radixark/miles](https://github.com/radixark/miles)
-- Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles`
+- Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles-rl`
 - Contributing: [developer guide](/developer/contributor-guide)

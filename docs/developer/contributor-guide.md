@@ -270,7 +270,7 @@ map it to a host.
 
 ## Where to ask
 
-* **Quick questions:** the Miles channel of the [SGLang Slack](https://slack.sglang.ai).
+* **Quick questions:** the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai).
 * **Design discussions:** a GitHub Discussion, or an Issue labeled `discussion`.
 * **CI internals:** [Stage](/ci/00-stage) (stages), [Labels](/ci/01-label) (label
   semantics), [Docker build](/ci/02-docker-build) (images),
