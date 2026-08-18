@@ -83,24 +83,38 @@ class RpcWorkerHandle(BaseWorkerHandle):
         )
         await call.submit()
 
-    async def wait_ready(self, *, timeout: float) -> None:
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        pinned_before = self._boot_uuid_pin.unpin() if allow_server_uuid_change else None
+
         async def attempt(remaining: float) -> None:
+            if allow_server_uuid_change:
+                self._boot_uuid_pin.unpin()
             await self._transport.request(
                 "GET", HEALTH_PATH, seconds=min(_HEALTH_TIMEOUT_SECONDS, remaining), response_model=HealthResponse
             )
 
         try:
-            await retry_until_deadline(
-                attempt,
-                total_seconds=timeout,
-                retry_on=RETRYABLE_ERRORS,
-                initial_delay=RETRY_INITIAL_DELAY_SECONDS,
-                backoff_factor=1.0,
-            )
-        except RETRYABLE_ERRORS as e:
-            raise WorkerUnreachableError(
-                f"{self._worker_cls_name} rpc server not ready within {timeout}s: {e!r}"
-            ) from e
+            try:
+                await retry_until_deadline(
+                    attempt,
+                    total_seconds=timeout,
+                    retry_on=RETRYABLE_ERRORS,
+                    initial_delay=RETRY_INITIAL_DELAY_SECONDS,
+                    backoff_factor=1.0,
+                )
+            except RETRYABLE_ERRORS as e:
+                raise WorkerUnreachableError(
+                    f"{self._worker_cls_name} rpc server not ready within {timeout}s: {e!r}"
+                ) from e
+
+            if allow_server_uuid_change:
+                assert (
+                    not self._boot_uuid_pin.needs_handshake()
+                ), "the readiness probe did not pin the answering process"
+        except BaseException:
+            if allow_server_uuid_change:
+                self._boot_uuid_pin.repin(pinned_before)
+            raise
 
     async def probe_is_dead(self) -> bool:
         try:
