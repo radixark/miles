@@ -63,6 +63,7 @@ class PoolEntry(ValuesModel):
     replicas: Annotated[int, Field(ge=1)] | None = None
     size: Annotated[int, Field(ge=1)] | None = None
     resources: _Resources | None = None
+    restart_at: Annotated[str, Field(min_length=1)] | None = None
 
 
 class ObjectNames(ValuesModel):
@@ -81,6 +82,7 @@ class AutoUninstallSection(ValuesModel):
 class OrchestratorSection(ValuesModel):
     command: list[str] | None = None
     resources: _Resources | None = None
+    restart_at: Annotated[str, Field(min_length=1)] | None = None
 
 
 class MooncakeSection(ValuesModel):
