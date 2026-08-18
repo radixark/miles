@@ -7,7 +7,7 @@ import ray
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.backends.megatron_utils.megatron_config import compute_trainer_args
+from miles.backends.megatron_utils.megatron_config import MegatronTrainerConfig, compute_trainer_args
 from miles.ray.rollout.inference_controller import UpdatableEngines
 from miles.ray.rollout.router_manager import resolve_router_addrs, wait_session_server_ready
 from miles.ray.specs.inference import (
@@ -21,7 +21,6 @@ from miles.ray.specs.train import (
     CRITIC_ROLE,
     TRAINER_CONTROLLER_ADDRS_FLAG,
     compute_trainer_configs,
-    compute_trainer_ids,
     create_trainer_controller_handle,
     external_trainer_controller_addrs,
 )
@@ -159,8 +158,16 @@ class TrainerInfo(NamedTuple):
 
 
 # TODO: move (when reorganizing files)
-async def create_training_model(args, *, trainer_id: str) -> TrainerInfo:
-    handle = create_trainer_controller_handle(args, capability=get_backend_capability(args), trainer_id=trainer_id)
+def create_trainer_handles(args, *, trainer_configs: list[MegatronTrainerConfig]) -> dict[str, BaseWorkerHandle]:
+    capability = get_backend_capability(args)
+    return {
+        config.trainer_id: create_trainer_controller_handle(args, capability=capability, trainer_id=config.trainer_id)
+        for config in trainer_configs
+    }
+
+
+# TODO: move (when reorganizing files)
+async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: str) -> TrainerInfo:
     restored_rollout_ids = await handle.init(args)
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     [restored_rollout_id] = set(restored_rollout_ids)
@@ -182,12 +189,15 @@ async def create_training_model(args, *, trainer_id: str) -> TrainerInfo:
 async def create_training_models(
     args, rollout_executor: BaseWorkerHandle
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
-    await wait_external_trainers(args)
-
     trainer_configs = compute_trainer_configs(args)
+    handles = create_trainer_handles(args, trainer_configs=trainer_configs)
+    await wait_external_trainers(args, handles=handles)
+
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     actor_info = await create_training_model(
-        compute_trainer_args(args, actor_config), trainer_id=actor_config.trainer_id
+        compute_trainer_args(args, actor_config),
+        handle=handles[actor_config.trainer_id],
+        trainer_id=actor_config.trainer_id,
     )
 
     critic_configs = [config for config in trainer_configs if config.role == CRITIC_ROLE]
@@ -195,7 +205,9 @@ async def create_training_models(
     if args.use_critic:
         [critic_config] = critic_configs
         critic_info = await create_training_model(
-            compute_trainer_args(args, critic_config), trainer_id=critic_config.trainer_id
+            compute_trainer_args(args, critic_config),
+            handle=handles[critic_config.trainer_id],
+            trainer_id=critic_config.trainer_id,
         )
         assert critic_info.restored_rollout_id == actor_info.restored_rollout_id, (
             f"the actor restored to rollout {actor_info.restored_rollout_id} but its critic to "
@@ -215,23 +227,17 @@ async def create_training_models(
 
 
 # TODO: move (when reorganizing files)
-async def wait_external_trainers(args) -> None:
+async def wait_external_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> None:
     """Wait for every independently deployed trainer controller, and refuse one that another run deployed."""
     if args.trainer_controller_addrs is None:
         return
 
-    trainer_ids = compute_trainer_ids(args)
-    addrs = external_trainer_controller_addrs(args, trainer_ids=trainer_ids)
+    addrs = external_trainer_controller_addrs(args, trainer_ids=list(handles))
     logger.info(f"Waiting for the independently deployed trainer controllers at {addrs}")
     await wait_static_addrs_ready(addrs.values())
 
-    capability = get_backend_capability(args)
-    handles = [
-        create_trainer_controller_handle(args, capability=capability, trainer_id=trainer_id)
-        for trainer_id in trainer_ids
-    ]
-    identities = await asyncio.gather(*[handle.get_deployment_identity() for handle in handles])
-    for trainer_id, identity in zip(trainer_ids, identities, strict=True):
+    identities = await asyncio.gather(*[handle.get_deployment_identity() for handle in handles.values()])
+    for trainer_id, identity in zip(handles, identities, strict=True):
         _assert_external_trainer_in_run(identity, args=args, trainer_id=trainer_id)
 
 
