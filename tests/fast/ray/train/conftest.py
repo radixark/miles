@@ -9,6 +9,7 @@ from tests.fast.ray.train.fake_worker_manager import FakeWorkerManager
 
 import miles.ray.train.group as group_module
 from miles.ray.train.cell import TrainerCell
+from miles.utils import object_store
 from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
@@ -33,6 +34,11 @@ def _patch_worker_backends():
 @pytest.fixture(scope="module", autouse=True)
 def ray_env(ray_local_mode):
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_object_store_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(object_store, "_INSTANCE", None)
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +84,8 @@ class RecordingHealthChecker(BaseHealthChecker):
 
     async def _run(self) -> None:
         self.task_started = True
+
+
 def make_provider() -> BaseWorkerProvider:
     return RayWorkerProvider(worker_manager_handle=fake_worker_manager)
 

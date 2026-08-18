@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import base64
 import os
 from abc import ABC, abstractmethod
 from argparse import Namespace
@@ -5,12 +8,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import TracebackType
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import ray
-from pydantic import ConfigDict
+import ray._private.internal_api
+from pydantic import AfterValidator, ConfigDict, Field, PlainSerializer
 
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.workers.types import WorkerCommBackend
 
 _MOONCAKE_IMPORT_ERROR: ImportError | None = None
 
@@ -34,10 +39,8 @@ class ObjectStoreBackend(Enum):
     MOONCAKE = "mooncake"
 
 
-class StoreObjectRef(StrictBaseModel):
+class _BaseStoreObjectRef(StrictBaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
-
-    payload: Any
 
 
 @dataclass(frozen=True)
@@ -69,28 +72,28 @@ class ObjectStoreGetResult:
 
 # ============================ singleton ============================
 
-_INSTANCE: "BaseObjectStore | None" = None
+_INSTANCE: BaseObjectStore | None = None
 
 
-def init_instance(args: Namespace, *, contribute_segment: bool | None = None) -> "BaseObjectStore":
+def init_instance(args: Namespace, *, contribute_segment: bool | None = None) -> BaseObjectStore:
     global _INSTANCE
     assert _INSTANCE is None, "object store instance is already initialized"
     _INSTANCE = _create_instance(args, contribute_segment=contribute_segment)
     return _INSTANCE
 
 
-def get_instance() -> "BaseObjectStore":
+def get_instance() -> BaseObjectStore:
     assert _INSTANCE is not None, "object store instance is not initialized; call init_instance first"
     return _INSTANCE
 
 
-def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> "BaseObjectStore":
+def _create_instance(args: Namespace, *, contribute_segment: bool | None) -> BaseObjectStore:
     backend = ObjectStoreBackend(args.object_store_backend)
     if backend == ObjectStoreBackend.MOONCAKE:
         if contribute_segment is None:
             contribute_segment = _default_contribute_segment()
         return MooncakeObjectStore(args, contribute_segment=contribute_segment)
-    return RayObjectStore()
+    return RayObjectStore(frees_objects=WorkerCommBackend(args.worker_comm_backend) == WorkerCommBackend.RPC)
 
 
 def _default_contribute_segment() -> bool:
@@ -118,15 +121,36 @@ class BaseObjectStore(ABC):
 # ============================ ray backend ==========================
 
 
+def _decode_ray_object_ref(payload: str) -> ray.ObjectRef:
+    return ray.cloudpickle.loads(base64.b64decode(payload))
+
+
+def _encode_ray_object_ref(payload: ray.ObjectRef) -> str:
+    return base64.b64encode(ray.cloudpickle.dumps(payload)).decode()
+
+
+class _RayStoreObjectRef(_BaseStoreObjectRef):
+    backend: Literal[ObjectStoreBackend.RAY.value] = ObjectStoreBackend.RAY.value
+
+    payload: Annotated[
+        ray.ObjectRef | Annotated[str, AfterValidator(_decode_ray_object_ref)],
+        PlainSerializer(_encode_ray_object_ref, return_type=str),
+    ]
+
+
 class RayObjectStore(BaseObjectStore):
+    def __init__(self, *, frees_objects: bool) -> None:
+        self._frees_objects = frees_objects
+
     def put(self, value: Any, value_spec: dict[str, ValueSpec] | None = None) -> StoreObjectRef:
-        return StoreObjectRef(payload=ray.put(value))
+        return _RayStoreObjectRef(payload=ray.put(value))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
         return ObjectStoreGetResult(value=ray.get(ref.payload), release_fn=_release_noop)
 
     def remove(self, ref: StoreObjectRef) -> None:
-        pass
+        if self._frees_objects:
+            ray._private.internal_api.free([ref.payload])
 
 
 def _release_noop(value: Any) -> None:
@@ -134,6 +158,12 @@ def _release_noop(value: Any) -> None:
 
 
 # ========================= mooncake backend ========================
+
+
+class _MooncakeStoreObjectRef(_BaseStoreObjectRef):
+    backend: Literal[ObjectStoreBackend.MOONCAKE.value] = ObjectStoreBackend.MOONCAKE.value
+
+    payload: Any
 
 
 class MooncakeObjectStore(BaseObjectStore):
@@ -160,7 +190,7 @@ class MooncakeObjectStore(BaseObjectStore):
             config=self._replicate_config(),
             field_schemas=_field_schemas_for_value(value, value_spec),
         )
-        return StoreObjectRef(payload=export_ref(ref))
+        return _MooncakeStoreObjectRef(payload=export_ref(ref))
 
     def get(self, ref: StoreObjectRef) -> ObjectStoreGetResult:
         value = self._transfer.get(import_ref(ref.payload), type="dict")
@@ -234,3 +264,6 @@ def _parse_size(value: Any) -> int:
 
 def _local_hostname() -> str:
     return ray.util.get_node_ip_address()
+
+
+StoreObjectRef = Annotated[_RayStoreObjectRef | _MooncakeStoreObjectRef, Field(discriminator="backend")]
