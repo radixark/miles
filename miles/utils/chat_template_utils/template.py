@@ -60,11 +60,41 @@ def load_hf_chat_template(model_id: str) -> str:
         return f.read()
 
 
+def _dict_arguments(args: Any) -> dict:
+    """Coerce tool_call ``arguments`` to a mapping for HF-Jinja rendering.
+
+    OpenAI wire responses carry ``function.arguments`` as a JSON string; Qwen-family
+    templates expect a mapping and iterate ``arguments|items``. Decode echoed wire
+    strings back to dicts at the render boundary, but never let adversarial args
+    crash render/data-load:
+
+    - already a ``dict`` -> passthrough.
+    - ``str`` -> guarded ``json.loads`` (empty -> ``{}``); a ``JSONDecodeError`` or a
+      value that decodes to a non-dict (list/number) is preserved under
+      ``_raw_arguments`` so it still renders.
+    - ``None`` -> ``{}`` (no arguments).
+    - any other native non-dict -> preserved under ``_raw_arguments``.
+    """
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str):
+        try:
+            decoded = json.loads(args or "{}")
+        except json.JSONDecodeError:
+            return {"_raw_arguments": args}
+        return decoded if isinstance(decoded, dict) else {"_raw_arguments": args}
+    if args is None:
+        return {}
+    return {"_raw_arguments": args}
+
+
 def normalize_tool_arguments(messages: list[dict], format: Literal["dict", "json"]) -> list[dict]:
     """Deep-copy *messages*, normalize assistant ``content: None`` -> "", and coerce
     tool_call ``arguments`` to the form the downstream renderer needs (``format`` picks
     the direction; never mutates the input):
     - ``"dict"``: JSON string -> dict, for HF-Jinja templates (they index args as objects).
+      Adversarial args (empty, malformed, or decoding to a non-dict / ``None``) are
+      coerced to a mapping rather than crashing render — see ``_dict_arguments``.
     - ``"json"``: dict -> JSON string, for the DeepSeek DSML encoders (they ``json.loads`` them).
     """
     normalized = copy.deepcopy(messages)
@@ -78,8 +108,8 @@ def normalize_tool_arguments(messages: list[dict], format: Literal["dict", "json
                     if not func:
                         continue
                     args = func.get("arguments")
-                    if format == "dict" and isinstance(args, str):
-                        func["arguments"] = json.loads(args)
+                    if format == "dict" and "arguments" in func:
+                        func["arguments"] = _dict_arguments(args)
                     elif format == "json" and isinstance(args, dict):
                         func["arguments"] = json.dumps(args, ensure_ascii=False)
     return normalized
