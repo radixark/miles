@@ -90,8 +90,8 @@ of the box, including older generations of the families below.
 | **LTX** | [LTX-2.3](/diffusion/models/ltx/ltx2) |
 | **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
 
-See [Models](/models/index) for the full family lists, exact conversion commands, launch
-scripts, and parallelism settings.
+See [Models](/models/index) for LLM family guides and [Diffusion](/diffusion) for
+diffusion recipes and validation details.
 
 ## Supported hardware
 
