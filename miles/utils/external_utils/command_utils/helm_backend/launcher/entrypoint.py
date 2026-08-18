@@ -316,7 +316,9 @@ def _assert_upgrade_only_resizes(
     diff = manifest_diff.diff_manifests(before=installed_manifest, after=proposed_manifest)
 
     if diff.is_allowed:
-        logger.info(f"Run {release} already exists; upgrading it:\n{diff.summarize_scaling()}")
+        logger.info(
+            f"Run {release} already exists; upgrading it with these allowed changes:\n{diff.summarize_allowed_changes()}"
+        )
         return
 
     message = (
