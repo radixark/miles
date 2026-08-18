@@ -38,6 +38,10 @@ spec:
     metadata:
       labels:
         {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 8 }}
+      {{- with .Values.run.orchestrator.restartAt }}
+      annotations:
+        miles.radixark.io/restart-at: {{ . | quote }}
+      {{- end }}
     spec:
       {{- include "miles-run.podDefaults" . | nindent 6 }}
       serviceAccountName: {{ $name | quote }}
