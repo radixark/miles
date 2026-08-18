@@ -6,7 +6,8 @@ import pytest
 from miles.utils.external_utils.command_utils.common import chart_dir
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
-from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH, RunNames
+from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH, ReleaseName
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
 
@@ -192,14 +193,18 @@ class TestChartDir:
 LONGEST_RUN_ID = "a" * RUN_ID_MAX_LENGTH
 
 
+def _unsplit(run_id: str) -> str:
+    return ReleaseName(run_id=run_id, deploy_component=DeployComponent.ALL, deploy_instance_id=None).serialize()
+
+
 class TestReleaseName:
     def test_a_release_is_the_chart_name_the_run_id_and_the_component(self):
         """The launcher finds a run's release again from the run id alone, so the rule is fixed."""
-        assert RunNames.release(run_id="260101-000000-000") == "miles-run-260101-000000-000-all"
+        assert _unsplit("260101-000000-000") == "miles-run-260101-000000-000-all"
 
     def test_the_same_run_id_always_names_the_same_release(self):
         """Relaunching a run upgrades its release; a fresh name would deploy a second copy instead."""
-        assert RunNames.release(run_id=LONGEST_RUN_ID) == RunNames.release(run_id=LONGEST_RUN_ID)
+        assert _unsplit(LONGEST_RUN_ID) == _unsplit(LONGEST_RUN_ID)
 
 
 class TestComponentName:
