@@ -103,6 +103,7 @@ def trainer_args(*, num_cells: int) -> SimpleNamespace:
         dumper_source_patcher_config_train=None,
         offload_train=False,
         offload_train_target="cpu",
+        megatron_config=None,
     )
 
 
