@@ -163,6 +163,16 @@ async def test_an_actor_and_a_critic_that_restored_to_different_rollouts_are_ref
         )
 
 
+async def test_an_explicit_start_rollout_id_does_not_hide_a_mismatch(monkeypatch):
+    """The override says which rollout to run next, not that the two checkpoint trees agree."""
+    _patch_train_controller_handles(monkeypatch, restored={"actor": [5], "critic": [4]})
+
+    with pytest.raises(AssertionError):
+        await placement_group_module.create_training_models(
+            _training_models_args(start_rollout_id=9), rollout_executor=_RecordingRolloutExecutor()
+        )
+
+
 async def test_an_actor_and_a_critic_that_agree_set_the_start_rollout_id(monkeypatch):
     """A resume takes its position from the checkpoints, and the executor replays from the rollout before it."""
     _patch_train_controller_handles(monkeypatch, restored={"actor": [5], "critic": [5]})

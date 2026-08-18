@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
 
-from miles.ray.placement_group import create_rollout_components
+from miles.ray import placement_group as placement_group_module
+from miles.ray.placement_group import create_rollout_components, create_training_model, create_training_models
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -188,6 +190,11 @@ class TestCreatePlacementGroups:
             critic_num_gpus_per_node=1,
             rollout_num_gpus=3,
             eval_num_gpus=0,
+            megatron_config=None,
+            critic_load=None,
+            critic_save=None,
+            critic_lr=None,
+            critic_lr_warmup_iters=None,
         )
         defaults.update(overrides)
         return Namespace(**defaults)
@@ -265,3 +272,119 @@ class TestUpdateWeights:
         await update_weights(actor_model, rollout_executor)
 
         rollout_executor.set_weight_version.remote.assert_not_awaited()
+
+
+class TestCreateTrainingModels:
+    @staticmethod
+    def _patched(monkeypatch, requested: list[str]) -> None:
+        def _create_handle(*, capability, trainer_id: str):
+            requested.append(trainer_id)
+            handle = MagicMock()
+            handle.init = AsyncMock(return_value=[0])
+            handle.get_train_parallel_config = AsyncMock(return_value=None)
+            return handle
+
+        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
+        monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: object())
+
+    @staticmethod
+    def _rollout_executor() -> MagicMock:
+        rollout_executor = MagicMock()
+        rollout_executor.set_train_parallel_config = AsyncMock()
+        rollout_executor.load = AsyncMock()
+        return rollout_executor
+
+    async def test_a_configured_policy_is_addressed_by_its_own_trainer_id(self, tmp_path, monkeypatch):
+        """A single entry --megatron-config names the pool '<model_id>-actor'; 'actor' addresses nothing."""
+        requested: list[str] = []
+        self._patched(monkeypatch, requested)
+        args = Namespace(
+            megatron_config=write_megatron_config(tmp_path, "alpha"), use_critic=False, start_rollout_id=None
+        )
+
+        await create_training_models(args, self._rollout_executor())
+
+        assert requested == ["alpha-actor"]
+
+    async def test_a_run_without_a_megatron_config_still_addresses_the_actor_and_critic_pools(self, monkeypatch):
+        """Every existing single policy deployment names its two pools 'actor' and 'critic'."""
+        requested: list[str] = []
+        self._patched(monkeypatch, requested)
+        args = Namespace(
+            megatron_config=None,
+            use_critic=True,
+            start_rollout_id=None,
+            trainer_model_id=None,
+            kl_coef=0,
+            use_opd=False,
+            disable_param_buffers_cpu_backup=False,
+            load=None,
+            save=None,
+            lr=1e-6,
+            lr_warmup_iters=None,
+            critic_load=None,
+            critic_save=None,
+            critic_lr=None,
+            critic_lr_warmup_iters=None,
+        )
+
+        await create_training_models(args, self._rollout_executor())
+
+        assert requested == ["actor", "critic"]
+
+    async def test_a_config_declaring_a_critic_without_use_critic_is_refused(self, tmp_path, monkeypatch):
+        """The critic pool would be deployed and never inited, so the run would hang waiting for it."""
+        self._patched(monkeypatch, [])
+        args = Namespace(
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha"}, {"model_id": "alpha", "role": "critic"}]
+            ),
+            use_critic=False,
+            start_rollout_id=None,
+        )
+
+        with pytest.raises(AssertionError, match="a run without --use-critic needs no critic"):
+            await create_training_models(args, self._rollout_executor())
+
+
+class TestCreateTrainingModel:
+    @staticmethod
+    def _patch_handle(monkeypatch, *, restored: list[int]) -> None:
+        def _create_handle(*, capability, trainer_id: str):
+            handle = MagicMock()
+            handle.init = AsyncMock(return_value=restored)
+            return handle
+
+        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
+        monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: object())
+
+    async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self, monkeypatch):
+        """Cells of one trainer hold one model, so disagreeing positions mean a corrupted checkpoint set."""
+        self._patch_handle(monkeypatch, restored=[5, 4])
+
+        with pytest.raises(AssertionError, match=r"trainer 'alpha-actor' restored \[5, 4\]"):
+            await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+
+    async def test_a_trainer_starts_where_its_cells_restored(self, monkeypatch):
+        """The restored position is what makes a resume continue instead of retraining old rounds."""
+        self._patch_handle(monkeypatch, restored=[3, 3])
+
+        info = await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+
+        assert info.start_rollout_id == 3
+
+    async def test_an_explicit_start_rollout_id_wins_over_the_restored_one(self, monkeypatch):
+        """--start-rollout-id is the manual override for replaying or skipping rounds."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+
+        assert info.start_rollout_id == 9
+
+    async def test_the_restored_position_is_kept_beside_the_overridden_start(self, monkeypatch):
+        """Cross trainer checks compare where checkpoints actually were, which an override must not rewrite."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+
+        assert info.restored_rollout_id == 3
