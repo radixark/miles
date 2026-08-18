@@ -7,9 +7,9 @@ import uuid
 from argparse import Namespace
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 
-_TRACKER_FILENAME = "latest_checkpointed_iteration.txt"
+logger = logging.getLogger(__name__)
 
 
 def snapshot(args: Namespace, iteration: int) -> None:
@@ -32,7 +32,7 @@ def restore(args: Namespace) -> None:
     if args.save_debug_event_data is None or args.load is None:
         return
 
-    iteration = _read_tracker_iteration(Path(args.load))
+    iteration = read_checkpoint_tracker_iteration(Path(args.load))
     if iteration is None:
         return
 
@@ -51,14 +51,3 @@ def restore(args: Namespace) -> None:
 
 def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:
     return checkpoint_root / f"iter_{iteration:07d}" / "debug_events"
-
-
-def _read_tracker_iteration(checkpoint_root: Path) -> int | None:
-    tracker = checkpoint_root / _TRACKER_FILENAME
-    if not tracker.is_file():
-        return None
-
-    content = tracker.read_text().strip()
-    if not content.isdigit():
-        return None
-    return int(content)
