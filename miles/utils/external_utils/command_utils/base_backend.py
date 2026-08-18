@@ -22,7 +22,7 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.typer_utils import dataclass_from_env
-from miles.utils.workers.types import ClusterBackend, DeployComponent
+from miles.utils.workers.types import ClusterBackend, DeployComponent, HotRestartComponent, parse_hot_restart
 
 logger = logging.getLogger(__name__)
 
@@ -37,12 +37,17 @@ class ExecuteTrainConfig:
     cluster_backend: ClusterBackend = ClusterBackend.RAY
     deploy_component: DeployComponent = DeployComponent.ALL
     deploy_instance_id: str | None = None
+    hot_restart: str = ""
     run_id: str = field(default_factory=create_run_id)
     run_uuid: str | None = None
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
     skip_upgrade_check: bool = False
     ci_run: bool = False
+
+    @property
+    def parsed_hot_restart(self) -> list[HotRestartComponent]:
+        return parse_hot_restart(self.hot_restart)
 
     def create_backend(self) -> BaseCommandBackend:
         match self.cluster_backend:
@@ -99,6 +104,10 @@ class BaseCommandBackend(ABC):
         prepare_cmd: dict[str, str] | None = None,
         extra_manifests: list[str] | None = None,
     ) -> None:
+        assert not (
+            self.config.parsed_hot_restart and self.config.cluster_backend is not ClusterBackend.KUBERNETES
+        ), "--hot-restart is only supported on the kubernetes backend"
+
         prepare_cmd = prepare_cmd if prepare_cmd is not None else {}
         assert set(prepare_cmd) <= _PREPARE_CMD_ROLES, (
             f"prepare_cmd names the roles {sorted(set(prepare_cmd) - _PREPARE_CMD_ROLES)}, but a backend only "
