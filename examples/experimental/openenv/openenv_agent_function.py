@@ -288,7 +288,8 @@ async def multi_turn(
                 model=model_name, messages=convo, extra_body=request_kwargs
             )
             gen_times.append(time.monotonic() - t0)
-            message = completion.choices[0].message
+            choice = completion.choices[0]
+            message = choice.message
             reply = message.content or ""
             # Echo the assistant turn back verbatim. The session server stores the
             # message exactly as SGLang emitted it -- content plus reasoning_content
@@ -300,7 +301,7 @@ async def multi_turn(
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
 
-            if completion.choices[0].finish_reason == "length":
+            if choice.finish_reason == "length":
                 break
 
             command = _strip_fence(reply) if "```" in reply else reply.strip()
@@ -416,7 +417,7 @@ async def run_for_training(
     session_url = _resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
-    policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY", timeout=3600.0, max_retries=0)
+    policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
     messages = _extract_messages(prompt)
 
     try:
