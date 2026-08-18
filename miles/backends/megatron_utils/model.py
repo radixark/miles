@@ -1024,4 +1024,13 @@ def load_model_state(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1)
+    if args.finetune and not is_lora_enabled(args):
+        assert iteration == 0, (
+            f"--finetune loaded {args.load} and found iteration {iteration}, so the checkpoint and the flag disagree "
+            f"about where this run stands"
+        )
+        start_rollout_id = 0
+    else:
+        start_rollout_id = iteration + 1
+
+    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=start_rollout_id)

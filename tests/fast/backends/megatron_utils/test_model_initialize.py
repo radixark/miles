@@ -2,9 +2,14 @@ import sys
 import types
 from argparse import Namespace
 from contextlib import ExitStack
+from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from miles.backends.megatron_utils.model import LoadCheckpointOutput
 
 
 def _stub_module(name: str, attrs: dict[str, object] | None = None, is_package: bool = False) -> types.ModuleType:
@@ -146,7 +151,7 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
 def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8)
+    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -174,7 +179,7 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
 def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
     from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8)
+    args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8, finetune=False)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()
@@ -197,3 +202,64 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
         LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
     )
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+def _load_model_state_with(
+    *, tmp_path: Path, finetune: bool, iteration: int, lora_rank: int = 0
+) -> "LoadCheckpointOutput":
+    from miles.backends.megatron_utils.model import load_model_state
+
+    load_dir = tmp_path / "ckpt"
+    load_dir.mkdir()
+    (load_dir / "latest_checkpointed_iteration.txt").write_text(str(iteration))
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("miles.backends.megatron_utils.model.load_checkpoint", return_value=(iteration, 0)))
+        _patch_initialize_side_effects(stack)
+        return load_model_state(
+            Namespace(
+                use_checkpoint_opt_param_scheduler=True,
+                global_batch_size=8,
+                finetune=finetune,
+                lora_rank=lora_rank,
+                megatron_to_hf_mode="core",
+                lora_adapter_path=None,
+                load=str(load_dir),
+            ),
+            model=[_FakeModelChunk()],
+            optimizer=None,
+            opt_param_scheduler=None,
+            role="actor",
+            checkpointing_context=None,
+        )
+
+
+class TestWhereALoadSaysTheRunStarts:
+    def test_a_finetune_load_starts_the_run_at_rollout_zero(self, tmp_path: Path):
+        """--finetune means there is no run to continue, so rollout 0 is still ahead rather than behind."""
+        assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0).start_rollout_id == 0
+
+    def test_a_resumed_load_starts_the_run_after_the_checkpoint_it_read(self, tmp_path: Path):
+        """The checkpoint's own rollout is done, so the run continues at the next one."""
+        assert _load_model_state_with(tmp_path=tmp_path, finetune=False, iteration=100).start_rollout_id == 101
+
+    def test_a_run_that_restored_the_iteration_zero_checkpoint_it_wrote_starts_at_one(self, tmp_path: Path):
+        """A real resume from the very first checkpoint must not be read as a finetune that starts over."""
+        assert _load_model_state_with(tmp_path=tmp_path, finetune=False, iteration=0).start_rollout_id == 1
+
+    def test_a_finetune_load_that_found_a_checkpoint_is_refused(self, tmp_path: Path):
+        """--finetune promises iteration 0; anything else means the two disagree about where the run stands."""
+        with pytest.raises(AssertionError, match="disagree about where this run stands"):
+            _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100)
+
+
+class TestALoraAdapterThatCarriesItsOwnIteration:
+    def test_a_lora_resume_under_finetune_continues_after_the_iteration_the_adapter_names(self, tmp_path: Path):
+        """LoRA saves write no tracker, so a lora resume always arrives here with --finetune set."""
+        output = _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=100, lora_rank=8)
+
+        assert output.start_rollout_id == 101
+
+    def test_a_lora_run_that_really_starts_from_scratch_still_starts_at_rollout_one(self, tmp_path: Path):
+        """An adapter with no training state answers iteration 0, and the run continues from the next rollout."""
+        assert _load_model_state_with(tmp_path=tmp_path, finetune=True, iteration=0, lora_rank=8).start_rollout_id == 1
