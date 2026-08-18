@@ -100,6 +100,34 @@ class TestAddArgumentsSupport:
             get_miles_extra_args_provider()(parser)
 
 
+class TestFullyAsyncDataBufferFlags:
+    def test_a_fully_async_run_reaches_the_data_buffer_flags_through_its_rollout_function(self, monkeypatch):
+        """The flag sits beside --custom-async-data-buffer-path, so a fully async run parses it like any other."""
+        monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+        argv = [
+            "test",
+            "--fully-async",
+            "--custom-async-data-buffer-path-per-model",
+            "solver=pkg.SolverBuffer",
+        ] + REQUIRED_ARGS
+        with patch.object(sys, "argv", argv):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+            args, _ = parser.parse_known_args()
+
+        assert args.custom_async_data_buffer_path_per_model == ["solver=pkg.SolverBuffer"]
+
+    def test_a_run_that_is_not_fully_async_never_declares_the_flag(self, monkeypatch):
+        """The flag belongs to the fully async rollout function, so no other run should accept or expose it."""
+        monkeypatch.setenv("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR", "1")
+        with patch.object(sys, "argv", ["test"] + REQUIRED_ARGS):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+            args, _ = parser.parse_known_args()
+
+        assert not hasattr(args, "custom_async_data_buffer_path_per_model")
+
+
 class TestAddArgumentsWithoutTheExperimentalRolloutFlag:
     def test_an_engine_provider_registers_its_own_flags_in_the_default_environment(self, monkeypatch):
         """External rollout does not need MILES_EXPERIMENTAL_ROLLOUT_REFACTOR, so a provider's
