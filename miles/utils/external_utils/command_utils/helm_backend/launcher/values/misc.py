@@ -56,6 +56,13 @@ class LaunchPlan(FrozenStrictBaseModel):
     mooncake_plan: MooncakePlan | None = None
     prepare_cmd: dict[str, str] = {}
     extra_manifests: list[str] = []
+    restart_at: str | None = None
+    stamped_components: frozenset[str] = frozenset()
+
+    def rendered_restart_at(self, component: str) -> str | None:
+        if component not in self.stamped_components:
+            return None
+        return self.restart_at
 
 
 class MooncakeInfo:
