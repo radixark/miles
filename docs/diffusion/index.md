@@ -6,8 +6,8 @@ title: Miles-Diffusion Documentation
 models. [sglang-diffusion](https://github.com/sgl-project/sglang/tree/main/python/sglang/multimodal_gen) serves the
 rollout, and the DiT trains under **FSDP2** on a backend that co-evolves with Miles' own. Models load from a diffusers
 pipeline, or from a native package when a family brings its own modeling. Shipped recipes carry explicit
-[verification levels](/diffusion/user-guide/recipe-verification); not every recipe has a complete training run or a default CI
-gate. Custom rewards, losses, and rollout functions plug in through flags.
+[verification levels](/diffusion/user-guide/recipe-verification). Custom rewards, losses, and rollout functions plug in
+through flags.
 
 ## Core features
 
