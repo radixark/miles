@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import inspect
 import typing
 from collections.abc import Callable
@@ -42,13 +43,31 @@ def canonicalize_method_arguments(
             f"{spec.name}() takes at most {len(spec.positional_parameter_names)} positional arguments, "
             f"got {len(args)}"
         )
-    named = dict(zip(spec.positional_parameter_names, args))
+    named = dict(zip(spec.positional_parameter_names, args, strict=False))
     if overlap := sorted(named.keys() & kwargs.keys()):
         raise TypeError(f"{spec.name}() got multiple values for {overlap}")
     return {**named, **kwargs}
 
 
 def collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
+    return dict(_collect_rpc_method_specs(worker_cls))
+
+
+def declared_concurrency_groups(worker_cls: type) -> dict[str, str]:
+    groups = {}
+    for name in sorted(dir(worker_cls)):
+        if name.startswith("_"):
+            continue
+        attr = inspect.getattr_static(worker_cls, name)
+        if not callable(attr):
+            continue
+        if (group := _find_rpc_config(attr).concurrency_group) != DEFAULT_CONCURRENCY_GROUP:
+            groups[name] = group
+    return groups
+
+
+@functools.cache
+def _collect_rpc_method_specs(worker_cls: type) -> dict[str, RpcMethodSpec]:
     specs: dict[str, RpcMethodSpec] = {}
 
     for name in sorted(dir(worker_cls)):
