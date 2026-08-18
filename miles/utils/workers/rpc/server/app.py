@@ -15,9 +15,11 @@ from miles.utils.workers.rpc.common.protocol import (
     DEFAULT_POLL_TIMEOUT_SECONDS,
     EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
+    IN_FLIGHT_PATH,
     SUBMIT_PATH,
     CallStatusResponse,
     HealthResponse,
+    InFlightResponse,
     SubmitRequest,
     SubmitResponse,
 )
@@ -67,6 +69,10 @@ def create_rpc_app(worker: object) -> FastAPI:
     @app.get(HEALTH_PATH)
     async def health() -> HealthResponse:
         return HealthResponse()
+
+    @app.get(IN_FLIGHT_PATH)
+    async def in_flight_calls() -> InFlightResponse:
+        return server.in_flight_calls()
 
     @app.post(SUBMIT_PATH)
     async def submit_call(method_name: str, request: SubmitRequest) -> SubmitResponse:

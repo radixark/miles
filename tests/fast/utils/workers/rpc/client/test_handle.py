@@ -24,9 +24,10 @@ from miles.utils.workers.rpc.common.protocol import (
     CALL_STATUS_PATH,
     EXPECTED_BOOT_UUID_HEADER,
     HEALTH_PATH,
+    IN_FLIGHT_PATH,
 )
 from miles.utils.workers.rpc.server.app import create_rpc_app
-from miles.utils.workers.worker_handle import WorkerUnreachableError
+from miles.utils.workers.worker_handle import WorkerStillBusyError, WorkerUnreachableError
 
 
 class _Item(StrictBaseModel):
@@ -37,6 +38,7 @@ class _Item(StrictBaseModel):
 class _Worker:
     def __init__(self) -> None:
         self.block_forever = threading.Event()
+        self.hang_started = threading.Event()
         self.calls = 0
 
     def demo_default_arg(self, a: int, b: int = 100) -> int:
@@ -50,6 +52,7 @@ class _Worker:
         raise ValueError("exploded")
 
     def demo_hang(self) -> str:
+        self.hang_started.set()
         assert self.block_forever.wait(timeout=30.0)
         return "done"
 
@@ -159,6 +162,7 @@ def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rpc_client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.02)
     monkeypatch.setattr(rpc_client_module, "RETRY_MAX_DELAY_SECONDS", 0.1)
     monkeypatch.setattr(rpc_handle_module, "RETRY_INITIAL_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(rpc_handle_module, "_IDLE_POLL_INTERVAL_SECONDS", 0.02)
 
 
 @contextlib.asynccontextmanager
@@ -1170,3 +1174,91 @@ class TestTheCallStoreOwnsACallRatherThanItsClient:
 
             assert response.status_code == 200
             assert response.json()["status"] == "success"
+
+
+class TestWaitIdle:
+    async def test_an_idle_worker_is_reported_idle_at_once(self) -> None:
+        """A worker that is running nothing must not cost its caller a poll interval."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                await handle.wait_idle(timeout=5.0)
+
+                assert transport.requests == 1
+
+    async def test_a_running_call_is_waited_out(self, fast_retries: None) -> None:
+        """The wait ends only once the worker has finished the call it was already running."""
+        worker = _Worker()
+
+        async def release_soon() -> None:
+            await asyncio.sleep(0.2)
+            worker.block_forever.set()
+
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            call = asyncio.create_task(handle.demo_hang())
+            assert await asyncio.to_thread(worker.hang_started.wait, 5.0)
+            releaser = asyncio.create_task(release_soon())
+
+            await handle.wait_idle(timeout=10.0)
+
+            assert worker.block_forever.is_set()
+            assert await asyncio.wait_for(call, timeout=5.0) == "done"
+            await releaser
+
+    async def test_a_call_that_never_finishes_ends_the_wait_loudly(self, fast_retries: None) -> None:
+        """A wait that hung forever would leave its caller wedged with no explanation, so it has to fail."""
+        worker = _Worker()
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            call = asyncio.create_task(handle.demo_hang())
+            assert await asyncio.to_thread(worker.hang_started.wait, 5.0)
+
+            with pytest.raises(WorkerStillBusyError, match="is still running the calls"):
+                await handle.wait_idle(timeout=0.3)
+
+            worker.block_forever.set()
+            assert await asyncio.wait_for(call, timeout=5.0) == "done"
+
+    async def test_a_call_that_is_queued_but_not_started_still_counts_as_in_flight(self, fast_retries: None) -> None:
+        """A take-over that adopted a worker with work still queued would drive it while that work runs."""
+        worker = _Worker()
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            first = asyncio.create_task(handle.demo_hang())
+            assert await asyncio.to_thread(worker.hang_started.wait, 5.0)
+            queued = asyncio.create_task(handle.demo_default_arg(a=1, b=2))
+            await asyncio.sleep(0.05)
+
+            with pytest.raises(WorkerStillBusyError, match="is still running the calls"):
+                await handle.wait_idle(timeout=0.3)
+
+            worker.block_forever.set()
+            assert await asyncio.wait_for(first, timeout=5.0) == "done"
+            assert await asyncio.wait_for(queued, timeout=5.0) == 3
+
+    async def test_a_call_that_failed_leaves_the_worker_idle(self, fast_retries: None) -> None:
+        """A call the worker refused is finished, and a take-over that kept waiting for it would never proceed."""
+        worker = _Worker()
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            with pytest.raises(RpcWorkerCallError):
+                await handle.demo_raises()
+
+            await handle.wait_idle(timeout=5.0)
+
+    async def test_a_wait_against_a_replaced_server_process_is_refused(self, fast_retries: None) -> None:
+        """A pinned handle waiting out a worker that restarted under it is waiting out the wrong process."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                transport.switch_to(second_app)
+                with pytest.raises(ServerRestartedError):
+                    await handle.wait_idle(timeout=5.0)
+
+    async def test_a_transport_hiccup_does_not_end_the_wait(self, fast_retries: None) -> None:
+        """The wait spans a pod that may be restarting under it, so a lost probe is retried rather than fatal."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=_fail_hook(2, "GET", IN_FLIGHT_PATH))
+            async with _handle_over(transport) as handle:
+                await handle.wait_idle(timeout=5.0)
+
+                assert transport.requests >= 3
