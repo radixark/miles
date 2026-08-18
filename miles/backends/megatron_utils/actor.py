@@ -8,6 +8,7 @@ from contextlib import ExitStack, nullcontext
 
 import torch
 import torch.distributed as dist
+from megatron.training.async_utils import maybe_finalize_async_save
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
@@ -229,22 +230,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
-        if self._enable_weight_backup:
-            self.weights_backuper.backup("actor")
-
-        if with_ref:
-            self.load_other_checkpoint("ref", args.ref_load)
-
-        # Load teacher model for Megatron-based on-policy distillation
-        if with_opd_teacher:
-            self.load_other_checkpoint("teacher", args.opd_teacher_load)
-
-        if self.args.keep_old_actor:
-            # Load old_actor checkpoint
-            self.load_other_checkpoint("old_actor", args.load)
-            # Create rollout_actor as a copy of current actor
-            if args.update_weights_interval == 1:
-                self.weights_backuper.backup("rollout_actor")
+        self._load_auxiliary_checkpoints()
 
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
@@ -292,6 +278,30 @@ class MegatronTrainRayActor(TrainRayActor):
         self.prof.on_init_end()
 
         return start_rollout_id
+
+    def _load_auxiliary_checkpoints(self) -> None:
+        if self._enable_weight_backup:
+            self.weights_backuper.backup("actor")
+
+        if self.with_ref:
+            self.load_other_checkpoint("ref", self.args.ref_load)
+
+        # Load teacher model for Megatron-based on-policy distillation
+        if self.with_opd_teacher:
+            self.load_other_checkpoint("teacher", self.args.opd_teacher_load)
+
+        if self.args.keep_old_actor:
+            # Load old_actor checkpoint
+            self.load_other_checkpoint("old_actor", self.args.load)
+            # Create rollout_actor as a copy of current actor
+            if self.args.update_weights_interval == 1:
+                self.weights_backuper.backup("rollout_actor")
+
+    def _finalize_pending_async_save(self) -> None:
+        if not self.args.async_save:
+            return
+
+        maybe_finalize_async_save(blocking=True)
 
     @with_logs
     @timer
@@ -676,10 +686,7 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only:
             return
 
-        if self.args.async_save:
-            from megatron.training.async_utils import maybe_finalize_async_save
-
-            maybe_finalize_async_save(blocking=True)
+        self._finalize_pending_async_save()
 
         if is_multi_lora_enabled(self.args):
             from miles.backends.megatron_utils.multi_lora_utils import save_due_adapter_checkpoints
@@ -689,8 +696,8 @@ class MegatronTrainRayActor(TrainRayActor):
         else:
             save(rollout_id, self.model, self.optimizer, self.opt_param_scheduler)
 
-        if force_sync and self.args.async_save:
-            maybe_finalize_async_save(blocking=True)
+        if force_sync:
+            self._finalize_pending_async_save()
 
         if self.args.save_hf is not None and self.role == "actor":
             from miles.backends.megatron_utils.hf_export import save_hf_model
@@ -698,8 +705,7 @@ class MegatronTrainRayActor(TrainRayActor):
             save_hf_model(self.args, rollout_id, self.model)
 
         if self.args.custom_megatron_post_save_hook_path is not None and dist.get_rank() == 0:
-            if self.args.async_save:
-                maybe_finalize_async_save(blocking=True)
+            self._finalize_pending_async_save()
 
             from megatron.training.checkpointing import get_checkpoint_name
 
