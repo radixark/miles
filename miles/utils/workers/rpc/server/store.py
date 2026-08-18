@@ -63,6 +63,9 @@ class CallStore:
     def contains(self, call_id: str) -> bool:
         return call_id in self._records
 
+    def in_flight_call_ids(self) -> list[str]:
+        return sorted(call_id for call_id, record in self._records.items() if record.outcome is None)
+
     def _purge_expired(self) -> None:
         now = time.monotonic()
         retained = {call_id: record for call_id, record in self._records.items() if self._is_live(record, now=now)}
