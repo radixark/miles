@@ -13,6 +13,7 @@ from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 
@@ -81,14 +82,16 @@ async def _launch(
     specs: list[CommandWorkerSpec], pgs: dict[str, PlacementGroupInfo] | None = None
 ) -> RayWorkerManager:
     manager = RayWorkerManager()
-    await manager.init(worker_manager_args(), specs, pgs if pgs is not None else {})
+    await manager.init(
+        worker_manager_args(), specs, pgs if pgs is not None else {}, comm_backend=WorkerCommBackend.RAY
+    )
     return manager
 
 
 class TestLaunchEntryPoint:
     async def test_the_manager_is_registered_under_its_well_known_name(self, fake_ray_cluster: FakeRayCluster):
         """Consumers find the manager by a fixed actor name, so it must be launched under that name."""
-        handle = RayWorkerManager.launch(worker_manager_args(), [], {})
+        handle = RayWorkerManager.launch(worker_manager_args(), [], {}, comm_backend=WorkerCommBackend.RAY)
 
         assert handle.options["name"] == "ray_worker_manager"
         assert handle.actor_class is RayWorkerManager
@@ -100,7 +103,7 @@ class TestLaunchEntryPoint:
         pgs: dict = {}
         args = worker_manager_args()
 
-        RayWorkerManager.launch(args, specs, pgs)
+        RayWorkerManager.launch(args, specs, pgs, comm_backend=WorkerCommBackend.RAY)
 
         init_calls = fake_ray_cluster.calls_of("init")
         assert len(init_calls) == 1
@@ -112,11 +115,13 @@ class TestLaunchEntryPoint:
         fake_ray_cluster.method_errors["init"] = RuntimeError("init exploded")
 
         with pytest.raises(RuntimeError, match="init exploded"):
-            RayWorkerManager.launch(worker_manager_args(), [_make_spec("router")], {})
+            RayWorkerManager.launch(
+                worker_manager_args(), [_make_spec("router")], {}, comm_backend=WorkerCommBackend.RAY
+            )
 
     async def test_get_handle_resolves_the_same_well_known_name(self, fake_ray_cluster: FakeRayCluster):
         """The lookup helper and the launcher must agree on the actor name."""
-        RayWorkerManager.launch(worker_manager_args(), [], {})
+        RayWorkerManager.launch(worker_manager_args(), [], {}, comm_backend=WorkerCommBackend.RAY)
 
         assert RayWorkerManager.get_handle() is fake_ray_cluster.named_actors["ray_worker_manager"]
 
