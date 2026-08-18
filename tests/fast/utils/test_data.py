@@ -6,7 +6,7 @@ import pytest
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.utils import object_store
-from miles.utils.data import remove_train_output_refs
+from miles.utils.data import RolloutDataPack, remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.object_store import BaseObjectStore, ObjectStoreGetResult, StoreObjectRef, ValueSpec
 
 
@@ -57,3 +57,27 @@ class TestRemoveTrainOutputRefs:
         )
 
         assert store.removed == [ref]
+
+
+class TestRemoveRolloutDataRefs:
+    def test_the_reference_the_rollout_shipped_is_released(self, store: _RecordingStore):
+        """The driver is the only process that frees a rollout, once per step, or the store fills up."""
+        ref = _ref("rollout")
+
+        remove_rollout_data_refs(None, rollout_data_pack=RolloutDataPack(sample_indices=[0], data_ref=ref))
+
+        assert store.removed == [ref]
+
+    def test_every_shard_of_a_split_rollout_is_released(self, store: _RecordingStore):
+        """Without --delay-split-train-data-by-dp there is one object per dp rank, and each one pins memory."""
+        refs = [_ref("a"), _ref("b")]
+
+        remove_rollout_data_refs(None, rollout_data_pack=RolloutDataPack(sample_indices=[0], data_ref=refs))
+
+        assert store.removed == refs
+
+    def test_a_pack_that_carries_no_data_never_reaches_the_store(self, store: _RecordingStore):
+        """An empty-batch timeout ships no object, and asking the store to free None would raise."""
+        remove_rollout_data_refs(None, rollout_data_pack=RolloutDataPack(empty_batch_timeout=True))
+
+        assert store.removed == []
