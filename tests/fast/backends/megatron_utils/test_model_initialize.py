@@ -144,7 +144,7 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
 
 
 def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
-    from miles.backends.megatron_utils.model import initialize_model_and_optimizer
+    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
     args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8)
     model = [_FakeModelChunk()]
@@ -162,12 +162,12 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
-    assert result == (model, optimizer, opt_param_scheduler, 100)
+    assert result == (model, optimizer, opt_param_scheduler, LoadCheckpointOutput(loaded_rollout_id=100))
     opt_param_scheduler.step.assert_not_called()
 
 
 def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
-    from miles.backends.megatron_utils.model import initialize_model_and_optimizer
+    from miles.backends.megatron_utils.model import LoadCheckpointOutput, initialize_model_and_optimizer
 
     args = Namespace(use_checkpoint_opt_param_scheduler=False, global_batch_size=8)
     model = [_FakeModelChunk()]
@@ -185,5 +185,5 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
-    assert result == (model, optimizer, opt_param_scheduler, 100)
+    assert result == (model, optimizer, opt_param_scheduler, LoadCheckpointOutput(loaded_rollout_id=100))
     opt_param_scheduler.step.assert_called_once_with(increment=800)

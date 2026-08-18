@@ -194,7 +194,7 @@ class MegatronTrainRayActor(TrainRayActor):
             dict(no_load_optim=False, no_load_rng=False, finetune=False) if recv_ckpt_src_rank is not None else {}
         )
         with inplace_modify_args(args, heal_load_overrides):
-            self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
+            self.model, self.optimizer, self.opt_param_scheduler, load_output = initialize_model_and_optimizer(
                 args, role, checkpointing_context=checkpointing_context
             )
 
@@ -209,7 +209,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         verify_megatron_parallel_state(self.model)
 
-        start_rollout_id = loaded_rollout_id + 1
+        start_rollout_id = load_output.loaded_rollout_id + 1
         self._asleep = False
 
         if role == "critic":
