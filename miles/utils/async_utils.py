@@ -2,7 +2,7 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
-from collections.abc import Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
@@ -15,6 +15,7 @@ __all__ = [
     "wait_futures",
     "wait_cancelling_pending_on_first_completion",
     "eager_create_task",
+    "gather_and_raise_first",
 ]
 
 _T = TypeVar("_T")
@@ -119,7 +120,28 @@ class AsyncioGatherUtils:
         return any(isinstance(output, BaseException) for output in outputs)
 
     @staticmethod
-    def log_error(outputs, debug_name: str):
+    def log_error(
+        outputs,
+        debug_name: str = "",
+        *,
+        describe_failure: Callable[[int], str] | None = None,
+        log: Callable[..., None] = logger.warning,
+    ) -> None:
         for i, output in enumerate(outputs):
             if isinstance(output, BaseException):
-                logger.warning(f"{debug_name} error index={i}", exc_info=output)
+                message = f"{debug_name} error index={i}" if describe_failure is None else describe_failure(i)
+                log(message, exc_info=output)
+
+
+async def gather_and_raise_first(
+    awaitables: Sequence[Awaitable[_T]], *, describe_failure: Callable[[int], str] | None = None
+) -> list[_T]:
+    results = await asyncio.gather(*awaitables, return_exceptions=True)
+
+    if describe_failure is not None:
+        AsyncioGatherUtils.log_error(results, describe_failure=describe_failure, log=logger.error)
+
+    failures = [result for result in results if isinstance(result, BaseException)]
+    if failures:
+        raise failures[0]
+    return results

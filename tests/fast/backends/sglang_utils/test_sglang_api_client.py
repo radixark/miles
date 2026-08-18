@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import json
 
 import httpx
 import pytest
@@ -12,16 +13,19 @@ SERVER_URL = "http://fake-host:1234"
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int = 200, payload: dict | None = None, text: str = ""):
+    def __init__(self, status_code: int = 200, payload: dict | None = None, text: str = "", body: bytes | None = None):
         self.status_code = status_code
         self._payload = payload if payload is not None else {"ok": True}
         self.text = text
+        self.content = json.dumps(self._payload).encode() if body is None else body
 
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError(f"status {self.status_code}", request=None, response=None)
 
     def json(self):
+        if not self.content:
+            raise ValueError("a response with no body carries no json")
         return self._payload
 
 
@@ -789,3 +793,25 @@ class TestStartProfile:
 
 async def _noop_sleep(seconds):
     return None
+
+
+class TestABodylessSuccess:
+    async def test_a_success_carrying_no_body_answers_none_instead_of_raising(self, client, monkeypatch):
+        """The engine answers some endpoints with 200 and an empty body, and parsing that as json raises."""
+        _Recorder().install(monkeypatch, responses=[_FakeResponse(body=b"")])
+
+        assert await client.abort_all_requests() is None
+
+    async def test_a_success_carrying_a_body_is_still_parsed(self, client, monkeypatch):
+        """Every other endpoint answers with json the callers read, so the empty-body case must not swallow it."""
+        _Recorder().install(monkeypatch, responses=[_FakeResponse(payload={"ok": True})])
+
+        assert await client.abort_all_requests() == {"ok": True}
+
+    async def test_aborting_every_request_reaches_the_engines_abort_endpoint(self, client, recorder):
+        """A take-over aborts what the previous script left generating, and no other endpoint does that."""
+        await client.abort_all_requests()
+
+        assert recorder.calls[0][0] == "post"
+        assert recorder.calls[0][1] == f"{SERVER_URL}/abort_request"
+        assert recorder.calls[0][2]["json"] == {"abort_all": True}

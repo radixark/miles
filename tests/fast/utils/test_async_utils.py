@@ -160,6 +160,20 @@ class TestAsyncioGatherUtilsLogError:
         assert "index=0" in error_records[0].message
         assert "index=2" in error_records[1].message
 
+    def test_a_caller_can_name_each_failure_itself(self, caplog):
+        """A cell of a server means more to whoever reads the log than the index it happened to gather at."""
+        with caplog.at_level(logging.WARNING):
+            AsyncioGatherUtils.log_error([_ERR1, "ok"], describe_failure=lambda index: f"cell-{index} refused")
+
+        assert [r.message for r in caplog.records] == ["cell-0 refused"]
+
+    def test_a_caller_can_choose_the_level_it_is_logged_at(self, caplog):
+        """A failure that is about to be raised is an error, while a gather that carries on is a warning."""
+        with caplog.at_level(logging.ERROR):
+            AsyncioGatherUtils.log_error([_ERR1], debug_name="test_op", log=logging.getLogger("x").error)
+
+        assert [r.levelno for r in caplog.records] == [logging.ERROR]
+
     def test_logs_include_debug_name(self, caplog):
         with caplog.at_level(logging.WARNING):
             AsyncioGatherUtils.log_error([_ERR1], debug_name="refresh_cells#coop")
@@ -528,3 +542,47 @@ class TestWaitCancellingPendingOnFirstCompletion:
             )
 
         assert cleaned_up
+
+
+class TestGatherAndRaiseFirst:
+    async def test_it_answers_every_result_when_nothing_fails(self):
+        """Callers use the results, so the happy path has to hand back what a plain gather would."""
+
+        async def answer(value: int) -> int:
+            return value
+
+        assert await async_utils.gather_and_raise_first([answer(1), answer(2)]) == [1, 2]
+
+    async def test_it_logs_a_failure_and_raises_it(self, caplog):
+        """A caller that describes its failures wants them named, and still wants the error to reach it."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="only one"):
+                await async_utils.gather_and_raise_first(
+                    [_failing("only one")], describe_failure=lambda index: f"awaitable {index} failed"
+                )
+
+        assert "awaitable 0 failed" in caplog.text
+
+    async def test_it_logs_every_failure_before_raising_the_first(self, caplog):
+        """The point of gathering is to see the whole set of sick peers, not whichever one finished first."""
+
+        async def answer() -> int:
+            return 0
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="first"):
+                await async_utils.gather_and_raise_first(
+                    [_failing("first"), answer(), _failing("second")],
+                    describe_failure=lambda index: f"awaitable {index} failed",
+                )
+
+        assert "awaitable 0 failed" in caplog.text and "awaitable 2 failed" in caplog.text
+        assert "awaitable 1 failed" not in caplog.text
+
+    async def test_it_says_nothing_when_no_description_is_given(self, caplog):
+        """A caller that logs its own failures would otherwise have every one of them reported twice."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="quiet"):
+                await async_utils.gather_and_raise_first([_failing("quiet")])
+
+        assert caplog.text == ""
