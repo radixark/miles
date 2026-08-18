@@ -3,7 +3,9 @@ title: Supported Models
 sidebarTitle: Overview
 description: Per-family recipes covering weight conversion, launch flags, and parallelism choices.
 ---
-Miles ships ready-to-run recipes for the language and diffusion model families below.
+Miles ships ready-to-run recipes for every model family listed below. Each page covers
+weight conversion, parallelism, and the launch script in the order you'd actually run
+them.
 
 ## Language Models
 
@@ -32,9 +34,9 @@ Each model name links to its recipe page.
 | **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
 | **MiniMax** | [MiniMax H3](/diffusion/models/h3/h3) |
 
-## How a language-model recipe is structured
+## How a recipe is structured
 
-Every language-model recipe page follows the same six sections:
+Every recipe page follows the same six sections:
 
 1. **Model Introduction** — what the model is and why miles supports it.
 2. **Supported Variants** — model sizes + HF links.
@@ -43,7 +45,7 @@ Every language-model recipe page follows the same six sections:
 5. **Recipe Configuration** — parallelism, algorithm, rollout/SGLang, optimizer.
 6. **Pairs Well With** — links to the advanced features that complement this recipe.
 
-## Adding a new language model
+## Adding a new model
 
 Miles's plugin architecture lets you wrap a HuggingFace implementation as a Megatron
 module without patching Megatron core. See
