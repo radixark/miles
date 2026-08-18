@@ -72,14 +72,14 @@ class TestWaitExpectedNumCellsIsLockFree:
     @pytest.mark.asyncio
     async def test_it_can_be_awaited_without_the_lock(self):
         """It runs during startup from create(), which deliberately holds no lock."""
-        srv = _make_server(expected_num_cells=0)
-        await srv.wait_expected_num_cells()
+        srv = _make_server(init_expected_num_cells=0)
+        await srv.wait_init_expected_num_cells()
 
     @pytest.mark.asyncio
     async def test_cells_can_still_be_added_while_it_polls(self):
         """Polling must not hold the lock, otherwise reconcile could never add the cells it waits for."""
-        srv = _make_server(expected_num_cells=1)
-        waiter = asyncio.create_task(srv.wait_expected_num_cells())
+        srv = _make_server(init_expected_num_cells=1)
+        waiter = asyncio.create_task(srv.wait_init_expected_num_cells())
         await asyncio.sleep(0)
 
         async with srv.context_lock:
