@@ -86,6 +86,7 @@ of the box, including older generations of the families below.
 | **Wan** | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2) |
 | **LTX** | [LTX-2.3](/diffusion/models/ltx/ltx2) |
 | **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
+| **MiniMax** | [MiniMax H3](/diffusion/models/h3/h3) |
 
 See [Models](/models/index) for LLM family guides and [Diffusion](/diffusion) for
 diffusion recipes and validation details.
