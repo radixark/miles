@@ -3,11 +3,9 @@ title: Supported Models
 sidebarTitle: Overview
 description: Per-family recipes covering weight conversion, launch flags, and parallelism choices.
 ---
-Miles ships ready-to-run recipes for every model family listed below. Each page covers
-weight conversion, parallelism, and the launch script in the order you'd actually run
-them.
+Miles ships ready-to-run recipes for the language and diffusion model families below.
 
-## By family
+## Language Models
 
 Each model name links to its recipe page.
 
@@ -23,9 +21,20 @@ Each model name links to its recipe page.
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
 
-## How a recipe is structured
+## Diffusion
 
-Every recipe page follows the same six sections:
+| Family | Models |
+|---|---|
+| **Stable Diffusion** | [SD3.5](/diffusion/models/sd3/sd3) |
+| **Qwen-Image** | [Qwen-Image](/diffusion/models/qwen-image/qwen-image) |
+| **Wan** | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2) |
+| **LTX** | [LTX-2.3](/diffusion/models/ltx/ltx2) |
+| **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
+| **MiniMax** | [MiniMax H3](/diffusion/models/h3/h3) |
+
+## How a language-model recipe is structured
+
+Every language-model recipe page follows the same six sections:
 
 1. **Model Introduction** — what the model is and why miles supports it.
 2. **Supported Variants** — model sizes + HF links.
@@ -34,7 +43,7 @@ Every recipe page follows the same six sections:
 5. **Recipe Configuration** — parallelism, algorithm, rollout/SGLang, optimizer.
 6. **Pairs Well With** — links to the advanced features that complement this recipe.
 
-## Adding a new model
+## Adding a new language model
 
 Miles's plugin architecture lets you wrap a HuggingFace implementation as a Megatron
 module without patching Megatron core. See
