@@ -2,10 +2,15 @@ import copy
 from collections.abc import Callable
 from typing import Any
 
+import pytest
 import yaml
 
 from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
+    STATEFUL_SET_KIND,
+    Manifest,
+    ManifestObjectKey,
+)
 
 NAMESPACE = "rl"
 
@@ -295,6 +300,161 @@ class TestScalingIsLimitedToTheSupportedApi:
             before=_manifest([_foreign_leader_worker_set()]),
             after=_manifest([_foreign_leader_worker_set(replicas=6)]),
             allow_diff_object_keys=frozenset({_FOREIGN_KEY}),
+        )
+
+        assert diff.is_allowed
+
+
+class TestReplicasThatOnlyOneSideHas:
+    def test_a_pool_that_lost_its_replica_count_is_refused(self):
+        """A template that stops rendering replicas is a chart change, not a run being scaled."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].pop("replicas"))
+        )
+
+        assert not diff.is_allowed
+        assert diff.allowed_changed == []
+
+    def test_a_pool_that_gained_a_replica_count_is_refused(self):
+        """The same holds the other way round, and reading it as scaling would apply a template change silently."""
+        before = copy.deepcopy(_objects())
+        before[0]["spec"].pop("replicas")
+
+        diff = manifest_diff.diff_manifests(before=_manifest(before), after=_manifest(_objects()))
+
+        assert not diff.is_allowed
+        assert diff.allowed_changed == []
+
+
+class TestTheStructureBehindTheRenderedViews:
+    def test_a_scaling_change_says_why_it_is_allowed_and_which_object_it_touched(self):
+        """The observation side reads these fields, so a rendered line is not enough to answer it."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].update(replicas=6))
+        )
+
+        [change] = diff.changes
+        assert (change.allowed_by, change.path) == ("scaling", ("spec", "replicas"))
+        assert change.identity.key == ManifestObjectKey(kind="LeaderWorkerSet", name="myrun-miles-run-engine")
+
+    def test_a_refused_change_carries_no_reason_to_allow_it(self):
+        """`allowed_by` is the whole answer to whether a change stops the launch."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(lambda objects: _worker_container(objects).update(image="miles:other")),
+        )
+
+        [change] = diff.changes
+        assert change.allowed_by is None
+
+
+_ORCHESTRATOR_KEY = ManifestObjectKey(kind=STATEFUL_SET_KIND, name="myrun-miles-run-orchestrator")
+
+
+class TestTheObjectsAHotRestartRebuilds:
+    def test_a_rebuilt_object_may_change_in_any_field(self):
+        """Changing the orchestration script's arguments is the whole point of a hot restart."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+        )
+
+        assert diff.is_allowed
+        assert diff.allowed_changed == [
+            "apps/v1/StatefulSet/rl/myrun-miles-run-orchestrator: spec.template.spec.containers.[0].image"
+        ]
+
+    def test_a_rebuilt_object_says_the_whitelist_is_what_allowed_it(self):
+        """The observation side asks why a change was allowed, and only scaling means the object stayed up."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+        )
+
+        [change] = diff.changes
+        assert change.allowed_by == "whitelist"
+
+    def test_every_other_object_is_still_refused(self):
+        """A hot restart that also changed the trainer has to stop the launch."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(lambda objects: _worker_container(objects).update(image="miles:other")),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+        )
+
+        assert not diff.is_allowed
+        assert diff.disallowed_changed == [
+            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: "
+            "spec.leaderWorkerTemplate.workerTemplate.spec.containers.[0].image"
+        ]
+
+    def test_an_ordinary_relaunch_exempts_nothing(self):
+        """The default is the strict gate every run that is not being hot restarted keeps."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+        )
+
+        assert not diff.is_allowed
+
+
+def _stateful_set_in(namespace: str) -> dict[str, Any]:
+    document = copy.deepcopy(_stateful_set())
+    document["metadata"]["namespace"] = namespace
+    return document
+
+
+class TestAWhitelistKeyTwoObjectsShare:
+    def test_an_ambiguous_key_in_the_installed_release_stops_the_launch(self):
+        """The key waves a change through, and two objects behind it wave through one nobody named."""
+        ambiguous = _manifest([*_objects(), _stateful_set_in("other")])
+
+        with pytest.raises(AssertionError, match="objects keyed"):
+            manifest_diff.diff_manifests(
+                before=ambiguous, after=ambiguous, allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY})
+            )
+
+    def test_an_ambiguous_key_in_the_proposed_release_stops_the_launch(self):
+        """The proposal is where the second object first appears, and it is whitelisted before it is diffed."""
+        with pytest.raises(AssertionError, match="objects keyed"):
+            manifest_diff.diff_manifests(
+                before=_manifest(_objects()),
+                after=_manifest([*_objects(), _stateful_set_in("other")]),
+                allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
+            )
+
+    def test_an_ambiguity_no_whitelist_key_names_is_not_this_check_business(self):
+        """Only the keys a hot restart exempts are resolved; every other object is compared by identity anyway."""
+        both = _manifest([*_objects(), _stateful_set_in("other")])
+
+        assert manifest_diff.diff_manifests(before=both, after=both).is_allowed
+
+    def test_a_whitelisted_key_no_object_carries_is_accepted(self):
+        """A trainer release carries no orchestrator, and exempting one it never installs changes nothing."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest(_objects()),
+            allow_diff_object_keys=frozenset({ManifestObjectKey(kind=STATEFUL_SET_KIND, name="absent")}),
+        )
+
+        assert diff.is_allowed
+
+    def test_an_unambiguous_whitelisted_key_still_exempts_its_object(self):
+        """The check runs before every diff, so it must not refuse the releases a hot restart is meant for."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()),
+            after=_manifest_after(
+                lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+            ),
+            allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY}),
         )
 
         assert diff.is_allowed
