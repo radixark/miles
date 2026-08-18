@@ -1,79 +1,111 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest, ManifestObject
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
+    Manifest,
+    ManifestObject,
+    ObjectIdentity,
+)
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 _SCALABLE_KINDS = frozenset({"LeaderWorkerSet"})
+_REPLICAS_PATH = ("spec", "replicas")
 
 
-class ManifestDiff(FrozenStrictBaseModel):
-    changed: list[str] = []
-    added: list[str] = []
-    removed: list[str] = []
-    scaled: list[str] = []
+class ManifestChange(FrozenStrictBaseModel):
+    identity: ObjectIdentity
+    path: tuple[str, ...]
+    allowed_by: Literal["scaling"] | None
+    description: str
+
+
+class ManifestDiffs(FrozenStrictBaseModel):
+    changes: list[ManifestChange] = []
+    additions: list[ObjectIdentity] = []
+    removals: list[ObjectIdentity] = []
+
+    @property
+    def disallowed_changed(self) -> list[str]:
+        return [change.description for change in self.changes if change.allowed_by is None]
+
+    @property
+    def allowed_changed(self) -> list[str]:
+        return [change.description for change in self.changes if change.allowed_by is not None]
 
     @property
     def is_allowed(self) -> bool:
-        return not (self.changed or self.added or self.removed)
+        return not (self.disallowed_changed or self.additions or self.removals)
 
-    def summarize_scaling(self) -> str:
-        return "\n".join(f"  {entry}" for entry in self.scaled) or "  (nothing to change)"
+    def summarize_allowed_changes(self) -> str:
+        return "\n".join(f"  {entry}" for entry in self.allowed_changed) or "  (nothing to change)"
 
     def describe(self) -> str:
         lines = []
-        for label, entries in (("changed", self.changed), ("added", self.added), ("removed", self.removed)):
+        for label, entries in (
+            ("changed", self.disallowed_changed),
+            ("added", [str(identity) for identity in self.additions]),
+            ("removed", [str(identity) for identity in self.removals]),
+        ):
             lines += [f"  {label}: {entry}" for entry in entries]
         return "\n".join(lines) or "  (no difference)"
 
 
-def diff_manifests(*, before: Manifest, after: Manifest) -> ManifestDiff:
+def diff_manifests(*, before: Manifest, after: Manifest) -> ManifestDiffs:
     old = before.by_identity
     new = after.by_identity
     shared = sorted(set(old) & set(new))
-    return ManifestDiff(
-        changed=[
-            f"{identity}: {path}"
+
+    return ManifestDiffs(
+        changes=[
+            _compute_change(old[identity], new[identity], identity=identity, path=path)
             for identity in shared
-            for path in _disallowed_differences(old[identity], new[identity])
+            for path in _differing_paths(old[identity].body, new[identity].body, ())
         ],
-        added=sorted(str(identity) for identity in set(new) - set(old)),
-        removed=sorted(str(identity) for identity in set(old) - set(new)),
-        scaled=[
-            f"{identity}: replicas {old[identity].replicas} -> {new[identity].replicas}"
-            for identity in shared
-            if old[identity].replicas != new[identity].replicas
-        ],
+        additions=sorted(set(new) - set(old), key=str),
+        removals=sorted(set(old) - set(new), key=str),
     )
 
 
-def _disallowed_differences(old: ManifestObject, new: ManifestObject) -> list[str]:
-    return _differing_paths(old.body, new.body, (), allowed=_allowed_of_kind(old.kind))
+def _compute_change(
+    old: ManifestObject, new: ManifestObject, *, identity: ObjectIdentity, path: tuple[str, ...]
+) -> ManifestChange:
+    allowed_by = "scaling" if _is_scaling(old, new, path=path) else None
+    if allowed_by is not None and path == _REPLICAS_PATH:
+        description = f"{identity}: replicas {old.replicas} -> {new.replicas}"
+    else:
+        description = f"{identity}: {_describe_path(path)}"
+    return ManifestChange(identity=identity, path=path, allowed_by=allowed_by, description=description)
 
 
-def _allowed_of_kind(kind: str) -> tuple[tuple[str, ...], ...]:
-    return (("spec", "replicas"),) if kind in _SCALABLE_KINDS else ()
+def _is_scaling(old: ManifestObject, new: ManifestObject, *, path: tuple[str, ...]) -> bool:
+    if old.kind not in _SCALABLE_KINDS or path != _REPLICAS_PATH:
+        return False
+    return old.replicas is not None and new.replicas is not None
 
 
-def _differing_paths(old: Any, new: Any, path: tuple[str, ...], *, allowed: tuple[tuple[str, ...], ...]) -> list[str]:
-    if path in allowed or old == new:
+def _describe_path(path: tuple[str, ...]) -> str:
+    return ".".join(path) or "(root)"
+
+
+def _differing_paths(old: Any, new: Any, path: tuple[str, ...]) -> list[tuple[str, ...]]:
+    if old == new:
         return []
 
     if isinstance(old, dict) and isinstance(new, dict):
         differences = []
         for key in sorted(set(old) | set(new)):
             if key not in old or key not in new:
-                differences.append(".".join((*path, key)))
+                differences.append((*path, key))
             else:
-                differences += _differing_paths(old[key], new[key], (*path, key), allowed=allowed)
+                differences += _differing_paths(old[key], new[key], (*path, key))
         return differences
 
     if isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
         return [
             difference
             for index, (old_item, new_item) in enumerate(zip(old, new, strict=True))
-            for difference in _differing_paths(old_item, new_item, (*path, f"[{index}]"), allowed=allowed)
+            for difference in _differing_paths(old_item, new_item, (*path, f"[{index}]"))
         ]
 
-    return [".".join(path) or "(root)"]
+    return [path]
