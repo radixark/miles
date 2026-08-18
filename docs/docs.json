@@ -408,7 +408,7 @@
   },
   {
    "source": "/user-guide/dashboard",
-   "destination": "/user-guide/monitoring#miles-dashboard",
+   "destination": "/user-guide/monitoring",
    "permanent": true
   }
  ],

@@ -49,28 +49,6 @@ should be supplied via Ray's `env_vars` rather than baked into the launch script
 Panel names follow what `loss.py` and the rollout logger emit; Miles's wandb metrics
 live under `train/`, `rollout/`, `perf/`, `multi_turn/`, `passrate/` namespaces.
 
-## Miles dashboard
-
-Miles ships a small self-hosted web UI for inspecting a single run: per-GPU phase
-timelines, engine metrics, and per-sample rollout data read straight from the run's
-dump directory. It is a debugging aid, not a replacement for wandb, and it is still
-under active development, so treat its surface as unstable.
-
-Record the telemetry by adding both flags to the training command:
-
-```bash
-python3 train.py ... --dump-details /path/to/dump --use-miles-dashboard
-```
-
-Then serve the directory from any machine that can read it:
-
-```bash
-python -m miles.dashboard.serve --dump-details /path/to/dump
-```
-
-Open `http://localhost:7788`, forwarding the port over SSH for a remote run. Run
-`python -m miles.dashboard.serve --help` for the collector and server flags.
-
 ## Custom loggers
 
 Replace the default rollout logger with your own to push to internal systems:
