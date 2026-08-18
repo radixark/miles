@@ -3,11 +3,26 @@ import math
 from miles.utils.types import Sample
 
 
+def _invalid_log_prob_kind(log_prob: object) -> str | None:
+    """Classify non-finite values and their JSON null representation."""
+    if log_prob is None:
+        return "null"
+    if isinstance(log_prob, bool):
+        return "invalid_type"
+
+    try:
+        if math.isfinite(log_prob):
+            return None
+        return "nan" if math.isnan(log_prob) else "inf"
+    except (TypeError, ValueError, OverflowError):
+        return "invalid_type"
+
+
 def guard_rollout_log_probs(samples: list[Sample], loss_masks: list[list[int]]) -> None:
-    """Reject non-finite rollout log probabilities on trainable tokens."""
-    nan_count = 0
-    inf_count = 0
-    valid_token_count = 0
+    """Reject malformed values and non-finite trainable rollout log probabilities."""
+    invalid_counts = {"active_nan": 0, "active_inf": 0, "null": 0, "invalid_type": 0}
+    total_token_count = 0
+    active_token_count = 0
     bad_rows = []
 
     for row, (sample, loss_mask) in enumerate(zip(samples, loss_masks, strict=True)):
@@ -21,24 +36,28 @@ def guard_rollout_log_probs(samples: list[Sample], loss_masks: list[list[int]]) 
 
         row_is_bad = False
         for log_prob, is_active in zip(log_probs, loss_mask, strict=True):
-            if not is_active:
+            total_token_count += 1
+            if is_active:
+                active_token_count += 1
+            invalid_kind = _invalid_log_prob_kind(log_prob)
+            if invalid_kind is None:
                 continue
-            valid_token_count += 1
-            if math.isfinite(log_prob):
-                continue
+            if invalid_kind in ("nan", "inf"):
+                if not is_active:
+                    continue
+                invalid_kind = f"active_{invalid_kind}"
             row_is_bad = True
-            if math.isnan(log_prob):
-                nan_count += 1
-            else:
-                inf_count += 1
+            invalid_counts[invalid_kind] += 1
         if row_is_bad:
             bad_rows.append(row)
 
-    non_finite_count = nan_count + inf_count
-    if non_finite_count:
+    invalid_count = sum(invalid_counts.values())
+    if invalid_count:
         raise ValueError(
-            f"Non-finite rollout_log_probs detected: {non_finite_count} bad tokens "
-            f"(nan={nan_count}, inf={inf_count}) out of {valid_token_count} valid tokens, "
+            f"Invalid rollout_log_probs detected: {invalid_count} bad tokens "
+            f"(active_nan={invalid_counts['active_nan']}, active_inf={invalid_counts['active_inf']}, "
+            f"null={invalid_counts['null']}, invalid_type={invalid_counts['invalid_type']}) "
+            f"across {total_token_count} total tokens ({active_token_count} active), "
             f"in {len(bad_rows)}/{len(samples)} sequences "
             f"(first bad row indices: {bad_rows[:16]})"
         )
