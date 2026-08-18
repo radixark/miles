@@ -57,7 +57,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             break
 
         gen_t0 = time.time()
-        output = await post(url, payload, headers=compute_routing_headers(args, sample))
+        # /generate is non-idempotent: a retry after the request reached the
+        # server would re-issue generation. Only pre-send errors are retried.
+        output = await post(url, payload, headers=compute_routing_headers(args, sample), idempotent=False)
         sink = None if input.evaluation else TrajectoryLifecycle().sink
         if sink is not None:
             tokens = output.get("meta_info", {}).get("completion_tokens", "")
