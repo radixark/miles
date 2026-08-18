@@ -170,7 +170,7 @@ SGLANG_ARGS=(
 )
 ```
 
-The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `SGLANG_DG_CACHE_DIR_PER_PROCESS=1`, and `SGLANG_OPT_FP8_WO_A_GEMM=0`. Passing `--train-deterministic` adds `NCCL_ALGO=Ring`, `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0`, and `CUBLAS_WORKSPACE_CONFIG=:4096:8` on top of those.
+The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `SGLANG_DG_CACHE_DIR_PER_PROCESS=1`, and `SGLANG_OPT_FP8_WO_A_GEMM=0`. Because `--train-deterministic` defaults to on, a stock run also gets `--deterministic-mode` plus `NCCL_ALGO=Ring`, `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; pass `--no-train-deterministic` to drop those four.
 
 On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 
