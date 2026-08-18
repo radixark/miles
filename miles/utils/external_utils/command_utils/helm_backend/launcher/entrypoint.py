@@ -32,6 +32,7 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import CI_LABEL, Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.hot_restart import plan_hot_restart
 from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_record import (
     LaunchRecord,
     installed_launch_record_file,
@@ -97,6 +98,13 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         _uninstall_leftover_ci_releases(namespace, keep_run_id=run_id)
     Helm.build_dependencies(chart)
 
+    orchestrator_command = ["python", request.train_script, *pod_argv] if deploys_orchestration_script else []
+    hot_restart_plan = plan_hot_restart(
+        components=config.parsed_hot_restart,
+        deploy_component=deploy_component,
+        release=release,
+        installed_manifest=installed_manifest,
+    )
     state_file = (
         _compute_state_file(installed_manifest=installed_manifest, run_directory=run_directory, release=release)
         if deploys_orchestration_script
@@ -108,13 +116,15 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         release=release,
         namespace=namespace,
         state_file=str(state_file) if state_file is not None else "",
-        orchestrator_command=["python", request.train_script, *pod_argv] if deploys_orchestration_script else [],
+        orchestrator_command=orchestrator_command,
         worker_argv=pod_argv,
         env=env,
         colocate=bool(args.colocate),
         mooncake_plan=_compute_mooncake_plan(args),
         prepare_cmd=request.prepare_cmd,
         extra_manifests=request.extra_manifests,
+        restart_at=hot_restart_plan.restart_at,
+        stamped_components=hot_restart_plan.stamped_components,
     )
     reachable_at = (
         _compute_trainer_controller_addrs(args, release=release, namespace=namespace)
@@ -142,8 +152,8 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
             namespace=namespace,
             chart=chart,
             values_files=values_files,
+            allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
             skip_upgrade_check=config.skip_upgrade_check,
-            allow_diff_object_keys=frozenset(),
         )
 
     record.write(path=record_path)
