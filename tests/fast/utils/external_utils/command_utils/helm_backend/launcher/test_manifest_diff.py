@@ -89,8 +89,8 @@ class TestManifestScaling:
             before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].update(replicas=6))
         )
 
-        assert diff.scaled == [
-            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: replicas 2 -> 6"
+        assert diff.allowed_changed == [
+            "leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/myrun-miles-run-engine: replicas 2 -> 6"
         ]
 
     def test_refuses_a_configmap_whose_data_changed(self):
@@ -100,13 +100,13 @@ class TestManifestScaling:
             after=_manifest_after(lambda objects: objects[1]["data"].update({"values.yaml": "run: {id: x}\n"})),
         )
 
-        assert diff.changed == ["v1/ConfigMap/rl/myrun-miles-run-values: data.values.yaml"]
+        assert diff.disallowed_changed == ["ConfigMap/rl/myrun-miles-run-values: data.values.yaml"]
 
     def test_says_so_when_the_rendered_manifests_are_identical(self):
         """Relaunching the same run id is how users check on a run, and it must read as a no-op."""
         diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=_manifest(_objects()))
 
-        assert "nothing to change" in diff.summarize_scaling()
+        assert "nothing to change" in diff.summarize_allowed_changes()
 
 
 class TestManifestRefusals:
@@ -118,8 +118,8 @@ class TestManifestRefusals:
         )
 
         assert not diff.is_allowed
-        assert diff.changed == [
-            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: "
+        assert diff.disallowed_changed == [
+            "leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/myrun-miles-run-engine: "
             "spec.leaderWorkerTemplate.workerTemplate.spec.containers.[0].image"
         ]
 
@@ -133,8 +133,8 @@ class TestManifestRefusals:
         )
 
         assert not diff.is_allowed
-        assert diff.changed == [
-            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: "
+        assert diff.disallowed_changed == [
+            "leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/myrun-miles-run-engine: "
             "spec.leaderWorkerTemplate.workerTemplate.spec.containers.[0].command.[2]"
         ]
 
@@ -146,7 +146,7 @@ class TestManifestRefusals:
         )
 
         assert not diff.is_allowed
-        assert diff.added == ["leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/second"]
+        assert [str(identity) for identity in diff.additions] == ["leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/second"]
 
     def test_refuses_an_object_the_upgrade_would_delete(self):
         """Upgrading would remove the orchestrator, and with it the run it is driving."""
@@ -155,7 +155,7 @@ class TestManifestRefusals:
         )
 
         assert not diff.is_allowed
-        assert diff.removed == ["apps/v1/StatefulSet/rl/myrun-miles-run-orchestrator"]
+        assert [str(identity) for identity in diff.removals] == ["apps/StatefulSet/rl/myrun-miles-run-orchestrator"]
 
     def test_refuses_replicas_moving_on_a_kind_that_does_not_scale(self):
         """Only a LeaderWorkerSet adds cells without touching the pods it already has."""
@@ -164,7 +164,7 @@ class TestManifestRefusals:
         )
 
         assert not diff.is_allowed
-        assert diff.changed == ["apps/v1/StatefulSet/rl/myrun-miles-run-orchestrator: spec.replicas"]
+        assert diff.disallowed_changed == ["apps/StatefulSet/rl/myrun-miles-run-orchestrator: spec.replicas"]
 
     def test_refuses_a_data_block_moving_on_a_kind_that_is_not_a_configmap(self):
         """A Secret's data is mounted into running pods, so rewriting it is not a free change."""
@@ -175,7 +175,7 @@ class TestManifestRefusals:
         diff = manifest_diff.diff_manifests(before=before, after=after)
 
         assert not diff.is_allowed
-        assert diff.changed == ["v1/Secret/rl/creds: data.token"]
+        assert diff.disallowed_changed == ["Secret/rl/creds: data.token"]
 
     def test_refuses_a_change_to_an_object_another_namespace_shares_a_name_with(self):
         """A release may hold both, and folding them would let this edit through as no change at all."""
@@ -187,10 +187,10 @@ class TestManifestRefusals:
         diff = manifest_diff.diff_manifests(before=before, after=after)
 
         assert not diff.is_allowed
-        assert diff.changed == ["v1/Service/other/engine: spec.clusterIP"]
+        assert diff.disallowed_changed == ["Service/other/engine: spec.clusterIP"]
 
     def test_refuses_a_change_to_an_object_another_api_group_shares_a_name_with(self):
-        """A crd of the same kind and name is a second object, and only apiVersion tells the two apart."""
+        """A crd of the same kind and name is a second object, and only the api group tells the two apart."""
         builtin = {
             "apiVersion": "v1",
             "kind": "Service",
@@ -204,7 +204,7 @@ class TestManifestRefusals:
         diff = manifest_diff.diff_manifests(before=before, after=after)
 
         assert not diff.is_allowed
-        assert diff.changed == ["example.com/v1/Service/rl/engine: spec.clusterIP"]
+        assert diff.disallowed_changed == ["example.com/Service/rl/engine: spec.clusterIP"]
 
     def test_names_the_field_it_refused(self):
         """A refusal the user cannot locate just makes them reach for --skip-upgrade-check."""
@@ -225,105 +225,9 @@ class TestManifestRefusals:
         diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=_manifest_after(grow_and_repoint))
 
         assert not diff.is_allowed
-        assert diff.scaled == [
-            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: replicas 2 -> 6"
-        ]
-
-
-def _foreign_leader_worker_set(replicas: int = 2, api_version: str = "example.com/v1") -> dict[str, Any]:
-    return {
-        "apiVersion": api_version,
-        "kind": "LeaderWorkerSet",
-        "metadata": {"name": "someone-elses-leaderworkerset"},
-        "spec": {"replicas": replicas},
-    }
-
-
-_FOREIGN_KEY = ManifestObjectKey(kind="LeaderWorkerSet", name="someone-elses-leaderworkerset")
-
-
-class TestScalingIsLimitedToTheSupportedApi:
-    def test_refuses_a_replica_change_on_a_leaderworkerset_of_another_api(self):
-        """The exemption is written for the api this launcher drives, and nothing else answers for it."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest([_foreign_leader_worker_set()]),
-            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
-        )
-
-        assert not diff.is_allowed
-        assert diff.disallowed_changed == [
-            "example.com/v1/LeaderWorkerSet/rl/someone-elses-leaderworkerset: spec.replicas"
-        ]
-
-    def test_reports_no_scaling_for_a_leaderworkerset_of_another_api(self):
-        """Reporting it as scaling is what let the change through the restart gate without a word."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest([_foreign_leader_worker_set()]),
-            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
-        )
-
-        assert diff.allowed_changed == []
-
-    def test_counts_a_foreign_replica_change_as_a_rebuild(self):
-        """Only the supported api is known to add cells without restarting what is already running."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest([_foreign_leader_worker_set()]),
-            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
-        )
-
-        assert diff.rebuilds(key=_FOREIGN_KEY)
-
-    def test_refuses_a_replica_change_on_an_unsupported_version_of_the_same_api_group(self):
-        """A future or older version of the api can size a set by something other than spec.replicas."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest([_foreign_leader_worker_set(api_version="leaderworkerset.x-k8s.io/v1alpha1")]),
-            after=_manifest([_foreign_leader_worker_set(replicas=6, api_version="leaderworkerset.x-k8s.io/v1alpha1")]),
-        )
-
-        assert not diff.is_allowed
-
-    def test_still_scales_the_supported_api(self):
-        """The whole point of the exemption is that this run's own engine pool may grow."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest([_foreign_leader_worker_set(api_version="leaderworkerset.x-k8s.io/v1")]),
-            after=_manifest([_foreign_leader_worker_set(replicas=6, api_version="leaderworkerset.x-k8s.io/v1")]),
-        )
-
-        assert diff.is_allowed
         assert diff.allowed_changed == [
-            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/someone-elses-leaderworkerset: replicas 2 -> 6"
+            "leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/myrun-miles-run-engine: replicas 2 -> 6"
         ]
-
-    def test_a_whitelisted_foreign_object_is_still_allowed_to_change(self):
-        """A hot restart names the objects it may rebuild, and that escape hatch is api-agnostic."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest([_foreign_leader_worker_set()]),
-            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
-            allow_diff_object_keys=frozenset({_FOREIGN_KEY}),
-        )
-
-        assert diff.is_allowed
-
-
-class TestReplicasThatOnlyOneSideHas:
-    def test_a_pool_that_lost_its_replica_count_is_refused(self):
-        """A template that stops rendering replicas is a chart change, not a run being scaled."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].pop("replicas"))
-        )
-
-        assert not diff.is_allowed
-        assert diff.allowed_changed == []
-
-    def test_a_pool_that_gained_a_replica_count_is_refused(self):
-        """The same holds the other way round, and reading it as scaling would apply a template change silently."""
-        before = copy.deepcopy(_objects())
-        before[0]["spec"].pop("replicas")
-
-        diff = manifest_diff.diff_manifests(before=_manifest(before), after=_manifest(_objects()))
-
-        assert not diff.is_allowed
-        assert diff.allowed_changed == []
 
 
 class TestTheStructureBehindTheRenderedViews:
@@ -348,6 +252,27 @@ class TestTheStructureBehindTheRenderedViews:
         assert change.allowed_by is None
 
 
+class TestReplicasThatOnlyOneSideHas:
+    def test_a_pool_that_lost_its_replica_count_is_refused(self):
+        """A template that stops rendering replicas is a chart change, not a run being scaled."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].pop("replicas"))
+        )
+
+        assert not diff.is_allowed
+        assert diff.allowed_changed == []
+
+    def test_a_pool_that_gained_a_replica_count_is_refused(self):
+        """The same holds the other way round, and reading it as scaling would apply a template change silently."""
+        before = copy.deepcopy(_objects())
+        before[0]["spec"].pop("replicas")
+
+        diff = manifest_diff.diff_manifests(before=_manifest(before), after=_manifest(_objects()))
+
+        assert not diff.is_allowed
+        assert diff.allowed_changed == []
+
+
 _ORCHESTRATOR_KEY = ManifestObjectKey(kind=STATEFUL_SET_KIND, name="myrun-miles-run-orchestrator")
 
 
@@ -364,7 +289,7 @@ class TestTheObjectsAHotRestartRebuilds:
 
         assert diff.is_allowed
         assert diff.allowed_changed == [
-            "apps/v1/StatefulSet/rl/myrun-miles-run-orchestrator: spec.template.spec.containers.[0].image"
+            "apps/StatefulSet/rl/myrun-miles-run-orchestrator: spec.template.spec.containers.[0].image"
         ]
 
     def test_a_rebuilt_object_says_the_whitelist_is_what_allowed_it(self):
@@ -390,7 +315,7 @@ class TestTheObjectsAHotRestartRebuilds:
 
         assert not diff.is_allowed
         assert diff.disallowed_changed == [
-            "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet/rl/myrun-miles-run-engine: "
+            "leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/myrun-miles-run-engine: "
             "spec.leaderWorkerTemplate.workerTemplate.spec.containers.[0].image"
         ]
 
@@ -404,6 +329,128 @@ class TestTheObjectsAHotRestartRebuilds:
         )
 
         assert not diff.is_allowed
+
+
+class TestWhetherADiffRebuildsOneObject:
+    def test_an_untouched_object_is_not_rebuilt(self):
+        """An ordinary relaunch renders the orchestrator it already installed, and nothing may be read into that."""
+        diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=_manifest(_objects()))
+
+        assert not diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_a_changed_object_is_rebuilt(self):
+        """This is what tells the launcher the orchestrator pod really rolls, whatever the reason."""
+        after = _manifest_after(
+            lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+        )
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()), after=after, allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY})
+        )
+
+        assert diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_a_change_to_another_object_is_not_read_as_this_one_rebuilding(self):
+        """Repointing the engines must not make the launcher throw the orchestrator's state file away."""
+        after = _manifest_after(lambda objects: _worker_container(objects).update(image="miles:other"))
+        diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=after)
+
+        assert not diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_scaling_alone_is_not_a_rebuild(self):
+        """A LeaderWorkerSet gaining cells keeps the pods it has, so nothing about it was rebuilt."""
+        after = _manifest_after(lambda objects: objects[0]["spec"].update(replicas=6))
+        diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=after)
+
+        assert not diff.rebuilds(key=ManifestObjectKey(kind="LeaderWorkerSet", name="myrun-miles-run-engine"))
+
+    def test_an_object_that_only_the_proposal_has_is_rebuilt(self):
+        """A release that gains its orchestration script needs the same treatment as a first install."""
+        before = _manifest([_leader_worker_set(), _config_map()])
+        diff = manifest_diff.diff_manifests(before=before, after=_manifest(_objects()))
+
+        assert diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_an_object_neither_manifest_has_is_not_rebuilt(self):
+        """A trainer release carries no orchestrator at all, and nothing about it ever changes."""
+        objects = [_leader_worker_set(), _config_map()]
+        diff = manifest_diff.diff_manifests(before=_manifest(objects), after=_manifest(objects))
+
+        assert not diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+
+def _foreign_leader_worker_set(replicas: int = 2, api_version: str = "example.com/v1") -> dict[str, Any]:
+    return {
+        "apiVersion": api_version,
+        "kind": "LeaderWorkerSet",
+        "metadata": {"name": "someone-elses-leaderworkerset"},
+        "spec": {"replicas": replicas},
+    }
+
+
+_FOREIGN_KEY = ManifestObjectKey(kind="LeaderWorkerSet", name="someone-elses-leaderworkerset")
+
+
+class TestScalingIsLimitedToTheSupportedApi:
+    def test_refuses_a_replica_change_on_a_leaderworkerset_of_another_api(self):
+        """The exemption is written for the api this launcher drives, and nothing else answers for it."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest([_foreign_leader_worker_set()]),
+            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
+        )
+
+        assert not diff.is_allowed
+        assert diff.disallowed_changed == [
+            "example.com/LeaderWorkerSet/rl/someone-elses-leaderworkerset: spec.replicas"
+        ]
+
+    def test_reports_no_scaling_for_a_leaderworkerset_of_another_api(self):
+        """Reporting it as scaling is what let the change through the restart gate without a word."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest([_foreign_leader_worker_set()]),
+            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
+        )
+
+        assert diff.allowed_changed == []
+
+    def test_counts_a_foreign_replica_change_as_a_rebuild(self):
+        """Only the supported api is known to add cells without restarting what is already running."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest([_foreign_leader_worker_set()]),
+            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
+        )
+
+        assert diff.rebuilds(key=_FOREIGN_KEY)
+
+    def test_scales_another_served_version_of_the_supported_api_group(self):
+        """A set sized some other way carries no spec.replicas, so the group is precise enough on its own."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest([_foreign_leader_worker_set(api_version="leaderworkerset.x-k8s.io/v1alpha1")]),
+            after=_manifest([_foreign_leader_worker_set(replicas=6, api_version="leaderworkerset.x-k8s.io/v1alpha1")]),
+        )
+
+        assert diff.is_allowed
+
+    def test_still_scales_the_supported_api(self):
+        """The whole point of the exemption is that this run's own engine pool may grow."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest([_foreign_leader_worker_set(api_version="leaderworkerset.x-k8s.io/v1")]),
+            after=_manifest([_foreign_leader_worker_set(replicas=6, api_version="leaderworkerset.x-k8s.io/v1")]),
+        )
+
+        assert diff.is_allowed
+        assert diff.allowed_changed == [
+            "leaderworkerset.x-k8s.io/LeaderWorkerSet/rl/someone-elses-leaderworkerset: replicas 2 -> 6"
+        ]
+
+    def test_a_whitelisted_foreign_object_is_still_allowed_to_change(self):
+        """A hot restart names the objects it may rebuild, and that escape hatch is api-agnostic."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest([_foreign_leader_worker_set()]),
+            after=_manifest([_foreign_leader_worker_set(replicas=6)]),
+            allow_diff_object_keys=frozenset({_FOREIGN_KEY}),
+        )
+
+        assert diff.is_allowed
 
 
 def _stateful_set_in(namespace: str) -> dict[str, Any]:
