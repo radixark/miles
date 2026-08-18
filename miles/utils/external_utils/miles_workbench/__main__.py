@@ -84,8 +84,11 @@ def stop_command(
     deploy_component: Annotated[
         DeployComponent, typer.Option(help="Which deployment of the run to stop, when it was deployed in parts")
     ] = DeployComponent.ALL,
+    deploy_instance_id: Annotated[
+        str | None, typer.Option(help="Which instance of that deployment to stop, when it was deployed in instances")
+    ] = None,
 ) -> None:
-    uninstall(ReleaseArgs(namespace=namespace, release=run_release_name(run_id, deploy_component)))
+    uninstall(ReleaseArgs(namespace=namespace, release=run_release_name(run_id, deploy_component, deploy_instance_id)))
 
 
 @app.command(name="uninstall", help="helm uninstall the release, keeping the namespace")
