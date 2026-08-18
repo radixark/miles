@@ -9,7 +9,6 @@ from tests.fast.ray.rollout.conftest import make_args
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.specs.inference import compute_engine_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import ActiveAndEpoch
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
@@ -127,7 +126,6 @@ async def _create_servers(args: Namespace, models: list[dict]) -> dict[str, Roll
     return await create_rollout_servers(
         args,
         context_lock=ContextLock("InferenceController"),
-        global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
         engine_provider=_StubProvider(),
         router_addrs=_make_router_addrs(models),
     )
@@ -196,7 +194,6 @@ class TestExpectedNumCellsAsksTheProvider:
         servers = await create_rollout_servers(
             args,
             context_lock=ContextLock("InferenceController"),
-            global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
             engine_provider=_CountingProvider(2),
             router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
         )
@@ -211,7 +208,6 @@ class TestExpectedNumCellsAsksTheProvider:
         servers = await create_rollout_servers(
             args,
             context_lock=ContextLock("InferenceController"),
-            global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
             engine_provider=_CountingProvider(0),
             router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
         )
@@ -225,7 +221,6 @@ class TestExpectedNumCellsAsksTheProvider:
         servers = await create_rollout_servers(
             args,
             context_lock=ContextLock("InferenceController"),
-            global_health_checker_activeness=lambda: ActiveAndEpoch(active=True, epoch=0),
             engine_provider=_StubProvider(),
             router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
         )

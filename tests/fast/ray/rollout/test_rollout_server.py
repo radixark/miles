@@ -16,9 +16,7 @@ from miles.ray.rollout.cell_state import CellAddrInfo, StateServing
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock
-from miles.utils.ft_utils.health_checker import ActiveAndEpoch
-from miles.utils.workers.worker_spec import HostAndPort
-from miles.utils.workers.worker_spec import NamedHostAndPorts
+from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
 class TestRolloutServerPureFunctions:
@@ -223,7 +221,7 @@ class TestCreateRolloutServersWiring:
 
     @pytest.mark.asyncio
     async def test_create_rollout_servers_wires_each_model_and_router_completely(self, tmp_path, monkeypatch):
-        """Every model gets its own router, the first one is published on the legacy args, and the injected lock, activeness getter and update_weights all survive."""
+        """Every model gets its own router and its own activeness tracker, the first one is published on the legacy args, and the injected lock and update_weights survive."""
 
         async def _wait_router_ready(model_idx: int) -> HostAndPort:
             return HostAndPort(host=f"10.0.0.{model_idx + 1}", port=20000 + model_idx)
@@ -234,15 +232,10 @@ class TestCreateRolloutServersWiring:
         cfg_path.write_text(self._CONFIG_YAML)
         args = make_args(sglang_config=str(cfg_path), rollout_num_gpus=12, debug_rollout_only=True)
         lock = ContextLock("InferenceControllerUnderTest")
-        active_and_epoch = ActiveAndEpoch(active=False, epoch=7)
-
-        def _get_active_and_epoch() -> ActiveAndEpoch:
-            return active_and_epoch
 
         servers = await create_rollout_servers(
             args,
             context_lock=lock,
-            global_health_checker_activeness=_get_active_and_epoch,
         )
 
         assert {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()} == {
@@ -253,10 +246,11 @@ class TestCreateRolloutServersWiring:
         assert args.sglang_model_routers == {"actor": ("10.0.0.1", 20000), "ref": ("10.0.0.2", 20001)}
         assert [srv.model_name for srv in servers.values()] == ["actor", "ref"]
         assert (servers["actor"].update_weights, servers["ref"].update_weights) == (True, False)
-        active_and_epoch = ActiveAndEpoch(active=True, epoch=8)
         for srv in servers.values():
             assert srv.context_lock is lock
-            assert srv.global_health_checker_activeness() == ActiveAndEpoch(active=True, epoch=8)
+        servers["actor"].health_checker_activeness.bump_active(False)
+        assert not servers["actor"].health_checker_activeness.get().active
+        assert servers["ref"].health_checker_activeness.get().active
 
 
 class TestEngineListOrdering:
