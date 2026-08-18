@@ -29,7 +29,12 @@ from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_chec
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
-from miles.utils.hot_restart import trainer_init_or_load_state, wait_trainers_idle, wait_until_worker_not_initialized
+from miles.utils.hot_restart import (
+    init_or_reset_inference_controller,
+    trainer_init_or_load_state,
+    wait_trainers_idle,
+    wait_until_worker_not_initialized,
+)
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
@@ -345,7 +350,7 @@ async def create_rollout_components(args) -> RolloutComponents:
     await wait_until_worker_not_initialized(rollout_executor)
 
     inference_controller = create_inference_controller_handle(capability=capability)
-    await inference_controller.init()
+    await init_or_reset_inference_controller(inference_controller, args=args)
 
     await rollout_executor.init()
 
