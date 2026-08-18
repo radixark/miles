@@ -18,6 +18,7 @@ from miles.backends.megatron_utils.megatron_config import (
     resolve_args_checkpoint_load,
     resolve_megatron_config,
 )
+from miles.utils.external_utils.model_args_utils import load_model_args
 
 
 def _write_yaml(data: dict, tmp_path) -> str:
@@ -715,3 +716,16 @@ class TestBaseArgumentsAreNotMutated:
         model.train_env_vars["NCCL_DEBUG"] = "INFO"
 
         assert args.train_env_vars == {"NCCL_DEBUG": "WARN"}
+
+
+class TestPerPolicyArgsCoverage:
+    @pytest.mark.parametrize("model_type", ["qwen2.5-0.5B", "qwen3-0.6B"])
+    def test_the_whitelist_admits_every_argument_of_a_model_script(self, model_type):
+        """A policy that cannot override one of its own architecture arguments would train another model's shape."""
+        declared = {
+            token.removeprefix("--").replace("-", "_")
+            for token in load_model_args(model_type).split()
+            if token.startswith("--")
+        }
+
+        assert declared <= PER_POLICY_ARGS
