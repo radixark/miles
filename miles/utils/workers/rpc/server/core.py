@@ -13,6 +13,7 @@ from miles.utils.workers.rpc.common.metadata import collect_rpc_method_specs
 from miles.utils.workers.rpc.common.protocol import (
     MAX_POLL_TIMEOUT_SECONDS,
     CallStatusResponse,
+    InFlightResponse,
     SubmitRequest,
     SubmitResponse,
 )
@@ -75,6 +76,9 @@ class RpcServer:
         )
 
         return SubmitResponse()
+
+    def in_flight_calls(self) -> InFlightResponse:
+        return InFlightResponse(call_ids=self._store.in_flight_call_ids())
 
     async def query_call(self, *, call_id: str, timeout: float) -> CallStatusResponse:
         if not self._store.contains(call_id):
