@@ -137,7 +137,7 @@ class RolloutManager:
     async def generate(self, rollout_id):
         start_time = time.time()
         self.rollout_id = rollout_id
-        self._health_monitoring_resume()
+        self.health_monitoring_resume()
         if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
             self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
@@ -171,7 +171,7 @@ class RolloutManager:
         if self.args.debug_train_only:
             # if debug train only, we don't generate evaluation data
             return
-        self._health_monitoring_resume()
+        self.health_monitoring_resume()
 
         if self.args.eval_uses_snapshots:
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
@@ -393,7 +393,7 @@ class RolloutManager:
         for monitor in self._health_monitors:
             monitor.pause()
 
-    def _health_monitoring_resume(self) -> None:
+    def health_monitoring_resume(self) -> None:
         for monitor in self._health_monitors:
             monitor.resume()
 

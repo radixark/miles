@@ -260,11 +260,15 @@ class RayTrainGroup:
         # ranks observe a consistent engine set; the actor releases the lock itself.
         info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
         await self._rollout_manager.health_monitoring_pause.remote()
-        # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
-        await retry(
-            lambda _: self._execute_first_alive("update_weights", info=info),
-            max_attempts=_RETRY_MAX_ATTEMPTS,
-        )
+        try:
+            # Catch with vanilla retry: cells w/ exceptions are auto marked
+            # errored, thus retry will find the next one.
+            await retry(
+                lambda _: self._execute_first_alive("update_weights", info=info),
+                max_attempts=_RETRY_MAX_ATTEMPTS,
+            )
+        finally:
+            await self._rollout_manager.health_monitoring_resume.remote()
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
