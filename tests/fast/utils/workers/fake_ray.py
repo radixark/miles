@@ -9,6 +9,8 @@ from typing import Any
 _ASYNC_METHOD_NODE_IP = "_get_node_ip"
 _ASYNC_METHOD_FREE_PORT_BLOCK = "_get_free_port_block"
 
+READINESS_METHOD = "__ray_ready__"
+
 EVENT_CREATE = "create"
 EVENT_KILL = "kill"
 
@@ -66,6 +68,10 @@ class FakeRayActorHandle:
         if name.startswith("__") or "cluster" not in self.__dict__:
             raise AttributeError(name)
         return FakeRayActorMethod(handle=self, method=name)
+
+    @property
+    def __ray_ready__(self) -> FakeRayActorMethod:
+        return FakeRayActorMethod(handle=self, method=READINESS_METHOD)
 
 
 @dataclass(kw_only=True)

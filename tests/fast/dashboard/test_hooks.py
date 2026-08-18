@@ -145,7 +145,7 @@ class FakeWorkerHandle(BaseWorkerHandle):
     async def wait_ready(self, *, timeout):
         return None
 
-    async def _probe_is_dead(self):
+    async def probe_is_dead(self):
         return True
 
 

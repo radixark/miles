@@ -21,7 +21,7 @@ class BaseWorkerHandle(abc.ABC):
     async def wait_dead(self, *, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         while True:
-            if await self._probe_is_dead():
+            if await self.probe_is_dead():
                 return
             if time.monotonic() >= deadline:
                 logger.error("Timed out after %.0fs waiting for %r to die; proceeding anyway", timeout, self)
@@ -29,4 +29,4 @@ class BaseWorkerHandle(abc.ABC):
             await asyncio.sleep(_WAIT_DEAD_PROBE_INTERVAL_SECONDS)
 
     @abc.abstractmethod
-    async def _probe_is_dead(self) -> bool: ...
+    async def probe_is_dead(self) -> bool: ...
