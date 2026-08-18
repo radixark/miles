@@ -58,10 +58,10 @@ the largest models all live on Megatron-LM. See
   MI355X via ROCm. See [Supported hardware](#supported-hardware).
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](/advanced/on-policy-distillation).
-- **Agentic environments.** Train coding and computer-use agents through connectors for
-  Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout
-  layer that fits it, with task sandboxes on AgentENV, Daytona, E2B or Modal. See
-  [Agentic Environments](/user-guide/environments).
+- **Agentic environments.** Train coding and computer-use agent models on environments
+  from Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more: each ecosystem has a connector
+  at the rollout layer that fits it. Task sandboxes run on AgentENV, Daytona, E2B or
+  Modal. See [Agentic Environments](/user-guide/environments).
 - **Comprehensive CI.** Unit suites run on every pull request, and tag-triggered end-to-end
   GPU training tests cover the supported model families on both NVIDIA and AMD runners.
 
