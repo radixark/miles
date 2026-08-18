@@ -104,12 +104,19 @@ the largest models all live on Megatron-LM. See
 
 ## Acknowledgment
 
-<!-- TODO: acknowledgment figure -->
-
 Miles was forked from [slime](https://github.com/THUDM/slime), and integrates
 [SGLang](https://github.com/sgl-project/sglang),
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and
 [torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
+
+Miles is shaped by the teams that build on it and support its development,
+from hardware and cloud to model labs, agent infrastructure, and academia:
+
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/radixark/miles/main/docs/assets/images/acknowledgment.png" alt="Organizations building on, contributing to, and collaborating with Miles" width="900">
+
+</div>
 
 ## Citation
 

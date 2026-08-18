@@ -115,6 +115,18 @@ and the container images for each.
 5. **[Training backends](/user-guide/training-backend)** — Megatron-LM and FSDP: parallelism,
    checkpoints, and hooks.
 
+## Acknowledgment
+
+Miles was forked from [slime](https://github.com/THUDM/slime), and integrates
+[SGLang](https://github.com/sgl-project/sglang),
+[Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and
+[torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
+
+Miles is shaped by the teams that build on it and support its development,
+from hardware and cloud to model labs, agent infrastructure, and academia:
+
+![Organizations building on, contributing to, and collaborating with Miles](/assets/images/acknowledgment.png)
+
 ## Contribute
 
 - GitHub: [github.com/radixark/miles](https://github.com/radixark/miles)
