@@ -85,6 +85,9 @@ class TrainerCell:
         await asyncio.sleep(0)
         return results
 
+    async def load_state(self) -> list:
+        return await self.execute("load_state", kill_on_failure=False)
+
     async def train(
         self,
         *,
