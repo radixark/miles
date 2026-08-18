@@ -214,7 +214,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json='{
      "env_vars": {
         "PYTHONPATH": "/root/Megatron-LM/",
-        "CUDA_DEVICE_MAX_CONNECTIONS": "1"
+        "CUDA_DEVICE_MAX_CONNECTIONS": "1",
+        "MILES_USE_LEGACY_ROLLOUT_V1": "1"
      }
    }' \
    -- python3 train.py \

@@ -14,18 +14,26 @@ from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.utils.chat_template_utils import get_tito_tokenizer
+from miles.utils.chat_template_utils.message_matcher_hub import (
+    SessionMessageMatcherError,
+    resolve_session_message_matcher,
+)
 from miles.utils.processing_utils import load_tokenizer
 
 logger = logging.getLogger(__name__)
 
 
-def setup_session_routes(app, backend, args):
+def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
     hf_checkpoint = getattr(args, "hf_checkpoint", None)
     if not hf_checkpoint:
         logger.info("[session] Skipping session routes (hf_checkpoint not set).")
         return
 
     session_server_instance_id = getattr(args, "session_server_instance_id", None)
+
+    message_matcher_selector = getattr(args, "session_message_matcher", "strict")
+    message_matcher = resolve_session_message_matcher(message_matcher_selector)
+    logger.info("[session] Using message matcher selector=%r callable=%r", message_matcher_selector, message_matcher)
 
     tokenizer = load_tokenizer(
         hf_checkpoint, chat_template_path=getattr(args, "chat_template_path", None), trust_remote_code=True
@@ -42,15 +50,19 @@ def setup_session_routes(app, backend, args):
         from miles.rollout.session.v2.core import SessionCoreV2
         from miles.rollout.session.v2.session_state import SessionRegistryV2
 
-        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
-        core = SessionCoreV2(backend, registry, args, session_server_instance_id)
+        registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        core = SessionCoreV2(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
     else:
-        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer)
-        core = SessionCore(backend, registry, args, session_server_instance_id)
+        registry = SessionRegistry(args, tokenizer, tito_tokenizer=tito_tokenizer, message_matcher=message_matcher)
+        core = SessionCore(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
 
     @app.exception_handler(SessionError)
     async def session_error_handler(request: Request, exc: SessionError):
         return JSONResponse(status_code=exc.status_code, content={"error": str(exc)})
+
+    @app.exception_handler(SessionMessageMatcherError)
+    async def session_message_matcher_error_handler(request: Request, exc: SessionMessageMatcherError):
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
     @app.get("/health")
     async def health():

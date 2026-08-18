@@ -65,15 +65,19 @@ logger = logging.getLogger(__name__)
 # older install outright, and the shared agent loop's harness-marker guard
 # backstops it per episode.
 #
-# Daytona rate-limits sandbox creation (ThrottlerException: Too Many Requests);
-# the shared backend caps in-flight creates process-wide and retries throttled ones
-# with jittered exponential backoff (knobs: OPENENV_DAYTONA_CREATE_*).
+# Creates are capped process-wide and retried with jittered backoff when Daytona
+# throttles (429) or reports the org out of capacity (OPENENV_DAYTONA_CREATE_* knobs).
 def _is_throttle_error(exc: BaseException) -> bool:
-    """True when a sandbox create failed only because Daytona rate-limited it.
+    """True when a sandbox create failed only because Daytona would not seat it yet.
 
     The SDK normalizes HTTP 429 to DaytonaRateLimitError; the text match is a
     fallback for older SDKs and server messages that only surface as text
     (e.g. "ThrottlerException: Too Many Requests").
+
+    Quota exhaustion ("Total CPU limit exceeded. Maximum allowed: 500.", and the
+    memory/disk wordings beside it) arrives as a DaytonaValidationError but is
+    just as transient in a shared org: an episode aborted before its first model
+    call makes check_no_aborted discard the whole group, so waiting beats failing.
     """
     # In-function import, deliberately: this is the class's only use site, it
     # only runs on the failure path (where daytona is already in sys.modules,
@@ -85,7 +89,7 @@ def _is_throttle_error(exc: BaseException) -> bool:
             return True
     except ImportError:  # pragma: no cover - only without the daytona SDK
         pass
-    return common.throttle_text(exc, "throttler")
+    return common.throttle_text(exc, "throttler", "limit exceeded")
 
 
 def _start_sandbox(task_id: str, tasks_dir: str) -> tuple[Any, str]:

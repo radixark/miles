@@ -1,66 +1,52 @@
 ---
-title: Examples
-description: Annotated end-to-end walkthroughs for the workflows people actually want to build.
+title: "Examples"
+sidebarTitle: "Overview"
+description: "These examples are runnable starting points for your own RL workflow."
+# Generated from examples/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
-The model recipes show you how to train a model. The examples below show you how to
-*build something useful* with Miles — tools, search, multi-agent, distillation, and
-async rollout.
+A few are purely demonstrative, but most are verifiable against a concrete performance score.
 
-Each example follows the same template:
+## Recipes
 
-1. **What you'll learn** — the takeaway in one sentence.
-2. **Prerequisites** — what you need installed/downloaded first.
-3. **Files** — what's in the example directory.
-4. **Quick start** — single command to run.
-5. **Walkthrough** — annotated tour of the key code.
-6. **What's happening underneath** — the moving parts you can't see.
-7. **Tuning knobs** — the levers that matter.
-8. **Troubleshooting** — the failure modes we've actually hit.
-9. **Variations** — common adaptations.
+End-to-end training workflows — the place to start.
 
-## The catalog
+- **[geo3k_vlm](/examples/geo3k-vlm)**: Training VLMs with FSDP using GRPO on the GEO3K dataset.
+  - **[multi_turn](/examples/geo3k-vlm/multi-turn)**: The same dataset over multiple turns, with the model cropping images through an interactive environment.
+- **[lora](https://github.com/radixark/miles/tree/main/examples/lora)**: LoRA fine-tuning with the Megatron backend.
+- **[multi_lora](/examples/multi-lora)**: Fully-async multi-adapter LoRA training with a slot-keyed adapter page table.
+- **[on_policy_distillation](/examples/on-policy-distillation)**: Teacher–student distillation on the student's own rollouts, run inside the on-policy training loop.
+  - **[qwen3_5_35b_selfdistill](/examples/on-policy-distillation/qwen3-5-35b-selfdistill)**: Two-phase self-distillation of Qwen3.5-35B-A3B on one 8xH200 node, with an in-process Megatron teacher.
+- **[ppo](/examples/ppo)**: Actor-critic PPO with GAE advantages, where the critic shares the actor's train GPUs.
+- **[retool_v2](/examples/retool-v2)**: Tool-enabled language model generation with sandboxed Python code execution interleaved with thinking.
+- **[swe-agent-harbor-docker](/examples/swe-agent-harbor-docker)**: Trains coding and terminal agents with Harbor-managed local Docker sandboxes and verifier rewards.
 
-<CardGroup cols={2}>
+## [Infra Features](/examples/infra-features)
 
-  <Card title="Fully Async Rollout" icon="bolt" href="/examples/fully-async">
+Runtime and infrastructure plumbing rather than training recipes — how miles moves
+data and weights around.
 
-    Continuous background generation with a queue between rollout and training.
-    Up to 2× end-to-end speedup.
+- **[fully_async](/examples/infra-features/fully-async)**: Demonstrates fully asynchronous rollout generation for higher efficiency.
+- **[low_precision](/examples/infra-features/low-precision)**: Examples of FP8 training and inference, plus INT4 QAT, for improved throughput and stability.
+- **[p2p_weight_transfer](/examples/infra-features/p2p-weight-transfer)**: Point-to-point weight transfer between training and rollout engines.
+- **[random_async](/examples/infra-features/random-async)**: Dataset-free stress test of the async rollout ↔ trainer loop.
+- **[train_infer_mismatch_helper](/examples/infra-features/train-infer-mismatch-helper)**: Algorithmic methods for rollout correction (e.g., TIS, MIS).
+- **[true_on_policy](/examples/infra-features/true-on-policy)**: Ensures strictly equal log probabilities between inference (SGLang) and training engines.
 
-  </Card>
+## [Experimental](https://github.com/radixark/miles/tree/main/examples/experimental)
 
-  <Card title="Search-R1 (Tool Use)" icon="magnifying-glass" href="/examples/search-r1">
+Not fully verified — for experimental and development use.
 
-    Multi-turn rollout where the model can issue `<search>...` actions, get
-    observations from a retrieval server, and produce a final answer.
-
-  </Card>
-
-  <Card title="Multi-Agent Co-Evolution" icon="users" href="/examples/multi-agent">
-
-    Two specialized agents (e.g. doctor + patient) train together and improve
-    each other.
-
-  </Card>
-
-  <Card title="Reproducibility Recipe" icon="rotate-left" href="/examples/reproducibility">
-
-    Bit-stable training across reruns. Determinism flags, seeds, and what to
-    watch.
-
-  </Card>
-
-  <Card title="SFT on OpenHermes" icon="book-open" href="/examples/openhermes-sft">
-
-    Plain SFT (no RL) — sometimes you just need a quick fine-tune.
-
-  </Card>
-
-</CardGroup>
-
-## Where to start
-
-* **Never used Miles for anything beyond GRPO?** → [Fully Async Rollout](/examples/fully-async).
-* **Want tool use / RAG?** → [Search-R1](/examples/search-r1).
-* **VLM / multi-agent?** → [Multi-Agent Co-Evolution](/examples/multi-agent).
-* **Replay an old result?** → [Reproducibility Recipe](/examples/reproducibility).
+- **[agentenv](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv)**: Rollouts against AgentENV, a self-hosted platform running agent sandboxes on Firecracker microVMs.
+- **[DrGRPO](https://github.com/radixark/miles/tree/main/examples/experimental/DrGRPO)**: Custom reducer for Dr.GRPO algorithm.
+- **[eval](https://github.com/radixark/miles/tree/main/examples/experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
+- **[eval_multi_task](https://github.com/radixark/miles/tree/main/examples/experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
+- **[formal_math](https://github.com/radixark/miles/tree/main/examples/experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
+- **[multi_agent](https://github.com/radixark/miles/tree/main/examples/experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
+- **[nemo-gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym)**: SWE-agent training with NVIDIA NeMo Gym as the environment ecosystem.
+- **[openenv](https://github.com/radixark/miles/tree/main/examples/experimental/openenv)**: Rollouts against OpenEnv-hosted environments.
+- **[reproducibility](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
+- **[search-r1](https://github.com/radixark/miles/tree/main/examples/experimental/search-r1)**: A minimal reproduction of Search-R1, featuring multi-turn conversation and tool-calling.
+- **[strands_sglang](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang)**: Integration example with the Strands-Agents scaffolding framework.
+- **[swe-agent-harbor-daytona](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-harbor-daytona)**: The `swe-agent-harbor-docker` pipeline with task sandboxes hosted on Daytona instead of local Docker.
+- **[tau-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).
+- **[verifiers](https://github.com/radixark/miles/tree/main/examples/experimental/verifiers)**: Training on a Prime Intellect Verifiers environment instead of a Miles prompt dataset.

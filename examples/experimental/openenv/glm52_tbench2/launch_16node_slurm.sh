@@ -16,6 +16,7 @@ set -uo pipefail
 : "${CONTAINER_IMAGE:?squashfs image with the miles runtime}"
 : "${CONTAINER_MOUNTS:?must expose the checkouts, model/data dirs and node-local scratch}"
 : "${DAYTONA_ENV_FILE:?file exporting DAYTONA_API_KEY (chmod 600, never in git)}"
+: "${FABRIC_PREFIX:?leading octets of the compute-fabric IP, e.g. 10.4.}"
 
 RECIPE=$MILES_ROOT/examples/experimental/openenv/glm52_tbench2/run_glm5_2_744b_a40b_daytona.py
 RECIPE_ARGS=$(printf '%q ' "$@")
@@ -24,8 +25,9 @@ COMMON="export PYTHONNOUSERSITE=1 RAY_memory_monitor_refresh_ms=0 PYTHONPATH=$MI
 
 nodes=( $(scontrol show hostnames "$SLURM_JOB_NODELIST") )
 # Compute-fabric IP: `hostname -I` ordering varies and the management subnet
-# is not routable between nodes, so select the fabric prefix explicitly.
-head_ip=$(srun --nodes=1 --ntasks=1 -w "${nodes[0]}" hostname -I | tr ' ' '\n' | grep -E "^${FABRIC_PREFIX:-10.}" | head -1)
+# is not routable between nodes; a wrong prefix hangs silently at Ray startup.
+head_ip=$(srun --nodes=1 --ntasks=1 -w "${nodes[0]}" hostname -I | tr ' ' '\n' | grep -E "^$FABRIC_PREFIX" | head -1)
+: "${head_ip:?no address matching $FABRIC_PREFIX on ${nodes[0]}}"
 ngpu_total=$(( ${#nodes[@]} * 4 ))
 echo "head=${nodes[0]} ($head_ip)  nodes=${#nodes[@]}  gpus=$ngpu_total"
 

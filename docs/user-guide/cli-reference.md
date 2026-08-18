@@ -27,8 +27,7 @@ This page has two passes.
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
 
-See [Training Script Walkthrough: Colocation](/user-guide/training-script-walkthrough#colocation-share-gpus-or-dont)
-for what `--colocate` flips on under the hood.
+See [Training Backends](/user-guide/training-backend) for what `--colocate` flips on under the hood.
 
 ### Batch sizing
 
@@ -229,7 +228,7 @@ Sections mirror the launch-script argument groups.
 | `--fsdp-cpu-offload` | flag | off | FSDP: offload params, grads, optimizer state to CPU. |
 | `--fsdp-cpu-backend` | str | `gloo` | FSDP: CPU backend for hybrid offload. |
 | `--dp-replicate-size` | int | `1` | FSDP2 hybrid-shard replica count. |
-| `--attn-implementation` | enum | `flash_attention_2` | FSDP only: `flash_attention_2`, `sdpa`, `eager`. |
+| `--attn-implementation` | str | `flash_attention_2` | FSDP only: passed to `transformers`, e.g. `flash_attention_2`, `flash_attention_3`, `sdpa`, `eager`. |
 
 ### RL algorithm
 
@@ -301,6 +300,26 @@ Common `--sglang-*` flags:
 --sglang-enable-overlap-schedule
 --sglang-cuda-graph-backend-prefill       # prefill graphs default to disabled in colocate mode
 ```
+
+### Agentic sessions
+
+These flags wire an OpenAI-compatible agent loop through Miles' TITO session
+server. See [Agentic Rollout (TITO)](/user-guide/agentic-rollout) for the request
+contract, session behavior, and model-family selection.
+
+| Flag | Type | Default | Notes |
+|---|---|---|---|
+| `--custom-generate-function-path` | `<module>.<fn>` | – | Set to `miles.rollout.generate_hub.agentic_tool_call.generate` for the built-in agentic wrapper. |
+| `--custom-agent-function-path` | `<module>.<fn>` | – | Async agent-environment loop. Registered after selecting the built-in agentic wrapper. |
+| `--use-session-server` | optional `v1` / `v2` | off | Bare flag (or `v1`) selects the linear append-only server; `v2` selects tree serving. Requires `--hf-checkpoint`. |
+| `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
+| `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
+| `--session-server-ip` | str | router IP | Session-server bind address. |
+| `--session-server-port` | int or start/end | auto | One port, or a half-open port range `[start, end)` for multiple instances. |
+| `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries` | v2 only: selects leaf samples before post-processing. |
+| `--session-sample-postprocessor-path` | `<module>.<fn>` | `default_postprocess` | v2 only: finalizes loss masks and rewards. |
+
+`--use-session-server v2` returns `list[Sample]` and rejects `--group-rm`, `--partial-rollout`, and `--recompute-logprobs-via-prefill`.
 
 ### MTP / speculative decoding
 

@@ -108,7 +108,7 @@ def _execute_with_cp(cp_size: int):
         "--sglang-speculative-num-draft-tokens 3 "
         # SGLang requires extra_buffer + SGLANG_ENABLE_SPEC_V2=1 to combine
         # speculative decoding with radix cache on Qwen3.5MoE; the prod
-        # script run_qwen3_5_35b_a3b_mtp_cp2_ep8.py already pairs these two.
+        # script run_qwen3_5_35b_a3b_mtp.py already pairs these two.
         "--sglang-mamba-scheduler-strategy extra_buffer "
     )
 

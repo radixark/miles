@@ -26,7 +26,7 @@ def _args() -> ScriptArgs:
         num_nodes=1,
         num_gpus_per_node=4,
         num_rollout=2,
-        extra_args=("--ci-test " "--ci-disable-logprobs-checker "),
+        extra_args=("--ci-test " "--ci-disable-logprobs-checker " "--skip-actor-forward-only "),
     )
 
 

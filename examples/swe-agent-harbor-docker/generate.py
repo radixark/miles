@@ -44,7 +44,12 @@ async def reward_func(args, samples: Sample | list[Sample], **kwargs) -> float |
 
 
 def _collect_values(all_metrics: list[dict], key: str) -> list[float]:
-    return [m.get(key, 0) for m in all_metrics]
+    """Values agents reported for ``key``; agents that omit it are skipped.
+
+    Defaulting to 0 would log a fake measurement and drag the batch mean down.
+    Callers skip empty lists, so an unreported key stays out of the log.
+    """
+    return [value for metrics in all_metrics if (value := metrics.get(key)) is not None]
 
 
 def _agg_mean(metrics: dict, all_metrics: list[dict], keys: list[str], prefix: str = "agent/", suffix: str = "_mean"):

@@ -1,3 +1,4 @@
+# FIXME
 """End-to-end test for MTP-only gradient verification.
 
 This test verifies that when MTP training is enabled and all outputs are truncated
@@ -15,7 +16,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 import miles.utils.external_utils.command_utils as U
 
 register_cuda_ci(est_time=400, suite="stage-c-4-gpu-h200", labels=["megatron"])
-register_rocm_ci(est_time=420, suite="stage-c-4-gpu-mi350", labels=["megatron"])
+register_rocm_ci(est_time=420, suite="nightly-stage-c-4-gpu-mi350", labels=["megatron"])
 
 MODEL_NAME = "MiMo-7B-RL"
 MODEL_TYPE = "mimo-7B-rl"
@@ -139,7 +140,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import uvicorn
 
+from miles.dashboard.advisory import DEFAULT_LOW_MFU
 from miles.dashboard.dump_reader import DumpReader
 from miles.dashboard.server import make_app
 from miles.dashboard.store import MetricStore
@@ -57,6 +58,14 @@ def main(argv: list[str] | None = None) -> None:
         help="always show the fleet utilization overview instead of the per-rank carpet "
         "(auto-enabled above 64 lanes)",
     )
+    parser.add_argument(
+        "--low-mfu-threshold",
+        type=float,
+        default=DEFAULT_LOW_MFU,
+        help="warn when mean actor-train MFU falls below this fraction; 0 disables the rule. "
+        "What counts as low is model- and config-dependent, so tune it to the run "
+        "(default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     if args.demo:
@@ -70,11 +79,16 @@ def main(argv: list[str] | None = None) -> None:
 
     store = MetricStore.load(dump_dir / "dashboard")
     reader = DumpReader(dump_dir, cache_dir=args.cache_dir, tensor_lru=args.tensor_lru)
-    app = make_app(store, reader, follow=args.follow, use_utilization_overview=args.use_utilization_overview)
+    app = make_app(
+        store,
+        reader,
+        follow=args.follow,
+        use_utilization_overview=args.use_utilization_overview,
+        low_mfu=args.low_mfu_threshold,
+    )
 
     if args.follow:
-        # Append-only streams + GIL-atomic list appends make concurrent reads
-        # from request handlers safe; a reader may just miss the newest records.
+        # races the threadpool handlers: list appends are GIL-atomic, partition caches lock
         def _tail() -> None:
             while True:
                 time.sleep(FOLLOW_INTERVAL_SECONDS)

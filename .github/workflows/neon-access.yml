@@ -1,0 +1,124 @@
+name: Neon access
+run-name: Neon access by ${{ github.actor }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Canonical request UUID
+        required: true
+        type: string
+      sql_gzip_base64:
+        description: Base64 of gzip-compressed UTF-8 PostgreSQL SQL
+        required: true
+        type: string
+      reason:
+        description: Audit reason
+        required: true
+        type: string
+      recipient_cert_base64:
+        description: Base64 PEM certificate for encrypted result delivery
+        required: true
+        type: string
+      max_result_bytes:
+        description: Maximum serialized returned-row bytes
+        required: true
+        default: "4194304"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REQUESTED_REF: ${{ github.ref_name }}
+        run: |
+          if [[ "$REQUESTED_REF" != "$DEFAULT_BRANCH" ]]; then
+            echo "::error::Neon access must run from the default branch"
+            exit 1
+          fi
+
+      - name: Require live write permission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INITIAL_ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          for actor in "$INITIAL_ACTOR" "$TRIGGERING_ACTOR"; do
+            permission="$(gh api \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/collaborators/${actor}/permission" \
+              --jq .permission)"
+            if [[ "$permission" != "write" && "$permission" != "admin" ]]; then
+              echo "::error::${actor} has ${permission}, not write/admin permission"
+              exit 1
+            fi
+          done
+
+  execute:
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the executor
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/neon_access_job.py
+          sparse-checkout-cone-mode: false
+
+      - name: Install the PostgreSQL driver
+        run: python3 -m pip install --disable-pip-version-check "psycopg[binary]==3.3.4"
+
+      - name: Prepare and validate the result recipient
+        env:
+          RECIPIENT_CERT_BASE64: ${{ inputs.recipient_cert_base64 }}
+        run: |
+          umask 077
+          printf '%s' "$RECIPIENT_CERT_BASE64" | base64 --decode > "$RUNNER_TEMP/recipient.cert.pem"
+          openssl x509 -in "$RUNNER_TEMP/recipient.cert.pem" -noout
+
+      - name: Execute the exact SQL
+        id: execute_sql
+        continue-on-error: true
+        env:
+          ACTOR: ${{ github.actor }}
+          MAX_RESULT_BYTES: ${{ inputs.max_result_bytes }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          REASON: ${{ inputs.reason }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          RESULT_PATH: ${{ runner.temp }}/result.json
+          RUN_ID: ${{ github.run_id }}
+          SQL_GZIP_BASE64: ${{ inputs.sql_gzip_base64 }}
+        run: python3 .github/workflows/scripts/neon_access_job.py
+
+      - name: Encrypt the result
+        if: ${{ always() }}
+        run: |
+          openssl cms -encrypt -binary -aes256 \
+            -in "$RUNNER_TEMP/result.json" \
+            -outform DER \
+            -out "$RUNNER_TEMP/result.json.cms" \
+            "$RUNNER_TEMP/recipient.cert.pem"
+          rm "$RUNNER_TEMP/result.json"
+
+      - name: Upload the encrypted result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: neon-access-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/result.json.cms
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Propagate database failure
+        if: ${{ steps.execute_sql.outcome != 'success' }}
+        run: exit 1

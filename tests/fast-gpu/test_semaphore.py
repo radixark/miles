@@ -8,7 +8,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=60,
     suite="stage-b-2-gpu-h200",
-    labels=[],
+    labels=["sglang"],
     disabled="FIXME: re-enable after shared HTTP client concurrency is reset between cases.",
 )
 

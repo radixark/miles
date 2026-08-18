@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 
 from miles.utils import train_metric_utils
-from miles.utils.flops_utils import calculate_fwd_flops
+from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -415,9 +415,7 @@ def log_perf_data(rollout_id: int, args: Namespace, extra_metrics: dict | None =
             and parallel_state.is_pp_last_stage
             and parallel_state.effective_dp_cp.rank == 0
         ),
-        compute_total_fwd_flops=lambda seq_lens: calculate_fwd_flops(seqlens=seq_lens, args=args)
-        / dist.get_world_size()
-        / 1e12,
+        compute_total_fwd_flops=lambda seq_lens: fwd_tflops_per_gpu(seq_lens, args, dist.get_world_size()),
         extra_metrics=extra_metrics,
     )
 

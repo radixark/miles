@@ -2,6 +2,7 @@ import os
 import statistics
 import time
 
+import polars as pl
 import pytest
 from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
@@ -112,6 +113,20 @@ def test_tokens_full_range(reader):
     assert payload["rollout_log_probs"] == pytest.approx(sample.rollout_log_probs)
     row = joined.train_rows[sample.index]
     assert payload["lp_diff"][0] == pytest.approx(float(row.log_probs[0] - row.rollout_log_probs[0]))
+
+
+def test_tokens_null_the_stats_where_the_loss_is_masked(reader):
+    """mask=0 positions hold placeholders the engine never scored: they serialize
+    as null, never as numbers a chart would mistake for data."""
+    masked = reader.tokens(0, REMOVED[0])
+    assert masked["loss_mask"] and set(masked["loss_mask"]) == {0}
+    for key in ("train_log_probs", "rollout_log_probs", "lp_diff", "imp_ratio", "ref_log_probs", "advantages"):
+        assert masked[key] == [None] * len(masked["loss_mask"]), key
+
+    row = reader.load_joined(0).train_rows[0]
+    unmasked = reader.tokens(0, 0)
+    assert set(unmasked["loss_mask"]) == {1}
+    assert unmasked["train_log_probs"] == pytest.approx([float(v) for v in row.log_probs])
 
 
 def test_tokens_window_straddles_response_boundary(reader):
@@ -231,3 +246,18 @@ def test_staleness_and_agentic_columns(reader):
 
     aggregates = reader.step_aggregates()
     assert 0 < aggregates["mixed_version_frac"][0] < 1
+
+
+def test_groups_null_rewards_are_not_zero_std(tmp_path):
+    # missing train dumps leave raw_reward null for every sample; that is
+    # absent data, not a degenerate group
+    reader = DumpReader(tmp_path)
+    reader.summary = lambda rollout_id, evaluation=False: pl.DataFrame(
+        {
+            "group_index": [0, 0, 1, 1],
+            "raw_reward": pl.Series([None] * 4, dtype=pl.Float64),
+            "response_length": [1, 2, 3, 4],
+            "truncated": [False] * 4,
+        }
+    )
+    assert not reader.groups(0)["zero_std"].any()

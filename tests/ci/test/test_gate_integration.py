@@ -8,7 +8,7 @@ monkeypatched.
 Covered:
 
 * passing-attempt selection: only the PASSED attempt's record feeds the gate.
-* nightly write: a `schedule` event makes the hook persist a baseline row
+* baseline write: a policy-selected writer makes the hook persist a baseline row
   whose `trusted` flag comes from the verdict; specs sharing a coordinate
   collapse to one `metric_values` row; a no-spec file writes nothing.
 * PR no-write: a `pull_request` event writes no row and emits a shadow
@@ -67,7 +67,9 @@ def _write_test_file(tmp_path: Path, gate_lines: str, *, name: str = "test_e2e_g
     body = (
         "from tests.ci.ci_register import register_cuda_ci\n"
         "from tests.ci.metric_history import register_ci_gate\n"
-        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100")\n' + textwrap.dedent(gate_lines).strip() + "\n"
+        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])\n'
+        + textwrap.dedent(gate_lines).strip()
+        + "\n"
     )
     p = tmp_path / name
     p.write_text(body)
@@ -182,7 +184,7 @@ class TestBuildStoreFromEnv:
 
 class TestPassingAttemptSelection:
     def test_only_passing_attempt_record_is_evaluated_and_written(self, tmp_path, store, monkeypatch):
-        # Nightly so the hook writes; assert the persisted value comes from the
+        # Baseline writer so the hook writes; assert the persisted value comes from the
         # PASSING attempt's good record, never the failed attempt's bad one.
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
         test_file = _write_test_file(
@@ -207,7 +209,7 @@ class TestPassingAttemptSelection:
             good_record,
             store=store,
             registry=registry,
-            nightly=True,
+            write_baseline=True,
             provenance=PROVENANCE,
         )
 
@@ -215,10 +217,10 @@ class TestPassingAttemptSelection:
         assert rows == [(0.80,)], "only the passing attempt's value must be written"
 
 
-# --- nightly write ----------------------------------------------------------
+# --- baseline write ---------------------------------------------------------
 
 
-class TestNightlyWrite:
+class TestBaselineWrite:
     def test_nightly_writes_trusted_row_with_provenance(self, tmp_path, store, monkeypatch):
         monkeypatch.setenv("GITHUB_EVENT_NAME", "schedule")
         test_file = _write_test_file(
@@ -237,7 +239,7 @@ class TestNightlyWrite:
             record,
             store=store,
             registry=registry,
-            nightly=True,
+            write_baseline=True,
             provenance=PROVENANCE,
             now_iso="2026-06-29T00:00:00+00:00",
         )
@@ -273,7 +275,7 @@ class TestNightlyWrite:
 
     def test_nightly_writes_untrusted_when_verdict_not_trusted(self, tmp_path, store):
         # A historical failure makes the verdict not-trusted; the row is still
-        # written (nightly always writes) but flagged untrusted, so it never
+        # written (baseline writers always write) but flagged untrusted, so it never
         # pollutes a future baseline.
         test_file = _write_test_file(
             tmp_path,
@@ -299,7 +301,7 @@ class TestNightlyWrite:
             record,
             store=store,
             registry=registry,
-            nightly=True,
+            write_baseline=True,
             provenance=PROVENANCE,
             now_iso="2026-06-29T00:00:00+00:00",
         )
@@ -336,7 +338,7 @@ class TestNightlyWrite:
             record,
             store=store,
             registry=registry,
-            nightly=True,
+            write_baseline=True,
             provenance=PROVENANCE,
         )
 
@@ -361,7 +363,7 @@ class TestNightlyWrite:
             record,
             store=store,
             registry=registry,
-            nightly=True,
+            write_baseline=True,
             provenance=PROVENANCE,
         )
         assert _count_runs(store) == 0
@@ -390,7 +392,7 @@ class TestNightlyWrite:
             record,
             store=store,
             registry=registry,
-            nightly=True,
+            write_baseline=True,
             provenance=PROVENANCE,
         )
         assert _count_runs(store) == 1
@@ -425,7 +427,7 @@ class TestPrShadow:
                 record,
                 store=store,
                 registry=registry,
-                nightly=False,
+                write_baseline=False,
                 provenance=PROVENANCE,
             )
 
@@ -472,7 +474,7 @@ class TestNeverBlocks:
             record,
             store=store,
             registry=registry,
-            nightly=False,
+            write_baseline=False,
             provenance=PROVENANCE,
         )
         assert result is None
@@ -499,7 +501,7 @@ class TestNeverBlocks:
                 missing_record,
                 store=store,
                 registry=registry,
-                nightly=True,
+                write_baseline=True,
                 provenance=PROVENANCE,
             )
         assert result is None
@@ -532,7 +534,7 @@ class TestNeverBlocks:
                 record,
                 store=store,
                 registry=registry,
-                nightly=True,
+                write_baseline=True,
                 provenance=PROVENANCE,
             )
             assert result is None
@@ -544,7 +546,7 @@ class TestNeverBlocks:
 
 
 def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypatch):
-    # Regression guard: nightly values must be built as
+    # Regression guard: baseline values must be built as
     # MetricSample(metric_key, steps_key, constraint_key, step, current) and only
     # for metrics whose current is not None. A spec on a missing metric
     # (current None) yields a written run with zero values.
@@ -565,7 +567,7 @@ def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypa
         record,
         store=store,
         registry=registry,
-        nightly=True,
+        write_baseline=True,
         provenance=PROVENANCE,
     )
     assert _count_runs(store) == 1

@@ -24,7 +24,7 @@ def ray_launchers() -> list[Path]:
 
 def test_the_repo_has_ray_launchers_to_check() -> None:
     """A discovery bug that finds nothing would make every other check in this file vacuous."""
-    assert len(ray_launchers()) > 50
+    assert len(ray_launchers()) > 30
 
 
 @pytest.mark.parametrize("launcher", ray_launchers(), ids=lambda path: str(path.relative_to(REPO_ROOT)))

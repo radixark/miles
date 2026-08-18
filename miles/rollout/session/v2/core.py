@@ -35,8 +35,10 @@ class SessionCoreV2(SessionCore):
     methods (positioning/commit, metadata, samples op), inherits the
     transport shell (health, create/delete, raw proxy)."""
 
-    def __init__(self, backend, registry: SessionRegistryV2, args, session_server_instance_id=None):
-        super().__init__(backend, registry, args, session_server_instance_id)
+    def __init__(
+        self, backend, registry: SessionRegistryV2, args, session_server_instance_id=None, *, use_addition_r3=False
+    ):
+        super().__init__(backend, registry, args, session_server_instance_id, use_addition_r3=use_addition_r3)
         # Import-path only in production: function_registry is process-local.
         self.sample_picker = load_function(args.session_sample_picker_path, sync_required=True)
         self.sample_postprocessor = load_function(args.session_sample_postprocessor_path, sync_required=True)
@@ -87,7 +89,12 @@ class SessionCoreV2(SessionCore):
 
         try:
             material = build_leaf_material(
-                self.args, session, self.registry, session_id=session_id, max_seq_len=max_seq_len
+                self.args,
+                session,
+                self.registry,
+                session_id=session_id,
+                max_seq_len=max_seq_len,
+                use_addition_r3=self.use_addition_r3,
             )
         except (AssertionError, ValueError) as exc:
             return Response(content=str(exc).encode(), status_code=422, media_type="text/plain")
@@ -144,7 +151,7 @@ class SessionCoreV2(SessionCore):
             )
 
             request_messages = request_body.get("messages", [])
-            position_for_request(session, request_messages)
+            position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
             prompt_token_ids = prepare_pretokenized(
                 session,
                 request_messages,
@@ -153,6 +160,8 @@ class SessionCoreV2(SessionCore):
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
+
+            self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
             attach_parent = session.active_leaf

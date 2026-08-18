@@ -6,6 +6,11 @@ on:
       execute_command:
         type: string
         required: true
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
+        type: string
+        required: false
+        default: ''
 
 jobs:
   # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
@@ -25,6 +30,8 @@ jobs:
 
       - name: Checkout miles
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -51,6 +58,16 @@ jobs:
             PR_SGLANG_PR=$(echo "$PR_BODY" | grep -m1 -oP '^ci-sglang-pr:\s+\K\S+' || true)
             [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
             [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
+          fi
+          # Release branches carry release-lock.json (written at branch cut) pinning
+          # the dependency SHAs the release was frozen with. Explicit overrides above
+          # still win; the moving branch heads are only the last resort.
+          if [ -f release-lock.json ]; then
+            LOCK_SGLANG=$(python3 -c "import json; print(json.load(open('release-lock.json'))['sglang_commit'])")
+            LOCK_MEGATRON=$(python3 -c "import json; print(json.load(open('release-lock.json'))['megatron_commit'])")
+            [ -z "$SGLANG_PR" ] && SGLANG_PR="$LOCK_SGLANG"
+            [ -z "$MEGATRON_PR" ] && MEGATRON_PR="$LOCK_MEGATRON"
+            echo "release-lock.json present: sglang=$LOCK_SGLANG megatron=$LOCK_MEGATRON"
           fi
           [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
           [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
@@ -93,6 +110,11 @@ jobs:
         run: |
           uv pip install -r requirements.txt -r tests/ci/requirements-ci-cpu.txt
           python tests/ci/verify_source_resolution.py
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.2.3
 
       - name: Resolve suite plan
         shell: bash

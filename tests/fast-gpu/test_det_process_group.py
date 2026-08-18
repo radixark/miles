@@ -1,6 +1,7 @@
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-register_cuda_ci(est_time=240, suite="stage-c-4-gpu-h200", labels=[])
+register_cuda_ci(est_time=240, suite="stage-c-4-gpu-h200", labels=["precision"])
+register_rocm_ci(est_time=40, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
 import os
 import socket

@@ -53,8 +53,7 @@ python examples/experimental/verifiers/run.py --verifiers-config /path/to/verifi
 
 The launcher points `VERIFIERS_CONFIG` at the file and selects the adapter with
 `--rollout-function-path verifiers_rollout.VerifiersRolloutFn` (the
-`generate_rollout` function entry without
-`MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1`) plus
+`generate_rollout` function entry under `MILES_USE_LEGACY_ROLLOUT_V1=1`) plus
 `--disable-rollout-global-dataset`. To wire a hand-rolled command, set the same
 three things and put this directory on `PYTHONPATH`.
 

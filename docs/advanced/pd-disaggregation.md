@@ -6,6 +6,9 @@ In a typical SGLang deployment, every engine handles both **prefill** (the
 one-shot forward over the prompt) and **decode** (the per-token autoregressive
 loop). The two phases have different compute profiles:
 
+This page covers separation inside the rollout deployment. To separate policy
+training from rollout inference, see [Disaggregated RL Rollout](/advanced/disaggregated-rollout).
+
 | Phase | Compute pattern | Bottleneck |
 |---|---|---|
 | Prefill | Long sequence × full batch | FLOPs |
@@ -77,7 +80,7 @@ on observed queueing:
 
 ## Pairs with
 
-* [DeepSeek R1 recipe](/models/deepseek/deepseek). PD is a clear win at
+* [DeepSeek-V3.2 recipe](/models/deepseek/deepseek-v3-2). PD is a clear win at
   671B scale.
 * [Speculative decoding](/advanced/speculative-decoding). Both are SGLang-side
   features; pool sizing should account for the verify-batch size when

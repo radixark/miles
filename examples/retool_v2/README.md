@@ -1,6 +1,6 @@
 # Retool v2
 
-This example is an upgraded version of [retool](../retool), using the updated interfaces provided by the miles framework to implement multi-turn RL training with tool calls in a cleaner way.
+This example is an upgraded version of the original retool example, using the updated interfaces provided by the miles framework to implement multi-turn RL training with tool calls in a cleaner way.
 
 ## Key Differences from v1
 
@@ -28,4 +28,6 @@ Users only need to focus on business logic (tool definitions, tool execution, re
 python examples/retool_v2/run_retool_multi_turn.py
 ```
 
-For data and model preparation, refer to the [retool v1 README](../retool/README.md).
+The launch script prepares everything it needs on its own: it downloads the dapo-math-17k
+training set and the aime-2024 eval set, downloads the checkpoint, and converts it to
+`torch_dist` before training starts.

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 import miles.rollout.generate_hub.agentic_tool_call as agentic_tool_call
+from miles.ray.rollout.rollout_data_conversion import validate_compact_rollout_ids
 from miles.rollout.base_types import GenerateFnInput
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.utils.types import Sample
@@ -67,7 +68,42 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
     output = await agentic_tool_call.generate(_generate_input())
 
     assert output.samples == [sample]
+    assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("input_rollout_id", "expected_rollout_id"), [(None, 7), (11, 11)])
+async def test_success_assigns_shared_rollout_id_to_v2_leaves(monkeypatch, input_rollout_id, expected_rollout_id):
+    leaves = [
+        Sample(status=Sample.Status.COMPLETED, response="one", response_length=1, tokens=[1]),
+        Sample(status=Sample.Status.COMPLETED, response="two", response_length=1, tokens=[2]),
+    ]
+    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    generate_input = _generate_input()
+    generate_input.sample.rollout_id = input_rollout_id
+
+    output = await agentic_tool_call.generate(generate_input)
+
+    assert [sample.rollout_id for sample in output.samples] == [expected_rollout_id] * 2
+    validate_compact_rollout_ids([[output.samples]])
+
+
+@pytest.mark.asyncio
+async def test_v2_requires_input_rollout_identity(monkeypatch):
+    leaves = [
+        Sample(status=Sample.Status.COMPLETED, response="one", response_length=1, tokens=[1]),
+        Sample(status=Sample.Status.COMPLETED, response="two", response_length=1, tokens=[2]),
+    ]
+    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata={}, empty_reason=None))
+    _patch_agent(monkeypatch, tracer)
+    generate_input = _generate_input()
+    generate_input.sample.index = None
+    generate_input.sample.rollout_id = None
+
+    with pytest.raises(AssertionError, match="require input Sample.rollout_id or Sample.index"):
+        await agentic_tool_call.generate(generate_input)
 
 
 @pytest.mark.asyncio
