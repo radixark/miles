@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from tests.e2e.short import test_multi_policy_solver_verifier_gsm8k as e2e
+from tests.e2e import conftest_multi_policy as e2e
 
 from miles.utils.audit_utils.event_logger.models import (
     EnvReport,
@@ -56,7 +56,7 @@ def _pin_verified_argument_count(monkeypatch):
 
 def _assert_with(monkeypatch, events: list) -> None:
     monkeypatch.setattr(e2e, "read_events", lambda events_dir: events)
-    e2e._assert_every_rank_trained_with_its_own_policy_args(Path("/events"), megatron_config=MEGATRON_CONFIG)
+    e2e.assert_ranks_trained_with_policy_args(Path("/events"), megatron_config=MEGATRON_CONFIG)
 
 
 class TestAssertEveryRankTrainedWithItsOwnPolicyArgs:
