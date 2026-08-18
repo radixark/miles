@@ -92,6 +92,9 @@ the largest models all live on Megatron-LM. See
   Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout
   layer that fits it, with task sandboxes on AgentENV, Daytona, E2B or Modal. See
   [Agentic Environments](https://miles.radixark.com/docs/user-guide/environments).
+- **Diffusion models.** Flow-GRPO, DiffusionNFT and SFT on an sglang-diffusion rollout
+  engine and an FSDP2 trainer, in
+  [Miles-diffusion](https://github.com/radixark/miles_diffusion).
 
 ## Getting Started
 
