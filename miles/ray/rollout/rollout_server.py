@@ -10,10 +10,13 @@ from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_INIT_EXPECTED_NUM_CELLS = 1
 
 WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
 WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
@@ -43,16 +46,20 @@ async def create_rollout_servers(
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
-            expected_num_cells=_compute_expected_num_cells(engine_provider, model_cfg=model_cfg),
+            init_expected_num_cells=_compute_init_expected_num_cells(args, engine_provider, model_cfg=model_cfg),
         )
 
     return servers
 
 
-def _compute_expected_num_cells(engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
-    if (n := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
-        return n
-    return model_cfg.num_server_cells
+def _compute_init_expected_num_cells(args, engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
+    if (declared := args.init_expected_num_cells) is not None:
+        return declared
+    if (answered := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
+        return answered
+    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
+        return model_cfg.num_server_cells
+    return _DEFAULT_INIT_EXPECTED_NUM_CELLS
 
 
 @dataclasses.dataclass
@@ -74,7 +81,7 @@ class RolloutServer:
     health_checker_activeness: ActivenessTracker = dataclasses.field(
         default_factory=lambda: ActivenessTracker(active=True)
     )
-    expected_num_cells: int = 0
+    init_expected_num_cells: int = 0
 
     @property
     @requires_lock
@@ -158,11 +165,11 @@ class RolloutServer:
         return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt
-    async def wait_expected_num_cells(self, timeout: float = 3600):
+    async def wait_init_expected_num_cells(self, timeout: float = 3600):
         async def _check(remaining_seconds: float) -> None:
             count = self._count_startable_cells()
-            if count < self.expected_num_cells:
-                raise Exception(f"Only {count}/{self.expected_num_cells} cells of {self.model_name} are ready")
+            if count < self.init_expected_num_cells:
+                raise Exception(f"Only {count}/{self.init_expected_num_cells} cells of {self.model_name} are ready")
 
         await retry_until_deadline(
             _check,
@@ -170,7 +177,7 @@ class RolloutServer:
             retry_on=Exception,
             initial_delay=WAIT_CELLS_INITIAL_DELAY_SECONDS,
             max_delay=WAIT_CELLS_MAX_DELAY_SECONDS,
-            log_fields=dict(op="wait_expected_num_cells", model_name=self.model_name),
+            log_fields=dict(op="wait_init_expected_num_cells", model_name=self.model_name),
         )
 
     @lock_exempt

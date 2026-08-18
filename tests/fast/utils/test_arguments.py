@@ -1260,6 +1260,59 @@ class TestDeployComponent:
         _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--debug-rollout-only"]))
 
 
+class TestInitExpectedNumCells:
+    def test_a_run_told_nothing_names_no_number_and_is_left_to_the_default(self):
+        """A split run reaches its first rollout on one engine, so the flag is optional for the simplest split."""
+        assert _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]).init_expected_num_cells is None
+
+    def test_a_run_deploying_its_own_engines_is_refused_the_flag(self):
+        """It launches every cell it waits for, so a number here would contradict what it deploys."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--init-expected-num-cells", "2"]))
+
+    def test_a_run_waits_for_as_many_registered_cells_as_it_was_told_to(self):
+        """Nothing here can derive the number: the engines are deployed by launches this one never sees."""
+        args = _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "4"])
+
+        assert args.init_expected_num_cells == 4
+
+    def test_a_run_waiting_for_no_cell_at_all_is_refused(self):
+        """It would start the first rollout against an empty fleet and fail on every request it routes."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(
+                _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "0"])
+            )
+
+    def test_a_split_trainer_deployment_is_refused_the_flag(self):
+        """It instantiates no inference controller, so the number it was given is dropped on the floor."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    ["--deploy-component", "trainer", *_SHARED_STORE_ARGS, "--init-expected-num-cells", "2"]
+                )
+            )
+
+    def test_an_unsplit_run_is_refused_the_flag(self):
+        """It deploys every engine it waits for, so the fleet it starts on is not something to be told."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(_parse_deploy_args(["--init-expected-num-cells", "2"]))
+
+    def test_the_refusal_names_the_deployment_that_does_take_the_flag(self):
+        """Whoever launched the wrong half has to be told which half to move the flag to."""
+        with pytest.raises(AssertionError, match="primary"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    ["--deploy-component", "trainer", *_SHARED_STORE_ARGS, "--init-expected-num-cells", "2"]
+                )
+            )
+
+    def test_the_primary_deployment_still_takes_the_flag(self):
+        """It is the one that waits for registrations, and nothing else can derive how many to wait for."""
+        _validate_deploy_component(
+            _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "4"])
+        )
+
+
 class TestEngineRegistrationArguments:
     def test_a_fully_told_engine_deployment_validates(self):
         """The controller address is all it needs; it redeems no object store reference of the run."""
