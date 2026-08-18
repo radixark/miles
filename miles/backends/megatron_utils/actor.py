@@ -59,7 +59,15 @@ from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
-from .model import TrainStepOutcome, build_model_and_optimizer, forward_only, load_model_state, save, train
+from .model import (
+    LoadCheckpointOutput,
+    TrainStepOutcome,
+    build_model_and_optimizer,
+    forward_only,
+    load_model_state,
+    save,
+    train,
+)
 from .named_weights import named_params_and_buffers
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
@@ -208,21 +216,11 @@ class MegatronTrainRayActor(TrainRayActor):
         self._grad_buffer_paused = False
 
         if role == "critic":
-            with inplace_modify_args(args, heal_load_overrides):
-                load_output = load_model_state(
-                    args,
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    opt_param_scheduler=self.opt_param_scheduler,
-                    role=role,
-                    checkpointing_context=checkpointing_context,
-                )
-
-            clear_memory()
-
+            load_output = self._load_state_core(
+                checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
+            )
             if self.args.offload_train:
                 self.sleep()
-
             return load_output.start_rollout_id
 
         main_cast_ctx = None
@@ -238,32 +236,20 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
+        load_output = self._load_state_core(
+            checkpointing_context=checkpointing_context, overrider_for_loading=heal_load_overrides
+        )
+
         self._init_training_state()
-
-        with inplace_modify_args(args, heal_load_overrides):
-            load_output = load_model_state(
-                args,
-                model=self.model,
-                optimizer=self.optimizer,
-                opt_param_scheduler=self.opt_param_scheduler,
-                role=role,
-                checkpointing_context=checkpointing_context,
-            )
-
-        self._load_auxiliary_checkpoints()
-        self._switch_model("actor")
-
-        # empty cache after initialization
-        clear_memory()
-
-        if self.args.offload_train:
-            self.sleep()
 
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:
             from miles.utils.function_registry import load_function
 
             self.rollout_data_postprocess = load_function(x)
+
+        if self.args.offload_train:
+            self.sleep()
 
         self.prof.on_init_end()
 
@@ -306,6 +292,28 @@ class MegatronTrainRayActor(TrainRayActor):
             for module in model_chunk.modules():
                 if isinstance(module, TransformerEngineBaseModule):
                     module._fp8_workspaces.clear()
+
+    def _load_state_core(
+        self, *, checkpointing_context: dict | None, overrider_for_loading: dict[str, object]
+    ) -> LoadCheckpointOutput:
+        with inplace_modify_args(self.args, overrider_for_loading):
+            load_output = load_model_state(
+                self.args,
+                model=self.model,
+                optimizer=self.optimizer,
+                opt_param_scheduler=self.opt_param_scheduler,
+                role=self.role,
+                checkpointing_context=checkpointing_context,
+            )
+
+        if self.role != "critic":
+            self._load_auxiliary_checkpoints()
+            self._switch_model("actor")
+
+        # empty cache after initialization
+        clear_memory()
+
+        return load_output
 
     def _load_auxiliary_checkpoints(self) -> None:
         if self._enable_weight_backup:
