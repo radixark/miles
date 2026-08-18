@@ -264,6 +264,7 @@
       "pages": [
        "examples/infra-features",
        "examples/infra-features/fully-async",
+       "examples/infra-features/hot-restart",
        "examples/infra-features/low-precision",
        "examples/infra-features/p2p-weight-transfer",
        "examples/infra-features/random-async",
