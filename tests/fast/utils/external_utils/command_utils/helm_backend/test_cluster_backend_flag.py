@@ -134,7 +134,11 @@ def launch_argv(
     monkeypatch.setattr(entrypoint, "_compute_trainer_controller_addrs", lambda args, *, release, namespace: {})
     monkeypatch.setattr(Helm, "get_manifest", staticmethod(lambda release, namespace: None))
     monkeypatch.setattr(Helm, "render_upgrade", staticmethod(fake_render_upgrade))
-    monkeypatch.setattr(entrypoint, "_remove_pending_uninstall", lambda release, *, namespace: None)
+    monkeypatch.setattr(
+        entrypoint,
+        "_defuse_previous_generation",
+        lambda release, *, namespace, superseded_state_file, state_file: None,
+    )
     monkeypatch.setattr(Helm, "build_dependencies", lambda chart: None)
     monkeypatch.setattr(Helm, "upgrade", staticmethod(fake_upgrade))
     monkeypatch.setattr(entrypoint, "_follow_until_finished", lambda **kwargs: None)
