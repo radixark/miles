@@ -197,6 +197,14 @@ class TestRayWorkerHandleWaitReady:
         with pytest.raises(WorkerUnreachableError):
             await handle.wait_ready(timeout=0.01)
 
+    async def test_allowing_the_uuid_to_change_is_accepted_and_changes_nothing(self):
+        """Every run takes this path at startup, and refusing the flag aborted the ray backend there."""
+        handle, inner = _make_handle(__ray_ready__=_FakeRemoteMethod([_return_factory(None)]))
+
+        await handle.wait_ready(timeout=1.0, allow_server_uuid_change=True)
+
+        assert inner.__ray_ready__.call_count == 1
+
 
 @pytest.mark.asyncio
 class TestRayWorkerHandleWaitDead:

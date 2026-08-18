@@ -32,7 +32,9 @@ class RayWorkerHandle(BaseWorkerHandle):
 
         return call
 
-    async def wait_ready(self, *, timeout: float) -> None:
+    async def wait_ready(self, *, timeout: float, allow_server_uuid_change: bool = False) -> None:
+        del allow_server_uuid_change
+
         try:
             await asyncio.wait_for(self._actor_handle.__ray_ready__.remote(), timeout=timeout)
         except ray.exceptions.RayActorError as e:
