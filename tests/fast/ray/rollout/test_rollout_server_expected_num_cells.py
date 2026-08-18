@@ -154,7 +154,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
         servers = await _create_servers(args, models)
 
         actual_per_model_idx = {
-            model_idx: servers[model["name"]].expected_num_cells for model_idx, model in enumerate(models)
+            model_idx: servers[model["name"]].init_expected_num_cells for model_idx, model in enumerate(models)
         }
         assert actual_per_model_idx == expected_per_model_idx
 
@@ -164,7 +164,7 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
 
         servers = await _create_servers(args, _CONFIG_WITH_PLACEHOLDER)
 
-        assert servers["actor"].expected_num_cells == 2
+        assert servers["actor"].init_expected_num_cells == 2
 
     async def test_every_model_gets_its_own_barrier_target(self, tmp_path: Path) -> None:
         """Sharing one pool size across models would block the small model behind the big one."""
@@ -172,8 +172,8 @@ class TestExpectedNumCellsMatchesTheEngineSpecs:
 
         servers = await _create_servers(args, _CONFIG_MULTI_MODEL)
 
-        assert servers["actor"].expected_num_cells == 4
-        assert servers["ref"].expected_num_cells == 1
+        assert servers["actor"].init_expected_num_cells == 4
+        assert servers["ref"].init_expected_num_cells == 1
 
     async def test_every_model_talks_to_its_own_router(self, tmp_path: Path) -> None:
         """A server paired with another model's router would advertise its cells to the wrong fleet."""
@@ -199,7 +199,7 @@ class TestExpectedNumCellsAsksTheProvider:
             router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
         )
 
-        assert servers["default"].expected_num_cells == 2
+        assert servers["default"].init_expected_num_cells == 2
 
     async def test_a_provider_that_starts_with_no_cells_is_not_treated_as_having_no_opinion(self) -> None:
         """An elastic provider legitimately announces zero cells at startup; folding that into the
@@ -213,7 +213,7 @@ class TestExpectedNumCellsAsksTheProvider:
             router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
         )
 
-        assert servers["default"].expected_num_cells == 0
+        assert servers["default"].init_expected_num_cells == 0
 
     async def test_a_provider_without_an_opinion_falls_back_to_the_config_derivation(self) -> None:
         """Backend providers announce cells they are told to launch, so the config stays the source."""
@@ -226,7 +226,7 @@ class TestExpectedNumCellsAsksTheProvider:
             router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
         )
 
-        assert servers["default"].expected_num_cells == 2
+        assert servers["default"].init_expected_num_cells == 2
 
 
 class TestEngineSpecNamingUsedByTheCrossCheck:
@@ -242,7 +242,7 @@ class TestRouterFlagsAtStartup:
         args = _make_args_with_config(models=_CONFIG_SINGLE_GROUP, tmp_path=tmp_path)
         args.sglang_router_port = 31000
 
-        assert await _create_servers(args)
+        assert await _create_servers(args, _CONFIG_SINGLE_GROUP)
 
     async def test_an_external_router_ip_is_still_rejected(self, tmp_path: Path) -> None:
         """Attaching to a router miles did not start is not supported yet, and silently starting
@@ -251,4 +251,57 @@ class TestRouterFlagsAtStartup:
         args.sglang_router_ip = "10.0.0.9"
 
         with pytest.raises(AssertionError, match="external router mode was removed"):
-            await _create_servers(args)
+            await resolve_router_addrs(args, router_providers=[_StubProvider()])
+
+
+class TestInitExpectedNumCellsOfARegisteringRun:
+    async def test_a_run_whose_engines_register_waits_for_one_cell_unless_told_otherwise(self) -> None:
+        """A split run reaches its first rollout on one engine, so the simplest split needs no flag."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+
+        servers = await _servers_of(args, provider=_StubProvider())
+
+        assert servers["default"].init_expected_num_cells == 1
+
+    async def test_a_run_whose_engines_register_waits_for_the_number_it_was_told(self) -> None:
+        """Its own config sizes engines it does not deploy, so only the flag names what to wait for."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+        args.init_expected_num_cells = 3
+
+        servers = await _servers_of(args, provider=_StubProvider())
+
+        assert servers["default"].init_expected_num_cells == 3
+
+    async def test_a_run_deploying_its_own_engines_derives_the_barrier_from_its_config(self) -> None:
+        """It launches every cell it waits for, and the flag is refused where the arguments are validated."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4)
+
+        servers = await _servers_of(args, provider=_StubProvider())
+
+        assert servers["default"].init_expected_num_cells == 2
+
+    async def test_the_flag_beats_a_provider_that_answers_for_its_own_fleet(self) -> None:
+        """Nothing here can tell a stale provider answer from a live one, so an explicit number wins."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+        args.init_expected_num_cells = 3
+
+        servers = await _servers_of(args, provider=_CountingProvider(7))
+
+        assert servers["default"].init_expected_num_cells == 3
+
+    async def test_a_provider_that_answers_beats_the_registration_fallback(self) -> None:
+        """An external provider knows its own fleet, and the fallback is a guess of one cell."""
+        args = make_args(rollout_num_gpus=8, rollout_num_gpus_per_engine=4, deploy_component="primary")
+
+        servers = await _servers_of(args, provider=_CountingProvider(7))
+
+        assert servers["default"].init_expected_num_cells == 7
+
+
+async def _servers_of(args: Namespace, *, provider: BaseWorkerProvider) -> dict[str, RolloutServer]:
+    return await create_rollout_servers(
+        args,
+        context_lock=ContextLock("InferenceController"),
+        engine_provider=provider,
+        router_addrs={"default": HostAndPort(host="127.0.0.1", port=20000)},
+    )
