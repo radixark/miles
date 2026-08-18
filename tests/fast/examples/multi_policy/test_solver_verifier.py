@@ -336,7 +336,7 @@ class TestTheLauncherLeavesThePromptAsMessages:
         """--apply-chat-template renders the messages into one templated string at dataset build time.
         This example quotes the question into a second prompt, which a string carrying special tokens
         cannot be used for, and a list prompt is chat templated at generation anyway. Getting this wrong
-        costs an 8-GPU run to notice."""
+        costs a 4-GPU run to notice."""
         source = (
             Path(__file__).resolve().parents[4] / "examples/multi_policy/run_solver_verifier_gsm8k.py"
         ).read_text()
@@ -358,3 +358,45 @@ class TestTheLauncherLeavesThePromptAsMessages:
         )
 
         assert question == "What is 9 + 9?"
+
+
+class TestSplitEvalDataByPolicy:
+    def test_a_mixed_eval_dataset_is_split_into_one_dataset_per_policy(self):
+        """A mean over solver and verifier rewards together is a number no policy's learning can be read from."""
+        data = {"gsm8k": dict(rewards=[1.0, 0.0], truncated=[False, True], samples=_eval_samples())}
+
+        keep_default = solver_verifier.split_eval_data_by_policy(0, _eval_args(), data, None)
+
+        assert keep_default is False
+        assert sorted(data) == ["gsm8k/solver", "gsm8k/verifier"]
+        assert data["gsm8k/solver"]["rewards"] == [1.0]
+        assert data["gsm8k/verifier"]["rewards"] == [0.5]
+        assert data["gsm8k/solver"]["truncated"] == [False]
+        assert data["gsm8k/verifier"]["truncated"] == [True]
+
+    def test_an_unattributed_sample_is_refused_rather_than_scored_under_a_guessed_policy(self):
+        """A reward silently counted for the wrong policy would bend that policy's eval curve, not fail."""
+        samples = _eval_samples()
+        samples[0].trainer_model_id = None
+        data = {"gsm8k": dict(rewards=[1.0, 0.0], truncated=[False, True], samples=samples)}
+
+        with pytest.raises(AssertionError, match="carries no trainer_model_id"):
+            solver_verifier.split_eval_data_by_policy(0, _eval_args(), data, None)
+
+
+def _eval_args() -> Namespace:
+    return Namespace(eval_reward_key=None, reward_key="reward_value")
+
+
+def _eval_samples() -> list[Sample]:
+    solver_sample = Sample(group_index=0, index=0, prompt="p", label="#### 18")
+    solver_sample.reward = {"reward_value": 1.0, "outcome": "solver_correct"}
+    solver_sample.status = Sample.Status.COMPLETED
+    solver_sample.trainer_model_id = "solver"
+
+    verifier_sample = Sample(group_index=0, index=0, prompt="p", label="#### 18")
+    verifier_sample.reward = {"reward_value": 0.5, "outcome": "wrong_solver_caught_not_fixed"}
+    verifier_sample.status = Sample.Status.TRUNCATED
+    verifier_sample.trainer_model_id = "verifier"
+
+    return [solver_sample, verifier_sample]
