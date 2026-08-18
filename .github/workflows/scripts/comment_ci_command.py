@@ -16,6 +16,7 @@ CLEAR_COMMAND = "clear-labels"
 RERUN_COMMAND = "rerun-failed-ci"
 RUN_FILE_COMMAND = "run-ci"
 RUN_FILE_WORKFLOW = "run-ci-file.yml"
+RUN_FILE_WORKFLOW_REF = "main"
 CLEAR_EXACT_LABELS = frozenset({"nightly", "bypass-fastfail"})
 RERUN_WORKFLOWS = (
     ("pre-commit.yml", ".github/workflows/pre-commit.yml"),
@@ -784,10 +785,8 @@ def _pr_body_pins(body):
 def _handle_run_test_file(context, request):
     if type(request) is not RunTestFile:
         raise CommentCommandError("run-ci file handler received the wrong request type")
-    # The dispatch runs run-ci-file.yml from the PR head ref, so the head
-    # branch must live in this repository; write access on a same-repo head
-    # already permits dispatching branch workflows directly, so the command
-    # delegates convenience, not a new privilege.
+    # Only same-repository heads are accepted; the fixed default-branch
+    # workflow receives the exact PR SHA as data and checks it out separately.
     if context.head_repository_id != REPOSITORY_ID:
         raise CommentCommandError("/run-ci supports only same-repository pull requests")
     require_access(
@@ -803,7 +802,7 @@ def _handle_run_test_file(context, request):
         "test_file": request.test_file,
     }
     inputs.update(_pr_body_pins(context.body))
-    context.api.create_workflow_dispatch(RUN_FILE_WORKFLOW, context.head_ref, inputs)
+    context.api.create_workflow_dispatch(RUN_FILE_WORKFLOW, RUN_FILE_WORKFLOW_REF, inputs)
     return {
         "actor_id": context.actor_id,
         "decision": "ALLOW_FILE_RUN_DISPATCHED",

@@ -11,6 +11,9 @@ on:
         type: string
         required: false
         default: ''
+    secrets:
+      HF_TOKEN:
+        required: false
 
 jobs:
   # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.

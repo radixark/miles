@@ -396,7 +396,8 @@ def main():
         nargs="+",
         help=(
             "Explicitly requested registered test files (repo-relative, e.g. "
-            "`tests/e2e/megatron/test_qwen3_0.6B.py`). Replaces label and "
+            "`tests/e2e/precision/test_hf_attention_cp_relayout.py`). Replaces "
+            "label and "
             "cadence selection: each file must resolve to an enabled "
             "registration in this exact --hw/--suite or the run fails."
         ),

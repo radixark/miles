@@ -28,8 +28,8 @@ ACTOR_ID = 1234
 HEAD_SHA = "a" * 40
 HEAD_REF = "feature/test"
 WRITE_PERMISSIONS = frozenset({"write", "admin"})
-RUN_FILE_BODY = "/run-ci tests/e2e/megatron/test_qwen3_0.6B.py"
-RUN_FILE_PATH = "tests/e2e/megatron/test_qwen3_0.6B.py"
+RUN_FILE_BODY = "/run-ci tests/e2e/precision/test_hf_attention_cp_relayout.py"
+RUN_FILE_PATH = "tests/e2e/precision/test_hf_attention_cp_relayout.py"
 
 
 class FakeAPI:
@@ -234,7 +234,10 @@ def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
 @pytest.mark.parametrize(
     ("body", "test_file"),
     [
-        ("/run-ci tests/e2e/megatron/test_qwen3_0.6B.py", "tests/e2e/megatron/test_qwen3_0.6B.py"),
+        (
+            "/run-ci tests/e2e/precision/test_hf_attention_cp_relayout.py",
+            "tests/e2e/precision/test_hf_attention_cp_relayout.py",
+        ),
         (" \n/run-ci tests/e2e/test_a.py\t", "tests/e2e/test_a.py"),
         ("/run-ci   tests/fast/rollout/test_b.py", "tests/fast/rollout/test_b.py"),
         ("/run-ci tests/fast-gpu/test_c.py", "tests/fast-gpu/test_c.py"),
@@ -1423,7 +1426,7 @@ def test_repository_writer_dispatches_a_file_run(permission):
     assert api.dispatch_calls == [
         (
             "run-ci-file.yml",
-            HEAD_REF,
+            "main",
             {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
         )
     ]

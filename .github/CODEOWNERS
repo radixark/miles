@@ -1,5 +1,11 @@
 /.github/CODEOWNERS @fzyzcjy @Ying1123
 /.github/workflows/ @yushengsu-thu @guapisolo @yueming-yuan
+/tests/__init__.py @yushengsu-thu @guapisolo @yueming-yuan
+/tests/ci/__init__.py @yushengsu-thu @guapisolo @yueming-yuan
+/tests/ci/file_run.py @yushengsu-thu @guapisolo @yueming-yuan
+/tests/ci/ci_register.py @yushengsu-thu @guapisolo @yueming-yuan
+/tests/ci/labels.py @yushengsu-thu @guapisolo @yueming-yuan
+/tests/ci/test/test_file_run.py @yushengsu-thu @guapisolo @yueming-yuan
 /miles/ @fzyzcjy @yueming-yuan @Zhichenzzz
 /miles/backends/ @fzyzcjy @yueming-yuan @maocheng23 @Zhichenzzz @Shi-Dong
 /miles/backends/fsdp_utils/ @fzyzcjy @yueming-yuan @Zhichenzzz @guapisolo @Rockdu

@@ -9,8 +9,12 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
-from tests.ci.ci_register import HWBackend, collect_tests, discover_ci_files
+from tests.ci.ci_register import HWBackend, collect_tests
+
+CPU_SUITES = frozenset({"stage-a-cpu", "stage-b-cpu"})
+DISCOVERY_ROOTS = ("tests/fast", "tests/fast-gpu", "tests/e2e", "tests/ci")
 
 # Runner labels per CUDA suite, mirroring the pr-test.yml job wiring.
 # `tests/ci/test/test_file_run.py` locks the key set to
@@ -29,6 +33,30 @@ _IMAGE_TAG_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 class FileRunError(Exception):
     pass
+
+
+def _discover_regular_ci_files() -> list[str]:
+    """Discover test files without following symlinks in scanned roots."""
+    files = []
+    for root in DISCOVERY_ROOTS:
+        component = Path()
+        for part in Path(root).parts:
+            component /= part
+            if component.is_symlink():
+                raise FileRunError(f"CI discovery path must not be a symlink: {component.as_posix()}")
+        for directory, directory_names, file_names in os.walk(root, followlinks=False):
+            for name in directory_names:
+                path = Path(directory, name)
+                if path.is_symlink():
+                    raise FileRunError(f"CI test directory must not be a symlink: {path.as_posix()}")
+            for name in file_names:
+                if not name.startswith("test_") or not name.endswith(".py"):
+                    continue
+                path = Path(directory, name)
+                if path.is_symlink():
+                    raise FileRunError(f"CI test file must not be a symlink: {path.as_posix()}")
+                files.append(path.as_posix())
+    return sorted(files)
 
 
 def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
@@ -62,7 +90,8 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         hw = "cuda"
         runs_on_json = json.dumps(runs_on)
     else:
-        # CPU suites run on the hosted runner fixed by _run-cpu-ci.yml.
+        if registration.suite not in CPU_SUITES:
+            raise FileRunError(f"CPU suite {registration.suite} is not allowed for an explicit file run")
         hw = "cpu"
         runs_on_json = ""
     return {
@@ -73,13 +102,30 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
     }
 
 
-def resolve_file_run(test_file: str, image_tag: str) -> dict[str, str]:
-    return plan_file_run(collect_tests(discover_ci_files(), sanity_check=True), test_file, image_tag)
+def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = ".") -> dict[str, str]:
+    try:
+        root = Path(source_root).resolve(strict=True)
+    except OSError as error:
+        raise FileRunError(f"cannot resolve CI source root {source_root}: {error}") from error
+    if not root.is_dir():
+        raise FileRunError(f"CI source root is not a directory: {root}")
+
+    previous_directory = Path.cwd()
+    try:
+        os.chdir(root)
+        tests = collect_tests(_discover_regular_ci_files(), sanity_check=True)
+    finally:
+        os.chdir(previous_directory)
+    return plan_file_run(tests, test_file, image_tag)
 
 
 def main() -> int:
     try:
-        plan = resolve_file_run(os.environ["TEST_FILE"], os.environ.get("CI_IMAGE_TAG") or "dev")
+        plan = resolve_file_run(
+            os.environ["TEST_FILE"],
+            os.environ.get("CI_IMAGE_TAG") or "dev",
+            os.environ.get("CI_SOURCE_ROOT") or ".",
+        )
     except FileRunError as error:
         print(f"::error::{error}", file=sys.stderr)
         return 1
