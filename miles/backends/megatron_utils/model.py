@@ -961,6 +961,7 @@ def build_model_and_optimizer(
 @dataclasses.dataclass(frozen=True)
 class LoadCheckpointOutput:
     loaded_rollout_id: int
+    start_rollout_id: int
 
 
 def load_model_state(
@@ -1023,4 +1024,4 @@ def load_model_state(
     if opt_param_scheduler is not None and not (args.use_checkpoint_opt_param_scheduler and iteration > 0):
         opt_param_scheduler.step(increment=iteration * args.global_batch_size)
 
-    return LoadCheckpointOutput(loaded_rollout_id=iteration)
+    return LoadCheckpointOutput(loaded_rollout_id=iteration, start_rollout_id=iteration + 1)

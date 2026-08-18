@@ -162,7 +162,12 @@ def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
-    assert result == (model, optimizer, opt_param_scheduler, LoadCheckpointOutput(loaded_rollout_id=100))
+    assert result == (
+        model,
+        optimizer,
+        opt_param_scheduler,
+        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
+    )
     opt_param_scheduler.step.assert_not_called()
 
 
@@ -185,5 +190,10 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
         _patch_initialize_side_effects(stack)
         result = initialize_model_and_optimizer(args)
 
-    assert result == (model, optimizer, opt_param_scheduler, LoadCheckpointOutput(loaded_rollout_id=100))
+    assert result == (
+        model,
+        optimizer,
+        opt_param_scheduler,
+        LoadCheckpointOutput(loaded_rollout_id=100, start_rollout_id=101),
+    )
     opt_param_scheduler.step.assert_called_once_with(increment=800)
