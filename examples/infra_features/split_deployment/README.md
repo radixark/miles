@@ -31,3 +31,26 @@ helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-trainer -n $MILES_SCRIPT_NAMESPACE
 helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-e0 -n $MILES_SCRIPT_NAMESPACE
 helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-e1 -n $MILES_SCRIPT_NAMESPACE
 ```
+
+## Example 2: A Run That Trains Several Policies
+
+`run_solver_verifier_gsm8k_split.py` installs the [multi_policy](../../multi_policy) solver /
+verifier demo the same way: one release per policy trainer, one per policy's engines, and the
+orchestration script last — five releases for two policies.
+
+```bash
+SCRIPT=examples/infra_features/split_deployment/run_solver_verifier_gsm8k_split.py
+
+python $SCRIPT --deploy-component trainer --deploy-instance-id solver-actor
+python $SCRIPT --deploy-component trainer --deploy-instance-id verifier-actor
+python $SCRIPT --deploy-component inference --deploy-instance-id solver
+python $SCRIPT --deploy-component inference --deploy-instance-id verifier
+python $SCRIPT --deploy-component primary
+```
+
+```bash
+helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-trainer-solver-actor -n $MILES_SCRIPT_NAMESPACE
+helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-trainer-verifier-actor -n $MILES_SCRIPT_NAMESPACE
+helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-solver -n $MILES_SCRIPT_NAMESPACE
+helm uninstall miles-run-$MILES_SCRIPT_RUN_ID-inference-verifier -n $MILES_SCRIPT_NAMESPACE
+```
