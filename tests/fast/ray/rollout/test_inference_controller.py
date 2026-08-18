@@ -166,6 +166,7 @@ class _FakeWorkerProvider(BaseWorkerProvider):
         self._pools = pool_ids or []
         self.watched_pool_ids: list[str] | None = None
         self.initialized = False
+        self.stop_watch_calls = 0
 
     async def init(self) -> None:
         self.initialized = True
@@ -184,7 +185,7 @@ class _FakeWorkerProvider(BaseWorkerProvider):
                 await reconcile(info.cell_id, info)
 
         async def _stop_watch() -> None:
-            return None
+            self.stop_watch_calls += 1
 
         return _stop_watch
 
@@ -926,6 +927,14 @@ class TestUpdatableEnginesPayload:
 
 
 class TestInitLifecycle:
+    @staticmethod
+    def _controller(args: Namespace, *, engine_provider: _FakeWorkerProvider | None = None) -> InferenceController:
+        return InferenceController(
+            args,
+            engine_provider=engine_provider if engine_provider is not None else _FakeWorkerProvider([]),
+            router_providers=[_FakeWorkerProvider([])],
+        )
+
     @pytest.mark.asyncio
     async def test_debug_train_only_init_has_no_rollout_side_effects(self, monkeypatch: pytest.MonkeyPatch):
         """A train-only debug run owns no engines, so init must not reach any rollout machinery."""
@@ -933,20 +942,20 @@ class TestInitLifecycle:
         async def _no_servers(args: Namespace, **kwargs: Any) -> dict:
             raise AssertionError("debug_train_only must not create rollout servers")
 
-        async def _no_session_server(args: Namespace) -> None:
-            raise AssertionError("debug_train_only must not wait for the session server")
+        async def _no_router_addrs(args: Namespace, **kwargs: Any) -> dict:
+            raise AssertionError("debug_train_only must not resolve any router")
 
         monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _no_servers)
-        monkeypatch.setattr(inference_controller_module, "wait_session_server_ready", _no_session_server)
-        monkeypatch.setattr(
-            inference_controller_module,
-            "RayWorkerProvider",
-            SimpleNamespace(create=lambda **kwargs: pytest.fail("debug_train_only must not watch cells")),
-        )
+        monkeypatch.setattr(inference_controller_module, "resolve_router_addrs", _no_router_addrs)
         monkeypatch.setattr(
             dashboard_hooks, "register_router", lambda args: pytest.fail("debug_train_only has no router")
         )
-        controller = InferenceController(make_args(debug_train_only=True))
+        provider = _RefusingWorkerProvider()
+        controller = InferenceController(
+            make_args(debug_train_only=True),
+            engine_provider=provider,
+            router_providers=[_RefusingWorkerProvider()],
+        )
 
         await controller.init()
 
@@ -954,6 +963,7 @@ class TestInitLifecycle:
         assert controller._eval_fleet is None
         assert controller._watcher_disposers == []
         assert controller._ticker is None
+        assert provider.initialized is False
 
     @pytest.mark.asyncio
     async def test_init_passes_its_exact_context_lock_to_the_server_factory(self, monkeypatch: pytest.MonkeyPatch):
@@ -964,13 +974,9 @@ class TestInitLifecycle:
             received.update(kwargs)
             return {"default": _RecordingServer()}
 
+        _patch_init(monkeypatch, servers={"default": _RecordingServer()})
         monkeypatch.setattr(inference_controller_module, "create_rollout_servers", _fake_create_rollout_servers)
-        monkeypatch.setattr(
-            inference_controller_module,
-            "RayWorkerProvider",
-            SimpleNamespace(create=lambda *, pool_ids: _FakeWorkerProvider([]).created_with(pool_ids)),
-        )
-        controller = InferenceController(make_args())
+        controller = self._controller(make_args())
 
         await controller.init()
         await controller.dispose()
@@ -982,10 +988,8 @@ class TestInitLifecycle:
         """The eval fleet drives the dedicated eval engines, so it must be handed that server and no other."""
         monkeypatch.setattr(inference_controller_module, "InferenceControllerEvalFleet", _RecordingEvalFleet)
         default, eval_srv = _RecordingServer(model_name="default"), _RecordingServer(model_name="eval")
-        eval_srv.api_clients = ["eval-client"]
-        eval_srv.router_ip, eval_srv.router_port = "10.0.0.2", 31000
-        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": default, "eval": eval_srv})
-        controller = InferenceController(make_args(eval_num_gpus=2))
+        _patch_init(monkeypatch, servers={"default": default, "eval": eval_srv})
+        controller = self._controller(make_args(eval_num_gpus=2))
 
         await controller.init()
         await controller.dispose()
@@ -1002,8 +1006,8 @@ class TestInitLifecycle:
             "InferenceControllerEvalFleet",
             lambda *args, **kwargs: pytest.fail("no eval fleet without eval gpus"),
         )
-        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": _RecordingServer()})
-        controller = InferenceController(make_args(eval_num_gpus=0))
+        _patch_init(monkeypatch, servers={"default": _RecordingServer()})
+        controller = self._controller(make_args(eval_num_gpus=0))
 
         await controller.init()
         await controller.dispose()
@@ -1014,18 +1018,12 @@ class TestInitLifecycle:
     async def test_init_registers_routing_and_waits_for_every_startup_gate(self, monkeypatch: pytest.MonkeyPatch):
         """Returning before every server has its cells would start a rollout against engines that are not up."""
         registered: list[Namespace] = []
-        waited_session: list[Namespace] = []
-
-        async def _wait_session_server_ready(args: Namespace) -> None:
-            waited_session.append(args)
-
         monkeypatch.setattr(dashboard_hooks, "register_router", registered.append)
-        monkeypatch.setattr(inference_controller_module, "wait_session_server_ready", _wait_session_server_ready)
         gate = asyncio.Event()
         ready, blocked = _RecordingServer(), _RecordingServer(cells_gate=gate)
-        _patch_init(monkeypatch, provider=_FakeWorkerProvider([]), servers={"default": ready, "frozen": blocked})
+        _patch_init(monkeypatch, servers={"default": ready, "frozen": blocked})
         args = make_args()
-        controller = InferenceController(args)
+        controller = self._controller(args)
 
         task = asyncio.create_task(controller.init())
         for _ in range(20):
@@ -1037,8 +1035,25 @@ class TestInitLifecycle:
         await controller.dispose()
 
         assert registered == [args]
-        assert waited_session == [args]
         assert blocked.waited_init_expected_num_cells == 1
+
+    @pytest.mark.asyncio
+    async def test_init_does_not_report_itself_initialized_before_its_fleet_is_in(self, monkeypatch):
+        """A take-over reads this answer, and a controller still short of its cells is not one to take over."""
+        gate = asyncio.Event()
+        _patch_init(monkeypatch, servers={"frozen": _RecordingServer(cells_gate=gate)})
+        controller = self._controller(make_args())
+
+        task = asyncio.create_task(controller.init())
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert await controller.is_initialized() is False
+
+        gate.set()
+        await asyncio.wait_for(task, timeout=5)
+        assert await controller.is_initialized() is True
+
+        await controller.dispose()
 
     @pytest.mark.asyncio
     async def test_init_and_dispose_own_the_cell_watch_and_ticker_lifetimes(self, monkeypatch: pytest.MonkeyPatch):
@@ -1046,8 +1061,8 @@ class TestInitLifecycle:
         monkeypatch.setattr(inference_controller_module, "TICK_INTERVAL_SECONDS", 0.01)
         cell = _TickingCell()
         provider = _FakeWorkerProvider([])
-        _patch_init(monkeypatch, provider=provider, servers={"default": _RecordingServer({"engine-0": cell})})
-        controller = InferenceController(make_args())
+        _patch_init(monkeypatch, servers={"default": _RecordingServer({"engine-0": cell})})
+        controller = self._controller(make_args(), engine_provider=provider)
 
         await controller.init()
         await asyncio.sleep(0.05)
@@ -1307,6 +1322,80 @@ class TestCellOperations:
         await weight_update
 
         assert weight_update_started.is_set()
+
+
+def _raise_configure_logger(*args, **kwargs):
+    raise ValueError("configure_logger blew up")
+
+
+class TestInitRunsExactlyOnce:
+    @staticmethod
+    def _controller() -> InferenceController:
+        return InferenceController(
+            make_args(debug_train_only=True),
+            engine_provider=_FakeWorkerProvider([]),
+            router_providers=[_FakeWorkerProvider([])],
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_controller_that_never_ran_init_reports_itself_uninitialized(self):
+        """A restarted script asks the controller it found running whether to initialize it or to take it over."""
+        assert await self._controller().is_initialized() is False
+
+    @pytest.mark.asyncio
+    async def test_a_controller_that_ran_init_reports_itself_initialized(self):
+        """The take-over path has to see the controller the previous script built as built."""
+        controller = self._controller()
+
+        await controller.init()
+
+        assert await controller.is_initialized() is True
+
+    @pytest.mark.asyncio
+    async def test_a_second_init_is_refused(self):
+        """Re-initializing a live controller would rebuild a fleet the previous script is still driving."""
+        controller = self._controller()
+        await controller.init()
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            await controller.init()
+
+    @pytest.mark.asyncio
+    async def test_a_controller_whose_init_raised_reports_itself_uninitialized(self, monkeypatch):
+        """A controller with no watcher and no ticker must not be taken over as a built one."""
+        controller = self._controller()
+        monkeypatch.setattr(inference_controller_module, "configure_logger", _raise_configure_logger)
+
+        with pytest.raises(ValueError, match="configure_logger blew up"):
+            await controller.init()
+
+        assert await controller.is_initialized() is False
+
+    @pytest.mark.asyncio
+    async def test_a_controller_whose_init_raised_still_refuses_a_second_init(self, monkeypatch):
+        """A half-built controller cannot be rebuilt over its own state, so it has to fail loudly instead."""
+        controller = self._controller()
+        monkeypatch.setattr(inference_controller_module, "configure_logger", _raise_configure_logger)
+        with pytest.raises(ValueError):
+            await controller.init()
+        monkeypatch.undo()
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            await controller.init()
+
+    @pytest.mark.asyncio
+    async def test_a_second_init_is_refused_after_a_full_init(self, monkeypatch: pytest.MonkeyPatch):
+        """The train-only shortcut returns early, so the refusal has to hold for a controller that built a fleet."""
+        _patch_init(monkeypatch, servers={"default": _RecordingServer()})
+        controller = InferenceController(
+            make_args(), engine_provider=_FakeWorkerProvider([]), router_providers=[_FakeWorkerProvider([])]
+        )
+        await controller.init()
+
+        with pytest.raises(AssertionError):
+            await controller.init()
+
+        await controller.dispose()
 
 
 class TestEvalFleetSurface:

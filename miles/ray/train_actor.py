@@ -19,6 +19,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.distributed_utils import init_gloo_group
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.init_once import InitOnce, init_once
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
@@ -49,9 +50,9 @@ class TrainRayActor(NodeProbeMixin):
         role: Literal["actor", "critic"],
         cell_index: int,
     ):
-        self.args = args
+        self._init_once = InitOnce(type(self).__name__)
 
-        self._init_called = False
+        self.args = args
         self._heartbeat = SimpleHeartbeat()
         self._world_size = world_size
         self._rank = rank
@@ -97,12 +98,8 @@ class TrainRayActor(NodeProbeMixin):
     ) -> int | None:
         raise NotImplementedError
 
+    @init_once
     def _init_common(self, args: Namespace, role: str, with_ref: bool = False, with_opd_teacher: bool = False) -> None:
-        assert (
-            not self._init_called
-        ), "init already ran in this worker process, so this is a stale worker being reused as a fresh one"
-        self._init_called = True
-
         self.args = args
         self.role = role
         self.with_ref = with_ref
@@ -157,6 +154,9 @@ class TrainRayActor(NodeProbeMixin):
             logger.info(f"Warning: Failed to set NUMA affinity: {e}")
 
         self._heartbeat.bump()
+
+    def is_initialized(self) -> bool:
+        return self._init_once.is_initialized()
 
     @rpc(concurrency_group="heartbeat_status")
     def get_heartbeat_status(self) -> HeartbeatStatus:
