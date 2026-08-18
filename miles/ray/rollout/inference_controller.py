@@ -13,6 +13,7 @@ from miles.ray.rollout.eval_fleet import EvalFleetInfo, EvalFleetPin, InferenceC
 from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
 from miles.ray.rollout.router_manager import resolve_router_addrs
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils import async_utils
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.context_lock import (
     ContextLock,
@@ -88,9 +89,15 @@ class InferenceController:
 
         await asyncio.gather(*[srv.wait_init_expected_num_cells() for srv in self.servers.values()])
 
+    # -------------------------- take over -----------------------------
+
     @lock_exempt
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
+
+    @with_lock
+    async def abort_all(self) -> None:
+        await async_utils.gather_and_raise_first([srv.abort_all() for srv in self.servers.values()])
 
     # -------------------------- registration -----------------------------
 
