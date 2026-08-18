@@ -6,10 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
+    compute_actor_args,
     compute_trainer_controller_pool_id,
     compute_trainer_pool_id,
     spec_trainer_controller_actor,
@@ -45,6 +47,7 @@ def _make_args(**overrides) -> SimpleNamespace:
         offload_train_target="cpu",
         offload_train_disk_dir="/tmp/offload",
         offload_train_disk_chunk_mb=64,
+        megatron_config=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -521,3 +524,12 @@ class TestSpecTrainerController:
     def test_the_controller_pool_name_encodes_the_role(self):
         """The two controllers of a critic run must not collide in the address book."""
         assert compute_trainer_controller_pool_id("critic") == "trainer-controller-critic"
+
+
+class TestComputeActorArgs:
+    def test_a_config_naming_several_actors_cannot_be_collapsed_to_one(self):
+        """train_async.py trains one actor; a run naming several must be started through train_multi_policy.py."""
+        args = _make_args(megatron_config=encode_megatron_config("a", "b"))
+
+        with pytest.raises(ValueError):
+            compute_actor_args(args)
