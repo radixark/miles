@@ -21,13 +21,14 @@ from miles.utils.workers.rpc.common.metadata import (
     canonicalize_method_arguments,
     collect_rpc_method_specs,
 )
-from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, HealthResponse
-from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
+from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, IN_FLIGHT_PATH, HealthResponse, InFlightResponse
+from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerStillBusyError, WorkerUnreachableError
 
 DEFAULT_CALL_TIMEOUT_SECONDS = 3600.0
 DEFAULT_READY_TIMEOUT_SECONDS = 600.0
 
 _HEALTH_TIMEOUT_SECONDS = 5.0
+_IDLE_POLL_INTERVAL_SECONDS = 5.0
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,26 @@ class RpcWorkerHandle(BaseWorkerHandle):
 
         if allow_server_uuid_change:
             assert not self._boot_uuid_pin.needs_handshake(), "the readiness probe did not pin the answering process"
+
+    async def wait_idle(self, *, timeout: float) -> None:
+        async def attempt(remaining: float) -> None:
+            response = await self._transport.request(
+                "GET",
+                IN_FLIGHT_PATH,
+                seconds=min(_HEALTH_TIMEOUT_SECONDS, remaining),
+                response_model=InFlightResponse,
+            )
+            if response.call_ids:
+                raise WorkerStillBusyError(f"{self._worker_cls_name} is still running the calls {response.call_ids}")
+
+        await retry_until_deadline(
+            attempt,
+            total_seconds=timeout,
+            retry_on=(WorkerStillBusyError, *RETRYABLE_ERRORS),
+            initial_delay=_IDLE_POLL_INTERVAL_SECONDS,
+            backoff_factor=1.0,
+            log_fields={"tag": "rpc", "op": "wait_idle", "target": self._worker_cls_name},
+        )
 
     async def probe_is_dead(self) -> bool:
         try:
