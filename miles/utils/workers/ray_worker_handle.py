@@ -42,6 +42,12 @@ class RayWorkerHandle(BaseWorkerHandle):
         except (TimeoutError, asyncio.TimeoutError) as e:
             raise WorkerUnreachableError(f"Worker not ready within {timeout}s") from e
 
+    async def wait_idle(self, *, timeout: float) -> None:
+        raise NotImplementedError(
+            "a ray actor does not track the calls it is running, so nobody can wait for it to go idle; only the "
+            "rpc communication backend answers this"
+        )
+
     async def probe_is_dead(self) -> bool:
         try:
             await asyncio.wait_for(
