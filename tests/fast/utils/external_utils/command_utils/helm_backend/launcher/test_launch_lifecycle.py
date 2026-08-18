@@ -10,18 +10,27 @@ from tests.fast.charts.utils import REPO_ROOT
 
 from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, ExecuteTrainRequest
 from miles.utils.external_utils.command_utils.helm_backend.launcher import command_wrapper, entrypoint
-from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm
-from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
+    RESTART_AT_ANNOTATION,
+    Manifest,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.observability import cluster_info, log_follower
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import MooncakeInfo
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles, _orchestrator_state_path
+from miles.utils.external_utils.command_utils.helm_backend.naming import (
+    ORCHESTRATOR_COMPONENT,
+    RunFiles,
+    _orchestrator_state_path,
+)
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator import observer
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state import (
+    STATE_FILE_FLAG,
     OrchestratorState,
     OrchestratorStatus,
 )
 from miles.utils.workers.k8s_types import ContainerState, ContainerStatus, Pod, PodMetadata, PodStatus
 from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.worker_provider.kubernetes.helm.naming import component_name
 
 
 def _write(path: Path, status: OrchestratorStatus, exit_code: int | None = None) -> None:
@@ -35,7 +44,12 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False, deploy_co
         entrypoint,
         "parse_args",
         lambda: SimpleNamespace(
-            colocate=colocate, deploy_component=deploy_component, argv=[], use_wandb=False, wandb_run_id=None
+            colocate=colocate,
+            deploy_component=deploy_component,
+            deploy_instance_id=None,
+            argv=[],
+            use_wandb=False,
+            wandb_run_id=None,
         ),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
@@ -59,7 +73,10 @@ class TestPerLaunchExitFile:
         _write(theirs, OrchestratorStatus.EXITED, exit_code=7)
 
         assert (
-            observer._compute_run_outcome(state=OrchestratorState.read(mine), phase="Running", missing_polls=0) is None
+            observer._compute_run_outcome(
+                state=OrchestratorState.read(mine), phase="Running", missing_polls=0, dead_polls=0
+            )
+            is None
         )
 
     def test_a_verdict_written_before_the_launcher_looked_is_returned_at_once(self, tmp_path):
@@ -68,7 +85,7 @@ class TestPerLaunchExitFile:
         _write(state_file, OrchestratorStatus.EXITED, exit_code=4)
 
         outcome = observer._compute_run_outcome(
-            state=OrchestratorState.read(state_file), phase="Running", missing_polls=0
+            state=OrchestratorState.read(state_file), phase="Running", missing_polls=0, dead_polls=0
         )
 
         assert outcome.exit_code == 4
@@ -110,6 +127,7 @@ class TestBackgroundLogOrdering:
         monkeypatch.setattr(log_follower, "selected_pods", lambda namespace, selector: pods)
         monkeypatch.setattr(cluster_info, "pod_events", lambda *, namespace, pods: [])
         monkeypatch.setattr(entrypoint, "pod_phase", lambda namespace, workload: "Running")
+        monkeypatch.setattr(entrypoint, "_active_state_file", lambda *, release, namespace: state_file)
         with pytest.raises(SystemExit) as raised:
             entrypoint._follow_until_finished(release="myrun", namespace="myns", state_file=state_file)
 
@@ -193,6 +211,24 @@ class TestDefusingAPendingUninstall:
         assert recorded.kubectl == []
         assert recorded.upgraded == [_RELEASE]
 
+    def test_an_orchestrator_that_really_changes_deletes_the_job_because_its_new_wrapper_re_arms_it(
+        self, monkeypatch, tmp_path
+    ):
+        """The orchestrator pod really rolls here, so its new wrapper recreates the job this delete removes."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+
+        _launch(
+            monkeypatch,
+            tmp_path,
+            recorded,
+            installed=True,
+            rendered=_RENDERED_ORCHESTRATOR,
+            proposed=_RENDERED_ORCHESTRATOR_REPLACED,
+            force=True,
+        )
+
+        assert _DELETE_UNINSTALL_JOB in recorded.kubectl
+
     def test_a_delete_the_cluster_refused_stops_the_launch(self, monkeypatch, tmp_path):
         """Installing over a job that is still armed hands the new run's release to the old run's uninstall."""
         recorded = _Recorded(kubectl=[], upgraded=[])
@@ -214,6 +250,145 @@ _DELETE_UNINSTALL_JOB = [
     "rl",
     "--ignore-not-found",
 ]
+
+
+class TestChoosingTheStateFile:
+    def test_a_relaunch_that_leaves_the_orchestrator_alone_keeps_watching_its_state_file(self, monkeypatch, tmp_path):
+        """The wrapper it attaches to writes the file it already names, so a new one would never be written to."""
+        followed = _launch(
+            monkeypatch, tmp_path, _Recorded(kubectl=[], upgraded=[]), installed=True, rendered=_RENDERED_ORCHESTRATOR
+        )
+
+        assert followed[0]["state_file"] == tmp_path / "attached.state"
+
+    def test_an_orchestrator_that_really_changes_gets_a_state_file_of_its_own(self, monkeypatch, tmp_path):
+        """The replaced wrapper's file already holds a verdict, and reading it would end the relaunch at once."""
+        followed = _launch(
+            monkeypatch,
+            tmp_path,
+            _Recorded(kubectl=[], upgraded=[]),
+            installed=True,
+            rendered=_RENDERED_ORCHESTRATOR,
+            proposed=_RENDERED_ORCHESTRATOR_REPLACED,
+            force=True,
+        )
+
+        assert followed[0]["state_file"] != tmp_path / "attached.state"
+        assert followed[0]["state_file"].parent.name == "state"
+
+
+class TestTheCarriedStateFile:
+    def test_a_release_that_is_not_installed_carries_no_state_file(self):
+        """A first install carries nothing over, and a path nobody has written to is not a carried file."""
+        assert entrypoint._carried_state_file(installed_manifest=None, release=_RELEASE) is None
+
+    def test_an_installed_release_carries_the_state_file_its_orchestrator_names(self):
+        """A relaunch that leaves the orchestrator alone keeps watching the file that wrapper writes its verdict to."""
+        manifest = Manifest.parse(
+            _orchestrator_manifest(state_file="/shared/attached.state", restart_at=None), namespace="rl"
+        )
+
+        carried = entrypoint._carried_state_file(installed_manifest=manifest, release=_RELEASE)
+
+        assert carried == Path("/shared/attached.state")
+
+
+class TestTheActiveStateFile:
+    def test_reads_the_generation_from_the_live_statefulset(self, monkeypatch, tmp_path):
+        """The live template changes before Kubernetes terminates the orchestrator it replaces."""
+        state_file = tmp_path / "replacement.state"
+        manifest = _orchestrator_manifest(state_file=str(state_file), restart_at=_STAMP)
+        monkeypatch.setattr(
+            Kubectl,
+            "run_raw",
+            staticmethod(lambda *arguments: subprocess.CompletedProcess(arguments, 0, stdout=manifest, stderr="")),
+        )
+
+        assert entrypoint._active_state_file(release=_RELEASE, namespace="rl") == state_file
+
+    def test_a_deleted_release_has_no_active_generation(self, monkeypatch):
+        """A finished auto-uninstalled release must still leave its state file as the final verdict."""
+        monkeypatch.setattr(
+            Kubectl,
+            "run_raw",
+            staticmethod(lambda *arguments: subprocess.CompletedProcess(arguments, 1, stdout="", stderr="NotFound")),
+        )
+
+        assert entrypoint._active_state_file(release=_RELEASE, namespace="rl") is None
+
+
+class TestAHotRestartOfARunThatIsUp:
+    @staticmethod
+    def _hot_restart(monkeypatch, tmp_path, recorded: _Recorded, proposals: list[dict]) -> list[dict]:
+        return _launch(
+            monkeypatch,
+            tmp_path,
+            recorded,
+            installed=True,
+            rendered=_orchestrator_manifest(state_file=str(tmp_path / "attached.state"), restart_at=None),
+            proposals=proposals,
+            hot_restart="orchestration,rollout_executor",
+        )
+
+    def test_the_orchestrator_rolls_without_force_and_gets_a_state_file_of_its_own(self, monkeypatch, tmp_path):
+        """This is the whole flag: the pod really changes, the gate lets it through, and its verdict file is new."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        proposals: list[dict] = []
+
+        followed = self._hot_restart(monkeypatch, tmp_path, recorded, proposals)
+
+        assert recorded.upgraded == [_RELEASE]
+        assert _DELETE_UNINSTALL_JOB in recorded.kubectl
+        assert followed[0]["state_file"] != tmp_path / "attached.state"
+        assert proposals[-1]["orchestrator"]["restartAt"]
+
+    def test_the_manifest_the_gate_judged_is_the_one_this_launch_installs(self, monkeypatch, tmp_path):
+        """The launch renders twice, and a gate judging the first render would approve values nobody installs."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        proposals: list[dict] = []
+
+        followed = self._hot_restart(monkeypatch, tmp_path, recorded, proposals)
+
+        assert proposals[-1] == _written_values(tmp_path)["run"]
+        assert proposals[-1]["stateFile"] == str(followed[0]["state_file"])
+
+
+class TestAnOrdinaryRelaunchOfAHotRestartedRun:
+    def test_it_changes_nothing_and_keeps_both_the_stamp_and_the_state_file(self, monkeypatch, tmp_path):
+        """Dropping the stamp it finds would make every later relaunch a diff the gate refuses forever."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+        proposals: list[dict] = []
+
+        followed = _launch(
+            monkeypatch,
+            tmp_path,
+            recorded,
+            installed=True,
+            rendered=_orchestrator_manifest(state_file=str(tmp_path / "attached.state"), restart_at=_STAMP),
+            proposals=proposals,
+        )
+
+        assert recorded.upgraded == [_RELEASE]
+        assert recorded.kubectl == []
+        assert followed[0]["state_file"] == tmp_path / "attached.state"
+        assert proposals[-1]["orchestrator"]["restartAt"] == _STAMP
+
+    def test_a_relaunch_that_changes_the_orchestration_arguments_is_refused_without_force(self, monkeypatch, tmp_path):
+        """Changing the arguments of a live run is what --hot-restart is for, and nothing else may do it."""
+        recorded = _Recorded(kubectl=[], upgraded=[])
+
+        with pytest.raises(SystemExit, match="more than its size"):
+            _launch(
+                monkeypatch,
+                tmp_path,
+                recorded,
+                installed=True,
+                rendered=_RENDERED_ORCHESTRATOR,
+                proposed=_RENDERED_ORCHESTRATOR_REPLACED,
+            )
+
+        assert recorded.upgraded == []
+        assert recorded.kubectl == []
 
 
 class TestTheRelaunchKeepsThePodsItAttachesTo:
@@ -266,7 +441,11 @@ def _launch(
     *,
     installed: bool,
     proposed_differs: bool = False,
+    proposed: str | None = None,
+    proposals: list[dict] | None = None,
     delete_fails: bool = False,
+    force: bool = False,
+    hot_restart: str = "",
     rendered: str | None = None,
     deploy_component: str = "all",
 ) -> list[dict]:
@@ -288,14 +467,17 @@ def _launch(
         "get_manifest",
         staticmethod(lambda release, namespace: Manifest.parse(rendered, namespace=namespace) if installed else None),
     )
-    proposed = _RENDERED_WITH_ANOTHER_KEY if proposed_differs else rendered
-    monkeypatch.setattr(
-        Helm,
-        "render_upgrade",
-        staticmethod(lambda **kwargs: Manifest.parse(proposed, namespace=kwargs["namespace"])),
-    )
+    proposed = proposed if proposed is not None else (_RENDERED_WITH_ANOTHER_KEY if proposed_differs else rendered)
+    if proposals is None:
+        monkeypatch.setattr(
+            Helm,
+            "render_upgrade",
+            staticmethod(lambda **kwargs: Manifest.parse(proposed, namespace=kwargs["namespace"])),
+        )
+    else:
+        monkeypatch.setattr(Helm, "render_upgrade", staticmethod(_render_from_values(proposals)))
     monkeypatch.setattr(Helm, "upgrade", staticmethod(lambda **kwargs: recorded.upgraded.append(kwargs["release"])))
-    monkeypatch.setattr(Manifest, "state_file", lambda self, container: tmp_path / "attached.state")
+    monkeypatch.setattr(Manifest, "state_file", lambda self, stateful_set, container: tmp_path / "attached.state")
     monkeypatch.setattr(entrypoint, "repo_base_dir", str(REPO_ROOT))
 
     followed = _stub_launch_inputs(monkeypatch, specs=[], deploy_component=deploy_component)
@@ -307,9 +489,49 @@ def _launch(
             run_id=_RUN_ID,
             helm_values=(str(_launchable_infra_file(tmp_path)),),
             deploy_component=DeployComponent(deploy_component),
+            force=force,
+            hot_restart=hot_restart,
         ),
     )
     return followed
+
+
+def _render_from_values(proposals: list[dict]):
+    def render_upgrade(*, release: str, namespace: str, chart, values_files) -> Manifest:
+        run = yaml.safe_load(Path(values_files[-1]).read_text())["run"]
+        proposals.append(run)
+        return Manifest.parse(
+            _orchestrator_manifest(
+                state_file=run.get("stateFile"), restart_at=run.get("orchestrator", {}).get("restartAt")
+            ),
+            namespace=namespace,
+        )
+
+    return render_upgrade
+
+
+def _orchestrator_manifest(*, state_file: str | None, restart_at: str | None) -> str:
+    template: dict = {
+        "spec": {
+            "containers": [
+                {
+                    "name": ORCHESTRATOR_COMPONENT,
+                    "command": ["python", "-m", "wrapper", STATE_FILE_FLAG, state_file or "", "--", *_INSTALLED_ARGV],
+                }
+            ]
+        }
+    }
+    if restart_at is not None:
+        template["metadata"] = {"annotations": {RESTART_AT_ANNOTATION: restart_at}}
+    return "---\n" + yaml.safe_dump(
+        {
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": _ORCHESTRATOR_OBJECT},
+            "spec": {"template": template},
+        },
+        sort_keys=True,
+    )
 
 
 def _written_values(tmp_path) -> dict:
@@ -372,6 +594,23 @@ spec:
               value: '{_INSTALLED_RECORD}'
 """
 _RENDERED_WITH_ANOTHER_KEY = _RENDERED + "data:\n  extra: added\n"
+_ORCHESTRATOR_OBJECT = component_name(_RELEASE, ORCHESTRATOR_COMPONENT)
+_RUN_UUID = "0123456789abcdef"
+_INSTALLED_ARGV = ["python", "/repo/train.py", "--cluster-backend", "kubernetes", "--run-uuid", _RUN_UUID]
+_RENDERED_ORCHESTRATOR = f"""---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {_ORCHESTRATOR_OBJECT}
+spec:
+  template:
+    spec:
+      containers:
+        - name: orchestrator
+          command: [python]
+"""
+_RENDERED_ORCHESTRATOR_REPLACED = _RENDERED_ORCHESTRATOR.replace("command: [python]", "command: [python, -u]")
+_STAMP = "2026-08-12T09:00:00+00:00"
 
 
 def _train_request() -> ExecuteTrainRequest:

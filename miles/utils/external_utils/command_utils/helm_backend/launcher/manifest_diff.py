@@ -38,6 +38,11 @@ class ManifestDiffs(FrozenStrictBaseModel):
     def is_allowed(self) -> bool:
         return not (self.disallowed_changed or self.additions or self.removals)
 
+    def rebuilds(self, *, key: ManifestObjectKey) -> bool:
+        if any(identity.key == key for identity in (*self.additions, *self.removals)):
+            return True
+        return any(change.identity.key == key and change.allowed_by != "scaling" for change in self.changes)
+
     def summarize_allowed_changes(self) -> str:
         return "\n".join(f"  {entry}" for entry in self.allowed_changed) or "  (nothing to change)"
 

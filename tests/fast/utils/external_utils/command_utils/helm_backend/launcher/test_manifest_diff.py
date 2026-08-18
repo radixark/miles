@@ -231,27 +231,6 @@ class TestManifestRefusals:
         ]
 
 
-class TestReplicasThatOnlyOneSideHas:
-    def test_a_pool_that_lost_its_replica_count_is_refused(self):
-        """A template that stops rendering replicas is a chart change, not a run being scaled."""
-        diff = manifest_diff.diff_manifests(
-            before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].pop("replicas"))
-        )
-
-        assert not diff.is_allowed
-        assert diff.allowed_changed == []
-
-    def test_a_pool_that_gained_a_replica_count_is_refused(self):
-        """The same holds the other way round, and reading it as scaling would apply a template change silently."""
-        before = copy.deepcopy(_objects())
-        before[0]["spec"].pop("replicas")
-
-        diff = manifest_diff.diff_manifests(before=_manifest(before), after=_manifest(_objects()))
-
-        assert not diff.is_allowed
-        assert diff.allowed_changed == []
-
-
 class TestTheStructureBehindTheRenderedViews:
     def test_a_scaling_change_says_why_it_is_allowed_and_which_object_it_touched(self):
         """The observation side reads these fields, so a rendered line is not enough to answer it."""
@@ -272,6 +251,27 @@ class TestTheStructureBehindTheRenderedViews:
 
         [change] = diff.changes
         assert change.allowed_by is None
+
+
+class TestReplicasThatOnlyOneSideHas:
+    def test_a_pool_that_lost_its_replica_count_is_refused(self):
+        """A template that stops rendering replicas is a chart change, not a run being scaled."""
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()), after=_manifest_after(lambda objects: objects[0]["spec"].pop("replicas"))
+        )
+
+        assert not diff.is_allowed
+        assert diff.allowed_changed == []
+
+    def test_a_pool_that_gained_a_replica_count_is_refused(self):
+        """The same holds the other way round, and reading it as scaling would apply a template change silently."""
+        before = copy.deepcopy(_objects())
+        before[0]["spec"].pop("replicas")
+
+        diff = manifest_diff.diff_manifests(before=_manifest(before), after=_manifest(_objects()))
+
+        assert not diff.is_allowed
+        assert diff.allowed_changed == []
 
 
 _ORCHESTRATOR_KEY = ManifestObjectKey(kind=STATEFUL_SET_KIND, name="myrun-miles-run-orchestrator")
@@ -330,3 +330,50 @@ class TestTheObjectsAHotRestartRebuilds:
         )
 
         assert not diff.is_allowed
+
+
+class TestWhetherADiffRebuildsOneObject:
+    def test_an_untouched_object_is_not_rebuilt(self):
+        """An ordinary relaunch renders the orchestrator it already installed, and nothing may be read into that."""
+        diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=_manifest(_objects()))
+
+        assert not diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_a_changed_object_is_rebuilt(self):
+        """This is what tells the launcher the orchestrator pod really rolls, whatever the reason."""
+        after = _manifest_after(
+            lambda objects: objects[2]["spec"]["template"]["spec"]["containers"][0].update(image="miles:other")
+        )
+        diff = manifest_diff.diff_manifests(
+            before=_manifest(_objects()), after=after, allow_diff_object_keys=frozenset({_ORCHESTRATOR_KEY})
+        )
+
+        assert diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_a_change_to_another_object_is_not_read_as_this_one_rebuilding(self):
+        """Repointing the engines must not make the launcher throw the orchestrator's state file away."""
+        after = _manifest_after(lambda objects: _worker_container(objects).update(image="miles:other"))
+        diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=after)
+
+        assert not diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_scaling_alone_is_not_a_rebuild(self):
+        """A LeaderWorkerSet gaining cells keeps the pods it has, so nothing about it was rebuilt."""
+        after = _manifest_after(lambda objects: objects[0]["spec"].update(replicas=6))
+        diff = manifest_diff.diff_manifests(before=_manifest(_objects()), after=after)
+
+        assert not diff.rebuilds(key=ManifestObjectKey(kind="LeaderWorkerSet", name="myrun-miles-run-engine"))
+
+    def test_an_object_that_only_the_proposal_has_is_rebuilt(self):
+        """A release that gains its orchestration script needs the same treatment as a first install."""
+        before = _manifest([_leader_worker_set(), _config_map()])
+        diff = manifest_diff.diff_manifests(before=before, after=_manifest(_objects()))
+
+        assert diff.rebuilds(key=_ORCHESTRATOR_KEY)
+
+    def test_an_object_neither_manifest_has_is_not_rebuilt(self):
+        """A trainer release carries no orchestrator at all, and nothing about it ever changes."""
+        objects = [_leader_worker_set(), _config_map()]
+        diff = manifest_diff.diff_manifests(before=_manifest(objects), after=_manifest(objects))
+
+        assert not diff.rebuilds(key=_ORCHESTRATOR_KEY)
