@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-%23miles--rl-brightgreen.svg)](https://slack.sglang.ai)
 
-| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) (`#miles-rl`) |
+| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Miles Diffusion**](https://github.com/radixark/miles_diffusion) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) (`#miles-rl`) |
 
 </div>
 
