@@ -5,6 +5,7 @@ from typing import Any, Literal
 from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import (
     Manifest,
     ManifestObject,
+    ManifestObjectKey,
     ObjectIdentity,
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
@@ -16,7 +17,7 @@ _REPLICAS_PATH = ("spec", "replicas")
 class ManifestChange(FrozenStrictBaseModel):
     identity: ObjectIdentity
     path: tuple[str, ...]
-    allowed_by: Literal["scaling"] | None
+    allowed_by: Literal["scaling", "whitelist"] | None
     description: str
 
 
@@ -51,14 +52,22 @@ class ManifestDiffs(FrozenStrictBaseModel):
         return "\n".join(lines) or "  (no difference)"
 
 
-def diff_manifests(*, before: Manifest, after: Manifest) -> ManifestDiffs:
+def diff_manifests(
+    *, before: Manifest, after: Manifest, allow_diff_object_keys: frozenset[ManifestObjectKey] = frozenset()
+) -> ManifestDiffs:
     old = before.by_identity
     new = after.by_identity
     shared = sorted(set(old) & set(new))
 
     return ManifestDiffs(
         changes=[
-            _compute_change(old[identity], new[identity], identity=identity, path=path)
+            _compute_change(
+                old[identity],
+                new[identity],
+                identity=identity,
+                path=path,
+                allow_diff_object_keys=allow_diff_object_keys,
+            )
             for identity in shared
             for path in _differing_paths(old[identity].body, new[identity].body, ())
         ],
@@ -68,14 +77,36 @@ def diff_manifests(*, before: Manifest, after: Manifest) -> ManifestDiffs:
 
 
 def _compute_change(
-    old: ManifestObject, new: ManifestObject, *, identity: ObjectIdentity, path: tuple[str, ...]
+    old: ManifestObject,
+    new: ManifestObject,
+    *,
+    identity: ObjectIdentity,
+    path: tuple[str, ...],
+    allow_diff_object_keys: frozenset[ManifestObjectKey],
 ) -> ManifestChange:
-    allowed_by = "scaling" if _is_scaling(old, new, path=path) else None
+    allowed_by = _compute_allowed_by(
+        old, new, identity=identity, path=path, allow_diff_object_keys=allow_diff_object_keys
+    )
     if allowed_by is not None and path == _REPLICAS_PATH:
         description = f"{identity}: replicas {old.replicas} -> {new.replicas}"
     else:
         description = f"{identity}: {_describe_path(path)}"
     return ManifestChange(identity=identity, path=path, allowed_by=allowed_by, description=description)
+
+
+def _compute_allowed_by(
+    old: ManifestObject,
+    new: ManifestObject,
+    *,
+    identity: ObjectIdentity,
+    path: tuple[str, ...],
+    allow_diff_object_keys: frozenset[ManifestObjectKey],
+) -> Literal["scaling", "whitelist"] | None:
+    if _is_scaling(old, new, path=path):
+        return "scaling"
+    if identity.key in allow_diff_object_keys:
+        return "whitelist"
+    return None
 
 
 def _is_scaling(old: ManifestObject, new: ManifestObject, *, path: tuple[str, ...]) -> bool:
