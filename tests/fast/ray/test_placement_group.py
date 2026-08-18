@@ -367,6 +367,19 @@ class TestCreateTrainingModels:
 
         assert requested == ["alpha-actor"]
 
+    async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
+        """A second handle would identify one connection and drive another, so the check would guard nothing."""
+        handles = self._patched(monkeypatch, [])
+        monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", AsyncMock(return_value=None))
+        monkeypatch.setattr(placement_group_module, "_assert_external_trainer_in_run", lambda identity, **kwargs: None)
+        args = self._args(tmp_path, trainer_controller_addrs=["alpha-actor=10.0.0.5:1234"])
+
+        await create_training_models(args, self._rollout_executor())
+
+        [handle] = handles
+        called = [name for name, _args, _kwargs in handle.mock_calls]
+        assert called.index("get_deployment_identity") < called.index("is_initialized") < called.index("init")
+
     async def test_a_run_without_a_megatron_config_still_addresses_the_actor_and_critic_pools(self, monkeypatch):
         """Every existing single policy deployment names its two pools 'actor' and 'critic'."""
         requested: list[str] = []
@@ -411,69 +424,65 @@ class TestCreateTrainingModels:
 
 class TestCreateTrainingModel:
     @staticmethod
-    def _patch_handle(monkeypatch, *, restored: list[int]) -> None:
-        def _create_handle(*, capability, trainer_id: str):
-            handle = MagicMock()
-            handle.init = AsyncMock(return_value=restored)
-            return handle
+    def _handle(*, restored: list[int]) -> MagicMock:
+        handle = MagicMock()
+        handle.init = AsyncMock(return_value=restored)
+        return handle
 
-        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
-        monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: object())
-
-    async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self, monkeypatch):
+    async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self):
         """Cells of one trainer hold one model, so disagreeing positions mean a corrupted checkpoint set."""
-        self._patch_handle(monkeypatch, restored=[5, 4])
-
         with pytest.raises(AssertionError, match=r"trainer 'alpha-actor' restored \[5, 4\]"):
-            await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+            await create_training_model(
+                Namespace(start_rollout_id=None), handle=self._handle(restored=[5, 4]), trainer_id="alpha-actor"
+            )
 
-    async def test_a_trainer_starts_where_its_cells_restored(self, monkeypatch):
+    async def test_a_trainer_starts_where_its_cells_restored(self):
         """The restored position is what makes a resume continue instead of retraining old rounds."""
-        self._patch_handle(monkeypatch, restored=[3, 3])
-
-        info = await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+        info = await create_training_model(
+            Namespace(start_rollout_id=None), handle=self._handle(restored=[3, 3]), trainer_id="alpha-actor"
+        )
 
         assert info.start_rollout_id == 3
 
-    async def test_an_explicit_start_rollout_id_wins_over_the_restored_one(self, monkeypatch):
+    async def test_an_explicit_start_rollout_id_wins_over_the_restored_one(self):
         """--start-rollout-id is the manual override for replaying or skipping rounds."""
-        self._patch_handle(monkeypatch, restored=[3])
-
-        info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+        info = await create_training_model(
+            Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+        )
 
         assert info.start_rollout_id == 9
 
-    async def test_a_trainer_told_to_start_elsewhere_than_it_restored_says_so(self, monkeypatch, caplog):
+    async def test_a_trainer_told_to_start_elsewhere_than_it_restored_says_so(self, caplog):
         """A trainer that silently starts somewhere other than where it restored gives the operator nothing to read."""
-        self._patch_handle(monkeypatch, restored=[3])
-
         with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
-            await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+            await create_training_model(
+                Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+            )
 
         assert "alpha-actor" in caplog.text and "--start-rollout-id 9" in caplog.text
 
-    async def test_a_trainer_told_to_start_where_it_restored_says_nothing(self, monkeypatch, caplog):
+    async def test_a_trainer_told_to_start_where_it_restored_says_nothing(self, caplog):
         """Logging every trainer that was told where it already stands is noise on every ordinary launch."""
-        self._patch_handle(monkeypatch, restored=[3])
-
         with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
-            await create_training_model(Namespace(start_rollout_id=3), trainer_id="alpha-actor")
+            await create_training_model(
+                Namespace(start_rollout_id=3), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+            )
 
         assert "--start-rollout-id" not in caplog.text
 
-    async def test_a_trainer_left_to_its_restored_position_says_nothing(self, monkeypatch, caplog):
+    async def test_a_trainer_left_to_its_restored_position_says_nothing(self, caplog):
         """The ordinary resume names no rollout at all, and it must not be reported as an override."""
-        self._patch_handle(monkeypatch, restored=[3])
-
         with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
-            await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+            await create_training_model(
+                Namespace(start_rollout_id=None), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+            )
 
         assert "--start-rollout-id" not in caplog.text
 
-    async def test_the_restored_position_is_kept_beside_the_overridden_start(self, monkeypatch):
+    async def test_the_restored_position_is_kept_beside_the_overridden_start(self):
         """Cross trainer checks compare where checkpoints actually were, which an override must not rewrite."""
-        self._patch_handle(monkeypatch, restored=[3])
-
-        info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+        info = await create_training_model(
+            Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor"
+        )
 
         assert info.restored_rollout_id == 3
