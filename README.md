@@ -4,12 +4,13 @@
 
 ### **Enterprise-Grade Reinforcement Learning for Large-Scale Model Post-Training**
 
+[![Website](https://img.shields.io/badge/website-miles.radixark.com-d55816)](https://miles.radixark.com/)
 [![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
-[![Docs](https://img.shields.io/badge/docs-miles.radixark.com-d55816)](https://miles.radixark.com/docs)
+[![Docs](https://img.shields.io/badge/docs-miles.radixark.com%2Fdocs-d55816)](https://miles.radixark.com/docs)
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
 [![Slack](https://img.shields.io/badge/slack-%23miles--rl-brightgreen.svg)](https://slack.sglang.ai)
 
-| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Miles Diffusion**](https://github.com/radixark/miles_diffusion) | [**Blog**](https://www.lmsys.org/blog?filter=miles) | [**Slack**](https://slack.sglang.ai) (`#miles-rl`) |
+| [**Website**](https://miles.radixark.com/) | [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Miles Diffusion**](https://github.com/radixark/miles_diffusion) | [**Blog**](https://www.lmsys.org/blog?filter=miles) | [**Slack**](https://slack.sglang.ai) (`#miles-rl`) |
 
 </div>
 
