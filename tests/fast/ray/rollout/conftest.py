@@ -10,6 +10,8 @@ import pytest
 import ray
 from sglang_router.launch_router import RouterArgs
 
+from tests.fast.fixtures.args_fixtures import parser_defaults
+
 from miles.utils import object_store
 from miles.utils.types import Sample
 
@@ -48,6 +50,7 @@ def make_args(**overrides: Any) -> Namespace:
         delay_split_train_data_by_dp=False,
         # object store
         object_store_backend="ray",
+        worker_comm_backend="ray",
         mooncake_store_init_kwargs=None,
         mooncake_replica_num=1,
         # advantage / reward
@@ -81,6 +84,7 @@ def make_args(**overrides: Any) -> Namespace:
         critic_num_nodes=0,
         critic_num_gpus_per_node=0,
         use_critic=False,
+        megatron_config=None,
         critic_train_only=False,
         # sglang router
         sglang_router_ip=None,
@@ -113,6 +117,7 @@ def make_args(**overrides: Any) -> Namespace:
         # deployment
         deploy_component="all",
         deploy_instance_id=None,
+        init_expected_num_cells=None,
         trainer_controller_addrs=None,
         inference_controller_addr=None,
         # external rollout
@@ -164,7 +169,7 @@ def make_args(**overrides: Any) -> Namespace:
     )
     defaults.update(router_defaults)
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return Namespace(**{**parser_defaults(), **defaults})
 
 
 def make_sample(
