@@ -73,10 +73,10 @@ async def test_controller_pauses_health_checks_before_snapshotting_the_engines()
     async def _record_pause() -> None:
         order.append("health_monitoring_pause")
 
-    async def _record_ensure_cells_ready() -> None:
+    async def _record_ensure_cells_ready(model_id: str | None = None) -> None:
         order.append("ensure_cells_ready")
 
-    def _record_snapshot() -> None:
+    def _record_snapshot(model_id: str | None = None) -> None:
         order.append("get_updatable_server")
         return None
 
@@ -100,7 +100,7 @@ async def test_start_update_weights_initializes_colocated_cells_before_snapshott
     controller.servers = {"default": _ServerStub({"a": cell})}
     init_counts_at_snapshot: list[int] = []
 
-    def _record_snapshot() -> None:
+    def _record_snapshot(model_id: str | None = None) -> None:
         init_counts_at_snapshot.append(cell.init_count)
         return None
 
@@ -116,7 +116,7 @@ def _make_controller(order: list[str]):
     from miles.ray.train.group import TrainerController
 
     group = TrainerController.__new__(TrainerController)
-    group.args = Namespace(debug_train_only=False, debug_rollout_only=False)
+    group.args = Namespace(debug_train_only=False, debug_rollout_only=False, trainer_model_id=None)
     group._inference_controller = _OrderRecordingInferenceController(order)
 
     async def _record_execute_first_alive(*args: object, **kwargs: object) -> list[int]:
