@@ -3,6 +3,8 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
+from typing import NoReturn
 
 import pytest
 
@@ -47,6 +49,27 @@ def _refusal(stderr: str) -> subprocess.CompletedProcess:
 
 
 class TestMain:
+    def test_an_unexpected_runner_exception_publishes_failure_before_reraising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kubectl_calls: list[list[str]]
+    ) -> None:
+        """An unexpected launch error records failure and arms cleanup before escaping."""
+        state_file = tmp_path / "orchestrator.state"
+        error = RuntimeError("runner failed")
+
+        def fail_to_launch(command: list[str], *, envs: dict[str, str]) -> NoReturn:
+            raise error
+
+        monkeypatch.setattr(orchestrator_wrapper, "launch_bound_subprocess", fail_to_launch)
+
+        with pytest.raises(RuntimeError) as raised:
+            orchestrator_wrapper.main(
+                ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", "unused"]
+            )
+
+        assert raised.value is error
+        assert (_state(state_file)["status"], _state(state_file)["exit_code"]) == ("exited", 1)
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
+
     def test_publishes_a_successful_exit_code(self, tmp_path):
         """The launcher reads this file to learn the run finished, so a clean run must record zero."""
         state_file = tmp_path / "orchestrator.state"
@@ -198,6 +221,30 @@ class TestMain:
 
 
 class TestUninstallJob:
+    def test_retries_when_creating_the_uninstall_job_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slept: list[int]
+    ) -> None:
+        """A transient create exception is retried without changing the run verdict."""
+        state_file = tmp_path / "orchestrator.state"
+        attempts: list[str] = []
+
+        def create_after_exception(manifest_path: str) -> bool:
+            attempts.append(manifest_path)
+            if len(attempts) == 1:
+                raise RuntimeError("apiserver unavailable")
+            return True
+
+        monkeypatch.setattr(Kubectl, "create_if_absent", staticmethod(create_after_exception))
+
+        code = orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert code == 0
+        assert _state(state_file)["exit_code"] == 0
+        assert attempts == [MANIFEST, MANIFEST]
+        assert slept == [orchestrator_wrapper._UNINSTALL_JOB_RETRY_SLEEPS[0]]
+
     def test_creates_the_job_as_soon_as_the_run_has_a_verdict(self, tmp_path, kubectl_calls):
         """The wrapper could die during the grace period, so the job carries the delay and is created at once."""
         state_file = tmp_path / "orchestrator.state"
@@ -206,7 +253,7 @@ class TestUninstallJob:
             ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
         )
 
-        assert kubectl_calls == [["create", "-f", MANIFEST, "--request-timeout", "60s"]]
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
 
     def test_creates_the_job_for_a_failed_run_too(self, tmp_path, kubectl_calls):
         """A failed run holds just as many gpus as a successful one, and its logs stay in the run directory."""
@@ -225,7 +272,7 @@ class TestUninstallJob:
             ]
         )
 
-        assert kubectl_calls == [["create", "-f", MANIFEST, "--request-timeout", "60s"]]
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
 
     def test_creates_the_job_when_the_script_could_not_be_launched(self, tmp_path, kubectl_calls):
         """That verdict ends the run as surely as a failing script, and the release must go the same way."""
@@ -242,7 +289,7 @@ class TestUninstallJob:
             ]
         )
 
-        assert kubectl_calls == [["create", "-f", MANIFEST, "--request-timeout", "60s"]]
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
 
     def test_never_creates_the_job_when_the_pod_is_asked_to_stop(self, tmp_path, kubectl_calls):
         """A relaunch SIGTERMs the orchestrator it replaces, and uninstalling then would tear down the new run."""
@@ -266,7 +313,7 @@ class TestUninstallJob:
         )
 
         assert code == 4
-        assert kubectl_calls == [["create", "-f", MANIFEST, "--request-timeout", "60s"]]
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
 
     def test_creates_the_job_for_a_run_a_restart_cut_short(self, tmp_path, kubectl_calls):
         """A pod that restarted mid-training reports a failure, and that failure ends the release too."""
@@ -278,7 +325,7 @@ class TestUninstallJob:
         )
 
         assert code == 1
-        assert kubectl_calls == [["create", "-f", MANIFEST, "--request-timeout", "60s"]]
+        assert kubectl_calls == [["create", "-f", MANIFEST]]
 
     def test_replaces_the_finished_job_a_previous_launch_of_this_release_left(self, tmp_path, monkeypatch):
         """A completed job holds the name without ever running again, so the release would never be uninstalled."""
@@ -397,3 +444,46 @@ class TestUninstallJob:
         orchestrator_wrapper.main(["--state-file", str(state_file), "--", sys.executable, "-c", "pass"])
 
         assert kubectl_calls == []
+
+    def test_leaves_the_uninstall_to_the_launch_that_took_the_run_over(self, tmp_path, kubectl_calls):
+        """The release already carries the replacement, so uninstalling it now tears the new run down."""
+        state_file = tmp_path / "orchestrator.state"
+        RunFiles.superseded_marker(state_file=state_file).write_text(f"{tmp_path / 'orchestrator-new.state'}\n")
+
+        orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert kubectl_calls == []
+
+    def test_a_superseded_generation_still_publishes_its_own_verdict(self, tmp_path, kubectl_calls):
+        """Losing the run is not a reason to leave the state file of this generation unwritten."""
+        state_file = tmp_path / "orchestrator.state"
+        RunFiles.superseded_marker(state_file=state_file).write_text("taken over\n")
+
+        code = orchestrator_wrapper.main(
+            [
+                "--state-file",
+                str(state_file),
+                "--uninstall-manifest",
+                MANIFEST,
+                "--",
+                sys.executable,
+                "-c",
+                "raise SystemExit(7)",
+            ]
+        )
+
+        assert code == 7
+        assert _state(state_file)["exit_code"] == 7
+
+    def test_a_marker_for_another_generation_defuses_nothing(self, tmp_path, kubectl_calls):
+        """Every generation writes its own state file, and only its own marker speaks for it."""
+        state_file = tmp_path / "orchestrator.state"
+        RunFiles.superseded_marker(state_file=tmp_path / "someone-else.state").write_text("taken over\n")
+
+        orchestrator_wrapper.main(
+            ["--state-file", str(state_file), "--uninstall-manifest", MANIFEST, "--", sys.executable, "-c", "pass"]
+        )
+
+        assert [call[:3] for call in kubectl_calls] == [["create", "-f", MANIFEST]]

@@ -33,7 +33,10 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher import manifest_diff
 from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import CI_LABEL, Helm, Kubectl
-from miles.utils.external_utils.command_utils.helm_backend.launcher.hot_restart import plan_hot_restart
+from miles.utils.external_utils.command_utils.helm_backend.launcher.hot_restart import (
+    compute_orchestrator_object_key,
+    plan_hot_restart,
+)
 from miles.utils.external_utils.command_utils.helm_backend.launcher.launch_record import (
     LaunchRecord,
     installed_launch_record_file,
@@ -52,6 +55,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunFiles, RunNames
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.observer import wait_for_run
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
+from miles.utils.file_utils import atomic_write_text
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import generate_run_uuid, validate_run_uuid
 from miles.utils.workers.naming import DNS_LABEL_PATTERN
@@ -108,55 +112,84 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
         release=release,
         installed_manifest=installed_manifest,
     )
-    state_file = (
-        _compute_state_file(installed_manifest=installed_manifest, run_directory=run_directory, release=release)
-        if deploys_orchestration_script
-        else None
-    )
-
-    plan = LaunchPlan(
-        run_id=run_id,
-        release=release,
-        namespace=namespace,
-        state_file=str(state_file) if state_file is not None else "",
-        orchestrator_command=orchestrator_command,
-        worker_argv=pod_argv,
-        env=env,
-        colocate=bool(args.colocate),
-        mooncake_plan=_compute_mooncake_plan(args),
-        prepare_cmd=request.prepare_cmd,
-        extra_manifests=request.extra_manifests,
-        restart_at=hot_restart_plan.restart_at,
-        stamped_components=hot_restart_plan.stamped_components,
-    )
     reachable_at = (
         _compute_trainer_controller_addrs(args, release=release, namespace=namespace)
         if deploy_component is DeployComponent.TRAINER
         else {}
     )
-
     values_path = RunFiles.new_values_file(run_directory=run_directory)
-    record = LaunchRecord.compute(plan=plan, values_file=values_path, reachable_at=reachable_at)
-    record_path = RunFiles.new_record_file(run_directory=run_directory)
-    plan = plan.model_copy(
-        update={
-            "launch_record": _compute_pod_record_file(installed_manifest=installed_manifest, record_path=record_path),
-        }
-    )
-    _write_helm_values(values_path, build_values(specs, plan).as_values())
     values_files: list[str | Path] = [*config.helm_values, values_path]
+    record_path = RunFiles.new_record_file(run_directory=run_directory)
 
-    if installed_manifest is None:
-        _remove_pending_uninstall(release, namespace=namespace)
-    else:
-        _assert_upgrade_is_allowed(
-            installed_manifest=installed_manifest,
+    def render_and_propose(state_file: Path | None) -> tuple[LaunchRecord, Manifest]:
+        plan = LaunchPlan(
+            run_id=run_id,
             release=release,
             namespace=namespace,
-            chart=chart,
-            values_files=values_files,
+            state_file=str(state_file) if state_file is not None else "",
+            orchestrator_command=orchestrator_command,
+            worker_argv=pod_argv,
+            env=env,
+            colocate=bool(args.colocate),
+            mooncake_plan=_compute_mooncake_plan(args),
+            prepare_cmd=request.prepare_cmd,
+            extra_manifests=request.extra_manifests,
+            restart_at=hot_restart_plan.restart_at,
+            stamped_components=hot_restart_plan.stamped_components,
+        )
+        computed = LaunchRecord.compute(plan=plan, values_file=values_path, reachable_at=reachable_at)
+        rendered = plan.model_copy(
+            update={
+                "launch_record": _compute_pod_record_file(
+                    installed_manifest=installed_manifest, record_path=record_path
+                ),
+            }
+        )
+        _write_helm_values(values_path, build_values(specs, rendered).as_values())
+        return computed, Helm.render_upgrade(
+            release=release, namespace=namespace, chart=chart, values_files=values_files
+        )
+
+    carried_state_file = (
+        _carried_state_file(installed_manifest=installed_manifest, release=release)
+        if deploys_orchestration_script
+        else None
+    )
+
+    rebuilds_orchestrator = True
+    if installed_manifest is not None:
+        _, carried_manifest = render_and_propose(carried_state_file)
+        carried_diff = manifest_diff.diff_manifests(
+            before=installed_manifest,
+            after=carried_manifest,
             allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
+        )
+        rebuilds_orchestrator = carried_diff.rebuilds(key=compute_orchestrator_object_key(release))
+    state_file = (
+        RunFiles.new_state_file(run_directory=run_directory)
+        if rebuilds_orchestrator and deploys_orchestration_script
+        else carried_state_file
+    )
+    record, proposed_manifest = render_and_propose(state_file)
+
+    if installed_manifest is not None:
+        _assert_upgrade_is_allowed(
+            diff=(
+                carried_diff
+                if state_file == carried_state_file
+                else manifest_diff.diff_manifests(
+                    before=installed_manifest,
+                    after=proposed_manifest,
+                    allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
+                )
+            ),
+            release=release,
             skip_upgrade_check=config.skip_upgrade_check,
+            allow_diff_object_keys=hot_restart_plan.allow_diff_object_keys,
+        )
+    if rebuilds_orchestrator:
+        _defuse_previous_generation(
+            release, namespace=namespace, superseded_state_file=carried_state_file, state_file=state_file
         )
 
     record.write(path=record_path)
@@ -224,6 +257,7 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
         outcome = wait_for_run(
             state_file=state_file,
             read_pod=lambda: observed_pod(namespace, orchestrator_workload),
+            read_active_state_file=lambda: _active_state_file(release=release, namespace=namespace),
         )
 
     if outcome.exit_code != 0:
@@ -302,9 +336,9 @@ def _compute_pod_record_file(*, installed_manifest: Manifest | None, record_path
     return installed_launch_record_file(manifest=installed_manifest)
 
 
-def _compute_state_file(*, installed_manifest: Manifest | None, run_directory: Path, release: str) -> Path:
+def _carried_state_file(*, installed_manifest: Manifest | None, release: str) -> Path | None:
     if installed_manifest is None:
-        return RunFiles.new_state_file(run_directory=run_directory)
+        return None
 
     attached_state_file = installed_manifest.state_file(
         stateful_set=RunNames.orchestrator_object(release=release), container=naming.ORCHESTRATOR_COMPONENT
@@ -316,23 +350,29 @@ def _compute_state_file(*, installed_manifest: Manifest | None, run_directory: P
     return attached_state_file
 
 
+def _active_state_file(*, release: str, namespace: str) -> Path | None:
+    object_name = RunNames.orchestrator_object(release=release)
+    result = Kubectl.run_raw("get", "statefulset", object_name, "--namespace", namespace, "--output", "yaml")
+    if result.returncode != 0:
+        error = (result.stderr + result.stdout).lower()
+        if "not found" in error or "notfound" in error:
+            return None
+        raise RuntimeError(
+            f"Cannot read the active orchestrator generation of {release}: "
+            f"{result.stderr.strip() or result.stdout.strip()}"
+        )
+
+    manifest = Manifest.parse(result.stdout, namespace=namespace)
+    return _carried_state_file(installed_manifest=manifest, release=release)
+
+
 def _assert_upgrade_is_allowed(
     *,
-    installed_manifest: Manifest,
+    diff: manifest_diff.ManifestDiffs,
     release: str,
-    namespace: str,
-    chart: Path,
-    values_files: list[str | Path],
     skip_upgrade_check: bool,
     allow_diff_object_keys: frozenset[ManifestObjectKey],
 ) -> None:
-    proposed_manifest = Helm.render_upgrade(
-        release=release, namespace=namespace, chart=chart, values_files=values_files
-    )
-    diff = manifest_diff.diff_manifests(
-        before=installed_manifest, after=proposed_manifest, allow_diff_object_keys=allow_diff_object_keys
-    )
-
     if diff.is_allowed:
         logger.info(
             f"Run {release} already exists; upgrading it with these allowed changes:\n{diff.summarize_allowed_changes()}"
@@ -364,7 +404,18 @@ def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list
     return releases
 
 
-def _remove_pending_uninstall(release: str, *, namespace: str) -> None:
+def _defuse_previous_generation(
+    release: str, *, namespace: str, superseded_state_file: Path | None, state_file: Path | None
+) -> None:
+    if superseded_state_file is not None:
+        marker = RunFiles.superseded_marker(state_file=superseded_state_file)
+        logger.info(
+            f"Writing {marker}, so the orchestrator of {superseded_state_file} leaves the uninstall of {release} "
+            f"to the generation this launch installs"
+        )
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(marker, f"{state_file}\n")
+
     job = RunNames.uninstall_job(release=release)
     logger.info(f"Deleting {job} if it is pending, so it cannot uninstall the release this launch installs")
     Kubectl.delete_job(job, namespace=namespace, check=True)
