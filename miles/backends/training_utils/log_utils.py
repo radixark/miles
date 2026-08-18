@@ -10,7 +10,7 @@ import torch.distributed as dist
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
-from miles.utils.metric_utils import compute_rollout_step, namespace_metrics
+from miles.utils.metric_utils import compute_rollout_step, namespace_metrics, strip_metrics_namespace
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
@@ -265,6 +265,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
+            reduced_log_dict = strip_metrics_namespace(reduced_log_dict, trainer_model_id=args.trainer_model_id)
             if (
                 rollout_id == 0
                 and "rollout/log_probs" in reduced_log_dict

@@ -103,6 +103,7 @@ def make_app(
             metric_keys=store.metric_keys() + dump_keys,
             engine_metric_keys=store.engine_metric_names(),
             step_keys=store.step_keys(),
+            step_key_of_metric_key=store.step_key_of_metric_key(),
             capabilities=dict(
                 has_metrics=store.has_stream(Stream.METRICS),
                 has_tokenizer=(reader.dump_dir / "tokenizer").is_dir(),

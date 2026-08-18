@@ -60,8 +60,10 @@ function describeMetric(key) {
   return hit ? hit[1] : undefined;
 }
 
-function axisOf(key) {
+function axisOf(key, meta) {
   if (key.startsWith("dump/")) return "dump";
+  const recorded = meta?.step_key_of_metric_key?.[key];
+  if (recorded) return recorded;
   if (key.startsWith("train/")) return "train/step";
   if (key.startsWith("eval/")) return "eval/step";
   return "rollout/step";
@@ -237,7 +239,7 @@ export async function renderMetrics(view, meta) {
     }
     const byAxis = new Map();
     for (const key of slots.keys()) {
-      const axis = axisOf(key);
+      const axis = axisOf(key, meta);
       if (!byAxis.has(axis)) byAxis.set(axis, []);
       byAxis.get(axis).push(key);
     }

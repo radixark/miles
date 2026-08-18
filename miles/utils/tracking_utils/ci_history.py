@@ -59,6 +59,13 @@ TARGET_METRIC_KEYS: tuple[str, ...] = (
 RECORD_DIR_ENV = "MILES_CI_GATE_RECORD_DIR"
 
 
+def _compute_logged_key(metrics: dict[str, Any], key: str) -> str | None:
+    if key in metrics:
+        return key
+    suffix = f"/{key}"
+    return next((logged for logged in metrics if logged.endswith(suffix)), None)
+
+
 def _encode_value(value: float) -> float | str:
     # Bare NaN/Infinity from json.dumps is not strict JSON; markers keep the
     # record parseable by any reader.
@@ -104,9 +111,9 @@ class CiHistoryBackend(TrackingBackend):
         with self._lock:
             captured: list[tuple[str, float]] = []
             for key in TARGET_METRIC_KEYS:
-                if key not in metrics:
+                if (logged_key := _compute_logged_key(metrics, key)) is None:
                     continue
-                value = metrics[key]
+                value = metrics[logged_key]
                 if not isinstance(value, (int, float)) or isinstance(value, bool):
                     message = f"CI history metric {key!r} must be int or float, got {type(value).__name__}"
                     logger.error("%s", message)
