@@ -168,8 +168,8 @@ MOONCAKE_BACKEND_NAME = "mooncake"
 MOONCAKE_INIT_KWARGS_FLAG = "--mooncake-store-init-kwargs"
 
 
-def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT) -> str:
-    init_kwargs = compute_mooncake_init_kwargs(master_port=master_port)
+def get_mooncake_object_store_args(master_port: int = MOONCAKE_MASTER_PORT, master_host: str = "127.0.0.1") -> str:
+    init_kwargs = compute_mooncake_init_kwargs(host=master_host, master_port=master_port)
     return (
         f"{OBJECT_STORE_BACKEND_FLAG} {MOONCAKE_BACKEND_NAME} "
         f"{MOONCAKE_INIT_KWARGS_FLAG} {shlex.quote(json.dumps(init_kwargs))} "

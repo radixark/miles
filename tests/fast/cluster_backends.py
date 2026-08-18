@@ -48,10 +48,7 @@ def kubernetes_availability_of_namespace(namespace: str, *, namespace_source: st
             return BackendAvailability(False, f"{tool} is not installed, {why}")
 
     if not namespace:
-        return BackendAvailability(
-            False,
-            f"set {namespace_source} to a namespace of your own; see docs/advanced/cluster-backend.md",
-        )
+        return BackendAvailability(False, compute_missing_namespace_reason(namespace_source))
 
     reachable = _run_kubectl(["get", "--raw", "/version"])
     if reachable.returncode != 0:
@@ -67,6 +64,10 @@ def kubernetes_availability_of_namespace(namespace: str, *, namespace_source: st
             return BackendAvailability(False, f"this account may not {verb} {resource} in namespace {namespace}")
 
     return BackendAvailability(True, f"using namespace {namespace}")
+
+
+def compute_missing_namespace_reason(namespace_source: str) -> str:
+    return f"set {namespace_source} to a namespace of your own; see docs/advanced/cluster-backend.md"
 
 
 def ray_availability() -> BackendAvailability:
