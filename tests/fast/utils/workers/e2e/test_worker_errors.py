@@ -1,7 +1,6 @@
 import asyncio
 
 import pytest
-from pydantic import ValidationError
 
 from miles.utils.workers.rpc.client.misc import RpcWorkerCallError
 from miles.utils.workers.worker_handle import WorkerUnreachableError
@@ -69,14 +68,14 @@ class TestResultContract:
         with pytest.raises(RpcWorkerCallError):
             await handle.demo_unserializable_result()
 
-    async def test_result_type_mismatch_is_caught_client_side(self, handle):
-        """A result that does not match the annotation fails validation on the client."""
-        with pytest.raises(ValidationError):
+    async def test_result_type_mismatch_fails_on_the_server(self, handle):
+        """A result that does not match the annotation fails in the process that produced it."""
+        with pytest.raises(RpcWorkerCallError, match="demo_wrong_result_type"):
             await handle.demo_wrong_result_type()
 
     async def test_server_survives_a_mismatched_result(self, handle):
-        """A validation failure on the client leaves the server usable."""
-        with pytest.raises(ValidationError):
+        """A failed result serialization leaves the server usable."""
+        with pytest.raises(RpcWorkerCallError):
             await handle.demo_wrong_result_type()
         assert await handle.demo_sync(a=2, b=2) == 4
 
