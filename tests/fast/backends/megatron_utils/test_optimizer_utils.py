@@ -48,14 +48,18 @@ def _chained_optimizer(*members) -> object:
     optimizer_module = pytest.importorskip("megatron.core.optimizer.optimizer")
     optimizer = optimizer_module.ChainedOptimizer.__new__(optimizer_module.ChainedOptimizer)
     optimizer.chained_optimizers = list(members)
-    optimizer.config = SimpleNamespace(offload_optimizer_states=False)
+    optimizer.config = SimpleNamespace(offload_optimizer_states=False, fp16=False)
     return optimizer
 
 
-def _reset(monkeypatch, *members, using_pytorch_optimizer: bool = True) -> None:
+def _reset(
+    monkeypatch, *members, using_pytorch_optimizer: bool = True, stream_optimizer_state_to_disk: bool = False
+) -> None:
     optimizer_utils = pytest.importorskip("miles.backends.megatron_utils.optimizer_utils")
     monkeypatch.setattr(optimizer_utils, "USING_PYTORCH_OPTIMIZER", using_pytorch_optimizer)
-    optimizer_utils.reset_optimizer_state(_chained_optimizer(*members))
+    optimizer_utils.reset_optimizer_state(
+        _chained_optimizer(*members), stream_optimizer_state_to_disk=stream_optimizer_state_to_disk
+    )
 
 
 def _adam_with_history(*, steps: int) -> tuple[torch.nn.Parameter, torch.optim.Adam]:
@@ -222,3 +226,28 @@ class TestTheSelfCheckAResetRuns:
 
         with pytest.raises(AssertionError):
             _reset(monkeypatch, member, using_pytorch_optimizer=False)
+
+
+class TestWhatAResetRefusesToWalk:
+    def test_an_optimizer_streaming_its_state_to_disk_is_refused(self, monkeypatch):
+        """Its moments live in the nvme store, so this walk would clear nothing and report a clean reset."""
+        with pytest.raises(AssertionError, match="stream-optimizer-state-to-disk"):
+            _reset(monkeypatch, _FakeChainedMember(), stream_optimizer_state_to_disk=True)
+
+    def test_an_fp16_optimizer_is_refused(self, monkeypatch):
+        """The loss scaler sits beside the state this clears, and a reset that leaves it is a half reset."""
+        optimizer_utils = pytest.importorskip("miles.backends.megatron_utils.optimizer_utils")
+        optimizer = _chained_optimizer(_FakeChainedMember())
+        optimizer.config = SimpleNamespace(offload_optimizer_states=False, fp16=True)
+
+        with pytest.raises(AssertionError, match="loss scaler"):
+            optimizer_utils.reset_optimizer_state(optimizer, stream_optimizer_state_to_disk=False)
+
+    def test_an_optimizer_offloading_its_states_is_refused(self, monkeypatch):
+        """The offloader would copy the old moments back over the reset from the buffer it keeps."""
+        optimizer_utils = pytest.importorskip("miles.backends.megatron_utils.optimizer_utils")
+        optimizer = _chained_optimizer(_FakeChainedMember())
+        optimizer.config = SimpleNamespace(offload_optimizer_states=True, fp16=False)
+
+        with pytest.raises(AssertionError):
+            optimizer_utils.reset_optimizer_state(optimizer, stream_optimizer_state_to_disk=False)
