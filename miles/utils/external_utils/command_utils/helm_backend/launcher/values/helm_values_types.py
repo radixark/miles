@@ -64,6 +64,7 @@ class PoolEntry(ValuesModel):
     size: Annotated[int, Field(ge=1)] | None = None
     resources: _Resources | None = None
     restart_at: Annotated[str, Field(min_length=1)] | None = None
+    service_account_name: _ObjectName | None = None
 
 
 class ObjectNames(ValuesModel):

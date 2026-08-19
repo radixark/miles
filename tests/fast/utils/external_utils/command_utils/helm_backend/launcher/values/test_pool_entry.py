@@ -138,3 +138,26 @@ class TestTheRestartStamp:
 
         with pytest.raises(AssertionError, match="renders a restart stamp"):
             build_values([trainer()], plan).as_values()
+
+
+class TestTheAccountAPoolRunsUnder:
+    def test_a_pool_that_observes_the_platform_gets_the_account_that_may_read_it(self):
+        """Only these workers reconcile against pods, and the namespace default cannot list one."""
+        spec = session_server(num_cells=1).model_copy(update={"needs_platform_read_permission": True})
+
+        entry = build_values([spec], LAYOUT).as_values()["run"]["staticWorkers"][0]
+
+        assert entry["serviceAccountName"] == "r-miles-run-orchestrator"
+
+    def test_every_other_pool_stays_on_the_namespace_default(self):
+        """An engine talks to no api server, and an account it never needs is one it could misuse."""
+        entry = build_values([session_server(num_cells=1)], LAYOUT).as_values()["run"]["staticWorkers"][0]
+
+        assert "serviceAccountName" not in entry
+
+    def test_refuses_a_pool_whose_template_renders_no_account_at_all(self):
+        """The engine template ignores the key, so the pod would run on the default and 403 far from here."""
+        spec = engine(num_cells=1, gpus_per_engine=8).model_copy(update={"needs_platform_read_permission": True})
+
+        with pytest.raises(AssertionError, match="renders a service account"):
+            build_values([spec], LAYOUT).as_values()

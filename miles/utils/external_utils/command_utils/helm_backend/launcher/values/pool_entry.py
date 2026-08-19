@@ -68,6 +68,11 @@ def build_entry(
         ports=[PortEntry(name=_port_name(port.name), port=port.static_port) for port in spec.port_infos],
         env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node) or None,
         meta=_meta_of_spec(spec) or None,
+        service_account_name=(
+            naming.component_name(plan.release, naming.ORCHESTRATOR_COMPONENT)
+            if spec.needs_platform_read_permission
+            else None
+        ),
         replicas=spec.scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
         resources={"limits": {"nvidia.com/gpu": gpus_per_pod}} if gpus_per_pod else None,

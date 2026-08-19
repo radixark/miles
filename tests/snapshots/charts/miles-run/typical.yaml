@@ -654,6 +654,7 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
+      serviceAccountName: "myrun-miles-run-orchestrator"
       restartPolicy: Always
       containers:
         - name: worker
@@ -971,6 +972,7 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
+      serviceAccountName: "myrun-miles-run-orchestrator"
       restartPolicy: Always
       containers:
         - name: worker
