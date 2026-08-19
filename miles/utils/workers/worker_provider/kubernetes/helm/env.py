@@ -14,6 +14,7 @@ DEFAULT_LABEL_KEYS = CellLabelKeys(
     cell_size_annotation="leaderworkerset.sigs.k8s.io/size",
     meta_annotation_prefix="miles.radixark.io/meta-",
     gpu_ids_meta="gpu_ids",
+    base_gpu_id_annotation="miles.radixark.io/base-gpu-id",
 )
 
 NAMESPACE_ENV_VAR = "MILES_K8S_NAMESPACE"
