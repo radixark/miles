@@ -1,4 +1,5 @@
 import importlib
+import logging
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -211,6 +212,139 @@ class TestTheCheckpointAReloadRollsBackTo:
 
         with pytest.raises(AssertionError):
             _actor(actor_module, role="actor", args=args).load_state()
+
+
+def _reference_weights(tmp_path: Path) -> str:
+    directory = tmp_path / "reference"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "config.json").write_text("{}")
+    return str(directory)
+
+
+def _cold_started_args(tmp_path: Path, **overrides) -> Namespace:
+    defaults = dict(
+        load=_reference_weights(tmp_path),
+        requested_load=str(tmp_path / "run"),
+        finetune=True,
+        no_load_optim=True,
+        no_load_rng=True,
+    )
+    defaults.update(overrides)
+    return _args(tmp_path, **defaults)
+
+
+def _stub_reset(actor_module, monkeypatch) -> None:
+    monkeypatch.setattr(actor_module, "set_random_seed_from_args", lambda *a, **k: None)
+    monkeypatch.setattr(actor_module, "reset_optimizer_state", lambda *a, **k: None)
+
+
+class TestAReloadThatFindsNothingItSaved:
+    def test_it_puts_the_trainer_back_where_the_run_began(self, actor_module, tmp_path, monkeypatch, caplog):
+        """A run that has not saved yet still has a state to go back to: the one it was started from."""
+        args = _cold_started_args(tmp_path)
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        actor = _actor(actor_module, role="actor", args=args)
+        _stub_reset(actor_module, monkeypatch)
+
+        with caplog.at_level(logging.INFO):
+            assert actor.load_state() == 0
+
+        assert seen["args_during_load"]["load"] == _reference_weights(tmp_path)
+        assert "found no checkpoint" in caplog.text
+
+    def test_it_loads_under_the_arguments_the_run_was_started_with(self, actor_module, tmp_path, monkeypatch):
+        """Anything else would answer a different question than the one the trainer's own init answered."""
+        args = _cold_started_args(tmp_path, ckpt_step=3, ref_ckpt_step=3)
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        actor = _actor(actor_module, role="actor", args=args)
+        _stub_reset(actor_module, monkeypatch)
+
+        actor.load_state()
+
+        during = seen["args_during_load"]
+        assert (during["finetune"], during["no_load_optim"], during["no_load_rng"], during["ckpt_step"]) == (
+            True,
+            True,
+            True,
+            3,
+        )
+
+    def test_it_reseeds_the_rng_and_resets_the_optimizer(self, actor_module, tmp_path, monkeypatch):
+        """A checkpoint load overwrites neither, so a live trainer would keep both from the rollouts it discards."""
+        args = _cold_started_args(tmp_path)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        actor = _actor(actor_module, role="actor", args=args)
+        actor.optimizer = "the live optimizer"
+        reseeded: list[Namespace] = []
+        reset: list[str] = []
+        monkeypatch.setattr(actor_module, "set_random_seed_from_args", reseeded.append)
+        monkeypatch.setattr(
+            actor_module,
+            "reset_optimizer_state",
+            lambda optimizer, *, stream_optimizer_state_to_disk: reset.append(optimizer),
+        )
+
+        actor.load_state()
+
+        assert reseeded == [args] and reset == ["the live optimizer"]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(finetune=False),
+            dict(no_load_optim=False),
+            dict(no_load_rng=False),
+            dict(ckpt_step=7),
+        ],
+    )
+    def test_a_run_that_did_not_cold_start_is_refused(self, actor_module, tmp_path, monkeypatch, overrides):
+        """Only a cold-started run is supported here; resetting state a load would also restore is undesigned."""
+        args = _cold_started_args(tmp_path, **overrides)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=0)
+        _stub_reset(actor_module, monkeypatch)
+
+        with pytest.raises(AssertionError):
+            _actor(actor_module, role="actor", args=args).load_state()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            dict(fp16=True),
+            dict(use_precision_aware_optimizer=True),
+            dict(optimizer_cpu_offload=True),
+            dict(offload_optimizer_states=True),
+        ],
+    )
+    def test_a_trainer_whose_state_cannot_be_reset_is_refused(self, actor_module, tmp_path, overrides):
+        """These keep state a reset would have to rebuild, and a half-reset trainer is worse than a refused one."""
+        actor = _actor(actor_module, role="actor", args=_cold_started_args(tmp_path, **overrides))
+
+        with pytest.raises(AssertionError):
+            actor.load_state()
+
+    def test_a_reload_that_did_save_is_not_pushed_back_to_the_beginning(self, actor_module, tmp_path, monkeypatch):
+        """The reset path is for a run with nothing of its own, and running it over a real resume would undo it."""
+        _write_checkpoint(tmp_path / "pretrain", iteration=50)
+        args = _args(tmp_path, fp16=True)
+        _watch_load(actor_module, monkeypatch, args=args, iteration=50)
+
+        assert _actor(actor_module, role="actor", args=args).load_state() == 51
+
+    def test_an_async_save_still_in_flight_is_finalized_before_the_choice_is_made(
+        self, actor_module, tmp_path, monkeypatch
+    ):
+        """The checkpoint a pending save is about to write is the one the reload has to come back to."""
+        args = _args(tmp_path, async_save=True, requested_load=str(tmp_path / "run"))
+        seen = _watch_load(actor_module, monkeypatch, args=args, iteration=50)
+        actor = _actor(actor_module, role="actor", args=args)
+        monkeypatch.setattr(
+            type(actor),
+            "_finalize_pending_async_save",
+            lambda self: _write_checkpoint(tmp_path / "run", iteration=50),
+        )
+
+        assert actor.load_state() == 51
+        assert seen["args_during_load"]["load"] == str(tmp_path / "run")
 
 
 class TestWhatAReloadRefuses:
