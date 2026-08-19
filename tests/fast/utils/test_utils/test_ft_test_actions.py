@@ -1,24 +1,30 @@
 import json
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from tests.e2e.ft.conftest_ft.execution import DEFAULT_TRAIN_SCRIPT
 
 from miles.utils.test_utils.ft_test_actions import (
     _ACTOR_ACTIONS,
     _CONTROLLER_ACTIONS,
+    _ORCHESTRATION_ACTIONS,
+    PARKABLE_TRAIN_SCRIPT,
+    SLEEP_FOREVER_AT_END_ACTION,
     FTTestAction,
     FTTestActionActorExecutor,
     FTTestActionControllerExecutor,
+    FTTestActionOrchestrationExecutor,
     _load_actions,
 )
 
 _POOL_ID = "trainer-engine-actor"
 
 
-def _args(ci_ft_test_actions: object) -> SimpleNamespace:
-    return SimpleNamespace(ci_ft_test_actions=ci_ft_test_actions)
+def _args(ci_ft_test_actions: object = None, **overrides: object) -> SimpleNamespace:
+    return SimpleNamespace(**{"ci_ft_test_actions": ci_ft_test_actions, "update_weights_interval": 1, **overrides})
 
 
 def test_load_actions_returns_empty_when_attr_is_none() -> None:
@@ -305,6 +311,7 @@ class TestRunAfterStep:
     @pytest.mark.asyncio
     async def test_a_rejected_stop_propagates_and_the_later_action_never_fires(self):
         """Carrying on after the requested transition failed turns a broken scenario into a green run."""
+
         class _RejectingOperations(FakeCellOperations):
             async def suspend(self, cell_id: str) -> None:
                 raise RuntimeError("worker manager rejected the stop")
@@ -395,3 +402,171 @@ class TestMaybeCrash:
         executor.maybe_crash(rollout_id=4, attempt=0)
 
         assert recorded_exit_codes == []
+
+
+_SLEEP_ACTION = FTTestAction(at_rollout=2, action="sleep_forever_at_end")
+
+
+class _SleptEnough(Exception):
+    pass
+
+
+def _sleeper(*, wakes: list[float], limit: int):
+    async def sleep(seconds: float) -> None:
+        wakes.append(seconds)
+        if len(wakes) >= limit:
+            raise _SleptEnough
+
+    return sleep
+
+
+class TestLoadingASleepForeverAction:
+    def test_the_action_that_freezes_the_orchestration_script_is_not_offered_to_the_cell_side_executors(self) -> None:
+        """A cell executor acting on it would suspend a cell where the scenario asked for a frozen script."""
+        assert SLEEP_FOREVER_AT_END_ACTION in _ORCHESTRATION_ACTIONS
+        assert not _ORCHESTRATION_ACTIONS & (_CONTROLLER_ACTIONS | _ACTOR_ACTIONS)
+
+    def test_a_sleep_forever_action_loads_without_naming_a_cell(self) -> None:
+        """The script that drives the run is not a cell, so this action has no cell id to carry."""
+        raw = json.dumps([{"at_rollout": 2, "action": "sleep_forever_at_end"}])
+
+        [action] = _load_actions(_args(raw), _ORCHESTRATION_ACTIONS)
+
+        assert action == _SLEEP_ACTION
+
+    def test_a_sleep_forever_action_that_names_a_cell_is_refused(self) -> None:
+        """A cell id here would read as a cell being frozen, and nothing freezes a cell."""
+        raw = json.dumps([{"at_rollout": 2, "action": "sleep_forever_at_end", "cell_id": "trainer-engine-actor-0"}])
+
+        with pytest.raises(ValidationError):
+            _load_actions(_args(raw), _ORCHESTRATION_ACTIONS)
+
+    def test_the_orchestration_executor_ignores_the_actions_of_the_other_sides(self) -> None:
+        """The orchestration script runs beside the cells, and suspending one from here would drive it twice."""
+        raw = json.dumps(
+            [
+                {"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-0"},
+                {"at_rollout": 2, "action": "sleep_forever_at_end"},
+            ]
+        )
+
+        assert _load_actions(_args(raw), _ORCHESTRATION_ACTIONS) == [_SLEEP_ACTION]
+
+
+class TestSleepForeverAtEnd:
+    @pytest.mark.asyncio
+    async def test_the_step_the_action_names_never_returns(self) -> None:
+        """The whole point is that the run stands still, so the loop is never handed the next step."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[_SLEEP_ACTION], sleep=_sleeper(wakes=wakes, limit=3), interval_seconds=0.5
+        )
+
+        with pytest.raises(_SleptEnough):
+            await executor.run_after_step(rollout_id=2)
+
+        assert wakes == [0.5, 0.5, 0.5]
+
+    @pytest.mark.asyncio
+    async def test_every_other_step_returns_at_once(self) -> None:
+        """A run frozen a step early would resume from another checkpoint than the one pinned."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(actions=[_SLEEP_ACTION], sleep=_sleeper(wakes=wakes, limit=1))
+
+        for rollout_id in (0, 1, 3, 4):
+            await executor.run_after_step(rollout_id=rollout_id)
+
+        assert wakes == []
+
+    @pytest.mark.asyncio
+    async def test_an_orchestration_executor_with_no_actions_never_sleeps(self) -> None:
+        """Every run outside this scenario carries no plan and has to train straight through."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(actions=[], sleep=_sleeper(wakes=wakes, limit=1))
+
+        await executor.run_after_step(rollout_id=2)
+
+        assert wakes == []
+
+    @pytest.mark.asyncio
+    async def test_a_cell_action_that_reached_the_orchestration_side_is_refused(self) -> None:
+        """Sleeping on a cell action would swallow the suspend the scenario armed and freeze the run instead."""
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[FTTestAction(at_rollout=2, action="stop_cell_at_end", cell_id="trainer-engine-actor-0")],
+            sleep=_sleeper(wakes=[], limit=1),
+        )
+
+        with pytest.raises(AssertionError, match="stop_cell_at_end"):
+            await executor.run_after_step(rollout_id=2)
+
+    @pytest.mark.asyncio
+    async def test_a_plan_the_run_never_reaches_leaves_it_training(self) -> None:
+        """An armed step past the end of the run is a scenario bug, not a freeze."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[FTTestAction(at_rollout=99, action="sleep_forever_at_end")],
+            sleep=_sleeper(wakes=wakes, limit=1),
+        )
+
+        await executor.run_after_step(rollout_id=5)
+
+        assert wakes == []
+
+
+class TestWhichLoopsCanBeParked:
+    def test_a_plan_reaching_a_loop_of_another_train_script_is_refused(self, driven_by) -> None:
+        """train_async.py has already started the next rollout, so the run would not be where the action names."""
+        driven_by("train_async.py")
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
+
+        with pytest.raises(AssertionError, match="train_async.py has already started"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_loop_is_judged_by_the_script_driving_it_and_not_by_a_flag_it_declares(self, driven_by) -> None:
+        """--fully-async is one way to reach an async loop; the train script is what actually chooses one."""
+        driven_by("train_async.py")
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]), fully_async=False)
+
+        with pytest.raises(AssertionError, match="train_async.py has already started"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_plan_reaching_a_run_that_syncs_weights_every_other_step_is_refused(self, driven_by) -> None:
+        """The action parks the run where it updates weights; a gated update skips that point."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]), update_weights_interval=2)
+
+        with pytest.raises(AssertionError, match="update-weights-interval"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_plan_reaching_one_policy_of_a_multi_policy_run_is_refused(self, driven_by) -> None:
+        """Only that policy's coroutine would park; the others would train past the step."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
+
+        with pytest.raises(AssertionError, match="several policies"):
+            FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id="solver")
+
+    def test_the_parkable_script_is_the_one_the_harness_launches_by_default(self) -> None:
+        """A literal of its own would go on naming train.py after the harness moved to another script."""
+        assert PARKABLE_TRAIN_SCRIPT == DEFAULT_TRAIN_SCRIPT
+
+    def test_the_loop_the_action_was_written_for_is_accepted(self, driven_by) -> None:
+        """train.py updates weights once per step, for one policy, after the step is done."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
+
+        assert FTTestActionOrchestrationExecutor.from_args(args)._actions == [_SLEEP_ACTION]
+
+    def test_a_run_with_no_plan_is_never_asked_which_loop_it_is(self, driven_by) -> None:
+        """Every run passes through here; only the ones carrying the action are constrained."""
+        driven_by("train_async.py")
+
+        FTTestActionOrchestrationExecutor.from_args(_args(fully_async=True))
+
+
+@pytest.fixture
+def driven_by(monkeypatch):
+    def install(train_script: str) -> None:
+        monkeypatch.setattr(sys, "argv", [f"/miles/{train_script}", "--some-flag", "some-value"])
+
+    return install

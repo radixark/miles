@@ -2379,7 +2379,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="JSON array of fault injection actions. Each action: "
                 '{"at_rollout": N, "action": "stop_cell_at_end"|"start_cell_at_end"|"crash_before_allreduce", '
                 '"cell_id": "trainer-engine-actor-2", "rank": 0, "attempt": 0}. '
-                "cell_id is the full cell id (spec name plus cell index) of the target cell.",
+                "cell_id is the full cell id (spec name plus cell index) of the target cell. "
+                'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
+                "once the step it names is trained and saved, so the run never starts the step after it.",
             )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",
