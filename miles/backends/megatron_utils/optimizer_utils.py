@@ -3,8 +3,17 @@ from megatron.core.optimizer import USING_PYTORCH_OPTIMIZER
 from megatron.core.optimizer.optimizer import ChainedOptimizer, MegatronOptimizer
 
 
-def reset_optimizer_state(optimizer: MegatronOptimizer) -> None:
+def reset_optimizer_state(optimizer: MegatronOptimizer, *, stream_optimizer_state_to_disk: bool) -> None:
     assert isinstance(optimizer, ChainedOptimizer)
+    assert not optimizer.config.offload_optimizer_states
+    assert not optimizer.config.fp16, (
+        "an fp16 optimizer keeps a loss scaler with a scale and a growth tracker beside the state this clears, so "
+        "the reset would leave the trainer with the scaler of the rollouts it just discarded"
+    )
+    assert not stream_optimizer_state_to_disk, (
+        "--stream-optimizer-state-to-disk keeps the moments in its own store rather than in the master optimizer "
+        "state this walks, so the reset would clear nothing and the self-check would pass on an empty walk"
+    )
 
     for chained in optimizer.chained_optimizers:
         if chained.is_stub_optimizer:
