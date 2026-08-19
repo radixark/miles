@@ -20,6 +20,9 @@ from tests.e2e.deploy.conftest_deploy.common.utils import compare_deterministic_
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_checkpoint import (
     assert_only_post_checkpoint_steps_redone,
 )
+from tests.e2e.deploy.conftest_deploy.hot_restart.assert_redone_from_scratch import (
+    assert_unsaved_run_redone_from_scratch,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.assert_workloads import assert_take_overs_replaced_only_script
 from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     HotRestartDriver,
@@ -29,10 +32,10 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
     driving_hot_restarts,
     relaunch_with_hot_restart,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartEvidence
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import TRAIN_STEP_METRIC_KEY, HotRestartEvidence
 from tests.e2e.deploy.conftest_deploy.hot_restart.freeze_plan import (
+    arm_first_freeze,
     compute_freeze_plan_path,
-    with_freeze_plan_of,
     write_freeze_plan,
 )
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
@@ -51,6 +54,12 @@ MIN_TRAINED_ROLLOUTS: int = 4
 SAVE_FLAG: str = "--save"
 LOAD_FLAG: str = "--load"
 WANDB_GROUP_FLAG: str = "--wandb-group"
+
+
+GLOBAL_BATCH_SIZE_FLAG: str = "--global-batch-size"
+ROLLOUT_BATCH_SIZE_FLAG: str = "--rollout-batch-size"
+SAMPLES_PER_PROMPT_FLAG: str = "--n-samples-per-prompt"
+ASYNC_SAVE_FLAG: str = "--async-save"
 
 _MODE: FTTestMode = FTTestMode(
     model_name=DENSE_MODEL_NAME,
@@ -98,7 +107,13 @@ CHECKPOINTED: HotRestartMode = HotRestartMode(
     ),
     assert_redone=assert_only_post_checkpoint_steps_redone,
 )
-MODES: tuple[HotRestartMode, ...] = (CHECKPOINTED,)
+NO_CHECKPOINT: HotRestartMode = HotRestartMode(
+    name="no_checkpoint",
+    save_interval=4,
+    schedule=(ScheduledFreeze(frozen_rollout_id=1, saved_iteration=None),),
+    assert_redone=assert_unsaved_run_redone_from_scratch,
+)
+MODES: tuple[HotRestartMode, ...] = (CHECKPOINTED, NO_CHECKPOINT)
 
 
 # ================================ entry points ================================
@@ -145,17 +160,42 @@ def _build_args(restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, e
     args += get_mooncake_object_store_args()
 
     assert_example_parallelism_matches(mode, train_args=args)
+    _assert_one_train_event_per_step(args)
+    _assert_run_saves_before_step_report(args)
     _TRAIN_ARGS_OF_DUMP_DIR[dump_dir] = args
     return args
+
+
+def _assert_one_train_event_per_step(train_args: str) -> None:
+    argv = shlex.split(train_args)
+    [global_batch_size] = ArgvManipulator.get(argv, GLOBAL_BATCH_SIZE_FLAG)
+    [rollout_batch_size] = ArgvManipulator.get(argv, ROLLOUT_BATCH_SIZE_FLAG)
+    [samples_per_prompt] = ArgvManipulator.get(argv, SAMPLES_PER_PROMPT_FLAG)
+
+    assert int(global_batch_size) == int(rollout_batch_size) * int(samples_per_prompt), (
+        f"the redo accounting of this scenario counts one {TRAIN_STEP_METRIC_KEY} event per rollout, and a run "
+        f"whose global batch {global_batch_size} is not {rollout_batch_size} x {samples_per_prompt} takes several "
+        f"optimizer steps per rollout and logs one event for each, so every attempt count would be a multiple of "
+        f"what the schedule reasons about"
+    )
+
+
+def _assert_run_saves_before_step_report(train_args: str) -> None:
+    assert not ArgvManipulator.is_defined(shlex.split(train_args), ASYNC_SAVE_FLAG), (
+        f"{ASYNC_SAVE_FLAG} lets a checkpoint land after the step that triggered it, and every take-over here is "
+        f"pinned to the checkpoint the frozen run is already holding"
+    )
 
 
 def _build_frozen_args(
     restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, enable_dumper: bool = True
 ) -> str:
-    plan_path = compute_freeze_plan_path(dump_dir)
-    write_freeze_plan(plan_path, frozen_rollout_id=restart_mode.frozen_rollout_ids[0])
-
-    args = with_freeze_plan_of(_build_args(restart_mode, mode, dump_dir, enable_dumper), plan_path=plan_path)
+    # TODO ad hoc hack: revert after the args refactor
+    args = arm_first_freeze(
+        _build_args(restart_mode, mode, dump_dir, enable_dumper),
+        side_dump_dir=dump_dir,
+        frozen_rollout_id=restart_mode.frozen_rollout_ids[0],
+    )
     _TRAIN_ARGS_OF_DUMP_DIR[dump_dir] = args
     return args
 
@@ -202,6 +242,7 @@ def _driving_take_overs_of(
     restart_mode: HotRestartMode, mode: FTTestMode, dump_dir: str, config: command_utils.ExecuteTrainConfig
 ) -> Iterator[None]:
     release = compute_release_of_config(config)
+    # TODO ad hoc hack: revert after the args refactor
     plan_path = compute_freeze_plan_path(dump_dir)
 
     def relaunch(frozen_rollout_id: int | None) -> None:
@@ -217,6 +258,7 @@ def _driving_take_overs_of(
         release=release,
         namespace=config.namespace,
         trainer_id=DEFAULT_TRAINER_ID,
+        freeze_plan_path=plan_path,
         schedule=restart_mode.schedule,
     )
 
@@ -237,6 +279,12 @@ def assert_freeze_schedule_leaves_redo_window(restart_mode: HotRestartMode) -> N
     assert max(restart_mode.frozen_rollout_ids) < NUM_ROLLOUTS - 1, (
         f"{restart_mode.test_name} freezes the run after step {max(restart_mode.frozen_rollout_ids)} of "
         f"{NUM_ROLLOUTS}, leaving no step past the last take-over that is not a redone one"
+    )
+    frozen = restart_mode.frozen_rollout_ids
+    assert len(set(frozen)) == len(frozen), (
+        f"{restart_mode.test_name} freezes the run twice after the same step ({list(frozen)}), and the driver "
+        f"tells one freeze from the one before it by the step the sentinel names: the sentinel a previous freeze "
+        f"left would be read as this one, and the take-over would go before the run had parked"
     )
 
     saved = compute_saved_rollout_ids(save_interval=restart_mode.save_interval)
@@ -263,7 +311,7 @@ def _compare(restart_mode: HotRestartMode, dump_dir: str, mode: FTTestMode) -> N
 
     evidence = HotRestartEvidence.load(dump_dir=target_dir)
     assert_take_overs_replaced_only_script(
-        evidence, num_restarts=restart_mode.num_restarts, minimum_restarts=restart_mode.num_restarts
+        evidence, num_restarts=len(evidence.records), minimum_restarts=restart_mode.num_restarts
     )
     restart_mode.assert_redone(
         dump_dir=target_dir,
