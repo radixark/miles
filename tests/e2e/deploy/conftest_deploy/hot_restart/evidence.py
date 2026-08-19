@@ -2,6 +2,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterSnapshot
+
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.test_utils.comparisons.metrics import read_metric_events
 
@@ -75,3 +77,28 @@ class HotRestartRecord(FrozenStrictBaseModel):
     index: int
     saved_iteration_at_trigger: int | None
     frozen_rollout_id: int
+
+
+class HotRestartEvidence(FrozenStrictBaseModel):
+    records: tuple[HotRestartRecord, ...]
+    snapshots: tuple[ClusterSnapshot, ...]
+    release: str
+
+    def write(self, *, dump_dir: str) -> None:
+        path = evidence_path(dump_dir=dump_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.model_dump_json(indent=2))
+        logger.info(f"Wrote what {len(self.records)} hot restart(s) left behind to {path}")
+
+    @classmethod
+    def load(cls, *, dump_dir: str) -> "HotRestartEvidence":
+        path = evidence_path(dump_dir=dump_dir)
+        assert path.is_file(), (
+            f"{path} does not exist, so nothing recorded which steps this run redid and which pods outlived its "
+            f"orchestration script; run the target side before comparing"
+        )
+        return cls.model_validate_json(path.read_text())
+
+
+def evidence_path(*, dump_dir: str) -> Path:
+    return Path(dump_dir) / "hot_restart" / "evidence.json"

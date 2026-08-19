@@ -1,14 +1,27 @@
+import dataclasses
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, RunProgress, read_run_progress
+from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import ClusterObserver
+from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import (
+    HotRestartEvidence,
+    HotRestartRecord,
+    RunProgress,
+    read_run_progress,
+)
+from tests.e2e.ft.conftest_ft.execution import run_training
+from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
 from miles.utils.test_utils.ft_test_actions import SLEEP_FOREVER_AT_END_ACTION, read_frozen_rollout_id
 from miles.utils.test_utils.polling_worker import PollingWorker
+from miles.utils.workers.types import HOT_RESTART_SEPARATOR, HotRestartComponent
 
 
 # ================================= constants ==================================
@@ -22,6 +35,7 @@ RELAUNCH_JOIN_TIMEOUT_SECONDS: float = 1800.0
 CONSECUTIVE_READ_FAILURE_LIMIT: int = 20
 TRACKER_SETTLE_ATTEMPTS: int = 3
 TRACKER_SETTLE_INTERVAL_SECONDS: float = 2.0
+HOT_RESTART_ARG: str = HOT_RESTART_SEPARATOR.join(one.value for one in HotRestartComponent)
 
 
 # ============================== run directories ===============================
@@ -56,6 +70,31 @@ def compute_freeze_plan(frozen_rollout_id: int | None) -> list[dict]:
     return [{"at_rollout": frozen_rollout_id, "action": SLEEP_FOREVER_AT_END_ACTION}]
 
 
+# ============================ relaunching a release ===========================
+
+
+def compute_release_of_config(config: ExecuteTrainConfig) -> str:
+    return ReleaseName(
+        run_id=config.run_id,
+        deploy_component=config.deploy_component,
+        deploy_instance_id=config.deploy_instance_id,
+    ).serialize()
+
+
+def relaunch_with_hot_restart(
+    *, train_args: str, mode: FTTestMode, config: ExecuteTrainConfig, installed_release: str
+) -> None:
+    assert (relaunched := compute_release_of_config(config)) == installed_release, (
+        f"a hot restart upgrades the release that is already up: this relaunch would install {relaunched}, not the "
+        f"watched {installed_release}, so it built a config with a run id of its own and would leave the trainers behind"
+    )
+    run_training(
+        train_args=train_args,
+        mode=mode,
+        config=dataclasses.replace(config, hot_restart=HOT_RESTART_ARG),
+    )
+
+
 # ============================== the take-over loop =============================
 
 
@@ -64,6 +103,9 @@ class HotRestartDriver:
     relaunch: Callable[[int | None], None]
     checkpoint_dir: Path
     events_dir: Path
+    release: str
+    namespace: str
+    trainer_id: str
     # TODO ad hoc hack: revert after the args refactor
     freeze_plan_path: Path
     schedule: tuple[ScheduledFreeze, ...]
@@ -82,10 +124,21 @@ class HotRestartDriver:
         self._relaunch_threads: list[threading.Thread] = []
         self._worker = PollingWorker(name="hot-restart-driver", run=self._drive)
         self._max_finished_rollout_id: int | None = None
+        self._observer = ClusterObserver(release=self.release, namespace=self.namespace, trainer_id=self.trainer_id)
 
     @property
     def num_restarts(self) -> int:
         return len(self.schedule)
+
+    @property
+    def evidence(self) -> HotRestartEvidence:
+        return HotRestartEvidence(
+            records=tuple(self.records),
+            snapshots=tuple(self._observer.snapshots),
+            release=self.release,
+            observation_attempts=self._observer.attempts,
+            observation_failures=self._observer.failures,
+        )
 
     def start(self) -> None:
         for path in (self.checkpoint_dir, self.events_dir):
@@ -97,8 +150,10 @@ class HotRestartDriver:
 
     def stop_collecting(self) -> None:
         self._worker.stop_and_join(timeout_seconds=RELAUNCH_JOIN_TIMEOUT_SECONDS)
+        self._observer.observe_once_or_warn()
         for thread in self._relaunch_threads:
             thread.join(timeout=RELAUNCH_JOIN_TIMEOUT_SECONDS)
+        self._observer.observe_once_or_warn()
 
     def assert_nothing_running(self) -> None:
         self._worker.assert_not_running(
@@ -140,6 +195,13 @@ class HotRestartDriver:
             logger.info(f"Hot restart {record.index} is due against a frozen run: {record}")
             self._relaunch_on_thread(index)
 
+        self._observe_until_stopped(stop_event)
+
+    def _observe_until_stopped(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            self._observer.observe_once_or_warn()
+            stop_event.wait(timeout=self.poll_interval_seconds)
+
     def _wait_until_run_frozen(
         self, stop_event: threading.Event, *, index: int, scheduled: ScheduledFreeze
     ) -> RunProgress | None:
@@ -147,7 +209,7 @@ class HotRestartDriver:
         failures = 0
 
         while not stop_event.is_set():
-            if (progress := self._read_progress()) is None:
+            if (progress := self._read_progress_and_observe_cluster()) is None:
                 failures += 1
                 assert failures < self.read_failure_limit, (
                     f"hot restart {index} failed to read how far the run had come {failures} time(s) in a row, so "
@@ -167,12 +229,16 @@ class HotRestartDriver:
 
         return None
 
-    def _read_progress(self) -> RunProgress | None:
+    def _read_progress_and_observe_cluster(self) -> RunProgress | None:
         try:
-            return read_run_progress(checkpoint_dir=self.checkpoint_dir, events_dir=self.events_dir)
+            progress = read_run_progress(checkpoint_dir=self.checkpoint_dir, events_dir=self.events_dir)
         except Exception:
             logger.warning("Failed to read how far the run being hot restarted has come", exc_info=True)
             return None
+
+        if progress.last_finished_rollout_id is not None:
+            self._observer.observe_once_or_warn()
+        return progress
 
     def _stands_frozen_at(self, scheduled: ScheduledFreeze, *, progress: RunProgress) -> bool:
         if (finished := progress.last_finished_rollout_id) is not None:
@@ -250,3 +316,14 @@ class HotRestartDriver:
         except BaseException as e:
             logger.warning("A hot restart relaunch failed", exc_info=True)
             self._failures.append(e)
+
+
+@contextmanager
+def driving_hot_restarts(driver: HotRestartDriver, *, dump_dir: str) -> Iterator[HotRestartDriver]:
+    driver.start()
+    try:
+        yield driver
+    finally:
+        driver.stop_collecting()
+        driver.evidence.write(dump_dir=dump_dir)
+        driver.assert_nothing_running()
