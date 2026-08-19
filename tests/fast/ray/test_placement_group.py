@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,7 @@ from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, 
 from miles.ray import placement_group as placement_group_module
 from miles.ray.placement_group import create_rollout_components, create_training_model, create_training_models
 from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.utils.init_once import InitState
 from miles.utils.workers.worker_spec import HostAndPort
 
 pytestmark = pytest.mark.asyncio
@@ -51,13 +53,13 @@ def fake_components():
         args.session_server_instance_ids = ["session-0"]
         events.append("session_servers_ready")
 
-    async def fake_executor_is_initialized() -> bool:
-        events.append("executor_not_initialized_checked")
-        return False
+    async def fake_executor_get_init_state() -> str:
+        events.append("executor_init_state_checked")
+        return InitState.NOT_INITED.value
 
     executor_handle = MagicMock(name="rollout_executor")
     executor_handle.wait_ready = AsyncMock(return_value=None)
-    executor_handle.is_initialized = AsyncMock(side_effect=fake_executor_is_initialized)
+    executor_handle.get_init_state = AsyncMock(side_effect=fake_executor_get_init_state)
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
     executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
@@ -90,7 +92,7 @@ class TestCreateRolloutComponents:
 
         assert fake_components.events == [
             "session_servers_ready",
-            "executor_not_initialized_checked",
+            "executor_init_state_checked",
             "controller_init",
             "executor_init",
         ]
@@ -103,7 +105,7 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args)
 
-        assert fake_components.events == ["executor_not_initialized_checked", "controller_init", "executor_init"]
+        assert fake_components.events == ["executor_init_state_checked", "controller_init", "executor_init"]
 
     async def test_returns_two_worker_handles(self, fake_components):
         """Both halves of rollout are independent workers, so the driver only ever holds handles."""
@@ -441,6 +443,33 @@ class TestCreateTrainingModel:
         info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
 
         assert info.start_rollout_id == 9
+
+    async def test_a_trainer_told_to_start_elsewhere_than_it_restored_says_so(self, monkeypatch, caplog):
+        """A trainer that silently starts somewhere other than where it restored gives the operator nothing to read."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+
+        assert "alpha-actor" in caplog.text and "--start-rollout-id 9" in caplog.text
+
+    async def test_a_trainer_told_to_start_where_it_restored_says_nothing(self, monkeypatch, caplog):
+        """Logging every trainer that was told where it already stands is noise on every ordinary launch."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(Namespace(start_rollout_id=3), trainer_id="alpha-actor")
+
+        assert "--start-rollout-id" not in caplog.text
+
+    async def test_a_trainer_left_to_its_restored_position_says_nothing(self, monkeypatch, caplog):
+        """The ordinary resume names no rollout at all, and it must not be reported as an override."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+
+        assert "--start-rollout-id" not in caplog.text
 
     async def test_the_restored_position_is_kept_beside_the_overridden_start(self, monkeypatch):
         """Cross trainer checks compare where checkpoints actually were, which an override must not rewrite."""
