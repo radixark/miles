@@ -164,7 +164,17 @@ async def create_training_model(args, *, trainer_id: str) -> TrainerInfo:
     restored_rollout_ids = await handle.init(args)
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     [restored_rollout_id] = set(restored_rollout_ids)
-    start_rollout_id = x if (x := args.start_rollout_id) is not None else restored_rollout_id
+
+    if (x := args.start_rollout_id) is None:
+        start_rollout_id = restored_rollout_id
+    else:
+        if x != restored_rollout_id:
+            logger.info(
+                f"trainer {trainer_id!r} restored rollout {restored_rollout_id}, and --start-rollout-id {x} was "
+                f"asked for, so it starts at {x}"
+            )
+        start_rollout_id = x
+
     return TrainerInfo(handle=handle, restored_rollout_id=restored_rollout_id, start_rollout_id=start_rollout_id)
 
 
