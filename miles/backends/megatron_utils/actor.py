@@ -103,6 +103,7 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> int | None:
         monkey_patch_torch_dist()
 
+        self._last_rollout_id: int | None = None
         super()._init_common(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
         for m in all_replay_managers:
@@ -302,7 +303,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
-        should_log_cpu_memory = is_first_replica_megatron_main_rank() and hasattr(self, "_last_rollout_id")
+        should_log_cpu_memory = is_first_replica_megatron_main_rank() and self._last_rollout_id is not None
 
         destroy_process_groups()
 
@@ -852,6 +853,10 @@ class MegatronTrainRayActor(TrainRayActor):
     def send_ckpt(self, dst_rank: int) -> None:
         # These states are not handled
         assert not self.args.keep_old_actor
+        assert self._last_rollout_id is not None, (
+            "this trainer has trained no rollout in this process, so it has no iteration to hand a healing peer; "
+            "a heal has to wait for its first train step"
+        )
 
         _send_ckpt(
             indep_dp=get_parallel_state().indep_dp,
