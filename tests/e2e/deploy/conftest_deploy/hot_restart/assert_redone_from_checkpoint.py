@@ -8,12 +8,11 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import TRAIN_STEP_MET
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 
-
-# ================================ redone steps ================================
-
-
 DISCARDED_EVENTS_GLOB: str = ".trash_*"
 CHECKPOINT_SNAPSHOT_GLOB: str = "iter_*/debug_events"
+
+
+# ================================ redone steps ================================
 
 
 @dataclass(frozen=True)
@@ -39,7 +38,7 @@ def assert_only_post_checkpoint_steps_redone(
     ), f"{dump_dir} holds a run nothing restarted, so it says nothing about which steps a take-over redoes"
     _assert_take_overs_handed_frozen_run(records, schedule=schedule)
 
-    discarded_dirs = sorted(Path(dump_dir).glob(DISCARDED_EVENTS_GLOB))
+    discarded_dirs = read_discarded_event_dirs(dump_dir)
     assert len(discarded_dirs) == len(records), (
         f"every take-over leaves the log it rolled back behind, and {len(records)} restart(s) left "
         f"{[one.name for one in discarded_dirs]}"
@@ -150,7 +149,7 @@ def _assert_take_overs_handed_frozen_run(
 
 
 def _assert_resume_points_are_checkpoints(*, checkpoint_dir: str, resume_rollout_ids: Sequence[int]) -> None:
-    snapshot_dirs = sorted(Path(checkpoint_dir).glob(CHECKPOINT_SNAPSHOT_GLOB))
+    snapshot_dirs = read_checkpoint_snapshot_dirs(checkpoint_dir)
     assert snapshot_dirs, (
         f"{checkpoint_dir} holds no event log snapshot beside any checkpoint, so what the run resumed from was "
         f"not a checkpoint of this run"
@@ -170,14 +169,27 @@ def _assert_resume_points_are_checkpoints(*, checkpoint_dir: str, resume_rollout
 
 
 def _read_finished_steps(events_dir: Path) -> dict[int, str]:
-    events_of_rollout_id: dict[int, list[str]] = {}
-    for event in read_events(events_dir):
-        if isinstance(event, MetricEvent) and event.rollout_id is not None and TRAIN_STEP_METRIC_KEY in event.metrics:
-            events_of_rollout_id.setdefault(event.rollout_id, []).append(event.model_dump_json())
+    events_of_rollout_id = read_step_events(events_dir)
 
     repeated = {rollout_id: len(logged) for rollout_id, logged in events_of_rollout_id.items() if len(logged) > 1}
     assert not repeated, (
         f"{events_dir} describes the steps {repeated} more than once each; a take-over rolls the log back before "
         f"redoing anything, so one log covers each step exactly once"
     )
-    return {rollout_id: logged[0] for rollout_id, logged in sorted(events_of_rollout_id.items())}
+    return {rollout_id: logged[0] for rollout_id, logged in events_of_rollout_id.items()}
+
+
+def read_step_events(events_dir: Path) -> dict[int, list[str]]:
+    events_of_rollout_id: dict[int, list[str]] = {}
+    for event in read_events(events_dir):
+        if isinstance(event, MetricEvent) and event.rollout_id is not None and TRAIN_STEP_METRIC_KEY in event.metrics:
+            events_of_rollout_id.setdefault(event.rollout_id, []).append(event.model_dump_json())
+    return dict(sorted(events_of_rollout_id.items()))
+
+
+def read_discarded_event_dirs(dump_dir: str) -> list[Path]:
+    return sorted(Path(dump_dir).glob(DISCARDED_EVENTS_GLOB))
+
+
+def read_checkpoint_snapshot_dirs(checkpoint_dir: str) -> list[Path]:
+    return sorted(Path(checkpoint_dir).glob(CHECKPOINT_SNAPSHOT_GLOB))
