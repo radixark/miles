@@ -196,8 +196,7 @@ async def create_training_models(
             not critic_configs
         ), f"a run without --use-critic needs no critic, but the trainer configs are {trainer_configs}"
 
-    if args.start_rollout_id is None:
-        args.start_rollout_id = actor_info.start_rollout_id
+    args.start_rollout_id = actor_info.start_rollout_id
 
     await rollout_executor.set_train_parallel_config(await actor_info.handle.get_train_parallel_config())
     await rollout_executor.load(args.start_rollout_id - 1)
