@@ -60,7 +60,7 @@ class SGLangApiClient:
     server_url: str
     api_key: str | None = None
 
-    async def _make_request(self, endpoint: str, payload: dict | None = None):
+    async def _make_request(self, endpoint: str, payload: dict | None = None, *, timeout: float | None = None):
         """Make a POST request to the specified endpoint with the given payload.
 
         Args:
@@ -71,7 +71,8 @@ class SGLangApiClient:
             The JSON response from the server
         """
         url = f"{self.server_url}/{endpoint}"
-        response = await GeneralHttpClientProvider.client().post(url, json=payload or {})
+        bound: dict[str, float] = {} if timeout is None else dict(timeout=timeout)
+        response = await GeneralHttpClientProvider.client().post(url, json=payload or {}, **bound)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -383,8 +384,8 @@ class SGLangApiClient:
         response.raise_for_status()
         return response
 
-    async def abort_all_requests(self):
-        return await self._make_request("abort_request", {"abort_all": True})
+    async def abort_all_requests(self, timeout: float | None = None):
+        return await self._make_request("abort_request", {"abort_all": True}, timeout=timeout)
 
     async def begin_weight_update(self, selector: str = "all"):
         """Open a weight-update session on the engine (restores packed weights for loading)."""

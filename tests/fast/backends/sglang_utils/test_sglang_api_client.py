@@ -521,7 +521,8 @@ class TestInformationGetters:
         rec.install(monkeypatch, responses=[_FakeResponse(payload={"version": "0.4.0"})])
 
         assert await client.get_server_info() == {"version": "0.4.0"}
-        assert rec.calls[0][2] == {"timeout": 5.0}
+        assert "params" not in rec.calls[0][2]
+        assert rec.calls[0][2]["timeout"] == 5.0
 
 
 _DIRECT_HTTP_METHODS = [
@@ -815,3 +816,15 @@ class TestABodylessSuccess:
         assert recorder.calls[0][0] == "post"
         assert recorder.calls[0][1] == f"{SERVER_URL}/abort_request"
         assert recorder.calls[0][2]["json"] == {"abort_all": True}
+
+    async def test_aborting_every_request_carries_the_budget_the_caller_gives(self, client, recorder):
+        """A wedged tokenizer manager is exactly what a take-over aborts, and this client waits forever by default."""
+        await client.abort_all_requests(timeout=12.0)
+
+        assert recorder.calls[0][2]["timeout"] == 12.0
+
+    async def test_aborting_every_request_without_a_budget_leaves_the_client_default(self, client, recorder):
+        """Every other endpoint of this client is unbounded, so naming a timeout stays the caller's choice."""
+        await client.abort_all_requests()
+
+        assert "timeout" not in recorder.calls[0][2]
