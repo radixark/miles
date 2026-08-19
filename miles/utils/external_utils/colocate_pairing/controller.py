@@ -101,7 +101,8 @@ def _target_trainer_pod(
 
     absolute_gpu = (
         layout.gpu_offset
-        + (inference_cell_index * layout.num_pods_per_inference_cell + inference_pod_index) * layout.num_gpus_per_node
+        + (inference_cell_index * layout.num_pods_per_inference_cell + inference_pod_index)
+        * layout.num_gpus_per_inference_pod
     )
     trainer_cell_index, trainer_pod_index = divmod(
         absolute_gpu // layout.num_gpus_per_node, layout.num_pods_per_trainer_cell

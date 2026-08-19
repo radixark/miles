@@ -378,6 +378,10 @@
           "minimum": 1,
           "type": "integer"
         },
+        "num_gpus_per_inference_pod": {
+          "minimum": 1,
+          "type": "integer"
+        },
         "gpu_offset": {
           "minimum": 0,
           "type": "integer"
@@ -389,6 +393,7 @@
         "num_pods_per_inference_cell",
         "num_pods_per_trainer_cell",
         "num_gpus_per_node",
+        "num_gpus_per_inference_pod",
         "gpu_offset"
       ],
       "type": "object"

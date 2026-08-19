@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ def _layout(
     num_pods_per_trainer_cell: int = 1,
     gpu_offset: int = 0,
     num_gpus_per_node: int = GPUS_PER_NODE,
+    num_gpus_per_inference_pod: int | None = None,
 ) -> PairingLayout:
     return PairingLayout(
         num_inference_cells=num_inference_cells,
@@ -42,6 +44,20 @@ def _layout(
         num_pods_per_inference_cell=num_pods_per_inference_cell,
         num_pods_per_trainer_cell=num_pods_per_trainer_cell,
         num_gpus_per_node=num_gpus_per_node,
+        num_gpus_per_inference_pod=(
+            num_gpus_per_node if num_gpus_per_inference_pod is None else num_gpus_per_inference_pod
+        ),
+        gpu_offset=gpu_offset,
+    )
+
+
+def _sub_node_layout(gpu_offset: int = 0, num_inference_cells: int = 4) -> PairingLayout:
+    return _layout(
+        num_inference_cells=num_inference_cells,
+        num_trainer_cells=1,
+        num_pods_per_inference_cell=1,
+        num_pods_per_trainer_cell=2,
+        num_gpus_per_inference_pod=4,
         gpu_offset=gpu_offset,
     )
 
@@ -79,6 +95,31 @@ class TestPairingLayout:
         with pytest.raises(pydantic.ValidationError):
             _layout(num_inference_cells=1, num_trainer_cells=1, num_pods_per_inference_cell=0)
 
+    def test_refuses_a_layout_that_never_says_how_wide_an_inference_pod_is(self):
+        """Without the pod width the pairing cannot tell a whole-node pod from four sub-node ones."""
+        with pytest.raises(pydantic.ValidationError):
+            PairingLayout(
+                num_inference_cells=1,
+                num_trainer_cells=1,
+                num_pods_per_inference_cell=1,
+                num_pods_per_trainer_cell=1,
+                num_gpus_per_node=GPUS_PER_NODE,
+                gpu_offset=0,
+            )
+
+    def test_refuses_an_inference_pod_with_no_gpus(self):
+        """A zero-gpu pod would divide by zero in the mapping and claim no gpu of the trainer's."""
+        with pytest.raises(pydantic.ValidationError):
+            _layout(num_inference_cells=1, num_trainer_cells=1, num_gpus_per_inference_pod=0)
+
+    def test_counts_the_gpus_every_inference_pod_of_the_pool_holds(self):
+        """The fit check is in gpus now, so the pool's width is cells times pods times the pod's gpus."""
+        assert _sub_node_layout().total_inference_gpus == 16
+
+    def test_counts_the_gpus_the_trainer_pool_holds_as_whole_nodes(self):
+        """A trainer pod is always a whole node, which is what the inference pool is measured against."""
+        assert _sub_node_layout().total_trainer_gpus == 16
+
     def test_refuses_an_unknown_field(self):
         """The layout comes from rendered values, so a renamed key must not be silently ignored."""
         with pytest.raises(pydantic.ValidationError):
@@ -88,9 +129,66 @@ class TestPairingLayout:
                 num_pods_per_inference_cell=1,
                 num_pods_per_trainer_cell=1,
                 num_gpus_per_node=GPUS_PER_NODE,
+                num_gpus_per_inference_pod=GPUS_PER_NODE,
                 gpu_offset=0,
                 podsPerInferenceCell=1,
             )
+
+
+_WHOLE_NODE_GRID = dict(
+    num_inference_cells=(1, 2, 3),
+    num_trainer_cells=(1, 2),
+    num_pods_per_inference_cell=(1, 2, 3),
+    num_pods_per_trainer_cell=(1, 2, 4),
+)
+
+
+def _whole_node_cases() -> list[dict[str, int]]:
+    return [
+        dict(zip(_WHOLE_NODE_GRID, values, strict=True)) for values in itertools.product(*_WHOLE_NODE_GRID.values())
+    ]
+
+
+def _pod_granular_layout_is_legal(*, gpu_offset: int, **case: int) -> bool:
+    pods_per_inference_cell = case["num_pods_per_inference_cell"]
+    pods_per_trainer_cell = case["num_pods_per_trainer_cell"]
+    pod_offset = gpu_offset // GPUS_PER_NODE
+    return (
+        pods_per_inference_cell <= pods_per_trainer_cell
+        and pods_per_trainer_cell % pods_per_inference_cell == 0
+        and gpu_offset % GPUS_PER_NODE == 0
+        and pod_offset % pods_per_inference_cell == 0
+        and pod_offset + case["num_inference_cells"] * pods_per_inference_cell
+        <= case["num_trainer_cells"] * pods_per_trainer_cell
+    )
+
+
+def _gpu_granular_layout_is_legal(*, gpu_offset: int, **case: int) -> bool:
+    try:
+        _layout(gpu_offset=gpu_offset, num_gpus_per_inference_pod=GPUS_PER_NODE, **case)
+    except pydantic.ValidationError:
+        return False
+    return True
+
+
+class TestWholeNodeLayoutsAreJudgedExactlyAsTheyWereInPods:
+    @pytest.mark.parametrize("gpu_offset", [0, 4, 8, 12, 16, 24, 32])
+    def test_accepts_and_refuses_the_same_layouts_the_pod_granular_rules_did(self, gpu_offset: int):
+        """The gpu rewrite has to be a pure generalisation: a whole-node pool sees no change in verdict."""
+        disagreements = [
+            case
+            for case in _whole_node_cases()
+            if _gpu_granular_layout_is_legal(gpu_offset=gpu_offset, **case)
+            != _pod_granular_layout_is_legal(gpu_offset=gpu_offset, **case)
+        ]
+
+        assert disagreements == []
+
+    def test_the_grid_it_compares_reaches_both_verdicts(self):
+        """A grid that only ever accepts, or only ever refuses, would make the comparison above vacuous."""
+        verdicts = {_gpu_granular_layout_is_legal(gpu_offset=8, **case) for case in _whole_node_cases()}
+
+        assert verdicts == {True, False}
 
 
 class TestTargetTrainerPod:
@@ -140,6 +238,29 @@ class TestTargetTrainerPod:
             _coordinate(0, 2),
             _coordinate(0, 3),
         ]
+
+    def test_seats_two_sub_node_inference_pods_on_one_trainer_pod(self):
+        """Half-node inference pods share the node their trainer pod holds, two of them per trainer pod."""
+        layout = _sub_node_layout()
+
+        assert [_target(index, layout) for index in range(4)] == [
+            _coordinate(0, 0),
+            _coordinate(0, 0),
+            _coordinate(0, 1),
+            _coordinate(0, 1),
+        ]
+
+    def test_seats_four_quarter_node_inference_pods_on_one_trainer_pod(self):
+        """The pod width alone decides how many inference pods a trainer's node seats, down to a quarter."""
+        layout = _layout(
+            num_inference_cells=8,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=1,
+            num_pods_per_trainer_cell=2,
+            num_gpus_per_inference_pod=2,
+        )
+
+        assert [_target(index, layout) for index in range(8)] == [_coordinate(0, index // 4) for index in range(8)]
 
     def test_refuses_an_inference_wider_than_a_trainer_cell(self):
         """K_e > K_t: its extra ranks would have no trainer node to sit on, so colocate cannot hold."""
@@ -245,13 +366,24 @@ class TestGpuOffsetPairing:
         assert _all_targets(layout) == [_coordinate(1)]
 
     def test_refuses_an_offset_that_starts_inside_a_node(self):
-        """Half a node is not a pod, and the inference would want gpus of two trainer pods at once."""
-        with pytest.raises(pydantic.ValidationError, match="starts inside a node"):
+        """Half a node is not a whole-node pod, and the inference would want gpus of two trainer pods at once."""
+        with pytest.raises(pydantic.ValidationError, match="is not a whole number of its own"):
             _layout(num_inference_cells=1, num_trainer_cells=2, num_pods_per_trainer_cell=2, gpu_offset=4)
 
+    def test_refuses_an_offset_that_starts_inside_a_sub_node_pod(self):
+        """The offset is counted in the pool's own pods, so two gpus in is half a four-gpu pod, not a start."""
+        with pytest.raises(pydantic.ValidationError, match="is not a whole number of its own"):
+            _sub_node_layout(gpu_offset=2, num_inference_cells=1)
+
+    def test_starts_a_sub_node_pool_on_the_trainer_pod_holding_the_offset_gpu(self):
+        """A pool offset by one sub-node pod still lands on the trainer pod whose node holds that gpu."""
+        layout = _sub_node_layout(gpu_offset=4, num_inference_cells=3)
+
+        assert _all_targets(layout) == [_coordinate(0, 0), _coordinate(0, 1), _coordinate(0, 1)]
+
     def test_refuses_an_offset_that_splits_an_inference_cell_across_trainer_cells(self):
-        """A two-pod inference starting on the trainer cell's last pod has no single cell to be healed with."""
-        with pytest.raises(pydantic.ValidationError, match="straddle trainer cells"):
+        """An offset of half a cell leaves the pool unaligned, so a later cell of it would span two trainer cells."""
+        with pytest.raises(pydantic.ValidationError, match="so its cells would straddle trainer cells"):
             _layout(
                 num_inference_cells=1,
                 num_trainer_cells=2,
@@ -259,6 +391,18 @@ class TestGpuOffsetPairing:
                 num_pods_per_trainer_cell=4,
                 gpu_offset=8,
             )
+
+    def test_allows_an_offset_of_whole_inference_cells(self):
+        """Offsetting by a whole two-pod cell keeps every later cell inside one trainer cell."""
+        layout = _layout(
+            num_inference_cells=1,
+            num_trainer_cells=2,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=4,
+            gpu_offset=16,
+        )
+
+        assert _all_targets(layout) == [_coordinate(0, 2), _coordinate(0, 3)]
 
     def test_refuses_a_pool_that_the_offset_pushes_past_the_last_trainer_pod(self):
         """Its last inference would sit on a gpu no trainer holds, and a weight update would transfer nothing."""
@@ -296,13 +440,32 @@ class TestLayoutPairs:
             )
 
 
+class TestGpuWidthPairs:
+    def test_refuses_an_inference_pod_that_does_not_divide_a_node(self):
+        """Three gpus of an eight-gpu node means a later pod of the pool would straddle two trainer pods."""
+        with pytest.raises(pydantic.ValidationError, match="does not divide a"):
+            _layout(num_inference_cells=1, num_trainer_cells=1, num_gpus_per_inference_pod=3)
+
+    def test_refuses_an_inference_pod_wider_than_a_node(self):
+        """A pod wider than the node it is pinned to would need gpus the trainer pod beside it holds."""
+        with pytest.raises(pydantic.ValidationError, match="does not divide a"):
+            _layout(num_inference_cells=1, num_trainer_cells=2, num_gpus_per_inference_pod=16)
+
+    def test_refuses_sub_node_pods_that_overrun_the_trainer_gpus_by_less_than_a_node(self):
+        """Counting in pods would round this down and miss it: the last half-node pod has no trainer gpu."""
+        with pytest.raises(pydantic.ValidationError, match="do not fit in the trainer's"):
+            _sub_node_layout(gpu_offset=4, num_inference_cells=4)
+
+    def test_allows_sub_node_pods_that_exactly_fill_the_trainer_gpus(self):
+        """The fit check is inclusive, so a pool covering every trainer gpu is the legal maximum."""
+        assert _sub_node_layout(num_inference_cells=4).total_inference_gpus == 16
+
+
 class TestAssertColocateSupported:
     def test_accepts_whole_node_cells_that_tile(self):
         """What the launcher checks before rendering: whole-node pods and an inference pool_id that tiles."""
         _assert_colocate_supported(
-            layout=_layout(
-                num_inference_cells=8, num_trainer_cells=2, num_pods_per_inference_cell=1, num_pods_per_trainer_cell=4
-            ),
+            num_gpus_per_node=GPUS_PER_NODE,
             gpus_per_inference_pod=8,
             gpus_per_trainer_pod=8,
         )
@@ -311,7 +474,7 @@ class TestAssertColocateSupported:
         """The device plugin picks the cards, so an inference holding part of a node has no static base gpu id."""
         with pytest.raises(AssertionError, match="sub-node cell"):
             _assert_colocate_supported(
-                layout=_layout(num_inference_cells=1, num_trainer_cells=1),
+                num_gpus_per_node=GPUS_PER_NODE,
                 gpus_per_inference_pod=4,
                 gpus_per_trainer_pod=8,
             )
@@ -320,10 +483,49 @@ class TestAssertColocateSupported:
         """Two trainer cells sharing a node would leave an inference with no single cell to pair with."""
         with pytest.raises(AssertionError, match="sub-node cell"):
             _assert_colocate_supported(
-                layout=_layout(num_inference_cells=1, num_trainer_cells=1),
+                num_gpus_per_node=GPUS_PER_NODE,
                 gpus_per_inference_pod=8,
                 gpus_per_trainer_pod=4,
             )
+
+
+class TestPoolsClaimDistinctGpus:
+    def test_refuses_two_pools_that_want_the_same_trainer_gpus(self):
+        """Only one inference can hold a node's gpus, and the second would land on gpus already taken."""
+        with pytest.raises(pydantic.ValidationError, match="both claim the trainer's gpu 8"):
+            _config(
+                [
+                    _inference_pool(_layout(num_inference_cells=2, num_trainer_cells=1, num_pods_per_trainer_cell=4)),
+                    _inference_pool(
+                        _layout(
+                            num_inference_cells=2,
+                            num_trainer_cells=1,
+                            num_pods_per_trainer_cell=4,
+                            gpu_offset=8,
+                        ),
+                        pool_id=DECODE_POOL_ID,
+                    ),
+                ]
+            )
+
+    def test_refuses_two_sub_node_pools_that_want_the_same_gpu_of_one_node(self):
+        """Sub-node pools share a node on purpose, so the overlap check has to be per gpu, not per node."""
+        with pytest.raises(pydantic.ValidationError, match="both claim the trainer's gpu 4"):
+            _config(
+                [
+                    _inference_pool(_sub_node_layout(num_inference_cells=2)),
+                    _inference_pool(_sub_node_layout(gpu_offset=4, num_inference_cells=1), pool_id=DECODE_POOL_ID),
+                ]
+            )
+
+    def test_allows_two_sub_node_pools_that_split_one_node_between_them(self):
+        """Two half-node pools on one trainer node is the point of sub-node cells, not a collision."""
+        _config(
+            [
+                _inference_pool(_sub_node_layout(num_inference_cells=1)),
+                _inference_pool(_sub_node_layout(gpu_offset=4, num_inference_cells=1), pool_id=DECODE_POOL_ID),
+            ]
+        )
 
 
 class TestReleasePatch:
@@ -648,10 +850,22 @@ class TestPairingConfig:
             '{"namespace": "rl", "release": "run", "trainer_pool_id": "t", "inference_pools": '
             '[{"pool_id": "d", "layout": {"num_inference_cells": 1, "num_trainer_cells": 1, '
             '"num_pods_per_inference_cell": 4, "num_pods_per_trainer_cell": 2, "num_gpus_per_node": 8, '
-            '"gpu_offset": 0}}]}'
+            '"num_gpus_per_inference_pod": 8, "gpu_offset": 0}}]}'
         )
 
         with pytest.raises(pydantic.ValidationError, match="cannot fit"):
+            PairingConfig.model_validate_json(payload)
+
+    def test_refuses_a_layout_whose_sub_node_pods_overrun_the_trainer(self):
+        """The gpu-level fit check has to survive the json boundary too, or the surplus pod waits forever."""
+        payload = (
+            '{"namespace": "rl", "release": "run", "trainer_pool_id": "t", "inference_pools": '
+            '[{"pool_id": "d", "layout": {"num_inference_cells": 5, "num_trainer_cells": 1, '
+            '"num_pods_per_inference_cell": 1, "num_pods_per_trainer_cell": 2, "num_gpus_per_node": 8, '
+            '"num_gpus_per_inference_pod": 4, "gpu_offset": 0}}]}'
+        )
+
+        with pytest.raises(pydantic.ValidationError, match="do not fit in the trainer's"):
             PairingConfig.model_validate_json(payload)
 
 

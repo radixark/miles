@@ -35,6 +35,7 @@ class TestTheValuesCarryAWholePairingConfig:
                         "num_pods_per_inference_cell": 1,
                         "num_pods_per_trainer_cell": 1,
                         "num_gpus_per_node": 8,
+                        "num_gpus_per_inference_pod": 8,
                         "gpu_offset": 0,
                     },
                 },
@@ -46,6 +47,7 @@ class TestTheValuesCarryAWholePairingConfig:
                         "num_pods_per_inference_cell": 1,
                         "num_pods_per_trainer_cell": 1,
                         "num_gpus_per_node": 8,
+                        "num_gpus_per_inference_pod": 8,
                         "gpu_offset": 16,
                     },
                 },
@@ -83,14 +85,14 @@ class TestTheValuesCarryAWholePairingConfig:
         """Both would be pinned onto the same node, and one of them would find no gpus left to run on."""
         specs = [*_disaggregated_engines(decode_offset=8), trainer(num_cells=4, gpus_per_cell=8)]
 
-        with pytest.raises(AssertionError, match="both claim the trainer's gpu"):
+        with pytest.raises(pydantic.ValidationError, match="both claim the trainer's gpu"):
             build_values(specs, COLOCATE_LAYOUT).as_values()
 
-    def test_refuses_a_pool_starting_part_way_into_a_node(self):
-        """Half a node is not a pod, so the engine would want gpus that two trainer pods hold between them."""
+    def test_refuses_a_pool_starting_part_way_into_one_of_its_own_pods(self):
+        """An 8-gpu engine starting at gpu 4 would want half of each of two nodes' worth of cards."""
         specs = [engine(num_cells=1, gpus_per_engine=8, gpu_offset=4), trainer(num_cells=4, gpus_per_cell=8)]
 
-        with pytest.raises(pydantic.ValidationError, match="starts inside a node"):
+        with pytest.raises(pydantic.ValidationError, match="not a whole number of its own"):
             build_values(specs, COLOCATE_LAYOUT).as_values()
 
     def test_refuses_more_engine_cells_than_the_trainer_can_seat(self):

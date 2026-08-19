@@ -365,7 +365,7 @@ spec:
             - -m
             - miles.utils.external_utils.colocate_pairing
             - --config
-            - "{\"inference_pools\":[{\"layout\":{\"gpu_offset\":0,\"num_gpus_per_node\":8,\"num_inference_cells\":1,\"num_pods_per_inference_cell\":2,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-0\"},{\"layout\":{\"gpu_offset\":16,\"num_gpus_per_node\":8,\"num_inference_cells\":2,\"num_pods_per_inference_cell\":1,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-1\"}],\"namespace\":\"rl\",\"release\":\"myrun\",\"trainer_pool_id\":\"trainer-engine-actor\"}"
+            - "{\"inference_pools\":[{\"layout\":{\"gpu_offset\":0,\"num_gpus_per_inference_pod\":8,\"num_gpus_per_node\":8,\"num_inference_cells\":1,\"num_pods_per_inference_cell\":2,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-0\"},{\"layout\":{\"gpu_offset\":16,\"num_gpus_per_inference_pod\":8,\"num_gpus_per_node\":8,\"num_inference_cells\":2,\"num_pods_per_inference_cell\":1,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-1\"}],\"namespace\":\"rl\",\"release\":\"myrun\",\"trainer_pool_id\":\"trainer-engine-actor\"}"
           env:
             - name: "CUDA_DEVICE_MAX_CONNECTIONS"
               value: "1"
