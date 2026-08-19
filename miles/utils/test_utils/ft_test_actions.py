@@ -1,10 +1,13 @@
+import asyncio
 import json
 import logging
 import os
-from collections.abc import Sequence
+import sys
+from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.retry_utils import retry_until_deadline
@@ -16,18 +19,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
-class FTTestAction(FrozenStrictBaseModel):
-    at_rollout: int
-    action: Literal["stop_cell_at_end", "start_cell_at_end", "crash_before_allreduce"]
-    cell_id: str
-    rank: int = 0  # for actor-level actions: which rank within the cell
-    attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
-
-
 CI_FT_TEST_ACTIONS_FLAG: str = "--ci-ft-test-actions"
-
-_ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
+SLEEP_FOREVER_AT_END_ACTION: str = "sleep_forever_at_end"
+SLEEP_FOREVER_INTERVAL_SECONDS: float = 60.0
+PARKABLE_TRAIN_SCRIPT: str = "train.py"
 
 
 def compute_ft_test_actions_arg(actions: Sequence[dict]) -> str:
@@ -42,6 +37,28 @@ _CELL_RESUME_OBSERVED_TIMEOUT_SECONDS = 300.0
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
+_ORCHESTRATION_ACTIONS = {SLEEP_FOREVER_AT_END_ACTION}
+
+SleepFn = Callable[[float], Awaitable[None]]
+
+
+class FTTestAction(FrozenStrictBaseModel):
+    at_rollout: int
+    action: Literal["stop_cell_at_end", "start_cell_at_end", "crash_before_allreduce", "sleep_forever_at_end"]
+    cell_id: str | None = None
+    rank: int = 0  # for actor-level actions: which rank within the cell
+    attempt: int = 0  # for actor-level actions: which attempt (0 = first try)
+
+    @model_validator(mode="after")
+    def _check_cell_name_matches_action(self) -> "FTTestAction":
+        assert (self.action in _ORCHESTRATION_ACTIONS) == (self.cell_id is None), (
+            f"an orchestration action names no cell and a cell action names one, and {self.action} names "
+            f"cell_id={self.cell_id!r}"
+        )
+        return self
+
+
+_ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
 
 
 def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
@@ -51,15 +68,34 @@ def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
     all_actions = _ACTION_LIST_ADAPTER.validate_json(raw)
 
     for action in all_actions:
+        if (cell_id := action.cell_id) is None:
+            continue
         try:
-            parse_cell_id(action.cell_id)
+            parse_cell_id(cell_id)
         except ValueError as e:
-            raise ValueError(f"FT test action has malformed cell_id {action.cell_id!r} (action={action})") from e
+            raise ValueError(f"FT test action has malformed cell_id {cell_id!r} (action={action})") from e
 
     actions = [a for a in all_actions if a.action in action_filter]
     if actions:
         logger.info("FT test actions activated: %d actions (%s)", len(actions), action_filter)
     return actions
+
+
+def _assert_loop_parkable(args: object, *, trainer_model_id: str | None) -> None:
+    assert (script := Path(sys.argv[0]).name) == PARKABLE_TRAIN_SCRIPT, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the orchestration script between two steps, and only "
+        f"{PARKABLE_TRAIN_SCRIPT} stands still at that point; {script} has already started the next rollout by the "
+        f"time it reaches here, so the run would not be standing where the action names"
+    )
+    assert (interval := args.update_weights_interval) == 1, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks the run where it updates weights, and --update-weights-interval "
+        f"{interval} means the run does not pass through that point after every step"
+    )
+    assert trainer_model_id is None, (
+        f"{SLEEP_FOREVER_AT_END_ACTION} parks one coroutine, and a run training several policies drives one per "
+        f"policy ({trainer_model_id!r} reached it here), so every other policy would keep training past the step "
+        f"the action names"
+    )
 
 
 class FTTestActionControllerExecutor:
@@ -106,7 +142,8 @@ class FTTestActionControllerExecutor:
         )
 
     def _check_action_target(self, action: FTTestAction) -> None:
-        parsed = parse_cell_id(action.cell_id)
+        assert (cell_id := action.cell_id) is not None
+        parsed = parse_cell_id(cell_id)
         assert parsed.pool_id == self._controller.pool_id, (
             f"FT test action targets pool_id {parsed.pool_id!r} but this controller drives {self._controller.pool_id!r} "
             f"(action={action})"
@@ -151,3 +188,46 @@ class FTTestActionActorExecutor:
                 logger.warning(msg)
                 print(msg, flush=True)
                 os._exit(1)
+
+
+class FTTestActionOrchestrationExecutor:
+    def __init__(
+        self,
+        *,
+        actions: list[FTTestAction],
+        sleep: SleepFn = asyncio.sleep,
+        interval_seconds: float = SLEEP_FOREVER_INTERVAL_SECONDS,
+    ) -> None:
+        self._actions = actions
+        self._sleep = sleep
+        self._interval_seconds = interval_seconds
+
+    @staticmethod
+    def from_args(args: object, *, trainer_model_id: str | None = None) -> "FTTestActionOrchestrationExecutor":
+        actions = _load_actions(args, _ORCHESTRATION_ACTIONS)
+        if actions:
+            _assert_loop_parkable(args, trainer_model_id=trainer_model_id)
+
+        return FTTestActionOrchestrationExecutor(actions=actions)
+
+    async def run_after_step(self, rollout_id: int) -> None:
+        actions = [action for action in self._actions if action.at_rollout == rollout_id]
+        if not actions:
+            return
+        for action in actions:
+            assert action.action == SLEEP_FOREVER_AT_END_ACTION, (
+                f"the orchestration side runs {SLEEP_FOREVER_AT_END_ACTION} and nothing else, and {action.action} "
+                f"reached it (action={action})"
+            )
+
+        msg = (
+            f"FT test action: {SLEEP_FOREVER_AT_END_ACTION} at rollout {rollout_id} — this orchestration script "
+            f"sleeps from here on and never starts rollout {rollout_id + 1}"
+        )
+        logger.warning(msg)
+        print(msg, flush=True)
+        await self._sleep_forever()
+
+    async def _sleep_forever(self) -> None:
+        while True:
+            await self._sleep(self._interval_seconds)

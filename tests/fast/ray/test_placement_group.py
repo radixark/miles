@@ -341,6 +341,21 @@ class TestUpdateWeights:
         assert info is None
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
 
+    async def test_the_startup_sync_validates_fault_actions_before_updating_weights(self, monkeypatch):
+        """A parked-loop action must be rejected even when no in-loop weight sync will run."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+        factory = MagicMock(side_effect=AssertionError("loop cannot be parked"))
+        monkeypatch.setattr(placement_group_module.FTTestActionOrchestrationExecutor, "from_args", factory)
+
+        with pytest.raises(AssertionError, match="loop cannot be parked"):
+            await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+        factory.assert_called_once()
+        actor_model.update_weights.assert_not_awaited()
+
     async def test_the_published_version_names_the_policy_it_belongs_to(self):
         """A version published under the wrong policy judges another policy's samples against these weights."""
         from miles.ray.placement_group import update_weights
