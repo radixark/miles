@@ -1152,6 +1152,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MILES_BASE_GPU_ID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['miles.radixark.io/base-gpu-id']
               - name: "CUDA_DEVICE_MAX_CONNECTIONS"
                 value: "1"
               - name: "HF_ENDPOINT"
@@ -1338,6 +1342,10 @@ spec:
                 valueFrom:
                   fieldRef:
                     fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MILES_BASE_GPU_ID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['miles.radixark.io/base-gpu-id']
               - name: "CUDA_DEVICE_MAX_CONNECTIONS"
                 value: "1"
               - name: "HF_ENDPOINT"

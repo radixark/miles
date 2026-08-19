@@ -65,13 +65,12 @@ def _compute_pairing_layout(*, inference: BaseWorkerSpec, trainer: BaseWorkerSpe
 def _assert_colocate_supported(
     *, num_gpus_per_node: int, gpus_per_inference_pod: int, gpus_per_trainer_pod: int
 ) -> None:
-    assert gpus_per_inference_pod == num_gpus_per_node, (
-        f"An inference pod holding {gpus_per_inference_pod} of a node's {num_gpus_per_node} gpus is a sub-node cell, "
-        f"which colocate does not support: the device plugin picks the cards, so the inference's base gpu id "
-        f"cannot be rendered before the pod runs"
+    assert gpus_per_inference_pod <= num_gpus_per_node, (
+        f"An inference pod holding {gpus_per_inference_pod} of a node's {num_gpus_per_node} gpus reaches past the "
+        f"node it is pinned to; colocate gives it the trainer's node, not a share of the next one as well"
     )
     assert gpus_per_trainer_pod == num_gpus_per_node, (
-        f"A trainer pod holding {gpus_per_trainer_pod} of a node's {num_gpus_per_node} gpus is a sub-node cell, "
-        f"which colocate does not support: two trainer cells could then share a node and an inference would "
-        f"have no single cell to pair with"
+        f"A trainer pod holding {gpus_per_trainer_pod} of a node's {num_gpus_per_node} gpus is a sub-node pod, which "
+        f"colocate does not support: the device plugin picks its cards at runtime, so a computed card index is the "
+        f"trainer pod's only when it holds every card, and the 0-gpu inference pod leaves the rest free to be given away"
     )

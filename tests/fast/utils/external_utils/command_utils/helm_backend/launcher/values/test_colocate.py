@@ -109,6 +109,16 @@ class TestTheValuesCarryAWholePairingConfig:
         with pytest.raises(AssertionError, match="sub-node"):
             build_values(specs, COLOCATE_LAYOUT).as_values()
 
+    def test_places_one_engine_per_gpu_of_a_single_trainer_node(self):
+        """The shape a user reaches for first: eight engines sharing the eight cards of one trainer node."""
+        specs = [engine(num_cells=8, gpus_per_engine=1), trainer(num_cells=1, gpus_per_cell=8)]
+
+        [pool] = build_values(specs, COLOCATE_LAYOUT).as_values()["run"]["colocate"]["inference_pools"]
+
+        assert pool["layout"]["num_inference_cells"] == 8
+        assert pool["layout"]["num_gpus_per_inference_pod"] == 1
+        assert pool["layout"]["num_gpus_per_node"] == 8
+
     def test_refuses_a_colocated_run_whose_engines_all_sit_past_the_trainer(self):
         """Installing a pairing controller with nothing to pair would leave every engine gated forever."""
         specs = [engine(num_cells=1, gpus_per_engine=8, gpu_offset=32), trainer(num_cells=4, gpus_per_cell=8)]
