@@ -5,7 +5,8 @@ import threading
 from tests.e2e.ft.conftest_ft.fault_injection.core import list_cells, run_fault_injection_loop
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog
-from tests.e2e.ft.conftest_ft.fault_injection.views import compute_num_injections
+
+from miles.utils.test_utils.polling_worker import PollingWorker
 
 API_SERVER_PORT: int = 18080
 # A pod deletion, the slowest form, cannot be cancelled and is two kubectl calls bounded at a minute.
@@ -24,34 +25,29 @@ class FaultInjectorHandle:
         self.event_log = EventLog()
         self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(
-            target=run_fault_injection_loop,
-            kwargs={
-                "base_url": base_url,
-                "seed": seed,
-                "mean_interval_seconds_of_cell_type": mean_interval_seconds_of_cell_type,
-                "stop_event": self._stop_event,
-                "event_log": self.event_log,
-                "cell_fault_forms": cell_fault_forms,
-            },
-            daemon=True,
-            name="ft-random-fault-injector",
-        )
 
-    @property
-    def num_successful_injections(self) -> int:
-        return compute_num_injections(self.event_log.events)
+        def inject_until_stopped(stop_event: threading.Event) -> None:
+            run_fault_injection_loop(
+                base_url=base_url,
+                seed=seed,
+                mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
+                stop_event=stop_event,
+                event_log=self.event_log,
+                cell_fault_forms=cell_fault_forms,
+            )
+
+        self._worker = PollingWorker(name="ft-random-fault-injector", run=inject_until_stopped)
 
     def start(self) -> None:
-        self._thread.start()
+        self._worker.start()
 
     def stop_and_join(self) -> None:
-        self._stop_event.set()
-        self._thread.join(timeout=STOP_AND_JOIN_TIMEOUT_SECONDS)
-        assert not self._thread.is_alive(), (
-            f"The fault injector was still mid-injection {STOP_AND_JOIN_TIMEOUT_SECONDS}s after being asked to "
-            f"stop, so it may still crash a cell nothing will heal, and reading its log now would race it"
+        self._worker.stop_and_join(timeout_seconds=STOP_AND_JOIN_TIMEOUT_SECONDS)
+        self._worker.assert_not_running(
+            message=(
+                f"The fault injector was still mid-injection {STOP_AND_JOIN_TIMEOUT_SECONDS}s after being asked to "
+                f"stop: it may still crash a cell nothing will heal, and reading its log would race it"
+            )
         )
         self._observe_final_snapshot()
 
