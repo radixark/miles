@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 30
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
+ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
@@ -275,7 +276,7 @@ class ServerCell:
         return await self.api_client.resume_memory_occupation(tags=tags)
 
     async def abort_all(self):
-        return await self.api_client.abort_all_requests()
+        return await self.api_client.abort_all_requests(timeout=ABORT_REQUEST_TIMEOUT_SECONDS)
 
     async def check_weights(self, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None):
         return await self.api_client.check_weights(
