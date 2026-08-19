@@ -171,7 +171,7 @@ class TestBuildArgs:
         """A bitwise comparison across a second difference would prove nothing about deployment."""
         driver = _deployments_of(deployments, DeployComponent.PRIMARY)[0]
 
-        baseline = scenario._build_baseline_args(mode, DUMP_DIR)
+        baseline = scenario._build_baseline_args(mode, DUMP_DIR, True, _request(mode).config)
 
         assert _shared_argv(driver.train_args) == _shared_argv(baseline)
 
