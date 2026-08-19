@@ -30,3 +30,7 @@ class TestReadCheckpointTrackerIteration:
     def test_a_tracker_naming_no_number_holds_no_iteration(self, tmp_path):
         """Megatron writes 'release' there, which names no iteration a caller could snapshot beside."""
         assert read_checkpoint_tracker_iteration(_write_tracker(tmp_path / "run", "release\n")) is None
+
+    def test_no_directory_at_all_holds_no_checkpoint(self):
+        """--save is optional, and None must not reach the filesystem."""
+        assert read_checkpoint_tracker_iteration(None) is None

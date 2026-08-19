@@ -52,6 +52,7 @@ from ..training_utils.loss import (
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
+from .checkpoint_tracker import read_checkpoint_tracker_iteration
 from .ft.checkpoint_transfer import recv_ckpt
 from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
@@ -283,6 +284,44 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.prof.on_init_end()
 
+        return load_output.start_rollout_id
+
+    @with_logs
+    def load_state(self) -> int:
+        assert self.is_initialized()
+
+        # reloading does not support things like these
+        assert not self.args.debug_rollout_only
+        assert not is_lora_enabled(self.args)
+        assert not is_multi_lora_enabled(self.args)
+        assert not self.args.colocate
+        assert not self.args.rematerialize_param_from_master_weight
+        assert self.args.non_persistent_ckpt_type != "local"
+        assert not self.args.offload_train
+        assert not self.args.use_pytorch_profiler
+        assert not self.args.record_memory_history
+        assert not self.args.keep_old_actor, (
+            "--keep-old-actor holds a second copy of the actor this reload does not roll back, so the run would "
+            "compare the reloaded actor against weights of a rollout it no longer stands at"
+        )
+        assert (requested_load := self.args.requested_load) is not None, "a hot restart needs --load"
+        assert read_checkpoint_tracker_iteration(requested_load) is not None
+
+        self._finalize_pending_async_save()
+
+        if self.opt_param_scheduler is not None:
+            self.opt_param_scheduler.num_steps = 0
+
+        overrider_for_loading: dict[str, object] = dict(
+            load=requested_load, ckpt_step=None, finetune=False, no_load_optim=False, no_load_rng=False
+        )
+        load_output = self._load_state_core(
+            checkpointing_context=None,
+            overrider_for_loading=overrider_for_loading,
+        )
+        self._last_rollout_id = None
+
+        logger.info(f"load_state rolled this trainer back to checkpoint iteration {load_output.loaded_rollout_id}")
         return load_output.start_rollout_id
 
     def _load_state_core(
