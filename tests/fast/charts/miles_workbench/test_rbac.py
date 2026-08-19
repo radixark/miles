@@ -40,6 +40,7 @@ _PAIRING_CONFIG = {
                 "num_pods_per_inference_cell": 1,
                 "num_pods_per_trainer_cell": 1,
                 "num_gpus_per_node": 8,
+                "num_gpus_per_inference_pod": 8,
                 "gpu_offset": 0,
             },
         }
