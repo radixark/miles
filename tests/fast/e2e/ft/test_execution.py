@@ -6,6 +6,12 @@ from tests.e2e.ft.conftest_ft.modes import MODES
 
 
 class TestGetCommonTrainArgs:
+    def test_fault_tolerance_runs_enable_the_events_the_checksums_are_written_into(self, tmp_path: Path) -> None:
+        """Inference-engine weight checksums are only recorded while the event logger is initialised."""
+        args = get_common_train_args(MODES["kill_rollout__dp4__colocate"], dump_dir=str(tmp_path))
+
+        assert f"--save-debug-event-data {tmp_path}/" in args
+
     def test_a_colocated_real_rollout_mode_emits_the_colocate_flag(self, tmp_path: Path) -> None:
         """A colocated mode must tell the trainer to share its gpus with the rollout engines."""
         args = get_common_train_args(MODES["kill_rollout__dp4__colocate"], dump_dir=str(tmp_path))
