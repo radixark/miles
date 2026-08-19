@@ -2,7 +2,8 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, TypeVar
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 import ray
 
@@ -17,6 +18,12 @@ _MAX_PORT = 65535
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
+_T = TypeVar("_T")
+
+
+@dataclass
+class MutableBox(Generic[_T]):
+    value: _T
 
 
 def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
