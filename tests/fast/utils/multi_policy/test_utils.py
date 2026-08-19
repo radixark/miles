@@ -141,12 +141,14 @@ def _make_trainer_args(*model_ids: str, **overrides: Any) -> Namespace:
 
 class TestCreatePolicyTrainers:
     @staticmethod
-    def _stub_create_training_model(monkeypatch, start_rollout_ids: dict[str, int]) -> list[dict]:
+    def _stub_create_training_model(
+        monkeypatch, start_rollout_ids: dict[str, int], *, resumed: bool = False
+    ) -> list[dict]:
         created: list[dict] = []
 
-        async def _create(trainer_args, *, handle, trainer_id):
+        async def _create(trainer_args, *, handle, trainer_id, resumed):
             handle.get_train_parallel_config = AsyncMock(return_value=f"parallel-config-of-{trainer_id}")
-            created.append(dict(trainer_id=trainer_id, args=trainer_args, handle=handle))
+            created.append(dict(trainer_id=trainer_id, args=trainer_args, handle=handle, resumed=resumed))
             return SimpleNamespace(handle=handle, start_rollout_id=start_rollout_ids[trainer_args.trainer_model_id])
 
         monkeypatch.setattr(multi_policy_utils, "create_training_model", _create)
@@ -155,6 +157,7 @@ class TestCreatePolicyTrainers:
             "create_trainer_handles",
             lambda args, *, trainer_configs: {config.trainer_id: AsyncMock() for config in trainer_configs},
         )
+        monkeypatch.setattr(multi_policy_utils, "take_over_trainers", AsyncMock(return_value=resumed))
         return created
 
     async def test_every_policy_gets_a_trainer_keyed_by_its_model_id(self, monkeypatch):
@@ -206,6 +209,16 @@ class TestCreatePolicyTrainers:
         await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=rollout_executor)
 
         rollout_executor.load.assert_awaited_once_with(1)
+
+    async def test_a_taken_over_run_loads_the_executor_at_the_leaders_position(self, monkeypatch):
+        """Every policy resumed from a checkpoint, so the shared dataset has to be asked for the same position."""
+        created = self._stub_create_training_model(monkeypatch, dict(a=4, b=2), resumed=True)
+        rollout_executor = AsyncMock()
+
+        await multi_policy_utils.create_trainers(_make_trainer_args("a", "b"), rollout_executor=rollout_executor)
+
+        assert [entry["resumed"] for entry in created] == [True, True]
+        rollout_executor.load.assert_awaited_once_with(3)
 
     async def test_a_resume_without_the_global_rollout_state_is_refused(self, monkeypatch, tmp_path):
         """The models would resume at rollout 4 while the data source silently restarts at the first prompt."""
