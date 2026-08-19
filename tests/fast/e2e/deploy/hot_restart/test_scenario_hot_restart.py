@@ -130,7 +130,7 @@ class TestWeightVersionExclusion:
         """A surviving engine keeps a monotonic publication counter, but every other metric still compares exactly."""
         calls: list[dict[str, Any]] = []
         dump_dir = _dump_dir_with_evidence(tmp_path)
-        monkeypatch.setattr(scenario, "assert_the_take_overs_replaced_only_the_script", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(scenario, "assert_take_overs_replaced_only_script", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(scenario, "compare_deterministic_sides", lambda **kwargs: calls.append(kwargs))
         restart_mode = dataclasses.replace(scenario.CHECKPOINTED, assert_redone=lambda **_kwargs: None)
 
@@ -301,7 +301,7 @@ class TestTheOneEventPerRolloutPremise:
 class TestTheVerdictEachModeIsMeasuredAgainst:
     def test_the_checkpointed_mode_is_paired_with_the_checkpointed_verdict(self):
         """A mode pointing at the other verdict would measure the run against the wrong redo."""
-        assert scenario.CHECKPOINTED.assert_redone is scenario.assert_only_the_steps_after_a_checkpoint_were_redone
+        assert scenario.CHECKPOINTED.assert_redone is scenario.assert_only_post_checkpoint_steps_redone
 
     def test_the_comparison_hands_the_verdict_the_target_side_dumps(self):
         """Handing it the base directory would read the two sides' logs as one run's."""
@@ -313,7 +313,7 @@ class TestTheVerdictEachModeIsMeasuredAgainst:
         mode = dataclasses.replace(scenario.CHECKPOINTED, assert_redone=record)
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(scenario.HotRestartEvidence, "load", classmethod(lambda _cls, *, dump_dir: _evidence()))
-            patch.setattr(scenario, "assert_the_take_overs_replaced_only_the_script", lambda *a, **k: None)
+            patch.setattr(scenario, "assert_take_overs_replaced_only_script", lambda *a, **k: None)
             patch.setattr(scenario, "compare_deterministic_sides", lambda **_kwargs: None)
             scenario._compare(mode, "/dumps/hot_restart_checkpointed", scenario._MODE)
 
