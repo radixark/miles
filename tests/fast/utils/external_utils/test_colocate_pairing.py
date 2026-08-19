@@ -641,18 +641,33 @@ class TestAssertColocateSupported:
             gpus_per_trainer_pod=8,
         )
 
-    def test_refuses_a_sub_node_inference_cell(self):
-        """The device plugin picks the cards, so an inference holding part of a node has no static base gpu id."""
-        with pytest.raises(AssertionError, match="sub-node cell"):
+    def test_accepts_a_sub_node_inference_cell_and_pairs_it_with_the_trainer_pod_holding_its_gpus(self):
+        """Several small inference pods may share one trainer node, each paired with the pod running there."""
+        _assert_colocate_supported(
+            num_gpus_per_node=GPUS_PER_NODE,
+            gpus_per_inference_pod=4,
+            gpus_per_trainer_pod=8,
+        )
+
+        assert _all_targets(_sub_node_layout()) == [
+            _coordinate(0, 0),
+            _coordinate(0, 0),
+            _coordinate(0, 1),
+            _coordinate(0, 1),
+        ]
+
+    def test_refuses_an_inference_pod_larger_than_a_node(self):
+        """It would be pinned to one node while holding gpus of the next, which colocate cannot honour."""
+        with pytest.raises(AssertionError, match="reaches past the node it is pinned to"):
             _assert_colocate_supported(
                 num_gpus_per_node=GPUS_PER_NODE,
-                gpus_per_inference_pod=4,
+                gpus_per_inference_pod=16,
                 gpus_per_trainer_pod=8,
             )
 
-    def test_refuses_a_sub_node_trainer_cell(self):
-        """Two trainer cells sharing a node would leave an inference with no single cell to pair with."""
-        with pytest.raises(AssertionError, match="sub-node cell"):
+    def test_refuses_a_sub_node_trainer_pod(self):
+        """The device plugin hands the trainer arbitrary cards, so only a whole-node one owns every index."""
+        with pytest.raises(AssertionError, match="sub-node pod"):
             _assert_colocate_supported(
                 num_gpus_per_node=GPUS_PER_NODE,
                 gpus_per_inference_pod=8,

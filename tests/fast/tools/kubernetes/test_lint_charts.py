@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import shutil
 import subprocess
 import textwrap
@@ -154,3 +155,37 @@ class TestMissingHelm:
         monkeypatch.setenv("CI", "true")
 
         assert lint_charts.main([]) == 1
+
+
+def colocate_variant() -> list[str]:
+    module = load_lint_charts()
+    [variant] = [args for args in module.VARIANTS["miles-run"] if any(a.startswith("run.colocate=") for a in args)]
+    return variant
+
+
+def set_json_value(variant: list[str], prefix: str) -> object:
+    [value] = [argument[len(prefix) :] for argument in variant if argument.startswith(prefix)]
+    return json.loads(value)
+
+
+class TestTheColocateVariant:
+    def test_names_pools_the_same_variant_renders(self):
+        """A pool id no pool carries makes the variant a disaggregated run, and the gated branch goes unlinted."""
+        colocate = set_json_value(colocate_variant(), "run.colocate=")
+        rendered = {
+            entry["name"]
+            for key in ("run.inferenceEngines=", "run.trainerEngines=")
+            for entry in set_json_value(colocate_variant(), key)
+        }
+
+        named = {pool["pool_id"] for pool in colocate["inference_pools"]} | {colocate["trainer_pool_id"]}
+        assert named <= rendered, sorted(named - rendered)
+
+    def test_covers_a_pool_narrower_than_a_node(self):
+        """Only a sub-node pool renders the base gpu id env, so a whole-node variant never lints that branch."""
+        colocate = set_json_value(colocate_variant(), "run.colocate=")
+
+        assert any(
+            pool["layout"]["num_gpus_per_inference_pod"] < pool["layout"]["num_gpus_per_node"]
+            for pool in colocate["inference_pools"]
+        )
