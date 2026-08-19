@@ -1,6 +1,7 @@
 import importlib
 import inspect
 import sys
+from argparse import Namespace
 from collections.abc import Iterator
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -96,3 +97,29 @@ class TestReconcileAdapters:
         assert controller.retirement_completed
         assert controller.snapshot_consumed
         assert controller.freed_slots == {"orphan"}
+
+
+class TestSendCheckpoint:
+    def test_healing_before_the_first_train_step_is_refused_without_sending(
+        self, actor_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Healing before the first train step is refused without transferring a checkpoint."""
+        train_actor = object.__new__(actor_module.MegatronTrainRayActor)
+        train_actor.args = Namespace(keep_old_actor=False)
+        train_actor._last_rollout_id = None
+        train_actor.model = object()
+        train_actor.optimizer = object()
+        train_actor.opt_param_scheduler = object()
+        checkpoint_transfer_attempted = False
+
+        def record_checkpoint_transfer(**_kwargs: object) -> None:
+            nonlocal checkpoint_transfer_attempted
+            checkpoint_transfer_attempted = True
+
+        monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(indep_dp=object()))
+        monkeypatch.setattr(actor_module, "_send_ckpt", record_checkpoint_transfer)
+
+        with pytest.raises(AssertionError, match="healing before the first train step is unsupported"):
+            train_actor.send_ckpt(dst_rank=1)
+
+        assert not checkpoint_transfer_attempted
