@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
@@ -109,7 +109,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
             base += compute_ft_test_actions_arg(_build_actions(num_cells=mode.num_cells))
             if mode.has_real_rollout:
                 # Post-fault rollouts inject the baseline's recorded data (see README).
-                baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
+                baseline_dump_dir = dump_dir.replace(f"/{TARGET_SIDE}/", f"/{BASELINE_SIDE}/")
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
                     f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 2} "
@@ -128,16 +128,16 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
-    for side in ["baseline", "target"]:
+    for side in [BASELINE_SIDE, TARGET_SIDE]:
         for phase in PHASES:
             assert_reconfigure_events(
                 Path(f"{dump_dir}/{side}/{phase}/{EVENTS_DIRNAME}"),
-                expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
+                expected=_expected_reconfigures(is_target=side == TARGET_SIDE, phase=phase, num_cells=mode.num_cells),
             )
 
     compare_metrics(
-        baseline_dir=f"{dump_dir}/baseline/phase_b",
-        target_dir=f"{dump_dir}/target/phase_b",
+        baseline_dir=f"{dump_dir}/{BASELINE_SIDE}/phase_b",
+        target_dir=f"{dump_dir}/{TARGET_SIDE}/phase_b",
         rtol=5e-2,
         atol=1e-7,
         key_prefixes=["train/"],
@@ -147,8 +147,8 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     phase_b_rollout_ids = range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS)
     expected_leaves = {f"fwd_bwd/rollout_{rollout_id}" for rollout_id in phase_b_rollout_ids}
     actual_leaves = {
-        str(p.parent.relative_to(Path(f"{dump_dir}/baseline/phase_b/dumps")))
-        for p in Path(f"{dump_dir}/baseline/phase_b/dumps").rglob("*.pt")
+        str(p.parent.relative_to(Path(f"{dump_dir}/{BASELINE_SIDE}/phase_b/dumps")))
+        for p in Path(f"{dump_dir}/{BASELINE_SIDE}/phase_b/dumps").rglob("*.pt")
     }
     assert actual_leaves == expected_leaves, (
         f"Dump leaves {actual_leaves} do not match the per-rollout comparison loop "
@@ -159,8 +159,8 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     for rollout_id in phase_b_rollout_ids:
         is_post_fault = mode.has_real_rollout and rollout_id >= first_injected_rollout_id
         compare_dumps(
-            baseline_dir=f"{dump_dir}/baseline/phase_b",
-            target_dir=f"{dump_dir}/target/phase_b",
+            baseline_dir=f"{dump_dir}/{BASELINE_SIDE}/phase_b",
+            target_dir=f"{dump_dir}/{TARGET_SIDE}/phase_b",
             diff_thresholds=_POST_FAULT_DIFF_THRESHOLDS if is_post_fault else _DIFF_THRESHOLDS,
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
             allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
