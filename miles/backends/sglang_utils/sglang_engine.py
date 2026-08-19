@@ -11,7 +11,6 @@ import requests
 import sglang_router
 from packaging.version import parse
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-from sglang.srt.environ import envs
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
@@ -91,7 +90,7 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     return p
 
 
-def _launch_sglang_server(server_args: ServerArgs, bundle_index: int):
+def _launch_sglang_server(server_args: ServerArgs, bundle_indices: list[int]):
     """Host the Ray HTTP server in a same-job child actor. Returns (actor, scheduler_actors)."""
     server_args.host = server_args.host.strip("[]")
     placement_group = ray.util.get_current_placement_group()
@@ -102,10 +101,10 @@ def _launch_sglang_server(server_args: ServerArgs, bundle_index: int):
         scheduling_strategy=PlacementGroupSchedulingStrategy(
             placement_group=placement_group,
             placement_group_capture_child_tasks=True,
-            placement_group_bundle_index=bundle_index,
+            placement_group_bundle_index=bundle_indices[0],
         ),
     ).remote()
-    scheduler_actors = ray.get(http_actor.start.remote(server_args))
+    scheduler_actors = ray.get(http_actor.start.remote(server_args, bundle_indices=bundle_indices))
     _wait_server_healthy(
         base_url=server_args.url(),
         api_key=server_args.api_key,
@@ -294,13 +293,12 @@ class SGLangEngine(RayActor):
         if use_rdt:
             placement_group = ray.util.get_current_placement_group()
             assert placement_group is not None
-            envs.SGLANG_RAY_BUNDLE_INDICES.set(",".join(str(bundle) for bundle in self.pg_bundles))
             server_args.override(
                 "miles.rdt.ray_context",
                 placement_group=placement_group,
             )
             self._sglang_server_actor, self._scheduler_actors = _launch_sglang_server(
-                server_args, bundle_index=self.pg_bundles[0]
+                server_args, bundle_indices=self.pg_bundles
             )
         else:
             self.process = launch_server_process(server_args)

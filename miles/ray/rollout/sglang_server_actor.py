@@ -1,5 +1,6 @@
 import threading
 
+from sglang.srt.environ import envs
 from sglang.srt.ray.http_server import launch_engine, serve_http
 from sglang.srt.server_args import ServerArgs
 
@@ -15,7 +16,9 @@ class SGLangServerActor:
     def __init__(self):
         self._serve_thread: threading.Thread | None = None
 
-    def start(self, server_args: ServerArgs) -> list:
+    def start(self, server_args: ServerArgs, bundle_indices: list[int]) -> list:
+        # Set here: a parent actor's os.environ mutations do not reach this process.
+        envs.SGLANG_RAY_BUNDLE_INDICES.set(",".join(str(i) for i in bundle_indices))
         engine = launch_engine(server_args)
         _, _, _, scheduler_init_result, _ = engine
         self._serve_thread = threading.Thread(
