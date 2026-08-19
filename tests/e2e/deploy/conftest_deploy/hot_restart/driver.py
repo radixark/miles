@@ -84,15 +84,19 @@ def compute_release_of_config(config: ExecuteTrainConfig) -> str:
 def relaunch_with_hot_restart(
     *, train_args: str, mode: FTTestMode, config: ExecuteTrainConfig, installed_release: str
 ) -> None:
+    run_training(
+        train_args=train_args,
+        mode=mode,
+        config=compute_hot_restart_config(config, installed_release=installed_release),
+    )
+
+
+def compute_hot_restart_config(config: ExecuteTrainConfig, *, installed_release: str) -> ExecuteTrainConfig:
     assert (relaunched := compute_release_of_config(config)) == installed_release, (
         f"a hot restart upgrades the release that is already up: this relaunch would install {relaunched}, not the "
         f"watched {installed_release}, so it built a config with a run id of its own and would leave the trainers behind"
     )
-    run_training(
-        train_args=train_args,
-        mode=mode,
-        config=dataclasses.replace(config, hot_restart=HOT_RESTART_ARG),
-    )
+    return dataclasses.replace(config, hot_restart=HOT_RESTART_ARG)
 
 
 # ============================== the take-over loop =============================
