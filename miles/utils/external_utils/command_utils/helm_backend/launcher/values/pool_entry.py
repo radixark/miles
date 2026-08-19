@@ -13,6 +13,12 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
     TRAINER_ENGINES_SECTION,
     LaunchPlan,
 )
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.placeholders import (
+    LEADER_ADDRESS_PLACEHOLDER,
+    RENDERED_CELL_INDEX,
+    WORKER_INDEX_SENTINEL,
+    with_worker_index,
+)
 from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
@@ -24,17 +30,11 @@ from miles.utils.workers.worker_spec import (
     ServeWorkerSpec,
 )
 
-_WORKER_INDEX_PLACEHOLDER = "$(LWS_WORKER_INDEX)"
-_LEADER_ADDRESS_PLACEHOLDER = "$(LWS_LEADER_ADDRESS)"
-
 _BIND_HOST = "0.0.0.0"
 
 _SERVE_MODULE = "miles.utils.workers.serving.serve"
 _SUPERVISOR_MODULE = "miles.utils.workers.process_supervisor"
 _SPECS_FN = "miles.ray.specs.entrypoint.compute_specs_from_argv"
-
-_RENDERED_CELL_INDEX = 0
-_WORKER_INDEX_SENTINEL = 987654321
 
 
 def build_entry(
@@ -45,7 +45,7 @@ def build_entry(
         f"before conversion, because a values entry always renders at least one pod"
     )
     context = _launch_context(
-        spec, addresses=addresses, cell_index=_RENDERED_CELL_INDEX, worker_in_cell_index=_WORKER_INDEX_SENTINEL
+        spec, addresses=addresses, cell_index=RENDERED_CELL_INDEX, worker_in_cell_index=WORKER_INDEX_SENTINEL
     )
     pods_per_cell = spec.scheduling.pods_per_cell()
     gpus_per_pod = spec.scheduling.gpus_per_pod()
@@ -116,7 +116,7 @@ def _launch_context(
 ) -> LaunchCommandContext:
     self_addrs = {
         port.name: HostAndPort(
-            host=_LEADER_ADDRESS_PLACEHOLDER if port.mode == "master" else _BIND_HOST,
+            host=LEADER_ADDRESS_PLACEHOLDER if port.mode == "master" else _BIND_HOST,
             port=port.static_port,
         )
         for port in spec.port_infos
@@ -135,7 +135,7 @@ def _launch_context(
 def _command_of_spec(spec: BaseWorkerSpec, context: LaunchCommandContext, plan: LaunchPlan) -> list[str]:
     match spec:
         case CommandWorkerSpec():
-            return _with_worker_index(shlex.split(spec.launch_command(context)), spec)
+            return with_worker_index(shlex.split(spec.launch_command(context)), spec)
         case ServeWorkerSpec():
             return _serve_command(spec, plan)
         case _:
@@ -165,16 +165,6 @@ def _serve_command(spec: ServeWorkerSpec, plan: LaunchPlan) -> list[str]:
         str(workers_per_pod),
         "--",
     ] + serve
-
-
-def _with_worker_index(argv: list[str], spec: BaseWorkerSpec) -> list[str]:
-    sentinel = str(_WORKER_INDEX_SENTINEL)
-    embedded = [argument for argument in argv if sentinel in argument and argument != sentinel]
-    assert not embedded, (
-        f"Spec '{spec.name}' builds {embedded} out of its pod index; kubelet substitutes a whole "
-        f"argument, so the index has to reach the command unchanged"
-    )
-    return [_WORKER_INDEX_PLACEHOLDER if argument == sentinel else argument for argument in argv]
 
 
 def _port_name(name: str) -> str:
