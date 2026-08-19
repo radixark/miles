@@ -95,15 +95,19 @@ def _launch_sglang_server(server_args: ServerArgs, bundle_indices: list[int]):
     server_args.host = server_args.host.strip("[]")
     placement_group = ray.util.get_current_placement_group()
     assert placement_group is not None
-    http_actor = ray.remote(SGLangServerActor).options(
-        num_cpus=0.2,
-        num_gpus=0,
-        scheduling_strategy=PlacementGroupSchedulingStrategy(
-            placement_group=placement_group,
-            placement_group_capture_child_tasks=True,
-            placement_group_bundle_index=bundle_indices[0],
-        ),
-    ).remote()
+    http_actor = (
+        ray.remote(SGLangServerActor)
+        .options(
+            num_cpus=0.2,
+            num_gpus=0,
+            scheduling_strategy=PlacementGroupSchedulingStrategy(
+                placement_group=placement_group,
+                placement_group_capture_child_tasks=True,
+                placement_group_bundle_index=bundle_indices[0],
+            ),
+        )
+        .remote()
+    )
     scheduler_actors = ray.get(http_actor.start.remote(server_args, bundle_indices=bundle_indices))
     _wait_server_healthy(
         base_url=server_args.url(),
@@ -291,12 +295,6 @@ class SGLangEngine(RayActor):
         )
         server_args = ServerArgs(**server_args_dict)
         if use_rdt:
-            placement_group = ray.util.get_current_placement_group()
-            assert placement_group is not None
-            server_args.override(
-                "miles.rdt.ray_context",
-                placement_group=placement_group,
-            )
             self._sglang_server_actor, self._scheduler_actors = _launch_sglang_server(
                 server_args, bundle_indices=self.pg_bundles
             )
