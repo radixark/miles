@@ -256,6 +256,9 @@ def _compute_trainer_checkpoint_dir(*, base_dir: str | None, trainer_id: str) ->
 
 
 def resolve_args_checkpoint_load(args: Namespace) -> None:
+    # TODO: refactor
+    args.requested_load = args.load
+
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
         # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
