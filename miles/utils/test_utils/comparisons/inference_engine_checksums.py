@@ -2,7 +2,7 @@ from pathlib import Path
 
 from miles.utils.audit_utils.event_analyzer.rules import inference_engine_weight_checksum_consistency
 from miles.utils.audit_utils.event_analyzer.rules.checksum_compare import ChecksumMismatchIssue, compare_flat_dicts
-from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.audit_utils.process_identity import TrainerControllerProcessIdentity
 
@@ -85,7 +85,7 @@ def _compute_model_id(event: InferenceEngineWeightChecksumEvent) -> str | None:
 
 def _read_inference_engine_checksum_events(dump_dir: Path) -> list[InferenceEngineWeightChecksumEvent]:
     """Read all InferenceEngineWeightChecksumEvents from the events directory."""
-    events_dir: Path = dump_dir / "events"
+    events_dir: Path = dump_dir / EVENTS_DIRNAME
     if not events_dir.exists():
         return []
     all_events = read_events(events_dir)

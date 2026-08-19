@@ -389,6 +389,7 @@ membership is asserted.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
 - **Why still-recovering cells are excluded**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica.
+- **A form that leaves its cell running**: `BaseFaultForm.harms_cell` is false for it, so the draw is recorded without retiring that cell from the live set; a form which replaces a run's orchestration script rather than crashing a replica would otherwise fire once and never again.
 - **Why a rollout spare must be `Serving`**: `Healthy` and even `Running` include a replacement that got weights but cannot answer requests yet. `Suspended` is not required in between — it lasts only `--mini-ft-controller-resume-delay` (10s by default), which a 2s poll can miss.
 - **Why poll faster than injections**: a crash → detect → heal cycle completing between two sparse injections must be seen, or its cell stays excluded from the live set forever.
 - **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.

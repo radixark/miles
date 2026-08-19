@@ -18,6 +18,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.ray.specs.train import compute_trainer_ids, external_trainer_controller_addrs
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.environ import use_legacy_rollout_v1
@@ -3564,10 +3565,10 @@ def miles_validate_args(args):
         args.save_debug_rollout_data = f"{args.dump_details}/rollout_data/{{rollout_id}}.pt"
         args.save_debug_train_data = f"{args.dump_details}/train_data/{{rollout_id}}_{{rank}}.pt"
         args.save_debug_trajectory_data = f"{args.dump_details}/trajectory/{{rollout_id}}.jsonl"
-        args.save_debug_event_data = f"{args.dump_details}/events"
+        args.save_debug_event_data = f"{args.dump_details}/{EVENTS_DIRNAME}"
 
     if args.save_debug_event_data is None and args.save is not None:
-        args.save_debug_event_data = f"{args.save}/events"
+        args.save_debug_event_data = f"{args.save}/{EVENTS_DIRNAME}"
 
     if args.load_debug_rollout_data is not None:
         logger.info(

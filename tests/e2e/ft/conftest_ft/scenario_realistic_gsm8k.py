@@ -15,7 +15,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     SeedOption,
     TrainerCrashIntervalSecondsOption,
 )
-from tests.e2e.ft.conftest_ft.execution import get_fully_async_args, get_train_script
+from tests.e2e.ft.conftest_ft.execution import get_api_server_args, get_fully_async_args, get_train_script
 from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import API_SERVER_PORT, spawn_fault_injector
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
     compute_mean_interval_seconds_of_cell_type,
@@ -24,6 +24,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import (
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_healing
 from tests.fast.cluster_backends import create_backend_for_run
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 
@@ -80,13 +81,14 @@ def run_ci(
     os.makedirs(dump_dir, exist_ok=True)
 
     train_args = _get_gsm8k_train_args(
+        config=config,
         seed=seed,
         num_rollout=num_rollout,
         metric_threshold=metric_threshold,
         fully_async=fully_async,
         test_name=test_name,
     )
-    train_args += f"--save-debug-event-data {dump_dir}/events "
+    train_args += f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} "
 
     base_url = f"http://{U.api_server_host()}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
@@ -113,7 +115,7 @@ def run_ci(
     finally:
         injector.stop_and_join()
 
-    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / "events", context=test_name)
+    assert_healing(_FT_COMPONENTS, injector=injector, event_dir=Path(dump_dir) / EVENTS_DIRNAME, context=test_name)
 
     print(f"Random failure gsm8k accuracy test PASSED ({test_name}, seed={seed}, rollouts={num_rollout})")
 
@@ -133,7 +135,13 @@ def _prepare_gsm8k(U: BaseCommandBackend) -> None:
 
 
 def _get_gsm8k_train_args(
-    *, seed: int, num_rollout: int, metric_threshold: float, fully_async: bool, test_name: str
+    *,
+    config: command_utils.ExecuteTrainConfig,
+    seed: int,
+    num_rollout: int,
+    metric_threshold: float,
+    fully_async: bool,
+    test_name: str,
 ) -> str:
     ckpt_args = f"--hf-checkpoint /root/models/{_MODEL_NAME}/ " f"--ref-load /root/models/{_MODEL_NAME}_torch_dist "
 
@@ -191,8 +199,8 @@ def _get_gsm8k_train_args(
     fault_tolerance_args = (
         "--use-fault-tolerance "
         f"--ft-components {' '.join(_FT_COMPONENTS)} "
-        f"--api-server-port {API_SERVER_PORT} "
-        "--mini-ft-controller-enable "
+        + get_api_server_args(config)
+        + "--mini-ft-controller-enable "
     )
 
     ci_args = (
