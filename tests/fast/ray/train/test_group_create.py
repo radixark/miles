@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from tests.fast.ray.train import conftest as train_conftest
@@ -49,6 +50,7 @@ def _make_args(*, num_cells: int) -> SimpleNamespace:
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
         ci_ft_test_actions=None,
+        ci_ft_test_actions_path=None,
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
@@ -93,7 +95,7 @@ class TestCreate:
 
     async def test_create_populates_cells_from_the_initial_sync(self, provider):
         """The initial watch sync must fill in the cells before create() returns."""
-        controller = await _create_controller(num_cells=2)
+        controller = await _create_controller(provider=provider, num_cells=2)
         try:
             assert sorted(cell.cell_index for cell in controller._cells_by_id.values()) == [0, 1]
             assert [cell.cell_index for cell in controller._cells] == [0, 1]
@@ -102,7 +104,7 @@ class TestCreate:
 
     async def test_dispose_stops_the_watch_loop(self, provider):
         """Without dispose() the 5-second poll loop outlives training and keeps logging failures."""
-        controller = await _create_controller(num_cells=1)
+        controller = await _create_controller(provider=provider, num_cells=1)
         await asyncio.sleep(_POLL_INTERVAL_SECONDS * 5)
 
         await controller.dispose()
@@ -114,7 +116,7 @@ class TestCreate:
 
     async def test_dispose_is_idempotent(self, provider):
         """Teardown paths overlap, so a second dispose must not raise."""
-        controller = await _create_controller(num_cells=1)
+        controller = await _create_controller(provider=provider, num_cells=1)
 
         await controller.dispose()
         await controller.dispose()

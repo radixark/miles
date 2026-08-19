@@ -37,7 +37,7 @@ class TestDocumentedFaultInjectionExample:
         """Copying the doc example into --ci-ft-test-actions must produce loadable actions, not a validation error."""
         raw = json.dumps(documented_actions)
 
-        actions = _load_actions(SimpleNamespace(ci_ft_test_actions=raw), _ALL_ACTIONS)
+        actions = _load_actions(SimpleNamespace(ci_ft_test_actions=raw, ci_ft_test_actions_path=None), _ALL_ACTIONS)
 
         assert len(actions) == len(documented_actions)
 

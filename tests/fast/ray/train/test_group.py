@@ -49,6 +49,7 @@ def _make_mock_args(
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
         ci_ft_test_actions=ci_ft_test_actions,
+        ci_ft_test_actions_path=ci_ft_test_actions_path,
         debug_train_only=False,
         debug_rollout_only=False,
         # compute_megatron_world_size_except_dp(args) = TP * PP * CP. Set CP to
@@ -89,6 +90,7 @@ def _make_controller(
         gpus_per_cell=actor_count_per_cell,
         num_cells=num_cells,
         ci_ft_test_actions=ci_ft_test_actions,
+        ci_ft_test_actions_path=None,
     )
     group._health_checker_config = compute_trainer_health_checker_config(
         group.args, expected_num_cells=group._expected_num_cells

@@ -2383,6 +2383,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 'The action "sleep_forever_at_end" names no cell: it puts the orchestration script itself to sleep '
                 "once the step it names is trained and saved, so the run never starts the step after it.",
             )
+            # TODO ad hoc hack: revert after the args refactor
+            parser.add_argument(
+                "--ci-ft-test-actions-path",
+                type=str,
+                default=None,
+                help="Path of a file holding the same JSON array as --ci-ft-test-actions, read afresh every time "
+                "the actions are consulted. A run relaunched in place keeps the arguments its pods were rendered "
+                "from, so a plan that has to change from one launch to the next is delivered through this file "
+                "instead of through the argument. Mutually exclusive with --ci-ft-test-actions.",
+            )
             parser.add_argument(
                 "--ci-inject-rollout-data-path",
                 type=str,
