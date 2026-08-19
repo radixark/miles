@@ -97,6 +97,7 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     scheduling: SchedulingSpec
     meta: SpecMetaFn | None = None
     deploy_component: DeployComponent = DeployComponent.PRIMARY
+    needs_platform_read_permission: bool = False
 
     @model_validator(mode="after")
     def _reject_selector_component(self) -> "BaseWorkerSpec":

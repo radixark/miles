@@ -481,6 +481,12 @@
         "restartAt": {
           "minLength": 1,
           "type": "string"
+        },
+        "serviceAccountName": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
         }
       },
       "required": [

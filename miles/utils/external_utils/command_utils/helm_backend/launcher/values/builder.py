@@ -57,6 +57,11 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
             f"only the {STATIC_WORKERS_SECTION} template renders a restart stamp, so stamping {spec.name} in "
             f"{section} would roll nothing while this launch believes it rolled a pod"
         )
+        assert section == STATIC_WORKERS_SECTION or entry.service_account_name is None, (
+            f"only the {STATIC_WORKERS_SECTION} template renders a service account, so naming one for "
+            f"{spec.name} in {section} would leave its pods on the namespace default; they would run until "
+            f"the first api call and fail with a 403 nothing connects back to this spec"
+        )
         entries[section].append(entry)
 
     return RunValues(
