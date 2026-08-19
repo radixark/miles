@@ -25,6 +25,7 @@ def build_deterministic_test_args(*, mode: FTTestMode, dump_dir: str, enable_dum
         + get_debug_dump_args(dump_dir=dump_dir, enable_dumper=enable_dumper)
         + "--debug-deterministic-collective "
         + "--sglang-disable-radix-cache "
+        + "--save-inference-engine-weight-checksum "
         + get_train_env_vars_arg(mode, deterministic=True)
     )
 
