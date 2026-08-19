@@ -31,7 +31,6 @@ class _RecordingBackend:
 
 class _StubInjector:
     def __init__(self) -> None:
-        self.num_successful_injections = 0
         self.event_log = state.EventLog()
 
     def stop_and_join(self) -> None:
@@ -85,7 +84,7 @@ class TestOneConfigPerSoak:
             "create_backend_for_run",
             lambda config: seen.prepared.append(config) or _RecordingBackend(config, seen),
         )
-        monkeypatch.setattr(scenario_realistic_gsm8k, "_prepare_gsm8k", lambda U: None)
+        monkeypatch.setattr(scenario_realistic_gsm8k, "prepare_gsm8k", lambda U: None)
         monkeypatch.setattr(scenario_realistic_gsm8k, "resolve_dump_dir", lambda test_name: str(tmp_path / "gsm8k"))
         monkeypatch.setattr(scenario_realistic_gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
         monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", lambda ft_components, **kwargs: None)
@@ -93,6 +92,21 @@ class TestOneConfigPerSoak:
         scenario_realistic_gsm8k.run_ci(num_rollout=1)
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
-        assert [config is seen.created[0] for config in seen.prepared] == [True]
+        assert [config is seen.created[0] for config in seen.prepared] == [True, True]
         assert [config is seen.created[0] for config in seen.asked_for_host] == [True]
         assert [config is seen.created[0] for config in seen.trained] == [True]
+
+
+class TestRelaunchingASoak:
+    def test_a_relaunch_is_installed_under_the_config_it_was_handed(self, monkeypatch) -> None:
+        """A hot restart relaunches the soak with --hot-restart added, and the backend reads that off its config."""
+        seen = _Seen()
+        _install(monkeypatch, seen)
+        monkeypatch.setattr(
+            scenario_realistic_gsm8k, "create_backend_for_run", lambda config: _RecordingBackend(config, seen)
+        )
+        relaunch = dataclasses.replace(command_utils.default_config(), hot_restart="orchestration")
+
+        scenario_realistic_gsm8k._launch_gsm8k(relaunch, train_args="", fully_async=False)
+
+        assert [config.hot_restart for config in seen.trained] == ["orchestration"]
