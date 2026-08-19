@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+from argparse import Namespace
+from typing import Any
+
 from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.rpc.client.misc import RETRYABLE_ERRORS, ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 
+logger = logging.getLogger(__name__)
+
 
 # ================================= constants ==================================
 
+TAKE_OVER_GATE_TIMEOUT_SECONDS = 600.0
+_TRAINER_RELOAD_TIMEOUT_SECONDS = 3600.0
 _WORKER_NOT_INITIALIZED_TIMEOUT_SECONDS = 1800.0
 _WORKER_POLL_INTERVAL_SECONDS = 5.0
 _WORKER_POLL_ATTEMPT_TIMEOUT_SECONDS = 120.0
@@ -37,3 +46,32 @@ async def wait_until_worker_not_initialized(
 
 class _StillInitializedError(Exception):
     pass
+
+
+# ============================= trainer take-over ==============================
+
+
+async def wait_trainers_idle(handles: dict[str, BaseWorkerHandle]) -> bool:
+    assert handles
+
+    initialized = await asyncio.gather(*[handle.is_initialized() for handle in handles.values()])
+    assert len(set(initialized)) == 1, f"trainers disagree about being initialized: {list(initialized)}"
+    [resumed] = set(initialized)
+
+    if resumed:
+        for trainer_id, handle in handles.items():
+            logger.info(f"Waiting until trainer {trainer_id!r} finished the call the previous script left running")
+            await handle.wait_idle(timeout=TAKE_OVER_GATE_TIMEOUT_SECONDS)
+
+    return resumed
+
+
+async def trainer_init_or_load_state(
+    trainer: BaseWorkerHandle, model_args: Namespace, *, trainer_id: str, resumed: bool
+) -> list[Any]:
+    if not resumed:
+        return await trainer.init(model_args)
+
+    start_rollout_ids = await asyncio.wait_for(trainer.load_state(), timeout=_TRAINER_RELOAD_TIMEOUT_SECONDS)
+    logger.info(f"Resumed the already-initialized trainer {trainer_id!r} at rollout ids {start_rollout_ids}")
+    return start_rollout_ids

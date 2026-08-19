@@ -29,7 +29,7 @@ from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_chec
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.ft_utils.api_server.server import start_api_server
-from miles.utils.hot_restart import wait_until_worker_not_initialized
+from miles.utils.hot_restart import trainer_init_or_load_state, wait_trainers_idle, wait_until_worker_not_initialized
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
@@ -167,8 +167,14 @@ def create_trainer_handles(args, *, trainer_configs: list[MegatronTrainerConfig]
 
 
 # TODO: move (when reorganizing files)
-async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: str) -> TrainerInfo:
-    restored_rollout_ids = await handle.init(args)
+async def take_over_trainers(args, *, handles: dict[str, BaseWorkerHandle]) -> bool:
+    await wait_external_trainers(args, handles=handles)
+    return await wait_trainers_idle(handles)
+
+
+# TODO: move (when reorganizing files)
+async def create_training_model(args, *, handle: BaseWorkerHandle, trainer_id: str, resumed: bool) -> TrainerInfo:
+    restored_rollout_ids = await trainer_init_or_load_state(handle, args, trainer_id=trainer_id, resumed=resumed)
     assert len(set(restored_rollout_ids)) == 1, f"trainer {trainer_id!r} restored {restored_rollout_ids}"
     [restored_rollout_id] = set(restored_rollout_ids)
 
@@ -191,13 +197,14 @@ async def create_training_models(
 ) -> tuple[BaseWorkerHandle, BaseWorkerHandle | None]:
     trainer_configs = compute_trainer_configs(args)
     handles = create_trainer_handles(args, trainer_configs=trainer_configs)
-    await wait_external_trainers(args, handles=handles)
+    resumed = await take_over_trainers(args, handles=handles)
 
     [actor_config] = [config for config in trainer_configs if config.role == ACTOR_ROLE]
     actor_info = await create_training_model(
         compute_trainer_args(args, actor_config),
         handle=handles[actor_config.trainer_id],
         trainer_id=actor_config.trainer_id,
+        resumed=resumed,
     )
 
     critic_configs = [config for config in trainer_configs if config.role == CRITIC_ROLE]
@@ -208,6 +215,7 @@ async def create_training_models(
             compute_trainer_args(args, critic_config),
             handle=handles[critic_config.trainer_id],
             trainer_id=critic_config.trainer_id,
+            resumed=resumed,
         )
         assert critic_info.restored_rollout_id == actor_info.restored_rollout_id, (
             f"the actor restored to rollout {actor_info.restored_rollout_id} but its critic to "
