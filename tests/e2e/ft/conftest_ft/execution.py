@@ -141,6 +141,7 @@ def get_common_train_args(
         f"{optimizer_args} "
         f"{rollout_args} "
         f"{get_debug_dump_args(dump_dir=dump_dir, enable_dumper=enable_dumper)} "
+        "--save-inference-engine-weight-checksum "
         f"{mode.parallel_args} "
         f"{misc_args} "
         f"{command_utils.get_default_wandb_args(__file__)} "

@@ -2357,6 +2357,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Save per-rank local weight checksum per-step.",
             )
             parser.add_argument(
+                "--save-inference-engine-weight-checksum",
+                action="store_true",
+                help="After every weight update, record each inference engine's weight checksum as an audit "
+                "event. Opt-in because it costs one checksum pass over every engine per update; fault "
+                "tolerance turns it on for its cross-replica consistency checks.",
+            )
+            parser.add_argument(
                 "--enable-event-analyzer",
                 action="store_true",
                 help="Enable event analyzer to run sanity checks (e.g. cross-replica checksum consistency) before each training step.",
@@ -3274,6 +3281,7 @@ def miles_validate_args(args):
         args.indep_dp = True
         args.delay_split_train_data_by_dp = True
         args.save_local_weight_checksum = True
+        args.save_inference_engine_weight_checksum = True
         args.enable_event_analyzer = True
         args.enable_witness = True
         args.non_persistent_ckpt_type = "local"
@@ -3283,7 +3291,7 @@ def miles_validate_args(args):
         # fully_parallel needs all_gather_object which hangs after ncclCommAbort in healing.
         args.non_persistent_local_ckpt_algo = "atomic"
         logger.info(
-            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
+            "train in ft_components. Auto set indep_dp=True, delay_split_train_data_by_dp=True, save_local_weight_checksum=True, save_inference_engine_weight_checksum=True, enable_event_analyzer=True, enable_witness=True, non_persistent_ckpt_type='local', non_persistent_local_ckpt_algo=%r",
             args.non_persistent_local_ckpt_algo,
         )
 

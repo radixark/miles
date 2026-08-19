@@ -277,7 +277,7 @@ Determinism: --deterministic-mode, plus NCCL_ALGO=Ring, NVTE_ALLOW_NONDETERMINIS
     reduction topologies bitwise-comparable
 
 Cross-cell check: --use-fault-tolerance --ft-components train auto-enables
-  --save-local-weight-checksum and --enable-event-analyzer
+  --save-local-weight-checksum, --save-inference-engine-weight-checksum and --enable-event-analyzer
   cross_replica_weight_checksum: cell-to-cell bitwise equality, every rollout attempt,
     post-healing included
 Engine checksum (real-rollout modes only): one InferenceEngineWeightChecksumEvent per
