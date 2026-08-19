@@ -238,7 +238,7 @@ class TestObservingTheClusterInTheBackground:
         )
         monkeypatch.setattr(cluster_module.ClusterObserver, "observe_once", lambda _self: taken.append("closing"))
 
-        with cluster_module.observing_the_cluster(observer, poll_interval_seconds=0.0):
+        with cluster_module.observing_cluster(observer, poll_interval_seconds=0.0):
             pass
 
         assert taken[-1] == "closing"
@@ -255,7 +255,7 @@ class TestObservingTheClusterInTheBackground:
 
         try:
             with pytest.raises(AssertionError, match="still reading the run"):
-                with cluster_module.observing_the_cluster(_observer(), poll_interval_seconds=0.0):
+                with cluster_module.observing_cluster(_observer(), poll_interval_seconds=0.0):
                     pass
         finally:
             release.set()
@@ -268,7 +268,7 @@ class TestObservingTheClusterInTheBackground:
         before = threading.active_count()
 
         with pytest.raises(_BodyFailed):
-            with cluster_module.observing_the_cluster(_observer(), poll_interval_seconds=0.0):
+            with cluster_module.observing_cluster(_observer(), poll_interval_seconds=0.0):
                 raise _BodyFailed
 
         _wait_until_threads_left(before)
