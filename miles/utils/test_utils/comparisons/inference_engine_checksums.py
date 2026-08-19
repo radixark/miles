@@ -45,6 +45,19 @@ def compare_inference_engine_checksums(baseline_dir: str, target_dir: str) -> No
     print(f"Engine weight checksum comparison passed: {len(baseline_by_model_and_rollout)} rollout(s) compared")
 
 
+def assert_engine_count(*, side: str, dump_dir: str, expected: int) -> None:
+    events = _read_inference_engine_checksum_events(Path(dump_dir))
+    assert events, f"{side}: no InferenceEngineWeightChecksumEvents in {dump_dir}, so no engine ever took weights"
+
+    counted = sorted({len(event.engine_checksums) for event in events})
+    assert counted == [expected], (
+        f"{side}: weights were pushed to {counted} engine(s), not {expected}; a run served by fewer engines still "
+        f"trains, so nothing else would notice engines that never joined"
+    )
+
+    print(f"{side}: every weight update covered {expected} engine(s)")
+
+
 def assert_engine_weights_moved(*, side: str, dump_dir: str) -> None:
     by_model_and_rollout = _checksums_by_model_and_rollout_id(_read_inference_engine_checksum_events(Path(dump_dir)))
     assert len(by_model_and_rollout) > 1, (

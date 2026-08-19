@@ -5,10 +5,13 @@ from typing import Any
 
 import pytest
 
-from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
-from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
+from miles.utils.test_utils.comparisons.inference_engine_checksums import (
+    assert_engine_count,
+    compare_inference_engine_checksums,
+)
 
 
 def _write_inference_engine_events(
@@ -186,3 +189,50 @@ class TestSeveralPolicies:
 
         with pytest.raises(AssertionError, match=r"baseline/b/rollout_1 vs target/b/rollout_1"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+
+class TestAssertEngineCount:
+    def test_a_run_every_update_of_which_covered_both_engines_passes(self, tmp_path: Path) -> None:
+        """The happy path has to stay reachable, or the refusals below prove nothing."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "bbb"}, {"rank0/w": "bbb"}]),
+            ],
+        )
+
+        assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_an_update_that_reached_one_engine_of_two_is_caught(self, tmp_path: Path) -> None:
+        """An engine that dropped out mid-run still leaves a run that trains, so nothing else notices."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]),
+                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "bbb"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"pushed to \[1, 2\] engine"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_a_startup_sync_that_reached_one_engine_of_two_is_caught(self, tmp_path: Path) -> None:
+        """The engines are synced before the first rollout, and one that joined late missed those weights."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "bbb"}, {"rank0/w": "bbb"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"pushed to \[1, 2\] engine"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_a_side_that_pushed_weights_to_no_engine_at_all_is_caught(self, tmp_path: Path) -> None:
+        """A side whose engines never registered would otherwise report every count it was asked for."""
+        (tmp_path / "target" / EVENTS_DIRNAME).mkdir(parents=True)
+
+        with pytest.raises(AssertionError, match="no engine ever took weights"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
