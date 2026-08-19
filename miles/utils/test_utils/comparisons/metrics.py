@@ -60,6 +60,16 @@ def read_metric_series(dump_dir: str, *, key: str) -> list[tuple[int, float]]:
     ]
 
 
+def assert_gradients_nonzero(*, side: str, dump_dir: str, min_trained_rollouts: int) -> None:
+    series = read_metric_series(dump_dir, key="train/grad_norm")
+    usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
+
+    assert len(usable) >= min_trained_rollouts, (
+        f"{side}: train/grad_norm is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) "
+        f"({series}), so this run's weights could have moved on weight decay alone"
+    )
+
+
 def assert_metrics_classified(dump_dir: str, *, compared: tuple[str, ...], ignored: tuple[str, ...]) -> None:
     keys = {key for event in _keep_only_final_attempt(_read_metric_events(Path(dump_dir))) for key in event.metrics}
     unclassified: list[str] = sorted(key for key in keys if not key.startswith(compared + ignored))
