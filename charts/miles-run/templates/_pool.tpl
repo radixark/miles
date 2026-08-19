@@ -60,6 +60,9 @@ spec:
             env:
               {{- include "miles-run.labelEnv" (dict "name" "MILES_CELL_INDEX" "label" "leaderworkerset.sigs.k8s.io/group-index") | trim | nindent 14 }}
               {{- include "miles-run.labelEnv" (dict "name" "MILES_POD_INDEX" "label" "leaderworkerset.sigs.k8s.io/worker-index") | trim | nindent 14 }}
+              {{- if $gated }}
+              {{- include "miles-run.annotationEnv" (dict "name" "MILES_BASE_GPU_ID" "annotation" "miles.radixark.io/base-gpu-id") | trim | nindent 14 }}
+              {{- end }}
               {{- with include "miles-run.envItems" (dict "context" $context "entry" $entry) | trim }}
               {{- . | nindent 14 }}
               {{- end }}
