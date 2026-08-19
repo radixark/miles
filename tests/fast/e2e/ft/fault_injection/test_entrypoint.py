@@ -3,17 +3,16 @@ import threading
 from unittest.mock import patch
 
 import pytest
-
 from tests.e2e.ft.conftest_ft.fault_injection import core, entrypoint, views
 from tests.fast.e2e.ft.fault_injection.utils import (
-    intervals,
+    SERVING,
+    StubFaultForm,
     api_server_fault_forms,
     fixed_fault_forms,
-    StubFaultForm,
-    typed_cell,
-    SERVING,
+    intervals,
     mock_response,
     staged,
+    typed_cell,
 )
 
 
@@ -65,4 +64,4 @@ def test_an_injector_that_outlives_the_join_fails_instead_of_racing_the_log() ->
                 handle.stop_and_join()
         finally:
             released.set()
-            handle._thread.join(timeout=30)
+            handle._worker.join(timeout_seconds=30)
