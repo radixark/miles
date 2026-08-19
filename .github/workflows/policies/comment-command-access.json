@@ -20,6 +20,7 @@
         "bypass-fastfail",
         "run-ci-amd",
         "run-ci-ckpt",
+        "run-ci-deploy",
         "run-ci-eval",
         "run-ci-fsdp",
         "run-ci-ft-long",
