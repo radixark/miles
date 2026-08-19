@@ -21,6 +21,10 @@ class NonRetryableError(Exception):
     pass
 
 
+class AttemptTimeoutError(TimeoutError):
+    pass
+
+
 async def retry(
     fn: Callable[[int], Awaitable[_T]],
     *,
@@ -55,6 +59,7 @@ async def retry_until_deadline(
     *,
     total_seconds: float,
     retry_on: type[Exception] | tuple[type[Exception], ...],
+    attempt_seconds: float | None = None,
     initial_delay: float = _DEFAULT_INITIAL_DELAY,
     max_delay: float = _DEFAULT_MAX_DELAY,
     backoff_factor: float = _DEFAULT_BACKOFF_FACTOR,
@@ -62,13 +67,16 @@ async def retry_until_deadline(
     log_fields: dict[str, Any] | None = None,
 ) -> _T:
     expires_at = time.monotonic() + total_seconds
+    retryable = retry_on if isinstance(retry_on, tuple) else (retry_on,)
     delay = initial_delay
     attempt = 0
 
     while True:
         try:
-            return await fn(max(0.0, expires_at - time.monotonic()))
-        except retry_on as e:
+            return await _run_attempt(
+                fn, remaining=max(0.0, expires_at - time.monotonic()), attempt_seconds=attempt_seconds
+            )
+        except (AttemptTimeoutError, *retryable) as e:
             attempt += 1
             sleep_seconds = delay + random.uniform(0.0, delay * jitter_ratio)
             if expires_at - time.monotonic() <= sleep_seconds:
@@ -85,3 +93,17 @@ async def retry_until_deadline(
             )
             await asyncio.sleep(sleep_seconds)
             delay = min(delay * backoff_factor, max_delay)
+
+
+async def _run_attempt(fn: Callable[[float], Awaitable[_T]], *, remaining: float, attempt_seconds: float | None) -> _T:
+    if attempt_seconds is None:
+        return await fn(remaining)
+
+    budget = min(attempt_seconds, remaining)
+    attempt = asyncio.ensure_future(fn(budget))
+    try:
+        return await asyncio.wait_for(attempt, timeout=budget)
+    except (TimeoutError, asyncio.TimeoutError) as e:
+        if not attempt.cancelled():
+            raise
+        raise AttemptTimeoutError(f"one attempt did not answer within {budget:.2f}s") from e
