@@ -39,6 +39,7 @@ class InjectionEvent(BaseEvent):
     cell_name: str
     form_name: str
     succeeded: bool
+    harmed: bool = True
 
 
 class CellInfo(FrozenStrictBaseModel):
@@ -67,8 +68,8 @@ class EventLog:
         with self._lock:
             return list(self._events)
 
-    def note_injection_attempt(self, *, cell_name: str, form_name: str, succeeded: bool) -> None:
-        self._append(InjectionEvent(cell_name=cell_name, form_name=form_name, succeeded=succeeded))
+    def note_injection_attempt(self, *, cell_name: str, form_name: str, succeeded: bool, harmed: bool = True) -> None:
+        self._append(InjectionEvent(cell_name=cell_name, form_name=form_name, succeeded=succeeded, harmed=harmed))
 
     def observe(self, cells: list[dict]) -> None:
         self._append(
