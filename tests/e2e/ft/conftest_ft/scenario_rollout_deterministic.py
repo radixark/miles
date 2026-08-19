@@ -2,15 +2,13 @@
 # WARNING: Do NOT relax any assert logic in this file. All assertions must remain strict.
 
 import contextlib
-import dataclasses
-import math
 import threading
 import time
 from collections.abc import Iterator
 from datetime import datetime
-from pathlib import Path
 
-from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.comparisons import compare_deterministic_sides
 from tests.e2e.ft.conftest_ft.execution import (
     get_api_server_args,
     get_common_train_args,
@@ -27,29 +25,13 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_tim
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_every_rollout_injection_recovered
 
-from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
-from miles.utils.test_utils.comparisons.dumps import (
-    INPUT_TENSORS_ALLOW_FAILED_PATTERN,
-    INPUT_TENSORS_SKIP_PATTERN,
-    compare_dumps,
-)
-from miles.utils.test_utils.comparisons.inference_engine_checksums import (
-    assert_engine_weights_moved,
-    compare_inference_engine_checksums,
-)
-from miles.utils.test_utils.comparisons.metrics import (
-    assert_metrics_classified,
-    compare_metrics,
-    read_metric_series,
-    read_rollout_completion_times,
-)
-from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections, assert_reconfigure_events
+from miles.utils.misc import MutableBox
+from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
+from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_injections
 
 TEST_NAME: str = "rollout_deterministic"
 NUM_ROLLOUTS: int = 8
-COMPARED_METRIC_PREFIXES: tuple[str, ...] = ("train/", "rollout/")
-UNCOMPARED_METRIC_PREFIXES: tuple[str, ...] = ("perf/",)
 SEED: int = 42
 CRASH_INTERVAL_SECONDS: float = 120.0
 HEALTH_CHECK_INTERVAL_SECONDS: float = 5.0
@@ -96,7 +78,7 @@ def _inject_rollout_faults(
     base_url: str = f"http://{config.create_backend().api_server_host()}:{API_SERVER_PORT}"
     print(f"Injecting into {ROLLOUT_CELL_TYPE} cells only, mean interval {CRASH_INTERVAL_SECONDS:.1f}s, seed {SEED}")
 
-    armed = _MutableBox()
+    armed: MutableBox[FaultInjectorHandle | None] = MutableBox(value=None)
 
     def arm_on_generation_start() -> None:
         if not _wait_for_first_rollout(dump_dir):
@@ -130,11 +112,6 @@ def _inject_rollout_faults(
     _assert_injections_spread_over_rollouts(injector, dump_dir=dump_dir)
 
 
-@dataclasses.dataclass
-class _MutableBox:
-    value: FaultInjectorHandle | None = None
-
-
 def _wait_for_first_rollout(dump_dir: str) -> bool:
     deadline = time.monotonic() + FIRST_ROLLOUT_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -165,48 +142,13 @@ def _compute_crashed_rollouts(
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
-    baseline_dir: str = f"{dump_dir}/baseline"
-    target_dir: str = f"{dump_dir}/target"
-
-    for side_dir in (baseline_dir, target_dir):
-        assert_reconfigure_events(Path(f"{side_dir}/{EVENTS_DIRNAME}"), expected=[])
-
-    for side_dir in (baseline_dir, target_dir):
-        assert_metrics_classified(side_dir, compared=COMPARED_METRIC_PREFIXES, ignored=UNCOMPARED_METRIC_PREFIXES)
-    compare_metrics(
-        baseline_dir=baseline_dir,
-        target_dir=target_dir,
-        rtol=0.0,
-        atol=0.0,
-        key_prefixes=list(COMPARED_METRIC_PREFIXES),
-        exclude_keys=[],
+    compare_deterministic_sides(
+        baseline_dir=f"{dump_dir}/{BASELINE_SIDE}",
+        target_dir=f"{dump_dir}/{TARGET_SIDE}",
+        min_trained_rollouts=MIN_TRAINED_ROLLOUTS,
     )
-
-    compare_dumps(
-        baseline_dir=baseline_dir,
-        target_dir=target_dir,
-        diff_thresholds=[(".*", "rel <= 0")],
-        allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
-        allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
-    )
-
-    compare_inference_engine_checksums(baseline_dir=baseline_dir, target_dir=target_dir)
-
-    for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
-        assert_engine_weights_moved(side=side, dump_dir=side_dir)
-        _assert_gradients_were_nonzero(side=side, dump_dir=side_dir)
 
     print("Rollout ft deterministic comparison test PASSED")
-
-
-def _assert_gradients_were_nonzero(*, side: str, dump_dir: str) -> None:
-    series = read_metric_series(dump_dir, key="train/grad_norm")
-    usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
-
-    assert len(usable) >= MIN_TRAINED_ROLLOUTS, (
-        f"{side}: train/grad_norm is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) "
-        f"({series}), so this run's weights could have moved on weight decay alone"
-    )
 
 
 app, run_ci = create_comparison_app_and_run_ci(
