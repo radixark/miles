@@ -33,10 +33,12 @@ def _make_args(**overrides) -> Namespace:
 
 @pytest.fixture
 def fake_components():
+    events: list[str] = []
+
     controller_handle = MagicMock(name="inference_controller")
     controller_handle.check_weights = AsyncMock()
     controller_handle.offload = AsyncMock()
-    controller_handle.init = AsyncMock(return_value=None)
+    controller_handle.init = AsyncMock(side_effect=lambda: events.append("controller_init"))
     controller_handle.get_eval_fleet_info = AsyncMock(return_value=None)
 
     async def resolve_router_addrs(args, *, router_providers) -> dict:
@@ -44,14 +46,18 @@ def fake_components():
         args.sglang_router_port = 4321
         return {}
 
-    events: list[str] = []
-
     async def fake_wait_session_server_ready(args, *, provider):
         args.session_server_addrs = ["10.0.0.2:5000"]
         args.session_server_instance_ids = ["session-0"]
         events.append("session_servers_ready")
 
+    async def fake_executor_is_initialized() -> bool:
+        events.append("executor_not_initialized_checked")
+        return False
+
     executor_handle = MagicMock(name="rollout_executor")
+    executor_handle.wait_ready = AsyncMock(return_value=None)
+    executor_handle.is_initialized = AsyncMock(side_effect=fake_executor_is_initialized)
     executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
     executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
     executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
@@ -82,9 +88,22 @@ class TestCreateRolloutComponents:
 
         await create_rollout_components(args)
 
-        assert fake_components.events == ["session_servers_ready", "executor_init"]
+        assert fake_components.events == [
+            "session_servers_ready",
+            "executor_not_initialized_checked",
+            "controller_init",
+            "executor_init",
+        ]
         assert args.session_server_addrs == ["10.0.0.2:5000"]
         assert args.session_server_instance_ids == ["session-0"]
+
+    async def test_the_executor_is_waited_out_before_anything_is_initialized(self, fake_components):
+        """A hot restart finds the previous script's executor up, and initializing anything against it is the bug."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        assert fake_components.events == ["executor_not_initialized_checked", "controller_init", "executor_init"]
 
     async def test_returns_two_worker_handles(self, fake_components):
         """Both halves of rollout are independent workers, so the driver only ever holds handles."""
