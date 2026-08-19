@@ -400,6 +400,17 @@ class TestFailTinkerBatch:
         view = backend.operations.get("fb1")
         assert view["state"] == "SUCCEEDED" and view["result"]["logprobs"] == [[-0.1, -0.2]]
 
+    def test_duplicate_finalization_keeps_the_first_terminal_error(self):
+        backend = ready_backend()
+        lease_metadata = self._claimed_batch(backend)
+        backend.fail_tinker_batch(["fb1"], "first failure", lease_metadata)
+        backend.fail_tinker_batch(["fb1"], "late duplicate", lease_metadata)
+
+        view = backend.operations.get("fb1")
+        assert view["state"] == "FAILED"
+        assert view["error"] == "first failure"
+        assert view["error_category"] == "server"
+
     def test_lease_releases_even_when_the_ledger_walk_raises(self):
         backend = ready_backend()
         lease_metadata = self._claimed_batch(backend)

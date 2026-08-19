@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from collections.abc import Callable
 
@@ -45,6 +46,26 @@ def call_rollout_function(fn, input: RolloutFnInput) -> RolloutFnOutput:
     if inspect.iscoroutine(output):
         output = run(output)
 
+    return output
+
+
+async def call_rollout_function_async(fn, input: RolloutFnInput) -> RolloutFnOutput:
+    """Invoke a rollout function without detaching async work from its caller.
+
+    Class-based async rollout functions run on the caller's event loop so
+    cancellation propagates into claim/selection work. Synchronous adapters
+    still run in a worker thread to avoid blocking that loop.
+    """
+    call = fn.__call__ if callable(fn) else None
+    if inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(call):
+        output = fn(input)
+    else:
+        output = await asyncio.to_thread(fn, input)
+
+    # Support a synchronous wrapper that returns an awaitable without forcing
+    # genuinely synchronous implementations onto the actor loop.
+    if inspect.isawaitable(output):
+        output = await output
     return output
 
 

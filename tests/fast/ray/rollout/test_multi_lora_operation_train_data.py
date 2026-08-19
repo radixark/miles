@@ -301,36 +301,3 @@ class TestPadding:
         data, metadata = self.postprocess(n=5, pad_to_dp=False, args=args)
         assert [s.index for s in data] == [0, 1, 2, 3]  # trimmed, never padded
         assert "dynamic_global_batch_size" not in metadata
-
-
-class TestTinkerDispatchSummary:
-    """The driver-visible dispatch identity: exactly the batch's operation ids
-    plus its encoded lease, so the abnormal-outcome finalizer never has to
-    fetch the batch back from the object store."""
-
-    def test_summary_carries_operation_ids_and_lease(self):
-        from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
-
-        lease = {"dispatch_id": "d1", "bindings_by_operation": [["op-A", ["A", "r-A", 0]]]}
-        train_data = {
-            "batch_kind": "tinker",
-            "operation_by_lane": {0: "op-A", 1: "op-B"},
-            "batch_execution_lease": lease,
-        }
-        assert tinker_dispatch_summary(train_data) == {"operation_ids": ["op-A", "op-B"], "lease": lease}
-
-    def test_non_tinker_batches_have_no_summary(self):
-        from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
-
-        assert tinker_dispatch_summary({"tokens": [[1]]}) is None
-
-    def test_summary_matches_the_converted_batch(self):
-        from miles.ray.rollout.train_data_conversion import tinker_dispatch_summary
-
-        plan = [plan_entry("A", 0, op_id="op-A"), plan_entry("B", 1, op_id="op-B")]
-        metadata = plan_metadata(plan)
-        samples = [make_sample("A", 0), make_sample("B", 0)]
-        train_data = convert(samples, metadata)
-        summary = tinker_dispatch_summary(train_data)
-        assert summary["operation_ids"] == ["op-A", "op-B"]
-        assert summary["lease"] == metadata["batch_execution_lease"]

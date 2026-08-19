@@ -101,8 +101,8 @@ class MultiLoraOperationController:
     def acquire_batch_lease(self, bindings_by_operation: list):
         return self.backend.acquire_batch_lease(bindings_by_operation)
 
-    def release_batch_lease(self, lease_metadata: dict) -> None:
-        self.backend.release_batch_lease(lease_metadata)
+    def release_batch_lease(self, lease) -> None:
+        self.backend.release_batch_lease(lease)
 
     def claim_ready_control_operations(self) -> list[dict]:
         return self.backend.claim_ready_control_operations()

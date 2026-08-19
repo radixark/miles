@@ -69,7 +69,10 @@ async def train_data_batch(actor_model, controller, rollout_id: int, rollout_dat
     operations."""
     from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 
-    dispatch = rollout_data.get("tinker_dispatch") or {}
+    # Generic rollout infrastructure forwards the rollout function's opaque
+    # lifecycle receipt. This Tinker-compatible driver is the layer that
+    # interprets it as operation identity plus an execution lease.
+    dispatch = rollout_data.get("rollout_handoff") or {}
     operation_ids = list(dispatch.get("operation_ids") or [])
     lease = dispatch.get("lease")
 

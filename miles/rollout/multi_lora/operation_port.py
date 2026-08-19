@@ -43,6 +43,14 @@ class BatchResidencyPort(Protocol[BindingT]):
 
     async def acquire_batch(self, bindings_by_operation: list) -> object: ...
 
+    async def release_batch(self, lease: object) -> None: ...
+
+
+class BatchAbortPort(Protocol):
+    """Finalize a claimed operation batch that will not reach the trainer."""
+
+    async def abort_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None) -> None: ...
+
 
 class RayMultiLoraOperationQueue:
     """Only this class (and its residency sibling) knows the Ray controller,
@@ -78,4 +86,22 @@ class RayTrainerResidencyPort:
 
         return await asyncio.to_thread(
             ray.get, get_multi_lora_controller().acquire_batch_lease.remote(list(bindings_by_operation))
+        )
+
+    async def release_batch(self, lease: object) -> None:
+        """Release the typed lease even if plain receipt encoding failed."""
+        from miles.ray.multi_lora.controller import get_multi_lora_controller
+
+        await asyncio.to_thread(ray.get, get_multi_lora_controller().release_batch_lease.remote(lease))
+
+
+class RayMultiLoraBatchAbort:
+    """BatchAbortPort concrete over the controller's idempotent finalizer."""
+
+    async def abort_batch(self, operation_ids: list[str], error: str, lease_metadata: dict | None) -> None:
+        from miles.ray.multi_lora.controller import get_multi_lora_controller
+
+        await asyncio.to_thread(
+            ray.get,
+            get_multi_lora_controller().fail_tinker_batch.remote(list(operation_ids), error, lease_metadata),
         )

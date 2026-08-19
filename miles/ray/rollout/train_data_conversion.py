@@ -201,21 +201,6 @@ def convert_samples_to_train_data(
     return train_data
 
 
-def tinker_dispatch_summary(train_data: dict[str, Any]) -> dict[str, Any] | None:
-    """Driver-visible dispatch identity of one converted tinker batch: the
-    claimed operation ids plus the encoded batch execution lease. The driver's
-    abnormal-outcome finalizer (``train_multi_lora_operations.train_data_batch``)
-    must fail exactly these operations and release exactly this lease without
-    fetching the batch back from the object store. ``None`` for non-tinker
-    batches."""
-    if train_data.get("batch_kind") != "tinker":
-        return None
-    return {
-        "operation_ids": [op_id for op_id in train_data.get("operation_by_lane", {}).values() if op_id],
-        "lease": train_data.get("batch_execution_lease"),
-    }
-
-
 def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: list[Sample]) -> list[int]:
     """Join lane -> operation -> lease binding to produce per-row physical
     slots. The lease and the lane maps must agree exactly (one binding per

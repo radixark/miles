@@ -20,13 +20,16 @@ from miles.ray.multi_lora.config import AdapterRun
 from miles.ray.multi_lora.residency import lease_to_metadata
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
+    RolloutFnHandoff,
     RolloutFnInput,
     RolloutFnTrainOutput,
     RolloutPostprocessOptions,
 )
 from miles.rollout.multi_lora.operation_port import (
+    BatchAbortPort,
     BatchResidencyPort,
     OperationQueuePort,
+    RayMultiLoraBatchAbort,
     RayMultiLoraOperationQueue,
     RayTrainerResidencyPort,
 )
@@ -36,7 +39,7 @@ from miles.utils.types import AdapterRef, Sample
 logger = logging.getLogger(__name__)
 
 
-def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
+def _batch_plan_to_metadata(batch_plan: list[dict]) -> dict[str, Any]:
     """Distill one tinker selection's BatchPlan into conversion metadata.
     Selections are homogeneous: exactly one data-operation kind — mixed
     forward/forward_backward batches are structurally impossible, which is
@@ -68,12 +71,16 @@ def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
         "registration_by_lane": {
             lane: (entry["name"], entry["registration_id"]) for lane, entry in enumerate(batch_plan)
         },
-        # The lease is mandatory: a batch without its dispatch receipt is one
-        # the trainer must reject, so the optional path may not exist here.
-        "batch_execution_lease": lease_to_metadata(lease),
     }
     if kinds == {"forward"}:
         metadata["tinker_forward_only"] = True
+    return metadata
+
+
+def batch_plan_to_metadata(batch_plan: list[dict], lease) -> dict[str, Any]:
+    """Build conversion metadata with the mandatory encoded batch lease."""
+    metadata = _batch_plan_to_metadata(batch_plan)
+    metadata["batch_execution_lease"] = lease_to_metadata(lease)
     return metadata
 
 
@@ -220,10 +227,12 @@ class MultiLoraOperationBatchFn:
         input: RolloutFnConstructorInput,
         operations: OperationQueuePort | None = None,
         residency: BatchResidencyPort | None = None,
+        abort: BatchAbortPort | None = None,
     ):
         self.args = input.args
         self.operations = operations if operations is not None else RayMultiLoraOperationQueue()
         self.residency = residency if residency is not None else RayTrainerResidencyPort()
+        self.abort = abort if abort is not None else RayMultiLoraBatchAbort()
         self.runtimes: dict[Tenant, AdapterRolloutRuntime] = {}
         self.rotation: deque[Tenant] = deque()
         self._ready = asyncio.Event()
@@ -248,6 +257,16 @@ class MultiLoraOperationBatchFn:
             await runtime.aclose()
         self.runtimes.clear()
         self.rotation.clear()
+
+    async def abort_handoff(self, handoff: RolloutFnHandoff, error: BaseException) -> None:
+        """Finalize a leased selection when downstream batch preparation fails."""
+        await self.abort.abort_batch(
+            list(handoff.receipt["operation_ids"]),
+            f"rollout batch preparation failed before trainer dispatch: {error}; the batch never "
+            "reached the trainer and its gradient window is poisoned — resubmit the batch and "
+            "optim_step again",
+            handoff.receipt["lease"],
+        )
 
     # ------------------------------ runtimes ------------------------------
 
@@ -335,41 +354,50 @@ class MultiLoraOperationBatchFn:
         collected = 0
         coalesce_deadline: float | None = None
 
-        while True:
-            runtime = self._pop_next_ready(kind_lock)
-            if runtime is not None:
-                selected.append(runtime)
-                # Leave READY immediately or the round-robin would re-select
-                # the same batch until the target is met (duplicated samples).
-                runtime.state = AdapterRolloutRuntime.SELECTED
-                kind_lock = runtime.ready_kind
-                collected += sum(len(group) for group in runtime.ready_output.samples)
-                if coalesce_deadline is None:
-                    coalesce_deadline = time.monotonic() + coalesce_wait
-                # Whole batches only: overshoot past the soft target is allowed,
-                # trimming is not.
-                if collected >= soft_target or len(selected) >= len(self.runtimes):
-                    break
-                continue
+        try:
+            while True:
+                runtime = self._pop_next_ready(kind_lock)
+                if runtime is not None:
+                    selected.append(runtime)
+                    # Leave READY immediately or the round-robin would re-select
+                    # the same batch until the target is met (duplicated samples).
+                    runtime.state = AdapterRolloutRuntime.SELECTED
+                    kind_lock = runtime.ready_kind
+                    collected += sum(len(group) for group in runtime.ready_output.samples)
+                    if coalesce_deadline is None:
+                        coalesce_deadline = time.monotonic() + coalesce_wait
+                    # Whole batches only: overshoot past the soft target is allowed,
+                    # trimming is not.
+                    if collected >= soft_target or len(selected) >= len(self.runtimes):
+                        break
+                    continue
 
-            now = time.monotonic()
-            if selected:
-                if now >= coalesce_deadline:
-                    break
-                timeout = coalesce_deadline - now
-            else:
-                if now >= empty_deadline:
-                    raise EmptyBatchTimeoutError(
-                        "no adapter produced a batch within "
-                        f"--tinker-max-empty-wait-s ({self.args.tinker_max_empty_wait_s}s)"
-                    )
-                timeout = empty_deadline - now
-            self._ready.clear()
-            try:
-                await asyncio.wait_for(self._ready.wait(), timeout=timeout)
-            except TimeoutError:
-                continue
-        return selected
+                now = time.monotonic()
+                if selected:
+                    if now >= coalesce_deadline:
+                        break
+                    timeout = coalesce_deadline - now
+                else:
+                    if now >= empty_deadline:
+                        raise EmptyBatchTimeoutError(
+                            "no adapter produced a batch within "
+                            f"--tinker-max-empty-wait-s ({self.args.tinker_max_empty_wait_s}s)"
+                        )
+                    timeout = empty_deadline - now
+                self._ready.clear()
+                try:
+                    await asyncio.wait_for(self._ready.wait(), timeout=timeout)
+                except TimeoutError:
+                    continue
+            return selected
+        except BaseException:
+            # The selection has not acquired a lease yet. Cancellation or any
+            # other coalescing failure returns this call's local picks to the
+            # READY pool with their claimed outputs intact.
+            for runtime in selected:
+                if runtime.state == AdapterRolloutRuntime.SELECTED:
+                    runtime.state = AdapterRolloutRuntime.READY
+            raise
 
     def _pop_next_ready(self, kind_lock: str | None) -> AdapterRolloutRuntime | None:
         """Persistent round-robin over READY runtimes matching the kind lock:
@@ -398,6 +426,10 @@ class MultiLoraOperationBatchFn:
         # intact (the claimed operation stays retryable at the next selection
         # instead of orphaning the only in-memory copy of an already-CLAIMED
         # output).
+        operation_ids: list[str] = []
+        lease_acquired = False
+        lease = None
+        lease_metadata = None
         try:
             for runtime in selected:
                 claim = runtime.ready_output
@@ -418,27 +450,70 @@ class MultiLoraOperationBatchFn:
                     )
                 )
                 metrics[f"{runtime.run.name}/operation_samples"] = sum(len(group) for group in claim.samples)
+            # Validate and build everything that does not depend on residency
+            # before acquiring the lease. A malformed selection therefore
+            # remains retryable without minting a dispatch receipt.
+            conversion_metadata = _batch_plan_to_metadata(batch_plan)
+            operation_ids = [entry["operation_id"] for entry in batch_plan]
             # One immutable dispatch receipt for the whole selection: the
             # controller re-validates exact slot ownership before issuing it.
             lease = await self.residency.acquire_batch(
                 [(entry["operation_id"], entry["binding"]) for entry in batch_plan]
             )
-        except BaseException:
-            for runtime in selected:
-                runtime.state = AdapterRolloutRuntime.READY
+            lease_acquired = True
+            lease_metadata = lease_to_metadata(lease)
+            conversion_metadata["batch_execution_lease"] = lease_metadata
+            output = RolloutFnTrainOutput(
+                samples=data,
+                metrics=metrics,
+                # Converted HERE, not in the manager: the generic rollout plane
+                # never recognizes tinker keys.
+                conversion_metadata=conversion_metadata,
+                # Whole client batches: zero-weight pads round the selection up
+                # to the DP grid so the dynamic-GBS branch sizes the step to the
+                # batch instead of trimming it.
+                postprocess=RolloutPostprocessOptions(pad_to_dp=True),
+                # Mint the lifecycle receipt where operation identity and the
+                # lease are authoritative. Generic rollout infrastructure
+                # forwards it opaquely and returns it to ``abort_handoff`` on
+                # downstream failure.
+                handoff=RolloutFnHandoff(
+                    receipt={
+                        "operation_ids": operation_ids,
+                        "lease": lease_metadata,
+                    }
+                ),
+            )
+        except BaseException as error:
+            if not lease_acquired:
+                for runtime in selected:
+                    runtime.state = AdapterRolloutRuntime.READY
+            else:
+                # Once a lease exists, retrying the same in-memory claim would
+                # mint a second dispatch identity. Terminalize the exact batch
+                # instead, preserving the original construction failure.
+                abort_failed = False
+                try:
+                    await self.abort.abort_batch(
+                        operation_ids,
+                        f"failed to build rollout handoff after lease acquisition: {error}",
+                        lease_metadata,
+                    )
+                except BaseException:  # cleanup must not mask the build error
+                    abort_failed = True
+                    logger.exception("failed to abort batch after rollout handoff construction error")
+                if lease_metadata is None or abort_failed:
+                    try:
+                        await self.residency.release_batch(lease)
+                    except BaseException:  # preserve the original build error
+                        logger.exception("failed to release typed lease after rollout handoff construction error")
+                for runtime in selected:
+                    runtime.ready_output = None
+                    runtime.state = AdapterRolloutRuntime.IDLE
             raise
-        # Acquisition succeeded: NOW consume the outputs.
+        # The complete handoff now exists: only now consume the selected
+        # outputs. A build failure above leaves them READY and retryable.
         for runtime in selected:
             runtime.ready_output = None
             runtime.state = AdapterRolloutRuntime.IDLE  # relaunches at the NEXT generate call
-        return RolloutFnTrainOutput(
-            samples=data,
-            metrics=metrics,
-            # Converted HERE, not in the manager: the generic rollout plane
-            # never recognizes tinker keys.
-            conversion_metadata=batch_plan_to_metadata(batch_plan, lease),
-            # Whole client batches: zero-weight pads round the selection up to
-            # the DP grid so the multi-LoRA dynamic-GBS branch sizes the step
-            # to the batch instead of trimming it.
-            postprocess=RolloutPostprocessOptions(pad_to_dp=True),
-        )
+        return output

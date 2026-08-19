@@ -9,6 +9,8 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu")
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from train_multi_lora_operations import ActorGroupWeightPublisher, run_control_phase
 
 
@@ -143,6 +145,33 @@ def test_validate_tinker_args_defaults_the_rollout_plane():
     validate_tinker_args(off)  # no-op without the flag
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "custom_convert_samples_to_train_data_path",
+            "my.module.custom_converter",
+            "custom-convert-samples-to-train-data-path",
+        ),
+        ("load_debug_rollout_data", "/data/rollout_{rollout_id}.pt", "load-debug-rollout-data"),
+        ("ci_inject_rollout_data_path", "/data/inject_{rollout_id}.pt", "ci-inject-rollout-data-path"),
+    ],
+)
+def test_validate_tinker_args_rejects_live_dispatch_bypasses(field, value, message):
+    from miles.utils.tinker import validate_tinker_args
+
+    args = SimpleNamespace(
+        tinker_backend=True,
+        multi_lora_n_adapters=4,
+        rollout_function_path=None,
+        data_source_path="miles.rollout.data_source.RolloutDataSourceWithBuffer",
+        use_dynamic_global_batch_size=False,
+        **{field: value},
+    )
+    with pytest.raises(AssertionError, match=message):
+        validate_tinker_args(args)
+
+
 class TestDataBatchFinalizer:
     """train_data_batch: a NORMAL train commits rank-side; every other exit
     (abnormal TrainStepOutcome, raised train error) must fail the batch's
@@ -154,7 +183,7 @@ class TestDataBatchFinalizer:
             "dispatch_id": "lease-9",
             "bindings_by_operation": [["fb1", ["A", "r-A", 0]], ["fb2", ["B", "r-B", 1]]],
         }
-        pack = {"data_ref": None, "tinker_dispatch": {"operation_ids": ["fb1", "fb2"], "lease": lease}}
+        pack = {"data_ref": None, "rollout_handoff": {"operation_ids": ["fb1", "fb2"], "lease": lease}}
         return pack, lease
 
     def test_normal_outcome_never_calls_the_finalizer(self):
@@ -209,8 +238,8 @@ class TestDataBatchFinalizer:
         assert name == "fail" and operation_ids == ["fb1", "fb2"] and lease_arg == lease
         assert "trainer rank died" in error and "poisoned" in error
 
-    def test_missing_dispatch_summary_still_finalizes_with_empty_ids(self):
-        # A pack without the summary (defensive: custom conversion path) must
+    def test_missing_handoff_metadata_still_finalizes_with_empty_ids(self):
+        # A pack without the handoff metadata (defensive) must
         # not crash the driver; the finalizer degrades to a lease-less no-op
         # call rather than an AttributeError.
         from train_multi_lora_operations import train_data_batch

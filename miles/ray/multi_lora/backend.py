@@ -293,9 +293,14 @@ class MultiLoraOperationBackend:
             tuple((operation_id, binding) for operation_id, binding in bindings_by_operation)
         )
 
-    def release_batch_lease(self, lease_metadata: dict) -> None:
-        """Completion-boundary lifecycle hook; no-op under fixed residency."""
-        self.residency.release_batch(lease_from_metadata(lease_metadata))
+    def release_batch_lease(self, lease: BatchExecutionLease[ResidentBinding] | dict) -> None:
+        """Completion-boundary lifecycle hook; no-op under fixed residency.
+
+        The typed form lets the rollout producer release an acquired lease if
+        converting it into the plain cross-actor receipt itself fails.
+        """
+        typed_lease = lease_from_metadata(lease) if isinstance(lease, dict) else lease
+        self.residency.release_batch(typed_lease)
 
     # ---------------- control-operation claims ----------------
 

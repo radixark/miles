@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from miles.rollout.data_source import DataSource
 from miles.utils.types import Sample
@@ -50,6 +50,27 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
 
 
 @dataclass(frozen=True)
+class RolloutFnHandoff:
+    """Opaque lifecycle handoff from a rollout function to its driver.
+
+    The generic rollout executor forwards ``receipt`` without
+    interpreting it. The mapping MUST contain only Ray-serializable plain data
+    because it crosses the manager-to-driver actor boundary. If downstream
+    batch preparation fails after the rollout function has handed work over,
+    the same object is returned to the rollout function's ``abort_handoff``
+    capability for cleanup.
+    """
+
+    receipt: dict[str, Any]
+
+
+class RolloutFnHandoffAborter(Protocol):
+    """Required cleanup capability for any rollout fn that returns a handoff."""
+
+    async def abort_handoff(self, handoff: RolloutFnHandoff, error: BaseException) -> None: ...
+
+
+@dataclass(frozen=True)
 class RolloutPostprocessOptions:
     """Postprocess policy the rollout fn declares for its own output, so the
     generic manager never has to recognize fn-specific metadata keys.
@@ -77,6 +98,10 @@ class RolloutFnTrainOutput:
     conversion_metadata: dict[str, Any] | None = None
     # How the manager postprocesses samples before conversion.
     postprocess: RolloutPostprocessOptions = field(default_factory=RolloutPostprocessOptions)
+    # Opaque driver-facing lifecycle receipt. The generic rollout executor
+    # forwards its metadata and returns the receipt to ``abort_handoff`` if a
+    # downstream postprocess/conversion/split/store step fails.
+    handoff: RolloutFnHandoff | None = None
 
 
 # TODO make it frozen

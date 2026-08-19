@@ -16,6 +16,7 @@ from miles.rollout.inference_rollout.compatibility import (
     LegacyGenerateFnAdapter,
     LegacyRolloutFnAdapter,
     call_rollout_function,
+    call_rollout_function_async,
     load_generate_function,
     load_rollout_function,
 )
@@ -132,6 +133,28 @@ class TestSupportedRolloutFormats:
             assert isinstance(fn, AsyncRolloutFn)
             expected_type = RolloutFnEvalOutput if evaluation else RolloutFnTrainOutput
             assert isinstance(result, expected_type)
+
+    @pytest.mark.asyncio
+    async def test_async_class_runs_on_the_caller_loop_and_observes_cancellation(self):
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+        caller_loop = asyncio.get_running_loop()
+
+        class AsyncRolloutFn:
+            async def __call__(self, _input):
+                assert asyncio.get_running_loop() is caller_loop
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+
+        task = asyncio.create_task(call_rollout_function_async(AsyncRolloutFn(), RolloutFnTrainInput(rollout_id=1)))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
 
 
 class TestSupportedGenerateFormats:

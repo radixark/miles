@@ -69,10 +69,24 @@ class FakeResidency:
 
     def __init__(self):
         self.leases: list[tuple] = []
+        self.releases: list[BatchExecutionLease] = []
 
     async def acquire_batch(self, bindings_by_operation):
         self.leases.append(tuple(bindings_by_operation))
         return BatchExecutionLease(dispatch_id="lease-1", bindings_by_operation=tuple(bindings_by_operation))
+
+    async def release_batch(self, lease):
+        self.releases.append(lease)
+
+
+class FakeBatchAbort:
+    """Recording BatchAbortPort used by lifecycle handoff tests."""
+
+    def __init__(self):
+        self.aborts: list[tuple] = []
+
+    async def abort_batch(self, operation_ids, error, lease_metadata):
+        self.aborts.append((list(operation_ids), error, lease_metadata))
 
 
 @pytest.fixture()
@@ -178,6 +192,7 @@ def make_fn(soft_target=100) -> MultiLoraOperationBatchFn:
         RolloutFnConstructorInput(args=args, data_source=None),
         operations=FakeOperationQueue(),
         residency=FakeResidency(),
+        abort=FakeBatchAbort(),
     )
 
 
@@ -212,6 +227,24 @@ class TestSelectionKindLock:
         with pytest.raises(EmptyBatchTimeoutError):
             asyncio.run(fn._select())
 
+    @pytest.mark.asyncio
+    async def test_cancelled_coalescing_restores_local_selection_to_ready(self):
+        fn = make_fn()
+        fn.args.tinker_max_coalesce_wait_s = 60
+        selected_runtime = ready_runtime(fn, "A", 0, "forward_backward")
+        other_kind = ready_runtime(fn, "B", 1, "forward")
+
+        task = asyncio.create_task(fn._select())
+        while selected_runtime.state != AdapterRolloutRuntime.SELECTED:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert selected_runtime.state == AdapterRolloutRuntime.READY
+        assert selected_runtime.ready_output is not None
+        assert other_kind.state == AdapterRolloutRuntime.READY
+
     def test_merge_ships_the_converted_plan_and_pad_policy(self):
         """Correlation is batch-local (§3.3): the selected operation gets lane
         0, the loss/result maps key by lane, and the exact registration rides
@@ -234,6 +267,10 @@ class TestSelectionKindLock:
             },
         }
         assert output.postprocess.pad_to_dp is True
+        assert output.handoff.receipt == {
+            "operation_ids": ["op-A"],
+            "lease": output.conversion_metadata["batch_execution_lease"],
+        }
         assert first.state == AdapterRolloutRuntime.IDLE and first.ready_output is None
 
     def test_failed_lease_acquisition_keeps_claimed_output_retryable(self):
@@ -269,6 +306,48 @@ class TestSelectionKindLock:
         assert output.conversion_metadata["operation_by_lane"] == {0: "op-A"}
         assert runtime.state == AdapterRolloutRuntime.IDLE and runtime.ready_output is None
 
+    def test_post_lease_handoff_build_failure_aborts_the_claimed_batch(self, monkeypatch):
+        import miles.rollout.multi_lora.rollout_fn as rollout_module
+
+        fn = make_fn()
+        runtime = ready_runtime(fn, "A", 0, "forward_backward")
+        selected = asyncio.run(fn._select())
+
+        def fail_output_build(**_kwargs):
+            raise RuntimeError("handoff construction failed")
+
+        monkeypatch.setattr(rollout_module, "RolloutFnTrainOutput", fail_output_build)
+        with pytest.raises(RuntimeError, match="handoff construction failed"):
+            merge(fn, selected)
+
+        [(operation_ids, error, lease_metadata)] = fn.abort.aborts
+        assert operation_ids == ["op-A"]
+        assert "handoff construction failed" in error
+        assert lease_metadata["dispatch_id"] == "lease-1"
+        assert runtime.state == AdapterRolloutRuntime.IDLE and runtime.ready_output is None
+
+    def test_lease_encoding_failure_releases_the_exact_typed_lease(self, monkeypatch):
+        import miles.rollout.multi_lora.rollout_fn as rollout_module
+
+        fn = make_fn()
+        runtime = ready_runtime(fn, "A", 0, "forward_backward")
+        selected = asyncio.run(fn._select())
+
+        def fail_encoding(_lease):
+            raise RuntimeError("lease encoding failed")
+
+        monkeypatch.setattr(rollout_module, "lease_to_metadata", fail_encoding)
+        with pytest.raises(RuntimeError, match="lease encoding failed"):
+            merge(fn, selected)
+
+        [(operation_ids, error, lease_metadata)] = fn.abort.aborts
+        assert operation_ids == ["op-A"]
+        assert "lease encoding failed" in error
+        assert lease_metadata is None
+        [released] = fn.residency.releases
+        assert released.dispatch_id == "lease-1"
+        assert runtime.state == AdapterRolloutRuntime.IDLE and runtime.ready_output is None
+
     def test_merge_of_a_forward_selection_marks_forward_only(self):
         """Forward kind: the same composition with ``tinker_forward_only``
         set — the flag that keeps forward operations gradient-free must
@@ -297,3 +376,29 @@ class TestSelectionKindLock:
         assert output.conversion_metadata["registration_by_lane"] == {0: ("A", "r-A"), 1: ("B", "r-B")}
         lease = output.conversion_metadata["batch_execution_lease"]
         assert lease["bindings_by_operation"] == [["op-A", ["A", "r-A", 7]], ["op-B", ["B", "r-B", 2]]]
+
+
+class TestDriverHandoff:
+    def test_merge_mints_exact_operation_ids_and_the_conversion_lease(self):
+        import ray.cloudpickle
+
+        fn = make_fn()
+        ready_runtime(fn, "A", 7, "forward_backward")
+        ready_runtime(fn, "B", 2, "forward_backward")
+        output = merge(fn, asyncio.run(fn._select()))
+
+        assert output.handoff.receipt["operation_ids"] == ["op-A", "op-B"]
+        assert output.handoff.receipt["lease"] is output.conversion_metadata["batch_execution_lease"]
+        assert ray.cloudpickle.loads(ray.cloudpickle.dumps(output.handoff.receipt)) == output.handoff.receipt
+
+    def test_abort_handoff_finalizes_the_exact_batch(self):
+        fn = make_fn()
+        ready_runtime(fn, "A", 0, "forward_backward")
+        output = merge(fn, asyncio.run(fn._select()))
+
+        asyncio.run(fn.abort_handoff(output.handoff, OSError("object-store placement failed")))
+
+        [(operation_ids, error, lease_metadata)] = fn.abort.aborts
+        assert operation_ids == ["op-A"]
+        assert lease_metadata is output.handoff.receipt["lease"]
+        assert "placement failed" in error and "poisoned" in error and "resubmit" in error
