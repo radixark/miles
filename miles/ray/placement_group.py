@@ -303,6 +303,8 @@ async def update_weights(
 async def _maybe_log_inference_engine_weight_checksums(
     args, *, inference_controller: BaseWorkerHandle, rollout_id: int | None, trainer_model_id: str | None
 ) -> None:
+    if not args.save_inference_engine_weight_checksum:
+        return
     if not is_event_logger_initialized():
         return
     if args.debug_train_only or args.debug_rollout_only:
