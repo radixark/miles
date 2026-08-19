@@ -7,7 +7,7 @@ from pathlib import Path
 import polars as pl
 from sglang.srt.debug_utils.comparator.display import _render_polars_as_text
 
-from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 
 logger = logging.getLogger(__name__)
@@ -238,7 +238,7 @@ def _check_required_keys_exist(events: list[MetricEvent]) -> list[str]:
 
 def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
     """Read all MetricEvents from the events directory."""
-    events_dir: Path = dump_dir / "events"
+    events_dir: Path = dump_dir / EVENTS_DIRNAME
     if not events_dir.exists():
         return []
     all_events = read_events(events_dir)

@@ -25,7 +25,7 @@ def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
     state_of_cell_name: dict[str, _CellState] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
-            if event.succeeded:
+            if event.succeeded and event.harmed:
                 state_of_cell_name[event.cell_name] = _CellState.INJECTED
             continue
         for name, state in list(state_of_cell_name.items()):
@@ -37,30 +37,44 @@ def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
     return set(state_of_cell_name)
 
 
-def compute_num_injections(events: list[Event], *, cell_type: str | None = None) -> int:
-    return len(compute_injected_cell_names(events, cell_type=cell_type))
+def compute_num_injections(events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
+    return len(compute_injected_cell_names(events, cell_type=cell_type, harmed_only=harmed_only))
 
 
-def compute_injected_cell_names(events: list[Event], *, cell_type: str | None = None) -> list[str]:
+def compute_injected_cell_names(
+    events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True
+) -> list[str]:
     return [
         name
-        for name, cell_events in _compute_matching_cell_events(events, cell_type=cell_type).items()
+        for name, cell_events in _compute_matching_cell_events(
+            events, cell_type=cell_type, harmed_only=harmed_only
+        ).items()
         for one in cell_events
         if one.kind == "injected"
     ]
 
 
+def compute_num_successful_injections_of_form(events: list[Event], *, form_name: str) -> int:
+    return len(
+        [
+            event
+            for event in events
+            if isinstance(event, InjectionEvent) and event.succeeded and event.form_name == form_name
+        ]
+    )
+
+
 def compute_num_completed_recoveries(events: list[Event], *, cell_type: str | None = None) -> int:
     return sum(
         _compute_recovery_tally(cell_events).num_completed
-        for cell_events in _compute_matching_cell_events(events, cell_type=cell_type).values()
+        for cell_events in _compute_matching_cell_events(events, cell_type=cell_type, harmed_only=True).values()
     )
 
 
 def compute_cells_with_unfinished_recovery(events: list[Event], *, cell_type: str | None = None) -> dict[str, int]:
     return {
         name: tally.num_unfinished
-        for name, cell_events in _compute_matching_cell_events(events, cell_type=cell_type).items()
+        for name, cell_events in _compute_matching_cell_events(events, cell_type=cell_type, harmed_only=True).items()
         if (tally := _compute_recovery_tally(cell_events)).num_unfinished
     }
 
@@ -120,11 +134,11 @@ class _CellEvent:
     state: ObservedCellState | None = None
 
 
-def _compute_cell_events(events: list[Event]) -> dict[str, list[_CellEvent]]:
+def _compute_cell_events(events: list[Event], *, harmed_only: bool = True) -> dict[str, list[_CellEvent]]:
     cell_events_of_name: dict[str, list[_CellEvent]] = {}
     for event in events:
         if isinstance(event, InjectionEvent):
-            if event.succeeded:
+            if event.succeeded and (event.harmed or not harmed_only):
                 cell_events_of_name.setdefault(event.cell_name, []).append(_CellEvent(kind="injected"))
             continue
         for name, info in event.cell_infos.items():
@@ -132,8 +146,10 @@ def _compute_cell_events(events: list[Event]) -> dict[str, list[_CellEvent]]:
     return cell_events_of_name
 
 
-def _compute_matching_cell_events(events: list[Event], *, cell_type: str | None) -> dict[str, list[_CellEvent]]:
-    cell_events_of_name = _compute_cell_events(events)
+def _compute_matching_cell_events(
+    events: list[Event], *, cell_type: str | None, harmed_only: bool
+) -> dict[str, list[_CellEvent]]:
+    cell_events_of_name = _compute_cell_events(events, harmed_only=harmed_only)
     if cell_type is None:
         return cell_events_of_name
     cell_type_of_name = _compute_cell_type_of_name(events)

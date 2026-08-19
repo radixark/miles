@@ -99,11 +99,15 @@ def run_fault_injection_loop(
         try:
             form.inject(target, rng)
         except Exception:
-            event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=False)
+            event_log.note_injection_attempt(
+                cell_name=cell_name, form_name=form.name, succeeded=False, harmed=form.harms_cell
+            )
             logger.info("Failed to inject fault %s into %s", form.name, cell_name, exc_info=True)
             continue
 
-        event_log.note_injection_attempt(cell_name=cell_name, form_name=form.name, succeeded=True)
+        event_log.note_injection_attempt(
+            cell_name=cell_name, form_name=form.name, succeeded=True, harmed=form.harms_cell
+        )
         next_injection_time_of_cell_type[cell_type] = _compute_next_injection_time(
             rng, mean_interval_seconds_of_cell_type[cell_type]
         )

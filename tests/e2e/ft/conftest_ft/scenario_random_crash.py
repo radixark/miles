@@ -16,6 +16,7 @@ from tests.e2e.ft.conftest_ft.cli_options import (
     TrainerCrashIntervalSecondsOption,
 )
 from tests.e2e.ft.conftest_ft.execution import (
+    get_api_server_args,
     get_common_train_args,
     get_ft_args,
     get_fully_async_args,
@@ -45,6 +46,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.views import (
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
 from miles.utils.test_utils.reconfigure_assertions import (
     assert_min_soak_injections,
@@ -107,7 +109,7 @@ def run_ci(
         )
         + get_ft_args(ft_mode)
         + get_fully_async_args(fully_async=fully_async)
-        + f"--api-server-port {API_SERVER_PORT} "
+        + get_api_server_args(config)
         + "--mini-ft-controller-enable "
     )
 
@@ -132,7 +134,10 @@ def run_ci(
         injector.stop_and_join()
 
     assert_healing(
-        ft_mode.ft_components, injector=injector, event_dir=Path(dump_dir) / "events", context=f"{test_name} {mode}"
+        ft_mode.ft_components,
+        injector=injector,
+        event_dir=Path(dump_dir) / EVENTS_DIRNAME,
+        context=f"{test_name} {mode}",
     )
 
     print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
