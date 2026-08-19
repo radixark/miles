@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from argparse import Namespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -441,6 +442,33 @@ class TestCreateTrainingModel:
         info = await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
 
         assert info.start_rollout_id == 9
+
+    async def test_a_trainer_told_to_start_elsewhere_than_it_restored_says_so(self, monkeypatch, caplog):
+        """A trainer that silently starts somewhere other than where it restored gives the operator nothing to read."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(Namespace(start_rollout_id=9), trainer_id="alpha-actor")
+
+        assert "alpha-actor" in caplog.text and "--start-rollout-id 9" in caplog.text
+
+    async def test_a_trainer_told_to_start_where_it_restored_says_nothing(self, monkeypatch, caplog):
+        """Logging every trainer that was told where it already stands is noise on every ordinary launch."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(Namespace(start_rollout_id=3), trainer_id="alpha-actor")
+
+        assert "--start-rollout-id" not in caplog.text
+
+    async def test_a_trainer_left_to_its_restored_position_says_nothing(self, monkeypatch, caplog):
+        """The ordinary resume names no rollout at all, and it must not be reported as an override."""
+        self._patch_handle(monkeypatch, restored=[3])
+
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(Namespace(start_rollout_id=None), trainer_id="alpha-actor")
+
+        assert "--start-rollout-id" not in caplog.text
 
     async def test_the_restored_position_is_kept_beside_the_overridden_start(self, monkeypatch):
         """Cross trainer checks compare where checkpoints actually were, which an override must not rewrite."""
