@@ -13,9 +13,32 @@ from miles.utils.test_utils.ft_test_actions import (
     FTTestActionActorExecutor,
     FTTestActionControllerExecutor,
     _load_actions,
+    compute_ft_test_actions_arg,
 )
 
 _POOL_ID = "trainer-engine-actor"
+
+
+class TestComputeFTTestActionsArg:
+    def test_the_launch_fragment_round_trips_the_complete_action_plan(self) -> None:
+        """The launch fragment preserves its flag, quoted action plan, and trailing separator."""
+        actions: list[dict[str, object]] = [
+            {"at_rollout": 2, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-0"},
+            {
+                "at_rollout": 5,
+                "action": "crash_before_allreduce",
+                "cell_id": "trainer-engine-actor-1",
+                "rank": 3,
+                "attempt": 1,
+            },
+        ]
+
+        fragment = compute_ft_test_actions_arg(actions)
+
+        prefix = "--ci-ft-test-actions '"
+        assert fragment.startswith(prefix)
+        assert fragment.endswith("' ")
+        assert json.loads(fragment[len(prefix) : -2]) == actions
 
 
 def _args(ci_ft_test_actions: object) -> SimpleNamespace:
