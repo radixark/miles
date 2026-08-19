@@ -1101,13 +1101,18 @@ _INFERENCE_ARGS = [
 ]
 
 
-def _parse_deploy_args(extra, *, use_critic: bool = False):
+def _parse_deploy_args(extra, *, use_critic: bool = False, resolve_fault_tolerance: bool = False):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
-    args.ft_components = []
-    args.mini_ft_controller_enable = False
     args.use_critic = use_critic
+    if resolve_fault_tolerance:
+        args.ft_components = _resolve_ft_components(args)
+        args.api_server_port = _resolve_api_server_port(args)
+        args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
+    else:
+        args.ft_components = []
+        args.mini_ft_controller_enable = False
     return args
 
 
@@ -2869,6 +2874,7 @@ class TestRolloutHealthCheckArguments:
         assert args.rollout_health_check_interval == 30.0
         assert args.rollout_health_check_timeout == 30.0
         assert args.rollout_health_check_first_wait == 0.0
+        assert args.rollout_health_check_failure_threshold == 1
 
     def test_the_first_wait_grace_period_is_still_tunable(self):
         """A first launch compiling deepgemm kernels needs a grace period, or it is killed while warming up."""
