@@ -11,11 +11,20 @@ class PairingLayout(FrozenStrictBaseModel):
     num_pods_per_inference_cell: int = Field(ge=1)
     num_pods_per_trainer_cell: int = Field(ge=1)
     num_gpus_per_node: int = Field(ge=1)
+    num_gpus_per_inference_pod: int = Field(ge=1)
     gpu_offset: int = Field(ge=0)
 
     @property
-    def pod_offset(self) -> int:
-        return self.gpu_offset // self.num_gpus_per_node
+    def gpus_per_inference_cell(self) -> int:
+        return self.num_pods_per_inference_cell * self.num_gpus_per_inference_pod
+
+    @property
+    def total_inference_gpus(self) -> int:
+        return self.num_inference_cells * self.num_pods_per_inference_cell * self.num_gpus_per_inference_pod
+
+    @property
+    def total_trainer_gpus(self) -> int:
+        return self.num_trainer_cells * self.num_pods_per_trainer_cell * self.num_gpus_per_node
 
     @model_validator(mode="after")
     def _assert_inference_pods_pair(self) -> PairingLayout:
@@ -27,20 +36,17 @@ class PairingLayout(FrozenStrictBaseModel):
             f"{self.num_pods_per_trainer_cell} trainer pods per cell is not a whole number of "
             f"{self.num_pods_per_inference_cell}-pod inference cells, so an inference would straddle two trainer cells"
         )
-        assert self.gpu_offset % self.num_gpus_per_node == 0, (
-            f"An inference pool starting at gpu {self.gpu_offset} of the trainer's {self.num_gpus_per_node}-gpu nodes "
-            f"starts inside a node, so each of its pods would want part of two trainer pods' gpus"
+        assert self.gpu_offset % self.gpus_per_inference_cell == 0, (
+            f"An inference pool starting at gpu {self.gpu_offset} is not a whole number of its own "
+            f"{self.gpus_per_inference_cell}-gpu cells in, so its cells would straddle trainer cells"
         )
-        assert self.pod_offset % self.num_pods_per_inference_cell == 0, (
-            f"An inference pool starting at trainer pod {self.pod_offset} is not a whole number of "
-            f"{self.num_pods_per_inference_cell}-pod inference cells in, so its cells would straddle trainer cells"
+        assert self.num_gpus_per_node % self.num_gpus_per_inference_pod == 0, (
+            f"An inference pod of {self.num_gpus_per_inference_pod} gpus does not divide a "
+            f"{self.num_gpus_per_node}-gpu node, so one of them would straddle two trainer pods"
         )
-        assert (
-            self.pod_offset + self.num_inference_cells * self.num_pods_per_inference_cell
-            <= self.num_trainer_cells * self.num_pods_per_trainer_cell
-        ), (
-            f"{self.num_inference_cells} inference cells starting at trainer pod {self.pod_offset} do not fit in "
-            f"{self.num_trainer_cells} trainer cells of {self.num_pods_per_trainer_cell} pods; an inference worker "
+        assert self.gpu_offset + self.total_inference_gpus <= self.total_trainer_gpus, (
+            f"{self.num_inference_cells} inference cells of {self.num_gpus_per_inference_pod} gpus starting at gpu "
+            f"{self.gpu_offset} do not fit in the trainer's {self.total_trainer_gpus} gpus; an inference worker "
             f"whose trainer pod does not exist would wait for a node forever"
         )
         return self
@@ -56,3 +62,16 @@ class PairingConfig(FrozenStrictBaseModel):
     release: str
     trainer_pool_id: str
     inference_pools: list[InferencePool] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _assert_pools_claim_distinct_gpus(self) -> PairingConfig:
+        owner_of_gpu: dict[int, str] = {}
+        for pool in self.inference_pools:
+            span = range(pool.layout.gpu_offset, pool.layout.gpu_offset + pool.layout.total_inference_gpus)
+            for gpu in span:
+                assert gpu not in owner_of_gpu, (
+                    f"'{pool.pool_id}' and '{owner_of_gpu[gpu]}' both claim the trainer's gpu {gpu}; one of them "
+                    f"would be pinned to a node whose gpus the other already holds"
+                )
+                owner_of_gpu[gpu] = pool.pool_id
+        return self
