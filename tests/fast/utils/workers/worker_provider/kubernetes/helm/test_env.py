@@ -45,3 +45,11 @@ class TestReleaseDiscovery:
 
         with pytest.raises(AssertionError, match=env.RELEASE_ENV_VAR):
             env.current_release()
+
+
+class TestTheCardAnnotationStandsApartFromTheMeta:
+    def test_the_base_gpu_id_key_is_not_a_meta_annotation(self) -> None:
+        """Meta annotations are merged across a cell's pods and asserted equal; this one differs per pod."""
+        keys = env.DEFAULT_LABEL_KEYS
+
+        assert not keys.base_gpu_id_annotation.startswith(keys.meta_annotation_prefix)

@@ -14,7 +14,11 @@ from tests.fast.utils.workers.reconcile.utils import FakeSource, replace_of, set
 
 from miles.utils.external_utils.colocate_pairing import pods as pairing_pods
 from miles.utils.external_utils.colocate_pairing.config import InferencePool, PairingConfig, PairingLayout
-from miles.utils.external_utils.colocate_pairing.controller import PairingController, _target_trainer_pod
+from miles.utils.external_utils.colocate_pairing.controller import (
+    InferencePlacement,
+    PairingController,
+    _place_inference_pod,
+)
 from miles.utils.external_utils.colocate_pairing.pods import PodCoordinate
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import _assert_colocate_supported
 from miles.utils.test_utils.clock import FakeClock
@@ -63,13 +67,21 @@ def _sub_node_layout(gpu_offset: int = 0, num_inference_cells: int = 4) -> Pairi
     )
 
 
-def _target(inference_cell_index: int, layout: PairingLayout, inference_pod_index: int = 0) -> PodCoordinate:
-    return _target_trainer_pod(
+def _place(inference_cell_index: int, layout: PairingLayout, inference_pod_index: int = 0) -> InferencePlacement:
+    return _place_inference_pod(
         inference_cell_index=inference_cell_index,
         inference_pod_index=inference_pod_index,
         layout=layout,
         trainer_pool_id=TRAINER_POOL_ID,
     )
+
+
+def _target(inference_cell_index: int, layout: PairingLayout, inference_pod_index: int = 0) -> PodCoordinate:
+    return _place(inference_cell_index, layout, inference_pod_index).trainer_coord
+
+
+def _base_gpu(inference_cell_index: int, layout: PairingLayout, inference_pod_index: int = 0) -> int:
+    return _place(inference_cell_index, layout, inference_pod_index).base_gpu_id
 
 
 def _coordinate(cell_index: int, pod_index: int = 0, pool_id: str = TRAINER_POOL_ID) -> PodCoordinate:
@@ -318,6 +330,164 @@ def _all_targets(layout: PairingLayout) -> list[PodCoordinate]:
     ]
 
 
+class TestBaseGpuIdOfAnInferencePod:
+    def test_a_whole_node_pod_starts_at_the_first_card(self):
+        """Its pod holds every card of the node, so the node-local numbering starts where the node does."""
+        layout = _layout(num_inference_cells=2, num_trainer_cells=2)
+
+        assert [_base_gpu(index, layout) for index in range(2)] == [0, 0]
+
+    def test_sub_node_pods_tile_the_cards_of_the_node_they_share(self):
+        """Two half-node pods on one trainer node must not both claim the cards the node numbers from zero."""
+        layout = _sub_node_layout()
+
+        assert [_base_gpu(index, layout) for index in range(4)] == [0, 4, 0, 4]
+
+    def test_one_gpu_pods_walk_the_whole_node(self):
+        """The recipe default is one gpu per engine, and eight of them cover a node card by card."""
+        layout = _layout(
+            num_inference_cells=8, num_trainer_cells=1, num_pods_per_trainer_cell=1, num_gpus_per_inference_pod=1
+        )
+
+        assert [_base_gpu(index, layout) for index in range(8)] == list(range(8))
+
+    def test_the_pods_of_a_wide_engine_each_start_at_their_own_node(self):
+        """An engine wider than a node is one whole-node pod per node, and each is handed its cards from zero."""
+        layout = _layout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+        )
+
+        assert [_base_gpu(0, layout, inference_pod_index=index) for index in range(2)] == [0, 0]
+
+    def test_the_pods_of_a_wide_engine_pair_with_adjacent_trainer_pods(self):
+        """Its two pods sit on two nodes, so they must wait on the two trainer pods holding those nodes."""
+        layout = _layout(
+            num_inference_cells=1,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+        )
+
+        assert [_target(0, layout, inference_pod_index=index) for index in range(2)] == [
+            _coordinate(0, 0),
+            _coordinate(0, 1),
+        ]
+
+    def test_the_pool_offset_moves_the_first_card_along(self):
+        """A second pool starts part way into the node its neighbour shares, and its offset says how far."""
+        layout = _sub_node_layout(gpu_offset=4, num_inference_cells=3)
+
+        assert [_base_gpu(index, layout) for index in range(3)] == [4, 0, 4]
+
+    def test_a_multi_pod_cell_of_sub_node_pods_walks_across_the_trainer_pods(self):
+        """Cells and pods per cell were only ever varied one at a time; together they index one flat gpu line."""
+        layout = _layout(
+            num_inference_cells=2,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+            num_gpus_per_inference_pod=4,
+        )
+        placements = [_place(cell, layout, pod) for cell in range(2) for pod in range(2)]
+
+        assert [(placement.trainer_coord, placement.base_gpu_id) for placement in placements] == [
+            (_coordinate(0, 0), 0),
+            (_coordinate(0, 0), 4),
+            (_coordinate(0, 1), 0),
+            (_coordinate(0, 1), 4),
+        ]
+
+    def test_a_multi_pod_cell_of_quarter_node_pods_stays_on_one_trainer_pod(self):
+        """Four quarter-node pods spread over two cells still share one node, a pair of its cards each."""
+        layout = _layout(
+            num_inference_cells=2,
+            num_trainer_cells=1,
+            num_pods_per_inference_cell=2,
+            num_pods_per_trainer_cell=2,
+            num_gpus_per_inference_pod=2,
+        )
+        placements = [_place(cell, layout, pod) for cell in range(2) for pod in range(2)]
+
+        assert {placement.trainer_coord for placement in placements} == {_coordinate(0, 0)}
+        assert [placement.base_gpu_id for placement in placements] == [0, 2, 4, 6]
+
+
+_DISJOINT_CARD_LAYOUTS = {
+    "half node pods, two cells of two": _layout(
+        num_inference_cells=2,
+        num_trainer_cells=1,
+        num_pods_per_inference_cell=2,
+        num_pods_per_trainer_cell=2,
+        num_gpus_per_inference_pod=4,
+    ),
+    "quarter node pods on one trainer pod": _layout(
+        num_inference_cells=2,
+        num_trainer_cells=1,
+        num_pods_per_inference_cell=2,
+        num_pods_per_trainer_cell=2,
+        num_gpus_per_inference_pod=2,
+    ),
+    "one gpu pods across two nodes": _layout(
+        num_inference_cells=16,
+        num_trainer_cells=2,
+        num_pods_per_trainer_cell=1,
+        num_gpus_per_inference_pod=1,
+    ),
+    "half node pods offset by one pod": _sub_node_layout(gpu_offset=4, num_inference_cells=3),
+}
+
+
+def _cards_by_trainer_pod(layouts: dict[str, PairingLayout]) -> dict[PodCoordinate, list[tuple[str, range]]]:
+    cards: dict[PodCoordinate, list[tuple[str, range]]] = {}
+    for pool_id, layout in layouts.items():
+        for cell_index in range(layout.num_inference_cells):
+            for pod_index in range(layout.num_pods_per_inference_cell):
+                placement = _place(cell_index, layout, pod_index)
+                span = range(placement.base_gpu_id, placement.base_gpu_id + layout.num_gpus_per_inference_pod)
+                cards.setdefault(placement.trainer_coord, []).append((pool_id, span))
+    return cards
+
+
+def _cards_claimed_by_two_trainer_pods(cards: dict[PodCoordinate, list[tuple[str, range]]]) -> list[Any]:
+    return [
+        (trainer, first, second)
+        for trainer, entries in cards.items()
+        for first, second in itertools.combinations(entries, 2)
+        if set(first[1]) & set(second[1])
+    ]
+
+
+class TestTheEnginesOfOneTrainerPodHoldDifferentCards:
+    @pytest.mark.parametrize("name", sorted(_DISJOINT_CARD_LAYOUTS))
+    def test_no_two_pods_of_a_pool_are_given_an_overlapping_stretch(self, name: str):
+        """Two engines on one node sharing a card is the failure this whole mechanism exists to avoid."""
+        cards = _cards_by_trainer_pod({name: _DISJOINT_CARD_LAYOUTS[name]})
+
+        assert _cards_claimed_by_two_trainer_pods(cards) == []
+
+    @pytest.mark.parametrize("name", sorted(_DISJOINT_CARD_LAYOUTS))
+    def test_at_least_one_trainer_pod_really_seats_several_of_them(self, name: str):
+        """A layout whose trainer pods seat one engine each would satisfy the test above without testing it."""
+        cards = _cards_by_trainer_pod({name: _DISJOINT_CARD_LAYOUTS[name]})
+
+        assert max(len(entries) for entries in cards.values()) >= 2
+
+    def test_two_pools_splitting_a_node_are_given_different_halves_of_it(self):
+        """Prefill and decode share a trainer node on purpose, and only their offsets keep them apart."""
+        cards = _cards_by_trainer_pod(
+            {
+                INFERENCE_POOL_ID: _sub_node_layout(num_inference_cells=1),
+                DECODE_POOL_ID: _sub_node_layout(gpu_offset=4, num_inference_cells=1),
+            }
+        )
+
+        assert _cards_claimed_by_two_trainer_pods(cards) == []
+        assert len(cards[_coordinate(0, 0)]) == 2
+
+
 class TestGpuOffsetPairing:
     @pytest.mark.parametrize(
         "layout",
@@ -529,20 +699,71 @@ class TestPoolsClaimDistinctGpus:
         )
 
 
+BASE_GPU_ID_ANNOTATION = DEFAULT_LABEL_KEYS.base_gpu_id_annotation
+_ESCAPED_BASE_GPU_ID_ANNOTATION = "miles.radixark.io~1base-gpu-id"
+_CHART_META_ANNOTATION = f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}"
+_POD_ANNOTATIONS = {_CHART_META_ANNOTATION: "0", "leaderworkerset.sigs.k8s.io/size": "2"}
+
+
+def _release_patch(
+    *,
+    node_name: str = "gpu-7",
+    base_gpu_id: int = 0,
+    gates: list[str] | None = None,
+    has_node_selector: bool = False,
+    annotations: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    return pairing_pods.release_patch(
+        node_name=node_name,
+        base_gpu_id=base_gpu_id,
+        gates=[pairing_pods._GATE_NAME] if gates is None else gates,
+        has_node_selector=has_node_selector,
+        annotations=_POD_ANNOTATIONS if annotations is None else annotations,
+    )
+
+
 class TestReleasePatch:
     def test_pins_the_pod_to_one_node_and_removes_the_gate(self):
         """Both in one patch, so a controller restart cannot leave a pinned pod still gated."""
-        patch = pairing_pods.release_patch(node_name="gpu-7", gates=[pairing_pods._GATE_NAME], has_node_selector=False)
+        patch = _release_patch()
 
         assert patch[0]["value"] == {"kubernetes.io/hostname": "gpu-7"}
-        assert patch[1:] == [
+        assert patch[2:] == [
             {"op": "test", "path": "/spec/schedulingGates/0/name", "value": pairing_pods._GATE_NAME},
             {"op": "remove", "path": "/spec/schedulingGates/0"},
         ]
 
+    def test_tells_the_pod_which_card_of_the_node_is_its_own(self):
+        """The pod cannot work this out itself, and the same patch that seats it is what hands it over."""
+        patch = _release_patch(base_gpu_id=5)
+
+        assert patch[1] == {
+            "op": "add",
+            "path": f"/metadata/annotations/{_ESCAPED_BASE_GPU_ID_ANNOTATION}",
+            "value": "5",
+        }
+
+    def test_writes_the_card_as_a_string_the_downward_api_can_serve(self):
+        """A fieldRef reads an annotation, and an annotation value that is not a string is not valid."""
+        [operation] = [op for op in _release_patch(base_gpu_id=7) if str(op["path"]).startswith("/metadata")]
+
+        assert operation["value"] == "7"
+
+    def test_never_replaces_the_map_of_a_pod_that_carries_annotations(self):
+        """A whole-map add replaces it, dropping the chart's gpu meta and the platform's own bookkeeping."""
+        patch = _release_patch(base_gpu_id=3, annotations=_POD_ANNOTATIONS)
+
+        assert patch[1]["path"] == f"/metadata/annotations/{_ESCAPED_BASE_GPU_ID_ANNOTATION}"
+        assert not any(operation["path"] == "/metadata/annotations" for operation in patch)
+
+    def test_refuses_to_build_a_patch_for_a_pod_that_carries_no_annotations(self):
+        """The apiserver would reject the add anyway; failing here names the pod state that caused it."""
+        with pytest.raises(AssertionError, match="carries no annotations"):
+            _release_patch(base_gpu_id=3, annotations={})
+
     def test_adds_one_key_when_the_pod_already_has_a_selector(self):
         """Replacing the map would drop the run's own nodeSelector, and a gated pod may only gain keys."""
-        patch = pairing_pods.release_patch(node_name="gpu-7", gates=[pairing_pods._GATE_NAME], has_node_selector=True)
+        patch = _release_patch(has_node_selector=True)
 
         assert patch[0] == {
             "op": "add",
@@ -554,18 +775,24 @@ class TestReleasePatch:
         """Dropping the whole list would release a pod another controller is still deliberately holding back."""
         gates = ["other.io/first", pairing_pods._GATE_NAME, "other.io/last"]
 
-        patch = pairing_pods.release_patch(node_name="gpu-7", gates=gates, has_node_selector=False)
+        patch = _release_patch(gates=gates)
 
-        assert patch[1:] == [
+        assert patch[2:] == [
             {"op": "test", "path": "/spec/schedulingGates/1/name", "value": pairing_pods._GATE_NAME},
             {"op": "remove", "path": "/spec/schedulingGates/1"},
         ]
 
     def test_is_a_json_patch_rather_than_a_merge(self):
         """A merge patch setting the gates to an empty list is silently ignored: the list merges by name."""
-        patch = pairing_pods.release_patch(node_name="gpu-7", gates=[pairing_pods._GATE_NAME], has_node_selector=False)
+        patch = _release_patch()
 
         assert all("op" in operation for operation in patch)
+
+    def test_hands_over_the_card_only_if_the_gate_is_still_there(self):
+        """A test op guards the whole patch, so a pod another pass released is never re-annotated."""
+        patch = _release_patch(base_gpu_id=5)
+
+        assert [operation["op"] for operation in patch] == ["add", "add", "test", "remove"]
 
 
 class TestCoordinateOf:
@@ -605,6 +832,7 @@ def _pod(
         DEFAULT_LABEL_KEYS.cell_index: str(cell_index),
         DEFAULT_LABEL_KEYS.pod_in_cell_index: str(pod_index),
     }
+    pod.metadata.annotations = {f"{DEFAULT_LABEL_KEYS.meta_annotation_prefix}{DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0"}
     return pod
 
 
@@ -643,6 +871,12 @@ def _controller(core_v1: Any, layout: PairingLayout | None = None) -> PairingCon
     return PairingController(config=_config(pools), core_v1=core_v1)
 
 
+def _base_gpu_id_written(body: list[dict[str, Any]]) -> str:
+    [operation] = [op for op in body if str(op["path"]).startswith("/metadata/annotations")]
+    value = operation["value"]
+    return value if isinstance(value, str) else value[BASE_GPU_ID_ANNOTATION]
+
+
 class TestReconcile:
     def test_releases_a_gated_inference_onto_its_trainer_node(self):
         """This is the whole point: the inference ends up where the trainer that feeds it already runs."""
@@ -654,9 +888,7 @@ class TestReconcile:
         assert core_v1.patched == [
             (
                 _pod_name(INFERENCE_POOL_ID, 0),
-                pairing_pods.release_patch(
-                    node_name="gpu-3", gates=[pairing_pods._GATE_NAME], has_node_selector=False
-                ),
+                _release_patch(node_name="gpu-3"),
             )
         ]
 
@@ -674,12 +906,57 @@ class TestReconcile:
         assert core_v1.patched == [
             (
                 _pod_name(INFERENCE_POOL_ID, index),
-                pairing_pods.release_patch(
-                    node_name="gpu-3", gates=[pairing_pods._GATE_NAME], has_node_selector=False
-                ),
+                _release_patch(node_name="gpu-3", base_gpu_id=index * 4),
             )
             for index in (0, 1)
         ]
+
+    def test_gives_every_engine_of_a_shared_node_a_card_of_its_own(self):
+        """Eight one-gpu engines on one trainer node is the shape this exists for, and 0..7 is the answer."""
+        core_v1 = FakeCoreV1()
+        layout = _layout(
+            num_inference_cells=8,
+            num_trainer_cells=1,
+            num_pods_per_trainer_cell=1,
+            num_gpus_per_inference_pod=1,
+        )
+        pods = [_pod(INFERENCE_POOL_ID, index) for index in range(8)]
+        pods.append(_pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False))
+
+        asyncio.run(_attached(_controller(core_v1, layout), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
+
+        assert [_base_gpu_id_written(body) for _, body in core_v1.patched] == [str(index) for index in range(8)]
+
+    def test_gives_a_whole_node_engine_the_first_card(self):
+        """The engine holds every card of the node, so it is handed them from zero and is told exactly that."""
+        core_v1 = FakeCoreV1()
+        pods = [_pod(INFERENCE_POOL_ID, 1), _pod(TRAINER_POOL_ID, 1, node_name="gpu-3", gated=False)]
+
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 1)))
+
+        assert [_base_gpu_id_written(body) for _, body in core_v1.patched] == ["0"]
+
+    def test_starts_a_second_sub_node_pool_where_its_own_offset_says(self):
+        """Two half-node pools split one trainer node, and only the offset tells the second one apart."""
+        core_v1 = FakeCoreV1()
+        controller = PairingController(
+            config=_config(
+                [
+                    _inference_pool(_sub_node_layout(num_inference_cells=1)),
+                    _inference_pool(_sub_node_layout(gpu_offset=4, num_inference_cells=1), pool_id=DECODE_POOL_ID),
+                ]
+            ),
+            core_v1=core_v1,
+        )
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(DECODE_POOL_ID, 0),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        asyncio.run(_attached(controller, pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+
+        assert [_base_gpu_id_written(body) for _, body in core_v1.patched] == ["0", "4"]
 
     def test_releases_only_the_inference_pods_of_the_trainer_being_reconciled(self):
         """The other trainer pod's node is a different machine, so its inference pods must stay gated."""
@@ -867,9 +1144,7 @@ class TestSeveralInferencePools:
         assert core_v1.patched == [
             (
                 _pod_name(DECODE_POOL_ID, 1),
-                pairing_pods.release_patch(
-                    node_name="gpu-4", gates=[pairing_pods._GATE_NAME], has_node_selector=False
-                ),
+                _release_patch(node_name="gpu-4"),
             )
         ]
 
@@ -1037,9 +1312,7 @@ class TestEventSequences:
             assert harness.core_v1.patched == [
                 (
                     _pod_name(INFERENCE_POOL_ID, 0),
-                    pairing_pods.release_patch(
-                        node_name="gpu-3", gates=[pairing_pods._GATE_NAME], has_node_selector=False
-                    ),
+                    _release_patch(node_name="gpu-3"),
                 ),
             ]
 
@@ -1053,9 +1326,7 @@ class TestEventSequences:
             assert harness.core_v1.patched == [
                 (
                     _pod_name(INFERENCE_POOL_ID, 1),
-                    pairing_pods.release_patch(
-                        node_name="gpu-9", gates=[pairing_pods._GATE_NAME], has_node_selector=False
-                    ),
+                    _release_patch(node_name="gpu-9"),
                 ),
             ]
 

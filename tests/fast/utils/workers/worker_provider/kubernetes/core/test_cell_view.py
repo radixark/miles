@@ -54,6 +54,7 @@ def make_run(*, workers_per_pod: int = 1, worker_class: str | None = ENGINE_CLAS
             cell_size_annotation="cell-size",
             meta_annotation_prefix="meta-",
             gpu_ids_meta="gpu_ids",
+            base_gpu_id_annotation="base-gpu-id",
         ),
     )
 
