@@ -106,12 +106,13 @@ def recorded_calls(monkeypatch) -> dict[str, list[dict[str, Any]]]:
     return calls
 
 
-def _compare() -> None:
+def _compare(*, exclude_keys: list[str] | None = None) -> None:
     utils.compare_deterministic_sides(
         baseline_dir=_BASELINE_DIR,
         target_dir=_TARGET_DIR,
         expected_engine_count=_EXPECTED_ENGINE_COUNT,
         min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+        exclude_keys=exclude_keys,
     )
 
 
@@ -121,8 +122,21 @@ class TestCompareDeterministicSides:
         _compare()
 
         assert recorded_calls["compare_deterministic_sides"] == [
-            dict(baseline_dir=_BASELINE_DIR, target_dir=_TARGET_DIR, min_trained_rollouts=_MIN_TRAINED_ROLLOUTS)
+            dict(
+                baseline_dir=_BASELINE_DIR,
+                target_dir=_TARGET_DIR,
+                min_trained_rollouts=_MIN_TRAINED_ROLLOUTS,
+                exclude_keys=None,
+            )
         ]
+
+    def test_a_deploy_scenario_can_name_the_keys_its_comparison_must_drop(self, recorded_calls):
+        """The deploy wrapper forwards the exclusions rather than deciding them for every scenario."""
+        excluded = ["rollout/weight_version/max"]
+
+        _compare(exclude_keys=excluded)
+
+        assert recorded_calls["compare_deterministic_sides"][0]["exclude_keys"] == excluded
 
     def test_both_sides_are_required_to_have_served_the_engines_the_run_declared(self, recorded_calls):
         """This is what the unsplit comparison cannot check: a split run losing an engine deployment."""
