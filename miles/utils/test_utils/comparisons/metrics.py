@@ -69,10 +69,12 @@ def assert_gradients_nonzero(*, side: str, dump_dir: str, min_trained_rollouts: 
 def assert_metric_finite_and_nonzero(*, side: str, dump_dir: str, key: str, min_rollouts: int) -> None:
     series = read_metric_series(dump_dir, key=key)
     usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
+    usable_rollouts = {rollout_id for rollout_id, _ in usable}
 
-    assert len(usable) >= min_rollouts, (
-        f"{side}: {key} is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) ({series}), so "
-        f"this run's weights may have moved on nothing training produced"
+    assert len(usable_rollouts) >= min_rollouts, (
+        f"{side}: {key} is finite and non-zero in only {len(usable_rollouts)} of "
+        f"{len({rollout_id for rollout_id, _ in series})} rollout(s) ({series}), so this run's weights may have "
+        f"moved on nothing training produced"
     )
 
 
@@ -252,10 +254,13 @@ def _check_required_keys_exist(events: list[MetricEvent]) -> list[str]:
     return issues
 
 
-def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
-    """Read all MetricEvents from the events directory."""
-    events_dir: Path = dump_dir / EVENTS_DIRNAME
+def read_metric_events(events_dir: Path) -> list[MetricEvent]:
+    """Read all MetricEvents written into one events directory."""
     if not events_dir.exists():
         return []
     all_events = read_events(events_dir)
     return [e for e in all_events if isinstance(e, MetricEvent)]
+
+
+def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
+    return read_metric_events(dump_dir / EVENTS_DIRNAME)

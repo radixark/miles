@@ -1,13 +1,20 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.test_utils.comparisons.metrics import (
     _check_events_line_up,
     _check_single_metric,
     _keep_only_final_attempt,
+    assert_metric_finite_and_nonzero,
 )
+
+_KEY: str = "train/grad_norm"
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 _FIXED_SOURCE = SimpleProcessIdentity(component="main")
@@ -133,3 +140,37 @@ class TestCheckEventsLineUp:
         target = [_metric_event(rollout_id=3, attempt=1)]
 
         assert _check_events_line_up(baseline, target) == []
+
+
+class TestAssertMetricWasFiniteAndNonzero:
+    def test_a_run_that_trained_as_many_rollouts_as_asked_passes(self, dump_dir) -> None:
+        """The happy path has to stay reachable, or the refusals below prove nothing."""
+        _write_metrics(dump_dir, [(0, 0.5), (1, 0.4)])
+
+        assert_metric_finite_and_nonzero(side="target", dump_dir=dump_dir, key=_KEY, min_rollouts=2)
+
+    def test_one_rollout_reported_over_several_steps_is_not_several_rollouts(self, dump_dir) -> None:
+        """Several optimizer steps of one rollout say that one rollout trained, however many events they write."""
+        _write_metrics(dump_dir, [(0, 0.5), (0, 0.4), (0, 0.3)])
+
+        with pytest.raises(AssertionError, match="in only 1 of 1 rollout"):
+            assert_metric_finite_and_nonzero(side="target", dump_dir=dump_dir, key=_KEY, min_rollouts=2)
+
+    def test_a_rollout_whose_only_usable_step_is_zero_does_not_count(self, dump_dir) -> None:
+        """A gradient of zero moved no weights, which is what this assertion exists to catch."""
+        _write_metrics(dump_dir, [(0, 0.5), (1, 0.0)])
+
+        with pytest.raises(AssertionError, match="in only 1 of 2 rollout"):
+            assert_metric_finite_and_nonzero(side="target", dump_dir=dump_dir, key=_KEY, min_rollouts=2)
+
+
+@pytest.fixture
+def dump_dir(tmp_path) -> str:
+    return str(tmp_path / "run")
+
+
+def _write_metrics(dump_dir: str, points: list[tuple[int, float]]) -> None:
+    event_logger = EventLogger(log_dir=Path(dump_dir) / "events", source=_FIXED_SOURCE, file_name="main.jsonl")
+    for rollout_id, value in points:
+        event_logger.log(MetricEvent, dict(rollout_id=rollout_id, attempt=0, metrics={_KEY: value}), print_log=False)
+    event_logger.close()
