@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from miles.utils.external_utils.colocate_pairing.config import PairingConfig
 from miles.utils.external_utils.command_utils.helm_backend import naming
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.colocate import pairing_config
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
@@ -42,6 +43,9 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
             _assert_worker_ports_fit(spec)
     addresses = _compute_addresses(specs, plan.release)
 
+    colocate = _pairing_config(specs, plan)
+    layout_of_pool = {pool.pool_id: pool.layout for pool in colocate.inference_pools} if colocate else {}
+
     entries: dict[str, list[PoolEntry]] = {
         STATIC_WORKERS_SECTION: [],
         INFERENCE_ENGINES_SECTION: [],
@@ -49,7 +53,7 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
     }
     for spec in specs:
         section = SECTION_OF_CATEGORY[spec.category]
-        entry = build_entry(spec, plan=plan, addresses=addresses)
+        entry = build_entry(spec, plan=plan, addresses=addresses, pairing_layout=layout_of_pool.get(spec.name))
         assert section == STATIC_WORKERS_SECTION or entry.restart_at is None, (
             f"only the {STATIC_WORKERS_SECTION} template renders a restart stamp, so stamping {spec.name} in "
             f"{section} would roll nothing while this launch believes it rolled a pod"
@@ -71,8 +75,14 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
         trainer_engines=entries[TRAINER_ENGINES_SECTION],
         env=dict(plan.env) or None,
         mooncake=MooncakeInfo.section(plan.mooncake_plan) if plan.mooncake_plan is not None else None,
-        colocate=pairing_config(specs, plan) if plan.colocate else None,
+        colocate=colocate,
     )
+
+
+def _pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingConfig | None:
+    if not plan.colocate or not any(SECTION_OF_CATEGORY[spec.category] == INFERENCE_ENGINES_SECTION for spec in specs):
+        return None
+    return pairing_config(specs, plan)
 
 
 def _object_names(release: str) -> ObjectNames:
