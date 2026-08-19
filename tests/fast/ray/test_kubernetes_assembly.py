@@ -72,6 +72,9 @@ class FakeRolloutExecutor:
     async def init(self) -> None:
         self.initialized = True
 
+    async def is_initialized(self) -> bool:
+        return self.initialized
+
     def dispose(self) -> None:
         return None
 
