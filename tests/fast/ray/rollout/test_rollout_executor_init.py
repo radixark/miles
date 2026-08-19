@@ -4,7 +4,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.rollout_executor import RolloutExecutor
-from miles.utils.init_once import InitOnce
+from miles.utils.init_once import InitOnce, InitState
 
 pytestmark = pytest.mark.asyncio
 
@@ -28,11 +28,11 @@ class TestInitRunsExactlyOnce:
             inference_controller_provider=MagicMock(),
         )
 
-        assert await executor.is_initialized() is False
+        assert await executor.get_init_state() == InitState.NOT_INITED.value
 
     async def test_an_executor_that_ran_init_reports_itself_initialized(self):
         """The wait at the start of the rollout components only ends once this answer flips back."""
-        assert await _inited_executor().is_initialized() is True
+        assert await _inited_executor().get_init_state() == InitState.INITED.value
 
     async def test_a_second_init_is_refused(self):
         """An executor process the previous script initialized is about to be replaced, not re-initialized."""
