@@ -137,6 +137,38 @@ class TestParsePod:
 
         assert parse(pod).gpu_ids == (0, 1, 2, 3)
 
+    def test_moves_those_gpus_along_by_the_card_the_pairing_seated_the_pod_on(self):
+        """A colocated engine's meta counts its cards from zero, but it was given the node's card five."""
+        pod = make_pod(
+            annotations={
+                f"{helm_env.DEFAULT_LABEL_KEYS.meta_annotation_prefix}{helm_env.DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0",
+                helm_env.DEFAULT_LABEL_KEYS.base_gpu_id_annotation: "5",
+            }
+        )
+
+        assert parse(pod).gpu_ids == (5,)
+
+    def test_moves_a_whole_pod_of_gpus_along_together(self):
+        """A two-gpu engine on the second half of a four-gpu stretch holds cards six and seven, not two and three."""
+        pod = make_pod(
+            annotations={
+                f"{helm_env.DEFAULT_LABEL_KEYS.meta_annotation_prefix}{helm_env.DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0,1",
+                helm_env.DEFAULT_LABEL_KEYS.base_gpu_id_annotation: "6",
+            }
+        )
+
+        assert parse(pod).gpu_ids == (6, 7)
+
+    def test_leaves_a_pod_the_pairing_never_seated_where_the_meta_put_it(self):
+        """Every pod outside a colocate run carries no such annotation, and its cards start at zero."""
+        pod = make_pod(
+            annotations={
+                f"{helm_env.DEFAULT_LABEL_KEYS.meta_annotation_prefix}{helm_env.DEFAULT_LABEL_KEYS.gpu_ids_meta}": "0,1"
+            }
+        )
+
+        assert parse(pod).gpu_ids == (0, 1)
+
 
 class TestParsePods:
     def test_returns_the_pods_of_a_cell_in_index_order(self):
