@@ -61,12 +61,18 @@ def read_metric_series(dump_dir: str, *, key: str) -> list[tuple[int, float]]:
 
 
 def assert_gradients_nonzero(*, side: str, dump_dir: str, min_trained_rollouts: int) -> None:
-    series = read_metric_series(dump_dir, key="train/grad_norm")
+    assert_metric_finite_and_nonzero(
+        side=side, dump_dir=dump_dir, key="train/grad_norm", min_rollouts=min_trained_rollouts
+    )
+
+
+def assert_metric_finite_and_nonzero(*, side: str, dump_dir: str, key: str, min_rollouts: int) -> None:
+    series = read_metric_series(dump_dir, key=key)
     usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
 
-    assert len(usable) >= min_trained_rollouts, (
-        f"{side}: train/grad_norm is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) "
-        f"({series}), so this run's weights could have moved on weight decay alone"
+    assert len(usable) >= min_rollouts, (
+        f"{side}: {key} is finite and non-zero in only {len(usable)} of {len(series)} rollout(s) ({series}), so "
+        f"this run's weights may have moved on nothing training produced"
     )
 
 
