@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
+from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
@@ -107,12 +107,12 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     # loosening these thresholds.
     grad_norm_key = "train/grad_norm"
     for phase, phase_start_rollout_id in PHASE_START_ROLLOUT_IDS.items():
-        baseline_dir = f"{dump_dir}/baseline/{phase}"
-        target_dir = f"{dump_dir}/target/{phase}"
-        for side, side_dir in (("baseline", baseline_dir), ("target", target_dir)):
+        baseline_dir = f"{dump_dir}/{BASELINE_SIDE}/{phase}"
+        target_dir = f"{dump_dir}/{TARGET_SIDE}/{phase}"
+        for side, side_dir in ((BASELINE_SIDE, baseline_dir), (TARGET_SIDE, target_dir)):
             assert_reconfigure_events(
                 Path(f"{side_dir}/{EVENTS_DIRNAME}"),
-                expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
+                expected=_expected_reconfigures(is_target=side == TARGET_SIDE, phase=phase, num_cells=mode.num_cells),
             )
 
         compare_metrics(
