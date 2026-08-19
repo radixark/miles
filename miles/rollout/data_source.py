@@ -142,14 +142,16 @@ class RolloutDataSource(DataSource):
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
+            logger.warning("--disable-rollout-global-dataset: the dataset starts where a fresh run's would")
             return
 
         if self.args.load is None:
+            logger.warning("no --load: the dataset starts where a fresh run's would")
             return
 
         path = compute_global_dataset_state_path(self.args.load, rollout_id=rollout_id)
         if not os.path.exists(path):
-            logger.info(f"Checkpoint {path} does not exist.")
+            logger.warning(f"no dataset state under {path}: the dataset starts where a fresh run's would")
             return
 
         logger.info(f"load metadata from {path}")
