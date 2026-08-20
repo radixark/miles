@@ -19,7 +19,7 @@ from tests.fast.utils.workers.real_ray.conftest import (
     wait_until_named_manager_is_gone,
 )
 
-from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import WorkerCommBackend
@@ -57,7 +57,7 @@ def ray_comm_pool(ray_local_mode) -> Iterator[ray.actor.ActorHandle]:
 @pytest.fixture
 async def ray_comm_handle(ray_comm_pool: ray.actor.ActorHandle) -> AsyncIterator[BaseWorkerHandle]:
     provider = RayWorkerProvider(worker_manager_handle=ray_comm_pool, pool_ids=[POOL_ID])
-    handle = provider.get_handle(f"{POOL_ID}-0-0")
+    handle = provider.get_handle(compute_worker_name(pool_id=POOL_ID))
     await handle.wait_ready(timeout=READY_TIMEOUT_SECONDS)
     yield handle
 
@@ -67,7 +67,7 @@ class TestARayLaunchedWorkerCalledOverRay:
         """Both wires stay supported until the default flips, so this column must keep running beside rpc."""
         provider = RayWorkerProvider(worker_manager_handle=ray_comm_pool, pool_ids=[POOL_ID])
 
-        handle = provider.get_handle(f"{POOL_ID}-0-0")
+        handle = provider.get_handle(compute_worker_name(pool_id=POOL_ID))
 
         assert isinstance(handle, RayWorkerHandle)
 

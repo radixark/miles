@@ -55,7 +55,7 @@ class TestParsePod:
         """A cell is a pool_id and a group index, which is what its consumers address."""
         parsed = parse(make_pod(pool_id="inference-engine-0-0", cell_id_suffix="2"))
 
-        assert parsed.cell_id == "inference-engine-0-0-2"
+        assert parsed.cell_id == "inference-engine-0-0-00002"
 
     def test_ignores_a_pod_that_carries_no_cell_labels(self):
         """A namespace holds other pods, and treating one as a worker would invent a cell."""
@@ -97,7 +97,7 @@ class TestParsePod:
         keys = DEFAULT_LABEL_KEYS.model_copy(update={"pool_id": "acme.io/group", "cell_index": "acme.io/index"})
         pod = make_unlabelled_pod("p", labels={"acme.io/group": "engine", "acme.io/index": "3"})
 
-        assert parse(pod, keys).cell_id == "engine-3"
+        assert parse(pod, keys).cell_id == "engine-00003"
 
     def test_reads_how_many_pods_the_cell_should_have(self):
         """A group still being created has ready pods but not all of them, and must not be given work."""

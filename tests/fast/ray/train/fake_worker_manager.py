@@ -5,7 +5,7 @@ import logging
 import ray
 from tests.fast.ray.train.dummy_actor import DummyTrainActor
 
-from miles.utils.workers.naming import compute_cell_id, parse_cell_id
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name, parse_cell_id, parse_worker_name
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import MASTER_PORT_NAME, HostAndPort
@@ -49,21 +49,27 @@ class FakeWorkerManager:
                     cell_id=cell_id,
                     pool_id=pool_id,
                     alive=True,
-                    worker_names=[f"{cell_id}-{worker_index}" for worker_index in range(self.actor_count_per_cell)],
+                    worker_names=[
+                        compute_worker_name(pool_id=pool_id, cell_index=cell_index, worker_in_cell_index=worker_index)
+                        for worker_index in range(self.actor_count_per_cell)
+                    ],
                     workers_hash=f"pseudo-hash-{1 + len(self.started_cell_ids)}",
                     meta={"cell_index": cell_index},
                 )
         return infos
 
     def _get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
+        parsed = parse_cell_id(cell_id)
         if cell_id not in self._handles:
             handles = [DummyTrainActor.remote() for _ in range(self.actor_count_per_cell)]
-            if parse_cell_id(cell_id).cell_index in self._cell_indices_failing_init:
+            if parsed.cell_index in self._cell_indices_failing_init:
                 ray.get([handle.set_fail_methods.remote(["init"]) for handle in handles])
             self._handles[cell_id] = handles
         return [
             WorkerInfo(
-                name=f"{cell_id}-{worker_index}",
+                name=compute_worker_name(
+                    pool_id=parsed.pool_id, cell_index=parsed.cell_index, worker_in_cell_index=worker_index
+                ),
                 generation=1 + len(self.started_cell_ids),
                 self_addrs={MASTER_PORT_NAME: self._compute_master_addr(worker_index)},
                 gpu_ids=[worker_index],
@@ -76,8 +82,8 @@ class FakeWorkerManager:
         assert (
             generation == expected_generation
         ), f"{worker_name} is generation {generation}, not {expected_generation}"
-        cell_id, _, worker_index = worker_name.rpartition("-")
-        return self._handles[cell_id][int(worker_index)]
+        pool_id, cell_index, worker_in_cell_index = parse_worker_name(worker_name)
+        return self._handles[compute_cell_id(pool_id=pool_id, cell_index=cell_index)][worker_in_cell_index]
 
     def _compute_master_addr(self, worker_index: int) -> HostAndPort:
         if self.master_addr_per_worker is None:
