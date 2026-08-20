@@ -176,7 +176,7 @@ class TestInitAllocatesPorts:
         assert [call.kwargs["count"] for call in fake_ray_cluster.calls_of("_get_free_port_block")] == [5, 5]
 
     async def test_static_ports_bypass_the_allocator(self, fake_ray_cluster: FakeRayCluster):
-        """A port the worker cannot choose is taken from the spec verbatim, without probing the node."""
+        """A port the worker cannot choose is taken from the spec verbatim, without asking the allocator."""
         spec = _make_spec(
             "router",
             port_infos=[
@@ -188,6 +188,15 @@ class TestInitAllocatesPorts:
 
         assert manager.get_worker_addr("router-0-0").port == 7777
         assert len(fake_ray_cluster.calls_of("_get_free_port_block")) == 1
+        assert [call.kwargs["port"] for call in fake_ray_cluster.calls_of("_is_port_available")] == [7777]
+
+    async def test_a_static_port_already_taken_on_the_node_fails_the_launch(self, fake_ray_cluster: FakeRayCluster):
+        """A stale listener on the pinned port would otherwise be mistaken for our own worker."""
+        fake_ray_cluster.occupy_ports("10.0.0.1", 7777)
+        spec = _make_spec("router", port_infos=[PortInfo(name="primary", static_port=7777, allow_dynamic=False)])
+
+        with pytest.raises(AssertionError, match="7777 on 10.0.0.1 is already in use"):
+            await _launch([spec])
 
     async def test_ports_are_tracked_per_node(self, fake_ray_cluster: FakeRayCluster):
         """Workers on different nodes may reuse the same port number."""
@@ -212,6 +221,119 @@ class TestInitAllocatesPorts:
         manager = await _launch([_make_spec("router")])
 
         assert manager.get_worker_addr("router-0-0").host == "[2001:db8::7]"
+
+
+class TestStaticPortsAreProbedBeforeUse:
+    async def test_the_probe_asks_for_the_cell_offset_port_rather_than_the_spec_base(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Probing the spec's base port would leave every cell but the first checking an address it never binds."""
+        spec = _make_spec(
+            "session-server",
+            num_cells=3,
+            port_infos=[PortInfo(name="primary", static_port=7000, allow_dynamic=False, offset_by_cell=True)],
+        )
+        await _launch([spec])
+
+        assert [call.kwargs["port"] for call in fake_ray_cluster.calls_of("_is_port_available")] == [7000, 7001, 7002]
+
+    async def test_an_occupied_cell_offset_port_refuses_the_launch(self, fake_ray_cluster: FakeRayCluster):
+        """A stale listener on a later cell's offset port must be caught too, not only one on the base port."""
+        fake_ray_cluster.occupy_ports("10.0.0.1", 7002)
+        spec = _make_spec(
+            "session-server",
+            num_cells=3,
+            port_infos=[PortInfo(name="primary", static_port=7000, allow_dynamic=False, offset_by_cell=True)],
+        )
+
+        with pytest.raises(AssertionError, match="Port 7002 on 10.0.0.1 is already in use"):
+            await _launch([spec])
+
+    async def test_the_probe_runs_on_the_node_the_worker_landed_on(self, fake_ray_cluster: FakeRayCluster):
+        """A port is only contended on the node that binds it, so the probe must go through the worker's own actor."""
+        fake_ray_cluster.use_node_ips("10.0.0.1", "10.0.0.2")
+        fake_ray_cluster.occupy_ports("10.0.0.2", 7777)
+        spec = _make_spec(
+            "router",
+            num_workers_per_cell=2,
+            port_infos=[PortInfo(name="primary", static_port=7777, allow_dynamic=False)],
+        )
+
+        with pytest.raises(AssertionError, match="Port 7777 on 10.0.0.2 is already in use"):
+            await _launch([spec])
+
+        assert [call.handle.node_ip for call in fake_ray_cluster.calls_of("_is_port_available")] == [
+            "10.0.0.1",
+            "10.0.0.2",
+        ]
+
+    async def test_a_port_occupied_on_an_unrelated_node_does_not_block_the_launch(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Refusing a port because another machine uses it would make every run hostage to unrelated nodes."""
+        fake_ray_cluster.occupy_ports("10.0.0.2", 7777)
+        spec = _make_spec("router", port_infos=[PortInfo(name="primary", static_port=7777, allow_dynamic=False)])
+
+        manager = await _launch([spec])
+
+        assert manager.get_worker_addrs("router-0-0")["primary"].port == 7777
+
+    async def test_a_master_static_port_is_probed_only_by_the_worker_that_reserves_it(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Peers that never bind the cell's master port would otherwise refuse a port their own worker 0 is serving."""
+        spec = _make_spec(
+            "engine",
+            num_cells=2,
+            num_workers_per_cell=3,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="dist_init", static_port=9000, mode="master", allow_dynamic=False),
+            ],
+        )
+        await _launch([spec])
+
+        assert [call.kwargs["port"] for call in fake_ray_cluster.calls_of("_is_port_available")] == [9000, 9000]
+
+    async def test_dynamic_ports_are_never_probed_by_the_static_check(self, fake_ray_cluster: FakeRayCluster):
+        """The allocator already hands out a free port, and re-probing its own reservation would refuse it."""
+        spec = _make_spec(
+            "engine",
+            num_cells=2,
+            num_workers_per_cell=2,
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="nccl", static_port=10000, allow_dynamic=True),
+            ],
+        )
+        await _launch([spec])
+
+        assert fake_ray_cluster.calls_of("_is_port_available") == []
+
+    async def test_the_refusal_names_the_worker_and_the_endpoint_it_could_not_serve(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """An operator hunting the stale process needs to know which worker wanted which endpoint."""
+        fake_ray_cluster.occupy_ports("10.0.0.1", 7777)
+        spec = _make_spec("router", port_infos=[PortInfo(name="prometheus", static_port=7777, allow_dynamic=False)])
+
+        with pytest.raises(AssertionError, match="router-0-0 cannot serve its 'prometheus' endpoint"):
+            await _launch([spec])
+
+    async def test_a_refused_port_rolls_the_cell_back_before_any_command_runs(self, fake_ray_cluster: FakeRayCluster):
+        """A refusal that let the commands start would add our own processes to the stale ones already there."""
+        fake_ray_cluster.occupy_ports("10.0.0.1", 7777)
+        spec = _make_spec(
+            "router",
+            num_workers_per_cell=2,
+            port_infos=[PortInfo(name="primary", static_port=7777, allow_dynamic=False)],
+        )
+
+        with pytest.raises(AssertionError):
+            await _launch([spec])
+
+        assert fake_ray_cluster.calls_of("run") == []
+        assert [handle.killed for handle in fake_ray_cluster.handles] == [True, True]
 
 
 class TestPortAllocationDetails:

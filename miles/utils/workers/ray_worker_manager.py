@@ -148,14 +148,21 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
         node_ip = await self.actor_handle._get_node_ip.remote()
         for port_info in self.spec.port_infos:
-            port = (
-                self.manager_ref.port_allocator.alloc(
+            if port_info.allow_dynamic:
+                port = self.manager_ref.port_allocator.alloc(
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
-                if port_info.allow_dynamic
-                else port_info.static_port + (self.cell_index if port_info.offset_by_cell else 0)
-            )
+            else:
+                port = port_info.static_port + (self.cell_index if port_info.offset_by_cell else 0)
+                await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
             self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+
+    async def _assert_static_port_is_free(self, *, port: int, port_name: str, node_ip: str) -> None:
+        free = await self.actor_handle._is_port_available.remote(port=port)
+        assert free, (
+            f"Port {port} on {node_ip} is already in use, so {self.name} cannot serve its {port_name!r} "
+            f"endpoint there; a stale process from an earlier run is the usual cause"
+        )
 
     async def post_setup(self) -> None:
         ctx = LaunchCommandContext(

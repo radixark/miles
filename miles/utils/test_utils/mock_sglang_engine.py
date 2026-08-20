@@ -92,6 +92,10 @@ class MockSGLangEngine:
         self._record("_get_node_ip", (), {})
         return NodeProbeMixin._get_node_ip()
 
+    def _is_port_available(self, *, port: int) -> bool:
+        self._record("_is_port_available", (), {"port": port})
+        return True
+
     def _get_gpu_uuids(self, gpu_ids: list[int]):
         self._record("_get_gpu_uuids", (gpu_ids,), {})
         return [None] * len(gpu_ids)

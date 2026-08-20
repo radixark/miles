@@ -485,10 +485,6 @@ A router sits in front of the SGLang workers. Router-side flags take a `--router
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
-Miles always starts its own router per model; external router mode
-(`--sglang-router-ip`/`--sglang-router-port`) was removed and is expected to
-return with the k8s-native mode.
-
 ---
 
 ## Further reading
