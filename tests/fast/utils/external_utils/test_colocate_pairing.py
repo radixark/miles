@@ -9,6 +9,7 @@ from typing import Any
 
 import pydantic
 import pytest
+from kubernetes_asyncio import client
 from tests.fast.utils.workers.reconcile.utils import FakeSource, replace_of, settle
 
 from miles.utils.external_utils.colocate_pairing import pods as pairing_pods
@@ -648,7 +649,7 @@ class TestReconcile:
         core_v1 = FakeCoreV1()
         pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
 
-        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched == [
             (
@@ -659,13 +660,86 @@ class TestReconcile:
             )
         ]
 
+    def test_releases_every_sub_node_inference_the_trainer_seats_in_one_pass(self):
+        """One trainer node wakes both half-node inference pods, and one reconcile has to place them both."""
+        core_v1 = FakeCoreV1()
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(INFERENCE_POOL_ID, 1),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+
+        assert core_v1.patched == [
+            (
+                _pod_name(INFERENCE_POOL_ID, index),
+                pairing_pods.release_patch(
+                    node_name="gpu-3", gates=[pairing_pods._GATE_NAME], has_node_selector=False
+                ),
+            )
+            for index in (0, 1)
+        ]
+
+    def test_releases_only_the_inference_pods_of_the_trainer_being_reconciled(self):
+        """The other trainer pod's node is a different machine, so its inference pods must stay gated."""
+        core_v1 = FakeCoreV1()
+        pods = [_pod(INFERENCE_POOL_ID, index) for index in range(4)]
+        pods.append(_pod(TRAINER_POOL_ID, 0, 1, node_name="gpu-4", gated=False))
+
+        asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 1)))
+
+        assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, index) for index in (2, 3)]
+
+    def test_releases_the_still_gated_pod_when_its_neighbour_is_already_placed(self):
+        """A partly released trainer node is the normal retry state, and the gate left is the only work."""
+        core_v1 = FakeCoreV1()
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0, node_name="gpu-3", gated=False),
+            _pod(INFERENCE_POOL_ID, 1),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        asyncio.run(_attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+
+        assert [name for name, _ in core_v1.patched] == [_pod_name(INFERENCE_POOL_ID, 1)]
+
+    def test_reports_a_rejected_patch_instead_of_forgiving_it(self):
+        """Any refusal reaches the loop, which logs it and backs off; the next pass sees a fresher store."""
+        core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 500})
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        with pytest.raises(client.ApiException):
+            asyncio.run(
+                _attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+            )
+
+    def test_reports_a_patch_the_gate_test_refused_as_well(self):
+        """A pod released by an earlier pass fails the gate test; the refusal is louder than a stale cache."""
+        core_v1 = FakeCoreV1(rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(INFERENCE_POOL_ID, 1),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        with pytest.raises(client.ApiException):
+            asyncio.run(
+                _attached(_controller(core_v1, _sub_node_layout()), pods).reconcile(_key(TRAINER_POOL_ID, 0, 0))
+            )
+
+        assert core_v1.patched == []
+
     def test_keeps_a_selector_the_pod_already_carries(self):
         """The run's global nodeSelector is on the pod, and removing it makes the apiserver refuse."""
         inference = _pod(INFERENCE_POOL_ID, 0, node_selector={"pool": "gpu"})
         core_v1 = FakeCoreV1()
         pods = [inference, _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
 
-        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched[0][1][0]["path"].endswith("kubernetes.io~1hostname")
 
@@ -674,7 +748,7 @@ class TestReconcile:
         core_v1 = FakeCoreV1()
         pods = [_pod(INFERENCE_POOL_ID, 0), _pod(TRAINER_POOL_ID, 0)]
 
-        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched == []
 
@@ -683,7 +757,7 @@ class TestReconcile:
         core_v1 = FakeCoreV1()
         pods = [_pod(INFERENCE_POOL_ID, 0)]
 
-        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched == []
 
@@ -695,7 +769,7 @@ class TestReconcile:
             _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False),
         ]
 
-        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched == []
 
@@ -704,7 +778,7 @@ class TestReconcile:
         core_v1 = FakeCoreV1()
         pods = []
 
-        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(_attached(_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert core_v1.patched == []
 
@@ -715,25 +789,36 @@ class TestReconcile:
         pods = [inference, _pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False)]
         controller = _attached(_controller(core_v1), pods)
 
-        asyncio.run(controller.reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0)))
         inference.spec.scheduling_gates = []
-        asyncio.run(controller.reconcile(_key(INFERENCE_POOL_ID, 0)))
+        asyncio.run(controller.reconcile(_key(TRAINER_POOL_ID, 0)))
 
         assert len(core_v1.patched) == 1
 
 
 class TestKeyOf:
-    def test_keys_an_inference_pod_by_itself(self):
-        """Its own events are what drive it forward."""
+    def test_keys_an_inference_pod_by_the_trainer_it_waits_on(self):
+        """The trainer's node is the only thing it waits for, so both pods have to reach one key."""
         controller = _controller(FakeCoreV1())
 
-        assert controller.key_of(_pod(INFERENCE_POOL_ID, 1)) == _key(INFERENCE_POOL_ID, 1)
+        assert controller.key_of(_pod(INFERENCE_POOL_ID, 1)) == _key(TRAINER_POOL_ID, 1)
 
-    def test_keys_a_trainer_pod_by_the_inference_it_unblocks(self):
-        """A trainer getting a node is the event the inference is waiting for, so it must reach that key."""
+    def test_keys_a_trainer_pod_by_itself(self):
+        """A trainer getting a node is the event its inference pods wait on, and the pair is keyed by it."""
         controller = _controller(FakeCoreV1())
 
-        assert controller.key_of(_pod(TRAINER_POOL_ID, 1)) == _key(INFERENCE_POOL_ID, 1)
+        assert controller.key_of(_pod(TRAINER_POOL_ID, 1)) == _key(TRAINER_POOL_ID, 1)
+
+    def test_keys_every_sub_node_inference_pod_of_one_node_by_the_same_trainer(self):
+        """The loop hands a pod exactly one key, so a trainer seating several inference pods needs one key."""
+        controller = _controller(FakeCoreV1(), _sub_node_layout())
+
+        assert [controller.key_of(_pod(INFERENCE_POOL_ID, index)) for index in range(4)] == [
+            _key(TRAINER_POOL_ID, 0, 0),
+            _key(TRAINER_POOL_ID, 0, 0),
+            _key(TRAINER_POOL_ID, 0, 1),
+            _key(TRAINER_POOL_ID, 0, 1),
+        ]
 
     def test_keys_a_trainer_that_seats_no_inference_apart(self):
         """A trainer cell the run left empty must not be routed to an inference key nothing waits on."""
@@ -767,9 +852,9 @@ class TestSeveralInferencePools:
         """One controller drives every colocated pool_id, and the offset is all that tells them apart."""
         controller = _two_pool_controller(FakeCoreV1())
 
-        assert [controller.key_of(_pod(TRAINER_POOL_ID, 0, index)) for index in (1, 2)] == [
-            _key(INFERENCE_POOL_ID, 1),
-            _key(DECODE_POOL_ID, 0),
+        assert [controller.key_of(_pod(INFERENCE_POOL_ID, 1)), controller.key_of(_pod(DECODE_POOL_ID, 0))] == [
+            _key(TRAINER_POOL_ID, 0, 1),
+            _key(TRAINER_POOL_ID, 0, 2),
         ]
 
     def test_releases_a_pod_of_the_second_pool_onto_its_own_trainer(self):
@@ -777,7 +862,7 @@ class TestSeveralInferencePools:
         core_v1 = FakeCoreV1()
         pods = [_pod(DECODE_POOL_ID, 1), _pod(TRAINER_POOL_ID, 0, 3, node_name="gpu-4", gated=False)]
 
-        asyncio.run(_attached(_two_pool_controller(core_v1), pods).reconcile(_key(DECODE_POOL_ID, 1)))
+        asyncio.run(_attached(_two_pool_controller(core_v1), pods).reconcile(_key(TRAINER_POOL_ID, 0, 3)))
 
         assert core_v1.patched == [
             (
@@ -788,34 +873,53 @@ class TestSeveralInferencePools:
             )
         ]
 
-    def test_keys_every_pool_by_its_own_pods(self):
-        """key_of runs over one stream of pods, so a pod of either pool_id has to route to itself."""
+    def test_keys_every_pool_by_the_trainer_pod_its_layout_names(self):
+        """key_of runs over one stream of pods, so a pod of either pool_id has to reach its own trainer."""
         controller = _two_pool_controller(FakeCoreV1())
 
-        assert controller.key_of(_pod(DECODE_POOL_ID, 1)) == _key(DECODE_POOL_ID, 1)
+        assert controller.key_of(_pod(DECODE_POOL_ID, 1)) == _key(TRAINER_POOL_ID, 0, 3)
 
-    def test_refuses_two_pools_that_want_the_same_trainer_pod(self):
-        """Only one inference can hold a node's gpus, and the second would wait on a trainer already taken."""
-        with pytest.raises(AssertionError, match="same trainer pod"):
-            PairingController(
-                config=_config(
-                    [
-                        _inference_pool(
-                            _layout(num_inference_cells=2, num_trainer_cells=1, num_pods_per_trainer_cell=4)
-                        ),
-                        _inference_pool(
-                            _layout(
-                                num_inference_cells=2,
-                                num_trainer_cells=1,
-                                num_pods_per_trainer_cell=4,
-                                gpu_offset=8,
-                            ),
-                            pool_id=DECODE_POOL_ID,
-                        ),
-                    ]
-                ),
-                core_v1=FakeCoreV1(),
-            )
+    def test_seats_two_sub_node_pools_side_by_side_on_one_trainer_pod(self):
+        """Prefill and decode may split a trainer node, and both then wait on that one trainer pod."""
+        controller = PairingController(
+            config=_config(
+                [
+                    _inference_pool(_sub_node_layout(num_inference_cells=1)),
+                    _inference_pool(_sub_node_layout(gpu_offset=4, num_inference_cells=1), pool_id=DECODE_POOL_ID),
+                ]
+            ),
+            core_v1=FakeCoreV1(),
+        )
+
+        assert [controller.key_of(_pod(INFERENCE_POOL_ID, 0)), controller.key_of(_pod(DECODE_POOL_ID, 0))] == [
+            _key(TRAINER_POOL_ID, 0, 0),
+            _key(TRAINER_POOL_ID, 0, 0),
+        ]
+
+    def test_releases_both_sub_node_pools_of_one_trainer_pod_together(self):
+        """The two pools share a node, so the trainer landing there has to place a pod of each."""
+        core_v1 = FakeCoreV1()
+        controller = PairingController(
+            config=_config(
+                [
+                    _inference_pool(_sub_node_layout(num_inference_cells=1)),
+                    _inference_pool(_sub_node_layout(gpu_offset=4, num_inference_cells=1), pool_id=DECODE_POOL_ID),
+                ]
+            ),
+            core_v1=core_v1,
+        )
+        pods = [
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(DECODE_POOL_ID, 0),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ]
+
+        asyncio.run(_attached(controller, pods).reconcile(_key(TRAINER_POOL_ID, 0, 0)))
+
+        assert [name for name, _ in core_v1.patched] == [
+            _pod_name(INFERENCE_POOL_ID, 0),
+            _pod_name(DECODE_POOL_ID, 0),
+        ]
 
 
 class TestPairingConfig:
@@ -870,16 +974,19 @@ class TestPairingConfig:
 
 
 class FakeCoreV1:
-    def __init__(self) -> None:
+    def __init__(self, *, rejects: dict[str, int] | None = None) -> None:
         self.patched: list[tuple[str, list[dict[str, Any]]]] = []
+        self._rejects = rejects or {}
 
     async def patch_namespaced_pod(self, *, name: str, namespace: str, body: list[dict[str, Any]]) -> None:
+        if (status := self._rejects.get(name)) is not None:
+            raise client.ApiException(status=status, reason="rejected by the fake apiserver")
         self.patched.append((name, body))
 
 
 class PairingHarness:
-    def __init__(self, *, layout: PairingLayout | None = None) -> None:
-        self.core_v1 = FakeCoreV1()
+    def __init__(self, *, layout: PairingLayout | None = None, rejects: dict[str, int] | None = None) -> None:
+        self.core_v1 = FakeCoreV1(rejects=rejects)
         self.source = FakeSource()
         self.clock = FakeClock()
         pools = [_inference_pool(layout or _layout(num_inference_cells=2, num_trainer_cells=2))]
@@ -952,6 +1059,22 @@ class TestEventSequences:
                 ),
             ]
 
+    async def test_releases_every_sub_node_inference_when_their_shared_trainer_lands(self):
+        """One trainer event has to carry both half-node inference pods onto that node, not just one."""
+        harness = PairingHarness(layout=_sub_node_layout())
+
+        async with harness.running(
+            _pod(INFERENCE_POOL_ID, 0), _pod(INFERENCE_POOL_ID, 1), _pod(TRAINER_POOL_ID, 0, 0)
+        ):
+            assert harness.core_v1.patched == []
+
+            await harness.upsert(_pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False))
+
+            assert harness.patched_names() == [
+                _pod_name(INFERENCE_POOL_ID, 0),
+                _pod_name(INFERENCE_POOL_ID, 1),
+            ]
+
     async def test_leaves_the_inference_gated_while_the_trainer_has_no_node(self):
         """A trainer pod exists long before it is scheduled, and its node is the only thing worth waiting on."""
         harness = PairingHarness()
@@ -1020,3 +1143,18 @@ class TestEventSequences:
             await harness.upsert(_pod(TRAINER_POOL_ID, 0, node_name="gpu-3", gated=False))
 
             assert harness.core_v1.patched == []
+
+    async def test_a_refused_release_is_left_to_the_pass_that_sees_a_fresher_store(self):
+        """The refusal aborts the pass; once the store shows that pod placed, its neighbour goes through."""
+        harness = PairingHarness(layout=_sub_node_layout(), rejects={_pod_name(INFERENCE_POOL_ID, 0): 422})
+
+        async with harness.running(
+            _pod(INFERENCE_POOL_ID, 0),
+            _pod(INFERENCE_POOL_ID, 1),
+            _pod(TRAINER_POOL_ID, 0, 0, node_name="gpu-3", gated=False),
+        ):
+            assert harness.patched_names() == []
+
+            await harness.upsert(_pod(INFERENCE_POOL_ID, 0, node_name="gpu-3", gated=False))
+
+            assert harness.patched_names() == [_pod_name(INFERENCE_POOL_ID, 1)]
