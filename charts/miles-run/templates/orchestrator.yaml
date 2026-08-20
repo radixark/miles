@@ -1,3 +1,4 @@
+{{- if not .Values.commandJob.enabled }}
 {{- $name := .Values.run.objectNames.orchestrator }}
 {{- if .Values.run.orchestrator.command }}
 {{- if not .Values.run.stateFile }}
@@ -74,4 +75,5 @@ spec:
       volumes:
         {{- . | nindent 8 }}
       {{- end }}
+{{- end }}
 {{- end }}
