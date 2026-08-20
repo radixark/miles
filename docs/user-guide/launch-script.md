@@ -141,11 +141,11 @@ documents the flags themselves:
 | `grpo_args` | [RL objective](/user-guide/argument-groups#grpo-args) |
 | `optimizer_args` | [Optimizer](/user-guide/argument-groups#optimizer-args) |
 | `sglang_args` | [Rollout engine](/user-guide/argument-groups#sglang-args) |
+| `misc_args` | [GPU layout and everything else](/user-guide/argument-groups#misc-args) |
 
-Two blocks have no Argument Groups section: `misc_args` carries the cluster shape
-(`--colocate`, `--actor-num-nodes`, `--actor-num-gpus-per-node`), and the wandb flags
-come from `U.get_default_wandb_args`, which returns them only when `WANDB_API_KEY` is
-set — so wandb logging turns on by exporting the key, with no script change.
+One block has no Argument Groups section: the wandb flags come from
+`U.get_default_wandb_args`, which returns them only when `WANDB_API_KEY` is set — so
+wandb logging turns on by exporting the key, with no script change.
 
 ## Three ways to override a recipe
 

@@ -297,6 +297,7 @@ class _PartitionReader:
         self._max_blocks = max_blocks
         self._blocks: OrderedDict[str, Any] = OrderedDict()
         self._offsets: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def files(self) -> list[tuple[str, Path]]:
         out = [(self.LEGACY_KEY, self.legacy_path)] if self.legacy_path.exists() else []
@@ -331,27 +332,29 @@ class _PartitionReader:
         return added
 
     def _block(self, key: str, path: Path) -> Any:
-        offset = self._offsets.get(key, 0)
-        if key in self._blocks and path.stat().st_size <= offset:
+        # read+parse release the GIL; two fills from one stale offset append the bytes twice
+        with self._lock:
+            offset = self._offsets.get(key, 0)
+            if key in self._blocks and path.stat().st_size <= offset:
+                self._blocks.move_to_end(key)
+                return self._blocks[key]
+            with open(path, "rb") as f:
+                f.seek(offset)
+                chunk = f.read()
+            end = chunk.rfind(b"\n")
+            if end >= 0:
+                new = self._parse(chunk[: end + 1], path, offset)
+                pieces = [self._blocks[key], new] if key in self._blocks else [new]
+                self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
+                self._offsets[key] = offset + end + 1
+            elif key not in self._blocks:
+                self._blocks[key] = self._concat([])
+                self._offsets[key] = offset
             self._blocks.move_to_end(key)
+            while len(self._blocks) > self._max_blocks:
+                evicted, _ = self._blocks.popitem(last=False)
+                self._offsets.pop(evicted, None)
             return self._blocks[key]
-        with open(path, "rb") as f:
-            f.seek(offset)
-            chunk = f.read()
-        end = chunk.rfind(b"\n")
-        if end >= 0:
-            new = self._parse(chunk[: end + 1], path, offset)
-            pieces = [self._blocks[key], new] if key in self._blocks else [new]
-            self._blocks[key] = self._concat([piece for piece in pieces if self._length(piece)])
-            self._offsets[key] = offset + end + 1
-        elif key not in self._blocks:
-            self._blocks[key] = self._concat([])
-            self._offsets[key] = offset
-        self._blocks.move_to_end(key)
-        while len(self._blocks) > self._max_blocks:
-            evicted, _ = self._blocks.popitem(last=False)
-            self._offsets.pop(evicted, None)
-        return self._blocks[key]
 
     def edge_stamps(self) -> list[float]:
         """Global-range candidates from the first line of the oldest file and

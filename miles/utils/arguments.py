@@ -12,7 +12,7 @@ from miles.backends.sglang_utils.arguments import validate_args as sglang_valida
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
 from miles.rollout.checkpoint_eval import is_checkpoint_eval_fn
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
-from miles.utils.environ import enable_experimental_ft_trainer, enable_experimental_rollout_refactor
+from miles.utils.environ import enable_experimental_ft_trainer, use_legacy_rollout_v1
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
     """The (rollout, eval) function paths the arguments select."""
-    if enable_experimental_rollout_refactor():
-        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
-    else:
+    if use_legacy_rollout_v1():
         standard_path = "miles.rollout.sglang_rollout.generate_rollout"
+    else:
+        standard_path = "miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn"
     rollout_path = args.rollout_function_path or standard_path
     if args.fully_async:
         rollout_path = "miles.rollout.fully_async_rollout.FullyAsyncRolloutFn"
@@ -42,11 +42,15 @@ def resolve_rollout_function_paths(args) -> tuple[str, str]:
 
 
 def _resolve_rollout_functions(args) -> None:
-    if args.fully_async:
-        assert enable_experimental_rollout_refactor(), (
-            "--fully-async needs the class-based rollout API: set MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1 "
-            "(and propagate it through runtime_env when submitting via Ray)"
+    if args.partial_rollout and args.mask_offpolicy_in_partial_rollout and not use_legacy_rollout_v1():
+        raise ValueError(
+            "--mask-offpolicy-in-partial-rollout does not re-extend the loss mask on the "
+            "class-based rollout path yet; set MILES_USE_LEGACY_ROLLOUT_V1=1"
         )
+    if args.fully_async:
+        assert (
+            not use_legacy_rollout_v1()
+        ), "--fully-async needs the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         # Runs after validate_multi_lora_args, which selects a rollout function of its own.
         assert not args.multi_lora, "--fully-async and multi-LoRA select different rollout functions"
         assert (
@@ -480,7 +484,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "so its signature should be "
                     "`def generate_rollout(args, rollout_id, data_source, evaluation=False) "
                     "-> RolloutFnTrainOutput | RolloutFnEvalOutput` "
-                    "(see `miles.rollout.sglang_rollout.generate_rollout` for the default impl). "
+                    "(see `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` "
+                    "for the default class-based implementation). "
                     "Within each output sample, set at least `tokens`, `response_length`, `reward`, "
                     "and `truncated`."
                 ),
@@ -493,7 +498,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Run fully async rollout: a persistent worker keeps generating while the trainer "
                     "drains completed groups. Selects `FullyAsyncRolloutFn` as the rollout function; "
                     "evaluation keeps the standard rollout function, which fully async does not serve. "
-                    "Requires train_async.py and MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1."
+                    "Requires train_async.py."
                 ),
             )
             parser.add_argument(
@@ -2639,7 +2644,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         parser = add_prefill_decode_disaggregation_arguments(parser)
         parser = add_ci_arguments(parser)
         parser = add_custom_megatron_plugins_arguments(parser)
-        if enable_experimental_rollout_refactor():
+        if not use_legacy_rollout_v1():
             parser = add_user_provided_function_arguments(parser)
 
         reset_arg(
@@ -2985,6 +2990,11 @@ def miles_validate_args(args):
             raise ValueError("--opd-log-prob-top-k must be non-negative.")
         if args.opd_log_prob_top_k > 0 and args.opd_type != "sglang":
             raise ValueError("--opd-log-prob-top-k is currently supported only with --opd-type=sglang.")
+        if args.opd_log_prob_top_k > 0 and args.opd_top_k_strategy != "only-teacher" and not use_legacy_rollout_v1():
+            raise ValueError(
+                "--opd-log-prob-top-k with a student-side strategy needs opd_student_top_logprobs, "
+                "which only the v1 rollout produces; set MILES_USE_LEGACY_ROLLOUT_V1=1"
+            )
         if args.opd_teacher_urls:
             if args.opd_type != "sglang":
                 raise ValueError("--opd-teacher-urls is only supported with --opd-type=sglang.")
@@ -3326,27 +3336,29 @@ def miles_validate_args(args):
 
     _validate_rematerialize_param_from_master_weight(args)
 
+    if (args.offload_train_target == "disk" or args.stream_optimizer_state_to_disk) and (
+        args.offload_train_disk_dir is None
+    ):
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        args.offload_train_disk_dir = os.path.join(os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}")
+
     if args.offload_train_target == "disk":
         assert args.offload_train, "--offload-train-target=disk requires --offload-train"
         assert (
             args.train_backend == "megatron"
         ), "--offload-train-target=disk is only supported on the megatron backend"
         assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
-        if args.offload_train_disk_dir is None:
-            uid = os.getuid() if hasattr(os, "getuid") else 0
-            args.offload_train_disk_dir = os.path.join(
-                os.environ.get("SCRATCH", "/scratch"), f"miles_train_offload_{uid}"
-            )
         logger.info(
             f"Train offload target=disk, dir={args.offload_train_disk_dir}, "
             f"chunk={args.offload_train_disk_chunk_mb}MB"
         )
 
     if args.stream_optimizer_state_to_disk:
-        assert args.offload_train_target == "disk", (
-            "--stream-optimizer-state-to-disk requires --offload-train-target=disk. Both answer the "
-            "same pressure and are only ever deployed as a pair, so that is the only combination "
-            "validated; streaming alone runs but is untested."
+        assert args.offload_train_target == "disk" or not args.offload_train, (
+            "--stream-optimizer-state-to-disk with --offload-train requires "
+            "--offload-train-target=disk: a run that cannot hold the optimizer state on GPU for "
+            "the duration of the step will not hold a pinned host copy of the whole actor either. "
+            "Disaggregated runs do not offload the trainer at all, and the target is unused there."
         )
         assert not args.indep_dp, (
             "--stream-optimizer-state-to-disk does not support --indep-dp: each cell has its own "
@@ -3398,8 +3410,8 @@ def miles_validate_args(args):
     # (The fleet-vs-CheckpointEvalFn conflict is asserted where the posture is derived.)
     if args.eval_uses_snapshots:
         assert (
-            enable_experimental_rollout_refactor()
-        ), "Snapshot eval requires the class-based rollout API (MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1)."
+            not use_legacy_rollout_v1()
+        ), "Snapshot eval requires the class-based rollout API; unset MILES_USE_LEGACY_ROLLOUT_V1"
         assert args.eval_interval is not None, "Snapshot eval requires --eval-interval."
         assert args.eval_hf_dir is not None or args.save_hf is not None, (
             "Snapshot eval requires a snapshot source: set --eval-hf-dir (staging exports) "

@@ -50,11 +50,12 @@ miles/
 │   └── training_utils/   # loss.py / loss_hub/, ParallelState, log + CI checkers
 ├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
 ├── rollout/
-│   ├── sglang_rollout.py # default rollout function
+│   ├── sglang_rollout.py # legacy v1 rollout function
 │   ├── data_source.py    # buffer + JSONL loader
 │   ├── filter_hub/       # built-in filters
+│   ├── rm_hub/           # built-in reward types (`--rm-type` dispatch)
 │   ├── fully_async_*.py  # queue-backed producer for train_async.py
-│   └── inference_rollout/# experimental rollout refactor
+│   └── inference_rollout/# default class-based rollout
 ├── router/               # FastAPI proxy + worker load-balancer (router.py)
 ├── dashboard/            # run dashboard: collector, backend, dump reader
 ├── true_on_policy/       # true-on-policy contracts and per-model profiles
@@ -102,7 +103,7 @@ from the trainer loop and uses a continuously-running worker.
 | You want to … | Edit |
 |---|---|
 | Add a new RL algorithm | `miles/backends/training_utils/loss.py` and `loss_hub/`, plus the enum in `miles/utils/arguments.py` |
-| Add a new built-in reward type | `miles/rollout/sglang_rollout.py` (rm dispatch) |
+| Add a new built-in reward type | `miles/rollout/rm_hub/` (the `rm_type` dispatch lives in its `__init__.py`) |
 | Add a new built-in filter | `miles/rollout/filter_hub/` |
 | Support a new architecture on Megatron | `miles_plugins/models/<model>.py` + a bridge in `miles_plugins/mbridge/` |
 | Support a new architecture on FSDP | `miles/backends/fsdp_utils/adaptations/specs/<arch>.py` |

@@ -18,7 +18,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(
     est_time=600,                  # rough seconds the test takes; used to balance + time-out
     suite="stage-c-4-gpu-h200",    # which hardware bucket runs it (table below)
-    labels=["megatron"],           # see "Will it run on my PR?"; use [] for always-on
+    labels=["megatron"],           # required; see "Will it run on my PR?"
 )
 ```
 
@@ -51,12 +51,10 @@ If your file does **not** show up, check, in order:
 
 ### Will it run on my PR?
 
-`labels` gates *which PRs* trigger your test within its eligible cadence:
-
-- `labels=[]` (or omitted) → **always-on** within the eligible cadence; with the default `nightly=False`, this includes every PR.
+`labels` gates *which PRs* trigger your test within its eligible cadence. GPU registrations require at least one domain label:
 - `labels=["megatron"]` → runs only when the PR carries the GitHub label **`run-ci-megatron`** (the `run-ci-` prefix is added on the PR side). This keeps the heavy GPU matrix off unrelated PRs.
 
-Cadence is independent of labels: `nightly=True` excludes a registration from regular cadence, while nightly and weekly runs include both ordinary and `nightly=True` registrations.
+Cadence is independent of labels: `nightly=True` excludes a registration from regular cadence, while nightly, weekly, and release runs include both ordinary and `nightly=True` registrations.
 
 So if your test is gated and you don't see it run, add the matching `run-ci-<label>` label to your PR. To force the full suite regardless of labels, a maintainer can add `run-ci-all`. Valid labels live in `tests/ci/labels.py`; using one outside that list is a hard error at collection time.
 
@@ -98,7 +96,7 @@ When a re-run still shows an infra signal from the table above, open a **GitHub 
 - A short **log snippet** of the error (the infra signal line).
 - What you already tried (e.g. "re-ran twice, same `ENOSPC`").
 
-A maintainer maps the runner to its host and fixes the machine; you don't need runner access. For a fast sanity check before filing, you can ask in the Miles channel of the [SGLang Slack](https://slack.sglang.ai), but the **GitHub Issue is the tracked record**.
+A maintainer maps the runner to its host and fixes the machine; you don't need runner access. For a fast sanity check before filing, you can ask in the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai), but the **GitHub Issue is the tracked record**.
 
 ## Report a flaky test
 

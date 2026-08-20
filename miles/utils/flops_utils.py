@@ -163,13 +163,24 @@ def flops_args_from_hf_config(config):
     assert num_layers is not None, f"no layer count on {type(config).__name__}; cannot size the FLOPs model"
     num_experts = _first(config, "n_routed_experts", "num_experts", "num_local_experts")
 
-    shared_ffn = getattr(config, "shared_expert_intermediate_size", None)
-    if shared_ffn is None and getattr(config, "n_shared_experts", None):
-        shared_ffn = config.n_shared_experts * config.moe_intermediate_size
+    dense_ffn = getattr(config, "intermediate_size", None)
 
     moe_ffn = getattr(config, "moe_intermediate_size", None)
     if num_experts is not None and moe_ffn is None:
-        moe_ffn = config.intermediate_size
+        moe_ffn = dense_ffn
+
+    shared_ffn = getattr(config, "shared_expert_intermediate_size", None)
+    if shared_ffn is None and getattr(config, "n_shared_experts", None):
+        shared_ffn = config.n_shared_experts * moe_ffn
+
+    moe_layer_freq = _moe_layer_pattern(config, num_layers, num_experts)
+    needs_dense = moe_layer_freq is None or any(f == 0 for f in moe_layer_freq)
+    needs_moe = moe_layer_freq is not None and any(f > 0 for f in moe_layer_freq)
+    if (needs_dense and dense_ffn is None) or (needs_moe and moe_ffn is None):
+        raise ValueError(
+            f"{type(config).__name__} does not expose the FFN widths the FLOPs model needs "
+            f"(dense={dense_ffn}, moe={moe_ffn}); it likely nests them under a sub-config"
+        )
 
     return SimpleNamespace(
         hidden_size=hidden_size,
@@ -177,13 +188,13 @@ def flops_args_from_hf_config(config):
         num_query_groups=_first(config, "num_key_value_heads", default=num_attention_heads),
         vocab_size=config.vocab_size,
         num_layers=num_layers,
-        ffn_hidden_size=config.intermediate_size,
+        ffn_hidden_size=dense_ffn,
         kv_channels=_first(config, "head_dim", default=hidden_size // num_attention_heads),
         num_experts=num_experts,
         moe_ffn_hidden_size=moe_ffn,
         moe_router_topk=_first(config, "num_experts_per_tok", "moe_topk", default=1),
         moe_shared_expert_intermediate_size=shared_ffn,
-        moe_layer_freq=_moe_layer_pattern(config, num_layers, num_experts),
+        moe_layer_freq=moe_layer_freq,
         q_lora_rank=getattr(config, "q_lora_rank", None),
         kv_lora_rank=getattr(config, "kv_lora_rank", None),
         qk_head_dim=getattr(config, "qk_nope_head_dim", None) or 0,

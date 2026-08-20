@@ -10,6 +10,7 @@ from tqdm import tqdm
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
@@ -127,7 +128,10 @@ async def generate_rollout_async(
             if do_print:
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
-                    f"First rollout sample: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+                    "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
+                    sample_text_preview(sample),
+                    str(sample.label)[:100],
+                    reward_log_summary(sample.reward),
                 )
                 do_print = False
 
@@ -147,7 +151,10 @@ async def generate_rollout_async(
     pbar.close()
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
-        f"Finish rollout: {[str(sample.prompt) + sample.response]}, label: {sample.label}, reward: {sample.reward}",
+        "Finish rollout: text_preview=%s, label=%s, reward_summary=%s",
+        sample_text_preview(sample),
+        str(sample.label)[:100],
+        reward_log_summary(sample.reward),
     )
 
     # there are still some unfinished requests, abort them

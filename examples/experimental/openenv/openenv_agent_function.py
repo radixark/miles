@@ -288,7 +288,8 @@ async def multi_turn(
                 model=model_name, messages=convo, extra_body=request_kwargs
             )
             gen_times.append(time.monotonic() - t0)
-            message = completion.choices[0].message
+            choice = completion.choices[0]
+            message = choice.message
             reply = message.content or ""
             # Echo the assistant turn back verbatim. The session server stores the
             # message exactly as SGLang emitted it -- content plus reasoning_content
@@ -299,6 +300,9 @@ async def multi_turn(
             # in matched prefix". model_dump round-trips whatever the SDK parsed
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
+
+            if choice.finish_reason == "length":
+                break
 
             command = _strip_fence(reply) if "```" in reply else reply.strip()
             if not command or command.upper().startswith("TASK_COMPLETE"):

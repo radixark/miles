@@ -11,6 +11,7 @@ const DEFAULT_COLUMNS = [
   "response_length",
   "truncated",
   "versions",
+  "staleness",
   "turns",
   "tool_calls",
   "mean_abs_lp_diff",
@@ -20,8 +21,7 @@ const DEFAULT_COLUMNS = [
   "non_generation_time",
 ];
 
-// staleness span rendered as one sortable-ish string column; mixed-version
-// samples are exactly what --use-tis corrects, so they must not blend in
+// one string column so mixed-version samples stay visibly distinct
 function versionSpan(row) {
   if (row.weight_version === null || row.weight_version === undefined) return null;
   const lo = row.weight_version_min;
@@ -117,14 +117,9 @@ export async function renderRollout(view, meta, route) {
     statBox("truncated frac", mean(rows.map((r) => (r.truncated ? 1 : 0)))),
     statBox("zero-std groups", `${zeroStdGroups}/${groups.rows.length}`),
     statBox("mixed-version frac", mean(rows.map((r) => (r.mixed_version === null ? null : +r.mixed_version)).filter((v) => v !== null))),
-    // staleness = trainer version at consume − generation version; the engine
-    // counter is 1 after the startup push and +1 per train step, so the
-    // trainer holds v(step+1) when consuming step N
     statBox(
       "avg staleness",
-      evaluation
-        ? null
-        : mean(rows.map((r) => (r.weight_version_min == null ? null : rolloutId + 1 - r.weight_version_min)).filter((v) => v !== null)),
+      evaluation ? null : mean(rows.map((r) => r.staleness).filter((v) => v !== null && v !== undefined)),
     ),
     statBox("mean |lp diff|", mean(rows.map((r) => r.mean_abs_lp_diff).filter((v) => v !== null))),
     statBox("mean entropy", mean(rows.map((r) => r.mean_entropy).filter((v) => v !== null))),

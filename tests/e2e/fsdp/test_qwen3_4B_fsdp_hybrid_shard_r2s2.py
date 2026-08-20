@@ -11,7 +11,7 @@ register_cuda_ci(
 )
 register_rocm_ci(
     est_time=600,
-    suite="stage-c-4-gpu-mi300x",
+    suite="stage-c-4-gpu-mi350",
     labels=["fsdp", "amd"],
 )
 
@@ -90,7 +90,6 @@ def execute():
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=None,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 

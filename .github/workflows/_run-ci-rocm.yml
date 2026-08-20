@@ -9,7 +9,7 @@ on:
       runs_on:
         type: string
         required: true
-        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi300x", "4gpu"]'' picks runners that carry ALL the listed labels.'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi350", "4gpu"]'' picks runners that carry ALL the listed labels.'
       container_image:
         # No default: pr-test-rocm.yml's resolve-ci-image is the single
         # source of the image name, so a dated tag can't rot here.
@@ -22,6 +22,11 @@ on:
         type: boolean
         required: false
         default: true
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
+        type: string
+        required: false
+        default: ''
     secrets:
       WANDB_API_KEY:
         required: false
@@ -30,7 +35,7 @@ jobs:
   run:
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
-    # (e.g. the label name '["amd", "mi300x", "4gpu"]' with brackets), which no
+    # (e.g. the label name '["amd", "mi350", "4gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
@@ -60,6 +65,7 @@ jobs:
         working-directory: ${{ github.workspace }}
     env:
       PYTHONPATH: ${{ github.workspace }}
+      MILES_HARDWARE_PLATFORM: rocm
       GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
@@ -67,6 +73,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Cleanup Ray processes
@@ -152,14 +159,14 @@ jobs:
           cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
           cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install polars zstandard xxhash blake3 --break-system-packages
+          pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
       - name: Install (miles only)
         if: ${{ inputs.skip_dependency_install }}
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install polars zstandard xxhash blake3 --break-system-packages
+          pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
       - name: Resolve suite plan
         shell: bash

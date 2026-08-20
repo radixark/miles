@@ -134,6 +134,13 @@ class ExecuteTrainConfig:
     output_dir: str = "/root/shared_data"
 
 
+def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainConfig) -> dict[str, str]:
+    return {
+        **extra_env_vars,
+        **_parse_extra_env_vars(config.extra_env_vars),
+    }
+
+
 def execute_train(
     train_args: str,
     num_gpus_per_node: int,
@@ -214,8 +221,7 @@ def execute_train(
             if config.cuda_core_dump
             else {}
         ),
-        **extra_env_vars,
-        **_parse_extra_env_vars(config.extra_env_vars),
+        **resolve_extra_env_vars(extra_env_vars, config),
     }
     runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
     runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
@@ -360,6 +366,9 @@ def encode_pseudo_file(text: str) -> str:
 
 NUM_GPUS_OF_HARDWARE = {
     "H100": 8,
+    "H200": 8,
+    "B200": 8,
+    "B300": 8,
     "GB200": 4,
     "GB300": 4,
     "MI350X": 8,

@@ -68,6 +68,7 @@ async def test_success_returns_list_and_forwards_agent_metadata(monkeypatch):
     output = await agentic_tool_call.generate(_generate_input())
 
     assert output.samples == [sample]
+    assert output.samples[0].rollout_id is None
     assert tracer.agent_metadata == {"agent_result": "done"}
 
 
@@ -91,8 +92,11 @@ async def test_success_assigns_shared_rollout_id_to_v2_leaves(monkeypatch, input
 
 @pytest.mark.asyncio
 async def test_v2_requires_input_rollout_identity(monkeypatch):
-    leaf = Sample(status=Sample.Status.COMPLETED, response="done", response_length=1, tokens=[1])
-    tracer = _Tracer(SamplesReply(samples=[leaf], session_metadata={}, empty_reason=None))
+    leaves = [
+        Sample(status=Sample.Status.COMPLETED, response="one", response_length=1, tokens=[1]),
+        Sample(status=Sample.Status.COMPLETED, response="two", response_length=1, tokens=[2]),
+    ]
+    tracer = _Tracer(SamplesReply(samples=leaves, session_metadata={}, empty_reason=None))
     _patch_agent(monkeypatch, tracer)
     generate_input = _generate_input()
     generate_input.sample.index = None

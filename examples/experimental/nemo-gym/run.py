@@ -180,9 +180,6 @@ def execute(args: ScriptArgs):
 
     extra_env_vars = {
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
-        # Gates the dynamic registration of the agentic flags above; without
-        # it train.py fails with "unrecognized arguments".
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "NEMO_GYM_URL": args.nemo_gym_url,
     }
     if args.router_external_host:

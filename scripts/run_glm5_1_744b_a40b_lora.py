@@ -278,7 +278,6 @@ def _train(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             # GLM-5 DSA indexer uses interleaved RoPE; a mismatch garbles long sequences
             "INDEXER_ROPE_NEOX_STYLE": "0",
             "SGLANG_NSA_FORCE_MLA": "1",

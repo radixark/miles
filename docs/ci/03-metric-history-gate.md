@@ -39,7 +39,7 @@ A declaration sits at top level of the test file, next to its CI registration �
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100")
+register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100", labels=["megatron"])
 
 register_ci_gate(
     metric_key="train/ppo_kl",                     # must be a captured key (whitelist)
@@ -204,7 +204,7 @@ Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/me
 
 - A run is `trusted` iff it passed **all** active gates. A drifting run is still recorded, with `trusted = false`, so it can't drag the baseline. A test that fails then passes on **retry** is gated on its passing attempt's metrics and trusted normally — needing a retry is not itself a trust penalty.
 - **Clean a bad point**: `mark_untrusted` = `UPDATE runs SET trusted = false` on the run. The next gate read excludes it immediately — no rebaseline, no row deletion.
-- **Nightly and weekly runs write baselines** — either an explicitly mapped `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records whether a writer was scheduled or PR-triggered, so a label-PR baseline can be `mark_untrusted`'d if it turns out bad. Ordinary (unlabeled) PR runs are read-only and only shadow.
+- **Nightly and weekly runs write baselines** — either an explicitly mapped `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records whether a writer was scheduled or PR-triggered, so a label-PR baseline can be `mark_untrusted`'d if it turns out bad. Ordinary PR runs and explicitly called release runs are read-only and only shadow; frozen release dependency SHAs must not enter the rolling baseline.
 - **What one baseline-writing run writes** — one `runs` row plus one `metric_values` row per value coordinate: two specs sharing a coordinate (identical `steps` + `constraint` literals, differing only in policy metadata) collapse to a single row, so a duplicated declaration cannot double-weight the baseline mean; and a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
 
 
@@ -220,7 +220,7 @@ Shadow-first: collect, store, and evaluate, but **never block a PR** initially �
 **Goal:** record accepted caveats and open questions beside the behavior they qualify; planned-but-unimplemented work lives in TODO below.
 
 - A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset levers are manual — `mark_untrusted` the stale runs, or edit the declaration literals (new `steps_key` / `constraint_key` ⇒ fresh coordinate).
-- Baseline writing is selected by the resolved CI policy rather than inferred from `GITHUB_EVENT_NAME`; nightly and weekly write, while regular runs stay shadow-only.
+- Baseline writing is selected by the resolved CI policy rather than inferred from `GITHUB_EVENT_NAME`; nightly and weekly write, while regular and release runs stay shadow-only.
 - Open: should a brand-new test's first baselines need human confirmation before counting as trusted? (v1: no.)
 
 

@@ -2,28 +2,36 @@
 title: Argument Groups
 description: The launch-script argument groups used by Miles recipes, with links to the flags that belong in each group.
 ---
-Miles launch scripts are bash arrays. The grouping is deliberately boring: each array
-owns one operational concern, then the script expands all arrays into `train.py` or
-`train_async.py`.
+Miles launch scripts are Python (`scripts/run_*.py`). The grouping is deliberately
+boring: each script builds one string per operational concern, concatenates them into
+`train_args`, and hands that to `execute_train`, which submits `train.py` or
+`train_async.py` as a Ray job.
 
 Use this page to decide where a flag belongs. Use the [CLI Reference](/user-guide/cli-reference)
-when you need the full default and type for an individual flag.
+when you need the full default and type for an individual flag. For how a script is laid
+out and how to override one, see [Launch Script](/user-guide/launch-script).
 
-| Group | Owns | Typical source |
+| Group | Owns | Where it comes from |
 |---|---|---|
-| [`MODEL_ARGS`](#model-args) | Architecture constants and plugin specs | `scripts/models/<family>.py` |
-| [`CKPT_ARGS`](#ckpt-args) | Actor, reference, HF tokenizer/config, save paths | Launch script |
-| [`ROLLOUT_ARGS`](#rollout-args) | Prompt data, sampling, reward, train/eval batch flow | Launch script |
-| [`EVAL_ARGS`](#eval-args) | Evaluation datasets and eval-only sampling overrides | Launch script |
-| [`PERF_ARGS`](#perf-args) | Parallelism, recomputation, dynamic batching | Recipe defaults |
-| [`GRPO_ARGS`](#grpo-args) | RL objective, KL, clipping, entropy, advantage estimator | Recipe defaults |
-| [`OPTIMIZER_ARGS`](#optimizer-args) | Learning rate, schedule, weight decay, Adam betas | Recipe defaults |
-| [`SGLANG_ARGS`](#sglang-args) | Rollout engine topology and `--sglang-*` passthrough | Deployment shape |
+| [model args](#model-args) | Architecture constants and plugin specs | `scripts/models/<megatron_model_type>.py`, spliced in by `execute_train` |
+| [`ckpt_args`](#ckpt-args) | Actor, reference, HF tokenizer/config, save paths | Launch script |
+| [`rollout_args`](#rollout-args) | Prompt data, sampling, reward, train/eval batch flow | Launch script |
+| [`eval_args`](#eval-args) | Evaluation datasets and eval-only sampling overrides | Launch script |
+| [`perf_args`](#perf-args) | Parallelism, recomputation, dynamic batching | Recipe defaults |
+| [`grpo_args`](#grpo-args) | RL objective, KL, clipping, entropy, advantage estimator | Recipe defaults |
+| [`optimizer_args`](#optimizer-args) | Learning rate, schedule, weight decay, Adam betas | Recipe defaults |
+| [`sglang_args`](#sglang-args) | Rollout engine topology and `--sglang-*` passthrough | Deployment shape |
+| [`misc_args`](#misc-args) | GPU layout, colocation, dropout, dashboard | Launch script |
+
+The names above are the local variables every launcher uses; a script that needs no eval
+simply leaves `eval_args` empty. Model args are the one group a launcher does not build:
+it passes `megatron_model_type` to `execute_train`, which resolves the matching file
+under `scripts/models/` and prepends those flags to the command line.
 
 <a id="model-args"></a>
-## MODEL_ARGS - architecture constants
+## Model args - architecture constants
 
-`MODEL_ARGS` tells Megatron what model it is instantiating. Megatron cannot infer all
+Model args tell Megatron what model it is instantiating. Megatron cannot infer all
 architecture details from a HuggingFace checkpoint, so each recipe loads a matching
 file from `scripts/models/`.
 
@@ -42,9 +50,9 @@ family changes rotary base, vocab padding, or normalization epsilon, override th
 sourced defaults in the launch script.
 
 <a id="ckpt-args"></a>
-## CKPT_ARGS - checkpoint paths
+## `ckpt_args` - checkpoint paths
 
-`CKPT_ARGS` wires the three model roles in a run:
+`ckpt_args` wires the three model roles in a run:
 
 | Role | Flag |
 |---|---|
@@ -57,9 +65,9 @@ sourced defaults in the launch script.
 `latest_checkpointed_iteration.txt`, Miles warm-starts the actor from `--ref-load`.
 
 <a id="rollout-args"></a>
-## ROLLOUT_ARGS - sampling and reward
+## `rollout_args` - sampling and reward
 
-`ROLLOUT_ARGS` controls data entering the loop and how many samples each rollout
+`rollout_args` controls data entering the loop and how many samples each rollout
 produces.
 
 | Concern | Flags |
@@ -75,7 +83,7 @@ The rollout volume and training consumption must satisfy the
 [four-knob invariant](/user-guide/concepts#the-four-knob-invariant).
 
 <a id="eval-args"></a>
-## EVAL_ARGS - evaluation overrides
+## `eval_args` - evaluation overrides
 
 Evaluation reuses the rollout stack but usually runs with a different dataset and more
 deterministic sampling.
@@ -89,12 +97,12 @@ Common entries:
 | Eval group size | `--n-samples-per-eval-prompt` |
 | Eval-only generation | `--eval-max-response-len`, `--eval-top-p`, `--eval-temperature` |
 
-Flags not set in `EVAL_ARGS` inherit from `ROLLOUT_ARGS`.
+Flags not set in `eval_args` inherit from `rollout_args`.
 
 <a id="perf-args"></a>
-## PERF_ARGS - parallelism and memory
+## `perf_args` - parallelism and memory
 
-`PERF_ARGS` controls how training is sharded and how activation memory is managed.
+`perf_args` controls how training is sharded and how activation memory is managed.
 
 | Concern | Flags |
 |---|---|
@@ -111,9 +119,9 @@ see [parallelism compatibility](/user-guide/training-backend#parallelism-compati
 more than one dimension.
 
 <a id="grpo-args"></a>
-## GRPO_ARGS - RL objective
+## `grpo_args` - RL objective
 
-`GRPO_ARGS` controls the policy-gradient objective and the stability terms around it.
+`grpo_args` controls the policy-gradient objective and the stability terms around it.
 
 | Concern | Flags |
 |---|---|
@@ -128,9 +136,9 @@ Zero-weight KL is recipe-specific. `--use-kl-loss --kl-loss-coef 0.00` still loa
 reference and logs KL; it does not remove the reference model.
 
 <a id="optimizer-args"></a>
-## OPTIMIZER_ARGS - optimizer schedule
+## `optimizer_args` - optimizer schedule
 
-`OPTIMIZER_ARGS` carries the optimizer choice and scalar schedule.
+`optimizer_args` carries the optimizer choice and scalar schedule.
 
 Common entries:
 
@@ -145,9 +153,9 @@ Post-training is sensitive to large updates. Most recipes start near `1e-6` and 
 constant schedule unless the model page says otherwise.
 
 <a id="sglang-args"></a>
-## SGLANG_ARGS - rollout engine passthrough
+## `sglang_args` - rollout engine passthrough
 
-`SGLANG_ARGS` configures the inference side. Miles owns
+`sglang_args` configures the inference side. Miles owns
 `--rollout-num-gpus-per-engine`; everything prefixed with `--sglang-` is forwarded to
 `python -m sglang.launch_server` after removing the prefix.
 
@@ -158,9 +166,30 @@ Common entries:
 | Engine tensor parallelism | `--rollout-num-gpus-per-engine` |
 | Engine memory | `--sglang-mem-fraction-static` |
 | Context length | `--sglang-context-length` |
-| MoE serving | `--sglang-enable-ep-moe`, `--sglang-enable-dp-attention` |
+| MoE serving | `--sglang-ep-size`, `--sglang-moe-a2a-backend`, `--sglang-enable-dp-attention` |
 | Debugging | `--sglang-log-level` |
 
 SGLang parallelism is separate from trainer parallelism. For example,
 `--rollout-num-gpus-per-engine` maps to the SGLang server's TP size, not Megatron's
 `--tensor-model-parallel-size`.
+
+<a id="misc-args"></a>
+## `misc_args` - GPU layout and everything else
+
+`misc_args` carries what the other groups do not: how many GPUs the actor gets, whether
+it shares them with the rollout engines, the Megatron knobs a recipe pins once and never
+tunes, and the optional dashboard.
+
+Common entries:
+
+| Concern | Flags |
+|---|---|
+| GPU layout | `--actor-num-nodes`, `--actor-num-gpus-per-node`, `--num-gpus-per-node` |
+| Colocation | `--colocate` |
+| Numerics pinned by the recipe | `--attention-dropout 0.0`, `--hidden-dropout 0.0`, `--attention-softmax-in-fp32`, `--accumulate-allreduce-grads-in-fp32` |
+| Attention kernel | `--attention-backend` |
+| Observability | `--use-miles-dashboard`, `--dump-details` |
+
+Under `--colocate` the actor and the engines share the same GPUs and take turns, so
+`--rollout-num-gpus` is ignored; see
+[Training Backends](/user-guide/training-backend#3-choosing-the-gpu-layout).

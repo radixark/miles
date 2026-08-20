@@ -104,10 +104,11 @@ training GPUs, which is the point when you are sizing engines against a fixed cl
   cannot help with: add `--stream-optimizer-state-to-disk`, and consider
   `--stream-optimizer-state-moment-dtype bf16` to claw back some of the I/O cost.
 
-Streaming requires `--offload-train-target=disk`; miles asserts it. The two answer the same
-pressure and are only deployed as a pair, so that is the only combination covered.
-Streaming on its own does run — it is the one case where offload has nothing to do, because
-nothing else wants the training GPUs during rollout — but nothing validates it.
+Streaming on its own is the disaggregated case: nothing else wants the training GPUs during
+rollout, so there is no actor to park and `--offload-train-target` is never read. Pass
+`--stream-optimizer-state-to-disk` alone there. Under `--offload-train`, though, the two go
+together — a run that cannot hold the optimizer state on the GPU for the step will not hold
+a pinned host copy of the whole actor either — and miles asserts that pairing.
 
 Both mechanisms share `--offload-train-disk-dir` and `--offload-train-disk-chunk-mb`. Point the
 directory at real node-local NVMe: a tmpfs mount, which `/tmp` is on many systems, keeps

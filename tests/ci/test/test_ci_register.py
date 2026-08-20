@@ -84,30 +84,6 @@ class TestRegisterPositive:
         assert r.suite == "stage-a-cpu"
         assert r.labels == []
 
-    def test_labels_none_is_always_run(self, tmp_path):
-        # Explicit `labels=None` is equivalent to omitting / `labels=[]`.
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=None)
-            """,
-            tmp_path,
-        )
-        r = ut_parse_one_file(path)[0]
-        assert r.labels == []
-
-    def test_labels_empty_list_is_always_run(self, tmp_path):
-        # `labels=[]` is also legal and means always-run; no never-run rule.
-        path = _make_fixture(
-            """
-            from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
-            """,
-            tmp_path,
-        )
-        r = ut_parse_one_file(path)[0]
-        assert r.labels == []
-
     def test_cuda_multiple_labels(self, tmp_path):
         path = _make_fixture(
             """
@@ -158,6 +134,19 @@ class TestRegisterPositive:
 
 
 class TestRegisterNegative:
+    @pytest.mark.parametrize("func_name", ["register_cuda_ci", "register_rocm_ci"])
+    @pytest.mark.parametrize("labels_arg", ["", ", labels=None", ", labels=[]"])
+    def test_gpu_labels_must_be_non_empty(self, tmp_path, func_name, labels_arg):
+        path = _make_fixture(
+            f"""
+            from tests.ci.ci_register import {func_name}
+            {func_name}(est_time=60, suite="stage-b-2-gpu-h200"{labels_arg})
+            """,
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match=r"labels.*must contain at least one domain label"):
+            ut_parse_one_file(path)
+
     def test_unknown_label_rejected(self, tmp_path):
         path = _make_fixture(
             """
@@ -279,7 +268,7 @@ class TestSelectionHelpers:
         assert _extract_list_constant(node) == []
 
     def test_extract_list_constant_none_is_empty(self):
-        # Treat literal `None` as equivalent to `[]` (always-run intent).
+        # Literal `None` remains the CPU always-run spelling.
         node = ast.parse("None", mode="eval").body
         assert _extract_list_constant(node) == []
 
@@ -356,7 +345,7 @@ class TestFileTextMentionsRegister:
     def test_file_with_cuda_call_matches(self, tmp_path):
         p = tmp_path / "f.py"
         p.write_text(
-            "from tests.ci.ci_register import register_cuda_ci\nregister_cuda_ci(est_time=60, suite='stage-b-2-gpu-h200', labels=[])\n"
+            "from tests.ci.ci_register import register_cuda_ci\nregister_cuda_ci(est_time=60, suite='stage-b-2-gpu-h200', labels=['precision'])\n"
         )
         assert _file_text_mentions_register(str(p))
 
@@ -479,7 +468,7 @@ class TestCollectTestsFastGpuStrict:
             "test_gpu_thing.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"])
             """,
         )
         registries = collect_tests([path], sanity_check=True)
@@ -523,7 +512,7 @@ class TestCollectTestsCudaBanInFast:
             "test_misplaced.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"])
             """,
         )
         with pytest.raises(ValueError, match=r"register_cuda_ci is forbidden in tests/fast/"):
@@ -536,7 +525,7 @@ class TestCollectTestsCudaBanInFast:
             "test_ok.py",
             """
             from tests.ci.ci_register import register_cuda_ci
-            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=[])
+            register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["precision"])
             """,
         )
         registries = collect_tests([path], sanity_check=True)

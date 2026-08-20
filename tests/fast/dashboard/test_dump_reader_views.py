@@ -115,16 +115,13 @@ def test_tokens_full_range(reader):
     assert payload["lp_diff"][0] == pytest.approx(float(row.log_probs[0] - row.rollout_log_probs[0]))
 
 
-def test_tokens_blank_the_trainer_side_where_the_loss_is_masked(reader):
-    """A real dump holds no rollout log-prob for positions the loss ignores (tool
-    output, masked turns), so the trainer side is blanked to match instead of
-    reporting a disagreement against that placeholder. The removed sample is
-    masked end to end; an ordinary sample must keep every dumped value."""
+def test_tokens_null_the_stats_where_the_loss_is_masked(reader):
+    """mask=0 positions hold placeholders the engine never scored: they serialize
+    as null, never as numbers a chart would mistake for data."""
     masked = reader.tokens(0, REMOVED[0])
     assert masked["loss_mask"] and set(masked["loss_mask"]) == {0}
-    assert masked["train_log_probs"] == [0.0] * len(masked["loss_mask"])
-    assert masked["lp_diff"] == pytest.approx([-v for v in masked["rollout_log_probs"]])
-    assert masked["ref_log_probs"] is not None  # left as dumped: no view diffs it
+    for key in ("train_log_probs", "rollout_log_probs", "lp_diff", "imp_ratio", "ref_log_probs", "advantages"):
+        assert masked[key] == [None] * len(masked["loss_mask"]), key
 
     row = reader.load_joined(0).train_rows[0]
     unmasked = reader.tokens(0, 0)

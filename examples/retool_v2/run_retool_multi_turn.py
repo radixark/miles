@@ -192,7 +192,6 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },
     )

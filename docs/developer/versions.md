@@ -1,6 +1,6 @@
 ---
 title: Versions and Images
-description: How the Miles, SGLang, and Megatron-LM trees fit together, what the Docker images pin, and the principle for bumping any of them.
+description: How the Miles, SGLang, and Megatron-LM trees fit together, which artifact owns each release identity, and what the Docker images pin.
 ---
 A Miles run is three Python source trees on one `PYTHONPATH`. Understanding which tree owns
 a given behavior, and which file pins its version, is most of what you need to debug a
@@ -16,17 +16,13 @@ version problem or land a bump.
 
 Two things follow from that table.
 
-**Neither dependency is a released version.** Both are branches that carry patches Miles
-needs before they land upstream, which is why installing stock `sglang` or upstream
-Megatron-LM next to Miles does not work. The Docker image exists to make one coherent
-triplet, not merely to save you a `pip install`.
+**The dependency branches are moving development sources.** Both carry patches Miles needs before they land upstream, which is why installing stock `sglang` or upstream Megatron-LM next to Miles does not work. Ordinary `dev` images follow those branches; a versioned release records their exact commits in `release-lock.json`.
 
 **All three are editable installs.** Nothing is copied into `site-packages`, so changing a
 file in any of the three trees changes the next run. That is also what lets CI move the
 SGLang and Megatron-LM checkouts to a different ref without reinstalling anything.
 
-The `version` in `setup.py` (`0.2.1`) is packaging metadata. Miles is consumed from a
-checkout plus an image tag, not from a version number.
+The `version` in `setup.py` owns the base Miles release version `X.Y.Z`. Release candidates and post releases keep that base in `setup.py` and add `rcN` or `.postN` only to the exact Git and Docker tags.
 
 ## Where each pin is written
 
@@ -34,6 +30,7 @@ checkout plus an image tag, not from a version number.
 docker/Dockerfile     the image recipe and its default build-args
 docker/build.py       the variant table: which build-args each variant overrides
 requirements.txt      Miles' own Python dependencies
+release-lock.json     generated on a release branch: dependency commits, CI image tag, and audit fingerprints
 ```
 
 The default build-args are the version surface:
@@ -43,7 +40,7 @@ The default build-args are the version surface:
 | `SGLANG_IMAGE_TAG` | `v0.5.16` | The `lmsysorg/sglang` base image, which brings torch, CUDA and Transformer Engine |
 | `SGLANG_BRANCH` | `sglang-miles` | The branch fetched into the base image's SGLang checkout |
 | `SGLANG_COMMIT` | empty | Empty means the branch HEAD at build time; set it to freeze one commit |
-| `MEGATRON_REPO` / `MEGATRON_BRANCH` | `radixark/Megatron-LM` / `miles-main` | The Megatron-LM checkout |
+| `MEGATRON_REPO` / `MEGATRON_BRANCH` / `MEGATRON_COMMIT` | `radixark/Megatron-LM` / `miles-main` / empty | The Megatron-LM checkout; an empty commit follows branch HEAD, while a release build supplies the locked commit |
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
 | `ENABLE_CUDA_13` | `1` | CUDA 13 plus the Mooncake structured-object-store wheel; `0` selects the CUDA 12.9 path |
 | `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
@@ -66,6 +63,22 @@ carries its reason inline**: `transformers==5.12.1` names the HF-native weight c
 an SGLang collision, `blake3` / `xxhash` / `zstandard` name the disk-delta weight sync,
 `onnxscript` records that TE 2.17 imports it at import time. Follow that when you add one.
 
+## Release identities and source ownership
+
+Release values represent different facts. Each row below names the source used by the supported automatic path.
+
+| Fact | Authoritative source | Derived or consumed values |
+|---|---|---|
+| Base Miles version | `setup.py` | Release branch `release/vX.Y.Z`; base-version check before tagging |
+| Exact published version | `version` input to `release-tag.yml`, persisted as annotated Git tag `v<exact-version>` | CUDA image tags `v<exact-version>` and `v<exact-version>-cu12` |
+| Frozen dependency selection | `release-lock.json` committed on the release branch | SGLang commit, Megatron-LM commit, and the CUDA image tag used by release CI |
+
+For example, base version `0.3.0` owns branch `release/v0.3.0`; that branch can produce exact tags `v0.3.0rc0`, `v0.3.0`, and `v0.3.0.post1` without changing `setup.py` between tags.
+
+`release-lock.json` freezes the two dependency source commits and names the prune-exempt CUDA image used by release CI. Miles itself is frozen by the release commit and final Git tag. Wheels asset fingerprints are audit records, not content-addressed inputs.
+
+Use [Release a Version](/ci/04-release) for the maintainer procedure. That runbook owns workflow order, inputs, success signals, and recovery; this page owns the identity and pinning model.
+
 ## The images
 
 CUDA variants are published to [`radixark/miles`](https://hub.docker.com/r/radixark/miles)
@@ -79,12 +92,9 @@ fleet's image is.
 | `cu13` | `radixark/miles:dev` | `linux/amd64` + `linux/arm64`, one manifest. This is the daily image |
 | `cu13-x86` / `cu13-aarch64` | `radixark/miles:dev` | Single-arch rebuilds of the same image |
 | `cu12-x86` | `radixark/miles:dev-cu12` | `linux/amd64`, CUDA 12.9 legacy |
-| `rocm-mi300` / `rocm-mi350` | `rocm/sgl-dev:miles-rocm7xx-mi3xx` | Native |
+| `rocm700-mi30x` / `rocm700-mi35x` / `rocm720-mi35x` | `rocm/sgl-dev:miles-rocm7xx-mi3xx` | Native |
 
-Every build also pushes a timestamped sibling (`dev-<YYYYMMDDHHMM>`), which is what you pin
-to when you need a frozen image. Only the scheduled build advances `latest` and prunes old
-timestamped tags, keeping the newest 20 per series; a manual dispatch writes its own tag and
-never moves `latest`.
+`--image-tag dev` also publishes a timestamped sibling. Scheduled retention and manual tag behavior are documented in [Docker build](/ci/02-docker-build).
 
 Build one yourself with `docker/build.py`:
 
@@ -95,6 +105,8 @@ python docker/build.py --variant cu13-x86 --image-tag custom --custom-tag my-exp
 [Docker build](/ci/02-docker-build) is the full reference for the build script, the
 workflow and the tag rules.
 
+Official versioned releases add `radixark/miles:v<exact-version>` for the CUDA 13 multi-arch image and `radixark/miles:v<exact-version>-cu12` for the CUDA 12.9 image. Publishing them does not move the rolling `dev` or `latest` families.
+
 ## What CI moves, and what it does not
 
 This is the part that decides whether your change needs a new image. A CUDA CI job starts
@@ -104,8 +116,7 @@ from `radixark/miles:<tag>` and then:
    restore is not cosmetic: TE's fused attention needs a newer cuDNN than torch pins, a
    plain resolve drags it back down, and the symptom is a fused-attention backward failing
    with `CUDNN_STATUS_BAD_PARAM`.
-2. Resets both dependency checkouts and fetches the selected refs, defaulting to
-   `sglang-miles` and `miles-main`.
+2. Resets both dependency checkouts and fetches the selected refs. Explicit dispatch or PR-body overrides win first, `release-lock.json` commits win when no override exists, and the moving `sglang-miles` / `miles-main` heads are the final defaults.
 3. Sets `PYTHONPATH` to the Miles workspace plus both source roots.
 
 It never reinstalls the three source trees, because they are editable installs. So:
@@ -117,8 +128,7 @@ It never reinstalls the three source trees, because they are editable installs. 
 | SGLang or Megatron-LM code | No. Point CI at a ref instead |
 | Miles code | No |
 
-The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` and
-exposes no ref inputs, so the only way to move them there is a new ROCm image.
+The ROCm stage is the exception: it takes SGLang and Megatron-LM from `rocm/sgl-dev` and exposes no dependency-ref inputs, so the only way to move them there is a new ROCm image. A release call can select the Miles ref, but its baked dependencies still make the run a smoke signal rather than a lock-accurate check.
 
 ## Bumping principle
 
@@ -127,9 +137,7 @@ exposes no ref inputs, so the only way to move them there is a new ROCm image.
 moves in `docker/build.py`. If a bump needs edits in two of the three, one of them is in the
 wrong place.
 
-**Prefer moving the branch to pinning a commit.** `SGLANG_COMMIT` is empty by default, so
-the image follows `sglang-miles` HEAD and the pair advances together. Pin a commit only to
-freeze a known-good state deliberately, and expect to unpin it.
+**Prefer moving the branch to pinning a commit during rolling development.** `SGLANG_COMMIT` and `MEGATRON_COMMIT` are empty by default, so ordinary images follow `sglang-miles` and `miles-main` together. A versioned release is the deliberate exception: its lockfile supplies both exact commits to CI and the final image build.
 
 **Validate an image-affecting bump on the PR that makes it.** A PR touching
 `docker/Dockerfile`, `docker/build.py`, `docker/verify_transformer_engine.py`,
@@ -169,11 +177,12 @@ that to stop moving underneath you, pin `ci-image-tag:` to a timestamped tag.
 | Build fails with "TE patch did not apply cleanly" | A `docker/patch/cu13/*.patch` no longer matches the new TE; rebase the patch or drop it if upstream fixed it |
 | TE triplet assertion at build time | The base image moved TE off `2.17.0`; update `docker/verify_transformer_engine.py` together with whatever depends on it |
 | `mooncake.structured_object_store` import fails | A CUDA 12 image; that wheel is only installed on the cu13 path |
-| A test passes locally but fails in CI, or the reverse | Compare the three refs: the image tag, and the two branch heads CI resolved. Every job logs all three |
+| A test passes locally but fails in CI, or the reverse | Compare the image tag and the two dependency refs or commits CI resolved. Every job logs all three |
 
 ## Related
 
 - [Installation](/getting-started/installation) for pulling and running the image.
+- [Release a Version](/ci/04-release) for the maintainer release runbook.
 - [Contributing](/developer/contributor-guide) for the CI labels and PR-description
   directives.
 - [Docker build](/ci/02-docker-build) for the build script, workflow triggers and tag
