@@ -1099,6 +1099,8 @@ spec:
                 subPath: "myuser/Megatron-LM"
               - name: node-local
                 mountPath: "/scratch"
+              - name: dev-shm
+                mountPath: /dev/shm
             command:
               - "<PYTHON>"
               - "-m"
@@ -1234,6 +1236,10 @@ spec:
             hostPath:
               path: "/mnt/local-nvme/miles-staging"
               type: DirectoryOrCreate
+          - name: dev-shm
+            hostPath:
+              path: /dev/shm
+              type: Directory
 ---
 # Source: miles-run/templates/inference-engines.yaml
 apiVersion: leaderworkerset.x-k8s.io/v1
@@ -1295,6 +1301,8 @@ spec:
                 subPath: "myuser/Megatron-LM"
               - name: node-local
                 mountPath: "/scratch"
+              - name: dev-shm
+                mountPath: /dev/shm
             command:
               - "<PYTHON>"
               - "-m"
@@ -1422,6 +1430,10 @@ spec:
             hostPath:
               path: "/mnt/local-nvme/miles-staging"
               type: DirectoryOrCreate
+          - name: dev-shm
+            hostPath:
+              path: /dev/shm
+              type: Directory
 
 ---
 # Source: miles-run/templates/trainer-engines.yaml
@@ -1482,6 +1494,8 @@ spec:
                 subPath: "myuser/Megatron-LM"
               - name: node-local
                 mountPath: "/scratch"
+              - name: dev-shm
+                mountPath: /dev/shm
             command:
               - "bash"
               - "-c"
@@ -1527,3 +1541,7 @@ spec:
             hostPath:
               path: "/mnt/local-nvme/miles-staging"
               type: DirectoryOrCreate
+          - name: dev-shm
+            hostPath:
+              path: /dev/shm
+              type: Directory
