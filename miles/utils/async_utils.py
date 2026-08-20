@@ -45,13 +45,15 @@ class AsyncLoopThread:
 
 # Create one global instance
 async_loop = None
+_async_loop_lock = threading.Lock()
 
 
 def get_async_loop():
     global async_loop
-    if async_loop is None:
-        async_loop = AsyncLoopThread()
-    return async_loop
+    with _async_loop_lock:
+        if async_loop is None:
+            async_loop = AsyncLoopThread()
+        return async_loop
 
 
 # TODO: rename these functions and classes
