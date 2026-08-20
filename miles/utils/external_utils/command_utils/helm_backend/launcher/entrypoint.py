@@ -422,4 +422,19 @@ def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> Non
 
 def _write_helm_values(path: Path, values: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(values, default_flow_style=False, sort_keys=True))
+    path.write_text(yaml.dump(values, Dumper=_HelmValuesDumper, default_flow_style=False, sort_keys=True))
+
+
+class _HelmValuesDumper(yaml.SafeDumper):
+    def represent_mapping(self, tag: str, mapping: Any, flow_style: bool | None = None) -> yaml.MappingNode:
+        node = super().represent_mapping(tag, mapping, flow_style=flow_style)
+        for key, _ in node.value:
+            key.style = None
+        return node
+
+
+def _represent_helm_value_str(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="'")
+
+
+_HelmValuesDumper.add_representer(str, _represent_helm_value_str)
