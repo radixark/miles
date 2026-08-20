@@ -5,8 +5,8 @@ Adam moments additionally live in per-bucket NVMe files and are streamed through
 GPU bucket-by-bucket during each optimizer step. Completing the run is only half the
 check: a run where the store silently never engaged (flag lost on the way to the
 actor, plugin import failure swallowed) trains just as happily, so `execute` also
-asserts that every rank logged actual streaming steps, on top of the disk-offload
-armed assertion inherited from the base test.
+asserts that every rank logged bounded main-param initialization and actual streaming
+steps, on top of the disk-offload armed assertion inherited from the base test.
 """
 
 import glob
@@ -65,7 +65,7 @@ def _assert_offloaded_to_disk():
 
 
 def _assert_streamed():
-    """Every rank must have executed real streaming steps.
+    """Every rank must have initialized through NVMe and executed real streaming steps.
 
     The store logs one `NVMe streaming step: ...` line per optimizer step from each
     training actor process, so the number of distinct worker logs carrying it equals
@@ -74,16 +74,24 @@ def _assert_streamed():
     logs = glob.glob("/tmp/ray/session_latest/logs/worker-*")
     assert logs, "no Ray worker logs to check for the streaming path"
 
+    initialized = set()
     streamed = set()
     for path in logs:
         with open(path, errors="ignore") as f:
-            if any("NVMe streaming step:" in line for line in f):
-                streamed.add(path)
+            for line in f:
+                if "NVMe optimizer main-param initialization:" in line:
+                    initialized.add(path)
+                if "NVMe streaming step:" in line:
+                    streamed.add(path)
 
+    assert len(initialized) == NUM_GPUS, (
+        f"expected {NUM_GPUS} ranks to initialize main params through NVMe, "
+        f"saw {len(initialized)}: {sorted(initialized)}"
+    )
     assert (
         len(streamed) == NUM_GPUS
     ), f"expected {NUM_GPUS} ranks to log streaming steps, saw {len(streamed)}: {sorted(streamed)}"
-    print(f"optimizer state streaming ran on {len(streamed)} ranks")
+    print(f"optimizer main-param initialization and streaming ran on {len(streamed)} ranks")
 
 
 def execute():

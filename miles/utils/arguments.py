@@ -2845,6 +2845,26 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.check_rematerialize_param_from_master_weight = True
 
 
+def _validate_optimizer_streaming_contract(args) -> None:
+    assert getattr(args, "bf16", False), "--stream-optimizer-state-to-disk currently requires --bf16 model training"
+    assert getattr(args, "ckpt_format", None) == "torch_dist", (
+        "--stream-optimizer-state-to-disk requires --ckpt-format torch_dist: the legacy "
+        "optimizer checkpoint path reads the master optimizer state that is owned by the "
+        "NVMe store while streaming"
+    )
+    assert not getattr(args, "fp16", False), (
+        "--stream-optimizer-state-to-disk does not support FP16 training: the streamed "
+        "optimizer binding does not checkpoint dynamic grad-scaler state; use --bf16"
+    )
+    assert not getattr(args, "fp8_param_gather", False), (
+        "--stream-optimizer-state-to-disk does not support FP8 model parameters: "
+        "Megatron's FP8 initialization path retains every FP32 main parameter"
+    )
+    assert not getattr(
+        args, "reuse_grad_buf_for_mxfp8_param_ag", False
+    ), "--stream-optimizer-state-to-disk does not support MXFP8 parameter all-gather"
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
@@ -3354,6 +3374,11 @@ def miles_validate_args(args):
         )
 
     if args.stream_optimizer_state_to_disk:
+        assert (
+            args.train_backend == "megatron"
+        ), "--stream-optimizer-state-to-disk is only supported on the megatron backend"
+        _validate_optimizer_streaming_contract(args)
+        assert args.offload_train_disk_chunk_mb > 0, "--offload-train-disk-chunk-mb must be positive"
         assert args.offload_train_target == "disk" or not args.offload_train, (
             "--stream-optimizer-state-to-disk with --offload-train requires "
             "--offload-train-target=disk: a run that cannot hold the optimizer state on GPU for "
@@ -3366,6 +3391,9 @@ def miles_validate_args(args):
             "on one node would share a store directory"
         )
         assert args.use_distributed_optimizer, "--stream-optimizer-state-to-disk requires the distributed optimizer"
+        assert not getattr(
+            args, "use_megatron_fsdp", False
+        ), "--stream-optimizer-state-to-disk does not support Megatron FSDP"
         assert (
             args.optimizer == "adam"
         ), f"--stream-optimizer-state-to-disk requires --optimizer adam, got {args.optimizer}"
@@ -3381,6 +3409,11 @@ def miles_validate_args(args):
         assert (
             not args.use_precision_aware_optimizer
         ), "--stream-optimizer-state-to-disk requires mcore to hold the fp32 main params"
+        assert args.accumulate_allreduce_grads_in_fp32, (
+            "--stream-optimizer-state-to-disk requires --accumulate-allreduce-grads-in-fp32: "
+            "otherwise Megatron materializes a separate FP32 gradient for every streamed main "
+            "parameter before the bucketed step, defeating the GPU-memory bound"
+        )
         assert not args.reset_optimizer_states, (
             "--reset-optimizer-states walks the master optimizer's state, which the NVMe store "
             "leaves empty, so the reset would silently do nothing"

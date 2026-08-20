@@ -174,6 +174,8 @@ def setup_model_and_optimizer(
     for f in dataclasses.fields(OptimizerConfig):
         if hasattr(args, f.name):
             kwargs[f.name] = getattr(args, f.name)
+    if args.stream_optimizer_state_to_disk:
+        kwargs["defer_main_param_initialization"] = True
     config = OptimizerConfig(**kwargs)
     config.timers = None
 
@@ -204,7 +206,7 @@ def setup_model_and_optimizer(
     if args.stream_optimizer_state_to_disk:
         from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
 
-        setup_optimizer_state_streaming(args, optimizer)
+        setup_optimizer_state_streaming(args, optimizer, role=role)
 
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler

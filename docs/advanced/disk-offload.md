@@ -64,6 +64,20 @@ DDP's bucket sizes, which reach tens of GB at DP=1. Native-fp32 model params (a 
 `expert_bias`, a GDN/Mamba `A_log`) stay GPU-resident under a small separate Adam: they
 are tiny, and unlike the bf16 path their optimizer shards alias the model params directly.
 
+Initialization follows the same cumulative-state bound without a temporary state file. Megatron
+creates each same-shaped CUDA fp32 main-param handle and immediately releases its storage. Once
+the complete dense/expert optimizer chain exists, Miles reserves the final main-plus-moments files,
+materializes one main-only runtime bucket, copies the still-live bf16 model shards into it, writes
+those bytes directly to their final offsets, and releases the bucket before continuing. Each
+initialized range is synchronized and advised `DONTNEED`, and the CUDA allocator cache is cleared
+around initialization and model-weight reloads. The normal streamed step remains buffered I/O, so
+reclaimable page cache is still charged to the trainer's host-memory cgroup.
+
+The handle is allocated on CUDA before its storage can be released, so construction still needs
+enough free HBM for the largest individual fp32 shard. Direct final-file initialization then needs
+one main-only bucket (normally at most about 200M fp32 elements, except for an oversized entry).
+It removes cumulative fp32-main residency; it does not make the largest shard allocation-free.
+
 `fp32` storage is bit-identical to keeping the state on GPU, so turning this on does not
 change results — it trades step time for memory. The step is I/O bound and the moments
 tolerate less precision than the master copy, so they can be stored narrower:
@@ -77,8 +91,16 @@ dtypes it was written with and a resume verifies them, so bytes written as bf16 
 be read back as fp32. The fp8 options work but are not recommended: `exp_avg_sq` needs
 per-block scaling to survive 8-bit storage, which this does not implement.
 
-Three limits to know about. Resume is same-topology only — the on-disk layout follows this
-rank's DP shard, so changing TP/PP/DP/EP fails the layout assert rather than resharding.
+Streaming requires `--ckpt-format torch_dist`; Megatron's legacy optimizer-checkpoint path reads
+the master optimizer state that the NVMe store deliberately leaves empty. It supports BF16 model
+training, not FP16, because the streamed optimizer binding does not checkpoint dynamic loss-scaler
+state. It also requires `--accumulate-allreduce-grads-in-fp32`: otherwise Megatron creates separate
+FP32 gradient tensors for all main parameters before the bucket loop and loses the GPU-memory bound.
+Transformer Engine or Apex FusedAdam is required, and Megatron FSDP is not supported.
+
+Other limits to know about. Resume requires the same topology, model definition, and parameter
+order — the on-disk layout follows this rank's DP shard and does not reshard optimizer state.
+Layout changes detected from the bucket and entry sizes fail explicitly.
 A checkpoint written before streaming was enabled cannot be resumed with it: the streamed
 state is the only optimizer state read, so miles refuses rather than silently restarting
 Adam from zero — pass `--no-load-optim` to accept a fresh optimizer state. And the
