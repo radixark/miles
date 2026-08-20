@@ -24,6 +24,7 @@ metadata:
     {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 4 }}
 spec:
   backoffLimit: 0
+  podReplacementPolicy: Failed
   activeDeadlineSeconds: {{ .Values.commandJob.activeDeadlineSeconds }}
   ttlSecondsAfterFinished: {{ .Values.commandJob.ttlSecondsAfterFinished }}
   completions: {{ .Values.commandJob.completions }}
