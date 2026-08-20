@@ -59,15 +59,20 @@ A multi-arch build (`cu13`) needs Buildx's `docker-container` driver and is push
 
 Dockerfile changes are build-tested on the PR itself, before merge — `docker-build.yml` only runs after a push to `main`, so without this breakage lands on `main` first.
 
-`pr-test.yml` calls `_build-pr-ci-image.yml` after `stage-a-cpu` satisfies its success/bypass gate, while both CPU stages run without waiting for it. The reusable workflow owns `docker-paths` and `docker-build`; for changes to `docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, or `requirements.txt`, it inserts a build before the GPU matrix:
+`pr-test.yml` calls `_build-pr-ci-image.yml` after `stage-a-cpu` satisfies its success/bypass gate, while both CPU stages run without waiting for it. A PR keeps **one** image tag, `radixark/miles:pr-<num>`, for its whole life, and rebuilds it only when the content that feeds it changes:
 
 | Job | What it does |
 | --- | --- |
-| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64`, then pushes one multi-arch PR-scoped `radixark/miles:pr-<num>` tag (same-repo PRs; fork PRs skip it and test on `dev`) |
-| `resolve-ci-image` | waits for the build and resolves the CI image to `pr-<num>`, so **every GPU suite runs inside the freshly built image**; a failed build stops the matrix instead of testing the stale image. The fresh build outranks a `ci-image-tag:` PR-body directive — the directive applies only when no PR image was built (non-docker or fork PRs) |
+| `docker-decide` | hashes the build inputs (`docker/image_inputs.py`) and compares. Inputs equal to the base branch → no PR image, suites run on `dev`. Otherwise it reads the `miles.image-inputs` label off the published `pr-<num>` tag: same hash → reuse it, different or absent → rebuild. Fork PRs cannot publish, so they always test on `dev` |
+| `docker-build` | builds `cu13` for `linux/amd64` and `linux/arm64` and pushes `pr-<num>`, stamped with the inputs hash. Runs on a `docker-build` node only when a rebuild is due; otherwise it is a hosted-runner no-op |
+| `resolve-ci-image` | resolves the CI image to `pr-<num>` whenever that tag is current — whether this run built it or an earlier one did — so **every GPU suite runs inside the PR's image**; a failed build stops the matrix instead of testing a stale image. A PR image outranks a `ci-image-tag:` PR-body directive, which applies only when the PR has no image (non-docker or fork PRs) |
 | `delete-pr-tag` (`docker-pr-tag-cleanup.yml`) | removes the `pr-<num>` tag when the PR closes; the tag stays available for re-runs while the PR is open |
 
-Non-docker PRs are untouched: `docker-paths` reports no change, `docker-build` skips, and the matrix runs on `dev` as before.
+So a rerun, or a push that touches only source files, reuses the image the PR already has instead of rebuilding an identical one. Non-docker PRs are untouched: no PR image, matrix on `dev`, as before.
+
+`docker/image_inputs.py` is the single source of truth for what counts as an input (`docker/Dockerfile`, `docker/build.py`, `docker/install-kube-tools.sh`, `docker/verify_transformer_engine.py`, `docker/patch/**`, `requirements.txt`). `Dockerfile.rocm` is deliberately excluded — it feeds `pr-test-rocm.yml`, not the `cu13` image built here.
+
+To rebuild when the inputs did not change — a moved base image, a floating dependency, a corrupt push — add the **`rebuild-ci-image`** label. Applying it starts a run that rebuilds and then removes the label, so it acts once rather than forcing a rebuild on every later run.
 
 ## Rolling Docker build (`docker-build.yml`)
 

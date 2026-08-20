@@ -124,6 +124,11 @@ jobs:
       needs.resolve-ci-policy.result == 'success' &&
       (needs.stage-a-cpu.result == 'success' ||
          needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    # Scoped to this call: a build consumes the one-shot rebuild-ci-image label by
+    # removing it. Every other job keeps the workflow-level read-only token.
+    permissions:
+      contents: read
+      pull-requests: write
     uses: ./.github/workflows/_build-pr-ci-image.yml
     secrets: inherit
 
@@ -143,11 +148,13 @@ jobs:
           # workflow_call image_tag (a frozen release-CI tag) outranks the
           # dispatch input, which only exists on manual runs anyway.
           INPUT_CI_IMAGE_TAG: ${{ inputs.image_tag || github.event.inputs.ci_image_tag || '' }}
-          DOCKER_BUILT: ${{ needs.docker-build.outputs.built }}
+          # Not `built`: a run that reused an unchanged image published earlier must still
+          # test against that image rather than silently falling back to the released one.
+          PR_IMAGE_AVAILABLE: ${{ needs.docker-build.outputs.tag_available }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && [ "$DOCKER_BUILT" = "true" ] && CI_IMAGE_TAG="pr-${PR_NUMBER}"
+          [ -z "$CI_IMAGE_TAG" ] && [ "$PR_IMAGE_AVAILABLE" = "true" ] && CI_IMAGE_TAG="pr-${PR_NUMBER}"
           if [ -n "$PR_BODY" ]; then
             PR_CI_IMAGE_TAG=$(echo "$PR_BODY" | grep -m1 -oP '^ci-image-tag:\s+\K\S+' || true)
             [ -z "$CI_IMAGE_TAG" ] && [ -n "$PR_CI_IMAGE_TAG" ] && CI_IMAGE_TAG="$PR_CI_IMAGE_TAG"

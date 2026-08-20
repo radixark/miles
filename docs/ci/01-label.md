@@ -11,6 +11,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
 | Behavior label | `bypass-fastfail` | opt out of fast-fail; one run surfaces every failure |
+| Behavior label | `rebuild-ci-image` | rebuild this PR's image even though its inputs are unchanged; removed once consumed (see [Docker build](/ci/02-docker-build)) |
 
 Only domain labels are declared in `labels=[...]`; scope and behavior labels are workflow inputs resolved by `tests/ci/ci_policy.py`. The separate `nightly=True` registration field is a cadence gate described below.
 
