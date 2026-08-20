@@ -1404,6 +1404,7 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "if: needs.handle-command.outputs.capability == 'actions'" in workflow
     assert "group: comment-ci-rerun-${{ github.event.issue.number }}" in workflow
     assert "cancel-in-progress: false" in workflow
+    assert "queue: max" in workflow
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]

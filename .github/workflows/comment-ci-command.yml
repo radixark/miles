@@ -67,6 +67,7 @@ jobs:
     concurrency:
       group: comment-ci-rerun-${{ github.event.issue.number }}
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
