@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from miles.utils.workers.env_vars import NAMESPACE_ENV_VAR, RELEASE_ENV_VAR
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys
 
 INSTANCE_LABEL = "app.kubernetes.io/instance"
@@ -17,8 +18,6 @@ DEFAULT_LABEL_KEYS = CellLabelKeys(
     base_gpu_id_annotation="miles.radixark.io/base-gpu-id",
 )
 
-NAMESPACE_ENV_VAR = "MILES_K8S_NAMESPACE"
-RELEASE_ENV_VAR = "MILES_K8S_RELEASE"
 NAMESPACE_FILE = Path("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 
 
