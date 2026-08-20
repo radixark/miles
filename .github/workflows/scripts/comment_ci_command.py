@@ -55,6 +55,7 @@ PR_BODY_PINS = (
 )
 LABEL_PATTERN = re.compile(r"(?:run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+WORKFLOW_RUN_URL_PATTERN = re.compile(rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/[1-9][0-9]*")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
 POLICY_GROUPS = frozenset({"add_label_access", "repo_write_access"})
 
@@ -249,6 +250,12 @@ def _positive_int(value, name):
     return value
 
 
+def _validate_workflow_run_url(value):
+    if not isinstance(value, str) or WORKFLOW_RUN_URL_PATTERN.fullmatch(value) is None:
+        raise CommentCommandError("workflow run URL is invalid")
+    return value
+
+
 def parse_event(event):
     if not isinstance(event, dict) or event.get("action") != "created":
         raise CommentCommandError("event must be issue_comment.created")
@@ -407,13 +414,22 @@ class GitHubAPI:
 
     def create_workflow_dispatch(self, workflow_file, ref, inputs):
         encoded_workflow = urllib.parse.quote(workflow_file, safe="")
-        self._request(
+        result = self._request(
             f"/repos/{REPOSITORY}/actions/workflows/{encoded_workflow}/dispatches",
             method="POST",
-            payload={"ref": ref, "inputs": inputs},
-            expected_statuses=(204,),
-            expect_json=False,
+            payload={"ref": ref, "inputs": inputs, "return_run_details": True},
+            expected_statuses=(200,),
         )
+        if not isinstance(result, dict):
+            raise CommentCommandError("GitHub API returned invalid workflow dispatch details")
+        run_id = _positive_int(result.get("workflow_run_id"), "workflow run ID")
+        html_url = _validate_workflow_run_url(result.get("html_url"))
+        if (
+            result.get("run_url") != f"{API_ROOT}/repos/{REPOSITORY}/actions/runs/{run_id}"
+            or html_url != f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
+        ):
+            raise CommentCommandError("GitHub API returned mismatched workflow dispatch details")
+        return html_url
 
     def add_comment_reaction(self, comment_id, content):
         result = self._request(
@@ -424,6 +440,16 @@ class GitHubAPI:
         )
         if not isinstance(result, dict) or result.get("content") != content:
             raise CommentCommandError("GitHub API did not confirm the comment reaction")
+
+    def create_issue_comment(self, pull_number, body):
+        result = self._request(
+            f"/repos/{REPOSITORY}/issues/{pull_number}/comments",
+            method="POST",
+            payload={"body": body},
+            expected_statuses=(201,),
+        )
+        if not isinstance(result, dict) or result.get("body") != body:
+            raise CommentCommandError("GitHub API did not confirm the workflow reply")
 
 
 def _validate_live_pull(pull, pull_number):
@@ -812,13 +838,18 @@ def _handle_run_test_file(context, request):
         "test_file": request.test_file,
     }
     inputs.update(_pr_body_pins(context.body))
-    context.api.create_workflow_dispatch(RUN_FILE_WORKFLOW, RUN_FILE_WORKFLOW_REF, inputs)
+    workflow_run_url = context.api.create_workflow_dispatch(
+        RUN_FILE_WORKFLOW,
+        RUN_FILE_WORKFLOW_REF,
+        inputs,
+    )
     return {
         "actor_id": context.actor_id,
         "decision": "ALLOW_FILE_RUN_DISPATCHED",
         "head_sha": context.head_sha,
         "pull_number": context.pull_number,
         "test_file": request.test_file,
+        "workflow_run_url": workflow_run_url,
     }
 
 
@@ -962,6 +993,21 @@ def acknowledge_event(event, api):
     }
 
 
+def reply_event(event, api, workflow_run_url):
+    pull_number, actor_id, _, request = parse_event(event)
+    if type(request) is not RunTestFile:
+        raise CommentCommandError("command does not define a workflow reply")
+    workflow_run_url = _validate_workflow_run_url(workflow_run_url)
+    body = f"Started `/{RUN_FILE_COMMAND} {request.test_file}`.\n\n" f"[View workflow run]({workflow_run_url})"
+    api.create_issue_comment(pull_number, body)
+    return {
+        "actor_id": actor_id,
+        "decision": "ALLOW_WORKFLOW_REPLY_CONFIRMED",
+        "pull_number": pull_number,
+        "workflow_run_url": workflow_run_url,
+    }
+
+
 def _write_routing(capability, success_reaction):
     if capability not in {"none", "issues", "actions"}:
         raise CommentCommandError("command registry selected an unknown capability")
@@ -978,12 +1024,30 @@ def _write_routing(capability, success_reaction):
         raise CommentCommandError(f"cannot write GITHUB_OUTPUT: {error}") from error
 
 
+def _write_workflow_run_url(result):
+    workflow_run_url = result.get("workflow_run_url")
+    if workflow_run_url is None:
+        return
+    workflow_run_url = _validate_workflow_run_url(workflow_run_url)
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    try:
+        with Path(output_path).open("a", encoding="utf-8") as output:
+            output.write(f"workflow_run_url={workflow_run_url}\n")
+    except OSError as error:
+        raise CommentCommandError(f"cannot write GITHUB_OUTPUT: {error}") from error
+
+
 def main():
     try:
         event = load_json(os.environ["GITHUB_EVENT_PATH"])
         if os.environ.get("CI_COMMAND_ACKNOWLEDGE") == "true":
             api = GitHubAPI(os.environ["CI_COMMAND_API_TOKEN"])
             result = acknowledge_event(event, api)
+        elif os.environ.get("CI_COMMAND_REPLY") == "true":
+            api = GitHubAPI(os.environ["CI_COMMAND_API_TOKEN"])
+            result = reply_event(event, api, os.environ.get("CI_COMMAND_WORKFLOW_RUN_URL"))
         elif os.environ.get("CI_COMMAND_PREFLIGHT") == "true":
             pull_number, actor_id, _, request = parse_event(event)
             if request is None:
@@ -1018,6 +1082,7 @@ def main():
             policy = load_policy(os.environ["CI_COMMAND_POLICY_PATH"])
             api = GitHubAPI(os.environ["CI_COMMAND_API_TOKEN"])
             result = process_event(event, policy, api)
+            _write_workflow_run_url(result)
     except CommentCommandError as error:
         print(f"::error::{error}")
         return 1

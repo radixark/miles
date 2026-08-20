@@ -67,6 +67,8 @@ jobs:
   # Actions-capability commands: /rerun-failed-ci and /rerun-test <test-file>.
   actions-command:
     needs: handle-command
+    outputs:
+      workflow_run_url: ${{ steps.run-command.outputs.workflow_run_url }}
     if: needs.handle-command.outputs.capability == 'actions'
     concurrency:
       group: comment-ci-actions-${{ github.event.issue.number }}
@@ -95,6 +97,7 @@ jobs:
           permission-pull-requests: read
 
       - name: Authorize and run the actions command
+        id: run-command
         env:
           CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
@@ -128,4 +131,35 @@ jobs:
         env:
           CI_COMMAND_API_TOKEN: ${{ steps.reaction-token.outputs.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
+        run: python3 .github/workflows/scripts/comment_ci_command.py
+
+  reply-command:
+    needs: actions-command
+    if: >-
+      needs.actions-command.result == 'success' &&
+      needs.actions-command.outputs.workflow_run_url != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted handler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
+          sparse-checkout-cone-mode: false
+
+      - name: Mint the reply-scoped App token
+        id: reply-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          permission-issues: write
+
+      - name: Reply with the workflow run
+        env:
+          CI_COMMAND_API_TOKEN: ${{ steps.reply-token.outputs.token }}
+          CI_COMMAND_REPLY: "true"
+          CI_COMMAND_WORKFLOW_RUN_URL: ${{ needs.actions-command.outputs.workflow_run_url }}
         run: python3 .github/workflows/scripts/comment_ci_command.py
