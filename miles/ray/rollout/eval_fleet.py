@@ -18,7 +18,7 @@ from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import wait_http_ok
 from miles.utils.workers.rpc.client.misc import ServerRestartedError
-from miles.utils.workers.worker_handle import WorkerUnreachableError
+from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
 
@@ -48,15 +48,16 @@ class RolloutExecutorEvalFleet:
     def __init__(
         self, args: Namespace, *, info: EvalFleetInfo, inference_controller_provider: BaseWorkerProvider
     ) -> None:
-        self._inference_controller_provider = inference_controller_provider
+        self._inference_controller: BaseWorkerHandle = inference_controller_provider.get_handle(
+            inference_controller_worker_name()
+        )
         self._state = GenerateState(
             retarget_args(args, info.router.host, info.router.port, info.num_gpus, info.num_gpus_per_engine)
         )
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
         try:
-            inference_controller = self._inference_controller_provider.get_handle(inference_controller_worker_name())
-            pin = await inference_controller.pin_eval_fleet(
+            pin = await self._inference_controller.pin_eval_fleet(
                 checkpoint_dir=checkpoint_dir, weight_version=weight_version
             )
         except UNREACHABLE_CONTROLLER_ERRORS as e:
