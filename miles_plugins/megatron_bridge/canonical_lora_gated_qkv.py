@@ -7,7 +7,9 @@ the wrapped projection and the first forward fails with a shape mismatch. The pa
 gives ``adapter_q`` per-head [Q; gate] rows (the HF ``q_proj`` layout, as in
 ``miles_plugins/mbridge/qwen3_5.py``) and packs adapter output per query group as
 [Q heads, gate heads, K, V] (Megatron's fused layout). Non-gated modules keep the
-original behavior. Drop once the Megatron-Bridge pin includes the fix upstream.
+original behavior. Like upstream's non-gated ``_interleave_qkv``, the interleave uses
+global head counts, so fused-QKV canonical LoRA remains TP=1-only for now. Drop once
+the Megatron-Bridge pin includes the fix upstream.
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ def install_canonical_lora_gated_qkv_patch() -> None:
         ParallelLinearAdapter,
         get_adapter_attributes_from_linear,
         get_effective_lora_dim,
+        is_modelopt_linear,
     )
     from torch import nn
 
@@ -100,7 +103,8 @@ def install_canonical_lora_gated_qkv_patch() -> None:
             ),
         )
         gated = bool(getattr(getattr(m, "config", None), "attention_output_gate", False))
-        if name != "linear_qkv" or already_wrapped or isinstance(m, nn.Linear) or not gated:
+        plain_linear = isinstance(m, nn.Linear) and not is_modelopt_linear(m)
+        if name != "linear_qkv" or already_wrapped or plain_linear or not gated:
             return _original_transform(self, m, name, prefix)
 
         if (ans := self.match(m, name, prefix)) is None:

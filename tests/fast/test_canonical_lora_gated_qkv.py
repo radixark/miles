@@ -129,18 +129,32 @@ class _FakeParallelLinearAdapter(nn.Module):
         return self.linear(x)
 
 
+def _gated_qkv_out_features(config):
+    heads, groups, head_size = config.num_attention_heads, config.num_query_groups, config.kv_channels
+    return (2 * heads + 2 * groups) * head_size
+
+
 class _FakeGatedQKVLinear(nn.Module):
     """Fused Q/Gate/K/V parallel linear with a megatron-style (output, bias) forward."""
 
     def __init__(self, config):
         super().__init__()
         self.config = config
-        heads, groups, head_size = config.num_attention_heads, config.num_query_groups, config.kv_channels
-        out_features = (2 * heads + 2 * groups) * head_size
-        self.linear = nn.Linear(config.hidden_size, out_features, bias=False)
+        self.linear = nn.Linear(config.hidden_size, _gated_qkv_out_features(config), bias=False)
+        self.out_features = self.linear.out_features
 
     def forward(self, x):
         return self.linear(x), None
+
+
+class _FakeModelOptGatedQKVLinear(nn.Linear):
+    """ModelOpt-quantized fused gated QKV: an nn.Linear subclass that must still get the gated wrapper."""
+
+    _is_modelopt = True
+
+    def __init__(self, config):
+        super().__init__(config.hidden_size, _gated_qkv_out_features(config), bias=False)
+        self.config = config
 
 
 class _FakeCanonicalLoRABase:
@@ -182,13 +196,14 @@ def patched_canonical_lora(monkeypatch):
     utils_module.ParallelLinearAdapter = _FakeParallelLinearAdapter
     utils_module.get_adapter_attributes_from_linear = lambda m, is_expert: SimpleNamespace(
         in_features=m.config.hidden_size,
-        out_features=m.linear.out_features,
+        out_features=m.out_features,
         input_is_parallel=False,
         base_linear_is_parallel=True,
         disable_tensor_parallel_comm=False,
         disable_sequence_parallel_comm=False,
     )
     utils_module.get_effective_lora_dim = lambda m, dim, normalize_moe_lora, is_expert: dim
+    utils_module.is_modelopt_linear = lambda m: getattr(m, "_is_modelopt", False)
 
     megatron_module = types.ModuleType("megatron")
     bridge_module = types.ModuleType("megatron.bridge")
@@ -257,6 +272,30 @@ def test_gated_forward_places_adapter_rows_in_megatron_order(patched_canonical_l
         head_size=config.kv_channels,
     )
     assert torch.allclose(output, expected)
+
+
+def test_modelopt_gated_linear_qkv_gets_gated_wrapper(patched_canonical_lora):
+    # ModelOpt linears subclass nn.Linear but must not fall through to the non-gated path.
+    config = _make_config()
+    lora = patched_canonical_lora.CanonicalLoRA()
+    wrapped = patched_canonical_lora.CanonicalLoRA.transform(
+        lora, _FakeModelOptGatedQKVLinear(config), name="linear_qkv"
+    )
+
+    assert isinstance(wrapped, _FakeAdapterWrapperBase)
+    assert lora.original_transform_calls == []
+    assert wrapped.adapter["adapter_q"].out_features == 2 * 4 * 8
+
+
+def test_plain_linear_gated_qkv_delegates_to_original_transform(patched_canonical_lora):
+    config = _make_config()
+    lora = patched_canonical_lora.CanonicalLoRA()
+    module = nn.Linear(config.hidden_size, _gated_qkv_out_features(config))
+    module.config = config
+    result = patched_canonical_lora.CanonicalLoRA.transform(lora, module, name="linear_qkv")
+
+    assert result is module
+    assert lora.original_transform_calls == ["linear_qkv"]
 
 
 def test_non_gated_linear_qkv_delegates_to_original_transform(patched_canonical_lora):
