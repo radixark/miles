@@ -13,6 +13,8 @@ DEFAULT_CONCURRENCY_GROUP = "default"
 
 _RPC_CONFIG_ATTR = "_miles_rpc_config"
 
+_RAY_TRACE_CONTEXT_PARAMETER = "_ray_trace_ctx"
+
 _F = TypeVar("_F", bound=Callable[..., Any])
 
 
@@ -130,6 +132,8 @@ def _build_method_spec(*, worker_cls: type, name: str, attr: Callable[..., Any])
 
     query_fields: dict[str, Any] = {}
     for param in parameters[1:]:
+        if _is_ray_trace_ctx_param(param):
+            continue
         if param.kind in (
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
@@ -159,4 +163,13 @@ def _build_method_spec(*, worker_cls: type, name: str, attr: Callable[..., Any])
             query_fields=query_fields,
             result_annotation=hints["return"],
         ),
+    )
+
+
+def _is_ray_trace_ctx_param(param: inspect.Parameter) -> bool:
+    return (
+        param.name == _RAY_TRACE_CONTEXT_PARAMETER
+        and param.kind is inspect.Parameter.KEYWORD_ONLY
+        and param.default is None
+        and param.annotation is inspect.Parameter.empty
     )
