@@ -99,6 +99,7 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         "suite": registration.suite,
         "runs_on": runs_on_json,
         "container_image": f"radixark/miles:{image_tag}",
+        "timeout_seconds": str(max(1800, int(registration.est_time * 1.25))),
     }
 
 

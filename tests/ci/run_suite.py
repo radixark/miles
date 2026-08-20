@@ -101,45 +101,6 @@ def filter_tests(
     return enabled_tests, skipped_tests
 
 
-def select_requested_files(
-    ci_tests: list[CIRegistry],
-    hw: HWBackend,
-    suite: str,
-    files: list[str],
-) -> list[CIRegistry]:
-    """Resolve an explicit file request, bypassing label and cadence filters.
-
-    An explicitly requested file is the selection, so domain labels and the
-    nightly eligibility gate do not apply. Every requested file must resolve
-    to an enabled registration in this exact hw/suite; anything else is a
-    hard error rather than a silent no-op.
-    """
-    valid_suites = CI_SUITES.get(hw, [])
-    if suite not in valid_suites:
-        raise ValueError(f"Unknown suite {suite} for backend {hw.name}")
-    if len(set(files)) != len(files):
-        raise ValueError(f"--files contains duplicate entries: {files}")
-
-    by_file: dict[str, list[CIRegistry]] = {}
-    for test in ci_tests:
-        by_file.setdefault(test.filename, []).append(test)
-
-    selected: list[CIRegistry] = []
-    for filename in files:
-        registrations = by_file.get(filename)
-        if not registrations:
-            raise ValueError(f"{filename} has no CI registration")
-        matches = [t for t in registrations if t.backend == hw and t.suite == suite]
-        if not matches:
-            actual = ", ".join(sorted(f"{t.backend.name}:{t.suite}" for t in registrations))
-            raise ValueError(f"{filename} is not registered for hw={hw.name} suite={suite} (registered: {actual})")
-        for test in matches:
-            if test.disabled is not None:
-                raise ValueError(f"{filename} is disabled: {test.disabled}")
-        selected.extend(matches)
-    return selected
-
-
 def auto_partition(files: list[CIRegistry], rank, size):
     """
     Partition files into size sublists with approximately equal sums of estimated times
@@ -242,17 +203,13 @@ def run_a_suite(args):
         f"include_labels={sorted(include_labels)}",
         flush=True,
     )
-    if args.files:
-        ci_tests = select_requested_files(all_tests, hw, suite, args.files)
-        skipped_tests = []
-    else:
-        ci_tests, skipped_tests = filter_tests(
-            all_tests,
-            hw,
-            suite,
-            policy.admit_nightly_tests,
-            labels=include_labels,
-        )
+    ci_tests, skipped_tests = filter_tests(
+        all_tests,
+        hw,
+        suite,
+        policy.admit_nightly_tests,
+        labels=include_labels,
+    )
 
     if auto_partition_size:
         ci_tests = auto_partition(ci_tests, auto_partition_id, auto_partition_size)
@@ -392,17 +349,6 @@ def main():
         ),
     )
     parser.add_argument(
-        "--files",
-        nargs="+",
-        help=(
-            "Explicitly requested registered test files (repo-relative, e.g. "
-            "`tests/e2e/precision/test_hf_attention_cp_relayout.py`). Replaces "
-            "label and "
-            "cadence selection: each file must resolve to an enabled "
-            "registration in this exact --hw/--suite or the run fails."
-        ),
-    )
-    parser.add_argument(
         "--match-all-labels",
         action="store_true",
         default=False,
@@ -414,9 +360,6 @@ def main():
         ),
     )
     args = parser.parse_args()
-
-    if args.files and args.match_all_labels:
-        parser.error("--files replaces label selection and cannot be combined with --match-all-labels.")
 
     # Validate auto-partition arguments
     if (args.auto_partition_id is not None) != (args.auto_partition_size is not None):

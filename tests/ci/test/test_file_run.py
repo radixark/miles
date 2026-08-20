@@ -16,13 +16,14 @@ def _make(
     *,
     backend: HWBackend = HWBackend.CUDA,
     suite: str = "stage-c-8-gpu-h100",
+    est_time: float = 60.0,
     nightly: bool = False,
     disabled: str | None = None,
 ) -> CIRegistry:
     return CIRegistry(
         backend=backend,
         filename=filename,
-        est_time=60.0,
+        est_time=est_time,
         suite=suite,
         labels=["megatron"],
         nightly=nightly,
@@ -50,6 +51,7 @@ def test_cuda_file_resolves_to_its_suite_runner_and_image():
         "suite": "stage-c-4-gpu-h200",
         "runs_on": json.dumps(["h200", "4gpu"]),
         "container_image": "radixark/miles:dev",
+        "timeout_seconds": "1800",
     }
 
 
@@ -61,7 +63,13 @@ def test_cpu_file_resolves_without_runner_labels():
         "suite": "stage-a-cpu",
         "runs_on": "",
         "container_image": "radixark/miles:pr-42",
+        "timeout_seconds": "1800",
     }
+
+
+def test_long_file_extends_the_default_timeout():
+    tests = [_make("tests/e2e/x/test_a.py", est_time=2000)]
+    assert plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")["timeout_seconds"] == "2500"
 
 
 def test_unknown_cpu_suite_is_a_hard_error():
@@ -153,6 +161,7 @@ def test_main_writes_github_outputs(monkeypatch, tmp_path):
     assert "suite=stage-a-cpu" in lines
     assert "runs_on=" in lines
     assert "container_image=radixark/miles:dev" in lines
+    assert "timeout_seconds=1800" in lines
 
 
 def test_main_fails_closed_on_an_unregistered_file(monkeypatch, tmp_path, capsys):
@@ -176,20 +185,30 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "name: Rerun Test" in workflow
     assert 'run-name: "/rerun-test ' in workflow
     assert workflow.count("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") == 2
-    assert "ref: ${{ inputs.head_sha }}" in workflow
+    assert workflow.count("ref: ${{ inputs.head_sha }}") == 3
+    assert workflow.count("plan_already_resolved: true") == 2
     assert "path: pr-source" in workflow
     assert "CI_SOURCE_ROOT: ${{ github.workspace }}/pr-source" in workflow
     assert "run: python3 -S -m tests.ci.file_run" in workflow
     assert "DISPATCHED_SHA" not in workflow
-    assert workflow.count("checkout_ref: ${{ inputs.head_sha }}") == 2
+    assert "checkout_ref" not in workflow
     assert "secrets: inherit" not in workflow
     assert "CI_COMMAND_APP_PRIVATE_KEY" not in workflow
     assert "NEON_DATABASE_URL" not in workflow
-    assert workflow.count("--files '${{ inputs.test_file }}'") == 2
-    assert "ref: ${{ inputs.checkout_ref || github.sha }}" in gpu_workflow
-    assert "ref: ${{ inputs.checkout_ref || github.sha }}" in cpu_workflow
+    assert "group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}" in workflow
+    assert "cancel-in-progress: false" in workflow
+    assert "queue: max" in workflow
+    assert "tests.ci.run_suite" not in workflow
+    assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
+    assert "python3 '${{ inputs.test_file }}'" in workflow
+    assert workflow.count("timeout --signal=TERM --kill-after=30s") == 2
+    assert workflow.count("'${{ needs.resolve-file-run.outputs.timeout_seconds }}s'") == 2
+    for reusable in (gpu_workflow, cpu_workflow):
+        assert "plan_already_resolved:" in reusable
+        assert "if: ${{ !inputs.plan_already_resolved }}" in reusable
+        assert "control_ref" not in reusable
     assert (
-        "GITHUB_COMMIT_NAME: ${{ inputs.checkout_ref || github.sha }}_"
+        "GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_"
         "${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}"
     ) in gpu_workflow
 
