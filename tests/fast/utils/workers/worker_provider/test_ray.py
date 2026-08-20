@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -468,9 +468,9 @@ class _RayCommManagerHandle:
     get_actor_handle: _ActorHandleMethod
 
 
-def _ray_comm_worker_info(*, generation: int) -> WorkerInfo:
+def _actor_worker_info(*, generation: int, name: str = "trainer-engine-actor-00000-00000") -> WorkerInfo:
     return WorkerInfo(
-        name="trainer-engine-actor-00000-00000",
+        name=name,
         generation=generation,
         self_addrs={"master": HostAndPort(host="10.0.0.7", port=20000)},
         gpu_ids=[],
@@ -482,7 +482,7 @@ class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
     def test_a_handle_of_the_described_generation_is_built(self, monkeypatch: pytest.MonkeyPatch):
         """The ordinary path: the cell did not move between the two calls the resolution takes."""
         handle = _RayCommManagerHandle(
-            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_ray_comm_worker_info(generation=3)]]),
+            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_actor_worker_info(generation=3)]]),
             get_actor_handle=_ActorHandleMethod(generation_of_worker=3),
         )
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
@@ -495,7 +495,7 @@ class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
     def test_a_cell_restarted_between_the_two_calls_is_refused(self, monkeypatch: pytest.MonkeyPatch):
         """Pairing an old cell's addresses with a new cell's actors sends new ranks to a dead rendezvous."""
         handle = _RayCommManagerHandle(
-            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_ray_comm_worker_info(generation=3)]]),
+            get_worker_infos=_ServingWorkerInfosMethod(answers=[[_actor_worker_info(generation=3)]]),
             get_actor_handle=_ActorHandleMethod(generation_of_worker=4),
         )
         provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
@@ -503,6 +503,111 @@ class TestRayWorkerProviderRayHandlesAreOfTheGenerationDescribed:
 
         with pytest.raises(AssertionError):
             provider.get_handle("trainer-engine-actor-00000-00000")
+
+
+@dataclass
+class _PendingActorHandle:
+    worker_name: str
+    expected_generation: int
+
+
+@dataclass
+class _PendingActorHandleMethod:
+    requested: list[tuple[str, int]] = field(default_factory=list)
+
+    def remote(self, worker_name: str, *, expected_generation: int) -> _PendingActorHandle:
+        self.requested.append((worker_name, expected_generation))
+        return _PendingActorHandle(worker_name=worker_name, expected_generation=expected_generation)
+
+
+@dataclass
+class _PendingManagerHandle:
+    get_actor_handle: _PendingActorHandleMethod
+
+
+@dataclass
+class _RecordingRayGet:
+    generation_of_workers: dict[str, int]
+    batches: list[list[_PendingActorHandle]] = field(default_factory=list)
+
+    def __call__(self, refs: list[_PendingActorHandle]) -> list[str]:
+        self.batches.append(refs)
+        return [self._resolve(ref) for ref in refs]
+
+    def _resolve(self, ref: _PendingActorHandle) -> str:
+        generation = self.generation_of_workers[ref.worker_name]
+        assert (
+            generation == ref.expected_generation
+        ), f"{ref.worker_name} is now generation {generation}, not the {ref.expected_generation} it was described as"
+        return f"actor-of-{ref.worker_name}"
+
+
+class _BatchingProbe(NamedTuple):
+    provider: RayWorkerProvider
+    manager_handle: _PendingManagerHandle
+    ray_get: _RecordingRayGet
+
+
+def _build_batching_provider(
+    *, monkeypatch: pytest.MonkeyPatch, generation_of_workers: dict[str, int]
+) -> _BatchingProbe:
+    handle = _PendingManagerHandle(get_actor_handle=_PendingActorHandleMethod())
+    provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["trainer-engine-actor"])
+    ray_get = _RecordingRayGet(generation_of_workers=generation_of_workers)
+    monkeypatch.setattr(ray_worker_provider_mod.ray, "get", ray_get)
+    return _BatchingProbe(provider=provider, manager_handle=handle, ray_get=ray_get)
+
+
+class TestRayWorkerProviderHandlesAreFetchedInOneBatch:
+    def test_many_workers_cost_a_single_round_trip(self, monkeypatch: pytest.MonkeyPatch):
+        """Resolving per worker blocks the event loop for one round trip each, so all of them go out together."""
+        names = [f"trainer-engine-actor-00000-{index:05d}" for index in range(4)]
+        probe = _build_batching_provider(monkeypatch=monkeypatch, generation_of_workers={name: 3 for name in names})
+
+        probe.provider.get_handles_of_worker_infos([_actor_worker_info(name=name, generation=3) for name in names])
+
+        assert len(probe.ray_get.batches) == 1
+        assert probe.manager_handle.get_actor_handle.requested == [(name, 3) for name in names]
+
+    def test_every_worker_is_paired_with_its_own_handle(self, monkeypatch: pytest.MonkeyPatch):
+        """A batch that mixes up the order would hand each caller somebody else's actor."""
+        names = [f"trainer-engine-actor-00000-{index:05d}" for index in range(3)]
+        probe = _build_batching_provider(monkeypatch=monkeypatch, generation_of_workers={name: 3 for name in names})
+
+        handles = probe.provider.get_handles_of_worker_infos(
+            [_actor_worker_info(name=name, generation=3) for name in names]
+        )
+
+        assert {name: handle._actor_handle for name, handle in handles.items()} == {
+            name: f"actor-of-{name}" for name in names
+        }
+
+    def test_a_worker_of_another_generation_is_still_refused(self, monkeypatch: pytest.MonkeyPatch):
+        """Batching must not swallow the generation check that keeps stale actors out of a new cell."""
+        names = ["trainer-engine-actor-00000-00000", "trainer-engine-actor-00000-00001"]
+        probe = _build_batching_provider(monkeypatch=monkeypatch, generation_of_workers={names[0]: 3, names[1]: 4})
+
+        with pytest.raises(AssertionError, match=names[1]):
+            probe.provider.get_handles_of_worker_infos([_actor_worker_info(name=name, generation=3) for name in names])
+
+    def test_asking_for_nothing_answers_nothing(self, monkeypatch: pytest.MonkeyPatch):
+        """An empty batch must answer an empty mapping instead of failing on a round trip with nothing to ask."""
+        probe = _build_batching_provider(monkeypatch=monkeypatch, generation_of_workers={})
+
+        assert probe.provider.get_handles_of_worker_infos([]) == {}
+        assert probe.manager_handle.get_actor_handle.requested == []
+
+    def test_served_workers_keep_their_locally_built_handles(self, monkeypatch: pytest.MonkeyPatch):
+        """An rpc worker needs no round trip, and must not be dropped from a batch that also holds actors."""
+        actor_name = "trainer-engine-actor-00000-00001"
+        probe = _build_batching_provider(monkeypatch=monkeypatch, generation_of_workers={actor_name: 3})
+
+        handles = probe.provider.get_handles_of_worker_infos(
+            [_served_worker_info(generation=3), _actor_worker_info(name=actor_name, generation=3)]
+        )
+
+        assert isinstance(handles["trainer-engine-actor-00000-00000"], RpcWorkerHandle)
+        assert probe.manager_handle.get_actor_handle.requested == [(actor_name, 3)]
 
 
 class TestRayWorkerProviderWatchCellsStop:

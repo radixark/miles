@@ -32,6 +32,17 @@ class RayWorkerProvider(BaseWorkerProvider):
     async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
         return await self._worker_manager_handle.get_worker_addrs.remote(worker_name)
 
+    def get_handles_of_worker_infos(self, infos: list[WorkerInfo]) -> dict[str, BaseWorkerHandle]:
+        actor_handles = self._get_actor_handles([info for info in infos if info.worker_class is None])
+        return {
+            info.name: (
+                RayWorkerHandle(actor_handles[info.name])
+                if info.worker_class is None
+                else build_rpc_handle_of_worker_info(info)
+            )
+            for info in infos
+        }
+
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         pool_ids = self._watched_pool_ids()
         loop = PollingReconcileLoop(
@@ -44,14 +55,12 @@ class RayWorkerProvider(BaseWorkerProvider):
         all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
         return {cell_id: info for cell_id, info in all_infos.items() if info.alive}
 
-    def _build_handle_of_worker_info(self, info: WorkerInfo) -> BaseWorkerHandle:
-        if info.worker_class is not None:
-            return build_rpc_handle_of_worker_info(info)
-        return RayWorkerHandle(
-            ray.get(
-                self._worker_manager_handle.get_actor_handle.remote(info.name, expected_generation=info.generation)
-            )
-        )
+    def _get_actor_handles(self, infos: list[WorkerInfo]) -> dict[str, ray.actor.ActorHandle]:
+        refs = [
+            self._worker_manager_handle.get_actor_handle.remote(info.name, expected_generation=info.generation)
+            for info in infos
+        ]
+        return {info.name: handle for info, handle in zip(infos, ray.get(refs), strict=True)}
 
     def _watched_pool_ids(self) -> list[str]:
         assert self._pool_ids is not None, "this provider was built without the pool_ids it is meant to observe"
