@@ -16,6 +16,13 @@ from miles.utils.workers.naming import (
     PORT_NAME_MAX_LENGTH,
     PORT_NAME_PATTERN,
 )
+from miles.utils.workers.env_vars import (
+    BASE_GPU_ID_ENV_VAR,
+    CELL_INDEX_ENV_VAR,
+    NAMESPACE_ENV_VAR,
+    POD_INDEX_ENV_VAR,
+    RELEASE_ENV_VAR,
+)
 
 _DNS_LABEL = rf"^{DNS_LABEL_PATTERN}$"
 _OPTIONAL_DNS_LABEL = rf"^({DNS_LABEL_PATTERN})?$"
@@ -23,10 +30,17 @@ _DNS_SUBDOMAIN = rf"^{DNS_SUBDOMAIN_PATTERN}$"
 _OPTIONAL_DNS_SUBDOMAIN = rf"^({DNS_SUBDOMAIN_PATTERN})?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
+_PLATFORM_OWNED_ENV_VARS = [
+    CELL_INDEX_ENV_VAR,
+    POD_INDEX_ENV_VAR,
+    BASE_GPU_ID_ENV_VAR,
+    NAMESPACE_ENV_VAR,
+    RELEASE_ENV_VAR,
+]
 _ENV_KEYS = {
     "propertyNames": {
         "pattern": "^[ -<>-~]+$",
-        "not": {"enum": ["PYTHONPATH", LAUNCHER_REPORT_ENV_VAR]},
+        "not": {"enum": ["PYTHONPATH", LAUNCHER_REPORT_ENV_VAR, *_PLATFORM_OWNED_ENV_VARS]},
     }
 }
 
