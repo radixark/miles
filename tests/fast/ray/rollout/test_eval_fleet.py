@@ -360,10 +360,10 @@ class TestRolloutExecutorEvalFleet:
 
         assert exc.value.reason == "pin_violation"
 
-    async def test_the_controller_is_resolved_again_for_every_point(self, fleet_states):
-        """A controller that restarted answers on a new handle, and a session that kept the old one never heals."""
+    async def test_the_controller_is_resolved_once_and_the_handle_reused(self, fleet_states):
+        """Resolving a fresh handle per point would hand every point a fresh boot-uuid pin, so it is resolved once."""
         first, second = (
-            FakeInferenceController([EvalFleetPin(skip_reason=None)]),
+            FakeInferenceController([EvalFleetPin(skip_reason=None), EvalFleetPin(skip_reason=None)]),
             FakeInferenceController([EvalFleetPin(skip_reason=None)]),
         )
         provider = FakeControllerProvider([first, second])
@@ -372,7 +372,7 @@ class TestRolloutExecutorEvalFleet:
         await session.pin("/snap/step_5", "5")
         await session.pin("/snap/step_6", "6")
 
-        assert (provider.lookups, len(first.calls), len(second.calls)) == (2, 1, 1)
+        assert (provider.lookups, len(first.calls), len(second.calls)) == (1, 2, 0)
 
     async def test_a_controller_that_cannot_be_reached_skips_the_point(self, fleet_states):
         """Losing the controller must skip one eval point, not raise into the driver's rollout loop."""
@@ -399,9 +399,16 @@ class TestRolloutExecutorEvalFleet:
 
         assert exc.value.reason == "controller_unreachable"
 
-    async def test_a_controller_that_restarted_skips_the_point(self, fleet_states):
-        """A restarted server is a transport failure too, and eval must degrade rather than crash the run."""
-        session = make_session_over(FakeControllerProvider([ServerRestartedError("boot uuid changed")]))
+    async def test_the_pin_keeps_reporting_a_restarted_controller_across_points(self, fleet_states):
+        """The kept handle keeps its boot-uuid pin, so a later point still sees the restart instead of a fresh pin."""
+        controller = FakeInferenceController(
+            [ServerRestartedError("boot uuid changed"), ServerRestartedError("boot uuid changed")]
+        )
+        provider = FakeControllerProvider([controller])
+        session = make_session_over(provider)
 
-        with pytest.raises(EvalSkip):
-            await session.pin("/snap/step_5", "5")
+        for checkpoint_dir, weight_version in (("/snap/step_5", "5"), ("/snap/step_6", "6")):
+            with pytest.raises(EvalSkip):
+                await session.pin(checkpoint_dir, weight_version)
+
+        assert (provider.lookups, len(controller.calls)) == (1, 2)
