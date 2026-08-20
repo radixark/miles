@@ -11,7 +11,7 @@ from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayC
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, _CommandActorManager
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 
@@ -724,6 +724,91 @@ class TestConcurrentPhases:
 
         assert sorted(entered) == [0, 1, 2]
         assert len({manager.get_worker_addrs(f"engine-{index}-0")["primary"].port for index in range(3)}) == 3
+
+
+class TestAddressPublication:
+    async def test_reading_the_addrs_of_a_worker_mid_allocation_is_refused(self, fake_ray_cluster: FakeRayCluster):
+        """A half-filled map reads like a worker that simply has no such endpoint, so it must not be observable."""
+        original_alloc_ports = _CommandActorManager.alloc_ports
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def gated_alloc(self) -> None:
+            entered.set()
+            await asyncio.wait_for(release.wait(), timeout=5)
+            await original_alloc_ports(self)
+
+        manager = RayWorkerManager()
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc)
+            task = asyncio.create_task(manager.init([_make_spec("engine")], {}))
+            await asyncio.wait_for(entered.wait(), timeout=5)
+
+            with pytest.raises(AssertionError, match="has not been given its ports yet"):
+                manager.get_worker_addrs("engine-0-0")
+
+            release.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        assert "primary" in manager.get_worker_addrs("engine-0-0")
+
+    async def test_a_read_between_two_ports_of_one_worker_is_refused(self, fake_ray_cluster: FakeRayCluster):
+        """A worker caught between two of its ports refuses the read rather than answering with the ports so far."""
+        spec = _make_spec(
+            "router",
+            port_infos=[
+                PortInfo(name="primary", static_port=8000, allow_dynamic=True),
+                PortInfo(name="prometheus", static_port=7001, allow_dynamic=False),
+                PortInfo(name="debug", static_port=7002, allow_dynamic=False),
+            ],
+        )
+        original_assert_free = _CommandActorManager._assert_static_port_is_free
+        observed: list[object] = []
+
+        async def probing_assert_free(self, *, port: int, port_name: str, node_ip: str) -> None:
+            try:
+                observed.append(self.manager.get_worker_addrs(self.name))
+            except AssertionError as error:
+                observed.append(str(error))
+            await original_assert_free(self, port=port, port_name=port_name, node_ip=node_ip)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_CommandActorManager, "_assert_static_port_is_free", probing_assert_free)
+            manager = await _launch([spec])
+
+        assert len(observed) == 2
+        assert all(isinstance(seen, str) and "has not been given its ports yet" in seen for seen in observed)
+        assert sorted(manager.get_worker_addrs("router-0-0")) == ["debug", "primary", "prometheus"]
+
+    async def test_a_worker_that_declares_no_ports_publishes_an_empty_map(self, fake_ray_cluster: FakeRayCluster):
+        """Owning no endpoint is a finished answer, so an empty map must read as published, not as unallocated."""
+        manager = await _launch([_make_spec("controller", port_infos=[])])
+
+        assert manager.get_worker_addrs("controller-0-0") == {}
+
+    async def test_a_settled_worker_stays_readable_while_a_peer_allocates(self, fake_ray_cluster: FakeRayCluster):
+        """Only the worker still being given its ports is unreadable; one that already has all of its own answers."""
+        specs = [
+            _make_spec("router"),
+            _make_spec("engine", port_infos=[PortInfo(name="primary", static_port=7001, allow_dynamic=False)]),
+        ]
+        manager = await _launch(specs)
+        router_port = manager.get_worker_addrs("router-0-0")["primary"].port
+        await manager.stop_cells(["engine-0"])
+
+        original_assert_free = _CommandActorManager._assert_static_port_is_free
+        observed: list[int] = []
+
+        async def probing_assert_free(self, *, port: int, port_name: str, node_ip: str) -> None:
+            observed.append(self.manager.get_worker_addrs("router-0-0")["primary"].port)
+            await original_assert_free(self, port=port, port_name=port_name, node_ip=node_ip)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_CommandActorManager, "_assert_static_port_is_free", probing_assert_free)
+            await manager.start_cells(["engine-0"])
+
+        assert observed == [router_port]
+        assert manager.get_worker_addrs("engine-0-0")["primary"].port == 7001
 
 
 class TestGpuPlacement:

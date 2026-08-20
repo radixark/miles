@@ -71,7 +71,12 @@ class RayWorkerManager:
         await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
-        return self._find_actor(worker_name).self_addrs
+        addrs = self._find_actor(worker_name).self_addrs
+        assert addrs is not None, (
+            f"{worker_name} has not been given its ports yet; a caller reading them now would take the "
+            f"endpoints it cannot find for endpoints the worker does not have"
+        )
+        return addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
         return {name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()}
@@ -288,7 +293,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
         )
 
     async def alloc_ports(self) -> None:
-        self.self_addrs = {}
+        allocated: NamedHostAndPorts = {}
 
         node_ip = await self.actor_handle._get_node_ip.remote()
         for port_info in self.spec.port_infos:
@@ -301,7 +306,9 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
             else:
                 port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
                 await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
-            self.self_addrs[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+            allocated[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+
+        self.self_addrs = allocated
 
     async def _assert_static_port_is_free(self, *, port: int, port_name: str, node_ip: str) -> None:
         free = await self.actor_handle._is_port_available.remote(port=port)
