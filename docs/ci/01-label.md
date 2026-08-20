@@ -77,7 +77,7 @@ The workflow is disabled by default. Workflow owners may set the repository vari
 
 1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read`, `Issues: write`, and `Actions: write`; do not grant `Contents: write`. Each request mints only one capability-specific token: label commands request `Issues: write`, while rerun and file-run commands request `Actions: write`.
 2. Store the App client ID in the repository variable `CI_COMMAND_APP_CLIENT_ID` and its private key in the repository secret `CI_COMMAND_APP_PRIVATE_KEY`.
-3. Protect the final bytes of `.github/workflows/comment-ci-command.yml`, `.github/workflows/run-ci-file.yml`, both reusable CI workflows, the handler, the resolver and its registry modules, and the policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
+3. Protect the final bytes under `.github/workflows/` that implement the command gateway—its workflows, handler, and policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
 4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers.
    Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
    Then create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.

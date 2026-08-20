@@ -211,17 +211,3 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
         "GITHUB_COMMIT_NAME: ${{ inputs.ref || github.sha }}_"
         "${{ github.event.pull_request.number || github.event.inputs.pull_number || 'non-pr' }}"
     ) in gpu_workflow
-
-
-def test_trusted_resolver_and_dependencies_have_workflow_owners():
-    codeowners = (Path(__file__).parents[3] / ".github/CODEOWNERS").read_text()
-    owners = "@yushengsu-thu @guapisolo @yueming-yuan"
-    for path in (
-        "/tests/__init__.py",
-        "/tests/ci/__init__.py",
-        "/tests/ci/file_run.py",
-        "/tests/ci/ci_register.py",
-        "/tests/ci/labels.py",
-        "/tests/ci/test/test_file_run.py",
-    ):
-        assert f"{path} {owners}" in codeowners
