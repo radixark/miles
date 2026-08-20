@@ -67,6 +67,35 @@ class TestRayWorkerProviderGetAddrs:
         assert await provider.get_addrs(worker_name="engine-0-0") == addrs
 
 
+class _FakeStopCellsMethod:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def remote(self, cell_ids: list[str]) -> None:
+        self.entered.set()
+        await self.release.wait()
+
+
+@dataclass
+class _StoppingManagerHandle:
+    stop_cells: _FakeStopCellsMethod
+
+
+class TestRayWorkerProviderStopCells:
+    async def test_stop_cells_does_not_report_completion_while_the_remote_stop_is_pending(self) -> None:
+        """Stopping cells remains pending until the remote operation has completed."""
+        handle = _StoppingManagerHandle(stop_cells=_FakeStopCellsMethod())
+        provider = RayWorkerProvider(worker_manager_handle=handle)
+
+        stopping = asyncio.create_task(provider.stop_cells(cell_ids=["cell-a"]))
+        await handle.stop_cells.entered.wait()
+        assert not stopping.done()
+
+        handle.stop_cells.release.set()
+        await stopping
+
+
 @dataclass
 class _FakeObjectRef:
     infos: list[WorkerInfo]
