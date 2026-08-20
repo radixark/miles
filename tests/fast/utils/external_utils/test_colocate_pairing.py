@@ -311,25 +311,6 @@ class TestTargetTrainerPod:
             _target(0, layout, inference_pod_index=5)
 
 
-def _target_by_cell_division(
-    inference_cell_index: int, inference_pod_index: int, layout: PairingLayout
-) -> PodCoordinate:
-    inferences_per_trainer_cell = layout.num_pods_per_trainer_cell // layout.num_pods_per_inference_cell
-    trainer_cell_index = inference_cell_index // inferences_per_trainer_cell
-    offset_within_cell = inference_cell_index % inferences_per_trainer_cell
-    return _coordinate(
-        trainer_cell_index, offset_within_cell * layout.num_pods_per_inference_cell + inference_pod_index
-    )
-
-
-def _all_targets(layout: PairingLayout) -> list[PodCoordinate]:
-    return [
-        _target(cell_index, layout, inference_pod_index=pod_index)
-        for cell_index in range(layout.num_inference_cells)
-        for pod_index in range(layout.num_pods_per_inference_cell)
-    ]
-
-
 class TestBaseGpuIdOfAnInferencePod:
     def test_a_whole_node_pod_starts_at_the_first_card(self):
         """Its pod holds every card of the node, so the node-local numbering starts where the node does."""
@@ -486,6 +467,25 @@ class TestTheEnginesOfOneTrainerPodHoldDifferentCards:
 
         assert _cards_claimed_by_two_trainer_pods(cards) == []
         assert len(cards[_coordinate(0, 0)]) == 2
+
+
+def _target_by_cell_division(
+    inference_cell_index: int, inference_pod_index: int, layout: PairingLayout
+) -> PodCoordinate:
+    inferences_per_trainer_cell = layout.num_pods_per_trainer_cell // layout.num_pods_per_inference_cell
+    trainer_cell_index = inference_cell_index // inferences_per_trainer_cell
+    offset_within_cell = inference_cell_index % inferences_per_trainer_cell
+    return _coordinate(
+        trainer_cell_index, offset_within_cell * layout.num_pods_per_inference_cell + inference_pod_index
+    )
+
+
+def _all_targets(layout: PairingLayout) -> list[PodCoordinate]:
+    return [
+        _target(cell_index, layout, inference_pod_index=pod_index)
+        for cell_index in range(layout.num_inference_cells)
+        for pod_index in range(layout.num_pods_per_inference_cell)
+    ]
 
 
 class TestGpuOffsetPairing:
