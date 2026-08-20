@@ -169,6 +169,91 @@ def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int
     return [totals[rid] for rid in rollout_ids]
 
 
+def _reward_group_segments(args: Any, samples: list[Sample], prompt_group_sizes: list[int] | None) -> list[list[int]]:
+    """Return the flattened row indices for each prompt reward group."""
+    # Multi-LoRA records explicit prompt boundaries before flattening.
+    if prompt_group_sizes is not None:
+        assert sum(prompt_group_sizes) == len(
+            samples
+        ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(samples)} rewards"
+        groups: list[list[int]] = []
+        start = 0
+        for size in prompt_group_sizes:
+            end = start + size
+            if size > 0:
+                groups.append(list(range(start, end)))
+            start = end
+        return groups
+
+    # Standard rollout samples carry their prompt identity in `group_index`.
+    group_indices = [sample.group_index for sample in samples]
+    if all(group_index is not None for group_index in group_indices):
+        segments_by_group_index: dict[int, list[int]] = {}
+        for segment_index, group_index in enumerate(group_indices):
+            segments_by_group_index.setdefault(int(group_index), []).append(segment_index)
+        return list(segments_by_group_index.values())
+
+    # Legacy fixed-fanout batches store each prompt's segments contiguously.
+    expected_samples = args.n_samples_per_prompt * args.rollout_batch_size
+    if len(samples) == expected_samples:
+        return [
+            list(range(start, start + args.n_samples_per_prompt))
+            for start in range(0, len(samples), args.n_samples_per_prompt)
+        ]
+    # Without prompt identities or a complete fixed layout, use one reward group.
+    return [list(range(len(samples)))]
+
+
+def _normalize_rewards_by_rollout(
+    args: Any,
+    samples: list[Sample],
+    raw_rewards: list[float],
+    prompt_group_sizes: list[int] | None,
+) -> list[float]:
+    """Normalize one shared reward per rollout, then broadcast it to siblings."""
+    if not samples:
+        return []
+
+    normalized_rewards = torch.empty(len(raw_rewards), dtype=torch.float)
+    for prompt_segments in _reward_group_segments(args, samples, prompt_group_sizes):
+        segments_by_rollout_key: dict[int | tuple[str, int], list[int]] = {}
+        for segment_index in prompt_segments:
+            sample = samples[segment_index]
+            if sample.rollout_id is not None:
+                rollout_key = sample.rollout_id
+            elif sample.index is not None:
+                rollout_key = sample.index
+            else:
+                rollout_key = ("row", segment_index)
+            segments_by_rollout_key.setdefault(rollout_key, []).append(segment_index)
+
+        rollout_segment_groups = list(segments_by_rollout_key.items())
+        shared_rewards: list[float] = []
+        for rollout_key, rollout_segments in rollout_segment_groups:
+            sibling_rewards = [raw_rewards[segment_index] for segment_index in rollout_segments]
+            if any(reward != sibling_rewards[0] for reward in sibling_rewards[1:]):
+                raise ValueError(
+                    f"all samples in rollout {rollout_key!r} must share one reward; "
+                    f"rows {rollout_segments} have rewards {sibling_rewards}"
+                )
+            shared_rewards.append(sibling_rewards[0])
+
+        rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
+        normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
+        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
+            rollout_std = rollout_rewards.std()
+            if rollout_std > 0:
+                normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
+
+        for (_, rollout_segments), normalized_reward in zip(
+            rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
+        ):
+            for segment_index in rollout_segments:
+                normalized_rewards[segment_index] = normalized_reward
+
+    return normalized_rewards.tolist()
+
+
 def _post_process_rewards(
     args,
     samples: list[Sample] | list[list[Sample]],
@@ -180,38 +265,8 @@ def _post_process_rewards(
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
-        # group norm
-        rewards = torch.tensor(raw_rewards, dtype=torch.float)
-        if prompt_group_sizes is not None:
-            # Multi-LoRA: groups may have heterogeneous sizes (per-adapter
-            # n_samples_per_prompt), so normalize within explicit boundaries.
-            assert sum(prompt_group_sizes) == len(
-                raw_rewards
-            ), f"prompt group sizes sum to {sum(prompt_group_sizes)}, but got {len(raw_rewards)} rewards"
-            normalized_groups = []
-            for group_rewards in rewards.split(prompt_group_sizes):
-                centered = group_rewards - group_rewards.mean()
-                if (
-                    args.advantage_estimator in ["grpo", "gspo"]
-                    and args.grpo_std_normalization
-                    and group_rewards.numel() > 1
-                ):
-                    centered = centered / (group_rewards.std() + 1e-6)
-                normalized_groups.append(centered)
-            return raw_rewards, torch.cat(normalized_groups).tolist()
-        if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
-            rewards = rewards.reshape(-1, args.n_samples_per_prompt)
-        else:
-            # when samples count are not equal in each group
-            rewards = rewards.view(-1, rewards.shape[-1])
-        mean = rewards.mean(dim=-1, keepdim=True)
-        rewards = rewards - mean
-
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization:
-            std = rewards.std(dim=-1, keepdim=True)
-            rewards = rewards / (std + 1e-6)
-
-        return raw_rewards, rewards.flatten().tolist()
+        normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
+        return raw_rewards, normalized_rewards
 
     return raw_rewards, raw_rewards
 

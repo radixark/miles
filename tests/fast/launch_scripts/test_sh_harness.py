@@ -3,7 +3,7 @@ import pytest
 from tests.fast.launch_scripts import sh_harness
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, REPO_ROOT_PLACEHOLDER, run_launch_script
 
-_SCRIPT = REPO_ROOT / "scripts" / "run-qwen3-4B.sh"
+_SCRIPT = REPO_ROOT / "examples" / "infra_features" / "low_precision" / "run-qwen3-4b-fp8.sh"
 
 _BACKGROUNDING_SCRIPT = """#!/bin/bash
 set -ex
@@ -65,7 +65,7 @@ class TestRunLaunchScriptOnARealScript:
         assert argv[:3] == ["ray", "job", "submit"]
         assert "--num-layers" in argv
         assert argv[argv.index("--num-layers") + 1] == "36"
-        assert argv[argv.index("--hf-checkpoint") + 1] == "/root/Qwen3-4B"
+        assert argv[argv.index("--hf-checkpoint") + 1] == "/root/Qwen3-4B-FP8"
 
     def test_nvlink_detection_is_frozen_to_absent(self, run):
         """The nvidia-smi shim reports no NVLink, so NCCL_NVLS_ENABLE is deterministic."""

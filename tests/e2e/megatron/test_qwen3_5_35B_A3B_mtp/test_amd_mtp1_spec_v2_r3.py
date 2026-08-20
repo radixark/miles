@@ -25,9 +25,9 @@ from tests.e2e.megatron.test_qwen3_5_35B_A3B_mtp._common import CaseConfig, exec
 
 register_rocm_ci(
     est_time=1600,
-    suite="stage-c-4-gpu-mi300x",
+    suite="stage-c-4-gpu-mi350",
     labels=["megatron", "qwen35", "amd"],
-    disabled="Disable due to failure",
+    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -46,6 +46,7 @@ CASE = CaseConfig(
     sglang_ep_size=4,
     enable_mtp_training=True,
     use_r3=True,
+    extra_args=("--moe-token-dispatcher-type alltoall " "--sglang-disable-shared-experts-fusion "),
     # miles has no VLM/vision implementation on the training side, so vision weights are
     # never synced; exclude them from the weight-equality check.
     check_weight_update_skip_list=("visual",),

@@ -34,10 +34,11 @@ logprob drift between train and rollout.
 ### 3.1 Download model + datasets
 
 ```bash
-export BASE_DIR=/root/miles_data
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir $BASE_DIR/dapo-math-17k
-hf download nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 --local-dir $BASE_DIR/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16 --local-dir /root/models/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
 ```
+
+Those are the `--data-dir` and `--model-dir` defaults; point them elsewhere with the flags.
 
 ### 3.2 No `torch_dist` conversion
 
@@ -45,13 +46,11 @@ AutoBridge + the NemotronH MoE shim load the HF checkpoint directly. Both
 `--hf-checkpoint` and `--ref-load` point at the HF directory:
 
 ```bash
-CKPT_ARGS=(
-   --hf-checkpoint $BASE_DIR/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
-   --ref-load     $BASE_DIR/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
-   --save         $BASE_DIR/nemotron-3-nano-30b-a3b_miles
-   --save-interval 20
-   --megatron-to-hf-mode bridge
-)
+--hf-checkpoint <model-dir>/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+--ref-load      <model-dir>/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
+--save          <output-dir>/checkpoints
+--save-interval 20
+--megatron-to-hf-mode bridge
 ```
 
 ## 4. Launch
@@ -60,11 +59,13 @@ CKPT_ARGS=(
 
 ```bash
 cd /root/miles
-export BASE_DIR=/root/miles_data
-bash scripts/run-nemotron-3-nano-30b-a3b.sh
+python scripts/run_nemotron_3_nano.py --model-name NVIDIA-Nemotron-3-Nano-30B-A3B-BF16
 ```
 
-The script targets 1 node × 8 GPU (H200). Default cell is `TP=2 PP=2 EP=2`.
+`scripts/run_nemotron_3_nano.py` is shared with the dense
+[Nemotron-3-Nano-4B](/models/nemotron/nemotron-3-nano); `--model-name` picks the MoE
+recipe here. It targets 1 node × 8 GPU (H200), default cell `TP=2 PP=2 EP=2`, and is a
+10-step smoke test (`--num-rollout`).
 
 ## 5. Recipe Configuration
 
@@ -75,14 +76,14 @@ Default cell is `TP=2 PP=2 EP=2`. Other verified cells from the upstream PR
 
 | Cell | TP | PP | CP | EP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|
-| **default (run script)** | 2 | 2 | 1 | 2 | 1024 | 8 (1 × 8) |
+| **default (launcher)** | 2 | 2 | 1 | 2 | 1024 | 8 (1 × 8) |
 | EP=4 | 1 | 1 | 1 | 4 | 1024 | 8 |
 | TP=2×EP=4+SP | 2 | 1 | 1 | 4 | 1024 | 8 |
 | PP=2×EP=4 | 1 | 2 | 1 | 4 | 1024 | 8 |
 | CP=2×EP=4 | 1 | 1 | 2 | 4 | 1024 | 8 |
 | TP=2×PP=2×EP=2+SP | 2 | 2 | 1 | 2 | 1024 | 8 |
 
-`--sequence-parallel` is enabled in the run script. Activation checkpointing is on
+`--sequence-parallel` is enabled by the recipe. Activation checkpointing is on
 (`--recompute-granularity full --recompute-method uniform --recompute-num-layers 1`).
 `--log-probs-chunk-size 128` is required for the smoke memory budget.
 
@@ -91,27 +92,23 @@ Default cell is `TP=2 PP=2 EP=2`. Other verified cells from the upstream PR
 GRPO with low-variance KL:
 
 ```bash
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
+--advantage-estimator grpo
+--use-kl-loss
+--kl-loss-coef 0.00
+--kl-loss-type low_var_kl
+--entropy-coef 0.00
+--eps-clip 0.2
+--eps-clip-high 0.28
 ```
 
 ### 5.3 Rollout & SGLang
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.7
-   # Replay the exact rollout routing during training forward so
-   # train logprobs match rollout logprobs (needed for MoE).
-   --use-rollout-routing-replay
-)
+--rollout-num-gpus-per-engine 1
+--sglang-mem-fraction-static 0.7
+# Replay the exact rollout routing during training forward so
+# train logprobs match rollout logprobs (needed for MoE).
+--use-rollout-routing-replay
 ```
 
 The `--use-rollout-routing-replay` flag is what keeps train and rollout
@@ -125,7 +122,7 @@ memory pressure rises.
 
 ### 5.5 Notable quirks
 
-From `scripts/models/nemotron-3-nano-30b-a3b.py` and `scripts/run-nemotron-3-nano-30b-a3b.sh`:
+From `scripts/models/nemotron-3-nano-30b-a3b.py` and `scripts/run_nemotron_3_nano.py`:
 
 - **No `--spec`**: AutoBridge + the NemotronH shim synthesize the Megatron MoE spec from HF config.
 - 128 experts, `--moe-router-topk 6`, shared expert (3712-dim).
@@ -143,4 +140,4 @@ shim layers `routed_scaling_factor` / `n_group` / `topk_group` onto the Megatron
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
 - [P2P Weight Transfer](/advanced/p2p-weight-transfer)
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)

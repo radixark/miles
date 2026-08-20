@@ -18,7 +18,7 @@ def convert_to_miles_format(
         output_path: Path to output JSONL file in Miles format
         limit: Optional limit on number of samples
         split: Dataset split name (used in metadata)
-        subset: NeMo-Gym subset controlling per-task image selection and eval
+        subset: NeMo Gym subset controlling per-task image selection and eval
             ("gym" -> SWE-Gym images, "verified" -> official SWE-bench images)
     """
     count = 0
@@ -54,7 +54,7 @@ def main():
     )
     parser.add_argument("--limit", type=int, help="Limit number of samples")
     parser.add_argument(
-        "--subset", type=str, default="gym", help='NeMo-Gym subset: "gym" (SWE-Gym) or "verified" (SWE-bench Verified)'
+        "--subset", type=str, default="gym", help='NeMo Gym subset: "gym" (SWE-Gym) or "verified" (SWE-bench Verified)'
     )
 
     args = parser.parse_args()

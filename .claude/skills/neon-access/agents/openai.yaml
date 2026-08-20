@@ -1,0 +1,4 @@
+interface:
+  display_name: "Neon SQL Access"
+  short_description: "Run arbitrary Neon SQL through an authorized workflow"
+  default_prompt: "Use $neon-access to run the provided SQL through the authorized Miles workflow and return the result."

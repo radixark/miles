@@ -6,12 +6,14 @@ from tests.ci.ci_register import register_cuda_ci
 import miles.utils.external_utils.command_utils as U
 
 # Smoke test for scripts/run_glm5_1_744b_a40b_lora.py on the 6-layer toy (full rollout ->
-# train -> save loop). Runs the MoE-expert LoRA matrix — {shared-outer + virtual-experts,
-# per-expert + no-virtual-experts} x {tilelang, megatron} — and every combination must pass.
+# train -> save loop). Runs one diagonal of the MoE-expert LoRA matrix — {tilelang +
+# shared-outer + virtual-experts, megatron + per-expert + no-virtual-experts} — and every
+# combination must pass. The GLM-5.2 5-layer sibling runs the complementary diagonal, so
+# nightly still covers all four {dsa backend} x {lora layout} cells across the pair.
 # Functionality, not accuracy; 8 GPUs (TP=EP=8).
 
 
-register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"])
+register_cuda_ci(est_time=1300, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"])
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)
@@ -22,8 +24,6 @@ _BASE_EXTRA = (
 # (name, dsa_attention_backend, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [
     ("tilelang + shared-outer + virtual-experts", "tilelang", True, True),
-    ("megatron + shared-outer + virtual-experts", "megatron", True, True),
-    ("tilelang + per-expert + no-virtual-experts", "tilelang", False, False),
     ("megatron + per-expert + no-virtual-experts", "megatron", False, False),
 ]
 

@@ -1,6 +1,7 @@
 # doc-dev: docs/ci/02-docker-build.md
-# Build via docker/build.py (single source of truth for build-args, platforms,
-# and tags) — see docs/ci/02-docker-build.md. Examples:
+# Build via docker/build.py (single source of truth for variant defaults,
+# platforms, tags, and build-arg ordering); callers may append explicit
+# build-arg overrides. See docs/ci/02-docker-build.md. Examples:
 #       python docker/build.py --variant cu13     --image-tag dev --push   # radixark/miles:dev      (amd64+arm64)
 #       python docker/build.py --variant cu13-x86 --image-tag dev --push   # radixark/miles:dev (amd64)
 #       python docker/build.py --variant cu13-aarch64 --image-tag dev --push   # radixark/miles:dev (arm64)
@@ -20,6 +21,8 @@ ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
 ARG MEGATRON_BRANCH=miles-main
+# Empty means the branch HEAD at build time; release builds set it to freeze one commit.
+ARG MEGATRON_COMMIT=""
 
 ARG ENABLE_CUDA_13=1
 
@@ -38,7 +41,7 @@ WORKDIR /root/
 
 RUN apt update
 # ethtool for network diagnostics
-RUN apt install -y nvtop rsync dnsutils ethtool
+RUN apt install -y nvtop rsync dnsutils ethtool tmux
 
 # nccl-tests for diagnostics
 RUN git clone https://github.com/NVIDIA/nccl-tests.git /tmp/nccl-tests && \
@@ -150,6 +153,7 @@ RUN pip install /tmp/wheels/apex-*.whl
 
 RUN git clone https://github.com/${MEGATRON_REPO}.git --recursive -b ${MEGATRON_BRANCH} Megatron-LM && \
     cd Megatron-LM && \
+    if [ -n "${MEGATRON_COMMIT}" ]; then git checkout -f ${MEGATRON_COMMIT} && git submodule update --init --recursive; fi && \
     pip install -e .
 
 # Muon optimizer support: megatron/core/optimizer/muon.py requires this for Newton-Schulz
@@ -225,6 +229,9 @@ RUN if [ "${ENABLE_CUDA_13}" = "1" ]; then \
       echo "CUDA 12 variant: keeping the base image's mooncake"; \
     fi
 
+COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
+RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
+
 # ====================================== Install main package ============================================
 
 ARG MILES_COMMIT=main
@@ -283,6 +290,47 @@ RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
 p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
+
+# ==================== Pin nvidia-cutlass-dsl to 4.6.2 ====================
+# The sglang v0.5.16 base ships nvidia-cutlass-dsl 4.6.0, whose 4.6.0/4.6.1 runtime
+# hangs FA4 CuTe backward forever on sm_103 (B300/GB300): the first training backward
+# spins at 100% GPU in _bwd_postprocess_convert and never returns
+# (https://github.com/Dao-AILab/flash-attention/issues/2797). 4.6.2 is fixed and passes
+# FA4's own SM100 forward/backward checks. The meta-package alone does NOT move what a
+# process loads — the -libs-cu12/-libs-cu13 wheels carry the actual runtime — so pin
+# every component and fail the build loudly if any of them slips.
+RUN pip install --force-reinstall --no-deps \
+      "nvidia-cutlass-dsl==4.6.2" \
+      "nvidia-cutlass-dsl-libs-base==4.6.2" \
+      "nvidia-cutlass-dsl-libs-core==4.6.2" \
+      "nvidia-cutlass-dsl-libs-cu12==4.6.2" \
+      "nvidia-cutlass-dsl-libs-cu13==4.6.2" && \
+    python3 -c "from importlib.metadata import version as v; \
+libs = ['nvidia-cutlass-dsl', 'nvidia-cutlass-dsl-libs-base', 'nvidia-cutlass-dsl-libs-core', \
+        'nvidia-cutlass-dsl-libs-cu12', 'nvidia-cutlass-dsl-libs-cu13']; \
+bad = {p: v(p) for p in libs if v(p) != '4.6.2'}; \
+assert not bad, 'nvidia-cutlass-dsl components not at 4.6.2: %s' % bad"
+
+# ==================== Pin flashinfer to 0.6.15.post1 ====================
+# The sglang v0.5.16 base ships flashinfer 0.6.14, whose trtllm MoE cubins can hang
+# 2CTA kernels on Blackwell (regression since 0.6.8, fixed cubins in 0.6.15;
+# https://github.com/flashinfer-ai/flashinfer/pull/3973). 0.6.15.post1 additionally
+# fixes the host-side MLA/MoE dispatch overhead that got the plain 0.6.15 bump
+# reverted upstream (sgl-project/sglang#31625 -> #31927). The python + cubin + jit-cache
+# trio must move together; jit-cache wheels live on flashinfer's own index, per CUDA line.
+RUN FI_CUDA_INDEX=$([ "${ENABLE_CUDA_13}" = "1" ] && echo cu130 || echo cu129) && \
+    pip install --force-reinstall --no-deps \
+      --extra-index-url "https://flashinfer.ai/whl" \
+      --extra-index-url "https://flashinfer.ai/whl/${FI_CUDA_INDEX}" \
+      "flashinfer-python==0.6.15.post1" \
+      "flashinfer-cubin==0.6.15.post1" \
+      "flashinfer-jit-cache==0.6.15.post1" && \
+    python3 -c "from importlib.metadata import version as v; \
+vers = {p: v(p) for p in ['flashinfer-python', 'flashinfer-cubin', 'flashinfer-jit-cache']}; \
+bad = {p: x for p, x in vers.items() if not x.startswith('0.6.15.post1')}; \
+assert not bad, 'flashinfer components not at 0.6.15.post1: %s' % bad"
+# The sglang base exports FLASHINFER_VERSION=0.6.14; keep the marker in step.
+ENV FLASHINFER_VERSION=0.6.15.post1
 
 RUN rm -rf /tmp/wheels
 

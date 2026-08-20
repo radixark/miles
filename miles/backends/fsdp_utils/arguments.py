@@ -1,5 +1,6 @@
 import argparse
 import dataclasses
+import difflib
 from dataclasses import dataclass
 
 import yaml
@@ -50,8 +51,9 @@ class FSDPArgs:
 
     deterministic_mode: bool = False  # This name must be the same as Megatron's
 
-    # Context Parallelism
-    context_parallel_size: int = 1  # Context Parallelism size
+    # The FSDP backend is pure data parallel. This knob only exists so shared argument
+    # validation can reject a context-parallel run with a clear message.
+    context_parallel_size: int = 1
     # Profile
     record_memory_history: bool = False
     memory_snapshot_path: str = "snapshot.pickle"
@@ -64,7 +66,7 @@ class FSDPArgs:
     config: str | None = None
 
 
-def parse_fsdp_cli(extra_args_provider=None):
+def build_fsdp_parser(extra_args_provider=None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser("FSDP SFT Training (miles)")
     parser.add_argument("--config", type=str, default=None, help="YAML config path")
     for f in dataclasses.fields(FSDPArgs):
@@ -79,33 +81,43 @@ def parse_fsdp_cli(extra_args_provider=None):
         else:
             arg_type = f.type
 
-        if f.name == "keep_fp32_master":
+        if arg_type is bool:
             parser.add_argument(
-                "--disable-fp32-master",
-                dest=f.name,
-                action="store_false",
-                default=f.default,
-                help="Disable the FP32 master copy to reduce memory when bit-exact weight sync is not required.",
+                f"--{f.name.replace('_', '-')}", action=argparse.BooleanOptionalAction, default=f.default
             )
-        elif arg_type is bool:
-            parser.add_argument(f"--{f.name.replace('_', '-')}", action="store_true")
         else:
             parser.add_argument(f"--{f.name.replace('_', '-')}", type=arg_type, default=f.default)
 
     if extra_args_provider is not None:
         parser = extra_args_provider(parser)
-    args = parser.parse_args()
-    return args
+    return parser
+
+
+def parse_fsdp_cli(extra_args_provider=None):
+    return build_fsdp_parser(extra_args_provider).parse_args()
+
+
+def reject_unknown_config_keys(data: dict, known: set[str]) -> None:
+    unknown = sorted(set(data) - known)
+    if not unknown:
+        return
+
+    described = []
+    for key in unknown:
+        close = difflib.get_close_matches(key, known, n=1)
+        described.append(f"{key!r} (did you mean {close[0]!r}?)" if close else repr(key))
+    raise ValueError(f"unknown key(s) in the YAML config: {', '.join(described)}")
 
 
 def load_fsdp_args(extra_args_provider=None):
-    args = parse_fsdp_cli(extra_args_provider)
+    parser = build_fsdp_parser(extra_args_provider)
+    args = parser.parse_args()
     if args.config:
         with open(args.config) as f:
             data = yaml.safe_load(f) or {}
-        for k, v in data.items():
-            if not hasattr(args, k):
-                setattr(args, k, v)
+        reject_unknown_config_keys(data, set(vars(args)))
+        parser.set_defaults(**data)
+        args = parser.parse_args()
     args.bf16 = not args.fp16
     return args
 
@@ -117,15 +129,5 @@ def validate_hybrid_shard_args(args) -> None:
         raise ValueError(f"dp_replicate_size must be at least 1, got {replicate_size}")
 
     world_size = args.actor_num_nodes * args.actor_num_gpus_per_node
-    if args.context_parallel_size < 1:
-        raise ValueError(f"context_parallel_size must be at least 1, got {args.context_parallel_size}")
-    if world_size % args.context_parallel_size:
-        raise ValueError(
-            f"world_size({world_size}) must be divisible by " f"context_parallel_size({args.context_parallel_size})"
-        )
-
-    data_parallel_size = world_size // args.context_parallel_size
-    if data_parallel_size % replicate_size:
-        raise ValueError(
-            f"data_parallel_size({data_parallel_size}) must be divisible by " f"dp_replicate_size({replicate_size})"
-        )
+    if world_size % replicate_size:
+        raise ValueError(f"world_size({world_size}) must be divisible by dp_replicate_size({replicate_size})")

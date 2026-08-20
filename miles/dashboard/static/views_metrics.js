@@ -124,8 +124,11 @@ export async function renderMetrics(view, meta) {
 
   // sglang legend: one checkbox per engine, all on by default; unchecking
   // hides that engine's line in every chart (and drops it from the y-scale)
-  const engines = []; // sorted union of scraped addrs, fixes the color order page-wide
+  const engines = []; // sorted union of series labels, fixes the color order page-wide
   const hiddenEngines = new Set();
+  let perDpRank = sessionStorage.getItem("metricsPerDpRank") === "1";
+  // aggregated series carry no dp_rank label; split mode keys by addr+rank
+  const seriesLabel = (s) => (s.labels && s.labels.dp_rank !== undefined ? `${s.addr} dp${s.labels.dp_rank}` : s.addr);
   const legendPanel = el("div", { class: "panel", style: "flex: 0 0 240px; min-width: 240px; display: none" });
   const engineOpts = () => ({ hidden: hiddenEngines, colorIndex: (label) => engines.indexOf(label) });
   const redrawEngineCharts = () => {
@@ -136,6 +139,24 @@ export async function renderMetrics(view, meta) {
   const renderLegend = () => {
     legendPanel.replaceChildren(
       el("h3", {}, ["Engines"]),
+      el(
+        "label",
+        { style: "display: flex; align-items: center; gap: 6px; padding: 2px 0 8px; cursor: pointer; font-size: 12px" },
+        [
+          el("input", {
+            type: "checkbox",
+            ...(perDpRank ? { checked: "" } : {}),
+            onchange: (ev) => {
+              perDpRank = ev.target.checked;
+              sessionStorage.setItem("metricsPerDpRank", perDpRank ? "1" : "0");
+              engines.length = 0;
+              hiddenEngines.clear();
+              buildPanels();
+            },
+          }),
+          "split by dp rank",
+        ],
+      ),
       ...engines.map((addr, i) =>
         el(
           "label",
@@ -163,6 +184,7 @@ export async function renderMetrics(view, meta) {
   function buildPanels() {
     slots.clear();
     legendPanel.style.display = active === "sglang" ? "" : "none";
+    if (active === "sglang") renderLegend(); // toggle must exist before data arrives
     const keys = activeKeys();
     if (!keys.length) {
       chartsPanel.replaceChildren(el("p", { class: "muted" }, [active ? "no metrics here" : "no metrics logged"]));
@@ -184,18 +206,18 @@ export async function renderMetrics(view, meta) {
     const current = ++epoch;
     if (active === "sglang") {
       for (const [key, slot] of slots.entries()) {
-        api("/api/timeline/engine_series", { metric: key, max_points: 1000 })
+        api("/api/timeline/engine_series", { metric: key, max_points: 1000, per_dp_rank: perDpRank })
           .then(({ series }) => {
             if (current !== epoch) return;
-            const signature = series.map((s) => `${s.addr}:${s.ts.length}:${s.ts.at(-1)}`).join("|");
+            const signature = series.map((s) => `${seriesLabel(s)}:${s.ts.length}:${s.ts.at(-1)}`).join("|");
             if (signature === slot.signature) return;
             slot.signature = signature;
             slot.status.remove();
-            slot.lastSeries = series.map((s) => ({ label: s.addr, ts: s.ts, value: s.value }));
+            slot.lastSeries = series.map((s) => ({ label: seriesLabel(s), ts: s.ts, value: s.value }));
             let grew = false;
             for (const s of series) {
-              if (!engines.includes(s.addr)) {
-                engines.push(s.addr);
+              if (!engines.includes(seriesLabel(s))) {
+                engines.push(seriesLabel(s));
                 grew = true;
               }
             }

@@ -472,6 +472,12 @@ class MegatronTrainRayActor(TrainRayActor):
     ) -> TrainStepOutcome:
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+        num_optimizer_steps = len(num_microbatches)
+        skip_actor_forward_only = self.args.skip_actor_forward_only
+        if skip_actor_forward_only:
+            option = "--skip-actor-forward-only"
+            assert num_optimizer_steps == 1, f"{option} requires 1 optimizer step, got {num_optimizer_steps}"
+            assert rollout_data.get("log_probs") is None, f"{option} requires rollout data without actor log probs"
 
         for m in all_replay_managers:
             if self._use_rollout_replay(m):
@@ -514,7 +520,9 @@ class MegatronTrainRayActor(TrainRayActor):
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
-                if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
+                if not skip_actor_forward_only and (
+                    not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics
+                ):
                     for m in all_replay_managers:
                         if m.enabled:
                             if self._use_rollout_replay(m):
@@ -558,6 +566,7 @@ class MegatronTrainRayActor(TrainRayActor):
             log_rollout_data(rollout_id, self.args, rollout_data)
 
             # Train
+            num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
             self._set_replay_stage("replay_backward")
             with timer("actor_train"):
                 train_step_outcome = train(
@@ -567,7 +576,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.opt_param_scheduler,
                     data_iterator,
                     num_microbatches,
-                    get_num_rollouts(self.args, rollout_data, len(num_microbatches)),
+                    num_rollouts,
                     witness_info=witness_info,
                     attempt=attempt,
                     ft_test_action_executor=self._ft_test_action_executor,

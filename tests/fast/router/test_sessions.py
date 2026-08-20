@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import uuid
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,7 +15,7 @@ import requests
 from fastapi.responses import JSONResponse
 
 from miles.rollout.session.server import SessionServer
-from miles.utils.chat_template_utils import message_matches
+from miles.utils.chat_template_utils import strict_message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
@@ -465,12 +466,12 @@ class TestChatFakeStreaming:
         assert len(records) == 2
 
     def test_streaming_client_rebuilt_tool_calls_match_stored(self, router_env):
-        """Rebuilt tool_calls must match the stored assistant under message_matches.
+        """Rebuilt tool_calls must match the stored assistant under strict_message_matches.
 
         The stored message keeps SGLang's wire shape (tool_calls carry
         ``index``); a protocol-faithful streaming client drops that
         streaming-only key when rebuilding.  The server's own comparison
-        (``message_matches``) must treat the two as equal — dict equality is
+        (``strict_message_matches``) must treat the two as equal — dict equality is
         deliberately NOT the contract."""
         session_id = _create_session(router_env.url)
         url = f"{router_env.url}/sessions/{session_id}/v1/chat/completions"
@@ -515,7 +516,7 @@ class TestChatFakeStreaming:
         # Mock fidelity guard: the stored wire shape carries index, the rebuilt drops it.
         assert all("index" in tool_call for tool_call in stored_message["tool_calls"])
         assert all("index" not in tool_call for tool_call in rebuilt_message["tool_calls"])
-        assert message_matches(stored_message, rebuilt_message)
+        assert strict_message_matches(stored_message, rebuilt_message)
         # Template-relevant substance survives the round-trip exactly.
         assert [tool_call["function"] for tool_call in rebuilt_message["tool_calls"]] == [
             tool_call["function"] for tool_call in stored_message["tool_calls"]
@@ -604,3 +605,112 @@ class TestChatFakeStreaming:
                 finish_reason = choice.finish_reason
         assert content == expected_content
         assert finish_reason == "stop"
+
+
+# ── additional R3 (in-place weight updates): derivation and request offsets ──
+
+
+@contextmanager
+def _serve_router(extra_args: dict | None = None):
+    """A dedicated v1 SessionServer for tests that flip args router_env's
+    class-scoped fixture pins (routing replay, pause_generation_mode)."""
+
+    def process_fn(prompt: str) -> ProcessResult:
+        return ProcessResult(text="ok", finish_reason="stop")
+
+    with with_mock_server(process_fn=process_fn) as backend:
+        args = SimpleNamespace(
+            miles_router_timeout=30,
+            hf_checkpoint="Qwen/Qwen3-0.6B",
+            chat_template_path=None,
+            apply_chat_template_kwargs={"enable_thinking": False},
+            tito_model="default",
+            sglang_speculative_algorithm=None,
+            trajectory_manager="linear_trajectory",
+            session_server_instance_id=uuid.uuid4().hex,
+            save_debug_trajectory_data=None,
+            **(extra_args or {}),
+        )
+        server_obj = SessionServer(args, backend_url=backend.url)
+        port = find_available_port(31000)
+        server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
+        server.start()
+        try:
+            yield SimpleNamespace(url=f"http://127.0.0.1:{port}", backend=backend)
+        finally:
+            server.stop()
+
+
+class TestUseAdditionR3Derivation:
+    """use_addition_r3 is derived once at server bootstrap from
+    pause_generation_mode; it is not independently configurable."""
+
+    @pytest.mark.parametrize(("mode", "expected"), [("in_place", True), ("retract", False)])
+    def test_mode_mapping(self, mode, expected):
+        args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
+        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
+
+    def test_absent_mode_keeps_full_r3(self):
+        args = SimpleNamespace(hf_checkpoint=None)
+        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is False
+
+
+class TestAdditionR3RequestOffset:
+    MESSAGES = [{"role": "user", "content": "hi"}]
+
+    def _accumulated(self, url: str, session_id: str) -> list[int]:
+        data = requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()
+        return data["metadata"]["accumulated_token_ids"]
+
+    def _turn2_messages(self, first_response: dict, tool_content: str) -> list[dict]:
+        return [
+            *self.MESSAGES,
+            first_response["choices"][0]["message"],
+            {"role": "tool", "content": tool_content, "tool_call_id": "t0"},
+        ]
+
+    def test_in_place_offsets_across_turns_and_rollback(self):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+            session_id = _create_session(env.url)
+
+            first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})
+            assert first.status_code == 200
+            turn1_body = env.backend.request_log[-1]
+            assert turn1_body["return_routed_experts"] is True
+            assert turn1_body["routed_experts_start_len"] == 0
+            checkpoint1 = self._accumulated(env.url, session_id)
+
+            second = _post_chat(env.url, session_id, {"messages": self._turn2_messages(first.json(), "ok")})
+            assert second.status_code == 200
+            turn2_body = env.backend.request_log[-1]
+            # The turn-1 checkpoint's prefix is stable, so only its last row is new.
+            assert turn2_body["routed_experts_start_len"] == len(checkpoint1) - 1
+            checkpoint2 = self._accumulated(env.url, session_id)
+            assert len(checkpoint2) > len(checkpoint1)
+
+            # Retrying turn 2 rolls back to checkpoint 1: the offset moves backward.
+            retry = _post_chat(env.url, session_id, {"messages": self._turn2_messages(first.json(), "different")})
+            assert retry.status_code == 200
+            retry_body = env.backend.request_log[-1]
+            assert retry_body["routed_experts_start_len"] == len(checkpoint1) - 1
+            assert len(checkpoint1) - 1 < len(checkpoint2) - 1
+
+            # The exact offset each successful turn used is persisted on its record.
+            records = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()["records"]
+            assert [r["request"]["routed_experts_start_len"] for r in records] == [0, len(checkpoint1) - 1]
+
+    def test_retract_request_has_no_start_len(self):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "retract"}) as env:
+            session_id = _create_session(env.url)
+            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
+            body = env.backend.request_log[-1]
+            assert body["return_routed_experts"] is True
+            assert "routed_experts_start_len" not in body
+
+    def test_in_place_without_replay_sends_neither_field(self):
+        with _serve_router({"pause_generation_mode": "in_place"}) as env:
+            session_id = _create_session(env.url)
+            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
+            body = env.backend.request_log[-1]
+            assert "return_routed_experts" not in body
+            assert "routed_experts_start_len" not in body

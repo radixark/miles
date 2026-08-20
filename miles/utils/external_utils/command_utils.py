@@ -82,6 +82,31 @@ def rsync_simple(path_src: str, path_dst: str, num_nodes: int | None = None):
     )
 
 
+def ssh_start_ray_workers(
+    master_addr: str,
+    num_gpus_per_node: int,
+    hostfile: str = "/root/mpi_rack_hostfile",
+    head_host: str | None = None,
+):
+    """Join every host in an MPI-style hostfile to the ray cluster over ssh, in parallel.
+
+    Ray itself cannot bring up the workers: the head is already running locally and the
+    workers have no agent yet. Pass this as `execute_train(before_ray_job_submit=...)` so
+    the cluster is complete before the job is submitted.
+    """
+    head_host = head_host or master_addr
+    exec_command_cpu(
+        f"for worker_ip in $(awk '{{print $1}}' {hostfile}); do "
+        f'if [ "$worker_ip" = {shlex.quote(head_host)} ]; then continue; fi; '
+        'echo "Starting Ray worker on $worker_ip"; '
+        'ssh root@"$worker_ip" '
+        '"pkill -9 sglang ; ray stop --force ; pkill -9 miles ; '
+        f"ray start --address={master_addr}:6379 --num-gpus {num_gpus_per_node} "
+        '--node-ip-address $worker_ip --disable-usage-stats" & '
+        "done; wait"
+    )
+
+
 def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
     _, partial_name = full_name.split("/")
     exec_command_cpu(f"hf download --repo-type dataset {full_name} --local-dir {data_dir}/{partial_name}")
@@ -107,6 +132,13 @@ class ExecuteTrainConfig:
     num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
     extra_env_vars: str = ""
     output_dir: str = "/root/shared_data"
+
+
+def resolve_extra_env_vars(extra_env_vars: dict[str, str], config: ExecuteTrainConfig) -> dict[str, str]:
+    return {
+        **extra_env_vars,
+        **_parse_extra_env_vars(config.extra_env_vars),
+    }
 
 
 def execute_train(
@@ -169,7 +201,8 @@ def execute_train(
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
             }
         ),
-        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE", str(int(check_has_nvlink()))),
+        # a get() default is evaluated eagerly, which would probe even when already decided
+        "NCCL_NVLS_ENABLE": os.environ.get("NCCL_NVLS_ENABLE") or str(int(check_has_nvlink())),
         **{
             k: os.environ[k]
             for k in ("NCCL_SOCKET_IFNAME", "GLOO_SOCKET_IFNAME", "NCCL_DEBUG", "NCCL_DEBUG_FILE")
@@ -188,8 +221,7 @@ def execute_train(
             if config.cuda_core_dump
             else {}
         ),
-        **extra_env_vars,
-        **_parse_extra_env_vars(config.extra_env_vars),
+        **resolve_extra_env_vars(extra_env_vars, config),
     }
     runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(megatron_path, runtime_env_vars.get("PYTHONPATH"))
     runtime_env_json = json.dumps({"env_vars": runtime_env_vars})
@@ -273,7 +305,7 @@ def get_env_enable_infinite_run():
 
 
 MOONCAKE_MASTER_PORT = 50051
-MOONCAKE_MASTER_METRICS_PORT = 50052
+MOONCAKE_MASTER_METRICS_PORT = 0
 MOONCAKE_MASTER_LOG_PATH = Path("/tmp/mooncake_master.log")
 
 
@@ -334,6 +366,9 @@ def encode_pseudo_file(text: str) -> str:
 
 NUM_GPUS_OF_HARDWARE = {
     "H100": 8,
+    "H200": 8,
+    "B200": 8,
+    "B300": 8,
     "GB200": 4,
     "GB300": 4,
     "MI350X": 8,

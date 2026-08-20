@@ -1,5 +1,6 @@
 ---
-title: Environments
+title: Agentic Environments
+sidebarTitle: Overview
 description: How Miles trains on RL environments — datasets with rewards, self-wired environments, and optional external ecosystems.
 ---
 
@@ -12,14 +13,16 @@ where the environment itself comes from:
 - **Your own environment** — plug your code into one of the three rollout
   layers described in [Integration shapes](#integration-shapes); most
   environments sit in the agent function, with the session server recording
-  tokens (see [Rollout Endpoints](/user-guide/rollout-endpoints)).
-- **An external ecosystem** — adopt a prebuilt connector from the table below;
-  connectors occupy the same three layers.
+  tokens (see [Agentic Rollout (TITO)](/user-guide/agentic-rollout)).
+- **An external ecosystem** — adopt a prebuilt connector from the table below,
+  spanning coding, computer-use and tool-calling agents; connectors occupy the
+  same three layers.
 
 | Integration | Plugs in at | Guide |
 |---|---|---|
 | [Harbor](https://github.com/harbor-framework/harbor) | agent function | [guide](/user-guide/harbor) |
-| [NeMo-Gym](https://github.com/NVIDIA-NeMo/Gym) | agent function | [guide](/user-guide/nemo-gym) |
+| [HUD](https://hud.ai) | generate function³ | [example](https://github.com/radixark/miles/tree/main/examples/experimental/hud) |
+| [NeMo Gym](https://github.com/NVIDIA-NeMo/Gym) | agent function | [guide](/user-guide/nemo-gym) |
 | [OpenEnv](https://github.com/huggingface/openenv) | agent function | [guide](/user-guide/openenv) |
 | [Strands Agents](https://strandsagents.com/) | generate function | [example](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang) |
 | [Verifiers (Prime Intellect)](https://github.com/PrimeIntellect-ai/verifiers) | rollout function | [guide](/user-guide/verifiers) |
@@ -31,7 +34,7 @@ Sandbox providers are a different axis: they provision the task containers
 | Sandbox provider | Used within | Guide |
 |---|---|---|
 | [AgentENV](https://github.com/kvcache-ai/AgentENV) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
-| [Daytona](https://www.daytona.io/) | OpenEnv, Harbor, NeMo-Gym | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
+| [Daytona](https://www.daytona.io/) | Harbor, HUD, NeMo Gym, OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 | [E2B](https://e2b.dev/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 | [Modal](https://modal.com/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 
@@ -62,3 +65,9 @@ rather than the session-server chat endpoint Miles' own recording uses.
 ² The environment may grade an episode itself (Harbor and τ-bench do); the
 score still enters training through Miles' `Sample.reward` / RM hooks, and
 group-level reward handling stays in Miles.
+
+³ HUD's harness records per-turn token ids and sampling logprobs itself when
+the inference server returns them, so the connector's job is stitching those
+into one training sequence rather than recording. Computer-use observations
+are screenshots, which Miles' session-server recording does not carry yet —
+once it does, this connector can also sit in the agent function.

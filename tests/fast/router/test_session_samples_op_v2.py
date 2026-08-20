@@ -64,7 +64,7 @@ class _UnusedBackend:
         raise AssertionError("collect_samples must not touch the proxy backend")
 
 
-def _build_core() -> SessionCoreV2:
+def _build_core(use_addition_r3: bool = False) -> SessionCoreV2:
     # Mirrors setup_session_routes (sessions.py): tokenizer + registry + core.
     tokenizer = load_tokenizer(
         _ARGS.hf_checkpoint, chat_template_path=_ARGS.chat_template_path, trust_remote_code=True
@@ -75,12 +75,19 @@ def _build_core() -> SessionCoreV2:
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
     registry = SessionRegistryV2(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCoreV2(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
+    return SessionCoreV2(
+        _UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id, use_addition_r3=use_addition_r3
+    )
 
 
 @pytest.fixture(scope="module")
 def core():
     return _build_core()
+
+
+@pytest.fixture(scope="module")
+def addition_core():
+    return _build_core(use_addition_r3=True)
 
 
 # ── fixtures: a two-turn trajectory with R3 / cache stats / weight versions ──
@@ -239,6 +246,118 @@ async def test_session_metadata_matches_get_session(core):
     assert response.status_code == 200
     assert reply.session_metadata == json.loads(response.body)["metadata"]
     assert reply.session_metadata["accumulated_token_ids"] == _ACCUMULATED
+
+
+# ── additional R3 (in-place weight updates): per-leaf materialization ──
+
+
+def _r3_slice_b64(seed: int, start_row: int, end_row: int) -> str:
+    """Rows [start_row, end_row) of the arange stream `_r3_b64(seed=...)`
+    encodes in full, so addition patches rebuild exactly `_expected_r3`."""
+    arr = np.arange(seed + start_row * NUM_LAYERS * TOPK, seed + end_row * NUM_LAYERS * TOPK, dtype=np.int32)
+    return pybase64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def _two_turn_addition_records(turn2_start_len: int = 4):
+    # The _two_turn_records trajectory with addition-R3 payloads: each record
+    # carries only rows [start, len(prompt)+len(output)-1) plus the request
+    # offset that produced them (turn 1: rows [0,4); turn 2: rows [4,8)).
+    return [
+        _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            output_log_probs=[-0.125, -0.25],
+            routed_experts=_r3_slice_b64(100, 0, 4),
+            routed_experts_start_len=0,
+        ),
+        _make_record(
+            prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+            output_token_ids=[30, 31],
+            output_log_probs=[-0.5, -1.0],
+            routed_experts=_r3_slice_b64(100, turn2_start_len, 8),
+            routed_experts_start_len=turn2_start_len,
+        ),
+    ]
+
+
+async def test_addition_assembled_sample_matches_full_reference(addition_core):
+    """Addition patches along one path rebuild byte-for-byte the tensor the
+    full-R3 fixture assembles for the same tokens (test_assembled_samples_golden_merged)."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.tokens == _ACCUMULATED
+    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
+    assert m.status == Sample.Status.COMPLETED
+    assert m.rollout_routed_experts.dtype == np.int32
+    assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
+
+
+async def test_addition_branched_tree_materializes_each_leaf():
+    """Each leaf materializes its root patch plus its own suffix patch."""
+    shared = _expected_r3(0, 4)
+    leaf_a_rows = _expected_r3(1000, 2)
+    leaf_b_rows = _expected_r3(2000, 2)
+
+    def _addition_record(prompt_ids, output_ids, start_len, rows):
+        return _make_record(
+            prompt_token_ids=list(prompt_ids),
+            output_token_ids=list(output_ids),
+            output_log_probs=[-0.1] * len(output_ids),
+            routed_experts=pybase64.b64encode(np.ascontiguousarray(rows).tobytes()).decode("ascii"),
+            routed_experts_start_len=start_len,
+        )
+
+    with function_registry.temporary("test_hooks.keep_all", _keep_all_picker):
+        hooked = _build_core_with_hooks(session_sample_picker_path="test_hooks.keep_all", use_addition_r3=True)
+        sid, state = await _fresh_state(hooked)
+        root = _fabricate_node(
+            state,
+            None,
+            _addition_record([1, 2, 3], [10, 11], 0, shared),
+            [1, 2, 3, 10, 11],
+            completion_span=(3, 5),
+        )
+        # Both branches attach at the root's 5-token snapshot: start = 4.
+        leaf_a = _fabricate_node(
+            state,
+            root,
+            _addition_record([1, 2, 3, 10, 11, 20], [30], 4, leaf_a_rows),
+            [1, 2, 3, 10, 11, 20, 30],
+            completion_span=(6, 7),
+        )
+        leaf_b = _fabricate_node(
+            state,
+            root,
+            _addition_record([1, 2, 3, 10, 11, 21], [31], 4, leaf_b_rows),
+            [1, 2, 3, 10, 11, 21, 31],
+            completion_span=(6, 7),
+        )
+        state.active_leaf = leaf_b
+
+        status, payload = await _collect_via_op(hooked, sid)
+        assert status == 200
+        reply = decode_samples_and_merge_input_sample(payload, Sample(), fields=COMPUTED_FIELDS_V2)
+        sample_a, sample_b = reply.samples
+        assert sample_a.tokens == leaf_a.token_ids
+        assert sample_b.tokens == leaf_b.token_ids
+        assert np.array_equal(sample_a.rollout_routed_experts, np.concatenate([shared, leaf_a_rows]))
+        assert np.array_equal(sample_b.rollout_routed_experts, np.concatenate([shared, leaf_b_rows]))
+
+
+async def test_addition_gap_returns_422(addition_core):
+    # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the per-leaf
+    # assembler rejects the gap as a 422 instead of producing a corrupt tensor.
+    sid = await _make_session(addition_core, _two_turn_addition_records(turn2_start_len=5), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid)
+    assert status == 422
+    assert "additional R3" in payload.decode()
+
+    health = await addition_core.health()
+    assert health.status_code == 200
 
 
 # ── empty_reason discriminator ──
@@ -544,7 +663,7 @@ async def _exploding_async_picker(leaf_samples, session_metadata):
     return leaf_samples
 
 
-def _build_core_with_hooks(**hook_args) -> SessionCoreV2:
+def _build_core_with_hooks(use_addition_r3: bool = False, **hook_args) -> SessionCoreV2:
     args = SimpleNamespace(**{**vars(_ARGS), **hook_args})
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path, trust_remote_code=True)
     tito_tokenizer = get_tito_tokenizer(
@@ -553,7 +672,9 @@ def _build_core_with_hooks(**hook_args) -> SessionCoreV2:
         chat_template_kwargs=args.apply_chat_template_kwargs,
     )
     registry = SessionRegistryV2(args, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCoreV2(_UnusedBackend(), registry, args, args.session_server_instance_id)
+    return SessionCoreV2(
+        _UnusedBackend(), registry, args, args.session_server_instance_id, use_addition_r3=use_addition_r3
+    )
 
 
 async def _retry_shaped_session(core):

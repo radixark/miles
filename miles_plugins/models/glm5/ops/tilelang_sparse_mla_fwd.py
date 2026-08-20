@@ -1,5 +1,7 @@
 # ruff: noqa
 # Adapted from https://github.com/tile-ai/tilelang/blob/e666d2d3cc483829c57618c9ebf2e4f4ada0819d/examples/deepseek_v32/sparse_mla_fwd.py
+import os
+
 import tilelang
 from tilelang import language as T
 
@@ -68,6 +70,7 @@ def sparse_mla_fwd(
         REPLICATE_H = 1
 
     H_per_block = padded_H if REPLICATE_H == 1 else 64
+    kernel_num_stages = min(num_stages, 1) if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm" else num_stages
 
     @T.prim_func
     def main(
@@ -115,7 +118,7 @@ def sparse_mla_fwd(
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
             T.copy(Q[b_i, s_i, H0:H1, D:], Q_tail_shared)
 
-            for i_i in T.Pipelined(NI, num_stages=num_stages):
+            for i_i in T.Pipelined(NI, num_stages=kernel_num_stages):
                 for bi_i in T.Parallel(BI):
                     # Changed here for thd
                     mask[bi_i] = Indices[b_i, s_i, g_i, i_i * BI + bi_i] != -1

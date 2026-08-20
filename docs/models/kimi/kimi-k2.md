@@ -25,20 +25,20 @@ description: Launch recipes for Kimi-K2-Instruct and Kimi-K2-Thinking — 32 nod
 ### 3.1 Required env vars
 
 ```bash
-export BASE_DIR=<shared FS path, reachable from every node>
 export MASTER_ADDR=<head node IP>
+export MILES_SCRIPT_EXTERNAL_RAY=1
 ```
 
-Both are referenced but never set inside the scripts — export them yourself before launch.
+`MASTER_ADDR` reaches the ray workers as the torch-distributed rendezvous address; `MILES_SCRIPT_EXTERNAL_RAY=1` tells the launcher the cluster is already up (see §4.2). Paths are Typer flags: `--model-dir` (default `/root/models`), `--data-dir` (default `/root/datasets`), `--output-dir` (default `/root/shared_data`) — all three on a shared FS reachable from every node.
 
 ### 3.2 Download model + datasets
 
 ```bash
-hf download moonshotai/Kimi-K2-Instruct --local-dir $BASE_DIR/Kimi-K2-Instruct
-hf download moonshotai/Kimi-K2-Thinking --local-dir $BASE_DIR/Kimi-K2-Thinking-fp8
+hf download moonshotai/Kimi-K2-Instruct --local-dir /root/models/Kimi-K2-Instruct
+hf download moonshotai/Kimi-K2-Thinking --local-dir /root/models/Kimi-K2-Thinking-fp8
 
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir $BASE_DIR/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir $BASE_DIR/rl_data/aime-2024
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ### 3.3 HF → Megatron `torch_dist` conversion
@@ -55,8 +55,8 @@ PYTHONPATH=/root/Megatron-LM/ torchrun \
    --nnodes=4 --node-rank ${NODE_RANK} \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint $BASE_DIR/Kimi-K2-Instruct/ \
-   --save          $BASE_DIR/Kimi-K2_torch_dist/
+   --hf-checkpoint /root/models/Kimi-K2-Instruct/ \
+   --save          /root/models/Kimi-K2_torch_dist/
 ```
 
 ## 4. Launch
@@ -65,12 +65,12 @@ PYTHONPATH=/root/Megatron-LM/ torchrun \
 
 ```bash
 cd /root/miles
-export BASE_DIR=...; export MASTER_ADDR=...
+export MASTER_ADDR=...
 
-bash scripts/run-kimi-k2-Thinking.sh   # or run-kimi-k2-Instruct.sh
+MILES_SCRIPT_EXTERNAL_RAY=1 python scripts/run_kimi_k2.py --model-name Kimi-K2-Thinking   # or Kimi-K2-Instruct
 ```
 
-Both launchers submit to an **already-running Ray cluster** (`ray job submit ...`); neither runs `ray start --head` itself.
+Both variants are one launcher selected by `--model-name`. With `MILES_SCRIPT_EXTERNAL_RAY=1` it skips `ray start` and submits to an **already-running Ray cluster** (`ray job submit ...`).
 
 ### 4.2 Multi-node fan-out
 
@@ -93,14 +93,14 @@ Identical for both Instruct and Thinking:
 |---|---|---|---|---|---|---|---|
 | 8 | 8 | 4 | 32 | 1 | 5 | 16384 | 256 (32 × 8) |
 
-Both scripts pass `--actor-num-nodes 32 --actor-num-gpus-per-node 8 --colocate --update-weight-buffer-size $((4*512*1024*1024))` to `train.py`.
+Both variants pass `--actor-num-nodes 32 --actor-num-gpus-per-node 8 --colocate --update-weight-buffer-size 2147483648` to `train.py`; `--num-nodes` overrides the node count.
 
 ### 5.2 Algorithm
 
-| Script | Advantage | TIS |
+| `--model-name` | Advantage | TIS |
 |---|---|---|
-| Instruct | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | – |
-| Thinking | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | `--use-tis` |
+| `Kimi-K2-Instruct` | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | – |
+| `Kimi-K2-Thinking` | GRPO (`--eps-clip 0.2 --eps-clip-high 0.28`) | `--use-tis` |
 
 Both use `--use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00`.
 
@@ -119,34 +119,28 @@ Rollout shape (both):
 --balance-data
 ```
 
-DAPO-style dynamic sampling is on by default in both scripts.
+DAPO-style dynamic sampling is on by default for both variants.
 
 ### 5.3 Rollout & SGLang
 
 Identical for both:
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 16
-   --sglang-mem-fraction-static 0.7
+--rollout-num-gpus-per-engine 16
+--sglang-mem-fraction-static 0.7
 
-   # dp attention
-   --sglang-enable-dp-attention
-   --sglang-dp-size 8
-   --sglang-moe-dense-tp-size 1
-   --sglang-enable-dp-lm-head
+# dp attention
+--sglang-enable-dp-attention
+--sglang-dp-size 8
+--sglang-moe-dense-tp-size 1
+--sglang-enable-dp-lm-head
 
-   --sglang-ep-size 16
+--sglang-ep-size 16
 
-   # deepep — commented out in both scripts
-   # --sglang-enable-deepep-moe
-   # --sglang-deepep-mode auto
-
-   --sglang-server-concurrency 1024
-)
+--sglang-server-concurrency 1024
 ```
 
-Megatron-side `--moe-enable-deepep` and `--moe-token-dispatcher-type flex` are **on** in the Instruct script but **commented out** in the Thinking script.
+SGLang DeepEP (`--sglang-moe-a2a-backend deepep`, `--sglang-deepep-mode`) is not enabled for either variant. Megatron-side `--moe-enable-deepep` and `--moe-token-dispatcher-type flex` are **on** for `Kimi-K2-Instruct` and **off** for `Kimi-K2-Thinking`.
 
 ### 5.4 Optimizer
 
@@ -160,8 +154,8 @@ CPU Adam is enabled in both:
 
 ### 5.5 Notable quirks
 
-- Instruct loads the BF16 HF checkpoint by default (FP8 commented out) and reads eval data from `$BASE_DIR/rl_data/`; Thinking loads the FP8 HF checkpoint by default and reads eval data from `$BASE_DIR/`.
-- `--global-batch-size 1024` is commented out in both scripts.
+- Instruct loads the BF16 HF release, Thinking the FP8 one (`Kimi-K2-Thinking-fp8`). Their `torch_dist` reference directories differ too — `Kimi-K2_torch_dist` vs `Kimi-K2-Thinking_torch_dist`.
+- Neither variant passes `--global-batch-size`; the batch is driven by `--rollout-batch-size` and `--num-steps-per-rollout`.
 
 ## 6. Pairs Well With
 

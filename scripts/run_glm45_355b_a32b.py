@@ -21,7 +21,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "GLM-4.5"
     megatron_model_type: str = "glm4.5-355B-A32B"
     num_gpus_per_node: int = 4
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    hardware: Literal["H100", "GB200", "GB300"] = "GB200"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"

@@ -24,7 +24,6 @@ def _args(tmp_path) -> Namespace:
         dump_details=str(tmp_path),
         wandb_group="wiring-e2e",
         use_rollout_entropy=True,
-        use_miles_router=False,
         dashboard_flush_interval=0.2,
         dashboard_gpu_sample_interval=0.2,
         dashboard_sglang_scrape_interval=2.0,

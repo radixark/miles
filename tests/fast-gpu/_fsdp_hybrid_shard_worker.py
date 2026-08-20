@@ -81,7 +81,6 @@ def main() -> None:
     meshes = build_fsdp_meshes(
         device_type="cuda",
         world_size=world_size,
-        context_parallel_size=1,
         dp_replicate_size=args.replicate_size,
     )
     fsdp_mesh = meshes["fsdp"]

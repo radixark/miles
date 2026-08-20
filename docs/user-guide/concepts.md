@@ -73,19 +73,20 @@ Use this map when reading any launch script:
 
 | Argument group | Concerns |
 |---|---|
-| [`MODEL_ARGS`](/user-guide/argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
-| [`CKPT_ARGS`](/user-guide/argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
-| [`ROLLOUT_ARGS`](/user-guide/argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
-| [`EVAL_ARGS`](/user-guide/argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
-| [`PERF_ARGS`](/user-guide/argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
-| [`GRPO_ARGS`](/user-guide/argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
-| [`OPTIMIZER_ARGS`](/user-guide/argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
-| [`SGLANG_ARGS`](/user-guide/argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [model args](/user-guide/argument-groups#model-args) | Architecture constants (layers, hidden size, rotary base, ...) |
+| [`ckpt_args`](/user-guide/argument-groups#ckpt-args) | Filesystem paths for the actor / reference / save directory |
+| [`rollout_args`](/user-guide/argument-groups#rollout-args) | Prompt dataset, batch knobs, sampling parameters, reward type |
+| [`eval_args`](/user-guide/argument-groups#eval-args) | Eval dataset, cadence, sampling overrides for evaluation |
+| [`perf_args`](/user-guide/argument-groups#perf-args) | Parallelism (TP/PP/CP/EP/ETP), recomputation, dynamic batching |
+| [`grpo_args`](/user-guide/argument-groups#grpo-args) | RL algorithm, KL, clipping, entropy bonus, advantage estimator |
+| [`optimizer_args`](/user-guide/argument-groups#optimizer-args) | Learning rate, schedule, weight decay, Adam betas |
+| [`sglang_args`](/user-guide/argument-groups#sglang-args) | Engine TP, memory fraction, log level, `--sglang-*` passthrough |
+| [`misc_args`](/user-guide/argument-groups#misc-args) | GPU layout, colocation, pinned Megatron numerics, dashboard |
 
 ## Next
 
-- [Training Backend](/user-guide/usage) — Megatron-LM, parallelism, checkpoints, and hooks.
+- [Launch Script](/user-guide/launch-script) — what a launch script does when you run it,
+  and how to override a recipe.
+- [Training Backends](/user-guide/training-backend) — Megatron-LM and FSDP, parallelism, checkpoints, and hooks.
 - [Argument Groups](/user-guide/argument-groups) — where each launch-script array belongs.
-- [Training Script Walkthrough](/user-guide/training-script-walkthrough) — the launch script
-  group by group, plus execution modes (colocation, sync/async, dynamic sampling, …).
 - [CLI Reference](/user-guide/cli-reference) — every flag, grouped and fully cataloged.

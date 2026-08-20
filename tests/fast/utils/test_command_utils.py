@@ -184,6 +184,22 @@ class TestStartMooncakeMaster:
         assert commands == []
         assert waits == []
 
+    def test_lets_the_os_choose_the_metrics_port(self, monkeypatch):
+        """Binding port zero atomically avoids collisions with other listeners."""
+        commands = []
+        waits = []
+        monkeypatch.setattr(command_utils, "_is_tcp_server_ready", lambda host, port: False)
+        monkeypatch.setattr(command_utils, "exec_command_cpu", commands.append)
+        monkeypatch.setattr(
+            command_utils, "wait_for_server_ready", lambda *args, **kwargs: waits.append((args, kwargs))
+        )
+
+        command_utils.start_mooncake_master()
+
+        assert len(commands) == 1
+        assert "mooncake_master --rpc_port 50051 --metrics_port 0" in commands[0]
+        assert waits == [(("127.0.0.1", 50051), {"timeout": 30})]
+
     def test_restarts_and_waits_until_ready(self, monkeypatch, tmp_path):
         """A dead master is replaced and the caller blocks until the new one answers."""
         commands = []

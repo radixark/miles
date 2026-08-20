@@ -485,3 +485,62 @@ class TestTruncationAndCompaction:
         nodes = meta["tree"]["nodes"]
         assert len(nodes) == 2
         assert nodes[1]["parent"] == nodes[0]["id"]
+
+
+# ── additional R3 (in-place weight updates): request offsets on the tree ──
+
+
+class TestAdditionR3RequestOffsetV2:
+    MESSAGES = [{"role": "user", "content": "hi"}]
+
+    def _accumulated(self, url: str, session_id: str) -> list[int]:
+        data = requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()
+        return data["metadata"]["accumulated_token_ids"]
+
+    def test_in_place_offsets_across_turns_and_branches(self):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+            session_id = _create_session(env.url)
+
+            first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})
+            assert first.status_code == 200
+            turn1_body = env.backend.request_log[-1]
+            assert turn1_body["return_routed_experts"] is True
+            assert turn1_body["routed_experts_start_len"] == 0
+            checkpoint1 = self._accumulated(env.url, session_id)
+
+            assistant = first.json()["choices"][0]["message"]
+            second = _post_chat(
+                env.url,
+                session_id,
+                {"messages": [*self.MESSAGES, assistant, {"role": "tool", "content": "ok", "tool_call_id": "t0"}]},
+            )
+            assert second.status_code == 200
+            assert env.backend.request_log[-1]["routed_experts_start_len"] == len(checkpoint1) - 1
+            checkpoint2 = self._accumulated(env.url, session_id)
+            assert len(checkpoint2) > len(checkpoint1)
+
+            # A divergent replay attaches at the turn-1 node (a sibling branch,
+            # never a rollback): the offset returns to that ancestor snapshot.
+            branch = _post_chat(
+                env.url,
+                session_id,
+                {
+                    "messages": [
+                        *self.MESSAGES,
+                        assistant,
+                        {"role": "tool", "content": "different", "tool_call_id": "t0"},
+                    ]
+                },
+            )
+            assert branch.status_code == 200
+            branch_body = env.backend.request_log[-1]
+            assert branch_body["routed_experts_start_len"] == len(checkpoint1) - 1
+            assert len(checkpoint1) - 1 < len(checkpoint2) - 1
+
+    def test_retract_request_has_no_start_len(self):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "retract"}) as env:
+            session_id = _create_session(env.url)
+            assert _post_chat(env.url, session_id, {"messages": self.MESSAGES}).status_code == 200
+            body = env.backend.request_log[-1]
+            assert body["return_routed_experts"] is True
+            assert "routed_experts_start_len" not in body

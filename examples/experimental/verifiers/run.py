@@ -23,6 +23,7 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+LEGACY_ROLLOUT_ENV = "MILES_USE_LEGACY_ROLLOUT_V1"
 
 
 @dataclass
@@ -76,6 +77,14 @@ def execute(args: ScriptArgs):
     if not config_path.exists():
         config_path.write_text(f'[taskset]\nid = "{args.taskset_id}"\n')
 
+    extra_env_vars = {
+        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
+        "VERIFIERS_CONFIG": str(config_path),
+    }
+    if LEGACY_ROLLOUT_ENV in os.environ:
+        extra_env_vars[LEGACY_ROLLOUT_ENV] = os.environ[LEGACY_ROLLOUT_ENV]
+    extra_env_vars = U.resolve_extra_env_vars(extra_env_vars, args)
+
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
         f"--sglang-tokenizer-path {args.sglang_tokenizer_path} "
@@ -88,9 +97,9 @@ def execute(args: ScriptArgs):
     # function plug-point selects the adapter, which resolves as a bare module
     # because PYTHONPATH carries this directory into the rollout actor.
     rollout_fn = (
-        "verifiers_rollout.VerifiersRolloutFn"
-        if os.environ.get("MILES_EXPERIMENTAL_ROLLOUT_REFACTOR") == "1"
-        else "verifiers_rollout.generate_rollout"
+        "verifiers_rollout.generate_rollout"
+        if bool(int(extra_env_vars.get(LEGACY_ROLLOUT_ENV, "0")))
+        else "verifiers_rollout.VerifiersRolloutFn"
     )
     rollout_args = (
         f"--rollout-function-path {rollout_fn} "
@@ -164,10 +173,7 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
-        extra_env_vars={
-            "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
-            "VERIFIERS_CONFIG": str(config_path),
-        },
+        extra_env_vars=extra_env_vars,
     )
 
 

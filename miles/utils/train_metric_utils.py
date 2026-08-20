@@ -3,6 +3,7 @@ from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
 
+from miles.utils.device_flops import local_peak_bf16_tflops
 from miles.utils.metric_utils import compute_rollout_step
 from miles.utils.timer import Timer
 from miles.utils.tracking_utils import tracking
@@ -40,6 +41,11 @@ def log_perf_data_raw(
         if log_dict["perf/actor_train_time"] > 0:
             log_dict["perf/actor_train_tflops"] = 3 * total_fwd_flops / log_dict["perf/actor_train_time"]
             log_dict["perf/actor_train_tok_per_s"] = sum(timer_instance.seq_lens) / log_dict["perf/actor_train_time"]
+
+            peak_tflops = getattr(args, "mfu_peak_tflops", None) or local_peak_bf16_tflops()
+            if peak_tflops:
+                log_dict["perf/mfu_peak_tflops"] = peak_tflops
+                log_dict["perf/actor_train_mfu"] = log_dict["perf/actor_train_tflops"] / peak_tflops
 
     if "perf/train_wait_time" in log_dict and "perf/train_time" in log_dict:
         total_time = log_dict["perf/train_wait_time"] + log_dict["perf/train_time"]

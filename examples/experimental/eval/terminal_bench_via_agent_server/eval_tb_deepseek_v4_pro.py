@@ -4,11 +4,11 @@ This is a pure client: no training, no Ray, no Megatron. It just POSTs
 ``/run`` requests concurrently to an already-running agent server and
 aggregates the per-trial results.
 
-The agent server is expected to be the one shipped in the ``harbor-private``
-branch ``shi/rebase-on-upstream-v0.7.0`` (see that repo's README for setup),
-running with ``$HARBOR_TASKS_DIR`` populated with the 89 Terminal-Bench 2.0
-tasks. The server is dataset-agnostic; this script just resolves the 89
-task names from ``registry.json`` and dispatches one ``/run`` request per
+The agent server is expected to be the one shipped in harbor's
+``harbor-miles-v0.20.0`` branch (see that repo's README for setup), running
+with ``$HARBOR_TASKS_DIR`` populated with the 89 Terminal-Bench 2.0 tasks.
+The server is dataset-agnostic; this script just resolves the 89 task names
+from ``registry.json`` and dispatches one ``/run`` request per
 (task, trial) pair.
 
 Usage::
@@ -16,7 +16,7 @@ Usage::
     export DEEPSEEK_API_KEY=<your-key>
     python eval_tb_deepseek_v4_pro.py \\
         --server-url http://localhost:8080 \\
-        --registry-path /path/to/harbor-private/registry.json \\
+        --registry-path /path/to/harbor/registry.json \\
         --n-trials-per-task 4 \\
         --max-concurrent 16
 
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
         "--registry-path",
         type=Path,
         default=Path("registry.json"),
-        help="Path to harbor-private's registry.json (used to read the 89 TB2 task names).",
+        help="Path to harbor's registry.json (used to read the 89 TB2 task names).",
     )
     parser.add_argument(
         "--dataset-name",

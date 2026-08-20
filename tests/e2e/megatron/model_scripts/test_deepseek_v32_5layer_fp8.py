@@ -38,6 +38,7 @@ def _args() -> ScriptArgs:
         extra_args=(
             "--ci-test --check-weight-update-allow-quant-error --bf16 --freeze-indexer "
             "--use-rollout-routing-replay "
+            "--skip-actor-forward-only "
             "--sglang-disable-shared-experts-fusion "
         ),
     )

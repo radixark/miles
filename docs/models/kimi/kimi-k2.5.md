@@ -2,7 +2,7 @@
 title: Kimi K2.5 / K2.6
 description: Launch recipe for Kimi-K2.5, running full-parameter GRPO on 32 × 8 H200 with an INT4 actor and a BF16 reference.
 ---
-The reference launcher is [`scripts/run-kimi-k25.sh`](https://github.com/radixark/miles/blob/main/scripts/run-kimi-k25.sh), which loads the shared model definition from `scripts/models/kimi-k2-thinking.py`.
+The reference launcher is [`scripts/run_kimi_k25.py`](https://github.com/radixark/miles/blob/main/scripts/run_kimi_k25.py), which loads the K2.5 model definition from `scripts/models/kimi-k25.py`.
 
 ## 1. Model Introduction
 
@@ -58,13 +58,15 @@ The `$BASE_DIR` directory must already hold the two K2.5 checkpoints from §2 al
 
 ### 3.2 One-line launch
 
-The script submits to an **already-running Ray cluster** (`ray job submit --address http://127.0.0.1:8265`); it does not run `ray start --head` itself. It also runs a `pkill` / `ray stop` cleanup pass at the top so a failed run can be re-launched cleanly.
+The launcher runs a `pkill` / `ray stop` cleanup pass first so a failed run can be re-launched cleanly, then starts the ray head and submits with `ray job submit --address http://127.0.0.1:8265`. Export `MILES_SCRIPT_EXTERNAL_RAY=1` to skip the `ray start` and submit to an **already-running Ray cluster** instead.
 
 ```bash
 cd /root/miles
-export BASE_DIR=...; export MASTER_ADDR=...
-bash scripts/run-kimi-k25.sh
+export MASTER_ADDR=...
+python scripts/run_kimi_k25.py train
 ```
+
+`train` submits only. `prepare` does the download and the INT4 → BF16 dequantization; `full-train` runs both plus the training submit in one go, which is how the single-node 2-layer smoke test runs (`--model-name Kimi-K2.5-2layer --num-nodes 1`).
 
 ### 3.3 Multi-node fan-out
 
@@ -79,13 +81,15 @@ ray start --address=${MASTER_ADDR}:6379 --num-gpus 8 --node-ip-address ${WORKER_
 
 ## 4. Script breakdown
 
-The launcher groups its flags into the arrays that are passed to `train.py`. The model shape comes from `MODEL_ARGS`, which is loaded from `scripts/models/kimi-k2-thinking.py`. That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and RoPE (`--rotary-base 50000`, `--rotary-scaling-factor 64.0`). The K2.5 recipe then layers the following on top:
+The launcher builds the flags it passes to `train.py` as one f-string group per concern. The model shape comes from `scripts/models/kimi-k25.py`.
 
-- **`CKPT_ARGS`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
-- **`ROLLOUT_ARGS`** and **`EVAL_ARGS`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).
-- **`PERF_ARGS`** sets the parallelism layout and recomputation (§5.1).
-- **`GRPO_ARGS`** and **`OPTIMIZER_ARGS`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
-- **`SGLANG_ARGS`** configures the colocated rollout engine (§5.3).
+That definition sets the MLA latent ranks (`q_lora_rank=1536`, `kv_lora_rank=512`, `qk_head_dim=128`, `qk_pos_emb_head_dim=64`, `v_head_dim=128`), the MoE routing (384 experts, top-8, sigmoid pre-softmax scoring, FP32 router, `--moe-router-topk-scaling-factor 2.827`), and YaRN RoPE (`--rope-type yarn`, `--rotary-base 50000`, `--rotary-scaling-factor 64.0`, `--original-max-position-embeddings 4096`, `--beta-fast 32`, `--beta-slow 1`). The K2.5 recipe then layers the following on top:
+
+- **`ckpt_args`** wires up the dual checkpoint (INT4 actor via `--hf-checkpoint`, BF16 reference via `--ref-load`) together with `--megatron-to-hf-mode bridge` and `--model-name kimi_k25`.
+- **`rollout_args`** and **`eval_args`** configure GRPO sampling and periodic AIME evaluation (covered in §5.2).
+- **`perf_args`** sets the parallelism layout and recomputation (§5.1).
+- **`grpo_args`** and **`optimizer_args`** set the algorithm and CPU-offloaded Adam (§5.2, §5.4).
+- **`sglang_args`** configures the colocated rollout engine (§5.3).
 
 The job runs colocated (`--colocate`) across 32 nodes (`--actor-num-nodes 32 --actor-num-gpus-per-node 8`) with `--update-weight-buffer-size $((4*512*1024*1024))`.
 

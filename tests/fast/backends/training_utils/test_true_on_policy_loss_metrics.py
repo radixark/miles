@@ -10,6 +10,7 @@ from miles.backends.training_utils.loss_hub import losses as loss_utils
 def _make_args(*, use_rollout_logprobs: bool) -> Namespace:
     return Namespace(
         use_rollout_logprobs=use_rollout_logprobs,
+        skip_actor_forward_only=False,
         use_opsm=False,
         advantage_estimator="ppo",
         get_mismatch_metrics=False,

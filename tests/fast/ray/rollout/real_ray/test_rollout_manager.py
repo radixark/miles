@@ -138,6 +138,103 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
 
 @pytest.mark.asyncio
 class TestRolloutManagerInit:
+    @pytest.mark.parametrize(
+        ("ft_components", "expected_monitor_count", "expected_injection_pending"),
+        [
+            (["train"], 0, False),
+            (["rollout"], 1, True),
+        ],
+    )
+    async def test_rollout_ft_lifecycle_follows_selected_component(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+        ft_components,
+        expected_monitor_count,
+        expected_injection_pending,
+    ):
+        import miles.ray.rollout.rollout_manager as rmgr
+
+        started_monitors = []
+
+        class FakeMonitor:
+            def __init__(self, group, args):
+                self.group = group
+
+            def start(self):
+                started_monitors.append(self)
+
+            def stop(self):
+                pass
+
+        monkeypatch.setattr(rmgr, "RolloutHealthMonitor", FakeMonitor)
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.use_fault_tolerance = True
+        args.ft_components = ft_components
+        args.ci_test = True
+        args.ci_metric_checker_key = None
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+
+        assert len(started_monitors) == expected_monitor_count
+        assert len(manager._health_monitors) == expected_monitor_count
+        assert manager._ci_fault_injection_pending is expected_injection_pending
+
+    async def test_debug_rollout_replay_skips_class_based_rollout_construction(
+        self,
+        ray_local_mode,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+    ):
+        import miles.ray.rollout.rollout_manager as rmgr
+
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.debug_train_only = True
+        args.load_debug_rollout_data = str(tmp_path / "rollout-{rollout_id}.pt")
+        args.rollout_num_gpus = None
+        monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
+
+        def fail_if_loaded(*args, **kwargs):
+            pytest.fail("debug rollout replay must not construct rollout functions")
+
+        monkeypatch.setattr(rmgr, "load_rollout_function", fail_if_loaded)
+
+        manager = _make_manager(args, pg=None)
+
+        assert manager.generate_rollout is None
+        assert manager.eval_generate_rollout is None
+
+    async def test_debug_train_only_without_replay_constructs_rollout_function(
+        self,
+        ray_local_mode,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+    ):
+        import miles.ray.rollout.rollout_manager as rmgr
+
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.debug_train_only = True
+        monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
+        loaded_paths: list[str] = []
+
+        def record_load(input, path):
+            loaded_paths.append(path)
+            return lambda *args, **kwargs: None
+
+        monkeypatch.setattr(rmgr, "load_rollout_function", record_load)
+
+        manager = _make_manager(args, pg=None)
+
+        assert loaded_paths == [args.rollout_function_path, args.eval_function_path]
+        assert manager.generate_rollout is not None
+        assert manager.eval_generate_rollout is not None
+
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
         self,
         ray_local_mode,

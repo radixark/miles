@@ -1,0 +1,186 @@
+# doc-dev: docs/ci/04-release.md
+name: Release Branch Cut
+# The branch name in run-name identifies the operator run; release-tag.yml
+# gates on the per-SHA release-ci commit status, not on this title.
+run-name: Release Branch Cut ${{ inputs.branch_name }}
+#
+# Creates a release/vX.Y.Z branch from main, freezes the dependency triplet
+# into release-lock.json on that branch, then runs the full-scope release
+# cadence CI suites against it. Re-dispatching on an existing branch skips
+# creation and just re-runs the tests (e.g. after a cherry-pick).
+#
+# A Miles version freezes the repository commit plus the SGLang and Megatron-LM
+# commits; see docs/developer/versions.md. The lockfile also names the CUDA CI
+# image, while wheel fingerprints are audit records and ROCm remains smoke-only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch_name:
+        description: 'Branch name to create (e.g., release/v0.3.0)'
+        required: true
+        type: string
+      commit_sha:
+        description: 'Commit SHA from main to cut from (defaults to latest main)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  # report-ci-status stamps the release-ci commit status release-tag.yml checks.
+  statuses: write
+
+jobs:
+  cut-release-branch:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    outputs:
+      branch_name: ${{ github.event.inputs.branch_name }}
+      ci_image_tag: ${{ steps.freeze.outputs.ci_image_tag }}
+      tested_sha: ${{ steps.freeze.outputs.tested_sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate inputs
+        id: validate
+        run: |
+          BRANCH_NAME="${{ github.event.inputs.branch_name }}"
+          if [[ ! "$BRANCH_NAME" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Branch name must match 'release/vX.Y.Z', got '$BRANCH_NAME'"
+            exit 1
+          fi
+          COMMIT_SHA="${{ github.event.inputs.commit_sha }}"
+          [ -z "$COMMIT_SHA" ] && COMMIT_SHA=$(git rev-parse HEAD)
+          if ! git merge-base --is-ancestor "$COMMIT_SHA" main; then
+            echo "::error::Commit '$COMMIT_SHA' is not on main"
+            exit 1
+          fi
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check if branch already exists
+        id: check_exists
+        run: |
+          BRANCH_NAME="${{ github.event.inputs.branch_name }}"
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" > /dev/null 2>&1; then
+            echo "Branch '$BRANCH_NAME' exists; skipping creation, re-running tests"
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to Docker Hub
+        if: steps.check_exists.outputs.branch_exists != 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create branch and freeze release-lock.json
+        id: freeze
+        run: |
+          BRANCH_NAME="${{ github.event.inputs.branch_name }}"
+          if [ "${{ steps.check_exists.outputs.branch_exists }}" = "true" ]; then
+            # Existing branch: reuse its committed lockfile for the CI image tag.
+            git fetch origin "$BRANCH_NAME"
+            git checkout "$BRANCH_NAME"
+            echo "ci_image_tag=$(python3 -c "import json; print(json.load(open('release-lock.json'))['ci_image_tag'])")" >> "$GITHUB_OUTPUT"
+            echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "miles-bot"
+          git config user.email "miles-bot@users.noreply.github.com"
+          git checkout -b "$BRANCH_NAME" "${{ steps.validate.outputs.commit_sha }}"
+
+          SGLANG_SHA=$(git ls-remote https://github.com/sgl-project/sglang refs/heads/sglang-miles | cut -f1)
+          MEGATRON_SHA=$(git ls-remote https://github.com/radixark/Megatron-LM refs/heads/miles-main | cut -f1)
+
+          # Prefer the latest timestamped dev tag; fall back to mutable dev if none exists.
+          DEV_IMAGE_TAG=$(curl -s "https://hub.docker.com/v2/repositories/radixark/miles/tags/?page_size=100&name=dev-" \
+            | python3 -c "import sys, json, re; names = [t['name'] for t in json.load(sys.stdin)['results']]; c = sorted(n for n in names if re.fullmatch(r'dev-\d{12}', n)); print(c[-1] if c else 'dev')")
+
+          # docker-build.yml's scheduled prune keeps only the newest 20 dev-<ts>
+          # tags, so a pinned one vanishes within weeks — and a .postN re-run of
+          # this workflow would then fail every container pull. Retag the frozen
+          # image under a release-scoped name the prune regex never matches.
+          CI_IMAGE_TAG="release-${BRANCH_NAME#release/}-ci"
+          docker buildx imagetools create -t "radixark/miles:${CI_IMAGE_TAG}" "radixark/miles:${DEV_IMAGE_TAG}"
+          echo "Retagged radixark/miles:${DEV_IMAGE_TAG} -> radixark/miles:${CI_IMAGE_TAG}"
+
+          # Wheels release fingerprints (audit only: rolling tags can have assets
+          # replaced in place, so they cannot be pinned by name — see docker-build.yml).
+          wheels_fp() {
+            curl -s "https://api.github.com/repos/yueming-yuan/miles-wheels/releases/tags/$1" \
+              | python3 -c "import sys,json,hashlib; a=json.load(sys.stdin).get('assets',[]); fp=sorted([x['name'],x['id'],x['size'],x['updated_at']] for x in a); print(hashlib.sha256(repr(fp).encode()).hexdigest() if a else '')"
+          }
+
+          python3 .github/scripts/release/write_release_lock.py "$BRANCH_NAME" "$SGLANG_SHA" "$MEGATRON_SHA" \
+            "$CI_IMAGE_TAG" "$(wheels_fp cu130-x86_64)" "$(wheels_fp cu130-aarch64)" "$(wheels_fp cu129-x86_64)"
+          git add release-lock.json
+          git commit -m "release: freeze dependency lockfile for $BRANCH_NAME"
+          git push origin "$BRANCH_NAME"
+          echo "ci_image_tag=$CI_IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "tested_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Froze: sglang=$SGLANG_SHA megatron=$MEGATRON_SHA image=$CI_IMAGE_TAG"
+
+      - name: Summary
+        run: |
+          {
+            echo "## Release Branch Cut"
+            echo "- Branch: \`${{ github.event.inputs.branch_name }}\`"
+            echo "- CI image: \`radixark/miles:${{ steps.freeze.outputs.ci_image_tag }}\`"
+            echo "- Once fully green, confirm the branch still points to the tested SHA, keep it frozen, then tag:"
+            echo "  \`gh workflow run release-tag.yml -f version=X.Y.Z -f ref=${{ steps.freeze.outputs.tested_sha }}\`"
+            echo "  (release-tag checks release-ci on this SHA but does not compare the remote branch tip)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  run-tests-cuda:
+    needs: cut-release-branch
+    uses: ./.github/workflows/pr-test.yml
+    with:
+      ref: ${{ needs.cut-release-branch.outputs.branch_name }}
+      cadence: release
+      image_tag: ${{ needs.cut-release-branch.outputs.ci_image_tag }}
+    secrets: inherit
+
+  # ROCm images bake their own sglang/Megatron and ignore the lockfile: a smoke
+  # signal for the release, not a pin-accurate verification.
+  run-tests-rocm:
+    needs: cut-release-branch
+    uses: ./.github/workflows/pr-test-rocm.yml
+    with:
+      ref: ${{ needs.cut-release-branch.outputs.branch_name }}
+      cadence: release
+    secrets: inherit
+
+  # Finalizer: stamps the verdict onto the exact tested commit so
+  # release-tag.yml can gate on per-SHA evidence instead of run archaeology.
+  # always() so a red run stamps failure; a re-dispatch on the same branch
+  # overwrites the same context (newest status per context wins).
+  report-ci-status:
+    needs: [cut-release-branch, run-tests-cuda, run-tests-rocm]
+    if: always() && needs.cut-release-branch.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post release-ci commit status on the tested SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.cut-release-branch.outputs.tested_sha }}
+          CUDA_RESULT: ${{ needs.run-tests-cuda.result }}
+          ROCM_RESULT: ${{ needs.run-tests-rocm.result }}
+        run: |
+          if [ "$CUDA_RESULT" = "success" ] && [ "$ROCM_RESULT" = "success" ]; then
+            STATE=success
+          else
+            STATE=failure
+          fi
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state="$STATE" -f context=release-ci \
+            -f description="full release CI (cuda=$CUDA_RESULT rocm=$ROCM_RESULT)" \
+            -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "Posted release-ci=$STATE on $SHA"

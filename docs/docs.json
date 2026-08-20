@@ -1,18 +1,25 @@
 {
- "$schema": "https://mintlify.com/schema.json",
+ "$schema": "https://mintlify.com/docs.json",
  "name": "Miles",
+ "description": "Miles is an open-source reinforcement learning framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.",
  "theme": "mint",
  "logo": {
-  "light": "/assets/images/miles_logo_light.png",
-  "dark": "/assets/images/miles_logo_dark.png",
+  "light": "/assets/images/brand/miles_logo_light.png",
+  "dark": "/assets/images/brand/miles_logo_dark.png",
   "href": "/",
   "width": 130
  },
- "favicon": "/assets/images/miles_square.png",
+ "favicon": "/assets/images/brand/miles_square.png",
  "seo": {
   "metatags": {
-   "canonical": "https://miles.radixark.com/docs",
    "og:site_name": "Miles Documentation"
+  },
+  "organization": {
+   "name": "RadixArk",
+   "url": "https://www.radixark.com",
+   "sameAs": [
+    "https://github.com/radixark"
+   ]
   }
  },
  "colors": {
@@ -26,27 +33,48 @@
     "type": "github",
     "href": "https://github.com/radixark/miles"
    }
-  ],
-  "primary": {
-   "type": "button",
-   "label": "Contact",
-   "href": "mailto:miles@radixark.ai"
-  }
+  ]
  },
  "navigation": {
   "tabs": [
    {
-    "tab": "Welcome",
-    "groups": [
+    "tab": "User Guide",
+    "pages": [
      {
       "group": "Welcome",
-      "root": "index",
       "pages": [
+       "index",
        "getting-started/index",
        "getting-started/installation",
        "getting-started/quick-start"
       ]
-     }
+     },
+     {
+      "group": "User Guide",
+      "pages": [
+       "user-guide/index",
+       "user-guide/concepts",
+       "user-guide/launch-script",
+       "user-guide/argument-groups",
+       "user-guide/fully-async",
+       "user-guide/training-backend",
+       "user-guide/monitoring",
+       "user-guide/customization",
+       "user-guide/generate-endpoint",
+       "user-guide/agentic-rollout",
+       {
+        "group": "Agentic Environments",
+        "pages": [
+         "user-guide/environments",
+         "user-guide/harbor",
+         "user-guide/openenv",
+         "user-guide/nemo-gym",
+         "user-guide/verifiers"
+        ]
+       }
+      ]
+     },
+     "user-guide/cli-reference"
     ]
    },
    {
@@ -54,12 +82,12 @@
     "groups": [
      {
       "group": "Models",
-      "root": "models/index",
       "pages": [
+       "models/index",
        {
         "group": "DeepSeek",
-        "root": "models/deepseek/index",
         "pages": [
+         "models/deepseek/index",
          {
           "group": "DeepSeek-V4",
           "pages": [
@@ -68,14 +96,15 @@
           ],
           "expanded": false
          },
+         "models/deepseek/deepseek-v3-2",
          "models/deepseek/deepseek"
         ],
         "expanded": false
        },
        {
         "group": "Thinking Machines",
-        "root": "models/thinkingmachines/index",
         "pages": [
+         "models/thinkingmachines/index",
          "models/thinkingmachines/inkling",
          "models/thinkingmachines/inkling-small"
         ],
@@ -83,8 +112,15 @@
        },
        {
         "group": "Qwen",
-        "root": "models/qwen/index",
         "pages": [
+         "models/qwen/index",
+         {
+          "group": "Qwen3.8",
+          "pages": [
+           "models/qwen/qwen3-8"
+          ],
+          "expanded": false
+         },
          {
           "group": "Qwen3.6",
           "pages": [
@@ -115,29 +151,29 @@
        },
        {
         "group": "GLM",
-        "root": "models/glm/index",
         "pages": [
+         "models/glm/index",
+         "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
-         "models/glm/glm4-5",
-         "models/glm/glm4"
+         "models/glm/glm4-5"
         ],
         "expanded": false
        },
        {
         "group": "Kimi",
-        "root": "models/kimi/index",
         "pages": [
+         "models/kimi/index",
+         "models/kimi/kimi-k3",
          "models/kimi/kimi-k2.5",
-         "models/kimi/kimi-k2",
-         "models/kimi/moonlight"
+         "models/kimi/kimi-k2"
         ],
         "expanded": false
        },
        {
         "group": "Nemotron",
-        "root": "models/nemotron/index",
         "pages": [
+         "models/nemotron/index",
          {
           "group": "Nemotron-3-Nano",
           "pages": [
@@ -146,157 +182,240 @@
           ],
           "expanded": false
          },
-         "models/nemotron/nemotron-3-super"
+         "models/nemotron/nemotron-3-super",
+         "models/nemotron/nemotron-3-ultra"
         ],
         "expanded": false
        },
-       "models/mimo/mimo",
+       {
+        "group": "Gemma",
+        "pages": [
+         "models/gemma/index",
+         "models/gemma/gemma-4"
+        ],
+        "expanded": false
+       },
        "models/gpt-oss/gpt-oss"
       ]
      }
     ]
    },
    {
-    "tab": "User Guide",
-    "groups": [
+    "tab": "Advanced Features",
+    "pages": [
+     "advanced/index",
      {
-      "group": "User Guide",
-      "root": "user-guide/index",
+      "group": "Performance",
       "pages": [
-       "user-guide/concepts",
-       "user-guide/argument-groups",
-       "user-guide/usage",
-       "user-guide/training-script-walkthrough",
-       "user-guide/monitoring",
-       "user-guide/dashboard",
-       "user-guide/customization",
-       "user-guide/rollout-endpoints",
-       "user-guide/fully-async",
-       "user-guide/agentic-chat-template",
-       "user-guide/cli-reference"
+       "advanced/low-precision",
+       "advanced/int4-qat",
+       "advanced/speculative-decoding",
+       "advanced/lora",
+       "advanced/on-policy-distillation"
       ]
      },
      {
-      "group": "Environments",
-      "root": "user-guide/environments",
+      "group": "Scale & Reliability",
       "pages": [
-       "user-guide/harbor",
-       "user-guide/openenv",
-       "user-guide/nemo-gym",
-       "user-guide/verifiers"
+       "advanced/fault-tolerance",
+       "advanced/pd-disaggregation",
+       "advanced/p2p-weight-transfer",
+       "advanced/disaggregated-rollout",
+       "advanced/disk-offload"
       ]
-     }
-    ]
-   },
-   {
-    "tab": "Advanced Features",
-    "groups": [
+     },
      {
-      "group": "Advanced Features",
-      "root": "advanced/index",
+      "group": "MoE & Routing",
       "pages": [
-       {
-        "group": "Performance",
-        "pages": [
-         "advanced/fp8-low-precision",
-         "advanced/int4-qat",
-         "advanced/speculative-decoding",
-         "advanced/lora"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Scale & Reliability",
-        "pages": [
-         "advanced/fault-tolerance",
-         "advanced/pd-disaggregation",
-         "advanced/p2p-weight-transfer",
-         "advanced/disk-offload"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "MoE & Routing",
-        "pages": [
-         "advanced/miles-router"
-        ],
-        "expanded": false
-       },
-       {
-        "group": "Backends",
-        "pages": [
-         "advanced/architecture-support"
-        ],
-        "expanded": false
-       }
+       "advanced/miles-router"
       ]
      }
     ]
    },
    {
     "tab": "Examples",
-    "groups": [
+    "pages": [
+     "examples/index",
      {
-      "group": "Examples",
-      "root": "examples/index",
+      "group": "Recipes",
       "pages": [
-       "examples/fully-async",
-       "examples/search-r1",
-       "examples/multi-agent",
-       "examples/reproducibility",
-       "examples/openhermes-sft"
+       "examples/geo3k-vlm",
+       "examples/geo3k-vlm/multi-turn",
+       "examples/multi-lora",
+       "examples/on-policy-distillation",
+       "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
+       "examples/ppo",
+       "examples/retool-v2",
+       "examples/swe-agent-harbor-docker"
+      ]
+     },
+     {
+      "group": "Infra Features",
+      "pages": [
+       "examples/infra-features",
+       "examples/infra-features/fully-async",
+       "examples/infra-features/low-precision",
+       "examples/infra-features/p2p-weight-transfer",
+       "examples/infra-features/random-async",
+       "examples/infra-features/train-infer-mismatch-helper",
+       "examples/infra-features/true-on-policy"
       ]
      }
     ]
    },
    {
     "tab": "Developer Guide",
-    "groups": [
+    "pages": [
+     "developer/index",
+     "developer/contributor-guide",
+     "developer/architecture",
+     "developer/versions",
+     "developer/debug",
      {
-      "group": "Developer Guide",
-      "root": "developer/index",
+      "group": "CI",
       "pages": [
-       "developer/contributor-guide",
-       "developer/debug",
-       "developer/migration",
-       "developer/architecture",
-       "developer/experimental-features"
+       "ci/contributor-guide",
+       "ci/00-stage",
+       "ci/01-label",
+       "ci/02-docker-build",
+       "ci/03-metric-history-gate",
+       "ci/04-release"
       ]
      }
     ]
    },
    {
-    "tab": "Platforms",
-    "groups": [
+    "tab": "Diffusion",
+    "pages": [
+     "diffusion/index",
      {
-      "group": "Platforms",
-      "root": "platforms/index",
+      "group": "Getting Started",
       "pages": [
-       "platforms/nvidia",
-       "platforms/amd"
+       "diffusion/getting-started/installation",
+       "diffusion/getting-started/quick-start"
+      ]
+     },
+     {
+      "group": "User Guide",
+      "pages": [
+       "diffusion/user-guide/cli-reference",
+       "diffusion/user-guide/concepts",
+       "diffusion/user-guide/customization",
+       "diffusion/user-guide/launch-script",
+       "diffusion/user-guide/recipe-verification",
+       "diffusion/user-guide/rewards"
+      ]
+     },
+     {
+      "group": "Models",
+      "pages": [
+       "diffusion/models/cosmos/cosmos3",
+       "diffusion/models/h3/h3",
+       "diffusion/models/ltx/ltx2",
+       "diffusion/models/qwen-image/qwen-image",
+       "diffusion/models/sd3/sd3",
+       "diffusion/models/wan/wan2-2"
+      ]
+     },
+     {
+      "group": "Advanced",
+      "pages": [
+       "diffusion/advanced/deterministic",
+       "diffusion/advanced/dtype-control",
+       "diffusion/advanced/lora",
+       "diffusion/advanced/sde-backend",
+       "diffusion/advanced/single-prompt-multi-gen",
+       "diffusion/advanced/streaming-reward"
+      ]
+     },
+     {
+      "group": "Developer",
+      "pages": [
+       "diffusion/developer/contributor-guide"
       ]
      }
     ]
    },
    {
     "tab": "Resources",
-    "groups": [
-     {
-      "group": "Resources",
-      "pages": [
-       "faq",
-       "blog/index"
-      ]
-     }
+    "pages": [
+     "blog/index",
+     "subscribe"
     ]
    }
   ]
  },
+ "redirects": [
+  {
+   "source": "/user-guide/rollout-endpoints",
+   "destination": "/user-guide/generate-endpoint"
+  },
+  {
+   "source": "/user-guide/agentic-chat-template",
+   "destination": "/user-guide/agentic-rollout"
+  },
+  {
+   "source": "/user-guide/usage",
+   "destination": "/user-guide/training-backend"
+  },
+  {
+   "source": "/advanced/architecture-support",
+   "destination": "/user-guide/training-backend#going-deeper-bringing-in-a-new-architecture"
+  },
+  {
+   "source": "/developer/experimental-features",
+   "destination": "/user-guide/training-backend#fsdp"
+  },
+  {
+   "source": "/platforms/index",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/nvidia",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/platforms/amd",
+   "destination": "/getting-started/installation",
+   "permanent": true
+  },
+  {
+   "source": "/advanced/fp8-low-precision",
+   "destination": "/advanced/low-precision",
+   "permanent": true
+  },
+  {
+   "source": "/examples/search-r1",
+   "destination": "/examples",
+   "permanent": true
+  },
+  {
+   "source": "/examples/multi-agent",
+   "destination": "/examples",
+   "permanent": true
+  },
+  {
+   "source": "/examples/reproducibility",
+   "destination": "/examples",
+   "permanent": true
+  },
+  {
+   "source": "/examples/openhermes-sft",
+   "destination": "/models/qwen/qwen3",
+   "permanent": true
+  },
+  {
+   "source": "/user-guide/dashboard",
+   "destination": "/user-guide/monitoring",
+   "permanent": true
+  }
+ ],
  "background": {
   "dark": "#0c0b0a",
   "light": "#faf7f4"
  },
- "url": "https://www.radixark.com",
  "contextual": {
   "options": [
    {

@@ -16,7 +16,7 @@ training-loop rollouts interact with the same backend.
 ## Prerequisites
 
 1. **A running `miles_agent_server`** from the
-   [`shi/rebase-on-upstream-v0.7.0` branch of harbor-private][branch], with
+   [`harbor-miles-v0.20.0` branch of `harbor-framework/harbor`][branch], with
    the server's `$HARBOR_TASKS_DIR` populated with the 89 Terminal-Bench 2.0
    tasks. The server's README explains setup; the short version is:
 
@@ -52,15 +52,15 @@ training-loop rollouts interact with the same backend.
    default env var is `DEEPSEEK_API_KEY`; override with `--api-key-env` if
    you keep your key under a different variable.
 
-4. **`registry.json`** from the harbor-private checkout (so the script knows
-   what the 89 task names are). Pass its path with `--registry-path`.
+4. **`registry.json`** from that harbor checkout (so the script knows what
+   the 89 task names are). Pass its path with `--registry-path`.
 
 ## Run
 
 ```bash
 python eval_tb_deepseek_v4_pro.py \
     --server-url   http://<agent-server-host>:8080 \
-    --registry-path <path-to-harbor-private>/registry.json \
+    --registry-path <path-to-harbor>/registry.json \
     --n-trials-per-task 4 \
     --max-concurrent 16
 ```
@@ -88,8 +88,8 @@ in the jsonl).
   case the agent server itself must have `OPENAI_API_KEY` set to a real
   value, because the host agent's LiteLLM client reads it from the server
   process env (Docker agents instead receive the credential per request).
-- `--max-seq-len 65536` matches the harbor-private branch's
-  poll-steps wrapper. Lower values will trigger early
+- `--max-seq-len 65536` matches the harbor branch's poll-steps
+  wrapper. Lower values will trigger early
   `SequenceLengthLimitExceeded` exits more often, which is sometimes
   desirable for shorter-context evals.
 - `--per-request-timeout-sec 3600` is the client-side cap. The server's
@@ -116,4 +116,4 @@ print(df.group_by("instance_id").agg(
 ).sort("n_pass", descending=True))
 ```
 
-[branch]: https://github.com/radixark/harbor-private/tree/shi/rebase-on-upstream-v0.7.0
+[branch]: https://github.com/harbor-framework/harbor/tree/harbor-miles-v0.20.0

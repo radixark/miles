@@ -1,6 +1,6 @@
 # Random fully-async example
 
-Minimal sibling of `examples/fully_async/`. Exercises the entire async
+Minimal sibling of `examples/infra_features/fully_async/`. Exercises the entire async
 rollout ↔ trainer loop **without any real dataset, real reward model, or
 meaningful generation** — useful as an agent infrastructure stress test 
 for bigger agentic workloads.

@@ -30,9 +30,9 @@ description: Launch recipes for dense Qwen3 models (0.6 B – 32 B).
 ### 3.1 Download model + datasets
 
 ```bash
-hf download Qwen/Qwen3-4B --local-dir /root/Qwen3-4B
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
+hf download Qwen/Qwen3-4B --local-dir /root/models/Qwen3-4B
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
@@ -43,8 +43,8 @@ MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3-
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3-4B \
-   --save          /root/Qwen3-4B_torch_dist
+   --hf-checkpoint /root/models/Qwen3-4B \
+   --save          /root/models/Qwen3-4B_torch_dist
 ```
 
 The converter auto-derives PP from `WORLD_SIZE`; for larger sizes drive it with `torchrun --nproc-per-node 8`. The FSDP launcher (`scripts/run_qwen3_0_6b_fsdp.py`) loads the HF checkpoint directly and skips this step.
@@ -55,10 +55,12 @@ The converter auto-derives PP from `WORLD_SIZE`; for larger sizes drive it with 
 
 ```bash
 cd /root/miles
-bash scripts/run-qwen3-4B.sh
+python scripts/run_qwen3_dense.py --model-name Qwen3-4B
 ```
 
-Other variants follow the same pattern — replace the script name (`run-qwen3-32B.sh`, etc.) and the `qwen3-XB.py` model config.
+One launcher covers the whole dense line — pick the variant with `--model-name` (`Qwen3-32B`, and the Qwen3.5 / Qwen3.6 sizes), and it selects the matching `qwen3-XB.py` model config. To run on a slice of a node, add `--num-gpus-per-node 4 --cuda-visible-devices 4,5,6,7`.
+
+Checkpoints are read from `--model-dir` (default `/root/models`), datasets from `--data-dir` (default `/root/datasets`), and `--save`/`--load` point under `--output-dir` (default `/root/shared_data`).
 
 The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.py`) just calls `qwen3-4B` with `rotary_base=5000000` (`MODEL_ARGS_ROTARY_BASE` still works as an environment override) — load it when converting / launching the Instruct-2507 checkpoint.
 
@@ -66,11 +68,14 @@ The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.py`) j
 
 ### 5.1 Parallelism
 
-| Script | TP | PP | CP | EP | `max_tokens_per_gpu` | GPUs |
+`scripts/run_qwen3_dense.py` holds one recipe per `--model-name`:
+
+| `--model-name` | TP | PP | CP | EP | `max_tokens_per_gpu` | GPUs |
 |---|---|---|---|---|---|---|
-| `run-qwen3-4B.sh` | 2 | 1 | 1 | 1 | 9216 | 8 (1 × 8) |
-| `run-qwen3-4B_4xgpu.sh` | 2 | 1 | 1 | 1 | 9216 | 4 (1 × 4) |
-| `run-qwen3-32B.sh` | 8 | 1 | 1 | 1 | 20480 | 8 (1 × 8) |
+| `Qwen3-4B` | 2 | 1 | 1 | 1 | 9216 | 8 (1 × 8) |
+| `Qwen3-32B` | 8 | 1 | 1 | 1 | 20480 | 8 (1 × 8) |
+
+`Qwen3-4B` also runs on a 4-GPU slice with `--num-gpus-per-node 4`; the parallelism is unchanged.
 
 `--sequence-parallel` is on whenever TP > 1.
 
@@ -79,33 +84,29 @@ The Qwen3-4B-Instruct-2507 config (`scripts/models/qwen3-4B-Instruct-2507.py`) j
 GRPO baseline across all dense recipes:
 
 ```bash
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
+--advantage-estimator grpo
+--use-kl-loss
+--kl-loss-coef 0.00
+--kl-loss-type low_var_kl
+--entropy-coef 0.00
+--eps-clip 0.2
+--eps-clip-high 0.28
 ```
 
-Rollout uses `--rm-type deepscaler` against `dapo-math-17k`. The SFT recipe (`run-qwen3-4B-base-sft.sh`) trains on `/root/openhermes2_5.parquet`.
+Rollout uses `--rm-type deepscaler` against `dapo-math-17k`. The SFT recipe (`python scripts/run_qwen3_sft.py --model-name Qwen3-4B-Base`) trains on `/root/datasets/openhermes2_5.parquet`.
 
 ### 5.3 Rollout & SGLang
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 2
-   --sglang-mem-fraction-static 0.7
-)
+--rollout-num-gpus-per-engine 2
+--sglang-mem-fraction-static 0.7
 ```
 
-`run-qwen3-32B.sh` additionally pins `--sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)`. The FSDP variant uses `--attn-implementation flash_attention_3`, SGLang attention backend `fa3`, and adds `--update-weight-buffer-size 536870912 --gradient-checkpointing`.
+`Qwen3-32B` additionally pins `--sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)`. The FSDP variant uses `--attn-implementation flash_attention_3`, SGLang attention backend `fa3`, and adds `--update-weight-buffer-size 536870912 --gradient-checkpointing`.
 
 ### 5.4 Optimizer
 
-`run-qwen3-32B.sh` enables CPU Adam:
+`Qwen3-32B` enables CPU Adam:
 
 ```bash
 --optimizer-cpu-offload
@@ -117,11 +118,11 @@ The 4 B / 8 B / 14 B recipes leave Adam on GPU.
 
 ### 5.5 Notable quirks
 
-- **BF16 train + FP8 inference**: `run-qwen3-4B.sh` ships a commented `--hf-checkpoint /root/Qwen3-4B-FP8` alternative — uncomment it (and download `Qwen/Qwen3-4B-FP8`) to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/advanced/fp8-low-precision).
+- **BF16 train + FP8 inference**: download `Qwen/Qwen3-4B-FP8` and pass `--extra-args "--hf-checkpoint /root/models/Qwen3-4B-FP8"` to swap rollout to FP8 while keeping BF16 training. See [Low Precision RL](/advanced/low-precision).
 - **FSDP backend**: `python3 scripts/run_qwen3_0_6b_fsdp.py` runs a Qwen3-0.6B recipe with `--train-backend fsdp` (downloads model + datasets itself); no Megatron `torch_dist` conversion needed.
-- **AMD ROCm**: `scripts/amd/run-qwen3-4B-amd.sh` mirrors the recipe with `${NUM_GPUS}` resolved from the AMD environment.
+- **AMD ROCm**: `python scripts/amd/run_qwen3_4b.py` mirrors the recipe, with the GPU count per node resolved from `--hardware` (`MI350X` / `MI355X`).
 
 ## 6. Pairs Well With
 
-- [Low Precision RL](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)
 - [Backends Beyond Megatron](/advanced/architecture-support) — for the FSDP variant.

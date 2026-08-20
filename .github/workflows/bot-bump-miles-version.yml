@@ -1,0 +1,45 @@
+# doc-dev: docs/ci/04-release.md
+name: Bot Bump Miles Version
+# Optional convenience for release step ①: a hand-opened PR editing setup.py's
+# version line (via .github/scripts/release/bump_miles_version.py) is fully equivalent
+# and triggers CI normally.
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: 'Base Miles version (X.Y.Z only; e.g., 0.3.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump-version:
+    if: github.repository == 'radixark/miles'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Bump version and open PR
+        # GITHUB_TOKEN-created PRs do not trigger pr-test.yml; close/reopen the
+        # PR once to run CI, or switch this to a PAT secret later.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ github.event.inputs.new_version }}"
+          git config user.name "miles-bot"
+          git config user.email "miles-bot@users.noreply.github.com"
+          BRANCH_NAME="bot/bump-miles-version-${NEW_VERSION}-$(echo $RANDOM | md5sum | head -c 4)"
+          git checkout -b "$BRANCH_NAME"
+          python .github/scripts/release/bump_miles_version.py "$NEW_VERSION"
+          git add setup.py
+          git commit -m "release: bump miles version to ${NEW_VERSION}"
+          git push origin "$BRANCH_NAME"
+          gh pr create \
+            --title "release: bump miles version to ${NEW_VERSION}" \
+            --body "Automated version bump via bot-bump-miles-version.yml." \
+            --base main --head "$BRANCH_NAME"

@@ -3,7 +3,7 @@
 Example scripts for running P2P (RDMA) and broadcast (NCCL) weight transfer between
 Megatron training and sglang rollout engines.
 
-See [docs/en/advanced/p2p-weight-transfer.md](../../docs/en/advanced/p2p-weight-transfer.md)
+See [docs/advanced/p2p-weight-transfer.md](../../../docs/advanced/p2p-weight-transfer.md)
 for full documentation, architecture details, and profiling results.
 
 ## Quick Start
@@ -15,8 +15,6 @@ per-model thin bash wrappers:
 examples/infra_features/p2p_weight_transfer/
 ├── run.py                # Shared logic: prepare + run (model registry)
 ├── Qwen3-4B.sh           # 1 node  – bash Qwen3-4B.sh [MODE]
-├── GLM-Z1-9B.sh          # 1 node  – bash GLM-Z1-9B.sh [MODE]
-├── Moonlight-16B.sh      # 2 nodes – bash Moonlight-16B.sh [MODE] [NODE_RANK] [HEAD_IP]
 ├── GLM-4.7-Flash.sh      # 2 nodes
 ├── GLM-5.sh              # 2/12/32 nodes – bash GLM-5.sh <VARIANT> [MODE] [NODE_RANK] [HEAD_IP]
 ├── Qwen3-30B-A3B.sh      # 4 nodes
@@ -27,13 +25,13 @@ examples/infra_features/p2p_weight_transfer/
 
 ## Usage
 
-### Single-node models (Qwen3-4B, GLM-Z1-9B)
+### Single-node models (Qwen3-4B)
 
 Single-node models auto-detect networking and don't require node rank or head IP:
 
 ```bash
 bash examples/infra_features/p2p_weight_transfer/Qwen3-4B.sh p2p
-bash examples/infra_features/p2p_weight_transfer/GLM-Z1-9B.sh broadcast
+bash examples/infra_features/p2p_weight_transfer/Qwen3-4B.sh broadcast
 ```
 
 ### Multi-node models

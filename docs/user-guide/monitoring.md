@@ -5,8 +5,6 @@ description: wandb, structured logs, profiling, and what to look at when somethi
 Miles emits per-rollout metrics to stdout and (optionally) Weights & Biases. SGLang and
 Ray write their own logs to their default directories.
 
-For per-GPU phase timelines and token level trajectory inspection, see the
-[Miles Dashboard](/user-guide/dashboard).
 
 ## What gets logged by default
 
@@ -20,7 +18,7 @@ fields depend on backend and config):
 ```
 
 When `--use-wandb` is set, metrics also go to wandb under the `train/`, `rollout/`,
-and `perf/` namespaces (see `miles/utils/wandb_utils.py`).
+and `perf/` namespaces (see `miles/utils/tracking_utils/wandb_utils.py`).
 
 ## Enabling wandb
 

@@ -80,6 +80,7 @@ def test_fixed_opd_inputs_are_detached_in_persistent_rollout_data(monkeypatch):
         "total_lengths": [2],
     }
     args = Namespace(
+        skip_actor_forward_only=False,
         use_rollout_logprobs=False,
         kl_coef=0.0,
         use_opd=True,

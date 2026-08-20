@@ -40,56 +40,12 @@ from .generate_utils.generate_endpoint_utils import (
     policy_uses_routing_key,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
 
 logger = logging.getLogger(__name__)
-
-
-def _len_or_value(value: Any) -> Any:
-    if isinstance(value, (dict, list, tuple, str)):
-        return {"type": type(value).__name__, "len": len(value)}
-    return value
-
-
-def _sample_text_preview(sample: Sample, max_chars: int = 512) -> str:
-    text = (str(sample.prompt) + sample.response).replace("\n", "\\n")
-    if len(text) <= max_chars:
-        return text
-    return f"{text[:max_chars]}...<truncated chars={len(text) - max_chars}>"
-
-
-def _reward_log_summary(reward: Any) -> Any:
-    """Summarize a reward (which for OPD scoring can be a large nested dict of logprobs)
-    into shapes/lengths instead of dumping the whole thing into the log."""
-    if not isinstance(reward, dict):
-        return _len_or_value(reward)
-
-    summary: dict[str, Any] = {}
-    for key, value in reward.items():
-        if not isinstance(value, dict):
-            summary[key] = _len_or_value(value)
-            continue
-
-        entry: dict[str, Any] = {"keys": list(value.keys())}
-        meta_info = value.get("meta_info")
-        if isinstance(meta_info, dict):
-            entry["meta_info"] = {
-                meta_key: _len_or_value(meta_info[meta_key])
-                for meta_key in (
-                    "id",
-                    "finish_reason",
-                    "prompt_tokens",
-                    "weight_version",
-                    "input_token_logprobs",
-                    "input_token_ids_logprobs",
-                    "input_top_logprobs",
-                )
-                if meta_key in meta_info
-            }
-        summary[key] = entry
-    return summary
 
 
 def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate") -> str:
@@ -532,9 +488,9 @@ async def generate_rollout_async(
                 sample = group[0][0] if isinstance(group[0], list) else group[0]
                 logger.info(
                     "First rollout sample: text_preview=%s, label=%s, reward_summary=%s",
-                    _sample_text_preview(sample),
+                    sample_text_preview(sample),
                     str(sample.label)[:100],
-                    _reward_log_summary(sample.reward),
+                    reward_log_summary(sample.reward),
                 )
                 do_print = False
 
@@ -556,9 +512,9 @@ async def generate_rollout_async(
     sample = data[-1][0][0] if isinstance(data[-1][0], list) else data[-1][0]
     logger.info(
         "Finish rollout: text_preview=%s, label=%s, reward_summary=%s",
-        _sample_text_preview(sample),
+        sample_text_preview(sample),
         str(sample.label)[:100],
-        _reward_log_summary(sample.reward),
+        reward_log_summary(sample.reward),
     )
 
     # there are still some unfinished requests, abort them

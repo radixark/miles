@@ -30,8 +30,8 @@ from transformers import AutoTokenizer
 from miles.utils.chat_template_utils import (
     TITOTokenizerType,
     get_tito_tokenizer,
-    message_matches,
     resolve_fixed_chat_template,
+    strict_message_matches,
 )
 from miles.utils.chat_template_utils.template import apply_chat_template
 from miles.utils.processing_utils import load_tokenizer
@@ -572,7 +572,7 @@ class TestDeepSeekV4TITOAlignWithSGLang:
 
 
 class TestMessageMatches:
-    """message_matches compares template-relevant content, not wire idiosyncrasies."""
+    """strict_message_matches compares template-relevant content, not wire idiosyncrasies."""
 
     STORED_SGLANG_WIRE = {
         "role": "assistant",
@@ -601,28 +601,28 @@ class TestMessageMatches:
     def test_stream_rebuilt_replay_matches_sglang_wire(self, index_value):
         stored = copy.deepcopy(self.STORED_SGLANG_WIRE)
         stored["tool_calls"][0]["index"] = index_value
-        assert message_matches(stored, self._rebuilt())
+        assert strict_message_matches(stored, self._rebuilt())
 
     def test_null_index_matches_absent_index(self):
-        assert message_matches(self.STORED_SGLANG_WIRE, self._rebuilt(index=None))
+        assert strict_message_matches(self.STORED_SGLANG_WIRE, self._rebuilt(index=None))
 
     def test_null_tool_call_id_does_not_match_absent_id(self):
         stored = copy.deepcopy(self.STORED_SGLANG_WIRE)
         stored["tool_calls"][0]["id"] = None
         rebuilt = self._rebuilt()
         del rebuilt["tool_calls"][0]["id"]
-        assert not message_matches(stored, rebuilt)
+        assert not strict_message_matches(stored, rebuilt)
 
     def test_different_arguments_still_mismatch(self):
         rebuilt = self._rebuilt()
         rebuilt["tool_calls"][0]["function"] = {"name": "get_weather", "arguments": '{"city": "Rome"}'}
-        assert not message_matches(self.STORED_SGLANG_WIRE, rebuilt)
+        assert not strict_message_matches(self.STORED_SGLANG_WIRE, rebuilt)
 
     def test_different_tool_call_id_still_mismatches(self):
         rebuilt = self._rebuilt(id="call_zzz")
-        assert not message_matches(self.STORED_SGLANG_WIRE, rebuilt)
+        assert not strict_message_matches(self.STORED_SGLANG_WIRE, rebuilt)
 
     def test_content_mismatch_still_detected(self):
         rebuilt = self._rebuilt()
         rebuilt["content"] = "different"
-        assert not message_matches(self.STORED_SGLANG_WIRE, rebuilt)
+        assert not strict_message_matches(self.STORED_SGLANG_WIRE, rebuilt)

@@ -57,7 +57,7 @@ class _UnusedBackend:
         raise AssertionError("collect_samples must not touch the proxy backend")
 
 
-def _build_core() -> SessionCore:
+def _build_core(use_addition_r3: bool = False) -> SessionCore:
     # Mirrors setup_session_routes (sessions.py): tokenizer + registry + core.
     tokenizer = load_tokenizer(
         _ARGS.hf_checkpoint, chat_template_path=_ARGS.chat_template_path, trust_remote_code=True
@@ -68,12 +68,19 @@ def _build_core() -> SessionCore:
         chat_template_kwargs=_ARGS.apply_chat_template_kwargs,
     )
     registry = SessionRegistry(_ARGS, tokenizer, tito_tokenizer=tito_tokenizer)
-    return SessionCore(_UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id)
+    return SessionCore(
+        _UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id, use_addition_r3=use_addition_r3
+    )
 
 
 @pytest.fixture(scope="module")
 def core():
     return _build_core()
+
+
+@pytest.fixture(scope="module")
+def addition_core():
+    return _build_core(use_addition_r3=True)
 
 
 # ── fixtures: a two-turn trajectory with R3 / cache stats / weight versions ──
@@ -241,6 +248,93 @@ async def test_session_metadata_matches_get_session(core):
     assert response.status_code == 200
     assert reply.session_metadata == json.loads(response.body)["metadata"]
     assert reply.session_metadata["accumulated_token_ids"] == _ACCUMULATED
+
+
+# ── additional R3 (in-place weight updates): patches rebuild the full tensor ──
+
+
+def _r3_slice_b64(seed: int, start_row: int, end_row: int) -> str:
+    """Rows [start_row, end_row) of the same arange stream `_r3_b64(seed=...)`
+    encodes in full, so addition patches rebuild exactly `_expected_r3`."""
+    arr = np.arange(seed + start_row * NUM_LAYERS * TOPK, seed + end_row * NUM_LAYERS * TOPK, dtype=np.int32)
+    return pybase64.b64encode(arr.tobytes()).decode("ascii")
+
+
+def _two_turn_addition_records(turn2_start_len: int = 4):
+    # The _two_turn_records trajectory with addition-R3 payloads: each record
+    # carries only rows [start, len(prompt)+len(output)-1) plus the request
+    # offset that produced them (turn 1: rows [0,4); turn 2: rows [4,8)).
+    return [
+        _make_record(
+            prompt_token_ids=[1, 2, 3],
+            output_token_ids=[10, 11],
+            output_log_probs=[-0.125, -0.25],
+            routed_experts=_r3_slice_b64(100, 0, 4),
+            routed_experts_start_len=0,
+        ),
+        _make_record(
+            prompt_token_ids=[1, 2, 3, 10, 11, 20, 21],
+            output_token_ids=[30, 31],
+            output_log_probs=[-0.5, -1.0],
+            routed_experts=_r3_slice_b64(100, turn2_start_len, 8),
+            routed_experts_start_len=turn2_start_len,
+        ),
+    ]
+
+
+async def test_addition_assembled_sample_matches_full_reference(addition_core):
+    """Addition patches must reconstruct byte-for-byte the tensor the full-R3
+    fixture assembles for the same tokens (test_assembled_sample_golden)."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+    (m,) = samples
+
+    assert m.tokens == _ACCUMULATED
+    assert m.loss_mask == [1, 1, 0, 0, 1, 1]
+    assert m.rollout_log_probs == [-0.125, -0.25, 0.0, 0.0, -0.5, -1.0]
+    assert m.status == Sample.Status.COMPLETED
+    assert m.rollout_routed_experts.dtype == np.int32
+    assert np.array_equal(m.rollout_routed_experts, _expected_r3(100, 8))
+
+
+async def test_addition_truncation_golden(addition_core):
+    """max_seq_len=8 strips one token off the merged sample; R3 is materialized
+    for exactly len(tokens) - 1 rows."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid, max_seq_len=8)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+
+    last = samples[-1]
+    assert last.status == Sample.Status.TRUNCATED
+    assert last.tokens == _ACCUMULATED[:8]
+    assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 8)[:-1])
+
+
+async def test_addition_turn_boundary_truncation_uses_required_prefix(addition_core):
+    """A max_seq_len boundary may drop the original last turn entirely."""
+    sid = await _make_session(addition_core, _two_turn_addition_records(), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid, max_seq_len=5)
+    assert status == 200
+    samples, _ = _new_pipeline(payload, _input_sample())
+
+    last = samples[-1]
+    assert last.tokens == _ACCUMULATED[:5]
+    assert np.array_equal(last.rollout_routed_experts, _expected_r3(100, 4))
+
+
+async def test_addition_gap_returns_422(addition_core):
+    # Turn 2 starts at row 5 while turn 1 retained only 4 rows: the assembler
+    # rejects the gap as a 422 instead of assembling a corrupt tensor.
+    sid = await _make_session(addition_core, _two_turn_addition_records(turn2_start_len=5), _ACCUMULATED)
+    status, payload = await _collect_via_op(addition_core, sid)
+    assert status == 422
+    assert "additional R3" in payload.decode()
+
+    health = await addition_core.health()
+    assert health.status_code == 200
 
 
 # ── empty_reason discriminator ──

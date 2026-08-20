@@ -7,10 +7,12 @@ and merge_samples — the core of the TITO (Token In Token Out) pipeline.
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import numpy as np
+import pybase64
 import pytest
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.samples.merge import compute_samples_from_openai_records
+from miles.rollout.session.samples.merge import compute_samples_from_openai_records, merge_samples_with_addition_r3
 from miles.rollout.session.types import SessionRecord
 from miles.utils.types import Sample
 
@@ -37,12 +39,15 @@ def _make_record(
     prompt_tokens: int | None = None,
     weight_version: str | None = None,
     routed_experts: str | None = None,
+    routed_experts_start_len: int | None = None,
 ) -> SessionRecord:
     """Build a minimal session record mimicking SGLang's response format.
 
     Token IDs and logprobs are stored in meta_info.output_token_logprobs
     as (logprob, token_id) tuples, matching the real SGLang response.
-    `routed_experts` is the base64 int32 buffer exactly as SGLang returns it.
+    `routed_experts` is the base64 int32 buffer exactly as SGLang returns it;
+    with `routed_experts_start_len` it covers only rows [start, end), matching
+    an addition-R3 request that persisted the offset.
     """
     if output_log_probs is None:
         output_log_probs = [-0.1 * (i + 1) for i in range(len(output_token_ids))]
@@ -63,12 +68,15 @@ def _make_record(
         meta_info["weight_version"] = weight_version
     if routed_experts is not None:
         meta_info["routed_experts"] = routed_experts
+    request = {"messages": [{"role": "user", "content": "hello"}], "input_ids": prompt_token_ids}
+    if routed_experts_start_len is not None:
+        request["routed_experts_start_len"] = routed_experts_start_len
     return SessionRecord(
         timestamp=0.0,
         method="POST",
         path="/v1/chat/completions",
         status_code=200,
-        request={"messages": [{"role": "user", "content": "hello"}], "input_ids": prompt_token_ids},
+        request=request,
         response={
             "choices": [
                 {
@@ -542,6 +550,200 @@ class TestTITOTrailingTokenTrim:
                 accumulated_token_ids=accumulated,
                 max_trim_tokens=1,
             )
+
+
+# ── test: additional-R3 patch assembly (in-place weight updates) ──────
+
+_ARGS_R3 = SimpleNamespace(save_debug_trajectory_data=None, sglang_speculative_algorithm=None, num_layers=2)
+_R3_TOPK = 2
+
+
+def _r3_rows(num_rows: int, seed: int) -> np.ndarray:
+    """`num_rows` distinct rows of shape (num_layers, topk), values seed, seed+1, …"""
+    size = num_rows * _ARGS_R3.num_layers * _R3_TOPK
+    return np.arange(seed, seed + size, dtype=np.int32).reshape(num_rows, _ARGS_R3.num_layers, _R3_TOPK)
+
+
+def _r3_patch(rows: np.ndarray) -> str:
+    return pybase64.b64encode(np.ascontiguousarray(rows).tobytes()).decode("ascii")
+
+
+def _merge_addition(records, accumulated, max_trim_tokens=0):
+    tok = _mock_tokenizer()
+    samples = compute_samples_from_openai_records(
+        _ARGS_R3,
+        records,
+        tok,
+        accumulated_token_ids=accumulated,
+        max_trim_tokens=max_trim_tokens,
+        use_addition_r3=True,
+    )
+    return merge_samples_with_addition_r3(_ARGS_R3, samples, records, tok)
+
+
+class TestAdditionR3Assembly:
+    """Addition-mode records carry an R3 patch of rows [routed_experts_start_len,
+    len(input_ids) + len(output) - 1) instead of a full per-turn tensor;
+    `merge_samples_with_addition_r3` concatenates the append-only stream into
+    one (len(tokens) - 1, num_layers, topk) tensor after the ordinary merge.
+    """
+
+    def test_two_patches_reconstruct_full_reference(self):
+        """Patches must rebuild byte-for-byte the tensor full-R3 responses give
+        for the same tokens under the same in-place lifecycle."""
+        full = _r3_rows(7, seed=0)
+        accumulated = [1, 2, 3, 10, 11, 4, 20, 21]
+        # Turn 1: 5-token checkpoint -> rows [0, 4). Turn 2 extends it by one
+        # env token -> start = checkpoint rows = 4, rows [4, 7).
+        addition_records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(full[:4]), routed_experts_start_len=0),
+            _make_record(
+                [1, 2, 3, 10, 11, 4], [20, 21], routed_experts=_r3_patch(full[4:]), routed_experts_start_len=4
+            ),
+        ]
+        full_records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(full[:4])),
+            _make_record([1, 2, 3, 10, 11, 4], [20, 21], routed_experts=_r3_patch(full)),
+        ]
+
+        merged_addition = _merge_addition(addition_records, accumulated)
+        tok = _mock_tokenizer()
+        full_samples = compute_samples_from_openai_records(
+            _ARGS_R3, full_records, tok, accumulated_token_ids=accumulated
+        )
+        merged_full = merge_samples(full_samples, tok)
+
+        assert merged_addition.tokens == merged_full.tokens == accumulated
+        assert merged_addition.loss_mask == merged_full.loss_mask
+        assert merged_addition.rollout_log_probs == merged_full.rollout_log_probs
+        assert merged_addition.rollout_routed_experts.dtype == np.int32
+        assert np.array_equal(merged_addition.rollout_routed_experts, merged_full.rollout_routed_experts)
+        assert np.array_equal(merged_addition.rollout_routed_experts, full)
+
+    def test_overlapping_start_raises(self):
+        """Every patch must start exactly after the preceding raw patch."""
+        turn1_rows = _r3_rows(5, seed=0)
+        turn2_rows = _r3_rows(2, seed=500)
+        records = [
+            _make_record([1, 2, 3], [10, 98, 99], routed_experts=_r3_patch(turn1_rows), routed_experts_start_len=0),
+            _make_record(
+                [1, 2, 3, 10, 55], [20, 21], routed_experts=_r3_patch(turn2_rows), routed_experts_start_len=4
+            ),
+        ]
+        accumulated = [1, 2, 3, 10, 55, 20, 21]
+
+        with pytest.raises(ValueError, match="record 1 starts at row 4; expected 5"):
+            _merge_addition(records, accumulated, max_trim_tokens=2)
+
+    def test_intermediate_truncated_turn_bounds_materialization(self):
+        """A non-COMPLETED turn bounds required rows before later patches."""
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
+            _make_record(
+                [1, 2, 3, 10, 11, 4],
+                [20, 21],
+                finish_reason="length",
+                routed_experts=_r3_patch(_r3_rows(3, 16)),
+                routed_experts_start_len=4,
+            ),
+            _make_record([1, 2, 3, 10, 11, 4, 20, 21, 5], [30, 31]),
+        ]
+        accumulated = [1, 2, 3, 10, 11, 4, 20, 21, 5, 30, 31]
+
+        merged = _merge_addition(records, accumulated)
+
+        assert merged.status == Sample.Status.TRUNCATED
+        assert merged.tokens == accumulated[:8]
+        expected = np.concatenate([_r3_rows(4, 0), _r3_rows(3, 16)])
+        assert np.array_equal(merged.rollout_routed_experts, expected)
+
+    def test_missing_required_patch_raises(self):
+        """A missing patch cannot silently shorten a merged trajectory."""
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
+            _make_record(
+                [1, 2, 3, 10, 11, 4],
+                [20, 21],
+                routed_experts=_r3_patch(_r3_rows(3, 16)),
+                routed_experts_start_len=4,
+            ),
+            _make_record([1, 2, 3, 10, 11, 4, 20, 21, 5], [30, 31]),
+        ]
+        accumulated = [1, 2, 3, 10, 11, 4, 20, 21, 5, 30, 31]
+
+        with pytest.raises(ValueError, match="record 2 has no routed_experts payload"):
+            _merge_addition(records, accumulated)
+
+    def test_replay_disabled_records_unaffected(self):
+        """use_addition_r3=True is dormant when no record carries R3."""
+        records = [
+            _make_record([1, 2, 3], [10, 11]),
+            _make_record([1, 2, 3, 10, 11, 4], [20, 21]),
+        ]
+        accumulated = [1, 2, 3, 10, 11, 4, 20, 21]
+
+        merged = _merge_addition(records, accumulated)
+        tok = _mock_tokenizer()
+        reference = merge_samples(
+            compute_samples_from_openai_records(_ARGS_R3, records, tok, accumulated_token_ids=accumulated), tok
+        )
+
+        assert merged.rollout_routed_experts is None
+        assert merged.tokens == reference.tokens
+        assert merged.loss_mask == reference.loss_mask
+
+    def test_empty_delta_keeps_empty_buffer_shape(self):
+        """A trajectory whose only patch is empty keeps the existing
+        empty-buffer decode shape instead of inventing a top-k source."""
+        records = [_make_record([1], [], routed_experts="", routed_experts_start_len=0)]
+
+        merged = _merge_addition(records, [1])
+
+        assert merged.rollout_routed_experts.shape == (0, _ARGS_R3.num_layers, 0)
+        assert merged.rollout_routed_experts.dtype == np.int32
+
+    def test_missing_start_len_raises(self):
+        records = [_make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)))]
+
+        with pytest.raises(ValueError, match="carries no routed_experts_start_len"):
+            _merge_addition(records, [1, 2, 3, 10, 11])
+
+    def test_empty_payload_for_nonempty_delta_raises(self):
+        records = [_make_record([1, 2, 3], [10, 11], routed_experts="", routed_experts_start_len=0)]
+
+        with pytest.raises(ValueError, match="payload presence does not match 4 rows"):
+            _merge_addition(records, [1, 2, 3, 10, 11])
+
+    def test_gapped_start_raises(self):
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(3, 0)), routed_experts_start_len=1)
+        ]
+
+        with pytest.raises(ValueError, match="starts at row 1; expected 0"):
+            _merge_addition(records, [1, 2, 3, 10, 11])
+
+    def test_wrong_value_count_raises(self):
+        # 4 rows announced (start=0, end=4) but only 3 rows of values supplied.
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(3, 0)), routed_experts_start_len=0)
+        ]
+
+        with pytest.raises(ValueError):
+            _merge_addition(records, [1, 2, 3, 10, 11])
+
+    def test_inconsistent_topk_raises(self):
+        # Turn 1 infers topk=2; turn 2 supplies 3 rows sized for topk=3.
+        bad_rows = np.arange(3 * _ARGS_R3.num_layers * 3, dtype=np.int32).reshape(3, _ARGS_R3.num_layers, 3)
+        records = [
+            _make_record([1, 2, 3], [10, 11], routed_experts=_r3_patch(_r3_rows(4, 0)), routed_experts_start_len=0),
+            _make_record(
+                [1, 2, 3, 10, 11, 4], [20, 21], routed_experts=_r3_patch(bad_rows), routed_experts_start_len=4
+            ),
+        ]
+        accumulated = [1, 2, 3, 10, 11, 4, 20, 21]
+
+        with pytest.raises(ValueError):
+            _merge_addition(records, accumulated)
 
 
 # ── test: thinking token issue (documents known failure mode) ────────

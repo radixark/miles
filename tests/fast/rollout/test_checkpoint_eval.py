@@ -68,7 +68,7 @@ def make_manager(args, eval_fn=None, fleet=None):
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
     mgr._health_monitors = []
-    mgr.use_experimental_refactor = True
+    mgr.use_legacy_rollout_v1 = False
     mgr._metric_checker = None
     mgr.eval_generate_rollout = eval_fn
     mgr._eval_fleet = fleet
@@ -469,14 +469,14 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
     assert len(dispatcher.pending) == 0
 
 
-# ---------------- example fn (examples/fully_async/external_eval_fn.py) ----------------
+# ------- example fn (examples/infra_features/fully_async/external_eval_fn.py) -------
 
 
 @pytest.fixture
 def external_fn_env(monkeypatch):
     import importlib
 
-    mod = importlib.import_module("examples.fully_async.external_eval_fn")
+    mod = importlib.import_module("examples.infra_features.fully_async.external_eval_fn")
     calls = []
 
     server = SimpleNamespace(loaded_version=None)

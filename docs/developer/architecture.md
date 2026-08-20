@@ -43,24 +43,33 @@ flowchart TB
 
 ```text
 miles/
-├── backends/
-│   ├── megatron_utils/   # fp32 markers, optimizer offload helpers, weight sync
-│   ├── sglang_utils/     # SGLang glue
-│   ├── training_utils/   # loss / GRPO / PPO / GSPO / REINFORCE++ plumbing
-│   └── experimental/
-│       └── fsdp_utils/   # FSDP-flavoured trainer (in progress)
-├── ray/                  # Ray actors + rollout driver
+├── backends/             # one directory per backend, plus what they share
+│   ├── megatron_utils/   # Megatron actor, update_weight/, checkpointing, fp32 markers
+│   ├── fsdp_utils/       # FSDP2 actor, adaptations/ per architecture, MoE kernels
+│   ├── sglang_utils/     # SGLang engine wrapper + argument glue
+│   └── training_utils/   # loss.py / loss_hub/, ParallelState, log + CI checkers
+├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
 ├── rollout/
-│   ├── sglang_rollout.py # default rollout function
+│   ├── sglang_rollout.py # legacy v1 rollout function
 │   ├── data_source.py    # buffer + JSONL loader
 │   ├── filter_hub/       # built-in filters
-│   └── inference_rollout/# experimental refactor
+│   ├── rm_hub/           # built-in reward types (`--rm-type` dispatch)
+│   ├── fully_async_*.py  # queue-backed producer for train_async.py
+│   └── inference_rollout/# default class-based rollout
 ├── router/               # FastAPI proxy + worker load-balancer (router.py)
-└── utils/                # async, types, IO, distributed helpers, arguments.py
+├── dashboard/            # run dashboard: collector, backend, dump reader
+├── true_on_policy/       # true-on-policy contracts and per-model profiles
+└── utils/                # arguments.py, async / IO / distributed helpers, audit_utils/
 ```
 
-`train.py` and `train_async.py` are the two entry points. They're thin: ~200 lines
-each. Most logic lives in the modules above.
+The `miles_plugins/` tree sits beside it. Nothing in `miles/` imports it directly: a plugin
+is loaded only when a run names its import path in a flag (`--spec`, or one of the
+`--custom-*-path` flags). `models/` holds Megatron specs and HF module wrappers, `mbridge/`
+per-architecture weight bridges, `megatron_bridge/` the `megatron.bridge` shims, and
+`optimizers/` optimizer plugins.
+
+`train.py`, `train_async.py` and `train_multi_lora_async.py` are the entry points. They are
+thin; most logic lives in the modules above.
 
 ## A request's life
 
@@ -93,12 +102,13 @@ from the trainer loop and uses a continuously-running worker.
 
 | You want to … | Edit |
 |---|---|
-| Add a new RL algorithm | `miles/backends/training_utils/loss.py` + enum in `miles/utils/arguments.py` |
-| Add a new built-in reward type | `miles/rollout/sglang_rollout.py` (rm dispatch) |
+| Add a new RL algorithm | `miles/backends/training_utils/loss.py` and `loss_hub/`, plus the enum in `miles/utils/arguments.py` |
+| Add a new built-in reward type | `miles/rollout/rm_hub/` (the `rm_type` dispatch lives in its `__init__.py`) |
 | Add a new built-in filter | `miles/rollout/filter_hub/` |
-| Wrap a new model architecture | `miles_plugins/models/<model>.py` + `mbridge` |
+| Support a new architecture on Megatron | `miles_plugins/models/<model>.py` + a bridge in `miles_plugins/mbridge/` |
+| Support a new architecture on FSDP | `miles/backends/fsdp_utils/adaptations/specs/<arch>.py` |
 | Add a new flag | `miles/utils/arguments.py` |
-| Change weight sync | `miles/backends/megatron_utils/update_weight/` and `miles/utils/distributed_utils.py` |
+| Change weight sync | `miles/backends/megatron_utils/update_weight/` (Megatron) or `miles/backends/fsdp_utils/update_weight_utils.py` (FSDP) |
 | Change rollout buffer | `miles/rollout/data_source.py` |
 
 ## Extension points (the right way)
@@ -117,7 +127,9 @@ tests/
 ├── fast/             # CPU CI only — each test_*.py auto-registers as stage-a-cpu (register_cuda_ci is rejected here)
 ├── fast-gpu/         # GPU or CPU CI, registered explicitly (register_cuda_ci / register_cpu_ci)
 ├── ci/               # the suite runner + registry, with their own CPU CI
-└── e2e/              # end-to-end (spins up Ray + SGLang); GPU or CPU CI, registered explicitly
+├── e2e/              # end-to-end (spins up Ray + SGLang); GPU or CPU CI, registered explicitly
+├── manual/           # run on request, not discovered by the CI runner
+└── snapshots/        # recorded fixtures the launch-script and other snapshot tests assert against
 ```
 
 CI discovery is location-based. The `tests/fast/` folder may hold **only CPU CI**: every `test_*.py`
@@ -138,6 +150,6 @@ If you have 30 minutes and want to understand Miles end-to-end:
 2. `miles/rollout/sglang_rollout.py:generate_rollout` — how prompts become samples.
 3. `miles/backends/training_utils/loss.py` — the loss and advantage computation.
 4. `miles/router/router.py` — the FastAPI proxy.
-5. `miles/utils/distributed_utils.py` — weight sync.
+5. `miles/backends/megatron_utils/update_weight/` — how trained weights reach the engines.
 
 That's the spine. Everything else hangs off it.

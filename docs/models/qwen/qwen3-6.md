@@ -37,8 +37,8 @@ wider, deeper Qwen3.5 with the gated-attention design preserved.
 ### 3.1 Download model + datasets
 
 ```bash
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
@@ -49,8 +49,8 @@ MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py qwen3.
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3.6-27B \
-   --save          /root/Qwen3.6-27B_torch_dist
+   --hf-checkpoint /root/models/Qwen3.6-27B \
+   --save          /root/models/Qwen3.6-27B_torch_dist
 ```
 
 ## 4. Launch
@@ -59,10 +59,13 @@ PYTHONPATH=/root/Megatron-LM python tools/convert_hf_to_torch_dist.py \
 
 ```bash
 cd /root/miles
-bash scripts/run-qwen3.6-27B.sh
+python scripts/run_qwen3_dense.py --model-name Qwen3.6-27B
 ```
 
-The script targets 1 node × 8 GPU.
+`scripts/run_qwen3_dense.py` is the shared dense launcher; `--model-name Qwen3.6-27B`
+selects this recipe, which targets 1 node × 8 GPU. Checkpoints come from `--model-dir`
+(default `/root/models`) and datasets from `--data-dir` (default `/root/datasets`);
+checkpoints are written under `--output-dir` (default `/root/shared_data`).
 
 ## 5. Recipe Configuration
 
@@ -80,24 +83,20 @@ The script targets 1 node × 8 GPU.
 GRPO with low-variance KL:
 
 ```bash
-GRPO_ARGS=(
-   --advantage-estimator grpo
-   --use-kl-loss
-   --kl-loss-coef 0.00
-   --kl-loss-type low_var_kl
-   --entropy-coef 0.00
-   --eps-clip 0.2
-   --eps-clip-high 0.28
-)
+--advantage-estimator grpo
+--use-kl-loss
+--kl-loss-coef 0.00
+--kl-loss-type low_var_kl
+--entropy-coef 0.00
+--eps-clip 0.2
+--eps-clip-high 0.28
 ```
 
 ### 5.3 Rollout & SGLang
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 1
-   --sglang-mem-fraction-static 0.5
-)
+--rollout-num-gpus-per-engine 1
+--sglang-mem-fraction-static 0.5
 ```
 
 `--rollout-num-gpus-per-engine 1` follows the Qwen3.5 line; SGLang TP > 1 has been
@@ -124,4 +123,4 @@ preserves FP32 parameters like `A_log` through Megatron's mixed-precision pipeli
 ## 6. Pairs Well With
 
 - [Backends Beyond Megatron](/advanced/architecture-support)
-- [FP8 & Low Precision](/advanced/fp8-low-precision)
+- [Low Precision RL](/advanced/low-precision)

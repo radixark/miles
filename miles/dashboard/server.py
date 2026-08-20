@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from miles.dashboard.advisory import compute_advisories
+from miles.dashboard.advisory import DEFAULT_LOW_MFU, compute_advisories, mfu_summary
 from miles.dashboard.dump_reader import STEP_AGGREGATE_METRICS, DumpReader, DumpStillWriting
 from miles.dashboard.store import MetricStore, Stream
 
@@ -74,7 +74,12 @@ def _wandb_url(args: dict) -> str | None:
 
 
 def make_app(
-    store: MetricStore, reader: DumpReader, *, follow: bool = False, use_utilization_overview: bool = False
+    store: MetricStore,
+    reader: DumpReader,
+    *,
+    follow: bool = False,
+    use_utilization_overview: bool = False,
+    low_mfu: float = DEFAULT_LOW_MFU,
 ) -> FastAPI:
     app = FastAPI(title="miles dashboard", docs_url=None, redoc_url=None)
 
@@ -174,7 +179,9 @@ def make_app(
         tuning advisory ask) — computed lazily on request, not persisted."""
         with _translate_errors():
             _check_window(t0, t1)
-            return dict(advisories=[asdict(a) for a in compute_advisories(store, t0=t0, t1=t1)])
+            mfu = mfu_summary(store)
+            advisories = compute_advisories(store, reader, t0=t0, t1=t1, mfu=mfu, low_mfu=low_mfu)
+            return dict(advisories=[asdict(a) for a in advisories], mfu=mfu)
 
     @app.get("/api/timeline/heatmap")
     def timeline_heatmap(
@@ -214,12 +221,20 @@ def make_app(
             return dict(outliers=store.outliers(criterion, t0=t0, t1=t1, top_k=top_k))
 
     @app.get("/api/timeline/engine_series")
-    def timeline_engine_series(metric: str, t0: float | None = None, t1: float | None = None, max_points: int = 2000):
+    def timeline_engine_series(
+        metric: str,
+        t0: float | None = None,
+        t1: float | None = None,
+        max_points: int = 2000,
+        per_dp_rank: bool = False,
+    ):
         with _translate_errors():
             _check_window(t0, t1)
             if max_points < 2:
                 raise ValueError(f"{max_points=} must be >= 2")
-            return dict(series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points))
+            return dict(
+                series=store.engine_series(metric, t0=t0, t1=t1, max_points=max_points, per_dp_rank=per_dp_rank)
+            )
 
     @app.get("/api/timeline/bubbles")
     def timeline_bubbles():

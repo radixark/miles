@@ -20,7 +20,10 @@ from typing import Any
 
 from miles.utils.chat_template_utils import deepseek, template
 from miles.utils.chat_template_utils.inkling_parser import InklingResponseParser
-from miles.utils.chat_template_utils.template import assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils.message_matcher_hub import (
+    assert_messages_append_only_with_allowed_role,
+    strict_message_matches,
+)
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -811,7 +814,7 @@ class InklingTITOTokenizer(TITOTokenizer):
             if index >= len(stored_messages):
                 break
             stored_message = stored_messages[index]
-            if stored_message.get("role") != "assistant" or not template.message_matches(
+            if stored_message.get("role") != "assistant" or not strict_message_matches(
                 stored_message, request_message
             ):
                 continue

@@ -1,0 +1,95 @@
+name: PR CI Image Build
+
+on:
+  workflow_call:
+    outputs:
+      built:
+        description: Whether this call built and pushed a PR-scoped image
+        value: ${{ jobs.docker-build.outputs.built }}
+
+jobs:
+  docker-paths:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          # Cron and manual runs have no PR diff and never build a PR image.
+          if [ -z "$BASE_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Compare the PR merge commit with its current base (HEAD^1) rather than
+          # the recorded base.sha, which can lag main and pull in unrelated changes.
+          # Dockerfile.rocm doesn't feed the cu13 multi-arch build this pipeline produces.
+          if ! CHANGED_PATHS=$(git diff --name-only HEAD^1 HEAD); then
+            echo "::error::Failed to determine docker-relevant changes."
+            exit 1
+          fi
+          if grep -qE '^(docker/(Dockerfile|build\.py|install-kube-tools\.sh|verify_transformer_engine\.py)|requirements\.txt)$|^docker/patch/' <<< "$CHANGED_PATHS"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Docker PRs build the multi-arch image after the caller's CPU gate passes.
+  # Without a relevant change this stays on a free hosted runner as a no-op;
+  # actual builds use docker-build nodes, never the GPU-suite pool.
+  docker-build:
+    needs: [docker-paths]
+    if: always() && !cancelled() && github.event.action != 'closed'
+    runs-on: ${{ fromJSON((needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository) && '["docker-build"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 180
+    outputs:
+      built: ${{ steps.build.outputs.built || 'false' }}
+    env:
+      # Forks cannot push to the registry, so they keep the released image.
+      BUILD: ${{ needs.docker-paths.outputs.changed == 'true' && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - name: Checkout repository
+        if: env.BUILD == 'true'
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        if: env.BUILD == 'true'
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      - name: Install Python + dependencies
+        if: env.BUILD == 'true'
+        run: |
+          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=600 update
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
+          fi
+          # Older pip (<23) lacks --break-system-packages; newer PEP 668
+          # systems require it. Probe instead of assuming either.
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP --ignore-installed typer
+      - name: Login to Docker Hub
+        if: env.BUILD == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push PR tag
+        id: build
+        if: env.BUILD == 'true'
+        run: |
+          python3 docker/build.py --variant cu13 --image-tag custom \
+            --custom-tag pr-${{ github.event.pull_request.number }} --push
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      - name: Nothing to build
+        if: env.BUILD != 'true'
+        run: echo "No docker-relevant changes; suites use the released image."

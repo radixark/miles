@@ -17,18 +17,22 @@ html.dark {
 
 /* =============================================
    Links — internal orange, external lighter + ↗
+   Scoped to the prose container: an unscoped `a` rule is unlayered and
+   beats Mintlify's layered Tailwind colors everywhere, repainting the
+   sidebar, tabs, and on-page TOC orange and erasing the active-page
+   highlight.
    ============================================= */
-a {
+.mdx-content a {
   color: #d55816;
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
 
-a:hover {
+.mdx-content a:hover {
   text-decoration-thickness: 2px;
 }
 
-a[href^="http"]:not([href*="radixark.com"])::after {
+.mdx-content a[href^="http"]:not([href*="radixark.com"])::after {
   content: "↗";
   margin-left: 0.15em;
   font-size: 0.7em;
@@ -69,14 +73,17 @@ pre code {
 
 /* =============================================
    Tables — readable + mobile-safe
+
+   Mintlify already wraps every table in a horizontal scroll area, so this
+   file must not size tables to `max-content`: that opts every table out of
+   wrapping and pushes the excess into a scroller whose scrollbar is hidden
+   (`scrollbar-width: none`), so the overflow reads as content silently cut
+   off rather than something you can scroll to. Let tables fill the column
+   and wrap instead; the wrapper still scrolls the rare table that genuinely
+   cannot fit.
    ============================================= */
 table {
-  display: block;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
   border-collapse: collapse;
-  width: max-content;
-  max-width: 100%;
   font-size: 0.9375rem;
 }
 
@@ -84,13 +91,22 @@ th {
   background: var(--rx-table-bg);
   font-weight: 600;
   letter-spacing: 0.01em;
-  white-space: nowrap;
 }
 
 td {
   border-color: var(--rx-divider);
   vertical-align: top;
   line-height: 1.5;
+}
+
+/* Mintlify floors every cell at 150px (`[&_td]:min-w-[150px]`), which on its
+   own makes a 9-column table 1350px wide against a ~719px content column.
+   Let the content decide the column widths. This selector is unlayered, so it
+   wins over Mintlify's layered Tailwind utility despite equal specificity —
+   the same mechanism the `img` rule below relies on. */
+th,
+td {
+  min-width: 0;
 }
 
 /* =============================================

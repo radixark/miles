@@ -21,13 +21,19 @@ def get_logits_and_tokens_offset_with_cp(
     response_length: int,
     qkv_format: str = "thd",
     max_seq_len: int | None = None,
+    cp_rank: int | None = None,
+    cp_size: int | None = None,
 ):
     """
     All offsets start from the begining of the prompt.
+
+    ``cp_rank`` / ``cp_size`` default to this process's parallel state; pass them
+    explicitly to compute another rank's offsets outside the process group.
     """
-    parallel_state = get_parallel_state()
-    cp_rank = parallel_state.cp.rank
-    cp_size = parallel_state.cp.size
+    if cp_rank is None or cp_size is None:
+        parallel_state = get_parallel_state()
+        cp_rank = parallel_state.cp.rank
+        cp_size = parallel_state.cp.size
     assert cp_size > 1
 
     prompt_length = total_length - response_length
@@ -429,6 +435,41 @@ def slice_log_prob_with_cp(
         return chunk_1 + chunk_2
     else:
         return torch.cat([chunk_1, chunk_2], dim=0)
+
+
+def assemble_log_prob_from_cp(
+    chunks: dict[int, torch.Tensor],
+    total_length: int,
+    response_length: int,
+    cp_size: int,
+    qkv_format: str = "thd",
+    max_seq_len: int | None = None,
+) -> torch.Tensor:
+    """Inverse of `slice_log_prob_with_cp`: per-rank slices back to one response.
+
+    `chunks` maps cp_rank to that rank's slice; every rank must be present.
+    Offsets come from the same helper the forward split uses.
+    """
+    assert cp_size > 1, "no reassembly needed at cp_size=1"
+    missing = sorted(set(range(cp_size)) - set(chunks))
+    assert not missing, f"cp ranks {missing} missing; cannot reassemble a partial group"
+
+    prompt_length = total_length - response_length
+    out = torch.zeros(response_length, dtype=next(iter(chunks.values())).dtype)
+    for cp_rank, chunk in chunks.items():
+        _, _, logits_offset, _ = get_logits_and_tokens_offset_with_cp(
+            total_length, response_length, qkv_format, max_seq_len, cp_rank=cp_rank, cp_size=cp_size
+        )
+        taken = 0
+        for lo, hi in logits_offset:
+            start, stop = lo - (prompt_length - 1), hi - (prompt_length - 1)
+            width = stop - start
+            if width <= 0:
+                continue
+            out[start:stop] = chunk[taken : taken + width]
+            taken += width
+        assert taken == len(chunk), f"cp rank {cp_rank}: consumed {taken} of {len(chunk)} values"
+    return out
 
 
 def build_gdn_cp_context(module: nn.Module, cu_seqlens: torch.Tensor, device: torch.device):

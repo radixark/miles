@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import groupby
 
+import httpx
 import numpy as np
 import pybase64
 import pytest
@@ -678,11 +679,19 @@ class TestAgentCollectionFailure:
     def variant(self, request):
         return request.param
 
-    def test_collect_timeout_aborts_sample_but_other_errors_propagate(
-        self, variant, generation_env, monkeypatch, caplog
+    @pytest.mark.parametrize(
+        "collect_error",
+        [
+            pytest.param(asyncio.TimeoutError(), id="timeout"),
+            # A broken connection to the session server is one sample's problem: in-place
+            # weight updates pause generation under in-flight requests, so letting it
+            # propagate takes the whole run down over a routine event.
+            pytest.param(httpx.ReadError("connection closed"), id="transport"),
+        ],
+    )
+    def test_collect_transient_failure_aborts_sample_but_other_errors_propagate(
+        self, variant, generation_env, monkeypatch, caplog, collect_error
     ):
-        collect_error = asyncio.TimeoutError()
-
         async def fail_collect(_tracer, _input_sample, *, max_seq_len, agent_metadata=None):
             raise collect_error
 
@@ -697,7 +706,7 @@ class TestAgentCollectionFailure:
         [sample] = listify(result.sample)
         assert sample.status == Sample.Status.ABORTED
         assert input_sample.status == Sample.Status.PENDING
-        assert "Timed out collecting samples" in caplog.text
+        assert "Failed collecting samples" in caplog.text
 
         collect_error = RuntimeError("assembly failed")
         with pytest.raises(RuntimeError, match="assembly failed"):

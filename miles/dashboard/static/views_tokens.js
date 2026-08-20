@@ -2,7 +2,7 @@ import { createAnatomy } from "./anatomy.js";
 import { api } from "./api.js";
 import { el, fmtNum } from "./app.js";
 import { divergingColor, drawChart, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
-import { renderConversation } from "./conversation.js";
+import { renderConversation, renderSampleChips } from "./conversation.js";
 
 const WINDOW_SIZES = [256, 1024, 4096];
 
@@ -99,7 +99,13 @@ export async function renderTokens(view, meta, route) {
   };
 
   if (conversationRow === null) {
-    view.replaceChildren(...panels, tokensPane);
+    view.replaceChildren(
+      ...panels,
+      el("p", { class: "muted" }, [
+        "No conversation recorded for this sample — aborted before any model call, or the step's trajectory sidecar is not written yet. Token view only.",
+      ]),
+      tokensPane,
+    );
     startTokens();
     return;
   }
@@ -118,7 +124,9 @@ export async function renderTokens(view, meta, route) {
     body.replaceChildren(name === "conversation" ? conversationPane : tokensPane);
     if (name === "tokens") startTokens();
   };
-  view.replaceChildren(...panels, tabs, body);
+  // chips sit above the tab bar, not inside either pane, so status/reward stay
+  // on screen while reading tokens
+  view.replaceChildren(...panels, renderSampleChips(conversationRow), tabs, body);
   select("conversation");
 }
 
@@ -172,12 +180,31 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
     );
     const values = chartData[chartMetric];
     const points = [];
+    let afterGap = false;
     values.forEach((v, i) => {
-      if (v === null) return;
+      if (v === null) {
+        afterGap = true;
+        return;
+      }
       const pos = chartData.prompt_len + i;
-      points.push({ x: pos, y: v, label: `pos ${pos}\n${chartMetric} = ${fmtNum(v)}` });
+      points.push({ x: pos, y: v, gap: afterGap, label: `pos ${pos}\n${chartMetric} = ${fmtNum(v)}` });
+      afterGap = false;
     });
-    queueMicrotask(() => drawChart(chartCanvas, points));
+    // shade the prompt and mask=0 runs: regions the policy did not generate
+    const bands = [{ x0: 0, x1: chartData.prompt_len, strong: true, label: "prompt" }];
+    const mask = chartData.loss_mask;
+    if (mask) {
+      let runStart = null;
+      mask.forEach((m, i) => {
+        if (m === 0 && runStart === null) runStart = i;
+        if (m !== 0 && runStart !== null) {
+          bands.push({ x0: chartData.prompt_len + runStart, x1: chartData.prompt_len + i });
+          runStart = null;
+        }
+      });
+      if (runStart !== null) bands.push({ x0: chartData.prompt_len + runStart, x1: chartData.prompt_len + mask.length });
+    }
+    queueMicrotask(() => drawChart(chartCanvas, points, { bands }));
   }
 
   async function loadChart() {

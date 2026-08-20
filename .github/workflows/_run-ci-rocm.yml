@@ -9,14 +9,10 @@ on:
       runs_on:
         type: string
         required: true
-        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi300x", "4gpu"]'' picks runners that carry ALL the listed labels.'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi350", "4gpu"]'' picks runners that carry ALL the listed labels.'
       container_image:
         # No default: pr-test-rocm.yml's resolve-ci-image is the single
         # source of the image name, so a dated tag can't rot here.
-        type: string
-        required: true
-      checkout_ref:
-        description: Git ref to test. PR callers pass the merge ref explicitly.
         type: string
         required: true
       skip_dependency_install:
@@ -26,6 +22,11 @@ on:
         type: boolean
         required: false
         default: true
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
+        type: string
+        required: false
+        default: ''
     secrets:
       WANDB_API_KEY:
         required: false
@@ -34,7 +35,7 @@ jobs:
   run:
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
-    # (e.g. the label name '["amd", "mi300x", "4gpu"]' with brackets), which no
+    # (e.g. the label name '["amd", "mi350", "4gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
@@ -64,6 +65,7 @@ jobs:
         working-directory: ${{ github.workspace }}
     env:
       PYTHONPATH: ${{ github.workspace }}
+      MILES_HARDWARE_PLATFORM: rocm
       GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
@@ -71,7 +73,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.checkout_ref }}
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Cleanup Ray processes

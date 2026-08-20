@@ -24,8 +24,8 @@ description: Launch recipe for Qwen3.5-35B-A3B with MTP training and EAGLE specu
 ### 3.1 Download model + datasets
 
 ```bash
-hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/dapo-math-17k
-hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/aime-2024
+hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset zhuzilin/aime-2024     --local-dir /root/datasets/aime-2024
 ```
 
 ### 3.2 HF → Megatron `torch_dist` conversion
@@ -37,12 +37,12 @@ read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
    tools/convert_hf_to_torch_dist.py \
    ${MODEL_ARGS[@]} \
-   --hf-checkpoint /root/Qwen3.5-35B-A3B \
-   --save          /root/Qwen3.5-35B-A3B_torch_dist \
+   --hf-checkpoint /root/models/Qwen3.5-35B-A3B \
+   --save          /root/models/Qwen3.5-35B-A3B_torch_dist \
    --mtp-num-layers 1
 ```
 
-`--mtp-num-layers 1` during conversion preserves the MTP layer so it survives into Megatron format.
+`--mtp-num-layers 1` during conversion preserves the MTP layer so it survives into Megatron format. The launcher below also runs the download and conversion itself before submitting, so this step is optional.
 
 ## 4. Launch
 
@@ -50,8 +50,15 @@ PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
 
 ```bash
 cd /root/miles
-bash scripts/run-qwen3.5-35B-A3B-mtp.sh
+python scripts/run_qwen3_5_35b_a3b_mtp.py \
+   --parallelism tp1-ep8 \
+   --rollout-max-response-len 8192 \
+   --sglang-ep-size 8 \
+   --sglang-max-running-requests 512 \
+   --enable-eval
 ```
+
+`--parallelism` also accepts `tp2-cp2-ep8` (the launcher default). Checkpoints are read from `--model-dir` (default `/root/models`) and datasets from `--data-dir` (default `/root/datasets`); checkpoints are written under `--output-dir` (default `/root/shared_data`).
 
 ## 5. Recipe Configuration
 
@@ -66,31 +73,29 @@ bash scripts/run-qwen3.5-35B-A3B-mtp.sh
 GRPO with `--eps-clip 0.2 --eps-clip-high 0.28 --use-kl-loss --kl-loss-coef 0.00`. Plus MTP training:
 
 ```bash
-MTP_ARGS=(
-   --enable-mtp-training
-   --mtp-num-layers 1
-   --mtp-loss-scaling-factor 0.2
-)
+--enable-mtp-training
+--mtp-num-layers 1
+--mtp-loss-scaling-factor 0.2
 ```
 
 ### 5.3 Rollout & SGLang
 
 ```bash
-SGLANG_ARGS=(
-   --rollout-num-gpus-per-engine 8
-   --sglang-mem-fraction-static 0.7
-   --sglang-ep-size 8
-   --sglang-cuda-graph-bs 1 2 4 8 $(seq 16 8 256)
+--rollout-num-gpus-per-engine 8
+--sglang-mem-fraction-static 0.7
+--sglang-ep-size 8
+--sglang-cuda-graph-bs 1 2 4 8 16 24 ... 256
 
-   # mtp speculative decoding
-   --sglang-speculative-algorithm EAGLE
-   --sglang-speculative-num-steps 2
-   --sglang-speculative-eagle-topk 1
-   --sglang-speculative-num-draft-tokens 3
+# mtp speculative decoding
+--sglang-speculative-algorithm EAGLE
+--sglang-speculative-num-steps 2
+--sglang-speculative-eagle-topk 1
+--sglang-speculative-num-draft-tokens 3
 
-   --sglang-max-running-requests 512
-)
+--sglang-max-running-requests 512
 ```
+
+`--sglang-ep-size` and `--sglang-max-running-requests` are launcher options; leave them out and SGLang keeps its own defaults.
 
 ### 5.4 Optimizer
 
