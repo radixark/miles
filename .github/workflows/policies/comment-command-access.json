@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "groups": {
+    "add_label_access": {
+      "repository_permissions": ["write", "admin"],
+      "user_ids": []
+    },
+    "repo_write_access": {
+      "repository_permissions": ["write", "admin"]
+    }
+  },
+  "commands": {
+    "add_label": {
+      "group": "add_label_access",
+      "allowed_labels": [
+        "bypass-fastfail",
+        "run-ci-amd",
+        "run-ci-ckpt",
+        "run-ci-eval",
+        "run-ci-fsdp",
+        "run-ci-ft-long",
+        "run-ci-ft-short",
+        "run-ci-fully-async",
+        "run-ci-image",
+        "run-ci-long",
+        "run-ci-lora",
+        "run-ci-megatron",
+        "run-ci-miles-plugin",
+        "run-ci-model-scripts",
+        "run-ci-mooncake",
+        "run-ci-precision",
+        "run-ci-qwen35",
+        "run-ci-replay",
+        "run-ci-sglang",
+        "run-ci-short",
+        "run-ci-weight-update"
+      ]
+    },
+    "clear_labels": {
+      "group": "repo_write_access"
+    },
+    "rerun_failed_ci": {
+      "group": "repo_write_access"
+    },
+    "run_test_file": {
+      "group": "repo_write_access"
+    }
+  }
+}

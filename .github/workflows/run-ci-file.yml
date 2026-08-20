@@ -1,0 +1,121 @@
+name: Rerun Test
+run-name: "/rerun-test ${{ inputs.test_file }} (PR #${{ inputs.pull_number }})"
+
+# Fixed default-branch orchestration for /rerun-test <test-file>. The reviewed
+# resolver chooses the plan before an execution job checks out the exact PR
+# head and invokes that file as PR-controlled code.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: 'Pull request number this file run belongs to (audit and concurrency only).'
+        required: true
+        type: string
+      head_sha:
+        description: 'Exact PR head SHA selected by the comment gateway.'
+        required: true
+        type: string
+      test_file:
+        description: 'Registered test file to run, e.g. tests/e2e/precision/test_hf_attention_cp_relayout.py.'
+        required: true
+        type: string
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit pin forwarded from the PR body (empty: miles-main).'
+        required: false
+        type: string
+        default: ''
+      ci_sglang_pr:
+        description: 'SGLang branch/commit pin forwarded from the PR body (empty: sglang-miles).'
+        required: false
+        type: string
+        default: ''
+      ci_image_tag:
+        description: 'Miles Docker image tag forwarded from the PR body (empty: dev).'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  resolve-file-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      hw: ${{ steps.resolve.outputs.hw }}
+      suite: ${{ steps.resolve.outputs.suite }}
+      runs_on: ${{ steps.resolve.outputs.runs_on }}
+      container_image: ${{ steps.resolve.outputs.container_image }}
+      timeout_seconds: ${{ steps.resolve.outputs.timeout_seconds }}
+    steps:
+      - name: Validate dispatch inputs
+        shell: bash
+        env:
+          PULL_NUMBER: ${{ inputs.pull_number }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          TEST_FILE: ${{ inputs.test_file }}
+        run: |
+          [[ "$PULL_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::pull_number must be numeric"; exit 1; }
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::head_sha must be a 40-hex SHA"; exit 1; }
+          # The charset below keeps the path safe to interpolate into the
+          # suite jobs' execute_command shell lines; the gateway enforces the
+          # same shape, and this re-check covers direct dispatches.
+          [[ "$TEST_FILE" =~ ^tests/(e2e|fast|fast-gpu|ci)(/[A-Za-z0-9_][A-Za-z0-9_.-]*)*/test_[A-Za-z0-9_][A-Za-z0-9_.-]*\.py$ ]] \
+            || { echo "::error::test_file must be a registered tests/ path: $TEST_FILE"; exit 1; }
+
+      - name: Check out the trusted resolver
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Check out the requested head
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.head_sha }}
+          path: pr-source
+          persist-credentials: false
+
+      - name: Resolve the file's execution plan
+        id: resolve
+        env:
+          TEST_FILE: ${{ inputs.test_file }}
+          CI_IMAGE_TAG: ${{ inputs.ci_image_tag }}
+          CI_SOURCE_ROOT: ${{ github.workspace }}/pr-source
+        run: python3 -S -m tests.ci.file_run
+
+  run-cuda-file:
+    needs: resolve-file-run
+    if: needs.resolve-file-run.outputs.hw == 'cuda'
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      ref: ${{ inputs.head_sha }}
+      plan_already_resolved: true
+      runs_on: ${{ needs.resolve-file-run.outputs.runs_on }}
+      container_image: ${{ needs.resolve-file-run.outputs.container_image }}
+      execute_command: >-
+        timeout --signal=TERM --kill-after=30s
+        '${{ needs.resolve-file-run.outputs.timeout_seconds }}s'
+        python3 '${{ inputs.test_file }}'
+    secrets:
+      WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+
+  run-cpu-file:
+    needs: resolve-file-run
+    if: needs.resolve-file-run.outputs.hw == 'cpu'
+    uses: ./.github/workflows/_run-cpu-ci.yml
+    with:
+      ref: ${{ inputs.head_sha }}
+      plan_already_resolved: true
+      execute_command: >-
+        timeout --signal=TERM --kill-after=30s
+        '${{ needs.resolve-file-run.outputs.timeout_seconds }}s'
+        pytest '${{ inputs.test_file }}' -v -x
+    secrets:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
