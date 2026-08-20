@@ -56,14 +56,14 @@ def test_load_actions_refuses_arguments_that_declare_no_plan_at_all() -> None:
 
 def test_load_actions_parses_single_crash_action_with_defaults() -> None:
     """A single crash_before_allreduce action loads with the model's default fields."""
-    raw = json.dumps([{"at_rollout": 3, "action": "crash_before_allreduce", "cell_id": "trainer-engine-actor-2"}])
+    raw = json.dumps([{"at_rollout": 3, "action": "crash_before_allreduce", "cell_id": "trainer-engine-actor-00002"}])
     actions = _load_actions(_args(raw), _ACTOR_ACTIONS)
     assert len(actions) == 1
     action = actions[0]
     assert isinstance(action, FTTestAction)
     assert action.at_rollout == 3
     assert action.action == "crash_before_allreduce"
-    assert action.cell_id == "trainer-engine-actor-2"
+    assert action.cell_id == "trainer-engine-actor-00002"
     assert action.rank == 0
     assert action.attempt == 0
 

@@ -104,8 +104,8 @@ class TestRolloutExecutorSpec:
 
     def test_the_worker_and_cell_names_are_stable(self):
         """The driver looks the executor up by name, so these names are part of the release's contract."""
-        assert rollout_executor_worker_name() == "rollout-executor-0-0"
-        assert rollout_executor_cell_id() == "rollout-executor-0"
+        assert rollout_executor_worker_name() == "rollout-executor-00000-00000"
+        assert rollout_executor_cell_id() == "rollout-executor-00000"
 
     def test_it_renders_into_static_workers_with_its_rpc_port(self):
         """The release has to contain the executor pod, or the address book would point at nothing."""
