@@ -28,7 +28,7 @@ ACTOR_ID = 1234
 HEAD_SHA = "a" * 40
 HEAD_REF = "feature/test"
 WRITE_PERMISSIONS = frozenset({"write", "admin"})
-RUN_FILE_BODY = "/run-ci tests/e2e/precision/test_hf_attention_cp_relayout.py"
+RUN_FILE_BODY = "/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py"
 RUN_FILE_PATH = "tests/e2e/precision/test_hf_attention_cp_relayout.py"
 
 
@@ -193,16 +193,19 @@ def workflow_run(
         "/run-ci-/unsafe",
         "/run-ci",
         "/run-ci ",
-        "/run-ci tests/e2e/test_a.py extra",
-        "/run-ci tests/e2e/test_a.py\n/run-ci-short",
-        "please /run-ci tests/e2e/test_a.py",
-        "/run-ci tests/unit/test_a.py",
-        "/run-ci tests/e2e/helper.py",
-        "/run-ci /tests/e2e/test_a.py",
-        "/run-ci ../tests/e2e/test_a.py",
-        "/run-ci tests/e2e/../fast/test_a.py",
-        "/run-ci tests/e2e/test_a.py;rm",
-        "/run-ci tests/e2e/test_a.py tests/e2e/test_b.py",
+        "/run-ci tests/e2e/test_a.py",
+        "/rerun-test",
+        "/rerun-test ",
+        "/rerun-test tests/e2e/test_a.py extra",
+        "/rerun-test tests/e2e/test_a.py\n/run-ci-short",
+        "please /rerun-test tests/e2e/test_a.py",
+        "/rerun-test tests/unit/test_a.py",
+        "/rerun-test tests/e2e/helper.py",
+        "/rerun-test /tests/e2e/test_a.py",
+        "/rerun-test ../tests/e2e/test_a.py",
+        "/rerun-test tests/e2e/../fast/test_a.py",
+        "/rerun-test tests/e2e/test_a.py;rm",
+        "/rerun-test tests/e2e/test_a.py tests/e2e/test_b.py",
         "/rerun-failed-ci extra",
         "/rerun-failed-ci\n/run-ci-short",
         "/clear-labels extra",
@@ -235,13 +238,13 @@ def test_command_parser_accepts_exact_rerun_command_with_outer_whitespace():
     ("body", "test_file"),
     [
         (
-            "/run-ci tests/e2e/precision/test_hf_attention_cp_relayout.py",
+            "/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py",
             "tests/e2e/precision/test_hf_attention_cp_relayout.py",
         ),
-        (" \n/run-ci tests/e2e/test_a.py\t", "tests/e2e/test_a.py"),
-        ("/run-ci   tests/fast/rollout/test_b.py", "tests/fast/rollout/test_b.py"),
-        ("/run-ci tests/fast-gpu/test_c.py", "tests/fast-gpu/test_c.py"),
-        ("/run-ci tests/ci/test/test_d.py", "tests/ci/test/test_d.py"),
+        (" \n/rerun-test tests/e2e/test_a.py\t", "tests/e2e/test_a.py"),
+        ("/rerun-test   tests/fast/rollout/test_b.py", "tests/fast/rollout/test_b.py"),
+        ("/rerun-test tests/fast-gpu/test_c.py", "tests/fast-gpu/test_c.py"),
+        ("/rerun-test tests/ci/test/test_d.py", "tests/ci/test/test_d.py"),
     ],
 )
 def test_command_parser_accepts_run_file_command(body, test_file):

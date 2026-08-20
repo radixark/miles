@@ -1,7 +1,7 @@
-name: Run CI File
-run-name: "/run-ci ${{ inputs.test_file }} (PR #${{ inputs.pull_number }})"
+name: Rerun Test
+run-name: "/rerun-test ${{ inputs.test_file }} (PR #${{ inputs.pull_number }})"
 
-# Fixed default-branch orchestration for /run-ci <test-file>. Only the exact
+# Fixed default-branch orchestration for /rerun-test <test-file>. Only the exact
 # PR head checkout contains PR-controlled code; workflow and resolver code
 # come from the reviewed default-branch commit that receives the dispatch.
 

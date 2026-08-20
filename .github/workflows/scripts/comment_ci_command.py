@@ -14,7 +14,7 @@ REPOSITORY = "radixark/miles"
 REPOSITORY_ID = 1072725553
 CLEAR_COMMAND = "clear-labels"
 RERUN_COMMAND = "rerun-failed-ci"
-RUN_FILE_COMMAND = "run-ci"
+RUN_FILE_COMMAND = "rerun-test"
 RUN_FILE_WORKFLOW = "run-ci-file.yml"
 RUN_FILE_WORKFLOW_REF = "main"
 CLEAR_EXACT_LABELS = frozenset({"nightly", "bypass-fastfail"})
@@ -24,9 +24,9 @@ RERUN_WORKFLOWS = (
     ("pr-test-rocm.yml", ".github/workflows/pr-test-rocm.yml"),
 )
 COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
-# "/run-ci" subsumes the former "/run-ci-" label marker: any comment touching
-# the run-ci family must parse as one exact command or fail loudly.
-COMMAND_MARKERS = ("/run-ci", "/bypass-fastfail", "/clear-labels", "/rerun-failed-ci")
+# "/run-ci" remains the label-family marker, while "/rerun-test" owns targeted
+# file runs; either family must parse as one exact command or fail loudly.
+COMMAND_MARKERS = ("/run-ci", "/rerun-test", "/bypass-fastfail", "/clear-labels", "/rerun-failed-ci")
 # Registered test files only: fixed roots, path segments that cannot form
 # ".." or an absolute path, and a test_*.py basename. The dispatched workflow
 # re-validates the same shape before the path reaches any shell command.
@@ -236,7 +236,7 @@ def parse_command(body):
         return RunTestFile(match.group(1))
     if any(marker in command for marker in COMMAND_MARKERS):
         raise CommentCommandError(
-            "comment must contain one exact /<label>, /run-ci <test-file>, /clear-labels, "
+            "comment must contain one exact /<label>, /rerun-test <test-file>, /clear-labels, "
             "or /rerun-failed-ci command"
         )
     return None
@@ -784,11 +784,11 @@ def _pr_body_pins(body):
 
 def _handle_run_test_file(context, request):
     if type(request) is not RunTestFile:
-        raise CommentCommandError("run-ci file handler received the wrong request type")
+        raise CommentCommandError("rerun-test handler received the wrong request type")
     # Only same-repository heads are accepted; the fixed default-branch
     # workflow receives the exact PR SHA as data and checks it out separately.
     if context.head_repository_id != REPOSITORY_ID:
-        raise CommentCommandError("/run-ci supports only same-repository pull requests")
+        raise CommentCommandError("/rerun-test supports only same-repository pull requests")
     require_access(
         context.api,
         context.actor_id,
@@ -832,7 +832,7 @@ def _rerun_command_value(request):
 
 def _run_file_value(request):
     if type(request) is not RunTestFile:
-        raise CommentCommandError("run-ci file audit received the wrong request type")
+        raise CommentCommandError("rerun-test audit received the wrong request type")
     return request.test_file
 
 

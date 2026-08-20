@@ -71,11 +71,11 @@ def plan_file_run(all_tests, test_file: str, image_tag: str) -> dict[str, str]:
         raise FileRunError(f"invalid CI image tag: {image_tag!r}")
     registrations = [t for t in all_tests if t.filename == test_file]
     if not registrations:
-        raise FileRunError(f"{test_file} has no CI registration; /run-ci runs only registered test files")
+        raise FileRunError(f"{test_file} has no CI registration; /rerun-test runs only registered test files")
     supported = [t for t in registrations if t.backend in (HWBackend.CPU, HWBackend.CUDA)]
     if not supported:
         suites = ", ".join(sorted(t.suite for t in registrations))
-        raise FileRunError(f"{test_file} is registered only for ROCm ({suites}); /run-ci supports CPU and CUDA")
+        raise FileRunError(f"{test_file} is registered only for ROCm ({suites}); /rerun-test supports CPU and CUDA")
     if len(supported) > 1:
         suites = ", ".join(sorted(f"{t.backend.name}:{t.suite}" for t in supported))
         raise FileRunError(f"{test_file} has multiple CPU/CUDA registrations ({suites}); expected exactly one")

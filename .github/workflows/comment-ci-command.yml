@@ -61,7 +61,7 @@ jobs:
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
         run: python3 .github/workflows/scripts/comment_ci_command.py
 
-  # Actions-capability commands: /rerun-failed-ci and /run-ci <test-file>.
+  # Actions-capability commands: /rerun-failed-ci and /rerun-test <test-file>.
   actions-command:
     needs: handle-command
     if: needs.handle-command.outputs.capability == 'actions'

@@ -1,4 +1,4 @@
-"""Unit tests for `tests/ci/file_run.py`, the /run-ci resolve step."""
+"""Unit tests for `tests/ci/file_run.py`, the /rerun-test resolve step."""
 
 import json
 from pathlib import Path
@@ -79,13 +79,13 @@ def test_rocm_registration_is_ignored_next_to_a_cuda_one():
 
 
 def test_unregistered_file_is_a_hard_error():
-    with pytest.raises(FileRunError, match="has no CI registration"):
+    with pytest.raises(FileRunError, match="/rerun-test runs only registered test files"):
         plan_file_run([_make("tests/e2e/x/test_a.py")], "tests/e2e/x/test_missing.py", "dev")
 
 
 def test_rocm_only_file_is_a_hard_error():
     tests = [_make("tests/e2e/x/test_a.py", backend=HWBackend.ROCM, suite="stage-c-8-gpu-mi350")]
-    with pytest.raises(FileRunError, match="registered only for ROCm"):
+    with pytest.raises(FileRunError, match="/rerun-test supports CPU and CUDA"):
         plan_file_run(tests, "tests/e2e/x/test_a.py", "dev")
 
 
@@ -173,6 +173,8 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     cpu_workflow = (root / ".github/workflows/_run-cpu-ci.yml").read_text()
 
     assert "permissions:\n  contents: read" in workflow
+    assert "name: Rerun Test" in workflow
+    assert 'run-name: "/rerun-test ' in workflow
     assert workflow.count("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") == 2
     assert "ref: ${{ inputs.head_sha }}" in workflow
     assert "path: pr-source" in workflow
