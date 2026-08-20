@@ -3215,9 +3215,12 @@ def miles_validate_args(args):
 
     # always true on offload for colocate at the moment.
     if args.update_weight_transfer_mode == "rdt":
-        assert (
-            args.train_backend == "megatron"
-        ), "RDT weight transfer is only supported with --train-backend megatron."
+        assert args.train_backend == "megatron", "RDT weight transfer is only supported with --train-backend megatron."
+        assert not args.use_critic, (
+            "RDT weight transfer is not compatible with Shared Actor/Critic PPO: "
+            "RDT requires each trainer rank to reserve a full GPU, but PPO schedules "
+            "actor and critic ranks in the same GPU bundles."
+        )
 
     if args.update_weight_transfer_mode in ("p2p", "rdt"):
         assert not args.colocate, (

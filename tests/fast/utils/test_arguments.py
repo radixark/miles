@@ -286,6 +286,43 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+class TestRdtValidation:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            ["--update-weight-transfer-mode", "rdt", *extra, "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+        miles_validate_args(args)
+        return args
+
+    def test_accepts_megatron_without_critic(self):
+        args = self._validate(["--train-backend", "megatron", "--advantage-estimator", "grpo"])
+
+        assert args.use_critic is False
+
+    @pytest.mark.parametrize(
+        ("extra", "message"),
+        [
+            pytest.param(
+                ["--train-backend", "fsdp", "--advantage-estimator", "grpo"],
+                "only supported with --train-backend megatron",
+                id="fsdp",
+            ),
+            pytest.param(
+                ["--train-backend", "megatron", "--advantage-estimator", "ppo"],
+                "not compatible with Shared Actor/Critic PPO",
+                id="ppo",
+            ),
+        ],
+    )
+    def test_rejects_unsupported_configuration(self, monkeypatch, extra, message):
+        monkeypatch.delenv("MILES_EXPERIMENTAL_FT_TRAINER", raising=False)
+
+        with pytest.raises(AssertionError, match=message):
+            self._validate(extra)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
