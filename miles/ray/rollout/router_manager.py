@@ -39,10 +39,13 @@ async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerPro
         f"every model is served by its own router, so it needs its own provider "
         f"(got {len(router_providers)} for {len(config.models)} models)"
     )
-    router_addrs = {
-        model_cfg.name: await wait_router_ready(model_idx=model_idx, provider=router_providers[model_idx])
-        for model_idx, model_cfg in enumerate(config.models)
-    }
+    ready = await asyncio.gather(
+        *[
+            wait_router_ready(model_idx=model_idx, provider=router_providers[model_idx])
+            for model_idx in range(len(config.models))
+        ]
+    )
+    router_addrs = {model_cfg.name: addr for model_cfg, addr in zip(config.models, ready, strict=True)}
 
     primary = router_addrs[config.models[0].name]
     args.sglang_router_ip = primary.host
@@ -81,8 +84,13 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
 
     assert provider is not None
     addrs = [
-        (await provider.get_addrs(worker_name=session_server_worker_name(index)))["primary"]
-        for index in range(args.session_server_workers)
+        named["primary"]
+        for named in await asyncio.gather(
+            *[
+                provider.get_addrs(worker_name=session_server_worker_name(index))
+                for index in range(args.session_server_workers)
+            ]
+        )
     ]
     # OpenAIEndpointTracer.create picks each session's instance from this list.
     args.session_server_instances = [
