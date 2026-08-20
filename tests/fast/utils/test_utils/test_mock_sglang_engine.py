@@ -15,7 +15,7 @@ def _public_methods(cls) -> set[str]:
     """Public methods (and known semi-private helpers) of ``cls``."""
     if hasattr(cls, "__ray_actor_class__"):
         cls = cls.__ray_actor_class__  # unwrap @ray.remote
-    keep_underscored = {"_get_free_port_block", "_get_node_ip", "_get_gpu_uuids", "_collect_env_report"}
+    keep_underscored = {name for name in vars(NodeProbeMixin) if not name.startswith("__")}
     return {
         name
         for name, _ in inspect.getmembers(cls, predicate=inspect.isfunction)
@@ -95,6 +95,16 @@ class TestApiContractMatchesRealEngine:
         )
 
 
+class TestNodeProbeHelpersAreCovered:
+    def test_every_node_probe_helper_takes_part_in_the_contract_comparison(self) -> None:
+        """A probe helper left out of the comparison set lets the mock silently lose a stub the real actor has."""
+        probe_helpers = {name for name in vars(NodeProbeMixin) if not name.startswith("__")}
+
+        assert probe_helpers
+        assert probe_helpers <= _public_methods(CommandActor)
+        assert probe_helpers <= _public_methods(MockSGLangEngine)
+
+
 # ----------------------------- real Ray smoke tests -----------------------------
 
 
@@ -137,6 +147,15 @@ class TestRealRayActorLifecycle:
             assert ray.get(actor.shutdown.remote()) is True
         finally:
             ray.kill(actor)
+
+
+class TestPortProbe:
+    def test_the_mock_reports_every_port_as_free_and_records_the_probe(self) -> None:
+        """A mock-driven launch must never be refused a pinned port by the real machine's port state."""
+        engine = MockSGLangEngine.__ray_actor_class__()
+
+        assert engine._is_port_available(port=30001) is True
+        assert engine.get_calls() == [("_is_port_available", (), {"port": 30001})]
 
 
 class TestNodeAddress:

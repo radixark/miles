@@ -6,6 +6,7 @@ from typing import Any
 
 _ASYNC_METHOD_NODE_IP = "_get_node_ip"
 _ASYNC_METHOD_FREE_PORT_BLOCK = "_get_free_port_block"
+_ASYNC_METHOD_IS_PORT_AVAILABLE = "_is_port_available"
 
 EVENT_CREATE = "create"
 EVENT_KILL = "kill"
@@ -171,6 +172,8 @@ class FakeRayCluster:
     def _compute_value(self, *, handle: FakeRayActorHandle, method: str, kwargs: dict[str, Any]) -> Any:
         if method == _ASYNC_METHOD_NODE_IP:
             return handle.node_ip
+        if method == _ASYNC_METHOD_IS_PORT_AVAILABLE:
+            return kwargs["port"] not in self._used_ports.get(handle.node_ip, set())
         if method == _ASYNC_METHOD_FREE_PORT_BLOCK:
             return self._alloc_port_block(
                 node_ip=handle.node_ip, start_port=kwargs["start_port"], count=kwargs["count"]

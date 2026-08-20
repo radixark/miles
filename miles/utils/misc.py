@@ -94,6 +94,10 @@ class NodeProbeMixin:
         return get_free_port(start_port=start_port, consecutive=count)
 
     @staticmethod
+    def _is_port_available(*, port: int) -> bool:
+        return is_port_available(port)
+
+    @staticmethod
     def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return get_gpu_uuids(gpu_ids)
 
