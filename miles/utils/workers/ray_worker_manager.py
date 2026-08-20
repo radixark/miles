@@ -79,7 +79,9 @@ class RayWorkerManager:
         return addrs
 
     def get_addrs(self) -> dict[str, list[NamedHostAndPorts]]:
-        return {name: [a.self_addrs for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()}
+        return {
+            name: [a.self_addrs or {} for c in g.cells if c.alive for a in c.actors] for name, g in self._pools.items()
+        }
 
     def get_worker_infos(self, pool_id: str, cell_index: int) -> list[WorkerInfo]:
         cell = self._pools[pool_id].cells[cell_index]
@@ -87,7 +89,7 @@ class RayWorkerManager:
             WorkerInfo(
                 name=actor.name,
                 generation=actor.generation,
-                self_addrs=actor.self_addrs,
+                self_addrs=actor.self_addrs or {},
                 gpu_ids=actor.gpu_ids,
                 actor_handle=actor.actor_handle,
             )
@@ -190,7 +192,7 @@ class _CellManager(Generic[SpecT]):
         return CellInfo(
             cell_id=self.cell_id,
             pool_id=self.spec.name,
-            alive=self.alive,
+            alive=self.alive and self._all_workers_have_addrs,
             worker_names=[a.name for a in self.actors] if self.actors is not None else [],
             workers_hash=f"pseudo-hash-{self.generation}",
             meta=f(WorkerMetaContext(cell_index=self.cell_index)) if (f := self.spec.meta) is not None else {},
@@ -203,6 +205,10 @@ class _CellManager(Generic[SpecT]):
     @property
     def alive(self) -> bool:
         return self.actors is not None
+
+    @property
+    def _all_workers_have_addrs(self) -> bool:
+        return all(a.self_addrs is not None for a in self.actors or [])
 
 
 _SHUTDOWN_TIMEOUT = 30
