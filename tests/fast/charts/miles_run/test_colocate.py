@@ -1,21 +1,33 @@
 import json
 from typing import Any
 
+import pytest
 from tests.fast.charts.utils import (
     NAMESPACE,
     RUN_RELEASE_NAME,
     named_object,
     objects_of_kind,
     render_run,
+    render_run_error,
     requires_helm,
     with_object_names,
 )
-
 from tests.fast.utils.external_utils.command_utils.helm_backend.launcher.values import utils as values_utils
 
 from miles.utils.external_utils.colocate_pairing.pods import _GATE_NAME, release_patch
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
-from miles.utils.workers.env_vars import BASE_GPU_ID_ENV_VAR
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
+    _PLATFORM_OWNED_ENV_VARS,
+)
+from miles.utils.workers.env_vars import (
+    BASE_GPU_ID_ENV_VAR,
+    CELL_INDEX_ENV_VAR,
+    NAMESPACE_ENV_VAR,
+    PLATFORM_IDENTITY_ENV_VARS,
+    POD_INDEX_ENV_VAR,
+    RELEASE_ENV_VAR,
+    SUBPROCESS_INDEX_ENV_VAR,
+)
 from miles.utils.workers.worker_provider.kubernetes.helm.env import DEFAULT_LABEL_KEYS
 
 ENGINES = [
@@ -129,7 +141,6 @@ class TestColocatedEnginePool:
         assert pod["schedulingGates"] == [GATE]
         assert pod["hostIPC"] is True
         assert pod["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == 0
-        assert BASE_GPU_ID_ENV_VAR in _env_names(pod["containers"][0])
 
     def test_is_told_which_card_of_the_node_the_pairing_gave_it(self):
         """The controller writes that annotation in the patch that releases the gate, before the pod runs."""
@@ -147,6 +158,12 @@ class TestColocatedEnginePool:
         entry = _env_entry(colocated_engine_pod()["containers"][0], BASE_GPU_ID_ENV_VAR)
 
         assert "value" not in entry
+
+    def test_gives_a_second_colocated_pool_that_variable_too(self):
+        """Prefill and decode may split one trainer node, and each needs to be told where it starts."""
+        pod = pool_pod(render_run(*ENABLE), "myrun-miles-run-decode")
+
+        assert BASE_GPU_ID_ENV_VAR in _env_names(pod["containers"][0])
 
     def test_carries_no_affinity_at_all_but_keeps_the_node_selector(self):
         """Any affinity would contradict the node the controller picks; the selector it only adds to."""
@@ -239,6 +256,46 @@ class TestAPoolTheConfigDoesNotName:
         assert "schedulingGates" not in pod
         assert "hostIPC" not in pod
         assert BASE_GPU_ID_ENV_VAR not in _env_names(pod["containers"][0])
+
+
+@requires_helm
+class TestTheVariablesThePlatformOwns:
+    @pytest.mark.parametrize(
+        "name", [CELL_INDEX_ENV_VAR, POD_INDEX_ENV_VAR, BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR]
+    )
+    @pytest.mark.parametrize("section", ["infra", "run"])
+    def test_the_schema_refuses_one_in_a_values_environment(self, section: str, name: str):
+        """Kubernetes keeps the last entry of a name, and these render first, so a values entry wins silently."""
+        error = render_run_error("--set", f"{section}.env.{name}=anything")
+
+        assert name in error
+
+    def test_the_release_and_namespace_a_pod_is_told_are_the_ones_it_runs_in(self):
+        """They are how a pod selects its own workers, so an entry pointing elsewhere reaches someone else's run."""
+        container = pool_pod(render_run(*ENABLE), "myrun-miles-run-decode")["containers"][0]
+        env = {entry["name"]: entry.get("value") for entry in container["env"]}
+
+        assert env[NAMESPACE_ENV_VAR] == NAMESPACE
+        assert env[RELEASE_ENV_VAR] == RUN_RELEASE_NAME
+
+
+class TestTheTwoListsOfPlatformVariables:
+    def test_the_reserved_names_and_the_identity_a_worker_reports_differ_only_where_meant_to(self):
+        """Two hand-kept lists of platform variables drift apart quietly, so the difference is what to state."""
+        reserved = set(_PLATFORM_OWNED_ENV_VARS)
+        identity = set(PLATFORM_IDENTITY_ENV_VARS)
+
+        assert reserved - identity == {BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR}
+        assert identity - reserved == {SUBPROCESS_INDEX_ENV_VAR}
+
+
+@requires_helm
+class TestTheNamesTheChartWritesAreTheNamesTheSchemaReserves:
+    def test_a_gated_pool_pod_is_given_the_reserved_names_and_nothing_else_of_its_own(self):
+        """Reserving a name is only worth something if the list covers every name the chart writes itself."""
+        container = pool_pod(render_run(*ENABLE), "myrun-miles-run-engine")["containers"][0]
+
+        assert _env_names(container) - {"NVIDIA_VISIBLE_DEVICES"} == set(_PLATFORM_OWNED_ENV_VARS)
 
 
 def _sub_node_engine_argv() -> list[str]:
