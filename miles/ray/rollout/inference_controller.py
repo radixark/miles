@@ -89,6 +89,11 @@ class InferenceController:
 
         await self.wait_expected_num_cells()
 
+    # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await self._engine_provider.stop_cells(cell_ids=[cell_id])
+
     # -------------------------- take over -----------------------------
 
     @lock_exempt
@@ -259,11 +264,6 @@ class InferenceController:
 
     # -------------------------- cell operations -----------------------------
 
-    # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
-    @with_lock
-    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
-        await RayWorkerManager.get_handle().stop_cells.remote([cell_id])
-
     # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
     @with_lock
     async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
@@ -273,7 +273,6 @@ class InferenceController:
         await RayWorkerManager.get_handle().inject_fault.remote(
             cell_id, mode=mode.value, worker_in_cell_index=sub_index
         )
-
 
     # -------------------------- eval fleet -----------------------------
 

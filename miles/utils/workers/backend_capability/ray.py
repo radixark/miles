@@ -22,4 +22,11 @@ class RayBackendCapability(BackendCapability):
         return RayWorkerProvider(worker_manager_handle=self._worker_manager_handle)
 
     def cell_operations(self) -> BaseCellOperations:
-        return RayCellOperations(worker_manager_handle=self._worker_manager_handle)
+        # TEMPORARY: this layer is not meant to import miles.ray, deliberately violated until the
+        # weight-update fault tolerance work removes the need
+        from miles.ray.specs.inference import create_inference_controller_handle
+
+        return RayCellOperations(
+            worker_manager_handle=self._worker_manager_handle,
+            resolve_inference_controller=lambda: create_inference_controller_handle(capability=self),
+        )
