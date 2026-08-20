@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 # Readiness budget for the spawned router/session-server children. The spawn
 # context re-imports the heavy transformers/megatron chain (~13s typical in
 # CI), and transient CI stalls have pushed startup past a 30s budget.
-_SERVER_READY_TIMEOUT_SECS = 120
+_ROUTER_READY_TIMEOUT_SECONDS = 120.0
+_SESSION_SERVER_READY_TIMEOUT_SECONDS = 300.0
 
 
 async def resolve_router_addrs(args, *, router_providers: Sequence[BaseWorkerProvider]) -> dict[str, HostAndPort]:
@@ -58,7 +59,7 @@ async def wait_router_ready(*, model_idx: int, provider: BaseWorkerProvider) -> 
     """Wait until the model's router, launched by the platform, is reachable and return its address."""
     worker_name = compute_router_worker_name(model_idx)
     router_addr = (await provider.get_addrs(worker_name=worker_name))["primary"]
-    await wait_tcp_ready_async(router_addr.host, router_addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
+    await wait_tcp_ready_async(router_addr.host, router_addr.port, timeout=_ROUTER_READY_TIMEOUT_SECONDS)
     logger.info(f"Router ready at {router_addr}")
     return router_addr
 
@@ -104,6 +105,6 @@ async def wait_session_server_ready(args, *, provider: BaseWorkerProvider | None
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
     await asyncio.gather(
-        *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS) for addr in addrs]
+        *[wait_tcp_ready_async(addr.host, addr.port, timeout=_SESSION_SERVER_READY_TIMEOUT_SECONDS) for addr in addrs]
     )
     logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
