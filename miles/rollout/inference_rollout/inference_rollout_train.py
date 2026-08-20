@@ -30,7 +30,12 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     urls = await get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+    results = await asyncio.gather(
+        *[post(f"{url}/abort_request", {"abort_all": True}) for url in urls], return_exceptions=True
+    )
+    for url, result in zip(urls, results, strict=True):
+        if isinstance(result, Exception):
+            logger.warning(f"Failed to abort worker at {url}: {result}")
 
     # Let the agent integration tear down its in-flight trials so they stop hitting
     # SGLang, instead of running on until their own max_seq_len / timeout.
