@@ -48,7 +48,7 @@ spec:
         {{- end }}
         containers:
           - name: {{ $pool.containerName | default "worker" | quote }}
-            {{- include "miles-run.containerDefaults" $context | nindent 12 }}
+            {{- include "miles-run.containerDefaultsWith" (dict "context" $context "extraMounts" (include "miles-run.shmVolumeMount" $context)) | nindent 12 }}
             command:
               {{- range $pool.command }}
               - {{ . | quote }}
@@ -82,7 +82,7 @@ spec:
             {{- end }}
             resources:
               {{- toYaml $resources | nindent 14 }}
-        {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" $context | trim) (include "miles-run.nodeLocalVolume" $context | trim)) | join "\n" }}
+        {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" $context | trim) (include "miles-run.nodeLocalVolume" $context | trim) (include "miles-run.shmVolume" $context | trim)) | join "\n" }}
         {{- with $volumes }}
         volumes:
           {{- . | nindent 10 }}
