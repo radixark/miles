@@ -98,6 +98,18 @@ affinity:
 {{- end }}
 {{- end }}
 
+{{- define "miles-run.shmVolume" -}}
+- name: dev-shm
+  hostPath:
+    path: /dev/shm
+    type: Directory
+{{- end }}
+
+{{- define "miles-run.shmVolumeMount" -}}
+- name: dev-shm
+  mountPath: /dev/shm
+{{- end }}
+
 {{- define "miles-run.nodeLocalVolumeMount" -}}
 {{- with .Values.infra.nodeLocalStorage | default dict -}}
 {{- if .hostPath }}
