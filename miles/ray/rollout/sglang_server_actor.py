@@ -1,9 +1,7 @@
 import threading
 
 import ray
-
 from sglang.srt.environ import envs
-from sglang.srt.ray.http_server import launch_engine, serve_http
 from sglang.srt.server_args import ServerArgs
 
 
@@ -19,6 +17,8 @@ class SGLangServerActor:
         self._serve_thread: threading.Thread | None = None
 
     def start(self, server_args: ServerArgs, bundle_indices: list[int]) -> list:
+        from sglang.srt.ray.http_server import launch_engine, serve_http
+
         # Set here: a parent actor's os.environ mutations do not reach this process.
         envs.SGLANG_RAY_BUNDLE_INDICES.set(",".join(str(i) for i in bundle_indices))
         placement_group = ray.util.get_current_placement_group()
