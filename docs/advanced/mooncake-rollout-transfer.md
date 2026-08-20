@@ -32,6 +32,11 @@ CUDA runtime and is compatible with the Miles revision. Follow the
 [Mooncake installation guide](https://kvcache-ai.github.io/Mooncake/getting_started/build.html)
 for current package names and supported platforms.
 
+The structured-object wheel ships only on the CUDA 13 path, so
+`mooncake.structured_object_store` fails to import on a CUDA 12 image. See
+[Versions and Images](/developer/versions) for the `ENABLE_CUDA_13` switch and
+that failure mode.
+
 ## Configure the backend
 
 Choose the transfer protocol before starting Ray. TCP works on any routable data
@@ -57,7 +62,13 @@ Then add these options to an existing Miles training command:
 ```
 
 Use a data-network address that every client can reach. The JSON value must remain
-one shell argument.
+one shell argument. `MOONCAKE_MASTER_ADDR` above is only a shell variable for these
+examples; the environment variable Miles itself falls back to is `MOONCAKE_MASTER`.
+
+Launch scripts and the Mooncake end-to-end tests assemble both pieces with
+`start_mooncake_master()` and `get_mooncake_object_store_args()` from
+`miles/utils/external_utils/command_utils.py`. The walkthrough below spells them out
+instead, so every setting stays visible.
 
 ## Two-node walkthrough
 
@@ -152,7 +163,6 @@ export RAY_DASHBOARD_ADDR="${RAY_DASHBOARD_ADDR:-http://127.0.0.1:8265}"
 
 RUNTIME_ENV_JSON='{
   "env_vars": {
-    "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
     "CUDA_DEVICE_MAX_CONNECTIONS": "1"
   }
 }'
@@ -224,6 +234,10 @@ See [Fully Async Rollout](/user-guide/fully-async) for the remaining async setti
 Values supplied in `--mooncake-store-init-kwargs` take precedence over environment
 variables. Use data-network addresses in multi-node jobs; loopback addresses work
 only when all clients run on one node.
+
+Not every client contributes a segment: the rollout manager never does, and among
+training actors one per node does. Size `global_segment_size` for that per-node
+contribution rather than for the total client count.
 
 Mooncake stores one replica by default. Request additional replicas with:
 
