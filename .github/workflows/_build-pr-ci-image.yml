@@ -21,6 +21,7 @@ jobs:
     outputs:
       needs_image: ${{ steps.decide.outputs.needs_image }}
       rebuild: ${{ steps.decide.outputs.rebuild }}
+      force_rebuild: ${{ steps.prepare.outputs.force_rebuild }}
     env:
       SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
@@ -28,27 +29,20 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      # Reading the inputs label off the published tag needs registry auth. Forks get no
-      # secrets and cannot push anyway, so they skip straight to the released image.
-      - name: Login to Docker Hub
-        if: env.SAME_REPO == 'true'
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - id: decide
+      - id: compare
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
-          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
-          FORCE_REBUILD: ${{ contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image') }}
         run: |
           set -euo pipefail
-          emit() { echo "needs_image=$1" >> "$GITHUB_OUTPUT"; echo "rebuild=$2" >> "$GITHUB_OUTPUT"; }
+          emit() {
+            echo "eligible=$1" >> "$GITHUB_OUTPUT"
+            echo "current=$2" >> "$GITHUB_OUTPUT"
+          }
 
           # Cron and manual runs have no PR diff and never own a PR image.
           if [ -z "$BASE_SHA" ]; then
-            emit false false
+            emit false ""
             exit 0
           fi
 
@@ -58,19 +52,71 @@ jobs:
           BASE=$(python3 docker/image_inputs.py --rev HEAD^1)
           if [ "$CURRENT" = "$BASE" ]; then
             echo "Build inputs match the base branch; suites use the released image."
-            emit false false
+            emit false ""
             exit 0
           fi
 
           if [ "$SAME_REPO" != "true" ]; then
             echo "::notice::Fork PRs cannot publish an image; suites use the released image."
-            emit false false
+            emit false ""
             exit 0
           fi
+
+          emit true "$CURRENT"
+
+      - id: prepare
+        shell: bash
+        env:
+          ELIGIBLE: ${{ steps.compare.outputs.eligible }}
+          CURRENT: ${{ steps.compare.outputs.current }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          emit() {
+            echo "inspect_tag=$1" >> "$GITHUB_OUTPUT"
+            echo "force_rebuild=$2" >> "$GITHUB_OUTPUT"
+            echo "current=$3" >> "$GITHUB_OUTPUT"
+          }
+
+          if [ "$ELIGIBLE" != "true" ]; then
+            emit false false ""
+            exit 0
+          fi
+
+          LABELS=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --jq '.[].name')
+          if grep -Fxq "rebuild-ci-image" <<< "$LABELS"; then
+            emit false true "$CURRENT"
+          else
+            emit true false "$CURRENT"
+          fi
+
+      # Registry auth is needed only when reading the inputs label from an existing tag.
+      - name: Login to Docker Hub
+        if: steps.prepare.outputs.inspect_tag == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: decide
+        shell: bash
+        env:
+          CURRENT: ${{ steps.prepare.outputs.current }}
+          FORCE_REBUILD: ${{ steps.prepare.outputs.force_rebuild }}
+          INSPECT_TAG: ${{ steps.prepare.outputs.inspect_tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          set -euo pipefail
+          emit() { echo "needs_image=$1" >> "$GITHUB_OUTPUT"; echo "rebuild=$2" >> "$GITHUB_OUTPUT"; }
 
           if [ "$FORCE_REBUILD" = "true" ]; then
             echo "::notice::rebuild-ci-image label present; forcing a rebuild."
             emit true true
+            exit 0
+          fi
+
+          if [ "$INSPECT_TAG" != "true" ]; then
+            emit false false
             exit 0
           fi
 
@@ -141,7 +187,7 @@ jobs:
           echo "built=true" >> "$GITHUB_OUTPUT"
       # The label is a one-shot request: leaving it on would rebuild on every later run.
       - name: Consume rebuild-ci-image label
-        if: steps.build.outputs.built == 'true' && contains(github.event.pull_request.labels.*.name, 'rebuild-ci-image')
+        if: steps.build.outputs.built == 'true' && needs.docker-decide.outputs.force_rebuild == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
