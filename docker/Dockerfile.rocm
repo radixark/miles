@@ -133,6 +133,9 @@ RUN cd /sgl-workspace/sglang && \
     fi && \
     pip install -e "python[all_hip]" --no-deps
 
+# SGLang is installed without dependencies, but its Inkling multimodal processor imports numba.
+RUN pip install "numba==0.65.1"
+
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
 RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@74d68c5e4bedf2b6774f2c92ed0f81b7c8d91ed0 --no-cache-dir --force-reinstall
