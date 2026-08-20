@@ -38,14 +38,13 @@ class TestCommandJob:
 
         assert [container["name"] for container in job["spec"]["template"]["spec"]["containers"]] == ["command-job"]
 
-    def test_an_eviction_does_not_spend_the_one_attempt(self):
-        """Kubernetes counts a displaced pod against backoffLimit like a failed one, so without this
-        a step the cluster evicted before it ran is reported as a step that ran and failed."""
+    def test_a_displaced_pod_fails_the_step_instead_of_running_the_command_twice(self):
+        """Forgiving a disruption lets kubernetes rerun a command step that is meant to run at most once."""
         job = single_object_of_kind(render_run(*ENABLE_COMMAND_JOB), "Job")
 
-        assert job["spec"]["podFailurePolicy"]["rules"] == [
-            {"action": "Ignore", "onPodConditions": [{"type": "DisruptionTarget"}]}
-        ]
+        assert "podFailurePolicy" not in job["spec"]
+        assert job["spec"]["podReplacementPolicy"] == "Failed"
+        assert job["spec"]["backoffLimit"] == 0
 
     def test_never_retries_a_failure(self):
         """The caller reports the failure; a silent retry would hide it and double the side effects."""
@@ -87,6 +86,46 @@ class TestCommandJob:
             "kubernetes.io/hostname",
             "topology.kubernetes.io/zone",
         ]
+
+    def test_a_multi_pod_job_merges_required_host_spreading_with_cluster_affinity(self) -> None:
+        """A fan-out job keeps cluster placement while requiring its own pods to use separate hosts."""
+        job = single_object_of_kind(
+            render_run(
+                *ENABLE_COMMAND_JOB,
+                "--set",
+                "commandJob.completions=4",
+                "--set-json",
+                'infra.scheduling.affinity.nodeAffinity={"requiredDuringSchedulingIgnoredDuringExecution":'
+                '{"nodeSelectorTerms":[{"matchExpressions":[{"key":"pool","operator":"In","values":["gpu"]}]}]}}',
+            ),
+            "Job",
+        )
+
+        affinity = job["spec"]["template"]["spec"]["affinity"]
+        assert affinity["nodeAffinity"] == {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [{"matchExpressions": [{"key": "pool", "operator": "In", "values": ["gpu"]}]}]
+            }
+        }
+        assert affinity["podAntiAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][0]["topologyKey"] == (
+            "kubernetes.io/hostname"
+        )
+
+    def test_a_multi_pod_job_gets_stable_peer_dns_through_its_headless_service(self) -> None:
+        """A fan-out job joins a matching headless service so indexed pods have stable peer DNS."""
+        objects = render_run(*ENABLE_COMMAND_JOB, "--set", "commandJob.completions=4")
+        job = single_object_of_kind(objects, "Job")
+        service = single_object_of_kind(objects, "Service")
+        selector = {
+            "app.kubernetes.io/component": "convert",
+            "app.kubernetes.io/instance": "myrun",
+            "app.kubernetes.io/name": "miles-run",
+        }
+
+        assert service["spec"]["clusterIP"] == "None"
+        assert service["spec"]["selector"] == selector
+        assert job["spec"]["template"]["metadata"]["labels"].items() >= selector.items()
+        assert job["spec"]["template"]["spec"]["subdomain"] == service["metadata"]["name"]
 
     def test_requests_gpus_only_when_asked(self):
         """Checkpoint conversion needs gpus; a download must not sit in the gpu queue."""
