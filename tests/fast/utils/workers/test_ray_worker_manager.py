@@ -11,7 +11,7 @@ from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayC
 from miles.ray.placement_group import PlacementGroupInfo
 from miles.utils.workers import ray_worker_manager
 from miles.utils.workers.command_actor import CommandActor
-from miles.utils.workers.ray_worker_manager import RayWorkerManager, _CommandActorManager
+from miles.utils.workers.ray_worker_manager import RayWorkerManager, _BaseActorManager, _CommandActorManager
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
 
@@ -82,6 +82,37 @@ async def _launch(
     manager = RayWorkerManager()
     await manager.init(specs, pgs if pgs is not None else {})
     return manager
+
+
+_GATE_MAX_YIELDS = 200
+
+
+@dataclass
+class _AllocPortsGate:
+    should_block: Callable[[_BaseActorManager], bool]
+    blocked: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+    allocated_names: list[str] = field(default_factory=list)
+
+    def install(self, patched: pytest.MonkeyPatch) -> None:
+        original_alloc_ports = _CommandActorManager.alloc_ports
+
+        async def gated_alloc_ports(actor: _BaseActorManager) -> None:
+            if self.should_block(actor):
+                self.blocked.set()
+                await asyncio.wait_for(self.release.wait(), timeout=5)
+            await original_alloc_ports(actor)
+            self.allocated_names.append(actor.name)
+
+        patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc_ports)
+
+    async def wait_until_allocated(self, *, worker_names: list[str]) -> None:
+        await asyncio.wait_for(self.blocked.wait(), timeout=5)
+        for _ in range(_GATE_MAX_YIELDS):
+            if set(worker_names) <= set(self.allocated_names):
+                return
+            await asyncio.sleep(0)
+        raise AssertionError(f"{worker_names=} were never allocated, only {self.allocated_names=}")
 
 
 class TestLaunchEntryPoint:
@@ -809,6 +840,122 @@ class TestAddressPublication:
 
         assert observed == [router_port]
         assert manager.get_worker_addrs("engine-0-0")["primary"].port == 7001
+
+    async def test_a_cell_is_published_only_once_every_worker_is_addressed(self, fake_ray_cluster: FakeRayCluster):
+        """One unaddressed rank makes the whole cell unusable, so the cell must not be observed as alive yet."""
+        original_alloc_ports = _CommandActorManager.alloc_ports
+        first_done = asyncio.Event()
+        release = asyncio.Event()
+
+        async def gated_alloc(self) -> None:
+            if self.worker_in_cell_index == 0:
+                await original_alloc_ports(self)
+                first_done.set()
+                return
+            await asyncio.wait_for(release.wait(), timeout=5)
+            await original_alloc_ports(self)
+
+        manager = RayWorkerManager()
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_CommandActorManager, "alloc_ports", gated_alloc)
+            task = asyncio.create_task(manager.init([_make_spec("engine", num_workers_per_cell=2)], {}))
+            await asyncio.wait_for(first_done.wait(), timeout=5)
+
+            assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive is False
+            assert manager.get_addrs()["engine"][1] == {}
+
+            release.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive is True
+
+    async def test_a_worker_still_being_addressed_is_described_with_an_empty_addr_map(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A missing addr map, unlike an empty one, cannot be described at all and loses the cell's description."""
+        gate = _AllocPortsGate(should_block=lambda actor: actor.worker_in_cell_index == 1)
+
+        manager = RayWorkerManager()
+        with pytest.MonkeyPatch.context() as patched:
+            gate.install(patched)
+            task = asyncio.create_task(manager.init([_make_spec("engine", num_workers_per_cell=2)], {}))
+            await gate.wait_until_allocated(worker_names=["engine-0-0"])
+
+            infos = manager.get_worker_infos("engine-0")
+
+            assert [info.name for info in infos] == ["engine-0-0", "engine-0-1"]
+            assert "primary" in infos[0].self_addrs
+            assert infos[1].self_addrs == {}
+
+            gate.release.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        assert "primary" in manager.get_worker_infos("engine-0")[1].self_addrs
+
+    async def test_a_cell_still_being_addressed_stays_listed_with_all_of_its_workers(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A cell being addressed is only unpublished, never hidden, so an observer can still track it."""
+        gate = _AllocPortsGate(should_block=lambda actor: actor.worker_in_cell_index == 1)
+
+        manager = RayWorkerManager()
+        with pytest.MonkeyPatch.context() as patched:
+            gate.install(patched)
+            task = asyncio.create_task(manager.init([_make_spec("engine", num_workers_per_cell=2)], {}))
+            await gate.wait_until_allocated(worker_names=["engine-0-0"])
+
+            info = manager.get_cell_infos(pool_ids=["engine"])["engine-0"]
+
+            assert info.alive is False
+            assert info.worker_names == ["engine-0-0", "engine-0-1"]
+
+            gate.release.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive is True
+
+    async def test_a_fully_addressed_cell_is_published_while_a_sibling_still_waits_for_ports(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """Addressing is judged per cell, so one slow cell must not withhold the cells that are ready to serve."""
+        gate = _AllocPortsGate(should_block=lambda actor: actor.parent.cell_index == 1)
+
+        manager = RayWorkerManager()
+        with pytest.MonkeyPatch.context() as patched:
+            gate.install(patched)
+            task = asyncio.create_task(manager.init([_make_spec("engine", num_cells=2, num_workers_per_cell=2)], {}))
+            await gate.wait_until_allocated(worker_names=["engine-0-0", "engine-0-1"])
+
+            infos = manager.get_cell_infos(pool_ids=["engine"])
+
+            assert infos["engine-0"].alive is True
+            assert infos["engine-1"].alive is False
+
+            gate.release.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        assert [info.alive for info in manager.get_cell_infos(pool_ids=["engine"]).values()] == [True, True]
+
+    async def test_a_resumed_cell_is_unpublished_again_until_its_new_ports_are_handed_out(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A resumed cell hands out fresh ports, so having been addressed once must not vouch for it again."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        await manager.stop_cells(["engine-0"])
+        gate = _AllocPortsGate(should_block=lambda actor: actor.worker_in_cell_index == 1)
+
+        with pytest.MonkeyPatch.context() as patched:
+            gate.install(patched)
+            task = asyncio.create_task(manager.start_cells(["engine-0"]))
+            await gate.wait_until_allocated(worker_names=["engine-0-0"])
+
+            assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive is False
+            assert manager.get_addrs()["engine"][1] == {}
+
+            gate.release.set()
+            await asyncio.wait_for(task, timeout=5)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-0"].alive is True
 
 
 class TestGpuPlacement:
