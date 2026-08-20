@@ -1135,6 +1135,34 @@ class TestRouterInterpreterFlags:
         assert argv[:6] == [sys.executable, "-O", "-X", "faulthandler", "-m", module]
 
 
+class TestEngineInterpreterFlags:
+    def test_the_engine_launch_command_carries_the_parent_interpreter_flags(self, tmp_path, monkeypatch):
+        """An engine launched by a bare interpreter runs with different semantics than the job that spawned it."""
+        monkeypatch.setattr(
+            sys,
+            "orig_argv",
+            [sys.executable, "-O", "-X", "faulthandler", "-m", "miles.train", "--config", "x.yaml"],
+        )
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+        recorded: dict = {}
+
+        def _record(**kwargs) -> str:
+            recorded.update(kwargs)
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        spec.launch_command(_make_engine_ctx())
+
+        assert recorded["interpreter_prefix"] == [sys.executable, "-O", "-X", "faulthandler"]
+
+
 class TestSpecInferenceController:
     def _args(self, tmp_path, **overrides) -> Namespace:
         config_path = tmp_path / "sglang.yaml"

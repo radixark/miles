@@ -33,6 +33,7 @@ def _cmd(
     addr_and_ports.update(addr_overrides or {})
     return compute_engine_launch_cmd(
         args or make_engine_args(),
+        interpreter_prefix=[sys.executable],
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=base_gpu_id,

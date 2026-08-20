@@ -1,9 +1,9 @@
 import dataclasses
+import functools
 import ipaddress
 import logging
 import os
 import shlex
-import sys
 
 from sglang.srt.server_args import ServerArgs
 
@@ -37,6 +37,7 @@ def build_server_url(host: str, port: int) -> str:
 def compute_engine_launch_cmd(
     args,
     *,
+    interpreter_prefix: list[str],
     node_rank: int,
     worker_type: str,
     base_gpu_id: int,
@@ -51,6 +52,8 @@ def compute_engine_launch_cmd(
     gated_launch_port: int,
     random_seed: int,
 ) -> str:
+    _assert_launch_gate_served()
+
     server_args_dict = _compute_server_args(
         args,
         node_rank=node_rank,
@@ -69,7 +72,7 @@ def compute_engine_launch_cmd(
     )
 
     launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
-    return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
+    return shlex.join([*interpreter_prefix, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
 def _compute_server_args(
@@ -195,3 +198,11 @@ def _compute_server_args(
             kwargs.pop(key)
 
     return kwargs
+
+
+@functools.cache
+def _assert_launch_gate_served() -> None:
+    assert any(field.name == "gated_launch_port" for field in dataclasses.fields(ServerArgs)), (
+        "this sglang has no --gated-launch-port, and miles launches every inference engine through "
+        "that gate; upgrade sglang to one that serves it"
+    )
