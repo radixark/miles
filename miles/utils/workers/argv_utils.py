@@ -108,7 +108,7 @@ def render_cli_argv(
             continue
         argv.extend(render(name, value))
 
-    parsed = from_parsed(make_parser().parse_args(argv))
+    parsed = from_parsed(_parse_without_exiting(make_parser(), argv))
     mismatch = _describe_mismatch(parsed, expected_obj, uncompared_fields=uncompared_fields)
     assert not mismatch, f"cli argv roundtrip mismatch on {mismatch}"
     return argv
@@ -127,6 +127,13 @@ def _record_field_names(record) -> tuple[str, ...]:
     import msgspec
 
     return tuple(field.name for field in msgspec.structs.fields(record))
+
+
+def _parse_without_exiting(parser: argparse.ArgumentParser, argv: list[str]) -> argparse.Namespace:
+    try:
+        return parser.parse_args(argv)
+    except SystemExit as exiting:
+        raise AssertionError(f"the argument parser rejects the rendered {shlex.join(argv)}") from exiting
 
 
 def _describe_mismatch(parsed: _ArgsT, wanted: _ArgsT, *, uncompared_fields: frozenset[str]) -> str:
