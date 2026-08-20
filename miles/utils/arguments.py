@@ -3214,6 +3214,11 @@ def miles_validate_args(args):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
+    if args.update_weight_transfer_mode == "rdt":
+        assert (
+            args.train_backend == "megatron"
+        ), "RDT weight transfer is only supported with --train-backend megatron."
+
     if args.update_weight_transfer_mode in ("p2p", "rdt"):
         assert not args.colocate, (
             f"{args.update_weight_transfer_mode} weight transfer mode is not compatible with "
