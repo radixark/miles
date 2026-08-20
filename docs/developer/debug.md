@@ -102,7 +102,7 @@ JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer gr
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
 **Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions such as
-`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-2"}`. The
+`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}`. The
 cell-targeted actions are `stop_cell_at_end`, `start_cell_at_end` and
 `crash_before_allreduce`, and `cell_id` is the full cell id (spec name plus cell index).
 `sleep_forever_at_end` names no cell: it puts the orchestration script itself to sleep once

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.utils.workers.naming import _worker_name_of_cell, compute_cell_id
 from miles.utils.workers.registration.hub import REPORTER_TTL_SECONDS, RegistrationHub
 from miles.utils.workers.registration.models import RegisteredCellInfo, RegistrationSnapshot
 from miles.utils.workers.worker_info import WorkerInfo
@@ -20,6 +21,10 @@ _RUN_UUID = "run-uuid-1"
 _POLL_INTERVAL_SECONDS = 0.001
 
 
+def _cell_id(cell_index: int, *, pool_id: str = _POOL_ID) -> str:
+    return compute_cell_id(pool_id=pool_id, cell_index=cell_index)
+
+
 def _cell(
     cell_index: int,
     *,
@@ -29,20 +34,20 @@ def _cell(
     reporter_id: str = _REPORTER,
     pool_id: str = _POOL_ID,
 ) -> RegisteredCellInfo:
-    cell_id = f"{pool_id}-{cell_index}"
+    cell_id = _cell_id(cell_index, pool_id=pool_id)
     return RegisteredCellInfo(
         reporter_id=reporter_id,
         info=CellInfo(
             cell_id=cell_id,
             pool_id=pool_id,
             alive=True,
-            worker_names=[f"{cell_id}-0"],
+            worker_names=[_worker_name_of_cell(cell_id)],
             workers_hash=f"hash-{host}",
             meta=dict(model_id=model_id, worker_type="regular"),
         ),
         workers=[
             WorkerInfo(
-                name=f"{cell_id}-0",
+                name=_worker_name_of_cell(cell_id),
                 generation=generation,
                 self_addrs={"primary": HostAndPort(host=host, port=8000)},
                 gpu_ids=[0],
@@ -116,8 +121,8 @@ class TestSnapshotMembership:
 
         await _apply(provider, _snapshot([_cell(0), _cell(1)]))
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0", f"{_POOL_ID}-1"]
-        assert [cell_id for cell_id, _observed in watcher.observations] == [f"{_POOL_ID}-0", f"{_POOL_ID}-1"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0), _cell_id(1)]
+        assert [cell_id for cell_id, _observed in watcher.observations] == [_cell_id(0), _cell_id(1)]
 
     async def test_an_unchanged_cell_is_not_announced_twice(self):
         """The run adds a cell once; announcing it again would tear down a serving engine to rebuild it."""
@@ -136,7 +141,7 @@ class TestSnapshotMembership:
         await _apply(provider, _snapshot([_cell(0, host="10.0.0.6")], sequence_number=2))
 
         (_first, (cell_id, observed)) = watcher.observations
-        assert cell_id == f"{_POOL_ID}-0"
+        assert cell_id == _cell_id(0)
         assert observed.workers_hash == "hash-10.0.0.6"
 
     async def test_a_cell_the_snapshot_stops_naming_is_removed(self):
@@ -146,8 +151,8 @@ class TestSnapshotMembership:
         await _apply(provider, _snapshot([_cell(0), _cell(1)], sequence_number=1))
         await _apply(provider, _snapshot([_cell(0)], sequence_number=2))
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
-        assert watcher.observations[-1] == (f"{_POOL_ID}-1", None)
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]
+        assert watcher.observations[-1] == (_cell_id(1), None)
 
     async def test_a_late_snapshot_is_ignored(self):
         """A snapshot that crossed the wan slowly would otherwise resurrect cells the run already dropped."""
@@ -156,7 +161,7 @@ class TestSnapshotMembership:
         await _apply(provider, _snapshot([_cell(0), _cell(1)], sequence_number=5))
         await _apply(provider, _snapshot([_cell(0)], sequence_number=4))
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0", f"{_POOL_ID}-1"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0), _cell_id(1)]
 
     async def test_a_cell_reported_by_two_deployments_is_refused(self):
         """One cell id names one cell, and the second owner could remove the cell of the first."""
@@ -216,7 +221,7 @@ class TestPartitioningCellsByReporter:
 
         await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=2))
 
-        assert sorted(provider._cell_of_id) == sorted([f"{_POOL_ID}-0", f"{_POOL_ID}-1", f"{_OTHER_POOL_ID}-0"])
+        assert sorted(provider._cell_of_id) == sorted([_cell_id(0), _cell_id(1), _cell_id(0, pool_id=_OTHER_POOL_ID)])
 
     async def test_each_reporter_is_sequenced_on_its_own(self):
         """Deployments count their own snapshots, so one that has run for longer must not silence a fresh one."""
@@ -225,7 +230,7 @@ class TestPartitioningCellsByReporter:
 
         await _apply(provider, _snapshot([_other_cell(0)], reporter_id=_OTHER_REPORTER, sequence_number=1))
 
-        assert sorted(provider._cell_of_id) == sorted([f"{_POOL_ID}-0", f"{_OTHER_POOL_ID}-0"])
+        assert sorted(provider._cell_of_id) == sorted([_cell_id(0), _cell_id(0, pool_id=_OTHER_POOL_ID)])
 
 
 class TestResendingTheSameMembership:
@@ -236,7 +241,7 @@ class TestResendingTheSameMembership:
 
         await _apply(provider, _snapshot([_cell(0)], sequence_number=2))
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]
 
     async def test_resending_it_announces_no_change_to_the_watcher(self):
         """A membership that did not move must not churn the cells the run reconciles."""
@@ -257,7 +262,7 @@ class TestAddressingRegisteredCells:
         provider, _watcher = await _watched()
         await _apply(provider, _snapshot([_cell(0)]))
 
-        addrs = await provider.get_addrs(f"{_POOL_ID}-0-0")
+        addrs = await provider.get_addrs(_worker_name_of_cell(_cell_id(0)))
 
         assert addrs["primary"] == HostAndPort(host="10.0.0.5", port=8000)
 
@@ -266,7 +271,7 @@ class TestAddressingRegisteredCells:
         provider, _watcher = await _watched()
         await _apply(provider, _snapshot([_cell(0, generation=3)]))
 
-        ((worker_info,),) = provider.get_worker_infos(cell_ids=[f"{_POOL_ID}-0"])
+        ((worker_info,),) = provider.get_worker_infos(cell_ids=[_cell_id(0)])
 
         assert worker_info.generation == 3
 
@@ -278,24 +283,24 @@ class TestAddressingRegisteredCells:
         watcher = _Watcher()
         await _start_watch(provider, watcher)
 
-        assert [cell_id for cell_id, _observed in watcher.observations] == [f"{_POOL_ID}-0"]
+        assert [cell_id for cell_id, _observed in watcher.observations] == [_cell_id(0)]
 
 
 class TestFailedReconciliation:
     async def test_a_cell_the_run_could_not_take_in_is_offered_again_on_the_next_poll(self):
         """A cell whose reconcile raised must be retried from the membership this run already holds."""
         provider, watcher = await _watched()
-        watcher.failing_cell_ids = {f"{_POOL_ID}-0"}
+        watcher.failing_cell_ids = {_cell_id(0)}
 
         await _apply(provider, _snapshot([_cell(0)], sequence_number=1))
 
         assert watcher.observations == []
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]
 
         watcher.failing_cell_ids = set()
         await _drain()
 
-        assert [cell_id for cell_id, _observed in watcher.observations] == [f"{_POOL_ID}-0"]
+        assert [cell_id for cell_id, _observed in watcher.observations] == [_cell_id(0)]
 
 
 class TestDroppingAReporterThatStoppedReporting:
@@ -309,7 +314,7 @@ class TestDroppingAReporterThatStoppedReporting:
         await _drain()
 
         assert sorted(provider._cell_of_id) == []
-        assert watcher.observations[-1] == (f"{_POOL_ID}-0", None)
+        assert watcher.observations[-1] == (_cell_id(0), None)
 
     async def test_a_reporter_still_inside_its_deadline_keeps_its_cells(self):
         """A reporter reports far more often than this, so dropping one early would flap a healthy deployment."""
@@ -320,7 +325,7 @@ class TestDroppingAReporterThatStoppedReporting:
         clock.now += REPORTER_TTL_SECONDS - 1.0
         await _drain()
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]
 
     async def test_a_reporter_that_comes_back_is_taken_in_again(self):
         """Being dropped is not a verdict on the deployment; it announces itself anew like any first time."""
@@ -332,7 +337,7 @@ class TestDroppingAReporterThatStoppedReporting:
         await _drain()
         await _apply(provider, _snapshot([_cell(0)], sequence_number=9))
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]
 
     async def test_a_snapshot_dropped_as_late_does_not_keep_its_reporter_alive(self):
         """A reporter that restarted resends from sequence 1, and only the deadline ends that stalemate."""
@@ -370,4 +375,4 @@ class TestDroppingAReporterThatStoppedReporting:
         clock.now += REPORTER_TTL_SECONDS + 1.0
         await _apply(provider, _snapshot([_cell(0)]))
 
-        assert sorted(provider._cell_of_id) == [f"{_POOL_ID}-0"]
+        assert sorted(provider._cell_of_id) == [_cell_id(0)]

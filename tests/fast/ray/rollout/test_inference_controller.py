@@ -1532,16 +1532,16 @@ def _registration_snapshot(*, model_id: str = "model-a", run_uuid: str = _RUN_UU
     cell = RegisteredCellInfo(
         reporter_id="west",
         info=CellInfo(
-            cell_id="west-inference-engine-0-0-0",
+            cell_id="west-inference-engine-0-0-00000",
             pool_id="west-inference-engine-0-0",
             alive=True,
-            worker_names=["west-inference-engine-0-0-0-0"],
+            worker_names=["west-inference-engine-0-0-00000-00000"],
             workers_hash="hash-1",
             meta=meta,
         ),
         workers=[
             WorkerInfo(
-                name="west-inference-engine-0-0-0-0",
+                name="west-inference-engine-0-0-00000-00000",
                 generation=0,
                 self_addrs={"primary": HostAndPort(host="10.0.0.5", port=8000)},
                 gpu_ids=[0],
@@ -1572,7 +1572,7 @@ class TestRegistrationSnapshotEndpoint:
 
         await controller.registration_ingest(snapshot=_registration_snapshot())
 
-        assert sorted(registry._cell_of_id) == ["west-inference-engine-0-0-0"]
+        assert sorted(registry._cell_of_id) == ["west-inference-engine-0-0-00000"]
 
     @pytest.mark.asyncio
     async def test_a_controller_the_script_has_not_initialized_yet_says_it_is_not_ready(self):

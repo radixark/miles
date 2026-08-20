@@ -24,6 +24,7 @@ from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
 from miles.utils.workers.k8s_types import Pod
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.reconcile.k8s_api import PodListPage
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.common.wire_types import Pickled
@@ -43,7 +44,7 @@ STATIC_HOSTS = {
     for pool_id in ("rollout-executor", "inference-controller", "trainer-controller-actor")
 }
 POOL = "trainer-engine-actor"
-CELL_ID = "trainer-engine-actor-0"
+CELL_ID = compute_cell_id(pool_id=POOL, cell_index=0)
 
 
 class FakeTrainWorker:
@@ -333,7 +334,9 @@ class TestKubernetesDriverAssembly:
 
         infos = asyncio.run(scenario())
 
-        assert [info.name for info in infos] == [f"{POOL}-0-{index}" for index in range(3)]
+        assert [info.name for info in infos] == [
+            compute_worker_name(pool_id=POOL, worker_in_cell_index=index) for index in range(3)
+        ]
         assert [info.self_addrs["rpc"].host for info in infos] == ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
         handles = provider.get_handles_of_worker_infos(infos)
         assert all(isinstance(handles[info.name], RpcWorkerHandle) for info in infos)
@@ -351,7 +354,9 @@ class TestKubernetesDriverAssembly:
 
         infos = asyncio.run(scenario())
 
-        assert [info.name for info in infos] == [f"{POOL}-0-0", f"{POOL}-0-1"]
+        assert [info.name for info in infos] == [
+            compute_worker_name(pool_id=POOL, worker_in_cell_index=index) for index in range(2)
+        ]
         assert [(info.self_addrs["rpc"].host, info.self_addrs["rpc"].port) for info in infos] == [
             ("10.0.0.1", 8000),
             ("10.0.0.1", 8001),

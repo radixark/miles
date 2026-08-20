@@ -20,6 +20,7 @@ from miles.utils.data import RolloutDataPack
 from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.ray_utils import Box
 from miles.utils.retry_utils import NonRetryableError
+from miles.utils.workers.naming import compute_cell_id
 
 pytestmark = pytest.mark.asyncio
 
@@ -99,7 +100,9 @@ def _make_controller(
         group._indep_dp_store, group._indep_dp_store_addr = group_module.create_tcp_store()
     for cell_index in range(num_cells):
         cell = group._create_cell(
-            f"{group._pool_id}-{cell_index}", cell_index=cell_index, workers_hash="pseudo-hash-1"
+            compute_cell_id(pool_id=group._pool_id, cell_index=cell_index),
+            cell_index=cell_index,
+            workers_hash="pseudo-hash-1",
         )
         group._cells_by_id[cell.cell_id] = cell
     return group
@@ -107,23 +110,25 @@ def _make_controller(
 
 async def _stop_cell(group: TrainerController, cell_index: int) -> None:
     """Suspension stops the cell in the manager; reconcile then drops it from the bookkeeping."""
-    cell_id = f"{group._pool_id}-{cell_index}"
+    cell_id = compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)
     train_conftest.fake_worker_manager._stop_cells([cell_id])
     await group._reconcile(cell_id, None)
 
 
 def _cell(group: TrainerController, cell_index: int) -> object:
-    return group._cells_by_id[f"{group._pool_id}-{cell_index}"]
+    return group._cells_by_id[compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)]
 
 
 def _start_cell(group: TrainerController, cell_index: int) -> None:
     """The manager relaunches the cell, so reconcile hands the controller a fresh object."""
-    cell_id = f"{group._pool_id}-{cell_index}"
+    cell_id = compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)
     group._cells_by_id[cell_id] = group._create_cell(cell_id, cell_index=cell_index, workers_hash="pseudo-hash-2")
 
 
 def _was_stopped(group: TrainerController, cell_index: int) -> bool:
-    return [f"{group._pool_id}-{cell_index}"] in train_conftest.fake_worker_manager.stopped_cell_ids
+    return [
+        compute_cell_id(pool_id=group._pool_id, cell_index=cell_index)
+    ] in train_conftest.fake_worker_manager.stopped_cell_ids
 
 
 def _was_killed(group: TrainerController, cell_index: int) -> bool:
@@ -1117,7 +1122,7 @@ class TestCellStatusesUnderConcurrentReconcile:
         """The api server reads this from its own thread while reconcile adds and drops cells,
         and iterating the live dict raises RuntimeError instead of answering the request."""
         controller = _make_controller(num_cells=3)
-        victim = f"{controller._pool_id}-1"
+        victim = compute_cell_id(pool_id=controller._pool_id, cell_index=1)
         real_cell = _cell(controller, 0)
 
         class _EvictingCell:
@@ -1125,13 +1130,13 @@ class TestCellStatusesUnderConcurrentReconcile:
                 controller._cells_by_id.pop(victim, None)
                 return real_cell.cell_status()
 
-        controller._cells_by_id[f"{controller._pool_id}-0"] = _EvictingCell()
+        controller._cells_by_id[compute_cell_id(pool_id=controller._pool_id, cell_index=0)] = _EvictingCell()
 
-        statuses = controller.get_cell_statuses()
+        statuses = await controller.get_cell_statuses()
 
         # The snapshot is taken before the first cell_status() call, so the evicted cell is still
         # answered for. What matters is that the read completes instead of raising.
-        assert set(statuses) == {f"{controller._pool_id}-{i}" for i in range(3)}
+        assert set(statuses) == {compute_cell_id(pool_id=controller._pool_id, cell_index=i) for i in range(3)}
 
 
 class TestUpdateWeightsReturnsTheVersion:
@@ -1181,21 +1186,25 @@ class TestInitForwardsModelFlags:
 class TestTrainRunsFTTestActions:
     async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
         """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
-        actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
+        actions = json.dumps(
+            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+        )
         group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
 
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == [["trainer-actor-2"]]
+        group._cell_operations.suspend.assert_awaited_once_with(cell_id="trainer-engine-actor-00002")
 
     async def test_train_leaves_the_pool_alone_on_a_rollout_no_action_names(self):
         """An action that fires on every rollout would tear the pool down for the whole run."""
-        actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
+        actions = json.dumps(
+            [{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-00002"}]
+        )
         group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
 
         await group.train(rollout_id=3, rollout_data_pack=_DUMMY_DATA_PACK)
 
-        assert train_conftest.fake_worker_manager.stopped_cell_ids == []
+        group._cell_operations.suspend.assert_not_awaited()
 
 
 class TestSaveModel:

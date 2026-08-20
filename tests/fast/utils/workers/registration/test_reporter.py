@@ -5,6 +5,7 @@ import random
 
 import pytest
 
+from miles.utils.workers.naming import _worker_name_of_cell, compute_cell_id
 from miles.utils.workers.registration.models import RegistrationSnapshot
 from miles.utils.workers.registration.reporter import (
     SNAPSHOT_INTERVAL_SECONDS,
@@ -22,6 +23,10 @@ _REPORTER_ID = "miles-run-r1-inference"
 _RUN_UUID = "run-uuid-1"
 
 
+def _cell_id(cell_index: int) -> str:
+    return compute_cell_id(pool_id=_POOL_ID, cell_index=cell_index)
+
+
 class _FakeEngineProvider(BaseWorkerProvider):
     def __init__(self, *, cell_indices: list[int], worker_type: str = "regular", generation: int = 0) -> None:
         self.cell_indices = list(cell_indices)
@@ -37,7 +42,7 @@ class _FakeEngineProvider(BaseWorkerProvider):
         return [
             [
                 WorkerInfo(
-                    name=f"{cell_id}-0",
+                    name=_worker_name_of_cell(cell_id),
                     generation=self.generation,
                     self_addrs={"primary": HostAndPort(host="10.0.0.5", port=8000)},
                     gpu_ids=[0],
@@ -50,7 +55,7 @@ class _FakeEngineProvider(BaseWorkerProvider):
     async def watch_cells(self, reconcile: CellReconcileFn) -> StopWatchFn:
         self.reconcile = reconcile
         for cell_index in self.cell_indices:
-            await reconcile(f"{_POOL_ID}-{cell_index}", _cell_info(cell_index, worker_type=self.worker_type))
+            await reconcile(_cell_id(cell_index), _cell_info(cell_index, worker_type=self.worker_type))
 
         async def _stop() -> None:
             self.stopped = True
@@ -72,10 +77,10 @@ class _FakeHub:
 
 def _cell_info(cell_index: int, *, workers_hash: str = "hash-1", worker_type: str = "regular") -> CellInfo:
     return CellInfo(
-        cell_id=f"{_POOL_ID}-{cell_index}",
+        cell_id=_cell_id(cell_index),
         pool_id=_POOL_ID,
         alive=True,
-        worker_names=[f"{_POOL_ID}-{cell_index}-0"],
+        worker_names=[_worker_name_of_cell(_cell_id(cell_index))],
         workers_hash=workers_hash,
         meta=dict(model_id="default", worker_type=worker_type),
     )
@@ -130,7 +135,7 @@ class TestSnapshotContents:
         await reporter._send_once()
 
         (snapshot,) = hub_endpoint.snapshots
-        assert [cell.info.cell_id for cell in snapshot.cells] == [f"{_POOL_ID}-0", f"{_POOL_ID}-1"]
+        assert [cell.info.cell_id for cell in snapshot.cells] == [_cell_id(0), _cell_id(1)]
 
     async def test_it_reports_the_names_its_own_deployment_gave_its_cells(self):
         """Those pool ids are born naming this deployment, so a name rewritten here would name nothing."""
@@ -140,7 +145,7 @@ class TestSnapshotContents:
 
         (cell,) = hub_endpoint.snapshots[0].cells
         assert cell.info.pool_id == _POOL_ID
-        assert [worker.name for worker in cell.workers] == [f"{_POOL_ID}-0-0"]
+        assert [worker.name for worker in cell.workers] == [_worker_name_of_cell(_cell_id(0))]
 
     async def test_it_reports_the_addresses_its_own_deployment_observed(self):
         """The run calls the engine there, so an address computed anywhere else would be a guess."""
@@ -195,20 +200,20 @@ class TestSnapshotSequencing:
         await reporter._send_once()
         await reporter._send_once()
 
-        assert [cell.info.cell_id for cell in hub_endpoint.snapshots[0].cells] == [f"{_POOL_ID}-0"]
-        assert [cell.info.cell_id for cell in hub_endpoint.snapshots[1].cells] == [f"{_POOL_ID}-0"]
+        assert [cell.info.cell_id for cell in hub_endpoint.snapshots[0].cells] == [_cell_id(0)]
+        assert [cell.info.cell_id for cell in hub_endpoint.snapshots[1].cells] == [_cell_id(0)]
 
     async def test_a_changed_membership_is_sent_whole(self):
         """A cell that appeared or went away has to reach the run in the very next snapshot."""
         reporter, provider, hub_endpoint = await _synced()
         await reporter._send_once()
 
-        await provider.reconcile(f"{_POOL_ID}-1", _cell_info(1))
+        await provider.reconcile(_cell_id(1), _cell_info(1))
         await reporter._send_once()
 
         assert [cell.info.cell_id for cell in hub_endpoint.snapshots[1].cells] == [
-            f"{_POOL_ID}-0",
-            f"{_POOL_ID}-1",
+            _cell_id(0),
+            _cell_id(1),
         ]
 
 
@@ -218,11 +223,11 @@ class TestObservingItsOwnCells:
         reporter, provider, _hub_endpoint = await _synced()
         assert reporter._trigger.notified == 1
 
-        await provider.reconcile(f"{_POOL_ID}-1", _cell_info(1))
-        await provider.reconcile(f"{_POOL_ID}-1", None)
+        await provider.reconcile(_cell_id(1), _cell_info(1))
+        await provider.reconcile(_cell_id(1), None)
 
         assert reporter._trigger.notified == 3
-        assert sorted(reporter._info_of_cell_id) == [f"{_POOL_ID}-0"]
+        assert sorted(reporter._info_of_cell_id) == [_cell_id(0)]
 
 
 class TestReporterWorker:

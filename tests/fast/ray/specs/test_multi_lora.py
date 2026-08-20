@@ -46,5 +46,5 @@ class TestMultiLoraControllerSpec:
 
     def test_the_worker_and_cell_names_are_stable(self):
         """Every process reaches the controller by this name, so it is part of the release's contract."""
-        assert multi_lora_controller_worker_name() == "multi-lora-controller-0-0"
-        assert multi_lora_controller_cell_id() == "multi-lora-controller-0"
+        assert multi_lora_controller_worker_name() == "multi-lora-controller-00000-00000"
+        assert multi_lora_controller_cell_id() == "multi-lora-controller-00000"

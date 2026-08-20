@@ -20,11 +20,11 @@ class TestProcessIdentityToName:
 
     def test_actor(self) -> None:
         source = TrainProcessIdentity(component="actor", cell_index=1, rank_within_cell=3)
-        assert source.to_name() == "actor_cell1_rank3"
+        assert source.to_name() == "actor_cell00001_rank00003"
 
     def test_critic(self) -> None:
         source = TrainProcessIdentity(component="critic", cell_index=0, rank_within_cell=2)
-        assert source.to_name() == "critic_cell0_rank2"
+        assert source.to_name() == "critic_cell00000_rank00002"
 
     def test_trainer_controller(self) -> None:
         assert TrainerControllerProcessIdentity(trainer_id="actor").to_name() == "trainer_controller_actor"
@@ -36,7 +36,7 @@ class TestProcessIdentityToName:
     def test_a_policy_worker_names_the_policy_it_serves(self) -> None:
         """Two policies write to the same log directory, so their file names must differ."""
         source = TrainProcessIdentity(component="actor", model_id="alpha", cell_index=1, rank_within_cell=3)
-        assert source.to_name() == "alpha_actor_cell1_rank3"
+        assert source.to_name() == "alpha_actor_cell00001_rank00003"
 
     def test_inference_controller(self) -> None:
         assert SimpleProcessIdentity(component="inference_controller").to_name() == "inference_controller"
@@ -74,19 +74,20 @@ class TestTrainProcessIdentityValidation:
 
 class TestProcessIdentityUnion:
     def test_process_identity_union_deserializes_rollout_executor(self) -> None:
-        """The discriminated union maps the wire component "rollout_executor" to RolloutExecutorProcessIdentity."""
+        """The discriminated union maps the wire component "rollout_executor" to SimpleProcessIdentity."""
         parsed = TypeAdapter(ProcessIdentity).validate_python({"component": "rollout_executor"})
 
-        assert isinstance(parsed, RolloutExecutorProcessIdentity)
+        assert isinstance(parsed, SimpleProcessIdentity)
         assert parsed.to_name() == "rollout_executor"
 
     def test_rollout_executor_survives_a_union_json_roundtrip(self) -> None:
-        """A serialized RolloutExecutorProcessIdentity is parsed back to the same type through the union."""
+        """A serialized rollout executor identity is parsed back to the same value through the union."""
         adapter = TypeAdapter(ProcessIdentity)
+        source = SimpleProcessIdentity(component="rollout_executor")
 
-        parsed = adapter.validate_json(RolloutExecutorProcessIdentity().model_dump_json())
+        parsed = adapter.validate_json(source.model_dump_json())
 
-        assert parsed == RolloutExecutorProcessIdentity()
+        assert parsed == source
 
     def test_unknown_component_is_rejected_by_the_union(self) -> None:
         """An unknown component discriminator fails validation instead of falling back to a member."""

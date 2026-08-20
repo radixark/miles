@@ -3,7 +3,6 @@ from __future__ import annotations
 from argparse import Namespace
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -147,7 +146,7 @@ class TestWaitRouterReady:
 
         addr = await wait_router_ready(model_idx=1, provider=_FakeProvider())
 
-        assert requested == ["inference-router-1-0-0"]
+        assert requested == ["inference-router-1-00000-00000"]
         assert waited == [("10.0.0.9", 12345)]
         assert addr == HostAndPort(host="10.0.0.9", port=12345)
 
@@ -239,7 +238,7 @@ class TestWaitSessionServerReady:
         )
         await wait_session_server_ready(args, provider=_FakeProvider())
 
-        assert requested == ["session-server-0-0", "session-server-1-0"]
+        assert requested == ["session-server-00000-00000", "session-server-00001-00000"]
         assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
         assert args.session_server_instance_ids == {
             "10.0.0.9:5005": "00112233445566aa-0",
@@ -295,15 +294,11 @@ class TestWaitSessionServerReady:
             if port == 5006:
                 raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
 
-        monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
         monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready_async", _refuse_one)
 
         args = make_args(use_session_server=True, hf_checkpoint="/fake/model", session_server_workers=2)
         with pytest.raises(RuntimeError, match="10.0.0.9:5006 not ready"):
-            await wait_session_server_ready(args)
+            await wait_session_server_ready(args, provider=_FakeProvider())
 
     async def test_a_failed_instance_addr_lookup_fails_before_any_tcp_wait(self, monkeypatch):
         """A session server the worker manager cannot resolve aborts startup before any TCP probe."""
@@ -314,15 +309,64 @@ class TestWaitSessionServerReady:
 
         waited: list[tuple[str, int]] = []
         monkeypatch.setattr(
-            "miles.ray.rollout.router_manager.RayWorkerProvider",
-            SimpleNamespace(create=lambda: _FakeProvider()),
-        )
-        monkeypatch.setattr(
             "miles.ray.rollout.router_manager.wait_tcp_ready_async",
             _recording_probe(waited),
         )
 
         args = make_args(use_session_server=True, hf_checkpoint="/fake/model", session_server_workers=2)
         with pytest.raises(RuntimeError, match="not registered"):
-            await wait_session_server_ready(args)
+            await wait_session_server_ready(args, provider=_FakeProvider())
         assert waited == []
+
+
+class TestTheWaitCoversWhatEachServerDoesBeforeItBinds:
+    async def test_a_session_server_is_given_longer_than_a_router(self, monkeypatch):
+        """A router binds its port first thing. A session server imports transformers and loads the
+        tokenizer and chat template first, and it is scheduled by the platform before any of that, so
+        holding it to the router's budget reports a server that is merely still starting as unreachable."""
+
+        class _FakeProvider:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                return {"primary": HostAndPort(host="10.0.0.9", port=5004)}
+
+        budgets: list[float] = []
+
+        async def record_budget(host, port, timeout) -> None:
+            budgets.append(timeout)
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready_async", record_budget)
+
+        await wait_router_ready(model_idx=0, provider=_FakeProvider())
+        router_budget = budgets.pop()
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=1,
+            run_uuid="00112233445566aa",
+        )
+        await wait_session_server_ready(args, provider=_FakeProvider())
+
+        assert budgets == [router_manager._SESSION_SERVER_READY_TIMEOUT_SECONDS]
+        assert budgets[0] > router_budget
+
+    async def test_a_session_server_that_never_binds_still_fails(self, monkeypatch):
+        """The budget is there to cover a slow start, not to wait out one that is never coming."""
+
+        class _FakeProvider:
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                return {"primary": HostAndPort(host="10.0.0.9", port=5004)}
+
+        def _refuse(host: str, port: int, timeout: float) -> None:
+            raise RuntimeError(f"Server at {host}:{port} not ready after {timeout}s")
+
+        monkeypatch.setattr("miles.ray.rollout.router_manager.wait_tcp_ready_async", _refuse)
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=1,
+            run_uuid="00112233445566aa",
+        )
+
+        with pytest.raises(RuntimeError, match="not ready after"):
+            await wait_session_server_ready(args, provider=_FakeProvider())

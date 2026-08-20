@@ -75,7 +75,7 @@ def _provider(api, worker_ports=None, pool_ids=("engine",), **kwargs):
     )
 
 
-def _cell_info(provider, cell_id="engine-0"):
+def _cell_info(provider, cell_id="engine-00000"):
     async def scenario():
         stop = await _watch(provider, [])
         try:
@@ -116,7 +116,7 @@ class TestGetAddrs:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return (await provider.get_addrs("engine-0-0"))["primary"]
+                return (await provider.get_addrs("engine-00000-00000"))["primary"]
             finally:
                 await stop()
 
@@ -129,7 +129,7 @@ class TestGetAddrs:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                await provider.get_addrs("engine-9-9")
+                await provider.get_addrs("engine-00009-00009")
             finally:
                 await stop()
 
@@ -151,7 +151,7 @@ class TestWatchCells:
 
         asyncio.run(scenario())
 
-        assert sorted(cell_id for cell_id, _ in reported) == ["engine-0", "engine-1"]
+        assert sorted(cell_id for cell_id, _ in reported) == ["engine-00000", "engine-00001"]
 
     def test_finishes_the_initial_listing_before_returning(self):
         """Otherwise a caller reading the cells right after cannot tell "not listed yet" from "not there"."""
@@ -165,7 +165,7 @@ class TestWatchCells:
             finally:
                 await stop()
 
-        assert asyncio.run(scenario()) == ["engine-0"]
+        assert asyncio.run(scenario()) == ["engine-00000"]
 
     def test_hides_a_cell_of_another_controller(self):
         """Several controllers share a namespace, and each must see only the specs it was given."""
@@ -180,7 +180,7 @@ class TestWatchCells:
 
         asyncio.run(scenario())
 
-        assert [cell_id for cell_id, info in reported if info is not None] == ["engine-0"]
+        assert [cell_id for cell_id, info in reported if info is not None] == ["engine-00000"]
 
     def test_reports_a_cell_that_is_not_alive_yet_as_gone(self):
         """A cell that is still starting has nothing a consumer can drive, which is what None says."""
@@ -197,7 +197,7 @@ class TestWatchCells:
 
         asyncio.run(scenario())
 
-        assert reported == [("engine-0", None)]
+        assert reported == [("engine-00000", None)]
 
     def test_says_nothing_about_a_cell_of_another_pool(self):
         """A pod outside this view's pools is keyed to no cell, so there is nothing to report about it."""
@@ -241,7 +241,7 @@ class TestWatchCells:
             finally:
                 await stop()
 
-        assert asyncio.run(scenario()) == ["engine-0"]
+        assert asyncio.run(scenario()) == ["engine-00000"]
 
     def test_pushes_exactly_what_a_direct_query_would_answer(self):
         """One watch and one set of pure functions: a pushed cell and a pulled one cannot be allowed to disagree."""
@@ -262,7 +262,7 @@ class TestWatchCells:
             stop = await _watch(provider, reported)
             await asyncio.sleep(0.05)
             try:
-                return provider.cell_info("engine-0")
+                return provider.cell_info("engine-00000")
             finally:
                 await stop()
 
@@ -316,7 +316,7 @@ class TestWatchCellsStateCommit:
         asyncio.run(_run_watch(provider, reported))
 
         assert [info is None for _, info in reported] == [False, True]
-        assert [cell_id for cell_id, _ in reported] == ["engine-0", "engine-0"]
+        assert [cell_id for cell_id, _ in reported] == ["engine-00000", "engine-00000"]
 
 
 class TestCellInfo:
@@ -333,11 +333,11 @@ class TestCellInfo:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return provider.cell_info("engine-0")
+                return provider.cell_info("engine-00000")
             finally:
                 await stop()
 
-        assert asyncio.run(scenario()).worker_names == ["engine-0-0", "engine-0-1"]
+        assert asyncio.run(scenario()).worker_names == ["engine-00000-00000", "engine-00000-00001"]
 
     def test_carries_the_meta_a_platform_annotated(self):
         """An engine's model id is a domain fact its consumers need and the pod is where it travels."""
@@ -347,7 +347,7 @@ class TestCellInfo:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return provider.cell_info("engine-0")
+                return provider.cell_info("engine-00000")
             finally:
                 await stop()
 
@@ -358,7 +358,12 @@ class TestCellInfo:
         api = FakePodApi(pods=[make_pod(name="engine-0-0"), make_pod(name="engine-0-1", pod_in_cell_index="1")])
         provider = _provider(api, workers_per_pod={"engine": 2})
 
-        assert _cell_info(provider).worker_names == ["engine-0-0", "engine-0-1", "engine-0-2", "engine-0-3"]
+        assert _cell_info(provider).worker_names == [
+            "engine-00000-00000",
+            "engine-00000-00001",
+            "engine-00000-00002",
+            "engine-00000-00003",
+        ]
 
     def test_still_reports_the_pods_themselves_for_the_operations_that_delete_them(self):
         """Healing recreates pods, and a rank name is not something kubernetes could delete."""
@@ -368,7 +373,7 @@ class TestCellInfo:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return provider.pod_names_of_cell("engine-0")
+                return provider.pod_names_of_cell("engine-00000")
             finally:
                 await stop()
 
@@ -381,7 +386,7 @@ class TestCellInfo:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return provider.cell_info("engine-7")
+                return provider.cell_info("engine-00007")
             finally:
                 await stop()
 
@@ -398,8 +403,8 @@ class TestSpecMeta:
         api = FakePodApi(pods=[make_pod(name="engine-0-0"), make_pod(name="engine-1-0", cell_id_suffix="1")])
         provider = _provider(api, spec_metas={"engine": _spec_meta})
 
-        first = _cell_info(provider, cell_id="engine-0")
-        second = _cell_info(provider, cell_id="engine-1")
+        first = _cell_info(provider, cell_id="engine-00000")
+        second = _cell_info(provider, cell_id="engine-00001")
 
         assert (first.meta["cell_index"], second.meta["cell_index"]) == (0, 1)
         assert (first.meta["role"], second.meta["role"]) == ("actor", "actor")
@@ -474,7 +479,7 @@ def _trainer_provider(api, pool_ids=("engine",), **kwargs):
     )
 
 
-def _worker_infos(provider, cell_id="engine-0"):
+def _worker_infos(provider, cell_id="engine-00000"):
     async def scenario():
         stop = await _watch(provider, [])
         try:
@@ -485,7 +490,7 @@ def _worker_infos(provider, cell_id="engine-0"):
     return asyncio.run(scenario())
 
 
-def _worker_handle(provider, cell_id="engine-0"):
+def _worker_handle(provider, cell_id="engine-00000"):
     async def scenario():
         stop = await _watch(provider, [])
         try:
@@ -510,7 +515,7 @@ class TestGetWorkerInfos:
 
         infos = _worker_infos(_trainer_provider(api))
 
-        assert [info.name for info in infos] == ["engine-0-0", "engine-0-1", "engine-0-2"]
+        assert [info.name for info in infos] == ["engine-00000-00000", "engine-00000-00001", "engine-00000-00002"]
 
     def test_addresses_a_worker_at_its_pod_ip_on_the_spec_ports(self):
         """Every rank has its own network namespace, so each publishes the spec's ports at its own ip."""
@@ -572,7 +577,7 @@ class TestGetWorkerInfos:
     def test_refuses_a_cell_it_has_never_observed(self):
         """Returning no workers would read as a cell with nothing to do rather than as an error."""
         with pytest.raises(AssertionError, match="no observed worker pods"):
-            _worker_infos(_trainer_provider(FakePodApi()), cell_id="engine-9")
+            _worker_infos(_trainer_provider(FakePodApi()), cell_id="engine-00009")
 
     def test_a_worker_that_is_not_served_names_no_class_and_refuses_a_handle(self):
         """A command worker has no rpc surface at all, so the refusal belongs where one is asked for."""
@@ -591,7 +596,7 @@ class TestGetWorkerInfos:
 
         infos = _worker_infos(_trainer_provider(api, workers_per_pod={"engine": 3}))
 
-        assert [info.name for info in infos] == ["engine-0-0", "engine-0-1", "engine-0-2"]
+        assert [info.name for info in infos] == ["engine-00000-00000", "engine-00000-00001", "engine-00000-00002"]
 
     def test_offsets_the_rpc_port_of_each_rank_the_way_the_process_binds_it(self):
         """serve_inner listens on port + worker_in_pod_index, so any other guess reaches the wrong rank or nothing."""
@@ -613,7 +618,12 @@ class TestGetWorkerInfos:
 
         infos = _worker_infos(_trainer_provider(api, workers_per_pod={"engine": 2}))
 
-        assert [info.name for info in infos] == ["engine-0-0", "engine-0-1", "engine-0-2", "engine-0-3"]
+        assert [info.name for info in infos] == [
+            "engine-00000-00000",
+            "engine-00000-00001",
+            "engine-00000-00002",
+            "engine-00000-00003",
+        ]
         assert [info.self_addrs["rpc"].host for info in infos] == ["10.0.0.1", "10.0.0.1", "10.0.0.2", "10.0.0.2"]
 
     def test_gives_each_rank_its_own_share_of_the_gpus_of_the_pod(self):
@@ -639,7 +649,7 @@ class TestGetWorkerInfos:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return await provider.get_addrs("engine-0-1")
+                return await provider.get_addrs("engine-00000-00001")
             finally:
                 await stop()
 
@@ -658,11 +668,11 @@ class TestGetWorkerInfos:
         async def scenario():
             stop = await _watch(provider, [])
             try:
-                return provider.get_worker_infos(cell_ids=["engine-0", "engine-1"])
+                return provider.get_worker_infos(cell_ids=["engine-00000", "engine-00001"])
             finally:
                 await stop()
 
         assert [[info.name for info in infos] for infos in asyncio.run(scenario())] == [
-            ["engine-0-0"],
-            ["engine-1-0"],
+            ["engine-00000-00000"],
+            ["engine-00001-00000"],
         ]

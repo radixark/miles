@@ -3,11 +3,12 @@ from __future__ import annotations
 import pytest
 from tests.fast.utils.workers.worker_provider.kubernetes.run_specs import make_pool_spec
 
+from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.kubernetes.core.cell_view import compute_cell_info, compute_worker_infos
 from miles.utils.workers.worker_provider.kubernetes.core.pod_view import CellLabelKeys, ParsedPod
 from miles.utils.workers.worker_provider.kubernetes.core.provider import KubernetesRunInfo
 
-CELL_ID = "engine-0"
+CELL_ID = "engine-00000"
 ENGINE_CLASS = f"{__name__}.FakeEngine"
 
 
@@ -135,7 +136,9 @@ class TestWorkerInfos:
 
         infos = build_worker_infos(pods, workers_per_pod=2)
 
-        assert [info.name for info in infos] == [f"engine-0-{index}" for index in range(4)]
+        assert [info.name for info in infos] == [
+            compute_worker_name(pool_id="engine", worker_in_cell_index=index) for index in range(4)
+        ]
         assert [info.gpu_ids for info in infos] == [[0], [1], [0], [1]]
 
     def test_offsets_the_rpc_port_of_each_worker_the_way_its_process_binds_it(self):

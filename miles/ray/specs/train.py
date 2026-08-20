@@ -12,7 +12,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.naming import compute_cell_id, compute_worker_name
+from miles.utils.workers.naming import compute_cell_id, compute_worker_name, format_name_index
 from miles.utils.workers.types import DeployComponent, DeploymentIdentity
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -266,7 +266,8 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
             env_vars["TMS_INIT_ENABLE_DISK_BACKUP"] = "1"
             env_vars["TMS_DISK_BACKUP_CHUNK_MB"] = str(args.offload_train_disk_chunk_mb)
             env_vars["TMS_DISK_BACKUP_DIR"] = os.path.join(
-                args.offload_train_disk_dir, f"cell{ctx.cell_index}_rank{ctx.worker_in_cell_index}"
+                args.offload_train_disk_dir,
+                f"cell{format_name_index(ctx.cell_index)}_rank{format_name_index(ctx.worker_in_cell_index)}",
             )
         else:
             env_vars["TMS_INIT_ENABLE_CPU_BACKUP"] = "1"

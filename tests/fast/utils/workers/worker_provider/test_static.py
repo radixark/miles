@@ -56,37 +56,37 @@ def _addr_provider(*addrs: str) -> StaticWorkerProvider:
 class TestAddresses:
     def test_recomputes_the_host_the_chart_gave_the_cell(self):
         """The launcher and the pod run the same naming function, so no address has to be shipped between them."""
-        addrs = asyncio.run(_provider().get_addrs("trainer-controller-0-0"))
+        addrs = asyncio.run(_provider().get_addrs("trainer-controller-00000-00000"))
 
         assert addrs["primary"].host == naming.static_worker_host(_RELEASE, "trainer-controller", 0)
         assert addrs["primary"].port == 7000
 
     def test_each_cell_answers_on_its_own_host(self):
         """Every cell of a static pool is its own workload object, so cell index selects the hostname."""
-        second = asyncio.run(_provider().get_addrs("trainer-controller-1-0"))
+        second = asyncio.run(_provider().get_addrs("trainer-controller-00001-00000"))
 
         assert second["primary"].host == naming.static_worker_host(_RELEASE, "trainer-controller", 1)
 
     def test_carries_every_port_the_spec_declares(self):
         """A caller that asked for a port the spec declares must not have to know its number."""
-        addrs = asyncio.run(_provider().get_addrs("trainer-controller-0-0"))
+        addrs = asyncio.run(_provider().get_addrs("trainer-controller-00000-00000"))
 
         assert sorted(addrs) == ["primary", "rpc"]
 
     def test_refuses_a_worker_of_another_pool(self):
         """One provider answers one pool, and guessing across pools would return a plausible wrong host."""
-        with pytest.raises(AssertionError, match="inference-router-0-0-0"):
-            asyncio.run(_provider().get_addrs("inference-router-0-0-0"))
+        with pytest.raises(AssertionError, match="inference-router-0-00000-00000"):
+            asyncio.run(_provider().get_addrs("inference-router-0-00000-00000"))
 
     def test_refuses_a_worker_the_cell_never_holds(self):
         """A worker index beyond the cell size would be answered with cell zero's ports."""
-        with pytest.raises(AssertionError, match="trainer-controller-0-3"):
-            asyncio.run(_provider().get_addrs("trainer-controller-0-3"))
+        with pytest.raises(AssertionError, match="trainer-controller-00000-00003"):
+            asyncio.run(_provider().get_addrs("trainer-controller-00000-00003"))
 
     def test_refuses_a_cell_the_run_never_deployed(self):
         """A cell beyond the replica count has no workload object, so its host would never resolve."""
-        with pytest.raises(AssertionError, match="trainer-controller-7-0"):
-            asyncio.run(_provider().get_addrs("trainer-controller-7-0"))
+        with pytest.raises(AssertionError, match="trainer-controller-00007-00000"):
+            asyncio.run(_provider().get_addrs("trainer-controller-00007-00000"))
 
 
 class TestReleaseNaming:
@@ -116,7 +116,7 @@ class TestReleaseNaming:
 class TestHandles:
     def test_calls_a_served_worker_through_its_rpc_port(self):
         """A controller is reached by rpc, and the class it serves is named by its own spec."""
-        handle = _provider().get_handle("trainer-controller-0-0")
+        handle = _provider().get_handle("trainer-controller-00000-00000")
 
         assert isinstance(handle, RpcWorkerHandle)
         assert handle._worker_cls_name == "FakeController"
@@ -124,20 +124,20 @@ class TestHandles:
     def test_refuses_to_call_a_pool_that_is_only_launched(self):
         """A command worker declares no worker class, so nothing describes its rpc methods."""
         with pytest.raises(AssertionError, match="launched as a command"):
-            _provider(_command_spec()).get_handle("inference-router-0-0-0")
+            _provider(_command_spec()).get_handle("inference-router-0-00000-00000")
 
 
 class TestEnumeration:
     def test_refuses_to_enumerate_workers(self):
         """Nothing observes a static pool, so a caller expecting live workers must fail loudly."""
         with pytest.raises(NotImplementedError, match="does not enumerate workers"):
-            _provider().get_worker_infos(cell_ids=["trainer-controller-0"])
+            _provider().get_worker_infos(cell_ids=["trainer-controller-00000"])
 
 
 class TestAddressesGivenExplicitly:
     def test_answers_the_address_it_was_given(self):
         """The whole point of addressing another deployment is that nothing discovers its address at runtime."""
-        addrs = asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-0-0"))
+        addrs = asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-00000-00000"))
 
         assert addrs["rpc"].addr == "http://10.0.0.1:8000"
 
@@ -145,21 +145,23 @@ class TestAddressesGivenExplicitly:
         """A composite controller is given several addresses, and cell one is not cell zero."""
         provider = _addr_provider("10.0.0.1:8000", "10.0.0.2:9000")
 
-        assert asyncio.run(provider.get_addrs(f"{_ADDR_POOL_ID}-1-0")).get("rpc").addr == "http://10.0.0.2:9000"
+        assert (
+            asyncio.run(provider.get_addrs(f"{_ADDR_POOL_ID}-00001-00000")).get("rpc").addr == "http://10.0.0.2:9000"
+        )
 
     def test_refuses_a_worker_nobody_named(self):
         """Answering an address for an instance that was never given would invent a host out of thin air."""
-        with pytest.raises(AssertionError, match=f"{_ADDR_POOL_ID}-3-0"):
-            asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-3-0"))
+        with pytest.raises(AssertionError, match=f"{_ADDR_POOL_ID}-00003-00000"):
+            asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-00003-00000"))
 
     def test_refuses_a_second_worker_in_a_cell(self):
         """A statically addressed controller is one process, so worker one of its cell does not exist."""
-        with pytest.raises(AssertionError, match=f"{_ADDR_POOL_ID}-0-1"):
-            asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-0-1"))
+        with pytest.raises(AssertionError, match=f"{_ADDR_POOL_ID}-00000-00001"):
+            asyncio.run(_addr_provider().get_addrs(f"{_ADDR_POOL_ID}-00000-00001"))
 
     def test_builds_an_rpc_handle_on_the_given_address(self):
         """The orchestration script reaches an independently deployed controller only over rpc."""
-        assert isinstance(_addr_provider().get_handle(f"{_ADDR_POOL_ID}-0-0"), RpcWorkerHandle)
+        assert isinstance(_addr_provider().get_handle(f"{_ADDR_POOL_ID}-00000-00000"), RpcWorkerHandle)
 
 
 class TestWaitStaticAddrsReady:

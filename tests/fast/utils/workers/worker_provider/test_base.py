@@ -42,31 +42,31 @@ class _RecordingProvider(BaseWorkerProvider):
 class TestGetHandle:
     def test_the_cell_is_derived_from_the_worker_name(self):
         """A worker name carries its pool and cell, so the provider must not be asked for anything else."""
-        provider = _RecordingProvider("inference-controller-0-0")
+        provider = _RecordingProvider("inference-controller-00000-00000")
 
-        provider.get_handle("inference-controller-0-0")
+        provider.get_handle("inference-controller-00000-00000")
 
-        assert provider.requested_cell_ids == [["inference-controller-0"]]
+        assert provider.requested_cell_ids == [["inference-controller-00000"]]
 
     def test_the_handle_of_the_named_worker_is_returned(self):
         """A cell holds several workers, so the one whose name matches must come back, not merely the first."""
-        provider = _RecordingProvider("trainer-engine-actor-0-0", "trainer-engine-actor-0-1")
+        provider = _RecordingProvider("trainer-engine-actor-00000-00000", "trainer-engine-actor-00000-00001")
 
-        handle = provider.get_handle("trainer-engine-actor-0-1")
+        handle = provider.get_handle("trainer-engine-actor-00000-00001")
 
-        assert handle.worker_name == "trainer-engine-actor-0-1"
+        assert handle.worker_name == "trainer-engine-actor-00000-00001"
 
     def test_a_worker_the_cell_does_not_hold_is_rejected(self):
         """Answering with a handle to some other worker would silently drive the wrong process."""
-        provider = _RecordingProvider("trainer-engine-actor-0-0")
+        provider = _RecordingProvider("trainer-engine-actor-00000-00000")
 
         with pytest.raises(AssertionError, match="worker_name="):
-            provider.get_handle("trainer-engine-actor-0-1")
+            provider.get_handle("trainer-engine-actor-00000-00001")
 
 
 class TestTheHandlesOfACell:
     def test_a_worker_that_is_only_launched_has_no_handle(self):
         """An sglang engine is started by the run and called over its own http api, never as a worker."""
-        provider = _RecordingProvider("inference-engine-0-0", worker_class=None)
+        provider = _RecordingProvider("inference-engine-00000-00000", worker_class=None)
 
         assert provider.get_handles_of_worker_infos(provider._infos) == {}

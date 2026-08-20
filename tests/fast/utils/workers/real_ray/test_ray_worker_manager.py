@@ -15,6 +15,7 @@ from tests.fast.utils.workers.real_ray.conftest import (
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.http_utils import wait_tcp_ready_async
+from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -38,7 +39,15 @@ class TestLaunchOnRealRay:
             cell_index, worker_in_cell_index = (int(part) for part in name.split("-"))
             assert record["context"]["cell_index"] == cell_index
             assert record["context"]["worker_in_cell_index"] == worker_in_cell_index
-            advertised = ray.get(handle.get_worker_addrs.remote(f"engine-{name}"))["primary"]
+            advertised = ray.get(
+                handle.get_worker_addrs.remote(
+                    compute_worker_name(
+                        pool_id="engine",
+                        cell_index=cell_index,
+                        worker_in_cell_index=worker_in_cell_index,
+                    )
+                )
+            )["primary"]
             assert record["context"]["self_addrs"]["primary"] == {
                 "host": advertised.host,
                 "port": advertised.port,
@@ -52,7 +61,12 @@ class TestLaunchOnRealRay:
         )
 
         probe.wait_for_records(3)
-        addrs = [ray.get(handle.get_worker_addrs.remote(f"engine-0-{index}"))["primary"] for index in range(3)]
+        addrs = [
+            ray.get(handle.get_worker_addrs.remote(compute_worker_name(pool_id="engine", worker_in_cell_index=index)))[
+                "primary"
+            ]
+            for index in range(3)
+        ]
 
         assert len({(addr.host, addr.port) for addr in addrs}) == 3
         for addr in addrs:
@@ -91,7 +105,28 @@ class TestLaunchOnRealRay:
         records = probe.wait_for_records(1)
 
         assert records["0-0"]["context"]["self_addrs"]["primary"]["port"] == 21987
-        assert ray.get(handle.get_worker_addrs.remote("router-0-0"))["primary"].port == 21987
+        assert ray.get(handle.get_worker_addrs.remote("router-00000-00000"))["primary"].port == 21987
+
+    def test_a_static_port_a_stale_process_still_holds_is_refused(self, manager_factory, worker_probe_factory):
+        """Readiness is a bare connect probe, which a stale listener satisfies, so a run that
+        launched anyway would silently drive the router an earlier run left behind."""
+        probe = worker_probe_factory()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as squatter:
+            squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            squatter.bind(("", 0))
+            squatter.listen(1)
+            taken = squatter.getsockname()[1]
+
+            with pytest.raises(Exception, match=f"Port {taken} .* is already in use"):
+                manager_factory(
+                    [
+                        make_command_spec(
+                            "router",
+                            launch_command=probe.launch_command,
+                            port_infos=[PortInfo(name="primary", static_port=taken, allow_dynamic=False)],
+                        )
+                    ]
+                )
 
     def test_a_spec_without_cells_launches_no_worker(self, manager_factory, worker_probe_factory):
         """A disabled spec is accepted and simply contributes no workers."""
@@ -107,7 +142,7 @@ class TestLaunchOnRealRay:
         enabled_probe.wait_for_records(1)
 
         assert disabled_probe.read_records() == {}
-        assert ray.get(handle.get_worker_addrs.remote("router-0-0"))["primary"].port > 0
+        assert ray.get(handle.get_worker_addrs.remote("router-00000-00000"))["primary"].port > 0
 
 
 class TestNamedManagerActor:
@@ -120,7 +155,7 @@ class TestNamedManagerActor:
         records = probe.wait_for_records(1)
 
         provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
-        addr = (await provider.get_addrs(worker_name="router-0-0"))["primary"]
+        addr = (await provider.get_addrs(worker_name="router-00000-00000"))["primary"]
 
         assert isinstance(addr, HostAndPort)
         assert records["0-0"]["context"]["self_addrs"]["primary"] == {"host": addr.host, "port": addr.port}
@@ -135,7 +170,7 @@ class TestNamedManagerActor:
         probe.wait_for_records(1)
 
         with pytest.raises(ray.exceptions.RayTaskError):
-            ray.get(RayWorkerManager.get_handle().get_worker_addrs.remote("router-9-9"))
+            ray.get(RayWorkerManager.get_handle().get_worker_addrs.remote("router-00009-00009"))
 
 
 class TestScaleOnRealRay:
@@ -335,10 +370,10 @@ class TestWorkerInfosOnRealRay:
         records = probe.wait_for_records(4)
 
         provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
-        (infos,) = provider.get_worker_infos(cell_ids=["engine-1"])
+        (infos,) = provider.get_worker_infos(cell_ids=["engine-00001"])
         handles = provider.get_handles_of_worker_infos(infos)
 
-        assert [info.name for info in infos] == ["engine-1-0", "engine-1-1"]
+        assert [info.name for info in infos] == ["engine-00001-00000", "engine-00001-00001"]
         assert [info.generation for info in infos] == [1, 1]
         assert [info.gpu_ids for info in infos] == [[], []]
         for worker_in_cell_index, info in enumerate(infos):
@@ -355,7 +390,7 @@ class TestWorkerDeathOnRealRay:
         manager_factory([make_command_spec("engine", num_workers_per_cell=2, launch_command=probe.launch_command)])
         probe.wait_for_records(2)
         provider = RayWorkerProvider(worker_manager_handle=RayWorkerManager.get_handle())
-        (infos,) = provider.get_worker_infos(cell_ids=["engine-0"])
+        (infos,) = provider.get_worker_infos(cell_ids=["engine-00000"])
         handles = [provider.get_handle(info.name) for info in infos]
 
         # The babysit thread may reach os._exit before this reply is sent, so losing the reply is

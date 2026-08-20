@@ -52,7 +52,7 @@ class TestKubernetesAssembly:
         capability = install_workers()
 
         provider = capability.static_worker_provider(pool_id="inference-router-0")
-        addr = asyncio.run(provider.get_addrs("inference-router-0-0-0"))["primary"]
+        addr = asyncio.run(provider.get_addrs("inference-router-0-00000-00000"))["primary"]
 
         assert addr.host == ROUTER_HOST
         assert addr.port == 8000
@@ -88,7 +88,7 @@ class TestKubernetesAssembly:
         capability = install_workers(pods=[make_pod(name="engine-0-0", pool_id="engine", cell_id_suffix="0")])
         operations = capability.cell_operations()
 
-        asyncio.run(operations.suspend(cell_id="engine-0"))
+        asyncio.run(operations.suspend(cell_id="engine-00000"))
 
         assert deleted == [(NAMESPACE, ["engine-0-0"])]
 
@@ -99,7 +99,7 @@ class TestKubernetesAssembly:
 
         infos = asyncio.run(operations.cell_infos(pool_ids=["engine"]))
 
-        assert list(infos) == ["engine-0"]
+        assert list(infos) == ["engine-00000"]
 
     def test_never_reaches_for_the_ray_worker_manager(self, monkeypatch: pytest.MonkeyPatch, deleted) -> None:
         """A namespace has no Ray cluster, so touching the manager would fail the run there."""
@@ -107,7 +107,7 @@ class TestKubernetesAssembly:
         capability = install_workers(pods=[make_pod(name="engine-0-0", pool_id="engine", cell_id_suffix="0")])
 
         operations = capability.cell_operations()
-        asyncio.run(operations.suspend(cell_id="engine-0"))
+        asyncio.run(operations.suspend(cell_id="engine-00000"))
 
         assert isinstance(capability.dynamic_worker_provider(pool_ids=["engine"]), KubernetesWorkerProvider)
         assert deleted == [(NAMESPACE, ["engine-0-0"])]
