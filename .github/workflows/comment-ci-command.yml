@@ -16,6 +16,7 @@ jobs:
       github.event.comment.user.type == 'User'
     outputs:
       capability: ${{ steps.authorize.outputs.capability }}
+      success_reaction: ${{ steps.authorize.outputs.success_reaction }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -37,11 +38,13 @@ jobs:
           CI_COMMAND_PREFLIGHT: "true"
         run: python3 .github/workflows/scripts/comment_ci_command.py
 
-      - name: Reject an unknown capability
+      - name: Reject unknown routing outputs
         if: >-
-          steps.authorize.outputs.capability != 'none' &&
-          steps.authorize.outputs.capability != 'issues' &&
-          steps.authorize.outputs.capability != 'actions'
+          (steps.authorize.outputs.capability != 'none' &&
+           steps.authorize.outputs.capability != 'issues' &&
+           steps.authorize.outputs.capability != 'actions') ||
+          (steps.authorize.outputs.success_reaction != 'none' &&
+           steps.authorize.outputs.success_reaction != '+1')
         run: exit 1
 
       - name: Mint the issues-scoped App token
@@ -95,4 +98,34 @@ jobs:
         env:
           CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+        run: python3 .github/workflows/scripts/comment_ci_command.py
+
+  acknowledge-command:
+    needs: [handle-command, actions-command]
+    if: >-
+      needs.actions-command.result == 'success' &&
+      needs.handle-command.outputs.success_reaction == '+1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted handler
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
+          sparse-checkout-cone-mode: false
+
+      - name: Mint the reaction-scoped App token
+        id: reaction-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          permission-issues: write
+
+      - name: Acknowledge the successful command
+        env:
+          CI_COMMAND_API_TOKEN: ${{ steps.reaction-token.outputs.token }}
+          CI_COMMAND_ACKNOWLEDGE: "true"
         run: python3 .github/workflows/scripts/comment_ci_command.py

@@ -49,6 +49,7 @@ class FakeAPI:
         self.rerun_calls = []
         self.list_pull_calls = []
         self.dispatch_calls = []
+        self.reaction_calls = []
         self.head_pulls = [pull]
 
     def get_pull(self, pull_number):
@@ -90,6 +91,10 @@ class FakeAPI:
         self.calls.append(("create_workflow_dispatch", workflow_file, ref, inputs))
         self.dispatch_calls.append((workflow_file, ref, inputs))
 
+    def add_comment_reaction(self, comment_id, content):
+        self.calls.append(("add_comment_reaction", comment_id, content))
+        self.reaction_calls.append((comment_id, content))
+
 
 def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
     return {
@@ -97,6 +102,7 @@ def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
         "repository": {"id": HANDLER.REPOSITORY_ID, "full_name": HANDLER.REPOSITORY},
         "issue": {"number": 123, "pull_request": {"url": "https://example.invalid/pulls/123"}},
         "comment": {
+            "id": 5678,
             "body": body,
             "user": {"id": actor_id, "login": "actor", "type": "User"},
         },
@@ -258,15 +264,20 @@ def test_command_parser_ignores_unrelated_comments(body):
 
 def test_static_registry_owns_policy_capability_and_handler_routing():
     expected = {
-        HANDLER.AddLabel: ("add_label", "issues", HANDLER._handle_add_label),
-        HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels),
-        HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci),
-        HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file),
+        HANDLER.AddLabel: ("add_label", "issues", HANDLER._handle_add_label, "none"),
+        HANDLER.ClearLabels: ("clear_labels", "issues", HANDLER._handle_clear_labels, "none"),
+        HANDLER.RerunFailedCI: ("rerun_failed_ci", "actions", HANDLER._handle_rerun_failed_ci, "none"),
+        HANDLER.RunTestFile: ("run_test_file", "actions", HANDLER._handle_run_test_file, "+1"),
     }
     assert set(HANDLER.COMMAND_REGISTRY) == set(expected)
-    for request_type, (policy_key, capability, handler) in expected.items():
+    for request_type, (policy_key, capability, handler, success_reaction) in expected.items():
         spec = HANDLER.COMMAND_REGISTRY[request_type]
-        assert (spec.policy_key, spec.capability, spec.handler) == (policy_key, capability, handler)
+        assert (spec.policy_key, spec.capability, spec.handler, spec.success_reaction) == (
+            policy_key,
+            capability,
+            handler,
+            success_reaction,
+        )
 
 
 def test_unknown_request_type_fails_closed():
@@ -1363,16 +1374,16 @@ def test_clear_rejects_a_final_response_with_a_new_ci_control_label():
 
 
 @pytest.mark.parametrize(
-    ("body", "capability"),
+    ("body", "capability", "success_reaction"),
     [
-        ("/run-ci-short", "issues"),
-        ("/bypass-fastfail", "issues"),
-        ("/clear-labels", "issues"),
-        ("/rerun-failed-ci", "actions"),
-        (RUN_FILE_BODY, "actions"),
+        ("/run-ci-short", "issues", "none"),
+        ("/bypass-fastfail", "issues", "none"),
+        ("/clear-labels", "issues", "none"),
+        ("/rerun-failed-ci", "actions", "none"),
+        (RUN_FILE_BODY, "actions", "+1"),
     ],
 )
-def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, capability):
+def test_preflight_writes_only_fixed_routing(monkeypatch, tmp_path, body, capability, success_reaction):
     api = FakeAPI(pull())
     output_path = tmp_path / "github-output"
     monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=body))
@@ -1385,7 +1396,7 @@ def test_preflight_writes_only_a_fixed_capability(monkeypatch, tmp_path, body, c
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     assert HANDLER.main() == 0
-    assert output_path.read_text() == f"capability={capability}\n"
+    assert output_path.read_text() == (f"capability={capability}\nsuccess_reaction={success_reaction}\n")
     assert api.calls == [("get_permission", "actor")]
 
 
@@ -1395,6 +1406,28 @@ def test_preflight_rejects_an_unknown_registry_capability(monkeypatch, tmp_path)
     spec = HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel]
     monkeypatch.setitem(HANDLER.COMMAND_REGISTRY, HANDLER.AddLabel, spec._replace(capability="unknown"))
     monkeypatch.setattr(HANDLER, "load_json", lambda _path: event())
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_POLICY_PATH", "policy.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "token")
+    monkeypatch.setenv("CI_COMMAND_PREFLIGHT", "true")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+
+    assert HANDLER.main() == 1
+    assert not output_path.exists()
+
+
+def test_preflight_rejects_an_unknown_registry_success_reaction(monkeypatch, tmp_path):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    spec = HANDLER.COMMAND_REGISTRY[HANDLER.RunTestFile]
+    monkeypatch.setitem(
+        HANDLER.COMMAND_REGISTRY,
+        HANDLER.RunTestFile,
+        spec._replace(success_reaction="heart"),
+    )
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
     monkeypatch.setattr(HANDLER, "load_policy", lambda _path: policy())
     monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
     monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
@@ -1417,7 +1450,7 @@ def test_unrelated_comment_preflight_uses_no_policy_or_api(monkeypatch, tmp_path
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     assert HANDLER.main() == 0
-    assert output_path.read_text() == "capability=none\n"
+    assert output_path.read_text() == "capability=none\nsuccess_reaction=none\n"
 
 
 @pytest.mark.parametrize("permission", ["write", "admin"])
@@ -1568,6 +1601,159 @@ def test_create_workflow_dispatch_rejects_unconfirmed_response(monkeypatch, stat
     assert attempts == 1
 
 
+@pytest.mark.parametrize("status", [200, 201])
+def test_add_comment_reaction_accepts_created_or_existing_reaction(monkeypatch, status):
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"content":"+1"}'
+
+    response = Response()
+    response.status = status
+
+    def urlopen(request, *, timeout):
+        requests.append((request, timeout))
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    HANDLER.GitHubAPI("secret-token").add_comment_reaction(5678, "+1")
+
+    request, timeout = requests[0]
+    assert request.full_url == ("https://api.github.com/repos/radixark/miles/issues/comments/5678/reactions")
+    assert request.method == "POST"
+    assert json.loads(request.data.decode("utf-8")) == {"content": "+1"}
+    assert timeout == 15
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [
+        (202, b'{"content":"+1"}', "expected 200 or 201"),
+        (204, b"", "expected 200 or 201"),
+        (201, b'{"content":"heart"}', "did not confirm"),
+        (201, b"not-json", "invalid JSON"),
+    ],
+)
+def test_add_comment_reaction_rejects_unconfirmed_response_without_retry(monkeypatch, status, body, message):
+    attempts = 0
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return body
+
+    response = Response()
+    response.status = status
+
+    def urlopen(_request, *, timeout):
+        nonlocal attempts
+        attempts += 1
+        assert timeout == 15
+        return response
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").add_comment_reaction(5678, "+1")
+    assert attempts == 1
+
+
+@pytest.mark.parametrize(
+    ("exception", "message"),
+    [
+        (urllib.error.HTTPError("url", 403, "forbidden", {}, None), "HTTP 403"),
+        (TimeoutError(), "timed out"),
+    ],
+)
+def test_comment_reaction_api_failure_is_not_retried(monkeypatch, exception, message):
+    attempts = []
+
+    def urlopen(_request, *, timeout):
+        attempts.append(timeout)
+        raise exception
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER.GitHubAPI("secret-token").add_comment_reaction(5678, "+1")
+    assert attempts == [15]
+
+
+def test_acknowledge_event_reacts_only_for_run_test_file():
+    api = FakeAPI(pull())
+
+    result = HANDLER.acknowledge_event(event(body=RUN_FILE_BODY), api)
+
+    assert api.reaction_calls == [(5678, "+1")]
+    assert result == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_SUCCESS_REACTION_CONFIRMED",
+        "pull_number": 123,
+        "reaction": "+1",
+    }
+
+
+def test_acknowledge_event_rejects_commands_without_a_success_reaction():
+    api = FakeAPI(pull())
+
+    with pytest.raises(HANDLER.CommentCommandError, match="does not define"):
+        HANDLER.acknowledge_event(event(body="/rerun-failed-ci"), api)
+    assert api.reaction_calls == []
+
+
+@pytest.mark.parametrize("comment_id", [None, 0, "5678"])
+def test_acknowledge_event_rejects_an_invalid_comment_id(comment_id):
+    api = FakeAPI(pull())
+    command_event = event(body=RUN_FILE_BODY)
+    command_event["comment"]["id"] = comment_id
+
+    with pytest.raises(HANDLER.CommentCommandError, match="comment ID must be a positive integer"):
+        HANDLER.acknowledge_event(command_event, api)
+    assert api.reaction_calls == []
+
+
+def test_acknowledge_mode_reacts_without_loading_policy(monkeypatch, capsys):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "reaction-token")
+    monkeypatch.setenv("CI_COMMAND_ACKNOWLEDGE", "true")
+
+    assert HANDLER.main() == 0
+    assert api.calls == [("add_comment_reaction", 5678, "+1")]
+    assert json.loads(capsys.readouterr().out) == {
+        "actor_id": ACTOR_ID,
+        "decision": "ALLOW_SUCCESS_REACTION_CONFIRMED",
+        "pull_number": 123,
+        "reaction": "+1",
+    }
+
+
+def test_acknowledge_mode_rejects_a_command_without_a_success_reaction(monkeypatch):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body="/rerun-failed-ci"))
+    monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "reaction-token")
+    monkeypatch.setenv("CI_COMMAND_ACKNOWLEDGE", "true")
+
+    assert HANDLER.main() == 1
+    assert api.calls == []
+
+
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
@@ -1577,7 +1763,7 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 2
+    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 3
     assert "client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}" in workflow
     assert "private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}" in workflow
     assert "permission-issues: write" in workflow
@@ -1586,27 +1772,52 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}" in workflow
+    assert "CI_COMMAND_API_TOKEN: ${{ steps.reaction-token.outputs.token }}" in workflow
     assert "CI_COMMAND_APP_TOKEN" not in workflow
     assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
     assert "steps.authorize.outputs.capability != 'none'" in workflow
     assert "steps.authorize.outputs.capability != 'issues'" in workflow
     assert "steps.authorize.outputs.capability != 'actions'" in workflow
     assert "capability: ${{ steps.authorize.outputs.capability }}" in workflow
+    assert "success_reaction: ${{ steps.authorize.outputs.success_reaction }}" in workflow
     assert "needs: handle-command" in workflow
     assert "if: needs.handle-command.outputs.capability == 'actions'" in workflow
     assert "group: comment-ci-actions-${{ github.event.issue.number }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
+    actions_job = workflow.split("  actions-command:", 1)[1].split("  acknowledge-command:", 1)[0]
+    acknowledge_job = workflow.split("  acknowledge-command:", 1)[1]
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
     actions_token = workflow.split("- name: Mint the actions-scoped App token", 1)[1].split(
         "- name: Authorize and run the actions command", 1
     )[0]
+    reaction_token = workflow.split("- name: Mint the reaction-scoped App token", 1)[1].split(
+        "- name: Acknowledge the successful command", 1
+    )[0]
     assert "permission-issues: write" in issues_token
     assert "permission-actions: write" not in issues_token
     assert "permission-actions: write" in actions_token
     assert "permission-issues: write" not in actions_token
+    assert "permission-issues: write" in reaction_token
+    assert "permission-actions: write" not in reaction_token
+    assert "permission-pull-requests: read" not in reaction_token
+    assert workflow.index("Authorize and run the actions command") < workflow.index(
+        "Acknowledge the successful command"
+    )
+    assert "Mint the reaction-scoped App token" not in actions_job
+    assert "permission-issues: write" not in actions_job
+    assert "CI_COMMAND_ACKNOWLEDGE" not in actions_job
+    assert "needs: [handle-command, actions-command]" in acknowledge_job
+    assert (
+        "if: >-\n"
+        "      needs.actions-command.result == 'success' &&\n"
+        "      needs.handle-command.outputs.success_reaction == '+1'"
+    ) in acknowledge_job
+    assert "always()" not in acknowledge_job
+    assert "permission-issues: write" in acknowledge_job
+    assert 'CI_COMMAND_ACKNOWLEDGE: "true"' in acknowledge_job
     assert "pull_request_target" not in workflow
     assert "github.event.pull_request.head" not in workflow
     assert "pip install" not in workflow
