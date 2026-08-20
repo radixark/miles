@@ -296,6 +296,7 @@ def _compute_spec_inference_engine(
     server_group_config: ServerGroupConfig,
 ) -> CommandWorkerSpec:
     num_workers_per_cell = max(1, server_group_config.num_gpus_per_engine // args.num_gpus_per_node)
+    interpreter_prefix = python_argv_prefix()
 
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         dist_init = ctx.self_addrs["dist_init"]
@@ -308,6 +309,7 @@ def _compute_spec_inference_engine(
         )
         return compute_engine_launch_cmd(
             args=args,
+            interpreter_prefix=interpreter_prefix,
             # TODO: make the indexing it k8s native compatible
             node_rank=ctx.worker_in_cell_index,
             worker_type=server_group_config.worker_type,
