@@ -191,13 +191,14 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
 
-    use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
-    if is_multi_lora_enabled(args):
-        # Per-slot LayerWise optimizers: plain DDP all-reduce keeps full grads on
-        # every rank (whole-param sharding + retained-gradient idempotency).
-        use_distributed_optimizer = False
+    # The grad buffer must agree with the optimizer that ``setup_model_and_optimizer``
+    # builds from the same ``args``: a distributed grad buffer reduce-scatters grads,
+    # so pairing it with a non-distributed optimizer leaves every rank stepping on its
+    # own unreduced shard once DP > 1. ``set_default_megatron_args`` is the single
+    # source of truth and already resolves this to False for Muon (owns its sharding)
+    # and for multi-LoRA (per-slot LayerWise optimizers need plain DDP all-reduce).
     ddp_config = DistributedDataParallelConfig(
-        use_distributed_optimizer=use_distributed_optimizer,
+        use_distributed_optimizer=args.use_distributed_optimizer,
         grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
     )
     ddp_config.finalize()
