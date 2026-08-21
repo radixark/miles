@@ -122,11 +122,12 @@ def test_per_position_ids_pads_prompt_and_keeps_response_order():
 
 
 def test_score_payload_routes_per_position_vs_flat():
-    flat = _score_payload([1, 2, 3], token_ids=[5, 7])
+    flat = _score_payload([1, 2, 3], token_ids=[5, 7], temperature=0.7)
     assert flat["token_ids_logprob"] == [5, 7]
     assert "token_ids_logprob_positions" not in flat
+    assert flat["sampling_params"]["temperature"] == 0.7
 
-    per_pos = _score_payload([1, 2, 3], token_ids_positions=[[], [5, 7], [9, 11]])
+    per_pos = _score_payload([1, 2, 3], token_ids_positions=[[], [5, 7], [9, 11]], temperature=0.7)
     assert per_pos["token_ids_logprob_positions"] == [[], [5, 7], [9, 11]]
     assert "token_ids_logprob" not in per_pos
 
