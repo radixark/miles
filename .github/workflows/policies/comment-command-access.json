@@ -2,11 +2,17 @@
   "version": 2,
   "groups": {
     "add_label_access": {
-      "repository_permissions": ["write", "admin"],
+      "repository_permissions": [
+        "write",
+        "admin"
+      ],
       "user_ids": []
     },
     "repo_write_access": {
-      "repository_permissions": ["write", "admin"]
+      "repository_permissions": [
+        "write",
+        "admin"
+      ]
     }
   },
   "commands": {
@@ -15,6 +21,7 @@
       "allowed_labels": [
         "bypass-fastfail",
         "run-ci-amd",
+        "run-ci-blackwell-only",
         "run-ci-ckpt",
         "run-ci-eval",
         "run-ci-fsdp",
@@ -33,7 +40,9 @@
         "run-ci-replay",
         "run-ci-sglang",
         "run-ci-short",
-        "run-ci-weight-update"
+        "run-ci-weight-update",
+        "run-on-blackwell",
+        "run-on-hopper"
       ]
     },
     "clear_labels": {

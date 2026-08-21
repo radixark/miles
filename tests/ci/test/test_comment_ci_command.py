@@ -440,6 +440,10 @@ def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     assert labels == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
         "bypass-fastfail",
         "run-ci-image",
+        # Scope and dispatch labels: consumed by ci_policy, not KNOWN_LABELS.
+        "run-ci-blackwell-only",
+        "run-on-hopper",
+        "run-on-blackwell",
     }
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,

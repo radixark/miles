@@ -89,7 +89,7 @@ Host conventions:
   CVD intentionally left unset so jobs see all 8 GPUs. The bare
   `--env CUDA_VISIBLE_DEVICES` forwards the "unset" state, and CUDA defaults
   to seeing every visible device.
-* **b200-oma-8gpu-0** (B200, 1 runner, externally managed via `gh-runner` image):
+* **b200-oma-8gpu-0** (B200, 1 runner, `docker-compose` flow):
   whole node, CVD unset like the novita hosts. Deliberately not partitioned —
   the 8-GPU runner would otherwise share physical GPUs with any 2/4-GPU runner
   on the same host, and GitHub has no cross-runner resource lock. Tests needing

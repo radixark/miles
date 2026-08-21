@@ -8,6 +8,7 @@ from pathlib import Path
 from tests.ci.ci_policy import RunPolicy, registration_matches_selection, strip_run_ci_prefix
 from tests.ci.ci_register import CIRegistry
 from tests.ci.labels import KNOWN_LABELS
+from tests.ci.run_suite import runs_in_stage
 
 # Only stages with jobs in the Miles PR workflows belong here; the external
 # MI350 nightly suites are not local runner-allocation targets.
@@ -72,19 +73,40 @@ def read_changed_files(path: str) -> tuple[ChangedFile, ...] | None:
     return tuple(changed_files) or None
 
 
-def _runnable_stages(registrations: Iterable[CIRegistry], run_policy: RunPolicy) -> set[str]:
+def _stages_for(registration: CIRegistry, run_policy: RunPolicy) -> set[str]:
+    """PR GPU stages this registration would execute in under `run_policy`.
+
+    Dispatch can move a test off its declared suite, so this asks the same
+    `runs_in_stage` predicate `run_suite` collects with. Without it a
+    `run-on-blackwell` PR would still allocate every Hopper runner and then find
+    nothing to run on them.
+    """
     return {
-        registration.suite
-        for registration in registrations
-        if registration.suite in PR_GPU_STAGES
-        and registration.disabled is None
-        and registration_matches_selection(
+        stage
+        for stage in PR_GPU_STAGES
+        if runs_in_stage(
+            registration,
+            stage,
+            dispatch_arches=run_policy.dispatch_arches,
+            absorb=run_policy.absorb,
+        )
+    }
+
+
+def _runnable_stages(registrations: Iterable[CIRegistry], run_policy: RunPolicy) -> set[str]:
+    stages: set[str] = set()
+    for registration in registrations:
+        if registration.disabled is not None:
+            continue
+        if not registration_matches_selection(
             registration.labels,
             registration.nightly,
             admit_nightly_tests=run_policy.admit_nightly_tests,
             include_labels=run_policy.include_labels,
-        )
-    }
+        ):
+            continue
+        stages |= _stages_for(registration, run_policy)
+    return stages
 
 
 def _explicit_scope_stages(
@@ -98,27 +120,34 @@ def _explicit_scope_stages(
         return set(runnable_stages)
 
     requested_labels = strip_run_ci_prefix(raw_labels) & set(KNOWN_LABELS)
-    return {
-        registration.suite
-        for registration in registrations
-        if registration.suite in PR_GPU_STAGES
-        and registration.disabled is None
-        and (not registration.nightly or run_policy.admit_nightly_tests)
-        and bool(set(registration.labels) & requested_labels)
-    }
+    stages: set[str] = set()
+    for registration in registrations:
+        if registration.disabled is not None:
+            continue
+        if registration.nightly and not run_policy.admit_nightly_tests:
+            continue
+        if not set(registration.labels) & requested_labels:
+            continue
+        stages |= _stages_for(registration, run_policy)
+    return stages
 
 
 def _known_no_gpu_path(path: str) -> bool:
     return path in _NO_GPU_PATHS or path.startswith(_NO_GPU_PREFIXES) or path.endswith(_NO_GPU_SUFFIXES)
 
 
-def _affected_stages(changed_files: Iterable[ChangedFile], registrations: Iterable[CIRegistry]) -> set[str]:
+def _affected_stages(
+    changed_files: Iterable[ChangedFile], registrations: Iterable[CIRegistry], run_policy: RunPolicy
+) -> set[str]:
     stages_by_file: dict[str, set[str]] = {}
     registered_files: set[str] = set()
     for registration in registrations:
         registered_files.add(registration.filename)
-        if registration.suite in PR_GPU_STAGES:
-            stages_by_file.setdefault(registration.filename, set()).add(registration.suite)
+        for stage in PR_GPU_STAGES:
+            if runs_in_stage(
+                registration, stage, dispatch_arches=run_policy.dispatch_arches, absorb=run_policy.absorb
+            ):
+                stages_by_file.setdefault(registration.filename, set()).add(stage)
 
     affected: set[str] = set()
     for changed_file in changed_files:
@@ -146,6 +175,6 @@ def select_skipped_gpu_stages(
 
     registrations = tuple(registrations)
     runnable = _runnable_stages(registrations, run_policy)
-    affected = _affected_stages(changed_files, registrations)
+    affected = _affected_stages(changed_files, registrations, run_policy)
     affected.update(_explicit_scope_stages(registrations, run_policy, raw_labels, runnable))
     return tuple(sorted(PR_GPU_STAGES - (runnable & affected)))

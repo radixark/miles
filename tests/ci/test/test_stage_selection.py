@@ -20,14 +20,19 @@ def _registration(
     *,
     labels: list[str] | None = None,
     disabled: str | None = None,
+    hardware: list[str] | None = None,
 ) -> CIRegistry:
     backend = HWBackend.ROCM if suite == "stage-c-4-gpu-mi350" else HWBackend.CUDA
+    if hardware is None and backend is HWBackend.CUDA:
+        # Mirror the home-stage invariant the registry enforces.
+        hardware = ["blackwell"] if suite.endswith("-b200") else ["hopper"]
     return CIRegistry(
         backend=backend,
         filename=filename,
         est_time=1,
         suite=suite,
         labels=["precision"] if labels is None else labels,
+        hardware=hardware or [],
         disabled=disabled,
     )
 

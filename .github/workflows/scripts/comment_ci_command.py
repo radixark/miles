@@ -53,7 +53,10 @@ PR_BODY_PINS = (
         re.compile(r"#[0-9]+|[A-Za-z0-9_][A-Za-z0-9_./-]*"),
     ),
 )
-LABEL_PATTERN = re.compile(r"(?:run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
+# Shapes a policy entry may take. Widening this does not widen what a comment
+# can add: `commands.add_label.allowed_labels` stays an exact default-deny
+# allowlist, and this only rejects malformed entries in it.
+LABEL_PATTERN = re.compile(r"(?:run-(?:ci|on)-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
 POLICY_GROUPS = frozenset({"add_label_access", "repo_write_access"})
