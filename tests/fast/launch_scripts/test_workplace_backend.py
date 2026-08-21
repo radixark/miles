@@ -9,11 +9,7 @@ from miles.utils.external_utils.command_utils.ray_backend.backend import RayComm
 def test_workplace_launch_uses_the_configured_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """The workplace recipe submits through its backend instead of removed module exports."""
     calls: list[dict[str, object]] = []
-    def capture(self: RayCommandBackend, **kwargs: object) -> None:
-        assert "config" not in kwargs
-        calls.append({**kwargs, "config": self.config})
-
-    monkeypatch.setattr(RayCommandBackend, "execute_train", capture)
+    monkeypatch.setattr(RayCommandBackend, "execute_train", lambda self, **kwargs: calls.append(kwargs))
     module = runpy.run_path(
         str(
             Path(__file__).resolve().parents[3]

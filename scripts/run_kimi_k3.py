@@ -525,6 +525,7 @@ def _train(args: ScriptArgs) -> None:
     backend = args.create_backend()
     backend.execute_train(
         train_args=train_args,
+        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars=extra_env_vars,
