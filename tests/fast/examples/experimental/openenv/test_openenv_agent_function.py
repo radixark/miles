@@ -67,6 +67,13 @@ class _FakeAction:
         self.command = command
 
 
+def _fake_completion(text, finish_reason="stop"):
+    msg = types.SimpleNamespace(
+        content=text, model_dump=lambda exclude_none=True: {"role": "assistant", "content": text}
+    )
+    return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason=finish_reason)])
+
+
 class _FakePolicy:
     """Turn 1: emit a bash command. Turn 2: TASK_COMPLETE."""
 
@@ -77,10 +84,15 @@ class _FakePolicy:
     async def _create(self, **kw):
         self.n += 1
         text = "```bash\necho hi\n```" if self.n == 1 else "TASK_COMPLETE"
-        msg = types.SimpleNamespace(
-            content=text, model_dump=lambda exclude_none=True: {"role": "assistant", "content": text}
-        )
-        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=msg, finish_reason="stop")])
+        return _fake_completion(text)
+
+
+class _NoCommandPolicy(_FakePolicy):
+    """Emits only whitespace, so there is no command to execute."""
+
+    async def _create(self, **kw):
+        self.n += 1
+        return _fake_completion(" \n")
 
 
 _CLASSES = {"env": _FakeEnv, "action": _FakeAction}
@@ -111,7 +123,9 @@ def test_shared_leg_dispatch(monkeypatch):
     assert execs[0].command == "echo hi"
     assert any("/tmp/tbench2_env_runs" in (a.command or "") for a in execs), "trial-dir purge missing"
     assert any(a.action_type == "evaluate" for a in actions)
-    assert metrics["turns"] == 2 and metrics["tool_calls"] == 1
+    assert metrics["turns"] == 2
+    assert metrics["end_reason"] == "task_complete"
+    assert metrics["tool_calls"] == 1
 
 
 class _TruncatingPolicy(_FakePolicy):
@@ -138,9 +152,45 @@ def test_length_capped_turn_ends_the_episode(monkeypatch):
     )
 
     assert metrics["turns"] == 1
+    assert metrics["end_reason"] == "length"
     assert metrics["tool_calls"] == 0
     execs = [a for a in _FakeEnv.last_actions if a.action_type == "exec"]
     assert not [a for a in execs if "echo hi" in (a.command or "")], "ran a command the model never finished"
+
+
+def test_no_command_reports_end_reason(monkeypatch):
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
+
+    async def spying_with_env(env_cls, env_url, body):
+        return await body(env_cls())
+
+    monkeypatch.setattr(oaf, "_with_env", spying_with_env)
+
+    _, metrics = run_async(
+        oaf.run_episode(_NoCommandPolicy(), "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"})
+    )
+
+    assert metrics["turns"] == 1
+    assert metrics["end_reason"] == "no_command"
+    assert metrics["tool_calls"] == 0
+
+
+def test_max_turns_reports_end_reason(monkeypatch):
+    monkeypatch.setenv("OPENENV_MAX_TURNS", "1")
+    monkeypatch.setattr(oaf, "load_tbench2", lambda: _CLASSES)
+
+    async def spying_with_env(env_cls, env_url, body):
+        return await body(env_cls())
+
+    monkeypatch.setattr(oaf, "_with_env", spying_with_env)
+
+    policy = _FakePolicy()
+    _, metrics = run_async(oaf.run_episode(policy, "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"}))
+
+    assert policy.n == 1
+    assert metrics["turns"] == 1
+    assert metrics["end_reason"] == "max_turns"
+    assert metrics["tool_calls"] == 1
 
 
 def test_old_server_reward_is_not_trusted(monkeypatch):
@@ -208,3 +258,4 @@ def test_truncated_turn_ends_the_episode(monkeypatch):
     assert all("/tmp/tbench2_env_runs" in (a.command or "") for a in execs), execs
     assert any(a.action_type == "evaluate" for a in actions), "scoring still runs"
     assert reward == 1.0 and metrics["turns"] == 1
+    assert metrics["end_reason"] == "length"

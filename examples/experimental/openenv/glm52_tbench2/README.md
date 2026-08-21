@@ -82,7 +82,7 @@ $MODEL_DIR/GLM-5.2_torch_dist   # training; tools/convert_hf_to_torch_dist.py
 $MODEL_DIR/GLM-5.2_fp8          # rollout;  tools/convert_hf_to_fp8.py
 
 python examples/experimental/openenv/make_tbench2_data.py \
-    --tasks_dir $OPENENV_TB2_TASKS_DIR --output $DATA_DIR/tbench2_train.jsonl
+    --tasks_dir $OPENENV_TB2_TASKS_DIR --output $DATA_DIR/tbench2_train69.jsonl
 # hold out a disjoint task set as $DATA_DIR/tbench2_eval.jsonl for the eval
 ```
 

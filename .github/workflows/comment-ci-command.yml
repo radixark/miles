@@ -1,0 +1,98 @@
+name: Comment command gateway
+run-name: Comment command by ${{ github.event.comment.user.login }}
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  handle-command:
+    if: >-
+      vars.CI_COMMAND_APP_ENABLED == 'true' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.type == 'User'
+    outputs:
+      capability: ${{ steps.authorize.outputs.capability }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted handler and policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/comment_ci_command.py
+            .github/workflows/policies/comment-command-access.json
+          sparse-checkout-cone-mode: false
+
+      - name: Validate and authorize the command
+        id: authorize
+        env:
+          CI_COMMAND_API_TOKEN: ${{ github.token }}
+          CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+          CI_COMMAND_PREFLIGHT: "true"
+        run: python3 .github/workflows/scripts/comment_ci_command.py
+
+      - name: Reject an unknown capability
+        if: >-
+          steps.authorize.outputs.capability != 'none' &&
+          steps.authorize.outputs.capability != 'issues' &&
+          steps.authorize.outputs.capability != 'actions'
+        run: exit 1
+
+      - name: Mint the issues-scoped App token
+        if: steps.authorize.outputs.capability == 'issues'
+        id: issues-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: read
+
+      - name: Authorize and run the issues command
+        if: steps.authorize.outputs.capability == 'issues'
+        env:
+          CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}
+          CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+        run: python3 .github/workflows/scripts/comment_ci_command.py
+
+  # Actions-capability commands: /rerun-failed-ci and /rerun-test <test-file>.
+  actions-command:
+    needs: handle-command
+    if: needs.handle-command.outputs.capability == 'actions'
+    concurrency:
+      group: comment-ci-actions-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted handler and policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/comment_ci_command.py
+            .github/workflows/policies/comment-command-access.json
+          sparse-checkout-cone-mode: false
+
+      - name: Mint the actions-scoped App token
+        id: actions-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-pull-requests: read
+
+      - name: Authorize and run the actions command
+        env:
+          CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}
+          CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
+        run: python3 .github/workflows/scripts/comment_ci_command.py

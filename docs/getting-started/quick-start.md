@@ -100,10 +100,6 @@ A few things it already does for you:
 - The policy is evaluated on AIME-2024 every 20 rollouts.
 - If the run dies, relaunch the same command — training resumes from the last
   checkpoint.
-- The [Miles dashboard](/user-guide/dashboard) records what every GPU was doing
-  during a step and what every trajectory contained, token by token. Serve it with
-  `python -m miles.dashboard.serve --dump-details /root/shared_data/dump_details`
-  and open `http://localhost:7788`.
 
 Once the engines warm up and the first rollout completes, the log settles into
 per-rollout metric lines (values illustrative, keys abridged):
@@ -192,7 +188,7 @@ size 256.
 |---|---|
 | Is the policy learning? | `rollout/raw_reward` in stdout, or wandb |
 | Rollout or train bottleneck? | `perf/rollout_time` vs. `perf/actor_train_time` |
-| Are GPUs saturated? | The [Miles dashboard](/user-guide/dashboard) GPU timeline |
+| Are GPUs saturated? | `nvidia-smi dmon -s u` |
 | SGLang internals? | Ray worker logs under `~/.ray/session_latest/logs/`; raise verbosity with `--sglang-log-level` |
 | Ranks crashing? | `~/.ray/session_latest/logs/worker-*.err` |
 

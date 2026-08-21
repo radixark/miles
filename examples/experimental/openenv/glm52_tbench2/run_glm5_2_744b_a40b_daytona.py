@@ -69,7 +69,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_interval: int = 100000  # effectively: only the end-of-training save
 
     # OpenEnv / Daytona
-    prompt_data: str = ""  # default: <data_dir>/tbench2_train.jsonl
+    prompt_data: str = ""  # default: <data_dir>/tbench2_train69.jsonl
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     openenv_max_turns: int = int(os.environ.get("OPENENV_MAX_TURNS", "30"))
     openenv_max_rollout_time_seconds: int = int(os.environ.get("OPENENV_MAX_ROLLOUT_TIME_SECONDS", "3600"))
@@ -107,7 +107,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         ), "GB300 config: 8 train nodes plus inference nodes (4 GPUs each)"
         assert self.daytona_api_key, "DAYTONA_API_KEY must be set in the environment"
         if not self.prompt_data:
-            self.prompt_data = f"{self.data_dir}/tbench2_train.jsonl"
+            self.prompt_data = f"{self.data_dir}/tbench2_train69.jsonl"
         if self.eval_interval and not self.eval_prompt_data:
             self.eval_prompt_data = f"{self.data_dir}/tbench2_eval.jsonl"
 

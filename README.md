@@ -4,12 +4,13 @@
 
 ### **Enterprise-Grade Reinforcement Learning for Large-Scale Model Post-Training**
 
+[![Website](https://img.shields.io/badge/website-miles.radixark.com-d55816)](https://miles.radixark.com/)
 [![GitHub Repo](https://img.shields.io/badge/github-radixark%2Fmiles-black?logo=github)](https://github.com/radixark/miles)
-[![Docs](https://img.shields.io/badge/docs-miles.radixark.com-d55816)](https://miles.radixark.com/docs)
+[![Docs](https://img.shields.io/badge/docs-miles.radixark.com%2Fdocs-d55816)](https://miles.radixark.com/docs)
 [![License](https://img.shields.io/github/license/radixark/miles)](LICENSE)
-[![Slack](https://img.shields.io/badge/slack-join-brightgreen.svg)](https://slack.sglang.ai)
+[![Slack](https://img.shields.io/badge/slack-%23miles--rl-brightgreen.svg)](https://slack.sglang.ai)
 
-| [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Models**](https://miles.radixark.com/docs/models) | [**Blog**](https://www.lmsys.org/blog) | [**Slack**](https://slack.sglang.ai) |
+| [**Website**](https://miles.radixark.com/) | [**Documentation**](https://miles.radixark.com/docs) | [**Quick Start**](https://miles.radixark.com/docs/getting-started/quick-start) | [**Supported Models**](https://miles.radixark.com/docs/models) | [**Miles Diffusion**](https://github.com/radixark/miles_diffusion) | [**Blog**](https://www.lmsys.org/blog?filter=miles) | [**Slack**](https://slack.sglang.ai) (`#miles-rl`) |
 
 </div>
 
@@ -17,6 +18,7 @@
 
 ## News
 
+- [2026/08] 🔥 Miles v0.1 is released! Read the blog post here: [Miles v0.1: Production-level Post-training](https://www.lmsys.org/blog/2026-08-18-miles-v0-1).
 - [2026/07] Towards Blackwell-Native 8-bit and 4-bit RL: End-to-End MXFP8 and NVFP4 RL in Miles ([blog](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)).
 - [2026/07] 🔥 SGLang and Miles add day-0 support for Kimi K3 ([blog](https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support)).
 - [2026/07] On-policy distillation lands in Miles ([blog](https://www.lmsys.org/blog/2026-07-18-opd-support-in-miles)).
@@ -72,10 +74,6 @@ the largest models all live on Megatron-LM. See
 - **Fault tolerance.** When an SGLang engine dies, Miles
   [recovers it and resumes the run in place](https://miles.radixark.com/docs/advanced/fault-tolerance):
   no restart, no pause.
-- **Miles dashboard.** A self-hosted web UI for a run's
-  [training dynamics and compute efficiency](https://miles.radixark.com/docs/user-guide/dashboard):
-  what every GPU was doing during a step, and what each trajectory contained at the token
-  level.
 
 ### What Miles runs
 
@@ -92,11 +90,15 @@ the largest models all live on Megatron-LM. See
   Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout
   layer that fits it, with task sandboxes on AgentENV, Daytona, E2B or Modal. See
   [Agentic Environments](https://miles.radixark.com/docs/user-guide/environments).
+- **Diffusion models.** Flow-GRPO, DiffusionNFT and SFT on an sglang-diffusion rollout
+  engine and an FSDP2 trainer, in
+  [Miles-diffusion](https://github.com/radixark/miles_diffusion).
 
 ## Getting Started
 
 - [Install Miles](https://miles.radixark.com/docs/getting-started/installation)
 - [Quick Start](https://miles.radixark.com/docs/getting-started/quick-start)
+- [Supported Models](https://miles.radixark.com/docs/models)
 - [Core Concepts](https://miles.radixark.com/docs/user-guide/concepts)
 - [Launch Script Walkthrough](https://miles.radixark.com/docs/user-guide/launch-script)
 - [Training Backends](https://miles.radixark.com/docs/user-guide/training-backend)
@@ -104,12 +106,19 @@ the largest models all live on Megatron-LM. See
 
 ## Acknowledgment
 
-<!-- TODO: acknowledgment figure -->
-
 Miles was forked from [slime](https://github.com/THUDM/slime), and integrates
 [SGLang](https://github.com/sgl-project/sglang),
 [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and
 [torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
+
+Miles is shaped by the teams that build on it and support its development,
+from hardware and cloud to model labs, agent infrastructure, and academia:
+
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/radixark/miles/main/docs/assets/images/acknowledgment.png" alt="Organizations building on, contributing to, and collaborating with Miles" width="900">
+
+</div>
 
 ## Citation
 

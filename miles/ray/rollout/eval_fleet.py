@@ -24,6 +24,7 @@ class EvalFleet:
     def __init__(self, args: Namespace, *, srv):
         self.args = args
         self._srv = srv
+        self._rollout_ft_enabled = args.use_fault_tolerance and "rollout" in args.ft_components
         self._state = GenerateState(self._fleet_args())
 
     async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
@@ -32,7 +33,7 @@ class EvalFleet:
         On the manager's event loop: keep everything here awaiting rather than blocking.
         """
         try:
-            if not self.args.use_fault_tolerance:
+            if not self._rollout_ft_enabled:
                 # Otherwise RolloutHealthMonitor owns the probing for these engines.
                 await self._srv.probe_and_mark_dead()
             await self._srv.recover()

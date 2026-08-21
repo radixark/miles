@@ -7,7 +7,7 @@ Miles ships ready-to-run recipes for every model family listed below. Each page 
 weight conversion, parallelism, and the launch script in the order you'd actually run
 them.
 
-## By family
+## Language Models
 
 Each model name links to its recipe page.
 
@@ -22,6 +22,17 @@ Each model name links to its recipe page.
 | **Gemma** | [Gemma-4 26B-A4B](/models/gemma/gemma-4)<br/>[Gemma-4 31B](/models/gemma/gemma-4) |
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
 | **GPT-OSS** | [gpt-oss-20b](/models/gpt-oss/gpt-oss) |
+
+## Diffusion
+
+| Family | Models |
+|---|---|
+| **Stable Diffusion** | [SD3.5](/diffusion/models/sd3/sd3) |
+| **Qwen-Image** | [Qwen-Image](/diffusion/models/qwen-image/qwen-image) |
+| **Wan** | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2) |
+| **LTX** | [LTX-2.3](/diffusion/models/ltx/ltx2) |
+| **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
+| **MiniMax** | [MiniMax H3](/diffusion/models/h3/h3) |
 
 ## How a recipe is structured
 

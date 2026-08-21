@@ -140,7 +140,7 @@ Identical for both:
 --sglang-server-concurrency 1024
 ```
 
-SGLang DeepEP (`--sglang-enable-deepep-moe`, `--sglang-deepep-mode`) is not enabled for either variant. Megatron-side `--moe-enable-deepep` and `--moe-token-dispatcher-type flex` are **on** for `Kimi-K2-Instruct` and **off** for `Kimi-K2-Thinking`.
+SGLang DeepEP (`--sglang-moe-a2a-backend deepep`, `--sglang-deepep-mode`) is not enabled for either variant. Megatron-side `--moe-enable-deepep` and `--moe-token-dispatcher-type flex` are **on** for `Kimi-K2-Instruct` and **off** for `Kimi-K2-Thinking`.
 
 ### 5.4 Optimizer
 

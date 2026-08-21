@@ -6,8 +6,8 @@ The `--use-fault-tolerance` flag enables Miles's rollout-side
 fault-tolerance machinery. It gates two code paths:
 
 1. A `RolloutHealthMonitor` thread per server group, started in
-   `miles/ray/rollout.py`, which periodically heart-beats each SGLang
-   engine.
+   `miles/ray/rollout/rollout_manager.py`, which periodically heart-beats
+   each SGLang engine.
 2. A recovery hook in the trainer's weight-update step
    (`miles/backends/megatron_utils/actor.py`), which restarts engines
    that the health monitor has killed.
@@ -17,15 +17,16 @@ fault-tolerance machinery. It gates two code paths:
 ```
 
 The flag is `action="store_true"`, default `False`
-(`miles/utils/arguments.py`).
+(`miles/utils/arguments.py`). The rollout paths below additionally require
+`rollout` in `--ft-components`, which is what that flag selects when omitted.
 
 ## Health monitor
 
 `RolloutHealthMonitor` (`miles/utils/health_monitor.py`) runs in a daemon
 thread. Lifecycle: `start` (called once during init), `pause` and `resume`
 (called when engines offload / onload), `stop` (called during dispose).
-`pause` / `resume` are wired up in `miles/ray/rollout.py` and called
-around offload / onload events.
+`pause` / `resume` are wired up in `miles/ray/rollout/rollout_manager.py`
+and called around offload / onload events.
 
 Each loop iteration does:
 
@@ -51,12 +52,12 @@ When `--use-fault-tolerance` is on, `MegatronActor.update_weights` calls
 `rollout_manager.recover_updatable_engines` on rank 0 before each weight
 update (`miles/backends/megatron_utils/actor.py`).
 
-`recover_updatable_engines` (`miles/ray/rollout.py`):
+`recover_updatable_engines` (`miles/ray/rollout/rollout_manager.py`):
 
 1. Pauses health monitoring.
 2. Calls `srv.recover()` on the updatable server.
 
-`srv.recover()` (`miles/ray/rollout.py`):
+`srv.recover()` (`miles/ray/rollout/rollout_server.py`, which fans out to `ServerGroup.recover` in `miles/ray/rollout/server_group.py`):
 
 1. Finds engine slots set to `None` (killed by the health monitor).
 2. Calls `start_engines` for each affected group.

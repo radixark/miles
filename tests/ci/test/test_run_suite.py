@@ -303,7 +303,7 @@ class TestWorkflowScopeSeam:
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["run"]
         assert cpu_jobs == ["run-cpu"]
-        assert docker_jobs == ["docker-paths", "docker-build"]
+        assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
         assert "cpu_runner" not in cpu_workflow
 
@@ -326,13 +326,37 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
-        assert "  docker-paths:" not in workflow
+        assert "  docker-decide:" not in workflow
         assert "value: ${{ jobs.docker-build.outputs.built }}" in reusable
-        assert "needs: [docker-paths]" in reusable
-        assert "if ! CHANGED_PATHS=$(git diff --name-only HEAD^1 HEAD); then" in reusable
-        assert "::error::Failed to determine docker-relevant changes." in reusable
+        assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
+        assert "needs: [docker-decide]" in reusable
+        # Rebuilds follow the build inputs, not whether the PR diff touched them.
+        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
+        assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
         assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
+
+    def test_docker_decision_logs_in_only_for_tag_inspection(self):
+        reusable = self._reusable_workflow("_build-pr-ci-image.yml")
+        decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
+
+        compare = decide_job.index("python3 docker/image_inputs.py --rev HEAD^1")
+        login = decide_job.index("- name: Login to Docker Hub")
+        inspect = decide_job.index("docker buildx imagetools inspect")
+        assert compare < login < inspect
+        assert "if: steps.prepare.outputs.inspect_tag == 'true'" in decide_job
+
+    def test_docker_force_rebuild_uses_live_label_for_decision_and_consumption(self):
+        reusable = self._reusable_workflow("_build-pr-ci-image.yml")
+        decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
+
+        live_labels = '"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels"'
+        assert live_labels in decide_job
+        assert decide_job.index(live_labels) < decide_job.index("- name: Login to Docker Hub")
+        assert "LABELS=$(gh api --paginate" in decide_job
+        assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
+        assert "github.event.pull_request.labels.*.name" not in reusable
+        assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
