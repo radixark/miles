@@ -90,7 +90,7 @@ SGLANG_ARGS=(
 )
 ```
 
-Required env vars (the launcher sets these for you): `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, and the Pro-only pair `SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=256`, `SGLANG_JIT_DEEPGEMM_PRECOMPILE=0`.
+Required env vars (the launcher sets these for you): `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `SGLANG_DG_CACHE_DIR_PER_PROCESS=1`, `SGLANG_OPT_FP8_WO_A_GEMM=0`, and the Pro-only pair `SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK=256`, `SGLANG_JIT_DEEPGEMM_PRECOMPILE=0`. Pro shares the V4 launcher, so `--train-deterministic` is on by default here too and brings the same `NCCL_ALGO` / `NVTE_ALLOW_NONDETERMINISTIC_ALGO` / `CUBLAS_WORKSPACE_CONFIG` trio.
 
 Megatron side: `--qkv-format bshd` (V4 needs `bshd` with CP-aware data slicing). The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 

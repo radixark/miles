@@ -168,23 +168,103 @@ the GDN `A_log` out of the low-precision optimizer path.
 
 ## 6. Qwen3.8-2.4T-A95B
 
-The sparse 2.4 T / 95 B-active variant shares nothing operational with the dense 27 B: it
-serves a ModelOpt **NVFP4** experts-only checkpoint from the rollout engine while the
-Megatron trainer runs **BF16** off a `torch_dist` built from the dequantized weights, and
-re-quantizes expert weights to NVFP4 at each weight-update boundary.
+The sparse 2.4 T / 95 B-active flagship shares nothing operational with the dense 27 B: the
+rollout engines serve the native ModelOpt **NVFP4** experts-only checkpoint
+([RadixArk/Qwen3.8-2.4T-A95B-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-2.4T-A95B-NVFP4))
+while the Megatron trainer runs **BF16** off a `torch_dist` built from the BF16 parent, and
+weight sync ships **LoRA adapters only** — the quantized base never leaves the engines. The
+implementation is [radixark/miles#2488](https://github.com/radixark/miles/pull/2488)
+("Qwen 3.8 day-0 lora RL support"): `scripts/run_qwen3_8.py` plus the
+`scripts/models/qwen3.8-2.4T-A95B{,_4layer,_full}.py` definitions. It is **LoRA-only in
+practice** — the native raw-mode `--lora` path is the validated route; treat full-weight
+training as unvalidated.
 
-That recipe is **not part of this page's launcher**. It lands separately in
-[radixark/miles#2488](https://github.com/radixark/miles/pull/2488) ("Qwen 3.8 day-0 lora RL
-support"), which adds `scripts/run_qwen3_8.py` and the
-`scripts/models/qwen3.8-2.4T-A95B{,_4layer,_full}.py` definitions.
+### 6.1 Variants
 
-Two things to know before reaching for it:
+`--model-variant` selects between them and sets the matching checkpoint paths and
+`megatron_model_type` (`scripts/models/qwen3.8-2.4T-A95B{_4layer,_full}.py`):
 
-- **It is LoRA-only in practice.** The `--lora` path (native raw-mode LoRA, attention
-  projections only, so the rollout MoE stays on `flashinfer_trtllm` unchanged) is the
-  supported route; treat the full-weight path as unvalidated.
-- **PR #2488 is still open** and stacked on a LoRA branch rather than `main`, so the recipe
-  and its reproduction steps may still move. Follow the PR for the current shape.
+| Variant | Layers | Purpose | GPUs |
+|---|---|---|---|
+| `full` | 92 | the real model | 64 (16 × 4 GB300), validated |
+| `4layer` | 4 | smoke test, default | single node |
+
+### 6.2 Environment Setup
+
+Use the `docker.io/radixark/miles:dev` image — it is multi-arch, so the same tag serves
+GB300 (aarch64) and x86 nodes. Inside the container, multi-node rollout engines need
+**NCCL ≥ 2.30.7** (2.28.x deadlocks CUDA-graph-captured cross-node collectives):
+
+```bash
+pip install nvidia-nccl-cu13==2.30.7
+export SGLANG_NCCL_SO_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/nccl/lib/libnccl.so.2
+export LD_PRELOAD=$SGLANG_NCCL_SO_PATH
+```
+
+The launcher looks checkpoints up under `--model-dir` (default `/root/models`) as
+`Qwen3.8-2.4T-A95B-NVFP4_<variant>` (rollout) and
+`Qwen3.8-2.4T-A95B-bf16_<variant>` (trainer source):
+
+```bash
+hf download RadixArk/Qwen3.8-2.4T-A95B-NVFP4 \
+    --local-dir /root/models/Qwen3.8-2.4T-A95B-NVFP4_full
+# BF16 parent -> /root/models/Qwen3.8-2.4T-A95B-bf16_full
+```
+
+Unless `--skip-prepare` is passed, the launcher's prepare step downloads
+`zhuzilin/dapo-math-17k` and runs the BF16 → `torch_dist` conversion itself
+(`tools/convert_hf_to_torch_dist.py` via the `qwen3.8-2.4T-A95B_<variant>` model args); the
+output re-shards at load, so the conversion layout does not have to match the training one.
+Training then takes the **NVFP4** directory as `--hf-checkpoint` and the converted
+`torch_dist` as `--ref-load` — both wired up by the launcher.
+
+### 6.3 Launch
+
+Single-node smoke test (default `--model-variant 4layer`, 8 GPUs):
+
+```bash
+python scripts/run_qwen3_8.py
+```
+
+Full model, validated on **16 nodes × 4 GB300** (bring up a ray cluster across the nodes,
+`export MILES_SCRIPT_EXTERNAL_RAY=1`, then run on the head):
+
+```bash
+python scripts/run_qwen3_8.py \
+  --mode normal --model-variant full --hardware GB300 \
+  --num-nodes 16 --num-gpus-per-node 4 \
+  --tp 1 --pp 4 --ep 16 --etp 1 --cp 1 \
+  --lora --lora-rank 32 --lora-alpha 64 \
+  --num-rollout 200 --rollout-batch-size 32 --n-samples-per-prompt 8 \
+  --rollout-max-response-len 4096 --global-batch-size 256 \
+  --rollout-max-concurrency 8 --recompute --skip-prepare \
+  --extra-args "--rollout-num-gpus-per-engine 16 --lr 1e-5"
+```
+
+| Side | Parallelism | Notes |
+|---|---|---|
+| Trainer (BF16) | TP 1 / PP 4 / EP 16 / ETP 1 | `num_query_groups 4` caps native-LoRA TP at 4 |
+| Rollout (NVFP4) | 4 engines × TP 16 / EP 1 | `flashinfer_trtllm` MoE runner, triton attention |
+| LoRA | rank 32 / alpha 64, `q,k,v,o_proj` | attention projections only; the 69 GDN mixer layers and the routed experts carry no adapter, so the rollout MoE path is untouched |
+
+### 6.4 Memory: the alternating-backup budget
+
+The recipe fits 956 GB hosts only if, at any moment, **exactly one side keeps a host
+backup**: during rollout the sleeping trainer's tms backup (~390 GB/node); during train the
+sleeping engines' NVFP4 mirror (~372 GB/node, `--lora-base-cpu-backup` →
+SGLang `enable_weights_cpu_backup`, which is also what lets every weight update skip the
+base re-ship). Anything that double-books breaks it. The flags that hold the line:
+
+- `--drop-checkpoint-page-cache-after-load` — a multi-TB DCP read leaves its page cache on
+  every node; lazy reclaim loses the race against pinned-allocation spikes at the
+  rollout/train handoff.
+- `--colocate-memory-peak-device gpu` and no `--use-kl-loss` at `kl-loss-coef 0` — a zero
+  coefficient still loads a full ref checkpoint and pins a second per-rank base copy.
+- Weight sync must not clone the sleeping side's backup (`get_cpu_backup(zero_copy=True)`
+  in #2488); the clone variant retains ~75 GB/rank in malloc arenas per update.
+
+Healthy peaks sit at **600–650 GB per node**; sustained readings above ~750 GB mean a
+second backup or the page cache came back.
 
 ## 7. Pairs Well With
 

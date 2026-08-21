@@ -17,9 +17,12 @@ name: PR Test (ROCm)
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
 #
-# SGLang / Megatron-LM versions are baked into the ROCm image
-# (_run-ci-rocm.yml defaults skip_dependency_install to true), so unlike
-# pr-test.yml there are no ci_megatron_pr / ci_sglang_pr inputs here.
+# SGLang / Megatron-LM versions are baked into the ROCm image, so a run that
+# names neither keeps them and skips the install step. Naming either one --
+# `ci-megatron-pr:` / `ci-sglang-pr:` in the PR body, or the dispatch inputs --
+# fetches and installs it over the baked copy, the same directives pr-test.yml
+# honours. The refs are fetched from the `origin` of the image's own checkouts,
+# so a ref that lives only on a different remote will not resolve here.
 
 on:
   pull_request:
@@ -30,6 +33,16 @@ on:
     - cron: '0 15 * * 6'
   workflow_dispatch:
     inputs:
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit to install over the one baked into the image (default: keep the image)'
+        required: false
+        type: string
+        default: ''
+      ci_sglang_pr:
+        description: 'SGLang branch/commit to install over the one baked into the image (default: keep the image)'
+        required: false
+        type: string
+        default: ''
       ci_image_tag:
         description: 'ROCm Docker image tag (default: miles-rocm720-mi35x, the undated tag each nightly image build overwrites)'
         required: false
@@ -115,12 +128,40 @@ jobs:
           echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
 
+  resolve-ci-deps:
+    runs-on: ubuntu-latest
+    outputs:
+      skip_dependency_install: ${{ steps.resolve.outputs.skip_dependency_install }}
+    steps:
+      - name: Resolve whether the image's baked dependencies are overridden
+        id: resolve
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+        run: |
+          NAMED_BY=""
+          if [ -n "$INPUT_MEGATRON_PR" ] || [ -n "$INPUT_SGLANG_PR" ]; then
+            NAMED_BY="the dispatch inputs"
+          elif [ -n "$PR_BODY" ] && echo "$PR_BODY" | grep -qP '^ci-(megatron|sglang)-pr:\s+\S+'; then
+            NAMED_BY="the pull request body"
+          fi
+          if [ -n "$NAMED_BY" ]; then
+            echo "skip_dependency_install=false" >> "$GITHUB_OUTPUT"
+            echo "Dependency refs named by $NAMED_BY: installing them over the image's baked copies"
+          else
+            echo "skip_dependency_install=true" >> "$GITHUB_OUTPUT"
+            echo "No dependency ref named: keeping the copies baked into the image"
+          fi
+
   stage-c-4-gpu-mi350:
-    needs: [resolve-ci-policy, resolve-ci-image]
+    needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]
     if: |
       always() && !cancelled() &&
       needs.resolve-ci-policy.result == 'success' &&
       needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-deps.result == 'success' &&
       !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
     # One shard per 4-GPU runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
@@ -134,6 +175,7 @@ jobs:
     with:
       runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}
       ref: ${{ inputs.ref || '' }}
       execute_command: >-
         python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350

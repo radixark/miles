@@ -11,6 +11,14 @@ on:
         type: string
         required: false
         default: ''
+      plan_already_resolved:
+        description: 'Skip the --list-only preflight when a trusted caller already resolved the execution plan.'
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      HF_TOKEN:
+        required: false
 
 jobs:
   # CPU-only path: GitHub-hosted ubuntu-latest, bare pip install.
@@ -117,6 +125,7 @@ jobs:
           version: v4.2.3
 
       - name: Resolve suite plan
+        if: ${{ !inputs.plan_already_resolved }}
         shell: bash
         run: ${{ inputs.execute_command }} --list-only
 

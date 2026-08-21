@@ -29,7 +29,7 @@ miles/
 │   ├── mbridge/              # per-architecture weight bridges
 │   ├── megatron_bridge/      # megatron.bridge shims
 │   └── optimizers/           # optimizer plugins (NVMe streaming store)
-├── scripts/                  # launchers, one per recipe; scripts/models/ holds MODEL_ARGS
+├── scripts/                  # launchers, one per recipe; scripts/models/ holds the architecture flags
 ├── tools/                    # checkpoint converters, quantizers, profilers
 ├── tests/                    # fast / fast-gpu / e2e / ci / manual (see Running CI)
 ├── docker/                   # Dockerfile, Dockerfile.rocm, build.py, patches
@@ -270,7 +270,7 @@ map it to a host.
 
 ## Where to ask
 
-* **Quick questions:** the Miles channel of the [SGLang Slack](https://slack.sglang.ai).
+* **Quick questions:** the `#miles-rl` channel of the [SGLang Slack](https://slack.sglang.ai).
 * **Design discussions:** a GitHub Discussion, or an Issue labeled `discussion`.
 * **CI internals:** [Stage](/ci/00-stage) (stages), [Labels](/ci/01-label) (label
   semantics), [Docker build](/ci/02-docker-build) (images),

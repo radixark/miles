@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
+import image_inputs
 import typer
 
 CACHE_DIR = "/tmp/miles-docker-cache"
@@ -156,6 +157,9 @@ def build_and_push(
     for spec in extra_build_args:
         assert "=" in spec, f"--build-arg expects KEY=VALUE, got {spec!r}"
         cmd += ["--build-arg", spec]
+
+    # CI reads this back off the published tag to skip rebuilds whose inputs are unchanged.
+    cmd += ["--label", f"{image_inputs.LABEL_KEY}={image_inputs.compute()}"]
 
     for tag in tags:
         cmd += ["-t", tag]

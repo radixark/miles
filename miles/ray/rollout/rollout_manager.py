@@ -71,14 +71,18 @@ class RolloutManager:
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
         if not self.use_legacy_rollout_v1:
-            input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
-            self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
-            if self.args.eval_function_path == self.args.rollout_function_path:
-                # Reuse the instance so train and eval share one state (and stateful
-                # rollout fns like FullyAsyncRolloutFn are not constructed twice).
-                self.eval_generate_rollout = self.generate_rollout
+            if self.args.load_debug_rollout_data is not None:
+                self.generate_rollout = None
+                self.eval_generate_rollout = None
             else:
-                self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
+                input = RolloutFnConstructorInput(args=args, data_source=self.data_source)
+                self.generate_rollout = load_rollout_function(input, self.args.rollout_function_path)
+                if self.args.eval_function_path == self.args.rollout_function_path:
+                    # Reuse the instance so train and eval share one state (and stateful
+                    # rollout fns like FullyAsyncRolloutFn are not constructed twice).
+                    self.eval_generate_rollout = self.generate_rollout
+                else:
+                    self.eval_generate_rollout = load_rollout_function(input, self.args.eval_function_path)
         else:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
@@ -88,8 +92,9 @@ class RolloutManager:
         self.custom_convert_samples_to_train_data_func = None
         if (x := self.args.custom_convert_samples_to_train_data_path) is not None:
             self.custom_convert_samples_to_train_data_func = load_function(x)
-        logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
-        logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
+        if self.generate_rollout is not None:
+            logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
+            logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
@@ -107,13 +112,15 @@ class RolloutManager:
 
         # TODO will be replaced by full ft, thus temporarily leave it without modifications
         self._health_monitors = []
-        if not self.args.debug_train_only and self.args.use_fault_tolerance:
+        self._rollout_ft_enabled = self.args.use_fault_tolerance and "rollout" in self.args.ft_components
+        self._ci_fault_injection_pending = False
+        if not self.args.debug_train_only and self._rollout_ft_enabled:
             for srv in self.servers.values():
                 for group in srv.server_groups:
                     monitor = RolloutHealthMonitor(group, args)
                     monitor.start()
                     self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test and "rollout" in self.args.ft_components
+            self._ci_fault_injection_pending = self.args.ci_test
 
     # -------------------------- lifecycle -----------------------------
     # TODO: may have a `async def init` here later
@@ -138,7 +145,7 @@ class RolloutManager:
         start_time = time.time()
         self.rollout_id = rollout_id
         self._health_monitoring_resume()
-        if self.args.ci_test and self.args.use_fault_tolerance and rollout_id >= 2:
+        if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
             self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
@@ -234,7 +241,7 @@ class RolloutManager:
         log_eval_skip(rollout_id, self.args, reason)
 
     async def _get_rollout_data(self, rollout_id):
-        if self.args.load_debug_rollout_data:
+        if self.args.load_debug_rollout_data is not None:
             data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
             metrics = None
         else:

@@ -303,7 +303,7 @@ class TestWorkflowScopeSeam:
         docker_jobs = re.findall(job_id_pattern, docker_workflow.split("\njobs:\n", 1)[1], re.MULTILINE)
         assert gpu_jobs == ["run"]
         assert cpu_jobs == ["run-cpu"]
-        assert docker_jobs == ["docker-paths", "docker-build"]
+        assert docker_jobs == ["docker-decide", "docker-build"]
         assert "cpu_runner" not in gpu_workflow
         assert "cpu_runner" not in cpu_workflow
 
@@ -326,13 +326,37 @@ class TestWorkflowScopeSeam:
         workflow = self._workflow()
         reusable = self._reusable_workflow("_build-pr-ci-image.yml")
 
-        assert "  docker-paths:" not in workflow
+        assert "  docker-decide:" not in workflow
         assert "value: ${{ jobs.docker-build.outputs.built }}" in reusable
-        assert "needs: [docker-paths]" in reusable
-        assert "if ! CHANGED_PATHS=$(git diff --name-only HEAD^1 HEAD); then" in reusable
-        assert "::error::Failed to determine docker-relevant changes." in reusable
+        assert "value: ${{ jobs.docker-build.outputs.tag_available }}" in reusable
+        assert "needs: [docker-decide]" in reusable
+        # Rebuilds follow the build inputs, not whether the PR diff touched them.
+        assert "python3 docker/image_inputs.py --rev HEAD^1" in reusable
+        assert "python3 docker/image_inputs.py --read-label" in reusable
         assert "github.event.pull_request.head.repo.full_name == github.repository" in reusable
         assert "python3 docker/build.py --variant cu13 --image-tag custom" in reusable
+
+    def test_docker_decision_logs_in_only_for_tag_inspection(self):
+        reusable = self._reusable_workflow("_build-pr-ci-image.yml")
+        decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
+
+        compare = decide_job.index("python3 docker/image_inputs.py --rev HEAD^1")
+        login = decide_job.index("- name: Login to Docker Hub")
+        inspect = decide_job.index("docker buildx imagetools inspect")
+        assert compare < login < inspect
+        assert "if: steps.prepare.outputs.inspect_tag == 'true'" in decide_job
+
+    def test_docker_force_rebuild_uses_live_label_for_decision_and_consumption(self):
+        reusable = self._reusable_workflow("_build-pr-ci-image.yml")
+        decide_job = reusable.split("  docker-decide:", 1)[1].split("  docker-build:", 1)[0]
+
+        live_labels = '"repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels"'
+        assert live_labels in decide_job
+        assert decide_job.index(live_labels) < decide_job.index("- name: Login to Docker Hub")
+        assert "LABELS=$(gh api --paginate" in decide_job
+        assert 'grep -Fxq "rebuild-ci-image" <<< "$LABELS"' in decide_job
+        assert "github.event.pull_request.labels.*.name" not in reusable
+        assert "needs.docker-decide.outputs.force_rebuild == 'true'" in reusable
 
     def test_policy_job_is_a_thin_python_adapter(self):
         workflow = self._workflow()
@@ -469,7 +493,7 @@ class TestRocmWorkflowScopeSeam:
         stage = workflow.split("  stage-c-4-gpu-mi350:", 1)[1]
         command = stage.split("execute_command:", 1)[1].split("secrets:", 1)[0]
 
-        assert "needs: [resolve-ci-policy, resolve-ci-image]" in stage
+        assert "needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]" in stage
         assert "allow_self_hosted" not in stage
         assert "partition_id: [0, 1]" in stage
         assert "max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}" in stage
@@ -481,6 +505,10 @@ class TestRocmWorkflowScopeSeam:
         assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" in stage
         assert "needs.resolve-ci-policy.result == 'success'" in stage
         assert "needs.resolve-ci-image.result == 'success'" in stage
+        assert "needs.resolve-ci-deps.result == 'success'" in stage
+        assert (
+            "skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}" in stage
+        )
         assert (
             "!contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')"
             in stage
@@ -493,6 +521,23 @@ class TestRocmWorkflowScopeSeam:
         assert "persist-credentials: false" in reusable
         assert "allow-unsafe-pr-checkout" not in reusable
         assert "MILES_HARDWARE_PLATFORM: rocm" in reusable
+
+    def test_megatron_override_preserves_rocm_patch(self):
+        reusable = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "_run-ci-rocm.yml").read_text()
+        override = reusable.split('if [ -n "$MEGATRON_PR" ]; then', 1)[1].split("          cd $GITHUB_WORKSPACE", 1)[0]
+
+        checkout = override.index("git checkout -f FETCH_HEAD")
+        check_patch = override.index('git apply --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"')
+        apply_patch = override.index('git apply "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"')
+        reverse_check = override.index(
+            'elif git apply --reverse --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then'
+        )
+        error = override.index('echo "::error::Selected Megatron ref is incompatible with the ROCm patch"')
+        fail = override.index("exit 1")
+        install = override.index("pip install -e . --no-deps --break-system-packages")
+
+        assert checkout < check_patch < apply_patch < reverse_check < error < fail < install
+        assert "/tmp/amd_patch/megatron.patch" not in override
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------

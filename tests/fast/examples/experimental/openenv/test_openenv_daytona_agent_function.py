@@ -68,6 +68,14 @@ def test_is_throttle_error_classification():
     assert not odaf._is_throttle_error(RuntimeError("image build failed"))
 
 
+def test_is_throttle_error_quota_exhaustion():
+    """Org capacity errors are retryable: failing immediately aborts the episode
+    and discards the whole group."""
+    assert odaf._is_throttle_error(Exception("Failed to create sandbox: Total CPU limit exceeded. Max allowed: 500."))
+    assert odaf._is_throttle_error(Exception("Failed to create sandbox: Total memory limit exceeded."))
+    assert not odaf._is_throttle_error(RuntimeError("task.toml is missing docker_image"))
+
+
 def test_is_throttle_error_typed_daytona_class():
     """The SDK's typed rate-limit error is recognized even when its message
     carries no throttle keywords."""

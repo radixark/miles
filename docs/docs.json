@@ -59,7 +59,6 @@
        "user-guide/fully-async",
        "user-guide/training-backend",
        "user-guide/monitoring",
-       "user-guide/dashboard",
        "user-guide/customization",
        "user-guide/generate-endpoint",
        "user-guide/agentic-rollout",
@@ -221,6 +220,7 @@
        "advanced/fault-tolerance",
        "advanced/pd-disaggregation",
        "advanced/p2p-weight-transfer",
+       "advanced/mooncake-rollout-transfer",
        "advanced/disaggregated-rollout",
        "advanced/disk-offload"
       ]
@@ -281,6 +281,58 @@
        "ci/02-docker-build",
        "ci/03-metric-history-gate",
        "ci/04-release"
+      ]
+     }
+    ]
+   },
+   {
+    "tab": "Diffusion",
+    "pages": [
+     "diffusion/index",
+     {
+      "group": "Getting Started",
+      "pages": [
+       "diffusion/getting-started/installation",
+       "diffusion/getting-started/quick-start"
+      ]
+     },
+     {
+      "group": "User Guide",
+      "pages": [
+       "diffusion/user-guide/cli-reference",
+       "diffusion/user-guide/concepts",
+       "diffusion/user-guide/customization",
+       "diffusion/user-guide/launch-script",
+       "diffusion/user-guide/recipe-verification",
+       "diffusion/user-guide/rewards"
+      ]
+     },
+     {
+      "group": "Models",
+      "pages": [
+       "diffusion/models/cosmos/cosmos3",
+       "diffusion/models/h3/h3",
+       "diffusion/models/ltx/ltx2",
+       "diffusion/models/qwen-image/qwen-image",
+       "diffusion/models/sd3/sd3",
+       "diffusion/models/wan/wan2-2"
+      ]
+     },
+     {
+      "group": "Advanced",
+      "pages": [
+       "diffusion/advanced/deterministic",
+       "diffusion/advanced/dtype-control",
+       "diffusion/advanced/lora",
+       "diffusion/advanced/sde-backend",
+       "diffusion/advanced/single-prompt-multi-gen",
+       "diffusion/advanced/streaming-reward"
+      ]
+     },
+     {
+      "group": "Developer",
+      "pages": [
+       "diffusion/developer/contributor-guide"
       ]
      }
     ]
@@ -353,6 +405,11 @@
   {
    "source": "/examples/openhermes-sft",
    "destination": "/models/qwen/qwen3",
+   "permanent": true
+  },
+  {
+   "source": "/user-guide/dashboard",
+   "destination": "/user-guide/monitoring",
    "permanent": true
   }
  ],
