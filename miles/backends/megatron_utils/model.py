@@ -206,7 +206,7 @@ def setup_model_and_optimizer(
     if args.stream_optimizer_state_to_disk:
         from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
 
-        setup_optimizer_state_streaming(args, optimizer, role=role)
+        setup_optimizer_state_streaming(args, optimizer)
 
     opt_param_scheduler = get_optimizer_param_scheduler(args, optimizer)
     return model, optimizer, opt_param_scheduler

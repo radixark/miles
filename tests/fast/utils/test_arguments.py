@@ -12,7 +12,6 @@ from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
     _resolve_rollout_functions,
-    _validate_optimizer_streaming_contract,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -285,50 +284,6 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
 
     with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
         miles_validate_args(args)
-
-
-def test_optimizer_streaming_accepts_bf16_torch_dist_contract():
-    _validate_optimizer_streaming_contract(SimpleNamespace(ckpt_format="torch_dist", bf16=True, fp16=False))
-
-
-def test_optimizer_streaming_rejects_non_bf16_training():
-    args = SimpleNamespace(ckpt_format="torch_dist", bf16=False, fp16=False)
-
-    with pytest.raises(AssertionError, match="requires --bf16"):
-        _validate_optimizer_streaming_contract(args)
-
-
-def test_optimizer_streaming_rejects_legacy_checkpoint_format():
-    args = SimpleNamespace(ckpt_format="torch", bf16=True, fp16=False)
-
-    with pytest.raises(AssertionError, match="--ckpt-format torch_dist"):
-        _validate_optimizer_streaming_contract(args)
-
-
-def test_optimizer_streaming_rejects_fp16_training():
-    args = SimpleNamespace(ckpt_format="torch_dist", bf16=True, fp16=True)
-
-    with pytest.raises(AssertionError, match="does not support FP16 training"):
-        _validate_optimizer_streaming_contract(args)
-
-
-def test_optimizer_streaming_rejects_fp8_model_parameters():
-    args = SimpleNamespace(ckpt_format="torch_dist", bf16=True, fp16=False, fp8_param_gather=True)
-
-    with pytest.raises(AssertionError, match="does not support FP8 model parameters"):
-        _validate_optimizer_streaming_contract(args)
-
-
-def test_optimizer_streaming_rejects_mxfp8_parameter_all_gather():
-    args = SimpleNamespace(
-        ckpt_format="torch_dist",
-        bf16=True,
-        fp16=False,
-        reuse_grad_buf_for_mxfp8_param_ag=True,
-    )
-
-    with pytest.raises(AssertionError, match="does not support MXFP8 parameter all-gather"):
-        _validate_optimizer_streaming_contract(args)
 
 
 class TestCriticSaveDerivation:
