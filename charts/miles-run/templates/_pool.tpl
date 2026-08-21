@@ -82,7 +82,7 @@ spec:
             {{- end }}
             resources:
               {{- toYaml $resources | nindent 14 }}
-        {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" $context | trim) (include "miles-run.nodeLocalVolume" $context | trim) (include "miles-run.shmVolume" $context | trim)) | join "\n" }}
+        {{- $volumes := compact (list (include "miles-common.volumes" $context | trim) (include "miles-run.shmVolume" $context | trim)) | join "\n" }}
         {{- with $volumes }}
         volumes:
           {{- . | nindent 10 }}

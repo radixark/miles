@@ -69,7 +69,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml (default dict $worker.resources) | nindent 12 }}
-      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" $context | trim) (include "miles-run.nodeLocalVolume" $context | trim)) | join "\n" }}
+      {{- $volumes := compact (list (include "miles-common.volumes" $context | trim)) | join "\n" }}
       {{- with $volumes }}
       volumes:
         {{- . | nindent 8 }}

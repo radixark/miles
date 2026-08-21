@@ -113,6 +113,20 @@ def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
     )
 
 
+def volumes_args(*volumes: dict[str, Any]) -> tuple[str, ...]:
+    return ("--set-json", f"infra.volumes={json.dumps(list(volumes))}")
+
+
+def host_path_volume(
+    *, name: str = "cluster-storage", path: str = "/cluster-storage", mounts: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "hostPath": {"path": path, "type": "Directory"},
+        "mounts": mounts if mounts is not None else [{"mountPath": "/cluster-storage"}],
+    }
+
+
 def with_object_names(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [{**entry, "objectName": f"{RUN_RELEASE_NAME}-miles-run-{entry['name']}"} for entry in entries]
 

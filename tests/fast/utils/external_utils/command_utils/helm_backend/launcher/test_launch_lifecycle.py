@@ -576,11 +576,14 @@ def _launchable_infra_file(tmp_path) -> Path:
             {
                 "infra": {
                     "image": {"repository": "registry.local/miles", "tag": "v1"},
-                    "sharedStorage": {
-                        "type": "hostPath",
-                        "hostPath": str(tmp_path / "cluster-storage"),
-                        "mountPath": str(tmp_path / "cluster-storage"),
-                    },
+                    "volumes": [
+                        {
+                            "name": "cluster-storage",
+                            "hostPath": {"path": str(tmp_path / "cluster-storage")},
+                            "mounts": [{"mountPath": str(tmp_path / "cluster-storage")}],
+                        }
+                    ],
+                    "paths": {"runsRoot": str(tmp_path / "cluster-storage" / "miles_data")},
                 }
             }
         )

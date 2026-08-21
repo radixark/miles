@@ -130,6 +130,80 @@
       },
       "type": "object"
     },
+    "DevShm": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "hostPath"
+          ]
+        },
+        {
+          "required": [
+            "emptyDir"
+          ]
+        }
+      ],
+      "properties": {
+        "mountPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "hostPath": {
+          "$ref": "#/definitions/HostPathSource"
+        },
+        "emptyDir": {
+          "$ref": "#/definitions/EmptyDirSource"
+        }
+      },
+      "required": [
+        "mountPath"
+      ],
+      "type": "object"
+    },
+    "EmptyDirSource": {
+      "additionalProperties": false,
+      "properties": {
+        "medium": {
+          "enum": [
+            "",
+            "Memory"
+          ],
+          "type": "string"
+        },
+        "sizeLimit": {
+          "pattern": "^[0-9]+(\\.[0-9]+)?([EPTGMk]i?|m)?$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "HostPathSource": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "Directory",
+            "DirectoryOrCreate"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
     "Image": {
       "additionalProperties": false,
       "properties": {
@@ -187,14 +261,17 @@
         "image": {
           "$ref": "#/definitions/Image"
         },
-        "sharedStorage": {
-          "$ref": "#/definitions/SharedStorage"
+        "volumes": {
+          "items": {
+            "$ref": "#/definitions/VolumeEntry"
+          },
+          "type": "array"
         },
         "paths": {
           "$ref": "#/definitions/Paths"
         },
-        "nodeLocalStorage": {
-          "$ref": "#/definitions/NodeLocalStorage"
+        "devShm": {
+          "$ref": "#/definitions/DevShm"
         },
         "scheduling": {
           "$ref": "#/definitions/Scheduling"
@@ -206,8 +283,8 @@
           "propertyNames": {
             "not": {
               "enum": [
-                "PYTHONPATH",
                 "MILES_SCRIPT_ENV_REPORT",
+                "PYTHONPATH",
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
                 "MILES_BASE_GPU_ID",
@@ -222,7 +299,7 @@
       },
       "required": [
         "image",
-        "sharedStorage"
+        "volumes"
       ],
       "type": "object"
     },
@@ -245,26 +322,6 @@
         "resources": {
           "additionalProperties": true,
           "type": "object"
-        }
-      },
-      "type": "object"
-    },
-    "NodeLocalStorage": {
-      "additionalProperties": false,
-      "properties": {
-        "hostPath": {
-          "not": {
-            "pattern": "(^|/)\\.\\.(/|$)"
-          },
-          "pattern": "^(/.*)?$",
-          "type": "string"
-        },
-        "mountPath": {
-          "not": {
-            "pattern": "(^|/)\\.\\.(/|$)"
-          },
-          "pattern": "^/",
-          "type": "string"
         }
       },
       "type": "object"
@@ -406,17 +463,29 @@
     "Paths": {
       "additionalProperties": false,
       "properties": {
-        "runsSubPath": {
+        "runsRoot": {
           "not": {
             "pattern": "(^|/)\\.\\.(/|$)"
           },
-          "pattern": "^([^/].*)?$",
+          "pattern": "^/",
           "type": "string"
-        },
-        "repos": {
-          "$ref": "#/definitions/Repos"
         }
       },
+      "type": "object"
+    },
+    "PersistentVolumeClaimSource": {
+      "additionalProperties": false,
+      "properties": {
+        "claimName": {
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claimName"
+      ],
       "type": "object"
     },
     "PoolEntry": {
@@ -457,8 +526,8 @@
           "propertyNames": {
             "not": {
               "enum": [
-                "PYTHONPATH",
                 "MILES_SCRIPT_ENV_REPORT",
+                "PYTHONPATH",
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
                 "MILES_BASE_GPU_ID",
@@ -526,33 +595,6 @@
       ],
       "type": "object"
     },
-    "Repos": {
-      "additionalProperties": false,
-      "properties": {
-        "miles": {
-          "not": {
-            "pattern": "(^|/)\\.\\.(/|$)"
-          },
-          "pattern": "^([^/].*)?$",
-          "type": "string"
-        },
-        "megatron": {
-          "not": {
-            "pattern": "(^|/)\\.\\.(/|$)"
-          },
-          "pattern": "^([^/].*)?$",
-          "type": "string"
-        },
-        "sglang": {
-          "not": {
-            "pattern": "(^|/)\\.\\.(/|$)"
-          },
-          "pattern": "^([^/].*)?$",
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
     "RunValues": {
       "additionalProperties": false,
       "properties": {
@@ -602,8 +644,8 @@
           "propertyNames": {
             "not": {
               "enum": [
-                "PYTHONPATH",
                 "MILES_SCRIPT_ENV_REPORT",
+                "PYTHONPATH",
                 "MILES_CELL_INDEX",
                 "MILES_POD_INDEX",
                 "MILES_BASE_GPU_ID",
@@ -654,63 +696,58 @@
       },
       "type": "object"
     },
-    "SharedStorage": {
+    "VolumeEntry": {
       "additionalProperties": false,
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "type": {
-                "const": "hostPath"
-              }
-            },
-            "required": [
-              "type"
-            ]
-          },
-          "then": {
-            "properties": {
-              "hostPath": {
-                "minLength": 1
-              }
-            },
-            "required": [
-              "hostPath"
-            ]
-          }
+          "required": [
+            "hostPath"
+          ]
         },
         {
-          "if": {
-            "properties": {
-              "type": {
-                "const": "pvc"
-              }
-            },
-            "required": [
-              "type"
-            ]
-          },
-          "then": {
-            "properties": {
-              "pvcClaimName": {
-                "minLength": 1
-              }
-            },
-            "required": [
-              "pvcClaimName"
-            ]
-          }
+          "required": [
+            "persistentVolumeClaim"
+          ]
+        },
+        {
+          "required": [
+            "emptyDir"
+          ]
         }
       ],
       "properties": {
-        "type": {
-          "enum": [
-            "hostPath",
-            "pvc",
-            "none"
-          ],
+        "name": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "type": "string"
         },
+        "hostPath": {
+          "$ref": "#/definitions/HostPathSource"
+        },
+        "persistentVolumeClaim": {
+          "$ref": "#/definitions/PersistentVolumeClaimSource"
+        },
+        "emptyDir": {
+          "$ref": "#/definitions/EmptyDirSource"
+        },
+        "mounts": {
+          "items": {
+            "$ref": "#/definitions/VolumeMount"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "mounts"
+      ],
+      "type": "object"
+    },
+    "VolumeMount": {
+      "additionalProperties": false,
+      "properties": {
         "mountPath": {
           "not": {
             "pattern": "(^|/)\\.\\.(/|$)"
@@ -718,21 +755,18 @@
           "pattern": "^/",
           "type": "string"
         },
-        "hostPath": {
+        "subPath": {
           "not": {
             "pattern": "(^|/)\\.\\.(/|$)"
           },
-          "pattern": "^(/.*)?$",
+          "pattern": "^([^/].*)?$",
           "type": "string"
         },
-        "pvcClaimName": {
-          "maxLength": 253,
-          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)?$",
-          "type": "string"
+        "readOnly": {
+          "type": "boolean"
         }
       },
       "required": [
-        "type",
         "mountPath"
       ],
       "type": "object"

@@ -285,7 +285,7 @@ class TestTheTwoListsOfPlatformVariables:
         reserved = set(_PLATFORM_OWNED_ENV_VARS)
         identity = set(PLATFORM_IDENTITY_ENV_VARS)
 
-        assert reserved - identity == {BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR}
+        assert reserved - identity == {"PYTHONPATH", BASE_GPU_ID_ENV_VAR, NAMESPACE_ENV_VAR, RELEASE_ENV_VAR}
         assert identity - reserved == {SUBPROCESS_INDEX_ENV_VAR}
 
 

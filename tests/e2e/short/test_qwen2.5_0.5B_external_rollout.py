@@ -12,7 +12,8 @@ from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import (
     InfraValues,
-    SharedStorage,
+    VolumeEntry,
+    VolumeMount,
 )
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
 from miles.utils.workers.types import ClusterBackend
@@ -32,7 +33,6 @@ ENGINE_OBJECT_NAME = "external-sglang"
 ENGINE_PORT = 30000
 ENGINE_CONTAINER_NAME = "sglang"
 ENGINE_HEALTH_PATH = "/health_generate"
-SHARED_STORAGE_VOLUME = "shared-storage"
 
 
 # ===== Entry points =====
@@ -67,7 +67,6 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         prepare_cmd=engines.prepare_cmd,
         extra_manifests=engines.extra_manifests,
-        extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
 
@@ -242,23 +241,18 @@ def _engine_argv(port: int) -> list[str]:
 
 def _engine_manifests(infra: InfraValues) -> str:
     scheduling = infra.scheduling
-    volume = _shared_storage_volume(infra.shared_storage)
 
     pod_fields: dict[str, Any] = {
         "imagePullSecrets": [dict(name=secret) for secret in infra.image.pull_secrets or []],
         "nodeSelector": scheduling.node_selector if scheduling is not None else None,
         "tolerations": scheduling.tolerations if scheduling is not None else None,
         "affinity": scheduling.affinity if scheduling is not None else None,
-        "volumes": [volume] if volume is not None else None,
+        "volumes": [_volume(volume) for volume in infra.volumes],
     }
     container_fields: dict[str, Any] = {
         "imagePullPolicy": infra.image.pull_policy,
         "env": [dict(name=name, value=value) for name, value in sorted((infra.env or {}).items())],
-        "volumeMounts": (
-            [dict(name=SHARED_STORAGE_VOLUME, mountPath=infra.shared_storage.mount_path)]
-            if volume is not None
-            else None
-        ),
+        "volumeMounts": [_volume_mount(volume, mount) for volume in infra.volumes for mount in volume.mounts],
     }
 
     return f"""\
@@ -319,30 +313,27 @@ def _yaml_block(fields: dict[str, Any], *, indent: int) -> str:
     return textwrap.indent(yaml.safe_dump(present, sort_keys=False), " " * indent)
 
 
-def _shared_storage_volume(shared_storage: SharedStorage) -> dict[str, Any] | None:
-    match shared_storage.type:
-        case "hostPath":
-            return dict(name=SHARED_STORAGE_VOLUME, hostPath=dict(path=shared_storage.host_path, type="Directory"))
-        case "pvc":
-            return dict(
-                name=SHARED_STORAGE_VOLUME,
-                persistentVolumeClaim=dict(claimName=shared_storage.pvc_claim_name),
-            )
-        case "none":
-            return None
+def _volume(volume: VolumeEntry) -> dict[str, Any]:
+    if (host_path := volume.host_path) is not None:
+        return dict(name=volume.name, hostPath=dict(path=host_path.path, type=host_path.type or "Directory"))
+    if (claim := volume.persistent_volume_claim) is not None:
+        return dict(name=volume.name, persistentVolumeClaim=dict(claimName=claim.claim_name))
+
+    assert volume.empty_dir is not None
+    return dict(name=volume.name, emptyDir=volume.empty_dir.as_values())
+
+
+def _volume_mount(volume: VolumeEntry, mount: VolumeMount) -> dict[str, Any]:
+    fields = dict(name=volume.name, mountPath=mount.mount_path)
+    if mount.sub_path is not None:
+        fields["subPath"] = mount.sub_path
+    if mount.read_only:
+        fields["readOnly"] = mount.read_only
+    return fields
 
 
 def _infra_values(helm_values: tuple[str, ...]) -> InfraValues:
-    infra = InfraInfo.load(chart_dir(repo_base_dir=repo_base_dir), list(helm_values))
-
-    repos = infra.paths.repos if infra.paths is not None else None
-    sglang_checkout = repos.sglang if repos is not None else None
-    assert not sglang_checkout, (
-        f"infra.paths.repos.sglang is {sglang_checkout!r}, so the run's own pods import that checkout while these "
-        f"engine pods would still serve the sglang built into the image, and the two backends would no longer "
-        f"test one sglang; clear the override for this run, or teach this manifest to mount it too"
-    )
-    return infra
+    return InfraInfo.load(chart_dir(repo_base_dir=repo_base_dir), list(helm_values))
 
 
 if __name__ == "__main__":

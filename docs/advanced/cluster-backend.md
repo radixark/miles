@@ -63,13 +63,16 @@ python -m miles.utils.external_utils.miles_workbench uninstall -n "$MILES_NS"
 
 ## Folder convention
 
-A run is many pods on many machines, and they share nothing but the storage `infra.yaml` mounts.
-A path that is not on it is the most common way a run fails.
+A run is many pods on many machines, and they share nothing but the volumes `infra.yaml` mounts.
+A path that is on none of them is the most common way a run fails.
 
-- Every path your script names — `/root/models`, `/root/datasets` — has to be on it.
+- Every path your script names — `/root/models`, `/root/datasets` — has to be under one of the
+  mounts, and so does `infra.paths.runsRoot`, where the launcher keeps each run's directory.
 - Copying a file into a pod is pointless: pods come and go, the mount survives.
-- To run your own branch instead of the image's copy, name its sub-path under the storage root:
-  `infra.paths.repos.miles: alice/miles`. `megatron` and `sglang` work the same way.
+- To run your own branch instead of the image's copy, mount it at the platform-owned source root:
+  `/root/miles`, `/root/Megatron-LM`, or `/sgl-workspace/sglang`. The chart injects these canonical
+  roots into `PYTHONPATH`; `infra.env.PYTHONPATH` cannot override them, and a copy mounted anywhere
+  else is not imported.
 
 ## For cluster administrator
 
@@ -91,10 +94,15 @@ infra:
   image:
     repository: radixark/miles
     tag: dev
-  sharedStorage:
-    type: hostPath
-    hostPath: /cluster-storage
-    mountPath: /cluster-storage
+  # TODO: describe a volume and its mounts here.
+  volumes:
+    - name: cluster-storage
+      hostPath: {path: /cluster-storage, type: Directory}
+      mounts:
+        - {mountPath: /cluster-storage}
+        - {mountPath: /root/miles, subPath: alice/miles}
+  paths:
+    runsRoot: /cluster-storage/miles_data
 ```
 
 `charts/miles-run/values.yaml` shows the full shape, and each chart's `values.schema.json` is the
