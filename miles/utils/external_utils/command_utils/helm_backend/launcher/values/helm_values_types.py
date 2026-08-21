@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import ConfigDict, Field
-from pydantic.alias_generators import to_camel
+from pydantic import ConfigDict, Field, model_validator
+from pydantic.alias_generators import to_camel, to_snake
 
 from miles.utils.env_report.launcher_report import LAUNCHER_REPORT_ENV_VAR
 from miles.utils.external_utils.colocate_pairing.config import PairingConfig
@@ -31,6 +31,7 @@ _OPTIONAL_DNS_SUBDOMAIN = rf"^({DNS_SUBDOMAIN_PATTERN})?$"
 
 _NO_PARENT_TRAVERSAL = {"not": {"pattern": r"(^|/)\.\.(/|$)"}}
 _PLATFORM_OWNED_ENV_VARS = [
+    "PYTHONPATH",
     CELL_INDEX_ENV_VAR,
     POD_INDEX_ENV_VAR,
     BASE_GPU_ID_ENV_VAR,
@@ -40,10 +41,13 @@ _PLATFORM_OWNED_ENV_VARS = [
 _ENV_KEYS = {
     "propertyNames": {
         "pattern": "^[ -<>-~]+$",
-        "not": {"enum": ["PYTHONPATH", LAUNCHER_REPORT_ENV_VAR, *_PLATFORM_OWNED_ENV_VARS]},
+        "not": {"enum": [LAUNCHER_REPORT_ENV_VAR, *_PLATFORM_OWNED_ENV_VARS]},
     }
 }
 
+_VOLUME_SOURCES = ("hostPath", "persistentVolumeClaim", "emptyDir")
+_DEV_SHM_SOURCES = ("hostPath", "emptyDir")
+_QUANTITY = r"^[0-9]+(\.[0-9]+)?([EPTGMk]i?|m)?$"
 _OBJECT_NAME_MAX = 63
 _KUBERNETES_NAME_MAX = 253
 WORKBENCH_OBJECT_NAME_MAX = 52
@@ -164,44 +168,64 @@ class Image(ValuesModel):
     ) = None
 
 
-class SharedStorage(ValuesModel):
-    model_config = ConfigDict(
-        json_schema_extra={
-            "allOf": [
-                {
-                    "if": {"properties": {"type": {"const": "hostPath"}}, "required": ["type"]},
-                    "then": {"properties": {"hostPath": {"minLength": 1}}, "required": ["hostPath"]},
-                },
-                {
-                    "if": {"properties": {"type": {"const": "pvc"}}, "required": ["type"]},
-                    "then": {"properties": {"pvcClaimName": {"minLength": 1}}, "required": ["pvcClaimName"]},
-                },
-            ]
-        }
+def _assert_one_source(volume: ValuesModel, sources: tuple[str, ...]) -> None:
+    declared = [source for source in sources if getattr(volume, to_snake(source)) is not None]
+    assert len(declared) == 1, (
+        f"a volume declares exactly one of {list(sources)}, but this one declares {declared}: a volume with none "
+        f"is a mount kubernetes cannot satisfy, and one with several is a values file whose reader has to guess"
     )
 
-    type: Literal["hostPath", "pvc", "none"]
+
+class HostPathSource(ValuesModel):
+    path: _AbsolutePath
+    type: Literal["Directory", "DirectoryOrCreate"] | None = None
+
+
+class PersistentVolumeClaimSource(ValuesModel):
+    claim_name: Annotated[str, Field(min_length=1, max_length=_KUBERNETES_NAME_MAX, pattern=_DNS_SUBDOMAIN)]
+
+
+class EmptyDirSource(ValuesModel):
+    medium: Literal["", "Memory"] | None = None
+    size_limit: Annotated[str, Field(pattern=_QUANTITY)] | None = None
+
+
+class VolumeMount(ValuesModel):
     mount_path: _AbsolutePath
-    host_path: _OptionalAbsolutePath | None = None
-    pvc_claim_name: Annotated[str, Field(max_length=_KUBERNETES_NAME_MAX, pattern=_OPTIONAL_DNS_SUBDOMAIN)] | None = (
-        None
-    )
+    sub_path: _RelativePath | None = None
+    read_only: bool | None = None
 
 
-class Repos(ValuesModel):
-    miles: _RelativePath | None = None
-    megatron: _RelativePath | None = None
-    sglang: _RelativePath | None = None
+class VolumeEntry(ValuesModel):
+    model_config = ConfigDict(json_schema_extra={"oneOf": [{"required": [key]} for key in _VOLUME_SOURCES]})
+
+    name: _ObjectName
+    host_path: HostPathSource | None = None
+    persistent_volume_claim: PersistentVolumeClaimSource | None = None
+    empty_dir: EmptyDirSource | None = None
+    mounts: Annotated[list[VolumeMount], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def _declares_exactly_one_source(self) -> VolumeEntry:
+        _assert_one_source(self, _VOLUME_SOURCES)
+        return self
+
+
+class DevShm(ValuesModel):
+    model_config = ConfigDict(json_schema_extra={"oneOf": [{"required": [key]} for key in _DEV_SHM_SOURCES]})
+
+    mount_path: _AbsolutePath
+    host_path: HostPathSource | None = None
+    empty_dir: EmptyDirSource | None = None
+
+    @model_validator(mode="after")
+    def _declares_exactly_one_source(self) -> DevShm:
+        _assert_one_source(self, _DEV_SHM_SOURCES)
+        return self
 
 
 class Paths(ValuesModel):
-    runs_sub_path: _RelativePath | None = None
-    repos: Repos | None = None
-
-
-class NodeLocalStorage(ValuesModel):
-    host_path: _OptionalAbsolutePath | None = None
-    mount_path: _AbsolutePath | None = None
+    runs_root: _AbsolutePath | None = None
 
 
 class Scheduling(ValuesModel):
@@ -212,9 +236,9 @@ class Scheduling(ValuesModel):
 
 class InfraValues(ValuesModel):
     image: Image
-    shared_storage: SharedStorage
+    volumes: list[VolumeEntry]
     paths: Paths | None = None
-    node_local_storage: NodeLocalStorage | None = None
+    dev_shm: DevShm | None = None
     scheduling: Scheduling | None = None
     env: _EnvVars | None = None
 
