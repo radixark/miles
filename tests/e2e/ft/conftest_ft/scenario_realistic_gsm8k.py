@@ -129,7 +129,7 @@ def run_realistic_gsm8k(
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
 
-    dump_dir: str = resolve_dump_dir(test_name)
+    dump_dir: str = resolve_dump_dir(test_name, run_id=config.run_id)
     # Start from a clean dump dir so the event analyzer never reads a previous run's
     # stale events (run_training does this for the other scenarios; gsm8k bypasses it).
     if os.path.exists(dump_dir):

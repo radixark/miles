@@ -56,7 +56,12 @@ class TestOneConfigPerSoak:
         """Regression: a second default_config gave the injector a run_id no release was ever installed under."""
         seen = _Seen()
         _install(monkeypatch, seen)
-        monkeypatch.setattr(scenario_random_crash, "resolve_dump_dir", lambda test_name: str(tmp_path / "dump"))
+        dump_run_ids: list[str] = []
+        monkeypatch.setattr(
+            scenario_random_crash,
+            "resolve_dump_dir",
+            lambda test_name, *, run_id: dump_run_ids.append(run_id) or str(tmp_path / "dump"),
+        )
         monkeypatch.setattr(scenario_random_crash, "prepare", lambda mode, *, config: seen.prepared.append(config))
         monkeypatch.setattr(
             scenario_random_crash, "materialize_cyclic_debug_rollout_data", lambda count: str(tmp_path / "rollout")
@@ -69,6 +74,7 @@ class TestOneConfigPerSoak:
         scenario_random_crash.run_ci("kill_train__dp4_cp2__fake_rollout__moe_5layer", num_steps=1)
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
+        assert dump_run_ids == ["sentinel-0"]
         assert [config is seen.created[0] for config in seen.prepared] == [True]
         assert [config is seen.created[0] for config in seen.asked_for_host] == [True]
         assert [config is seen.created[0] for config in seen.trained] == [True]
@@ -85,13 +91,19 @@ class TestOneConfigPerSoak:
             lambda config: seen.prepared.append(config) or _RecordingBackend(config, seen),
         )
         monkeypatch.setattr(scenario_realistic_gsm8k, "prepare_gsm8k", lambda U: None)
-        monkeypatch.setattr(scenario_realistic_gsm8k, "resolve_dump_dir", lambda test_name: str(tmp_path / "gsm8k"))
+        dump_run_ids: list[str] = []
+        monkeypatch.setattr(
+            scenario_realistic_gsm8k,
+            "resolve_dump_dir",
+            lambda test_name, *, run_id: dump_run_ids.append(run_id) or str(tmp_path / "gsm8k"),
+        )
         monkeypatch.setattr(scenario_realistic_gsm8k, "spawn_fault_injector", lambda **kwargs: _StubInjector())
         monkeypatch.setattr(scenario_realistic_gsm8k, "assert_healing", lambda ft_components, **kwargs: None)
 
         scenario_realistic_gsm8k.run_ci(num_rollout=1)
 
         assert [config.run_id for config in seen.created] == ["sentinel-0"]
+        assert dump_run_ids == ["sentinel-0"]
         assert [config is seen.created[0] for config in seen.prepared] == [True, True]
         assert [config is seen.created[0] for config in seen.asked_for_host] == [True]
         assert [config is seen.created[0] for config in seen.trained] == [True]

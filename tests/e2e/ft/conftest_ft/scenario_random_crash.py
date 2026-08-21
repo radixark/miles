@@ -91,7 +91,7 @@ def run_ci(
 
     config = command_utils.default_config()
     test_name: str = f"{TEST_NAME}_fully_async" if fully_async else TEST_NAME
-    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}")
+    dump_dir: str = resolve_dump_dir(f"{test_name}_{mode}", run_id=config.run_id)
     print(f"Dump directory: {dump_dir}")
     mean_interval_seconds_of_cell_type: dict[str, float] = compute_mean_interval_seconds_of_cell_type(
         ft_mode.ft_components,
@@ -128,7 +128,7 @@ def run_ci(
             train_args=train_args,
             mode=ft_mode,
             dump_dir=dump_dir,
-            extra_env_vars=_get_extra_env_vars(fully_async=fully_async),
+            extra_env_vars={},
             config=config,
             train_script=get_train_script(fully_async=fully_async),
         )
@@ -143,12 +143,6 @@ def run_ci(
     )
 
     print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
-
-
-def _get_extra_env_vars(*, fully_async: bool) -> dict[str, str]:
-    if fully_async:
-        return {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
-    return {}
 
 
 def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:
