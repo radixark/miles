@@ -258,6 +258,7 @@ def run_a_suite(args):
         max_attempts=args.max_attempts,
         retry_wait_seconds=args.retry_wait_seconds,
         gate_store=gate_store,
+        gate_executing_suite=suite,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
     )
