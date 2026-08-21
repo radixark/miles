@@ -97,6 +97,7 @@ def main() -> None:
         )
 
     save_replay_data(script, rank=rank)
+    _dump_model_params_and_grads(model)
     _finalize_dumper()
 
     if rank == 0:
@@ -127,13 +128,20 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
     args.__dict__.setdefault("debug_deterministic_collective", False)
     set_default_megatron_args(args)
     validate_args(args)
+    # Megatron's validate_args unconditionally resets this to False; the miles
+    # backend always runs with variable_seq_lengths (miles/utils/arguments.py),
+    # so mirror it here to keep the worker consistent with the training path.
+    args.variable_seq_lengths = True
 
     init(args)
 
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
+    # Forward-only runs never call backward, so skip the DDP wrapper and its
+    # per-parameter grad buffers (which otherwise OOM for large models even
+    # when only logits/logprobs are needed).
+    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=script.run_backward)
 
     if args.load is not None:
         load_checkpoint(
@@ -145,7 +153,7 @@ def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) ->
         )
 
     for m in model:
-        m.train()
+        m.train(script.run_backward)
     return model
 
 
@@ -208,6 +216,33 @@ def _print_config(args: argparse.Namespace, script: WorkerScriptArgs) -> None:
         flush=True,
     )
     print(f"[worker] run_backward={script.run_backward}, role={script.role}", flush=True)
+
+
+def _dump_model_params_and_grads(model: list[Any]) -> None:
+    """Dump parameter gradients so runs can be diffed per parameter.
+
+    ``DUMPER_ENABLE_MODEL_GRAD`` only takes effect inside ``dump_model``, which
+    the training path reaches through ``DumperMegatronUtil.finalize`` but this
+    standalone worker never called -- so ``--run-backward`` produced no
+    parameter gradients at all.
+
+    ``get_grad`` is not optional here. The dumper's default is a bare
+    ``param.grad`` read, and under Megatron DDP the gradient lives in
+    ``param.main_grad`` with ``param.grad`` left as None, so omitting it yields a
+    silently empty dump. The heavier distributed-optimizer shard gather in
+    ``dumper_utils`` is only needed for the FT trainer, whose reduce-scatter
+    leaves each rank holding a partial buffer.
+    """
+    if os.environ.get("DUMPER_ENABLE", "0") != "1":
+        return
+    if os.environ.get("DUMPER_ENABLE_MODEL_GRAD", "0") != "1":
+        return
+    assert len(model) == 1, f"model dump does not support virtual pipeline parallelism ({len(model)} chunks)"
+
+    def get_grad(param: torch.nn.Parameter) -> torch.Tensor | None:
+        return param.grad if param.grad is not None else getattr(param, "main_grad", None)
+
+    dumper.dump_model(model[0], get_grad=get_grad)
 
 
 def _finalize_dumper() -> None:
