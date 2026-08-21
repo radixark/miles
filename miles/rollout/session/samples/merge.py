@@ -16,6 +16,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     get_routed_experts_from_response,
 )
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.sampling_mask import append_sampling_metadata
 from miles.rollout.session.types import SessionRecord
 from miles.utils.lifecycle import attach_lifecycle_metadata
 from miles.utils.types import Sample
@@ -102,6 +103,7 @@ def _compute_sample_from_openai_record(
     args: Namespace, record: SessionRecord, tokenizer, trim_count: int = 0, *, use_addition_r3: bool = False
 ) -> Sample:
     choice = record.response["choices"][0]
+    finish_reason = choice.get("finish_reason")
 
     prompt_token_ids = record.request.get("input_ids")
     if prompt_token_ids is None:
@@ -111,6 +113,15 @@ def _compute_sample_from_openai_record(
     output_log_probs = [item[0] for item in choice["meta_info"]["output_token_logprobs"]]
 
     sample = Sample()
+    if record.request.get("return_sampling_mask", False):
+        has_sampling_metadata = (
+            choice["meta_info"].get("output_token_sampling_mask") is not None
+            and choice["meta_info"].get("output_token_sampling_logprobs") is not None
+        )
+        # A request aborted before sampling has no support metadata. Successful
+        # and length-truncated generations must remain strict.
+        if finish_reason != "abort" or has_sampling_metadata:
+            output_log_probs = append_sampling_metadata(sample, output_token_ids, choice["meta_info"])
     sample.tokens = prompt_token_ids + output_token_ids
     sample.rollout_log_probs = output_log_probs
     sample.response = tokenizer.decode(output_token_ids)
@@ -125,7 +136,7 @@ def _compute_sample_from_openai_record(
         sample.strip_last_output_tokens(trim_count, tokenizer)
 
     # TODO unify with Sample.update_from_meta_info
-    match choice["finish_reason"]:
+    match finish_reason:
         case "stop" | "tool_calls":
             sample.status = Sample.Status.COMPLETED
         case "length":

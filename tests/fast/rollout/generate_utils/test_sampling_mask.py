@@ -2,13 +2,165 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
 from miles.rollout.generate_utils.sampling_mask import (
     append_forced_sampling_tokens,
     append_sampling_metadata,
     merge_sampling_masks,
+    should_return_sampling_mask,
 )
 from miles.utils.sampling import sampling_mask_replay_enabled
 from miles.utils.types import Sample
+
+
+@pytest.mark.parametrize(
+    ("rollout_top_p", "rollout_top_k", "request_top_p", "request_top_k", "expected"),
+    [
+        (0.95, 32, 0.95, 32, True),
+        (1.0, 32, 1.0, 32, True),
+        (1.0, -1, 1.0, -1, False),
+    ],
+)
+def test_generate_payload_automatically_requests_sampling_mask(
+    rollout_top_p,
+    rollout_top_k,
+    request_top_p,
+    request_top_k,
+    expected,
+):
+    args = SimpleNamespace(
+        rollout_top_p=rollout_top_p,
+        rollout_top_k=rollout_top_k,
+        rollout_temperature=1.0,
+        rollout_max_response_len=16,
+        rollout_max_context_len=None,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+
+    payload, halt_status = compute_request_payload(
+        args,
+        input_ids=[1, 2],
+        sampling_params={"max_new_tokens": 4, "top_p": request_top_p, "top_k": request_top_k},
+    )
+
+    assert halt_status is None
+    assert payload.get("return_sampling_mask", False) is expected
+
+
+@pytest.mark.parametrize(
+    ("rollout_top_p", "rollout_top_k", "request_top_p", "request_top_k"),
+    [
+        (1.0, -1, 0.95, -1),
+        (1.0, 32, 1.0, -1),
+    ],
+)
+def test_request_cannot_change_whether_sampling_is_truncated(
+    rollout_top_p,
+    rollout_top_k,
+    request_top_p,
+    request_top_k,
+):
+    args = SimpleNamespace(rollout_top_p=rollout_top_p, rollout_top_k=rollout_top_k, rollout_temperature=1.0)
+
+    with pytest.raises(ValueError, match="request-level top-p/top-k"):
+        should_return_sampling_mask(
+            args,
+            {"top_p": request_top_p, "top_k": request_top_k},
+        )
+
+
+def test_request_cannot_introduce_min_p_truncation():
+    args = SimpleNamespace(rollout_top_p=1.0, rollout_top_k=-1, rollout_temperature=1.0)
+
+    with pytest.raises(ValueError, match="request-level top-p/top-k/min-p"):
+        should_return_sampling_mask(args, {"min_p": 0.1})
+
+
+def test_evaluation_does_not_request_or_validate_training_sampling_support():
+    args = SimpleNamespace(
+        rollout_top_p=0.95,
+        rollout_top_k=32,
+        rollout_temperature=1.0,
+        rollout_max_response_len=16,
+        rollout_max_context_len=None,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+
+    payload, halt_status = compute_request_payload(
+        args,
+        input_ids=[1, 2],
+        sampling_params={"max_new_tokens": 4, "top_p": 1.0, "top_k": -1, "temperature": 0.5},
+        evaluation=True,
+    )
+
+    assert halt_status is None
+    assert "return_sampling_mask" not in payload
+
+
+def test_training_request_temperature_must_match_actor_scoring_temperature():
+    args = SimpleNamespace(rollout_top_p=0.95, rollout_top_k=32, rollout_temperature=1.0)
+
+    with pytest.raises(ValueError, match="request temperature 0.5"):
+        should_return_sampling_mask(args, {"top_p": 0.95, "top_k": 32, "temperature": 0.5})
+
+
+@pytest.mark.parametrize("request_top_k", [-1, 33])
+def test_training_request_top_k_must_fit_configured_bound(request_top_k):
+    args = SimpleNamespace(rollout_top_p=0.95, rollout_top_k=32, rollout_temperature=1.0)
+
+    with pytest.raises(ValueError, match=r"request top_k must be in \[1, 32\]"):
+        should_return_sampling_mask(args, {"top_p": 0.95, "top_k": request_top_k})
+
+
+@pytest.mark.parametrize(
+    "sampling_params",
+    [
+        {"max_new_tokens": 4},
+        {"max_new_tokens": 4, "top_p": None, "top_k": None, "temperature": None},
+    ],
+)
+def test_generate_payload_materializes_replayed_sampling_defaults(sampling_params):
+    args = SimpleNamespace(
+        rollout_top_p=0.95,
+        rollout_top_k=32,
+        rollout_temperature=0.7,
+        rollout_max_response_len=16,
+        rollout_max_context_len=None,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+
+    payload, _ = compute_request_payload(
+        args,
+        input_ids=[1, 2],
+        sampling_params=sampling_params,
+    )
+
+    assert payload["sampling_params"] == {
+        "top_p": 0.95,
+        "top_k": 32,
+        "temperature": 0.7,
+        "max_new_tokens": 4,
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("frequency_penalty", 0.1),
+        ("presence_penalty", 0.1),
+        ("repetition_penalty", 1.1),
+        ("logit_bias", {"1": 0.1}),
+        ("custom_logit_processor", "processor"),
+    ],
+)
+def test_training_request_rejects_unreplayed_logit_transform(name, value):
+    args = SimpleNamespace(rollout_top_p=0.95, rollout_top_k=32, rollout_temperature=1.0)
+
+    with pytest.raises(ValueError, match=rf"{name} is not supported"):
+        should_return_sampling_mask(args, {"top_p": 0.95, "top_k": 32, name: value})
 
 
 @pytest.mark.parametrize(

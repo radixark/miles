@@ -120,8 +120,8 @@ class TestConvertSamplesToTrainData:
         )
         assert out["rollout_log_probs"][0] == [-0.1, -0.2, -0.3, -0.4]
 
-    def test_sampling_mask_passed_through(self):
-        args = make_args(rewards_normalization=False)
+    def test_truncated_sampling_mask_passed_through(self):
+        args = make_args(rewards_normalization=False, rollout_top_p=0.95, rollout_top_k=32)
         s = make_sample()
         s.rollout_sampling_mask_ids = [0, 7, 1, 8, 2, 9, 3, 10]
         s.rollout_sampling_mask_offsets = [0, 2, 4, 6, 8]
@@ -135,19 +135,30 @@ class TestConvertSamplesToTrainData:
         assert out["rollout_sampling_mask_ids"][0] == s.rollout_sampling_mask_ids
         assert out["rollout_sampling_mask_offsets"][0] == s.rollout_sampling_mask_offsets
 
-    def test_sampling_mask_requires_complete_batch(self):
-        args = make_args(rewards_normalization=False)
-        captured = make_sample(index=8)
-        captured.rollout_sampling_mask_ids = [0, 7, 1, 8, 2, 9, 3, 10]
-        captured.rollout_sampling_mask_offsets = [0, 2, 4, 6, 8]
+    def test_truncated_sampling_requires_mask_for_every_sample(self):
+        args = make_args(rewards_normalization=False, rollout_top_p=0.95, rollout_top_k=32)
 
         with pytest.raises(
             ValueError,
-            match=r"must be present for every training sample.*sample_index=9",
+            match=r"requires sampling-mask data for every training sample.*sample_index=0",
         ):
             convert_samples_to_train_data(
                 args,
-                [captured, make_sample(index=9)],
+                [make_sample()],
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
+    def test_removed_sample_still_requires_native_sampling_mask(self):
+        args = make_args(rewards_normalization=False, rollout_top_p=0.95, rollout_top_k=32)
+        removed = make_sample(index=9)
+        removed.remove_sample = True
+
+        with pytest.raises(ValueError, match=r"training sample.*sample_index=9"):
+            convert_samples_to_train_data(
+                args,
+                [removed],
                 metadata={},
                 custom_convert_samples_to_train_data_func=None,
                 custom_reward_post_process_func=None,

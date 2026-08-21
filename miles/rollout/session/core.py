@@ -2,7 +2,7 @@
 
 HTTP-agnostic: the FastAPI adapter (``sessions.py`` + ``server.py``) turns each request into primitives and calls these methods. Owns one ``SessionRegistry`` (per-session TITO/trajectory state) and one proxy ``backend``.
 
-- ``chat_completions`` strips the R3 replay payloads (``routed_experts`` / ``indexer_topk``) from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for the training path (``GET /sessions/{id}``).
+- ``chat_completions`` strips training-only replay payloads from the client reply copy-on-write; the ``SessionRecord`` keeps the full response for server-side training-sample assembly.
 - ``chat_completions`` holds the per-session lock for prep and state update but not across the proxy call; ``closing`` re-checks and the ``num_assistant`` check gate concurrent DELETE/chat.
 - ``stream: true`` is served as fake streaming: the backend call stays non-streaming (TITO needs the complete message + meta_info) and the full response is re-rendered as a single SSE chunk plus ``data: [DONE]``. Errors all happen before the SSE body is built, so they keep their real status codes as JSON.
 - ``collect_samples`` assembles training Samples from the session's records on the server (compute -> truncate -> merge, synchronously on the loop like the lock-free ``get_session``); deterministic assembly failures return 422 with the assertion text.
@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.sampling_mask import set_sampling_mask_request_defaults, should_return_sampling_mask
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -71,7 +72,13 @@ def _samples_response(payload: bytes) -> Response:
     return Response(content=payload, status_code=200, media_type="application/octet-stream")
 
 
-_CLIENT_STRIPPED_META_KEYS = ("routed_experts", "indexer_topk")
+_CLIENT_STRIPPED_META_KEYS = (
+    "routed_experts",
+    "indexer_topk",
+    "output_token_sampling_mask",
+    "output_token_sampling_logprobs",
+    "output_token_sampling_mask_length",
+)
 
 
 def _strip_replay_payloads(response: dict) -> dict:
@@ -179,6 +186,27 @@ def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
     # setdefault) so agent-side overrides cannot break token accumulation.
     request_body["logprobs"] = True
     request_body["return_meta_info"] = True
+    sampling_mask_requested = request_body.get("return_sampling_mask")
+    try:
+        return_sampling_mask = should_return_sampling_mask(args, request_body)
+    except ValueError as exc:
+        raise MessageValidationError(str(exc)) from exc
+    if sampling_mask_requested is False and return_sampling_mask:
+        raise MessageValidationError(
+            "return_sampling_mask cannot be disabled when rollout sampling-support replay is enabled"
+        )
+    if sampling_mask_requested is True and not return_sampling_mask:
+        raise MessageValidationError(
+            "return_sampling_mask requires truncated rollout sampling with a positive --rollout-top-k"
+        )
+    if return_sampling_mask:
+        request_body["return_sampling_mask"] = True
+        set_sampling_mask_request_defaults(
+            request_body,
+            top_p=args.rollout_top_p,
+            top_k=args.rollout_top_k,
+            temperature=args.rollout_temperature,
+        )
     if getattr(args, "use_rollout_routing_replay", False):
         request_body["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
