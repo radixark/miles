@@ -115,6 +115,20 @@ class TestPoolPodsShareTheHostSharedMemory:
         assert len(_shm_mounts(pod_spec)) == 1
         assert "hostIPC" not in pod_spec
 
+    def test_a_cluster_whose_nodes_keep_shared_memory_elsewhere_can_say_so(self):
+        """The path was hardcoded, which left a node that mounts its shm elsewhere with no way to be described."""
+        pod_spec = _pod_spec_of_sole_pool("--set", "infra.devShm.hostPath.path=/run/shm")
+
+        assert _shm_volume(pod_spec)["hostPath"]["path"] == "/run/shm"
+
+    def test_a_cluster_that_would_rather_size_it_itself_can_ask_for_memory(self):
+        """The size knob the run lost only ever made sense on a volume of the pod's own, which is this one."""
+        pod_spec = _pod_spec_of_sole_pool(
+            "--set", "infra.devShm.hostPath=null", "--set-json", 'infra.devShm.emptyDir={"medium":"Memory"}'
+        )
+
+        assert _shm_volume(pod_spec)["emptyDir"] == {"medium": "Memory"}
+
     def test_a_run_cannot_ask_for_a_private_size_any_more(self):
         """The size knob belonged to the emptyDir; leaving it accepted would let a values file break sharing."""
         error = render_run_error("--set", "run.shmSize=8Gi")
