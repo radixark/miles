@@ -24,7 +24,10 @@ from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.mixin import (
     DistBucketedWeightUpdateMixin,
 )
-from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+from miles.backends.megatron_utils.update_weight.update_weight_from_tensor import (
+    UpdateWeightFromTensor,
+    _refresh_lora_ipc_payload,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME
 
 _UW_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_tensor"
@@ -72,6 +75,149 @@ def _make_args(**overrides):
     )
     defaults.update(overrides)
     return Namespace(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# Colocated LoRA CUDA-IPC payload lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestColocatedLoraIpcPayloadLifecycle:
+    def test_refresh_preserves_storage_and_updates_values(self):
+        payload = {
+            "layer.lora_A.weight": torch.empty(2, 3),
+            "layer.lora_B.weight": torch.empty(3, 2),
+        }
+        storage_ptrs = {name: tensor.untyped_storage().data_ptr() for name, tensor in payload.items()}
+        current = [
+            ("layer.lora_A.weight", torch.full((2, 3), 1.5)),
+            ("layer.lora_B.weight", torch.full((3, 2), -2.0)),
+        ]
+
+        refreshed = _refresh_lora_ipc_payload(current, payload)
+
+        assert refreshed is payload
+        assert {name: tensor.untyped_storage().data_ptr() for name, tensor in payload.items()} == storage_ptrs
+        assert torch.equal(payload["layer.lora_A.weight"], current[0][1])
+        assert torch.equal(payload["layer.lora_B.weight"], current[1][1])
+
+        next_values = [(name, tensor + 3.0) for name, tensor in current]
+        _refresh_lora_ipc_payload(next_values, payload)
+
+        assert {name: tensor.untyped_storage().data_ptr() for name, tensor in payload.items()} == storage_ptrs
+        assert torch.equal(payload["layer.lora_A.weight"], next_values[0][1])
+        assert torch.equal(payload["layer.lora_B.weight"], next_values[1][1])
+
+    def test_refresh_synchronizes_reused_cuda_storage_before_serialization(self):
+        device = torch.device("cuda:0")
+        target = MagicMock(shape=(2, 3), dtype=torch.bfloat16, device=device, is_cuda=True)
+        current = MagicMock(shape=(2, 3), dtype=torch.bfloat16, device=device)
+        stream = MagicMock()
+
+        with patch(f"{_UW_MODULE}.torch.cuda.current_stream", return_value=stream) as current_stream:
+            _refresh_lora_ipc_payload([("layer.lora_A.weight", current)], {"layer.lora_A.weight": target})
+
+        target.copy_.assert_called_once_with(current)
+        current_stream.assert_called_once_with(device=device)
+        stream.synchronize.assert_called_once_with()
+
+    def test_refresh_accepts_order_changes(self):
+        payload = {
+            "layer.lora_A.weight": torch.empty(2, 3),
+            "layer.lora_B.weight": torch.empty(3, 2),
+        }
+        reordered = [
+            ("layer.lora_B.weight", torch.empty(3, 2)),
+            ("layer.lora_A.weight", torch.empty(2, 3)),
+        ]
+
+        assert _refresh_lora_ipc_payload(reordered, payload) is payload
+
+    def test_refresh_rejects_name_changes(self):
+        payload = {"layer.lora_A.weight": torch.empty(2, 3)}
+
+        with pytest.raises(RuntimeError, match="payload names changed"):
+            _refresh_lora_ipc_payload([("other.lora_A.weight", torch.empty(2, 3))], payload)
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            torch.empty(3, 3),
+            torch.empty(3, 2, dtype=torch.float64),
+        ],
+    )
+    def test_refresh_rejects_incompatible_layout(self, replacement):
+        payload = {
+            "layer.lora_A.weight": torch.full((2, 3), 7.0),
+            "layer.lora_B.weight": torch.full((3, 2), 8.0),
+        }
+
+        with pytest.raises(RuntimeError, match="payload layout changed"):
+            _refresh_lora_ipc_payload(
+                [
+                    ("layer.lora_A.weight", torch.zeros(2, 3)),
+                    ("layer.lora_B.weight", replacement),
+                ],
+                payload,
+            )
+
+        assert torch.equal(payload["layer.lora_A.weight"], torch.full((2, 3), 7.0))
+
+    def test_reuse_waits_for_unload_and_group_cuda_sync(self):
+        events = []
+        unload = MagicMock()
+        unload.remote.side_effect = lambda **_kwargs: events.append("unload_submit") or "unload_ref"
+        updater = SimpleNamespace(
+            _ipc_gather_group="ipc_group",
+            _ipc_gather_src=3,
+            _ipc_engine=SimpleNamespace(unload_lora_adapter=unload),
+            _lora_ipc_live_tensors=[{"layer.lora_A.weight": torch.empty(2, 3)}],
+            _lora_loaded=True,
+        )
+
+        with (
+            patch(f"{_UW_MODULE}.dist") as dist_mock,
+            patch(f"{_UW_MODULE}.ray") as ray_mock,
+            patch(f"{_UW_MODULE}.torch.cuda.synchronize") as synchronize_mock,
+        ):
+            dist_mock.get_rank.return_value = 3
+            ray_mock.get.side_effect = lambda ref: events.append("unload_ack") if ref == "unload_ref" else None
+            dist_mock.broadcast_object_list.side_effect = lambda *_args, **_kwargs: events.append("broadcast")
+            dist_mock.barrier.side_effect = lambda **_kwargs: events.append("barrier")
+            synchronize_mock.side_effect = lambda: events.append("cuda_sync")
+
+            UpdateWeightFromTensor._prepare_lora_ipc_payload_for_reuse(updater)
+
+        assert events == ["unload_submit", "unload_ack", "broadcast", "barrier", "cuda_sync"]
+        assert updater._lora_loaded is False
+
+    def test_unload_failure_is_broadcast_and_fails_closed(self):
+        unload = MagicMock()
+        unload.remote.return_value = "unload_ref"
+        updater = SimpleNamespace(
+            _ipc_gather_group="ipc_group",
+            _ipc_gather_src=0,
+            _ipc_engine=SimpleNamespace(unload_lora_adapter=unload),
+            _lora_ipc_live_tensors=[{"layer.lora_A.weight": torch.empty(2, 3)}],
+            _lora_loaded=True,
+        )
+
+        with (
+            patch(f"{_UW_MODULE}.dist") as dist_mock,
+            patch(f"{_UW_MODULE}.ray") as ray_mock,
+            patch(f"{_UW_MODULE}.torch.cuda.synchronize") as synchronize_mock,
+        ):
+            dist_mock.get_rank.return_value = 0
+            ray_mock.get.side_effect = RuntimeError("engine unavailable")
+
+            with pytest.raises(RuntimeError, match="failed to unload.*engine unavailable"):
+                UpdateWeightFromTensor._prepare_lora_ipc_payload_for_reuse(updater)
+
+        error_status = dist_mock.broadcast_object_list.call_args.args[0]
+        assert error_status[0] == "RuntimeError: engine unavailable"
+        dist_mock.barrier.assert_not_called()
+        synchronize_mock.assert_not_called()
+        assert updater._lora_loaded is True
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +316,34 @@ class TestSendHfParamsEmptyLoraDetection:
         # Should not raise; mock_send was called with the LoRA tensors
         assert mock_send.called
 
+    @patch(f"{_UW_MODULE}._send_to_colocated_engine", return_value=([], []))
+    @patch(f"{_UW_MODULE}.dist")
+    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+    def test_reuses_retained_payload_when_repacking(self, mock_iter_base, mock_dist, mock_send):
+        mock_dist.get_world_size.return_value = 1
+        mock_dist.get_rank.return_value = 0
+        mock_dist.new_group.return_value = MagicMock()
+        mock_iter_base.create.return_value = MagicMock()
+
+        updater = UpdateWeightFromTensor(
+            args=_make_args(),
+            model=[MagicMock()],
+            weights_getter=lambda: {},
+            model_name="qwen",
+            quantization_config=None,
+            is_lora=True,
+        )
+        updater._ipc_engine = MagicMock()
+        updater._ipc_gather_src = 0
+        updater._ipc_gather_group = MagicMock()
+        updater.use_distribute = False
+        retained_payload = {name: tensor.clone() for name, tensor in SAMPLE_LORA_WEIGHTS}
+        updater._lora_ipc_live_tensors = [retained_payload]
+
+        updater._send_lora_params(SAMPLE_LORA_WEIGHTS, repack_lora_for_ipc=True)
+
+        assert mock_send.call_args.kwargs["reusable_lora_payload"] is retained_payload
+
 
 # ---------------------------------------------------------------------------
 # update_weights: zero-chunk detection
@@ -240,6 +414,57 @@ class TestUpdateWeightsZeroChunks:
         updater.use_distribute = False
 
         updater.update_weights()
+
+
+class TestUpdateWeightsLoraIpcRetention:
+    @patch("miles.backends.megatron_utils.update_weight.common.ray")
+    @patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock())
+    @patch(f"{_UW_MODULE}.ray")
+    @patch(f"{_UW_MODULE}.dist")
+    @patch(f"{_UW_MODULE}.HfWeightIteratorBase")
+    def test_retains_exporter_before_waiting_for_load_result(
+        self, mock_iter_base, mock_dist, mock_ray, mock_gloo, mock_common_ray
+    ):
+        mock_dist.get_world_size.return_value = 1
+        mock_dist.get_rank.return_value = 0
+        mock_dist.new_group.return_value = MagicMock()
+
+        iterator = MagicMock()
+        iterator.get_hf_weight_chunks.side_effect = lambda _weights, *, weight_type: iter(
+            [] if weight_type == "base" else [SAMPLE_LORA_WEIGHTS]
+        )
+        mock_iter_base.create.return_value = iterator
+
+        updater = UpdateWeightFromTensor(
+            args=_make_args(),
+            model=[MagicMock()],
+            weights_getter=lambda: {},
+            model_name="qwen",
+            quantization_config=None,
+            is_lora=True,
+        )
+        updater.rollout_engines = [MagicMock()]
+        updater.use_distribute = False
+        load_ref = object()
+        retained_buffers = [{name: tensor.clone() for name, tensor in SAMPLE_LORA_WEIGHTS}]
+        updater._send_lora_params = MagicMock(return_value=([load_ref], retained_buffers))
+
+        def ray_get(refs):
+            if len(refs) == 1 and refs[0] is load_ref:
+                raise RuntimeError("load failed after importing handles")
+            return []
+
+        mock_ray.get.side_effect = ray_get
+
+        parallel_state = SimpleNamespace(pp=SimpleNamespace(group=MagicMock()))
+        with (
+            patch(f"{_UW_MODULE}.get_parallel_state", return_value=parallel_state),
+            pytest.raises(RuntimeError, match="load failed after importing handles"),
+        ):
+            updater.update_weights()
+
+        assert updater._lora_ipc_live_tensors is retained_buffers
+        assert updater._lora_loaded is False
 
 
 # ---------------------------------------------------------------------------
