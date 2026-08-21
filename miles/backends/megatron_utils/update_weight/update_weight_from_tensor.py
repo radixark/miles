@@ -242,14 +242,16 @@ class UpdateWeightFromTensor:
 
         rank = dist.get_rank()
 
-        # TODO: implement lora weight checker
         colocate_base_persistent = getattr(self.args, "colocate", False) and not getattr(
             self.args, "offload_rollout", True
+        )
+        checker_needs_base_restore = (
+            self.is_lora and getattr(self.args, "check_weight_update_equal", False) and self.weight_version == 1
         )
         skip_base_sync = (
             self.is_lora
             and (self.use_distribute or lora_base_cpu_backup_enabled(self.args) or colocate_base_persistent)
-            and not getattr(self.args, "check_weight_update_equal", False)
+            and not checker_needs_base_restore
         )
 
         if rank == 0:
