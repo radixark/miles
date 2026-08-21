@@ -94,7 +94,7 @@ def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -
 
     specs = compute_specs(args)
     chart = chart_dir(repo_base_dir=repo_base_dir)
-    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)))
+    shared_root = InfraInfo.shared_root(InfraInfo.load(chart, list(config.helm_values)), namespace=namespace)
     run_directory = RunFiles.run_dir(shared_root=shared_root, run_id=run_id)
 
     if config.ci_run:

@@ -50,10 +50,38 @@ env:
 {{- end }}
 {{- end }}
 
+{{- define "miles-common.interpolatePath" -}}
+{{- $value := .value -}}
+{{- range $reference := regexFindAll "\\$\\{[^}]*\\}" $value -1 -}}
+{{- if ne $reference "${NAMESPACE}" -}}
+{{- fail (printf "%s is %s, which names the unknown variable %s: ${NAMESPACE} is the only variable a path may name, and an unknown one left in place would give every namespace the same literal directory instead of one of its own" $.field $value $reference) -}}
+{{- end -}}
+{{- end -}}
+{{- $value | replace "${NAMESPACE}" .root.Release.Namespace -}}
+{{- end }}
+
+{{- define "miles-common.assertInfraPathsResolve" -}}
+{{- $_ := include "miles-common.volumes" . -}}
+{{- $_ = include "miles-common.volumeMounts" . -}}
+{{- $_ = include "miles-common.runsRoot" . -}}
+{{- end }}
+
+{{- define "miles-common.runsRoot" -}}
+{{- with (.Values.infra.paths | default dict).runsRoot -}}
+{{- include "miles-common.interpolatePath" (dict "root" $ "field" "infra.paths.runsRoot" "value" .) -}}
+{{- end -}}
+{{- end }}
+
 {{- define "miles-common.volumes" -}}
+{{- $root := . -}}
 {{- range $volume := (.Values.infra.volumes | default list) }}
+{{- $source := $volume }}
+{{- with $volume.hostPath }}
+{{- $path := include "miles-common.interpolatePath" (dict "root" $root "field" (printf "infra.volumes[%s].hostPath.path" $volume.name) "value" .path) }}
+{{- $source = mustMergeOverwrite (deepCopy $volume) (dict "hostPath" (dict "path" $path)) }}
+{{- end }}
 - name: {{ $volume.name | quote }}
-  {{- include "miles-common.volumeSource" $volume | trim | nindent 2 }}
+  {{- include "miles-common.volumeSource" $source | trim | nindent 2 }}
 {{- end }}
 {{- end }}
 
@@ -76,12 +104,13 @@ emptyDir:
 {{- end }}
 
 {{- define "miles-common.volumeMounts" -}}
+{{- $root := . -}}
 {{- range $volume := (.Values.infra.volumes | default list) }}
-{{- range $mount := ($volume.mounts | default list) }}
+{{- range $index, $mount := ($volume.mounts | default list) }}
 - name: {{ $volume.name | quote }}
-  mountPath: {{ $mount.mountPath | quote }}
+  mountPath: {{ include "miles-common.mountPath" (dict "root" $root "volume" $volume "index" $index "mount" $mount) | quote }}
   {{- with $mount.subPath }}
-  subPath: {{ . | quote }}
+  subPath: {{ include "miles-common.interpolatePath" (dict "root" $root "field" (printf "infra.volumes[%s].mounts[%d].subPath" $volume.name $index) "value" .) | quote }}
   {{- end }}
   {{- if $mount.readOnly }}
   readOnly: true
@@ -90,20 +119,26 @@ emptyDir:
 {{- end }}
 {{- end }}
 
+{{- define "miles-common.mountPath" -}}
+{{- include "miles-common.interpolatePath" (dict "root" .root "field" (printf "infra.volumes[%s].mounts[%d].mountPath" .volume.name (int .index)) "value" .mount.mountPath) -}}
+{{- end }}
+
 {{- define "miles-common.assertRunsRootIsMounted" -}}
-{{- $runsRoot := (.Values.infra.paths | default dict).runsRoot | default "" -}}
+{{- $root := . -}}
+{{- $runsRoot := include "miles-common.runsRoot" . -}}
 {{- if $runsRoot }}
 {{- $writable := list -}}
 {{- $readOnly := list -}}
 {{- $all := list -}}
 {{- range $volume := (.Values.infra.volumes | default list) }}
-{{- range $mount := ($volume.mounts | default list) }}
-{{- $all = append $all $mount.mountPath }}
-{{- if or (eq $runsRoot $mount.mountPath) (hasPrefix (printf "%s/" $mount.mountPath) $runsRoot) }}
+{{- range $index, $mount := ($volume.mounts | default list) }}
+{{- $mountPath := include "miles-common.mountPath" (dict "root" $root "volume" $volume "index" $index "mount" $mount) }}
+{{- $all = append $all $mountPath }}
+{{- if or (eq $runsRoot $mountPath) (hasPrefix (printf "%s/" $mountPath) $runsRoot) }}
 {{- if $mount.readOnly }}
-{{- $readOnly = append $readOnly $mount.mountPath }}
+{{- $readOnly = append $readOnly $mountPath }}
 {{- else }}
-{{- $writable = append $writable $mount.mountPath }}
+{{- $writable = append $writable $mountPath }}
 {{- end }}
 {{- end }}
 {{- end }}
