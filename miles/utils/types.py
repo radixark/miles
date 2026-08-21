@@ -44,6 +44,9 @@ class Sample:
     loss_mask: list[int] | None = None
     weight_versions: list[str] = field(default_factory=list)
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
+    # Flattened rollout sampling supports in CSR form. Offsets have response_length + 1 entries.
+    rollout_sampling_mask_ids: list[int] | None = None
+    rollout_sampling_mask_offsets: list[int] | None = None
     rollout_routed_experts: numpy.ndarray | None = (
         None  # Routed experts from rollout engine. shape: (num_tokens-1, num_layers, moe_router_topk), dtype=int32
     )
@@ -194,6 +197,25 @@ class Sample:
             assert (
                 len(self.rollout_log_probs) == self.response_length
             ), f"rollout_log_probs length ({len(self.rollout_log_probs)}) != response_length ({self.response_length})"
+        assert (self.rollout_sampling_mask_ids is None) == (
+            self.rollout_sampling_mask_offsets is None
+        ), "rollout sampling mask ids and offsets must either both be set or both be None"
+        if self.rollout_sampling_mask_offsets is not None:
+            assert self.rollout_sampling_mask_offsets, "rollout_sampling_mask_offsets must not be empty"
+            assert len(self.rollout_sampling_mask_offsets) == self.response_length + 1, (
+                f"rollout_sampling_mask_offsets length ({len(self.rollout_sampling_mask_offsets)}) "
+                f"!= response_length + 1 ({self.response_length + 1})"
+            )
+            assert self.rollout_sampling_mask_offsets[0] == 0
+            assert self.rollout_sampling_mask_offsets[-1] == len(self.rollout_sampling_mask_ids)
+            assert all(
+                start < end
+                for start, end in zip(
+                    self.rollout_sampling_mask_offsets[:-1],
+                    self.rollout_sampling_mask_offsets[1:],
+                    strict=True,
+                )
+            ), "every response token must have a non-empty rollout sampling support"
         if self.teacher_log_probs is not None:
             assert (
                 len(self.teacher_log_probs) == self.response_length
@@ -229,6 +251,11 @@ class Sample:
         self.response_length -= n
         if self.rollout_log_probs is not None:
             self.rollout_log_probs = self.rollout_log_probs[:-n]
+        if self.rollout_sampling_mask_offsets is not None:
+            keep_tokens = self.response_length
+            keep_ids = self.rollout_sampling_mask_offsets[keep_tokens]
+            self.rollout_sampling_mask_ids = self.rollout_sampling_mask_ids[:keep_ids]
+            self.rollout_sampling_mask_offsets = self.rollout_sampling_mask_offsets[: keep_tokens + 1]
         if self.teacher_log_probs is not None:
             self.teacher_log_probs = self.teacher_log_probs[:-n]
         if self.opd_reverse_kl is not None:
@@ -258,6 +285,8 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.rollout_sampling_mask_ids = None
+        self.rollout_sampling_mask_offsets = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
