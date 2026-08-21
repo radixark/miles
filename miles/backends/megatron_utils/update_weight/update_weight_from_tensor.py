@@ -18,6 +18,10 @@ from miles.backends.megatron_utils.lora_utils import (
     lora_base_cpu_backup_enabled,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.serialized_buckets import (
+    align_serialized_bucket_columns,
+    empty_flattened_tensor_data,
+)
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -324,10 +328,8 @@ class UpdateWeightFromTensor:
         """Frozen vision/audio tower tensors to append to every base sync (see
         __init__ comment). Returns None when the run has no MM towers. EVERY
         gather-group rank contributes the full tower set (read once from its local
-        HF checkpoint, the same bytes the engine loaded at boot): the colocated
-        send requires homogeneous per-rank bucket counts (num_dtypes is taken from
-        rank 0 and indexed into every rank's list), so a src-only contribution
-        breaks assembly. The duplicates are ~15MB/rank and load idempotently."""
+        HF checkpoint, the same bytes the engine loaded at boot). The duplicates
+        are ~15MB/rank and load idempotently."""
         provider = getattr(self.args, "custom_model_provider_path", None) or ""
         if "inkling_mm_model_provider" not in provider:
             return None
@@ -476,7 +478,7 @@ def _send_to_colocated_engine(
         converted_named_tensors_by_dtypes = {}
         serialized_lora = MultiprocessingSerializer.serialize(payload, output_str=True)
     elif getattr(FlattenedTensorBucket, "supports_multi_dtypes", False):
-        converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors}
+        converted_named_tensors_by_dtypes = {"dtype": hf_named_tensors} if hf_named_tensors else {}
     else:
         converted_named_tensors_by_dtypes = {}
         for name, tensor in hf_named_tensors:
@@ -532,10 +534,18 @@ def _send_to_colocated_engine(
             )
 
         else:
-            num_dtypes = len(serialized_named_tensors[0])
-            for i in range(num_dtypes):
+            empty_serialized_tensor = None
+            for column in align_serialized_bucket_columns(serialized_named_tensors):
+                if any(item is None for item in column):
+                    if empty_serialized_tensor is None:
+                        empty_tensor_data = empty_flattened_tensor_data(device=torch.cuda.current_device())
+                        long_live_tensors.append(empty_tensor_data)
+                        empty_serialized_tensor = MultiprocessingSerializer.serialize(
+                            empty_tensor_data, output_str=True
+                        )
+                    column = [item if item is not None else empty_serialized_tensor for item in column]
                 kwargs = {
-                    "serialized_named_tensors": [tensors[i] for tensors in serialized_named_tensors],
+                    "serialized_named_tensors": column,
                     "load_format": "flattened_bucket",
                     "weight_version": str(weight_version),
                     "selector": selector,
