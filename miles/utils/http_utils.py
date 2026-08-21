@@ -334,7 +334,7 @@ def _init_ray_distributed_post(args):
         for _ in range(args.num_gpus_per_node):
             actor = _HttpPosterActor.options(
                 name=None,
-                lifetime="detached",
+                lifetime="non_detached",
                 scheduling_strategy=scheduling,
                 max_concurrency=per_actor_conc,
                 # Use tiny CPU to schedule
