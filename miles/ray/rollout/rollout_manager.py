@@ -297,6 +297,8 @@ class RolloutManager:
 
     async def onload_kv(self):
         await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+        # Matching resume for offload()'s pause: only un-pause once KV and CUDA graphs are back.
+        await asyncio.gather(*[srv.continue_generation() for srv in self.servers.values()])
 
     # -------------------------- engine management -----------------------------
 

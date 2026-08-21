@@ -266,10 +266,32 @@ class RolloutServer:
         await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
+        """Pause and drain every engine before any memory release.
+
+        This layer sees all groups of a model: in PD disaggregation, no
+        decode-side request or in-flight KV transfer may be alive while the
+        prefill group releases memory.
+        """
+        pause_handles = []
+        for g in self.server_groups:
+            pause_handles.extend(g.pause_generation())
+        await asyncio.gather(*pause_handles)
+
+        flush_handles = []
+        for g in self.server_groups:
+            flush_handles.extend(g.flush_cache())
+        await asyncio.gather(*flush_handles)
+
+        release_handles = []
+        for g in self.server_groups:
+            release_handles.extend(g.offload(tags=tags))
+        return await asyncio.gather(*release_handles)
+
+    async def continue_generation(self):
         handles = []
         for g in self.server_groups:
-            handles.extend(g.offload(tags=tags))
-        return await asyncio.gather(*handles)
+            handles.extend(g.continue_generation())
+        await asyncio.gather(*handles)
 
     async def onload(self, tags: list[str] | None = None):
         handles = []

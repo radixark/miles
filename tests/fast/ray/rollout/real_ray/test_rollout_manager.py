@@ -478,6 +478,52 @@ class TestGetUpdatableEnginesAndLock:
 
 
 @pytest.mark.asyncio
+class TestOffloadOnloadKv:
+    async def test_offload_quiesces_each_engine_and_onload_kv_resumes_after_restore(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """Each engine must see pause → flush → release on ``offload`` and
+        resume(KV+CUDA graph) → continue on ``onload_kv``. Frozen models never
+        pass through weight-update pause/continue, so ``onload_kv`` is their
+        resume boundary too."""
+        from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE
+
+        args = _make_test_args(tmp_path, models=[("actor", True), ("ref", False)])
+        args.offload_rollout = True
+        args.colocate = True
+        pg = placement_group_factory(4)
+
+        manager = _make_manager(args, pg)
+        for srv in manager.servers.values():
+            await srv.wait_all_engines_alive()
+
+        await manager.offload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+        await manager.onload_kv()
+
+        protocol = [
+            "pause_generation",
+            "flush_cache",
+            "release_memory_occupation",
+            "resume_memory_occupation",
+            "continue_generation",
+        ]
+        handles = [e.actor_handle for srv in manager.servers.values() for e in srv.engines if e.is_allocated]
+        assert len(handles) == 4
+        for handle in handles:
+            calls = ray.get(handle.get_calls.remote())
+            assert [name for name, _args, _kwargs in calls if name in protocol] == protocol
+            kwargs_by_name = {name: kwargs for name, _args, kwargs in calls}
+            assert kwargs_by_name["pause_generation"] == {"mode": "abort"}
+            assert kwargs_by_name["resume_memory_occupation"] == {
+                "tags": [GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH]
+            }
+
+
+@pytest.mark.asyncio
 class TestCheckWeights:
     async def test_check_weights_targets_only_updatable_model(
         self,
