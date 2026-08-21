@@ -20,7 +20,7 @@ from miles.backends.megatron_utils.lora_utils import (
 )
 from miles.ray.ray_actor import RayActor
 from miles.utils.env_report import collect_and_print_node_env_report
-from miles.utils.http_utils import get_host_info
+from miles.utils.http_utils import bearer_auth_headers, get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
 
@@ -90,7 +90,7 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
 def _wait_server_healthy(base_url, api_key, is_process_alive):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
-        "Authorization": f"Bearer {api_key}",
+        **bearer_auth_headers(api_key),
     }
 
     with requests.Session() as session:
@@ -213,6 +213,9 @@ class SGLangEngine(RayActor):
         self.node_rank = server_args_dict["node_rank"]
         self.server_host = server_args_dict["host"]  # with [] if ipv6
         self.server_port = server_args_dict["port"]
+        # ServerArgs.api_key (--sglang-api-key) makes the server enforce bearer auth
+        # on every endpoint; remember it so control-plane calls can authenticate.
+        self.server_api_key = server_args_dict.get("api_key")
 
         if self.args.rollout_external:
             self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
@@ -223,7 +226,10 @@ class SGLangEngine(RayActor):
         logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
 
         def _get_actual_server_args():
-            response = requests.get(f"http://{self.server_host}:{self.server_port}/get_server_info")
+            response = requests.get(
+                f"http://{self.server_host}:{self.server_port}/get_server_info",
+                headers=self._server_headers(),
+            )
             response.raise_for_status()
             return response.json()
 
@@ -237,7 +243,7 @@ class SGLangEngine(RayActor):
 
         _wait_server_healthy(
             base_url=f"http://{self.server_host}:{self.server_port}",
-            api_key=None,
+            api_key=self.server_api_key,
             is_process_alive=lambda: True,
         )
         actual_server_args = _get_actual_server_args()
@@ -248,12 +254,14 @@ class SGLangEngine(RayActor):
         self.process = launch_server_process(ServerArgs(**server_args_dict))
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
+            headers = self._router_headers()
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
                 assert (
                     self.worker_type == "regular"
                 ), "pd disaggregation is not supported in old router or miles router."
                 response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}"
+                    f"http://{self.router_ip}:{self.router_port}/add_worker?url=http://{self.server_host}:{self.server_port}",
+                    headers=headers,
                 )
             else:
                 payload = {
@@ -262,11 +270,20 @@ class SGLangEngine(RayActor):
                 }
                 if self.worker_type == "prefill":
                     payload["bootstrap_port"] = server_args_dict["disaggregation_bootstrap_port"]
+                if worker_api_key := server_args_dict.get("api_key"):
+                    payload["api_key"] = worker_api_key
                 response = requests.post(
                     f"http://{self.router_ip}:{self.router_port}/workers",
                     json=payload,
+                    headers=headers,
                 )
             response.raise_for_status()
+
+    def _server_headers(self) -> dict[str, str]:
+        return bearer_auth_headers(getattr(self, "server_api_key", None))
+
+    def _router_headers(self) -> dict[str, str]:
+        return bearer_auth_headers(getattr(self.args, "router_api_key", None))
 
     def _make_request(self, endpoint: str, payload: dict | None = None):
         """Make a POST request to the specified endpoint with the given payload.
@@ -282,7 +299,7 @@ class SGLangEngine(RayActor):
             return
 
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
-        response = requests.post(url, json=payload or {})
+        response = requests.post(url, json=payload or {}, headers=self._server_headers())
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -309,6 +326,7 @@ class SGLangEngine(RayActor):
         response = requests.get(
             f"http://{self.server_host}:{self.server_port}/health_generate",
             timeout=timeout,
+            headers=self._server_headers(),
         )
         response.raise_for_status()
         return True
@@ -346,6 +364,7 @@ class SGLangEngine(RayActor):
             f"http://{self.server_host}:{self.server_port}/get_remote_instance_transfer_engine_info",
             params={"rank": rank},
             timeout=5.0,
+            headers=self._server_headers(),
         )
         response.raise_for_status()
         return response.json()["remote_instance_transfer_engine_info"]
@@ -355,6 +374,7 @@ class SGLangEngine(RayActor):
             f"http://{self.server_host}:{self.server_port}/parallelism_config",
             params={"rank": rank},
             timeout=5.0,
+            headers=self._server_headers(),
         )
         response.raise_for_status()
         return response.json()
@@ -363,6 +383,7 @@ class SGLangEngine(RayActor):
         response = requests.get(
             f"http://{self.server_host}:{self.server_port}/server_info",
             timeout=5.0,
+            headers=self._server_headers(),
         )
         response.raise_for_status()
         return response.json()
@@ -449,15 +470,22 @@ class SGLangEngine(RayActor):
         last_message = None
         for _ in range(60):
             try:
-                response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
-                if response.status_code == 200:
-                    break
-                last_message = response.text
+                response = requests.get(
+                    f"http://{self.server_host}:{self.server_port}/flush_cache",
+                    headers=self._server_headers(),
+                )
             except NewConnectionError as e:
                 raise e
             except Exception as e:
                 logger.info(f"Error flushing cache: {e}")
                 last_message = str(e)
+                time.sleep(1)
+                continue
+            if response.status_code == 200:
+                break
+            if response.status_code in (401, 403):
+                response.raise_for_status()
+            last_message = response.text
             time.sleep(1)
         else:
             raise TimeoutError(f"Timeout while flushing cache: {last_message}")
@@ -470,21 +498,30 @@ class SGLangEngine(RayActor):
         if self.node_rank == 0:
             worker_url = f"http://{self.server_host}:{self.server_port}"
             response = None
+            headers = self._router_headers()
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
                 response = requests.post(
-                    f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}"
+                    f"http://{self.router_ip}:{self.router_port}/remove_worker?url=http://{self.server_host}:{self.server_port}",
+                    headers=headers,
                 )
             elif parse(sglang_router.__version__) < parse("0.3.0"):
                 worker_url = quote(worker_url, safe="")
-                response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}")
+                response = requests.delete(
+                    f"http://{self.router_ip}:{self.router_port}/workers/{worker_url}",
+                    headers=headers,
+                )
             else:
                 try:
-                    all_workers = requests.get(f"http://{self.router_ip}:{self.router_port}/workers").json()["workers"]
+                    all_workers = requests.get(
+                        f"http://{self.router_ip}:{self.router_port}/workers",
+                        headers=headers,
+                    ).json()["workers"]
                     for worker in all_workers:
                         if worker["url"] == worker_url:
                             worker_id = worker["id"]
                             response = requests.delete(
-                                f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}"
+                                f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}",
+                                headers=headers,
                             )
                             break
                     else:
@@ -502,7 +539,7 @@ class SGLangEngine(RayActor):
         base = f"http://{self.server_host}:{self.server_port}"
         # new sglang change api from /get_weight_version to /model_info
         for endpoint in ("/model_info", "/get_weight_version"):
-            response = requests.get(f"{base}{endpoint}")
+            response = requests.get(f"{base}{endpoint}", headers=self._server_headers())
             if response.status_code == 200:
                 return response.json()["weight_version"]
         response.raise_for_status()
@@ -624,12 +661,17 @@ class SGLangEngine(RayActor):
         response = requests.post(
             f"http://{self.server_host}:{self.server_port}/pause_generation",
             json={"mode": mode},
+            headers=self._server_headers(),
         )
         response.raise_for_status()
         return response
 
     def continue_generation(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/continue_generation", json={})
+        response = requests.post(
+            f"http://{self.server_host}:{self.server_port}/continue_generation",
+            json={},
+            headers=self._server_headers(),
+        )
         response.raise_for_status()
         return response
 
@@ -672,12 +714,17 @@ class SGLangEngine(RayActor):
                 "with_stack": with_stack,
                 "record_shapes": record_shapes,
             },
+            headers=self._server_headers(),
         )
         response.raise_for_status()
         return response
 
     def stop_profile(self):
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/stop_profile", json={})
+        response = requests.post(
+            f"http://{self.server_host}:{self.server_port}/stop_profile",
+            json={},
+            headers=self._server_headers(),
+        )
         response.raise_for_status()
         return response
 

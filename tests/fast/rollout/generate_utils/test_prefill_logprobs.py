@@ -266,3 +266,39 @@ async def test_recompute_samples_batches_by_logprob_start_len(monkeypatch):
     assert calls[1][1]["input_ids"] == [[10, 11, 20], [10, 11, 22]]
     assert calls[3][1]["logprob_start_len"] == 2
     assert calls[3][1]["input_ids"] == [[10, 11, 12, 21]]
+    assert all(not call[3] or "Authorization" not in call[3] for call in calls)
+    assert all("Bearer None" not in str(call[3]) for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_recompute_samples_batch_sends_router_bearer(monkeypatch):
+    samples = [
+        Sample(tokens=[10, 11, 20], response_length=1, status=Sample.Status.COMPLETED),
+        Sample(tokens=[10, 11, 21], response_length=1, status=Sample.Status.COMPLETED),
+    ]
+    args = SimpleNamespace(
+        recompute_logprobs_via_prefill=True,
+        sglang_enable_lora=False,
+        sglang_router_policy="round_robin",
+        router_api_key="router-secret",
+    )
+    headers_seen = []
+
+    async def fake_post(url, payload, action="post", headers=None):
+        headers_seen.append(headers)
+        if url.endswith("/flush_cache"):
+            return {}
+        return [
+            {"meta_info": {"input_token_logprobs": [(None, 11), (-float(tokens[-1]), tokens[-1])]}}
+            for tokens in payload["input_ids"]
+        ]
+
+    monkeypatch.setattr(prefill_logprobs, "post", fake_post)
+    await prefill_logprobs.recompute_samples_rollout_logprobs_via_prefill(
+        args,
+        samples,
+        url="http://localhost/generate",
+        sampling_params={"max_new_tokens": 32},
+    )
+    expected = {"Authorization": "Bearer router-secret"}
+    assert headers_seen == [expected, expected]

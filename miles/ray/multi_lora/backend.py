@@ -12,7 +12,7 @@ import httpx
 
 from miles.ray.multi_lora.registry import AdapterRegistry, AdapterState
 from miles.utils.adapter_config import AdapterRunConfig
-from miles.utils.http_utils import router_worker_base_urls
+from miles.utils.http_utils import bearer_auth_headers, router_worker_base_urls
 from miles.utils.multi_lora import RID_SEPARATOR, min_groups_per_dp_split
 
 logger = logging.getLogger(__name__)
@@ -168,7 +168,10 @@ class MultiLoRABackend:
             ("/workers", lambda body: [worker["url"] for worker in body["workers"]]),
         ):
             try:
-                resp = await self.client.get(f"{self.router_url}{endpoint}")
+                resp = await self.client.get(
+                    f"{self.router_url}{endpoint}",
+                    headers=bearer_auth_headers(getattr(self.args, "router_api_key", None)),
+                )
                 if resp.status_code == 200:
                     return router_worker_base_urls(extract(resp.json()))
             except Exception:
@@ -182,7 +185,14 @@ class MultiLoRABackend:
             logger.warning(f"Abort for adapter '{adapter_name}': no workers discovered at {self.router_url}")
             return
         results = await asyncio.gather(
-            *(self.client.post(f"{url}/abort_request", json={"rid": prefix, "prefix": True}) for url in urls),
+            *(
+                self.client.post(
+                    f"{url}/abort_request",
+                    json={"rid": prefix, "prefix": True},
+                    headers=bearer_auth_headers(getattr(self.args, "sglang_api_key", None)),
+                )
+                for url in urls
+            ),
             return_exceptions=True,
         )
         if failures := sum(isinstance(r, Exception) for r in results):

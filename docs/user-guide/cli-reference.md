@@ -288,6 +288,11 @@ Sections mirror the launch-script argument groups.
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 
+Bearer auth: when SGLang servers are launched with `--sglang-api-key` (and/or the
+router with `--router-api-key`), Miles attaches the matching key to engine
+control-plane calls, router (de)registration, worker list/abort, and generate
+routing headers. With no key set, no `Authorization` header is sent.
+
 Common `--sglang-*` flags:
 
 ```bash

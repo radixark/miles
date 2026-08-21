@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
-from miles.utils.http_utils import post
+from miles.utils.http_utils import bearer_auth_headers, post
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.multi_lora import slot_lora_name
 from miles.utils.processing_utils import encode_image_for_rollout_engine
@@ -159,12 +159,13 @@ async def recompute_samples_rollout_logprobs_via_prefill(
             prompt_len = len(sample.tokens) - sample.response_length
             samples_by_batch_key[(prompt_len - 1, _lora_path_for_sample(args, sample))].append(sample)
 
+        headers = bearer_auth_headers(getattr(args, "router_api_key", None))
         for batch_samples in samples_by_batch_key.values():
             # SGLang can serve scoring requests from radix/KV cache. Flush before
             # each scoring group so every group uses the same clean-prefill path.
-            await post(flush_url, {})
+            await post(flush_url, {}, headers=headers)
             payload = _build_batch_prefill_scoring_payload(args, batch_samples, sampling_params)
-            outputs = await post(url, payload)
+            outputs = await post(url, payload, headers=headers)
             if not isinstance(outputs, list):
                 raise ValueError(f"SGLang batch prefill scoring returned {type(outputs).__name__}, expected list")
             if len(outputs) != len(batch_samples):
