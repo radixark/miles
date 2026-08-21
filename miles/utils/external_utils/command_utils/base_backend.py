@@ -27,27 +27,12 @@ from miles.utils.workers.types import ClusterBackend, DeployComponent, HotRestar
 logger = logging.getLogger(__name__)
 
 
-# This class can be extended by concrete scripts
 @dataclass
-class ExecuteTrainConfig:
-    cuda_core_dump: bool = False
-    num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
-    extra_env_vars: str = ""
-    output_dir: str = "/root/shared_data"
+class CommandUtilConfig:
     cluster_backend: ClusterBackend = ClusterBackend.RAY
-    deploy_component: DeployComponent = DeployComponent.ALL
-    deploy_instance_id: str | None = None
-    hot_restart: str = ""
-    run_id: str = field(default_factory=create_run_id)
-    run_uuid: str | None = None
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
-    skip_upgrade_check: bool = False
     ci_run: bool = False
-
-    @property
-    def parsed_hot_restart(self) -> list[HotRestartComponent]:
-        return parse_hot_restart(self.hot_restart)
 
     def create_backend(self) -> BaseCommandBackend:
         match self.cluster_backend:
@@ -59,6 +44,25 @@ class ExecuteTrainConfig:
                 from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 
                 return RayCommandBackend(self)
+
+
+# This class can be extended by concrete scripts
+@dataclass
+class ExecuteTrainConfig(CommandUtilConfig):
+    cuda_core_dump: bool = False
+    num_nodes: int = field(default_factory=lambda: int(os.environ.get("SLURM_JOB_NUM_NODES", "1")))
+    extra_env_vars: str = ""
+    output_dir: str = "/root/shared_data"
+    deploy_component: DeployComponent = DeployComponent.ALL
+    deploy_instance_id: str | None = None
+    hot_restart: str = ""
+    run_id: str = field(default_factory=create_run_id)
+    run_uuid: str | None = None
+    skip_upgrade_check: bool = False
+
+    @property
+    def parsed_hot_restart(self) -> list[HotRestartComponent]:
+        return parse_hot_restart(self.hot_restart)
 
 
 def default_config(config_class: type = ExecuteTrainConfig) -> ExecuteTrainConfig:
@@ -86,9 +90,10 @@ _PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
 
 
 class BaseCommandBackend(ABC):
-    def __init__(self, config: ExecuteTrainConfig) -> None:
+    def __init__(self, config: CommandUtilConfig) -> None:
         from miles.utils.logging_utils import configure_logger_raw
 
+        assert isinstance(config, CommandUtilConfig), "config must be a CommandUtilConfig"
         configure_logger_raw("launcher")
         self.config = config
 
@@ -103,9 +108,21 @@ class BaseCommandBackend(ABC):
         megatron_path: str = "/root/Megatron-LM",
         prepare_cmd: dict[str, str] | None = None,
         extra_manifests: list[str] | None = None,
+        config: ExecuteTrainConfig | None = None,
     ) -> None:
+        if config is None:
+            assert isinstance(
+                self.config, ExecuteTrainConfig
+            ), "execute_train requires an ExecuteTrainConfig, either as config or as the backend's config"
+            config = self.config
+
+        assert config.cluster_backend is self.config.cluster_backend, (
+            f"This backend was built to talk to {self.config.cluster_backend.value}, but the launch it is handed "
+            f"describes a run on {config.cluster_backend.value}, so everything this launch installs would be named "
+            f"for one cluster and installed onto the other; build the backend from the config of the launch"
+        )
         assert not (
-            self.config.parsed_hot_restart and self.config.cluster_backend is not ClusterBackend.KUBERNETES
+            config.parsed_hot_restart and config.cluster_backend is not ClusterBackend.KUBERNETES
         ), "--hot-restart is only supported on the kubernetes backend"
 
         prepare_cmd = prepare_cmd if prepare_cmd is not None else {}
@@ -120,16 +137,14 @@ class BaseCommandBackend(ABC):
         train_argv = shlex.split(train_args)
         train_backend_fsdp = "fsdp" in ArgvManipulator.get(train_argv, "--train-backend")
         assert train_backend_fsdp == (megatron_model_type is None)
-        _assert_train_args_name_no_other_backend(train_argv, cluster_backend=self.config.cluster_backend.value)
-        _assert_train_args_name_no_other_deploy_component(
-            train_argv, deploy_component=self.config.deploy_component.value
-        )
-        train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {self.config.deploy_component.value}"
-        if self.config.deploy_instance_id is not None:
-            train_args = f"{train_args} --deploy-instance-id {self.config.deploy_instance_id}"
+        _assert_train_args_name_no_other_backend(train_argv, cluster_backend=config.cluster_backend.value)
+        _assert_train_args_name_no_other_deploy_component(train_argv, deploy_component=config.deploy_component.value)
+        train_args = f"{train_args} {_DEPLOY_COMPONENT_FLAG} {config.deploy_component.value}"
+        if config.deploy_instance_id is not None:
+            train_args = f"{train_args} --deploy-instance-id {config.deploy_instance_id}"
 
         self._execute_train_inner(
-            ExecuteTrainRequest(
+            request=ExecuteTrainRequest(
                 train_args=train_args,
                 num_gpus_per_node=num_gpus_per_node,
                 megatron_model_type=megatron_model_type,
@@ -140,7 +155,8 @@ class BaseCommandBackend(ABC):
                 before_ray_job_submit=before_ray_job_submit,
                 prepare_cmd=prepare_cmd,
                 extra_manifests=extra_manifests if extra_manifests is not None else [],
-            )
+            ),
+            config=config,
         )
 
     def convert_checkpoint(
@@ -231,11 +247,11 @@ class BaseCommandBackend(ABC):
             f"--output-bf16-hf-path {path_dst} "
         )
 
-    def api_server_host(self) -> str:
+    def api_server_host(self, config: ExecuteTrainConfig) -> str:
         return "localhost"
 
     @abstractmethod
-    def _execute_train_inner(self, request: ExecuteTrainRequest) -> None: ...
+    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None: ...
 
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)

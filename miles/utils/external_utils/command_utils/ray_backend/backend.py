@@ -2,7 +2,11 @@ import json
 import os
 import shlex
 
-from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest
+from miles.utils.external_utils.command_utils.base_backend import (
+    BaseCommandBackend,
+    ExecuteTrainConfig,
+    ExecuteTrainRequest,
+)
 from miles.utils.external_utils.command_utils.common import (
     MOONCAKE_BACKEND_NAME,
     OBJECT_STORE_BACKEND_FLAG,
@@ -20,7 +24,7 @@ from miles.utils.external_utils.model_args_utils import shell_safe_model_args
 
 
 class RayCommandBackend(BaseCommandBackend):
-    def _execute_train_inner(self, request: ExecuteTrainRequest) -> None:
+    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
         assert not request.extra_manifests, (
             "extra_manifests are objects a helm release installs beside the run, and a ray launch installs no "
             "release; launch onto kubernetes, or start what they describe yourself"
@@ -46,7 +50,7 @@ class RayCommandBackend(BaseCommandBackend):
         if (f := request.before_ray_job_submit) is not None:
             f()
 
-        runtime_env_vars = train_env_vars(request, self._ray_env_vars(master_addr=master_addr), config=self.config)
+        runtime_env_vars = train_env_vars(request, self._ray_env_vars(master_addr=master_addr), config=config)
         runtime_env_vars["PYTHONPATH"] = _pythonpath_with_sources(
             request.megatron_path, runtime_env_vars.get("PYTHONPATH")
         )

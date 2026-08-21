@@ -113,7 +113,7 @@ def run_ci(
         + "--mini-ft-controller-enable "
     )
 
-    base_url = f"http://{config.create_backend().api_server_host()}:{API_SERVER_PORT}"
+    base_url = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
         base_url=base_url,
         seed=seed,

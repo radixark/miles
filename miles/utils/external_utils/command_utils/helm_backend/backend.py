@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 
-from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend, ExecuteTrainRequest
+from miles.utils.external_utils.command_utils.base_backend import (
+    BaseCommandBackend,
+    ExecuteTrainConfig,
+    ExecuteTrainRequest,
+)
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend import command_job
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
@@ -9,8 +13,8 @@ from miles.utils.external_utils.command_utils.helm_backend.naming import Release
 
 
 class KubernetesCommandBackend(BaseCommandBackend):
-    def _execute_train_inner(self, request: ExecuteTrainRequest) -> None:
-        entrypoint.execute_train(request=request, config=self.config)
+    def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
+        entrypoint.execute_train(request=request, config=config)
 
     def exec_command_gpu(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
@@ -26,7 +30,7 @@ class KubernetesCommandBackend(BaseCommandBackend):
         num_nodes: int | None = None,
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
-        assert self.config.namespace, "Set ExecuteTrainConfig.namespace to run a command somewhere"
+        assert self.config.namespace, "Set CommandUtilConfig.namespace to run a command somewhere"
         return command_job.run_on_nodes(
             command_job.CommandJobContext(
                 namespace=self.config.namespace,
@@ -40,21 +44,21 @@ class KubernetesCommandBackend(BaseCommandBackend):
             step="command",
         )
 
-    def api_server_host(self) -> str:
-        assert self.config.run_id and self.config.namespace, (
+    def api_server_host(self, config: ExecuteTrainConfig) -> str:
+        assert config.run_id and config.namespace, (
             "The api server of a kubernetes run answers on the orchestrator's pod, which is named after the "
-            "release; set ExecuteTrainConfig.run_id and .namespace before asking where that pod is"
+            "release; set the launch config's run_id and namespace before asking where that pod is"
         )
-        assert not self.config.deploy_component.is_split(), (
+        assert not config.deploy_component.is_split(), (
             f"The api server, and the mini ft controller polling it, answer for the cells of their own deployment, "
             f"so a split run is refused one (--api-server-port 0) and nothing listens on the "
-            f"{self.config.deploy_component.value} deployment for this host to name"
+            f"{config.deploy_component.value} deployment for this host to name"
         )
         return RunNames.orchestrator_host(
             release=ReleaseName(
-                run_id=self.config.run_id,
-                deploy_component=self.config.deploy_component,
-                deploy_instance_id=self.config.deploy_instance_id,
+                run_id=config.run_id,
+                deploy_component=config.deploy_component,
+                deploy_instance_id=config.deploy_instance_id,
             ).serialize(),
-            namespace=self.config.namespace,
+            namespace=config.namespace,
         )
