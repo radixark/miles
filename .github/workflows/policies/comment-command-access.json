@@ -43,6 +43,7 @@
         "run-ci-precision",
         "run-ci-qwen35",
         "run-ci-replay",
+        "run-ci-rpc-comm",
         "run-ci-sglang",
         "run-ci-short",
         "run-ci-weight-update"
