@@ -1,4 +1,5 @@
 from miles.utils.external_utils.command_utils.base_backend import (
+    CommandUtilConfig,
     ExecuteTrainConfig,
     default_config,
     resolve_extra_env_vars,
@@ -20,6 +21,7 @@ from miles.utils.external_utils.command_utils.common import (
 from miles.utils.typer_utils import dataclass_cli
 
 __all__ = [
+    "CommandUtilConfig",
     "ExecuteTrainConfig",
     "GENERATION_HARDWARE",
     "NUM_GPUS_OF_HARDWARE",
