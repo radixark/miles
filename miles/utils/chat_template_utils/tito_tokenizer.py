@@ -180,7 +180,9 @@ class TITOTokenizer:
         if not text_with.startswith(text_without):
             roles = [msg["role"] for msg in appended_messages] if appended_messages else ["generation_prompt"]
             raise ValueError(f"rendered suffix diff failed for {roles}")
-        return self._encode_text(text_with[len(text_without) :])
+        prefix_ids = self._encode_text(text_without)
+        full_ids = self._encode_text(text_with)
+        return full_ids[len(prefix_ids) :]
 
     def tokenize_additional_messages(
         self,
