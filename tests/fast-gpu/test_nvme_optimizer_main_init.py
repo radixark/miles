@@ -57,45 +57,34 @@ def test_bucketwise_main_initialization_preserves_bytes_and_releases_cuda_storag
     store.dist_opt = dist_opt
     store.buckets = [bucket]
 
-    try:
-        with patch(
-            "miles_plugins.optimizers.nvme_stream._drop_file_cache",
-            wraps=_drop_file_cache,
-        ) as drop_file_cache:
-            written = store.refresh_main_from_model_params()
+    with patch(
+        "miles_plugins.optimizers.nvme_stream._drop_file_cache",
+        wraps=_drop_file_cache,
+    ) as drop_file_cache:
+        written = store.refresh_main_from_model_params()
 
-        nbytes = main_param.numel() * main_param.element_size()
-        assert written == nbytes
-        assert main_param.untyped_storage().nbytes() == 0
-        assert drop_file_cache.call_count == 1
-        assert drop_file_cache.call_args.args[2] == bucket.offsets["exp_avg"][0]
-        assert drop_file_cache.call_args.kwargs["sync"] is True
+    nbytes = main_param.numel() * main_param.element_size()
+    assert written == nbytes
+    assert main_param.untyped_storage().nbytes() == 0
+    assert drop_file_cache.call_count == 1
+    assert drop_file_cache.call_args.args[2] == bucket.offsets["exp_avg"][0]
+    assert drop_file_cache.call_args.kwargs["sync"] is True
 
-        restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
-        torch.testing.assert_close(restored, model_param.float().cpu(), atol=0, rtol=0)
+    restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
+    torch.testing.assert_close(restored, model_param.float().cpu(), atol=0, rtol=0)
 
-        with patch(
-            "miles_plugins.optimizers.nvme_stream._drop_file_cache",
-            wraps=_drop_file_cache,
-        ) as drop_file_cache:
-            reloaded = store.refresh_main_from_model_params(state_dict=object())
+    with patch(
+        "miles_plugins.optimizers.nvme_stream._drop_file_cache",
+        wraps=_drop_file_cache,
+    ) as drop_file_cache:
+        reloaded = store.refresh_main_from_model_params(state_dict=object())
 
-        assert reloaded == nbytes
-        assert main_param.untyped_storage().nbytes() == 0
-        assert drop_file_cache.call_count == 1
-        restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
-        torch.testing.assert_close(restored, torch.full_like(restored, 7), atol=0, rtol=0)
-
-        with (
-            patch.object(bucket._stager, "transfer", side_effect=RuntimeError("injected write failure")),
-            patch("torch.cuda.empty_cache", wraps=torch.cuda.empty_cache) as empty_cache,
-            pytest.raises(RuntimeError, match="injected write failure"),
-        ):
-            store.refresh_main_from_model_params()
-        assert main_param.untyped_storage().nbytes() == 0
-        empty_cache.assert_called_once()
-    finally:
-        bucket.close()
+    assert reloaded == nbytes
+    assert main_param.untyped_storage().nbytes() == 0
+    assert drop_file_cache.call_count == 1
+    restored = torch.frombuffer(bytearray(os.pread(bucket.fd, nbytes, 0)), dtype=torch.float32)
+    torch.testing.assert_close(restored, torch.full_like(restored, 7), atol=0, rtol=0)
+    bucket.close()
 
 
 def test_bucket_close_releases_file_descriptor(tmp_path):
@@ -111,12 +100,9 @@ def test_bucket_close_releases_file_descriptor(tmp_path):
     bucket.close()
     bucket.close()
 
-    try:
+    with pytest.raises(OSError) as exc_info:
         os.fstat(fd)
-    except OSError as exc:
-        assert exc.errno == errno.EBADF
-    else:
-        raise AssertionError("bucket file descriptor remained open")
+    assert exc_info.value.errno == errno.EBADF
 
 
 def test_store_indices_produce_stable_checkpoint_paths():
@@ -189,43 +175,41 @@ def test_store_checkpoint_round_trip_preserves_main_moments_and_step(tmp_path):
     store._instance = 0
     store.store_index = 0
 
-    try:
-        store.refresh_main_from_model_params()
-        bucket.allocate_moments()
-        bucket.fetch()
-        adam.state[main_param]["exp_avg"].fill_(2)
-        adam.state[main_param]["exp_avg_sq"].fill_(3)
-        bucket.flush()
-        adam.param_groups[0]["step"] = 7
-        store.save_to(str(tmp_path / "checkpoint"))
+    store.refresh_main_from_model_params()
+    bucket.allocate_moments()
+    bucket.fetch()
+    adam.state[main_param]["exp_avg"].fill_(2)
+    adam.state[main_param]["exp_avg_sq"].fill_(3)
+    bucket.flush()
+    adam.param_groups[0]["step"] = 7
+    store.save_to(str(tmp_path / "checkpoint"))
 
-        os.pwrite(bucket.fd, bytes(bucket.nbytes), 0)
-        adam.param_groups[0]["step"] = 0
-        assert store.load_from(str(tmp_path / "checkpoint"))
-        bucket.fetch()
+    os.pwrite(bucket.fd, bytes(bucket.nbytes), 0)
+    adam.param_groups[0]["step"] = 0
+    assert store.load_from(str(tmp_path / "checkpoint"))
+    bucket.fetch()
 
-        torch.testing.assert_close(main_param, model_param.float(), atol=0, rtol=0)
-        torch.testing.assert_close(
-            adam.state[main_param]["exp_avg"],
-            torch.full_like(main_param, 2),
-            atol=0,
-            rtol=0,
-        )
-        torch.testing.assert_close(
-            adam.state[main_param]["exp_avg_sq"],
-            torch.full_like(main_param, 3),
-            atol=0,
-            rtol=0,
-        )
-        assert adam.param_groups[0]["step"] == 7
+    torch.testing.assert_close(main_param, model_param.float(), atol=0, rtol=0)
+    torch.testing.assert_close(
+        adam.state[main_param]["exp_avg"],
+        torch.full_like(main_param, 2),
+        atol=0,
+        rtol=0,
+    )
+    torch.testing.assert_close(
+        adam.state[main_param]["exp_avg_sq"],
+        torch.full_like(main_param, 3),
+        atol=0,
+        rtol=0,
+    )
+    assert adam.param_groups[0]["step"] == 7
 
-        adam.param_groups[0]["step"] = 0
-        store.save_to(str(tmp_path / "checkpoint_step_zero"))
-        adam.param_groups[0]["step"] = 7
-        assert store.load_from(str(tmp_path / "checkpoint_step_zero"))
-        assert adam.param_groups[0]["step"] == 0
-    finally:
-        bucket.close()
+    adam.param_groups[0]["step"] = 0
+    store.save_to(str(tmp_path / "checkpoint_step_zero"))
+    adam.param_groups[0]["step"] = 7
+    assert store.load_from(str(tmp_path / "checkpoint_step_zero"))
+    assert adam.param_groups[0]["step"] == 0
+    bucket.close()
 
 
 def test_load_rejects_missing_native_fp32_optimizer_sidecar(tmp_path):

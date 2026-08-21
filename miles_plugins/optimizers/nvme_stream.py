@@ -69,14 +69,15 @@ def _resize(tensor: torch.Tensor, numel: int) -> None:
     tensor.untyped_storage().resize_(numel * tensor.element_size())
 
 
-def _reserve_file(fd: int, nbytes: int) -> None:
-    """Reserve the file, or at least size it when allocation is unsupported."""
+def _allocate_file(path: str, nbytes: int) -> int:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
         os.posix_fallocate(fd, 0, nbytes)
     except OSError as e:
         if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL):
             raise
         os.ftruncate(fd, nbytes)
+    return fd
 
 
 def _drop_file_cache(fd: int, offset: int, nbytes: int, *, sync: bool) -> None:
@@ -87,21 +88,7 @@ def _drop_file_cache(fd: int, offset: int, nbytes: int, *, sync: bool) -> None:
         os.fdatasync(fd)
     if not hasattr(os, "posix_fadvise") or not hasattr(os, "POSIX_FADV_DONTNEED"):
         return
-    try:
-        os.posix_fadvise(fd, offset, nbytes, os.POSIX_FADV_DONTNEED)
-    except OSError as e:
-        if e.errno not in (errno.EOPNOTSUPP, errno.ENOTSUP, errno.EINVAL, errno.ENOSYS):
-            raise
-
-
-def _allocate_file(path: str, nbytes: int) -> int:
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        _reserve_file(fd, nbytes)
-    except BaseException:
-        os.close(fd)
-        raise
-    return fd
+    os.posix_fadvise(fd, offset, nbytes, os.POSIX_FADV_DONTNEED)
 
 
 def _rw_full(op, fd: int, offset: int, buf) -> None:
@@ -246,17 +233,15 @@ class _Bucket:
             for tensor, offset in self._tensors(segment):
                 if not to_disk:
                     _resize(tensor, tensor.numel())
-                try:
-                    moved += self._stager.transfer(
-                        self.fd,
-                        offset,
-                        tensor,
-                        self.dtypes[segment],
-                        to_disk=to_disk,
-                    )
-                finally:
-                    if to_disk:
-                        _resize(tensor, 0)
+                moved += self._stager.transfer(
+                    self.fd,
+                    offset,
+                    tensor,
+                    self.dtypes[segment],
+                    to_disk=to_disk,
+                )
+                if to_disk:
+                    _resize(tensor, 0)
         return moved
 
     def fetch(self) -> int:
@@ -331,13 +316,8 @@ class NVMeOptimizerStateStore:
         self._dir_finalizer = weakref.finalize(self, shutil.rmtree, self.dir, ignore_errors=True)
 
         self._stager = stager
-        self.buckets: list[_Bucket] = []
-        try:
-            self._build_buckets()
-            self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
-        except BaseException:
-            self.close()
-            raise
+        self.buckets = self._build_buckets()
+        self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
 
         total_gb = sum(b.nbytes for b in self.buckets) / 1024**3
         logger.info(
@@ -367,7 +347,7 @@ class NVMeOptimizerStateStore:
         """
         return os.path.join(f"rank{self._rank:05d}", f"opt{self._instance}_{self.store_index}")
 
-    def _build_buckets(self) -> None:
+    def _build_buckets(self) -> list[_Bucket]:
         by_ddp_bucket: dict[tuple, list[_Entry]] = {}
         groups = zip(self.dist_opt.model_float16_groups, self.dist_opt.shard_fp32_from_float16_groups, strict=True)
         for group_index, (model_group, main_group) in enumerate(groups):
@@ -376,12 +356,13 @@ class NVMeOptimizerStateStore:
                 key = self.dist_opt.model_param_gbuf_map[model_param]
                 by_ddp_bucket.setdefault(key, []).append(_Entry(model_param, main_param, group_index))
 
+        buckets = []
         for index, entries in enumerate(plan_buckets(by_ddp_bucket)):
             params: dict[int, list[torch.Tensor]] = {}
             for entry in entries:
                 params.setdefault(entry.group_index, []).append(entry.main_param)
             path = os.path.join(self.dir, f"bucket{index:05d}.bin")
-            self.buckets.append(
+            buckets.append(
                 _Bucket(
                     path,
                     entries,
@@ -390,6 +371,7 @@ class NVMeOptimizerStateStore:
                     self.dtypes,
                 )
             )
+        return buckets
 
     def _build_fp32_optimizer(self):
         params: dict[int, list[torch.Tensor]] = {}
@@ -468,40 +450,35 @@ class NVMeOptimizerStateStore:
         )
 
         written = 0
-        try:
-            for bucket in self.buckets:
-                bucket.materialize_main()
-                for entry in bucket.entries:
-                    param_range = dist_opt._get_model_param_range_map(entry.model_param)["param"]
-                    assert param_range.size == entry.main_param.nelement()
-                    source = (
-                        source_by_model_param[entry.model_param]
-                        if source_by_model_param is not None
-                        else entry.model_param
-                    )
-                    source_shard = source.view(-1)[param_range.start : param_range.end]
-                    entry.main_param.copy_(source_shard)
-                written += bucket.flush(segments=("main",))
-                bucket.sync_and_drop_main_cache()
+        for bucket in self.buckets:
+            bucket.materialize_main()
+            for entry in bucket.entries:
+                param_range = dist_opt._get_model_param_range_map(entry.model_param)["param"]
+                assert param_range.size == entry.main_param.nelement()
+                source = (
+                    source_by_model_param[entry.model_param]
+                    if source_by_model_param is not None
+                    else entry.model_param
+                )
+                source_shard = source.view(-1)[param_range.start : param_range.end]
+                entry.main_param.copy_(source_shard)
+            written += bucket.flush(segments=("main",))
+            bucket.sync_and_drop_main_cache()
 
-            # Native-FP32 shards alias the live model and stay resident. Only the
-            # explicit state-dict reload path needs to copy them.
-            if source_by_model_param is not None:
-                for model_group, shard_group in zip(
-                    dist_opt.model_fp32_groups,
-                    dist_opt.shard_fp32_groups,
-                    strict=True,
-                ):
-                    for model_param, shard_param in zip(model_group, shard_group, strict=True):
-                        param_range = dist_opt._get_model_param_range_map(model_param)["param"]
-                        source = source_by_model_param[model_param]
-                        shard_param.copy_(source.view(-1)[param_range.start : param_range.end])
-            return written
-        finally:
-            for bucket in self.buckets:
-                for entry in bucket.entries:
-                    _resize(entry.main_param, 0)
-            torch.cuda.empty_cache()
+        # Native-FP32 shards alias the live model and stay resident. Only the
+        # explicit state-dict reload path needs to copy them.
+        if source_by_model_param is not None:
+            for model_group, shard_group in zip(
+                dist_opt.model_fp32_groups,
+                dist_opt.shard_fp32_groups,
+                strict=True,
+            ):
+                for model_param, shard_param in zip(model_group, shard_group, strict=True):
+                    param_range = dist_opt._get_model_param_range_map(model_param)["param"]
+                    source = source_by_model_param[model_param]
+                    shard_param.copy_(source.view(-1)[param_range.start : param_range.end])
+        torch.cuda.empty_cache()
+        return written
 
     @torch.no_grad()
     def save_to(self, base_dir: str) -> None:
@@ -523,13 +500,11 @@ class NVMeOptimizerStateStore:
         }
         for bucket in self.buckets:
             destination = os.path.join(dirpath, os.path.basename(bucket.path))
-            dst_fd = _allocate_file(destination, bucket.nbytes)
-            try:
+            with os.fdopen(_allocate_file(destination, bucket.nbytes), "r+b", buffering=0) as destination_file:
+                dst_fd = destination_file.fileno()
                 self._stager.copy_file_range(bucket.fd, 0, dst_fd, 0, bucket.nbytes)
                 _drop_file_cache(dst_fd, 0, bucket.nbytes, sync=True)
                 _drop_file_cache(bucket.fd, 0, bucket.nbytes, sync=True)
-            finally:
-                os.close(dst_fd)
         if self._fp32_adam is not None:
             torch.save(self._fp32_adam.state_dict(), os.path.join(dirpath, "fp32_resident_optimizer.pt"))
         with open(os.path.join(dirpath, "manifest.json"), "w") as f:
@@ -556,50 +531,46 @@ class NVMeOptimizerStateStore:
         with open(os.path.join(dirpath, "manifest.json")) as f:
             manifest = json.load(f)
 
-        try:
-            saved = manifest.get("dtypes", {segment: str(torch.float32) for segment in SEGMENTS})
-            current = {segment: str(dtype) for segment, dtype in self.dtypes.items()}
-            assert saved == current, (
-                f"NVMe state dtype mismatch: checkpoint stores {saved}, this run stores {current} "
-                "-- the bytes would be misread"
-            )
-            assert len(manifest["buckets"]) == len(self.buckets), (
-                f"NVMe state layout mismatch: checkpoint has {len(manifest['buckets'])} buckets, "
-                f"current topology builds {len(self.buckets)} (same-topology resume only)"
-            )
+        saved = manifest.get("dtypes", {segment: str(torch.float32) for segment in SEGMENTS})
+        current = {segment: str(dtype) for segment, dtype in self.dtypes.items()}
+        assert saved == current, (
+            f"NVMe state dtype mismatch: checkpoint stores {saved}, this run stores {current} "
+            "-- the bytes would be misread"
+        )
+        assert len(manifest["buckets"]) == len(self.buckets), (
+            f"NVMe state layout mismatch: checkpoint has {len(manifest['buckets'])} buckets, "
+            f"current topology builds {len(self.buckets)} (same-topology resume only)"
+        )
 
-            for bucket, meta in zip(self.buckets, manifest["buckets"], strict=True):
-                assert meta["numel"] == bucket.numel
-                assert meta["entry_numels"] == [e.main_param.numel() for e in bucket.entries]
-                source = os.path.join(dirpath, meta["file"])
-                assert os.path.getsize(source) == bucket.nbytes, (
-                    f"NVMe optimizer checkpoint is incomplete: {source} has "
-                    f"{os.path.getsize(source)} bytes, expected {bucket.nbytes}"
-                )
-                src_fd = os.open(source, os.O_RDONLY | os.O_CLOEXEC)
-                try:
-                    self._stager.copy_file_range(src_fd, 0, bucket.fd, 0, bucket.nbytes)
-                    _drop_file_cache(src_fd, 0, bucket.nbytes, sync=False)
-                finally:
-                    os.close(src_fd)
-                _drop_file_cache(bucket.fd, 0, bucket.nbytes, sync=True)
-                for group, step in zip(bucket.adam.param_groups, meta["steps"], strict=True):
-                    group["step"] = step
-                bucket.allocate_moments()
-            fp32_state = os.path.join(dirpath, "fp32_resident_optimizer.pt")
-            has_fp32_state = manifest.get("has_fp32_resident_optimizer", os.path.isfile(fp32_state))
-            assert has_fp32_state == (
-                self._fp32_adam is not None
-            ), "NVMe state layout mismatch: checkpoint and current model disagree on native-fp32 optimizer presence"
-            assert not has_fp32_state or os.path.isfile(
-                fp32_state
-            ), f"NVMe optimizer checkpoint is incomplete: missing {fp32_state}"
-            if has_fp32_state:
-                self._fp32_adam.load_state_dict(torch.load(fp32_state))
-            logger.info(f"NVMe optimizer state loaded: {len(self.buckets)} buckets <- {dirpath}")
-            return True
-        finally:
-            torch.cuda.empty_cache()
+        for bucket, meta in zip(self.buckets, manifest["buckets"], strict=True):
+            assert meta["numel"] == bucket.numel
+            assert meta["entry_numels"] == [e.main_param.numel() for e in bucket.entries]
+            source = os.path.join(dirpath, meta["file"])
+            assert os.path.getsize(source) == bucket.nbytes, (
+                f"NVMe optimizer checkpoint is incomplete: {source} has "
+                f"{os.path.getsize(source)} bytes, expected {bucket.nbytes}"
+            )
+            with open(source, "rb", buffering=0) as source_file:
+                src_fd = source_file.fileno()
+                self._stager.copy_file_range(src_fd, 0, bucket.fd, 0, bucket.nbytes)
+                _drop_file_cache(src_fd, 0, bucket.nbytes, sync=False)
+            _drop_file_cache(bucket.fd, 0, bucket.nbytes, sync=True)
+            for group, step in zip(bucket.adam.param_groups, meta["steps"], strict=True):
+                group["step"] = step
+            bucket.allocate_moments()
+        fp32_state = os.path.join(dirpath, "fp32_resident_optimizer.pt")
+        has_fp32_state = manifest.get("has_fp32_resident_optimizer", os.path.isfile(fp32_state))
+        assert has_fp32_state == (
+            self._fp32_adam is not None
+        ), "NVMe state layout mismatch: checkpoint and current model disagree on native-fp32 optimizer presence"
+        assert not has_fp32_state or os.path.isfile(
+            fp32_state
+        ), f"NVMe optimizer checkpoint is incomplete: missing {fp32_state}"
+        if has_fp32_state:
+            self._fp32_adam.load_state_dict(torch.load(fp32_state))
+        torch.cuda.empty_cache()
+        logger.info(f"NVMe optimizer state loaded: {len(self.buckets)} buckets <- {dirpath}")
+        return True
 
 
 def _live_dir_root(args, role: str) -> str:
@@ -645,39 +616,34 @@ def setup_optimizer_state_streaming(args, optimizer, *, role: str) -> None:
         )
         active.append((len(active), dist_opt))
 
+    _purge_legacy_rank_dir(args.offload_train_disk_dir)
+    dir_root = _live_dir_root(args, role)
+    _purge_rank_dir(dir_root)
+    torch.cuda.empty_cache()
+    stager = _Stager(args.offload_train_disk_chunk_mb * 1024 * 1024)
     stores = []
-    try:
-        _purge_legacy_rank_dir(args.offload_train_disk_dir)
-        dir_root = _live_dir_root(args, role)
-        _purge_rank_dir(dir_root)
-        torch.cuda.empty_cache()
-        stager = _Stager(args.offload_train_disk_chunk_mb * 1024 * 1024)
-        initialized_shards = 0
-        initialized_bytes = 0
-        for store_index, dist_opt in active:
-            store = NVMeOptimizerStateStore(
-                dist_opt,
-                dir_root,
-                stager,
-                store_index,
-                args.stream_optimizer_state_moment_dtype,
-                allow_fresh_state=args.no_load_optim,
-            )
-            stores.append((dist_opt, store))
-            initialized_bytes += store.refresh_main_from_model_params()
-            initialized_shards += sum(len(bucket.entries) for bucket in store.buckets)
-
-        logger.info(
-            f"NVMe optimizer main-param initialization: wrote {initialized_shards} shards, "
-            f"{initialized_bytes / 1024**3:.1f} GB directly to {dir_root}"
+    initialized_shards = 0
+    initialized_bytes = 0
+    for store_index, dist_opt in active:
+        store = NVMeOptimizerStateStore(
+            dist_opt,
+            dir_root,
+            stager,
+            store_index,
+            args.stream_optimizer_state_moment_dtype,
+            allow_fresh_state=args.no_load_optim,
         )
+        stores.append((dist_opt, store))
+        initialized_bytes += store.refresh_main_from_model_params()
+        initialized_shards += sum(len(bucket.entries) for bucket in store.buckets)
 
-        for dist_opt, store in stores:
-            _bind(dist_opt, store)
-    except BaseException:
-        for _, store in reversed(stores):
-            store.close()
-        raise
+    logger.info(
+        f"NVMe optimizer main-param initialization: wrote {initialized_shards} shards, "
+        f"{initialized_bytes / 1024**3:.1f} GB directly to {dir_root}"
+    )
+
+    for dist_opt, store in stores:
+        _bind(dist_opt, store)
 
     # Deferred construction is complete; clear this transient contract before any
     # checkpoint or scheduler code can observe the optimizer.
