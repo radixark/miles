@@ -498,6 +498,20 @@ class TestRocmWorkflowScopeSeam:
         assert "allow-unsafe-pr-checkout" not in reusable
         assert "MILES_HARDWARE_PLATFORM: rocm" in reusable
 
+    def test_megatron_override_preserves_rocm_patch(self):
+        reusable = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "_run-ci-rocm.yml").read_text()
+        override = reusable.split('if [ -n "$MEGATRON_PR" ]; then', 1)[1].split("          cd $GITHUB_WORKSPACE", 1)[0]
+
+        checkout = override.index("git checkout -f FETCH_HEAD")
+        check_patch = override.index("git apply --check /tmp/amd_patch/megatron.patch")
+        apply_patch = override.index("git apply /tmp/amd_patch/megatron.patch")
+        reverse_check = override.index("elif git apply --reverse --check /tmp/amd_patch/megatron.patch; then")
+        error = override.index('echo "::error::Selected Megatron ref is incompatible with the ROCm patch"')
+        fail = override.index("exit 1")
+        install = override.index("pip install -e . --no-deps --break-system-packages")
+
+        assert checkout < check_patch < apply_patch < reverse_check < error < fail < install
+
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------
 
