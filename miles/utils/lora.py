@@ -15,3 +15,9 @@ def lora_rollout_enabled(args: Namespace) -> bool:
     ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
     """
     return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
+
+
+def start_rollout_id_from_checkpoint(args: Namespace, loaded_rollout_id: int) -> int:
+    if getattr(args, "lora_adapter_path", None) is not None and not getattr(args, "lora_training_state_loaded", False):
+        return 0
+    return loaded_rollout_id + 1

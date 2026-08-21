@@ -23,6 +23,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
+from miles.utils.lora import start_rollout_id_from_checkpoint
 from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.processing_utils import load_tokenizer
@@ -209,7 +210,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         verify_megatron_parallel_state(self.model)
 
-        start_rollout_id = loaded_rollout_id + 1
+        start_rollout_id = start_rollout_id_from_checkpoint(args, loaded_rollout_id)
         self._asleep = False
 
         if role == "critic":
