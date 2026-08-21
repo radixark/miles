@@ -23,7 +23,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, print_memory, report_peak_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -366,7 +366,7 @@ class MegatronTrainRayActor(TrainRayActor):
         store_prefix: str = "",
     ) -> dict[str, list[torch.Tensor]]:
 
-        with timer(f"{store_prefix}log_probs"):
+        with timer(f"{store_prefix}log_probs"), report_peak_memory(f"{store_prefix}log_probs"):
             return forward_only(
                 get_log_probs_and_entropy,
                 self.args,
@@ -568,7 +568,7 @@ class MegatronTrainRayActor(TrainRayActor):
             # Train
             num_rollouts = get_num_rollouts(self.args, rollout_data, num_optimizer_steps)
             self._set_replay_stage("replay_backward")
-            with timer("actor_train"):
+            with timer("actor_train"), report_peak_memory("actor_train"):
                 train_step_outcome = train(
                     rollout_id,
                     self.model,
