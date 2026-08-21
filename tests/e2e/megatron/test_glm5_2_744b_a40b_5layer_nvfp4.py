@@ -11,7 +11,6 @@ register_cuda_ci(
     suite="stage-c-8-gpu-b200",
     labels=["model-scripts"],
     hardware=["blackwell"],
-    disabled="Requires Blackwell/B200 CI runner for NVFP4.",
 )
 
 MODEL_ORG = "Pinaster"

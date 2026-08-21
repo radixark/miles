@@ -8,10 +8,10 @@ register_cuda_ci(
     suite="stage-c-8-gpu-b200",
     labels=["megatron"],
     hardware=["blackwell"],
-    disabled="Blackwell CI not supported",
 )
 
 ARGS = ScriptArgs(
+    hardware="B200",
     rollout_mxfp8=True,
     train_mxfp8=True,
     ci_test=True,
