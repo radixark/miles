@@ -1,3 +1,4 @@
+import copy
 import itertools
 import logging
 
@@ -7,7 +8,7 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
-def postprocess_rollout_data(args, data, train_parallel_config):
+def postprocess_rollout_data(args, data, train_parallel_config, pad_to_dp: bool = False):
     metadata = {}
 
     validate_compact_rollout_ids(data)
@@ -24,6 +25,9 @@ def postprocess_rollout_data(args, data, train_parallel_config):
     # flatten the data if it is a list of lists
     while isinstance(data[0], list):
         data = list(itertools.chain.from_iterable(data))
+
+    if pad_to_dp and (dp_size := (train_parallel_config or {}).get("dp_size")):
+        data = _pad_samples_to_dp(data, dp_size)
 
     # Compact rollouts must not be trimmed by sample count; the schedule drops
     # whole trailing rollouts instead.
@@ -80,6 +84,23 @@ def _nested_sample_count(group) -> int:
     if not isinstance(group, list):
         return 1
     return sum(_nested_sample_count(item) for item in group)
+
+
+def _pad_samples_to_dp(data: list[Sample], dp_size: int) -> list[Sample]:
+    deficit = -len(data) % dp_size
+    if deficit == 0:
+        return data
+
+    donor = data[-1]
+    padded = list(data)
+    for _ in range(deficit):
+        pad = copy.deepcopy(donor)
+        pad.index = -1
+        pad.rollout_id = None
+        pad.loss_mask = [0] * pad.response_length
+        padded.append(pad)
+    logger.info(f"Padded rollout batch from {len(data)} to {len(padded)} samples for DP alignment")
+    return padded
 
 
 def _compute_dynamic_global_batch_size(args, train_parallel_config, num_samples: int) -> int:
