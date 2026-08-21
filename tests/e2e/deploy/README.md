@@ -16,8 +16,9 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/hot_restart/scenario_hot_re
 - **Subcommands**: comparison scenarios expose `run` / `baseline` / `target` / `compare` (no GPU) /
   `generate-data`; the multi policy one exposes `run` / `verify`; the realistic soak exposes `run`
   only; hot restart deterministic nests these under one subcommand per mode.
-- **Dump dirs**: `/node_public/dumps/<TEST_NAME>/` (only `run` deletes it; `--dump-dir` overrides
-  for `baseline` / `target` / `compare`); multi policy:
+- **Dump dirs**: `$MILES_TEST_DUMPS_ROOT/<run_id>/<TEST_NAME>/`, defaulting to `/node_public/dumps` when
+  the cluster sets no root (only `run` deletes it, and only its own run id's subtree; `--dump-dir`
+  overrides for `baseline` / `target` / `compare`); multi policy:
   `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
 
 ## Test Specifications

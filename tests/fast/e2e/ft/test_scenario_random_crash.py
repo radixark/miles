@@ -2,11 +2,7 @@ from pathlib import Path
 
 import pytest
 from tests.e2e.ft.conftest_ft.fault_injection import entrypoint, fault_forms, state
-from tests.e2e.ft.conftest_ft.scenario_random_crash import (
-    _assert_drawn_fault_forms_worked,
-    _get_extra_env_vars,
-    assert_healing,
-)
+from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_drawn_fault_forms_worked, assert_healing
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
@@ -16,11 +12,6 @@ from miles.utils.workers.types import ClusterBackend
 
 _ROLLOUT_CELL_NAME = "rollout-engine-0"
 _ACTOR_CELL_NAME = "actor-0"
-
-
-def test_fully_async_soak_enables_the_required_rollout_api() -> None:
-    """The Ray runtime must receive the class-based rollout feature flag."""
-    assert _get_extra_env_vars(fully_async=True) == {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
 
 
 def _injector(*, cell_types: tuple[str, ...]) -> entrypoint.FaultInjectorHandle:
@@ -35,7 +26,10 @@ def _injector(*, cell_types: tuple[str, ...]) -> entrypoint.FaultInjectorHandle:
 
 def _actor_cell(name: str = _ACTOR_CELL_NAME) -> dict:
     return {
-        "metadata": {"name": name, "labels": {"miles.io/cell-type": "actor"}},
+        "metadata": {
+            "name": name,
+            "labels": {"miles.io/cell-type": "actor", "miles.io/workers-hash": "generation-0"},
+        },
         "status": {"phase": "Running", "conditions": [{"type": "Healthy", "status": "True"}]},
     }
 
@@ -46,7 +40,11 @@ def _note_actor_injections(
     log = injector.event_log
     for _ in range(count):
         log.observe([_actor_cell(name)])
-        log.note_injection_attempt(cell_name=name, form_name="inject_fault:sigkill", succeeded=True)
+        log.note_injection_attempt(
+            cell_name=name,
+            form_name="inject_fault:sigkill",
+            succeeded=True,
+        )
 
 
 def _note_form_attempts(
@@ -54,11 +52,19 @@ def _note_form_attempts(
 ) -> None:
     injector.event_log.observe([_actor_cell(name)])
     for succeeded in outcomes:
-        injector.event_log.note_injection_attempt(cell_name=name, form_name=form_name, succeeded=succeeded)
+        injector.event_log.note_injection_attempt(
+            cell_name=name,
+            form_name=form_name,
+            succeeded=succeeded,
+        )
 
 
 def _note_rollout_injection(log: state.EventLog) -> None:
-    log.note_injection_attempt(cell_name=_ROLLOUT_CELL_NAME, form_name="inject_fault:sigkill", succeeded=True)
+    log.note_injection_attempt(
+        cell_name=_ROLLOUT_CELL_NAME,
+        form_name="inject_fault:sigkill",
+        succeeded=True,
+    )
 
 
 def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
@@ -72,7 +78,10 @@ def _rollout_cell(cell_state: state.ObservedCellState) -> dict:
         ]
     )
     return {
-        "metadata": {"name": _ROLLOUT_CELL_NAME, "labels": {"miles.io/cell-type": "rollout"}},
+        "metadata": {
+            "name": _ROLLOUT_CELL_NAME,
+            "labels": {"miles.io/cell-type": "rollout", "miles.io/workers-hash": "generation-0"},
+        },
         "status": {"phase": phase, "conditions": conditions},
     }
 

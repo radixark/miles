@@ -104,7 +104,7 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 - **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds` / `--fully-async`.
 - **`scenario_realistic_gsm8k`**: only `run`, with `--seed` / `--num-rollout` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds` / `--metric-threshold` / `--fully-async`; no `--mode`.
 - **`scenario_*_fully_async`**: only `run`, with the same options minus `--fully-async`, which they pin.
-- **Dumps**: `/node_public/dumps/<test_name>/` via `resolve_dump_dir` in `conftest_ft/app.py`, deleted at the end of `run`.
+- **Dumps**: `resolve_dump_dir` in `conftest_ft/app.py` puts them under `$MILES_TEST_DUMPS_ROOT/<run_id>/<test_name>/`, falling back to `/node_public/dumps` when the cluster sets no root; deleted at the end of `run`. The run id is what stops two agents running the same test from deleting each other's dumps.
 
 ### Cluster Backend
 
