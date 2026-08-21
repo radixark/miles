@@ -24,7 +24,13 @@ def _stub_launch_inputs(monkeypatch, *, specs, colocate: bool = False) -> None:
         entrypoint,
         "parse_args",
         lambda: SimpleNamespace(
-            colocate=colocate, deploy_component="all", argv=[], use_wandb=False, wandb_run_id=None
+            colocate=colocate,
+            deploy_component="all",
+            deploy_instance_id=None,
+            argv=[],
+            train_env_vars={},
+            use_wandb=False,
+            wandb_run_id=None,
         ),
     )
     monkeypatch.setattr(MooncakeInfo, "plan_of_args", staticmethod(lambda args: None))
@@ -142,7 +148,18 @@ def _record_launch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, ci_run: b
     infra = _infra_file(
         tmp_path,
         "infra.yaml",
-        {"infra": {"sharedStorage": {"mountPath": str(tmp_path / "cluster-storage")}, "paths": {"runsSubPath": ""}}},
+        {
+            "infra": {
+                "volumes": [
+                    {
+                        "name": "cluster-storage",
+                        "hostPath": {"path": str(tmp_path / "cluster-storage")},
+                        "mounts": [{"mountPath": str(tmp_path / "cluster-storage")}],
+                    }
+                ],
+                "paths": {"runsRoot": str(tmp_path / "cluster-storage")},
+            }
+        },
     )
 
     _stub_launch_inputs(monkeypatch, specs=[])
