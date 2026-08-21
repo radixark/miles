@@ -112,13 +112,16 @@ infra:
         - {mountPath: /root/datasets, subPath: datasets}
         - {mountPath: /root/shared_data, subPath: alice/shared_data}
   paths:
-    runsRoot: /cluster-storage/miles_data
+    runsRoot: /cluster-storage/${NAMESPACE}/miles_data
 ```
 
 The `hostPath` above stands for a cluster-wide shared filesystem (NFS, Lustre, a CSI mount) already
 mounted at `/cluster-storage` on every node: a per-node directory would lose the orchestrator state
 file and the shared checkpoints. Where Pod Security forbids `hostPath`, replace that key with an RWX
 `persistentVolumeClaim` and keep the mounts.
+
+Any path in `infra.yaml` — a `hostPath`, a `mountPath`, a `subPath`, `infra.paths.runsRoot` — may
+name `${NAMESPACE}`, which the chart replaces with the namespace it is installed into.
 
 `charts/miles-run/values.yaml` shows the full shape, and each chart's `values.schema.json` is the
 authoritative field list.

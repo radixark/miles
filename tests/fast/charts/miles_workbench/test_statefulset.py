@@ -6,6 +6,7 @@ from tests.fast.charts.utils import (
     host_path_volume,
     pod_spec,
     render,
+    render_error,
     requires_helm,
     single_object_of_kind,
     volumes_args,
@@ -181,3 +182,34 @@ class TestWorkbenchStatefulSet:
         assert "tolerations" not in spec
         assert "affinity" not in spec
         assert "imagePullSecrets" not in spec
+
+
+@requires_helm
+class TestNamespaceInterpolation:
+    def test_the_workbench_mounts_what_its_own_namespace_names(self):
+        """One workbench per namespace, and the same values file has to give each of them its own checkout."""
+        objects = render(
+            *volumes_args(
+                host_path_volume(
+                    path="/data/${NAMESPACE}",
+                    mounts=[
+                        {"mountPath": "/cluster-storage"},
+                        {"mountPath": "/root/miles", "subPath": "repos/${NAMESPACE}/miles"},
+                    ],
+                )
+            )
+        )
+
+        assert _volume(objects, "cluster-storage")["hostPath"]["path"] == f"/data/{NAMESPACE}"
+        assert {
+            "name": "cluster-storage",
+            "mountPath": "/root/miles",
+            "subPath": f"repos/{NAMESPACE}/miles",
+        } in container(objects)["volumeMounts"]
+
+    def test_an_unknown_variable_is_refused_by_a_chart_that_renders_no_run(self):
+        """This chart writes the infra.yaml every launch from here reads, so a typo has to stop at this render."""
+        error = render_error("--set", "infra.paths.runsRoot=/cluster-storage/${NAMESPCE}/data")
+
+        assert "infra.paths.runsRoot" in error
+        assert "${NAMESPCE}" in error
