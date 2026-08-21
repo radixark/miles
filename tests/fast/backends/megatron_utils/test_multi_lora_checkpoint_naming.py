@@ -1,7 +1,7 @@
 """Adapter shards are keyed by (tp, pp, ep): EP ranks hold different local experts, and
 the realized coordinates are not the tp x pp x ep cross product when ETP < TP."""
 
-from miles.backends.megatron_utils.multi_lora_utils import all_megatron_checkpoints_exist, megatron_shard_name
+from miles.backends.megatron_utils.lora_checkpoint import all_megatron_checkpoints_exist, megatron_shard_name
 
 
 def _names(coords, ep_size):

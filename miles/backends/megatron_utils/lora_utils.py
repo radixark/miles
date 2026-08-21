@@ -10,6 +10,11 @@ from typing import Any
 import torch
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.lora_checkpoint import (
+    adapter_shard_topology,
+    megatron_shard_name,
+    raise_if_any_rank_failed,
+)
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
@@ -404,6 +409,40 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
+def _native_adapter_shard_path(directory: Path) -> Path:
+    parallel_state = get_parallel_state()
+    return directory / megatron_shard_name(
+        parallel_state.tp.rank,
+        parallel_state.pp.rank,
+        parallel_state.ep.rank,
+        parallel_state.ep.size,
+    )
+
+
+def _save_native_adapter_checkpoint(model: Sequence[torch.nn.Module], directory: Path) -> Path | None:
+    is_writer, _ = adapter_shard_topology()
+    path = None
+    adapter_state = {}
+    save_error = None
+    if is_writer:
+        try:
+            adapter_state = {
+                name: param.data.cpu()
+                for model_chunk in model
+                for name, param in model_chunk.named_parameters()
+                if _is_adapter_param_name(name)
+            }
+            path = _native_adapter_shard_path(directory)
+            torch.save(adapter_state, path)
+        except Exception as error:
+            save_error = error
+
+    raise_if_any_rank_failed(save_error, "Native LoRA checkpoint save")
+    if path is not None:
+        logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {path}")
+    return path
+
+
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -419,16 +458,15 @@ def save_lora_checkpoint(
     1. **HF PEFT format** (``adapter_model.bin`` + ``adapter_config.json``) for
        external tool compatibility. Uses Megatron-Bridge's ``export_adapter_weights``
        which correctly handles fused QKV / gate-up weight splitting and TP gathering.
-    2. **Megatron-native format** (``adapter_megatron_rank{global_rank}.pt``) for fast
-       checkpoint resume without name/weight conversion. Each TP/PP rank saves its
-       own shard with original parameter names.
+    2. **Megatron-native format** (``adapter_megatron_tp{tp}_pp{pp}[_ep{ep}].pt``)
+       for fast checkpoint resume without name/weight conversion.
 
     When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
     also saved per-rank for checkpoint resume. Base model weights are frozen and
     never change, so they are not saved.
 
-    This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    This function is collective: all ranks participate in topology discovery and
+    Bridge export, while one writer stores each model-parallel native shard.
     """
     import json
 
@@ -446,16 +484,7 @@ def save_lora_checkpoint(
     if dist.is_initialized():
         dist.barrier()
 
-    adapter_state: dict[str, torch.Tensor] = {}
-    for model_chunk in model:
-        for name, param in model_chunk.named_parameters():
-            if _is_adapter_param_name(name):
-                adapter_state[name] = param.data.cpu()
-
-    global_rank = dist.get_rank() if dist.is_initialized() else 0
-    native_path = save_path / f"adapter_megatron_rank{global_rank}.pt"
-    torch.save(adapter_state, native_path)
-    logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
+    _save_native_adapter_checkpoint(model, save_path)
 
     # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
     # Bridge export is collective: all TP ranks participate in the all-gather,
@@ -496,7 +525,7 @@ def save_lora_checkpoint(
             logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
     except Exception as hf_export_err:
         logger.warning(
-            f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
+            f"HF PEFT adapter export skipped ({hf_export_err}); the model-parallel native "
             f"shards + training state are sufficient for training resume."
         )
 
@@ -528,8 +557,8 @@ def load_lora_adapter(
 ) -> tuple[bool, int | None]:
     """Load LoRA adapter weights from a saved checkpoint into the model.
 
-    Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
-    which preserves the exact TP/PP sharding and requires no name conversion.
+    Attempts to load from Megatron-native format first (per-model-parallel ``.pt``
+    files), which preserves the exact TP/PP/EP sharding and requires no name conversion.
     Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
     (not yet implemented for HF PEFT format).
 
@@ -552,17 +581,24 @@ def load_lora_adapter(
         logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
         return False, None
 
-    tp_rank = get_parallel_state().tp.rank
-    pp_rank = get_parallel_state().pp.rank
+    parallel_state = get_parallel_state()
+    tp_rank = parallel_state.tp.rank
+    pp_rank = parallel_state.pp.rank
+    ep_size = parallel_state.ep.size
 
     # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    global_rank = dist.get_rank() if dist.is_initialized() else 0
-    native_path = adapter_dir / f"adapter_megatron_rank{global_rank}.pt"
+    native_path = _native_adapter_shard_path(adapter_dir)
     if not native_path.exists():
-        legacy = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
-        if legacy.exists():
-            logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
-            native_path = legacy
+        global_rank = dist.get_rank() if dist.is_initialized() else 0
+        legacy_rank = adapter_dir / f"adapter_megatron_rank{global_rank}.pt"
+        if legacy_rank.exists():
+            logger.warning(f"Using legacy global-rank adapter shard {legacy_rank}")
+            native_path = legacy_rank
+        elif ep_size > 1:
+            legacy_tp_pp = adapter_dir / megatron_shard_name(tp_rank, pp_rank, 0, 1)
+            if legacy_tp_pp.exists():
+                logger.warning(f"Using legacy tp/pp-named adapter shard {legacy_tp_pp}; only valid when EP<=TP")
+                native_path = legacy_tp_pp
     if native_path.exists():
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
         loaded = 0

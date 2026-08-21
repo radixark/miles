@@ -5,10 +5,14 @@ exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
+import miles.backends.megatron_utils.lora_checkpoint as lora_checkpoint
+import miles.backends.megatron_utils.lora_utils as lora_utils
 from miles.backends.megatron_utils.lora_utils import (
     _get_lora_class_name,
     _is_adapter_param_name,
@@ -346,6 +350,87 @@ class TestBuildLoraSyncConfig:
         config = build_lora_sync_config(args)
         assert config["target_modules"] == ["q_proj", "k_proj"]
         assert config["r"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Native adapter checkpoints
+# ---------------------------------------------------------------------------
+
+
+def _parallel_state(tp=0, pp=0, ep=0, ep_size=1):
+    return SimpleNamespace(
+        tp=SimpleNamespace(rank=tp),
+        pp=SimpleNamespace(rank=pp),
+        ep=SimpleNamespace(rank=ep, size=ep_size),
+    )
+
+
+def _adapter_model(name="module.lora_A.weight"):
+    model = MagicMock()
+    model.named_parameters.return_value = [(name, torch.nn.Parameter(torch.ones(2, 2)))]
+    return model
+
+
+class TestNativeAdapterCheckpoint:
+    def test_writer_saves_model_parallel_shard(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: _parallel_state(tp=1, pp=2, ep=3, ep_size=4))
+        monkeypatch.setattr(lora_utils, "adapter_shard_topology", lambda: (True, ((1, 2, 3),)))
+
+        path = lora_utils._save_native_adapter_checkpoint([_adapter_model()], tmp_path)
+
+        assert path == tmp_path / "adapter_megatron_tp1_pp2_ep3.pt"
+        assert path.exists()
+        assert not list(tmp_path.glob("adapter_megatron_rank*.pt"))
+
+    def test_replica_does_not_write_duplicate_shard(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lora_utils, "adapter_shard_topology", lambda: (False, ((0, 0, 0),)))
+
+        assert lora_utils._save_native_adapter_checkpoint([_adapter_model()], tmp_path) is None
+        assert not list(tmp_path.iterdir())
+
+    def test_writer_failure_is_reported_before_later_collectives(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lora_utils, "adapter_shard_topology", lambda: (True, ((0, 0, 0),)))
+        monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: _parallel_state())
+        monkeypatch.setattr(lora_utils.torch, "save", MagicMock(side_effect=OSError("disk full")))
+
+        with pytest.raises(RuntimeError, match="Native LoRA checkpoint save.*disk full"):
+            lora_utils._save_native_adapter_checkpoint([_adapter_model()], tmp_path)
+
+    def test_replica_observes_peer_writer_failure(self, monkeypatch):
+        monkeypatch.setattr(lora_checkpoint.dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(lora_checkpoint.dist, "get_world_size", lambda group: 2)
+        monkeypatch.setattr(lora_checkpoint, "get_gloo_group", MagicMock(return_value=object()))
+
+        def gather(messages, _local_message, group):
+            messages[:] = ["OSError: disk full", None]
+
+        monkeypatch.setattr(lora_checkpoint.dist, "all_gather_object", gather)
+
+        with pytest.raises(RuntimeError, match="Native LoRA checkpoint save.*disk full"):
+            lora_checkpoint.raise_if_any_rank_failed(None, "Native LoRA checkpoint save")
+
+    def test_loads_model_parallel_shard(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: _parallel_state())
+        expected = torch.full((2, 2), 3.0)
+        torch.save({"module.lora_A.weight": expected}, tmp_path / "adapter_megatron_tp0_pp0.pt")
+        model = _adapter_model()
+
+        loaded, iteration = lora_utils.load_lora_adapter([model], str(tmp_path))
+
+        assert loaded
+        assert iteration is None
+        assert torch.equal(model.named_parameters.return_value[0][1], expected)
+
+    def test_loads_legacy_global_rank_shard(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(lora_utils, "get_parallel_state", lambda: _parallel_state())
+        expected = torch.full((2, 2), 4.0)
+        torch.save({"module.lora_A.weight": expected}, tmp_path / "adapter_megatron_rank0.pt")
+        model = _adapter_model()
+
+        loaded, _ = lora_utils.load_lora_adapter([model], str(tmp_path))
+
+        assert loaded
+        assert torch.equal(model.named_parameters.return_value[0][1], expected)
 
 
 # ---------------------------------------------------------------------------
