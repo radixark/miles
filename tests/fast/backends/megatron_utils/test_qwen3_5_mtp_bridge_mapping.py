@@ -3,7 +3,11 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
+
+# The converters accept both the old and new MTP submodule names; cover both.
+MTP_LAYER_ATTRS = ("mtp_model_layer", "transformer_layer")
 
 
 def install_bridge_stubs():
@@ -126,12 +130,13 @@ def load_raw_export_module():
     return module
 
 
-def test_mtp_moe_expert_mapping_uses_individual_hf_weights():
+@pytest.mark.parametrize("mtp_layer_attr", MTP_LAYER_ATTRS)
+def test_mtp_moe_expert_mapping_uses_individual_hf_weights(mtp_layer_attr):
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
 
-    fc1_names = bridge._convert_mtp_param("mtp.layers.0.transformer_layer.mlp.experts.linear_fc1.weight42")
-    fc2_names = bridge._convert_mtp_param("mtp.layers.0.transformer_layer.mlp.experts.linear_fc2.weight42")
+    fc1_names = bridge._convert_mtp_param(f"mtp.layers.0.{mtp_layer_attr}.mlp.experts.linear_fc1.weight42")
+    fc2_names = bridge._convert_mtp_param(f"mtp.layers.0.{mtp_layer_attr}.mlp.experts.linear_fc2.weight42")
 
     assert fc1_names == [
         "mtp.layers.0.mlp.experts.42.gate_proj.weight",
@@ -140,15 +145,33 @@ def test_mtp_moe_expert_mapping_uses_individual_hf_weights():
     assert fc2_names == ["mtp.layers.0.mlp.experts.42.down_proj.weight"]
 
 
-def test_mtp_dense_mlp_mapping_still_uses_dense_hf_weights():
+@pytest.mark.parametrize("mtp_layer_attr", MTP_LAYER_ATTRS)
+def test_mtp_dense_mlp_mapping_still_uses_dense_hf_weights(mtp_layer_attr):
     module = load_bridge_module()
     bridge = module.Qwen3_5Bridge.__new__(module.Qwen3_5Bridge)
 
-    fc1_names = bridge._convert_mtp_param("mtp.layers.0.transformer_layer.mlp.linear_fc1.weight")
-    fc2_names = bridge._convert_mtp_param("mtp.layers.0.transformer_layer.mlp.linear_fc2.weight")
+    fc1_names = bridge._convert_mtp_param(f"mtp.layers.0.{mtp_layer_attr}.mlp.linear_fc1.weight")
+    fc2_names = bridge._convert_mtp_param(f"mtp.layers.0.{mtp_layer_attr}.mlp.linear_fc2.weight")
 
     assert fc1_names == ["mtp.layers.0.mlp.gate_proj.weight", "mtp.layers.0.mlp.up_proj.weight"]
     assert fc2_names == ["mtp.layers.0.mlp.down_proj.weight"]
+
+
+@pytest.mark.parametrize("mtp_layer_attr", MTP_LAYER_ATTRS)
+def test_raw_qwen3_5_mtp_export_handles_both_mtp_layer_attrs(mtp_layer_attr):
+    module = load_raw_export_module()
+
+    param = torch.zeros(4)
+    # convert_qwen3_5_to_hf derives head_dim at entry, so the stub needs attention dims.
+    args = types.SimpleNamespace(kv_channels=None, hidden_size=64, num_attention_heads=4, num_query_groups=2)
+    result = module._convert_mtp_layer(
+        args,
+        f"module.module.mtp.layers.0.{mtp_layer_attr}.mlp.experts.linear_fc1",
+        param,
+        0,
+    )
+
+    assert result == [("mtp.layers.0.mlp.experts.gate_up_proj", param)]
 
 
 def test_mtp_block_spec_uses_current_transformer_layer_spec():

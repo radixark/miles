@@ -14,8 +14,11 @@ def _convert_mtp_layer(args, name, param, layer_idx):
     if "eh_proj.weight" in name:
         return [("mtp.fc.weight", param)]
 
-    if "transformer_layer" in name:
-        proxy_name = name.replace(f"mtp.layers.{layer_idx}.transformer_layer", f"decoder.layers.{layer_idx}")
+    # Accept both MTP submodule names: mtp_model_layer (new) and transformer_layer (old).
+    for mtp_layer_attr in ("mtp_model_layer", "transformer_layer"):
+        if mtp_layer_attr not in name:
+            continue
+        proxy_name = name.replace(f"mtp.layers.{layer_idx}.{mtp_layer_attr}", f"decoder.layers.{layer_idx}")
         mapped_params = convert_qwen3_5_to_hf(args, proxy_name, param)
 
         final_params = []

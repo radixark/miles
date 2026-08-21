@@ -130,8 +130,13 @@ class GLM4MoELiteBridge(DeepseekV3Bridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        assert "mtp.layers.0.transformer_layer" in name, "mtp not found"
-        proxy_name = name.replace("mtp.layers.0.transformer_layer", f"decoder.layers.{mtp_layer_id}")
+        # Accept both MTP submodule names: mtp_model_layer (new) and transformer_layer (old).
+        for mtp_layer_attr in ("mtp_model_layer", "transformer_layer"):
+            if f"mtp.layers.0.{mtp_layer_attr}" in name:
+                proxy_name = name.replace(f"mtp.layers.0.{mtp_layer_attr}", f"decoder.layers.{mtp_layer_id}")
+                break
+        else:
+            raise AssertionError(f"mtp not found in parameter name: {name}")
         if "self_attention" in proxy_name or "input_layernorm.weight" in proxy_name:
             return self._weight_name_mapping_attention(proxy_name)
         if "mlp" in proxy_name:
