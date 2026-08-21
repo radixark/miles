@@ -280,6 +280,34 @@ class TestPostProcessRewards:
         expected_std = float(np.std([-1.5, -0.5, 0.5, 1.5]))
         assert abs(np.std(processed) - expected_std) < 1e-5
 
+    def test_reinforce_uses_grpo_normalization_including_std(self):
+        args = make_args(
+            advantage_estimator="reinforce",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=4,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, 4, rewards=[1.0, 2.0, 3.0, 4.0])
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        import numpy as np
+
+        assert abs(sum(processed) / 4) < 1e-5
+        assert abs(np.std(processed, ddof=1) - 1.0) < 1e-4
+
+    def test_reinforce_singleton_group_keeps_raw_rewards(self):
+        # A group of 1 has no baseline; subtracting its mean would zero the advantage.
+        args = make_args(
+            advantage_estimator="reinforce",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=1,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, 1, rewards=[3.5])
+        raw, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+        assert processed == raw == [3.5]
+
     def test_irregular_group_size_uses_explicit_group_index(self):
         """Explicit group identity keeps an irregularly sized group together."""
         args = make_args(

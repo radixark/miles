@@ -239,11 +239,16 @@ def _normalize_rewards_by_rollout(
             shared_rewards.append(sibling_rewards[0])
 
         rollout_rewards = torch.tensor(shared_rewards, dtype=torch.float)
-        normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
-        if args.advantage_estimator in ["grpo", "gspo"] and args.grpo_std_normalization and len(rollout_rewards) > 1:
-            rollout_std = rollout_rewards.std()
-            if rollout_std > 0:
-                normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
+        if len(rollout_rewards) <= 1:
+            # A group of 1 has no baseline: subtracting its own mean would zero
+            # every advantage (including standard n=1 REINFORCE).
+            normalized_rollout_rewards = rollout_rewards
+        else:
+            normalized_rollout_rewards = rollout_rewards - rollout_rewards.mean()
+            if args.advantage_estimator in ["grpo", "gspo", "reinforce"] and args.grpo_std_normalization:
+                rollout_std = rollout_rewards.std()
+                if rollout_std > 0:
+                    normalized_rollout_rewards = normalized_rollout_rewards / (rollout_std + 1e-6)
 
         for (_, rollout_segments), normalized_reward in zip(
             rollout_segment_groups, normalized_rollout_rewards.tolist(), strict=True
@@ -264,7 +269,10 @@ def _post_process_rewards(
         return f(args, samples)
 
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
-    if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
+    if (
+        args.advantage_estimator in ["grpo", "gspo", "reinforce", "reinforce_plus_plus_baseline"]
+        and args.rewards_normalization
+    ):
         normalized_rewards = _normalize_rewards_by_rollout(args, samples, raw_rewards, prompt_group_sizes)
         return raw_rewards, normalized_rewards
 
