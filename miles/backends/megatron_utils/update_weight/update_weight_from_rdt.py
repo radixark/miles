@@ -151,9 +151,19 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     ) -> None:
         """Plan transfers, build a GPU replica + fixed bucket per engine rank.
 
-        The lock and gpu count/offset args exist for parity with the broadcast path;
-        one-sided RDMA pulls have no collective to deadlock, so they are unused here.
+        ``engine_gpu_counts`` must be uniform at ``args.rollout_num_gpus_per_engine``.
+        The lock and offsets exist for parity with the broadcast path; one-sided
+        RDMA pulls have no collective to deadlock, so they are unused.
         """
+        if engine_gpu_counts is not None and any(
+            count != self.args.rollout_num_gpus_per_engine for count in engine_gpu_counts
+        ):
+            raise ValueError(
+                f"[RDT] Heterogeneous engine GPU counts {list(engine_gpu_counts)} are not supported; "
+                f"every engine must use --rollout-num-gpus-per-engine "
+                f"({self.args.rollout_num_gpus_per_engine})."
+            )
+
         self.rollout_engines = rollout_engines
         self._connection_stale = False
         self._staged_tensors.clear()
@@ -199,8 +209,15 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
             if expandable:
                 torch._C._accelerator_setAllocatorSettings("expandable_segments:False")
             try:
+                max_param_nbytes = max((spec[2] for spec in param_specs.values()), default=0)
+                if max_param_nbytes > self.args.update_weight_buffer_size:
+                    logger.warning(
+                        f"[RDT] Largest destination parameter needs {max_param_nbytes} bytes, above "
+                        f"--update-weight-buffer-size ({self.args.update_weight_buffer_size}); "
+                        f"growing bucket to fit."
+                    )
                 gpu_bucket = torch.empty(
-                    self.args.update_weight_buffer_size,
+                    max(self.args.update_weight_buffer_size, max_param_nbytes),
                     dtype=torch.uint8,
                     device=torch.cuda.current_device(),
                 )

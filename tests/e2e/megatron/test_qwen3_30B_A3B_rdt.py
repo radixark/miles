@@ -104,9 +104,6 @@ def execute():
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
-        # RDT stages whole HF params into a fixed GPU bucket; 1 GiB covers the
-        # largest single param (embed_tokens, 0.58 GiB bf16) with headroom.
-        f"--update-weight-buffer-size {1 * 1024 ** 3} "
         "--update-weight-transfer-mode rdt "
         "--moe-token-dispatcher-type alltoall "
     )
