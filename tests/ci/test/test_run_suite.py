@@ -503,14 +503,17 @@ class TestRocmWorkflowScopeSeam:
         override = reusable.split('if [ -n "$MEGATRON_PR" ]; then', 1)[1].split("          cd $GITHUB_WORKSPACE", 1)[0]
 
         checkout = override.index("git checkout -f FETCH_HEAD")
-        check_patch = override.index("git apply --check /tmp/amd_patch/megatron.patch")
-        apply_patch = override.index("git apply /tmp/amd_patch/megatron.patch")
-        reverse_check = override.index("elif git apply --reverse --check /tmp/amd_patch/megatron.patch; then")
+        check_patch = override.index('git apply --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"')
+        apply_patch = override.index('git apply "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"')
+        reverse_check = override.index(
+            'elif git apply --reverse --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then'
+        )
         error = override.index('echo "::error::Selected Megatron ref is incompatible with the ROCm patch"')
         fail = override.index("exit 1")
         install = override.index("pip install -e . --no-deps --break-system-packages")
 
         assert checkout < check_patch < apply_patch < reverse_check < error < fail < install
+        assert "/tmp/amd_patch/megatron.patch" not in override
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------

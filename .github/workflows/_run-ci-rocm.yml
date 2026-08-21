@@ -164,9 +164,9 @@ jobs:
             git fetch origin "$MEGATRON_PR"
             git checkout -f FETCH_HEAD
             git log --oneline -1
-            if git apply --check /tmp/amd_patch/megatron.patch; then
-              git apply /tmp/amd_patch/megatron.patch
-            elif git apply --reverse --check /tmp/amd_patch/megatron.patch; then
+            if git apply --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then
+              git apply "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"
+            elif git apply --reverse --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then
               echo "Megatron ROCm patch already present"
             else
               echo "::error::Selected Megatron ref is incompatible with the ROCm patch"
