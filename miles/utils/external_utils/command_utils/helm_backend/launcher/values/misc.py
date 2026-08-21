@@ -113,9 +113,12 @@ class InfraInfo:
 
     @staticmethod
     def shared_root(infra: InfraValues) -> str:
-        mount_path = infra.shared_storage.mount_path.rstrip("/")
-        runs_sub_path = (infra.paths.runs_sub_path if infra.paths is not None else None) or ""
-        return f"{mount_path}/{runs_sub_path.rstrip('/')}".rstrip("/")
+        runs_root = infra.paths.runs_root if infra.paths is not None else None
+        assert runs_root, (
+            "infra.paths.runsRoot is unset, so the launcher has no container path to write a run's directory to; "
+            "set it to an absolute path under one of the infra.volumes mounts"
+        )
+        return runs_root.rstrip("/")
 
 
 def _load_helm_values(chart: str | Path, values_files: list[str] | list[Path]) -> Any:

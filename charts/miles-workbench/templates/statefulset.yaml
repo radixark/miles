@@ -36,7 +36,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" . | trim) (include "miles-common.codeVolumeMounts" . | trim)) | join "\n" }}
+          {{- $mounts := include "miles-common.volumeMounts" . | trim }}
           volumeMounts:
             - name: {{ include "miles-workbench.infraValuesVolumeName" . | quote }}
               mountPath: {{ include "miles-workbench.infraValuesDir" . | quote }}
@@ -47,6 +47,6 @@ spec:
         - name: {{ include "miles-workbench.infraValuesVolumeName" . | quote }}
           configMap:
             name: {{ include "miles-workbench.infraConfigMapName" . | quote }}
-        {{- with include "miles-common.sharedStorageVolume" . }}
+        {{- with include "miles-common.volumes" . }}
         {{- . | nindent 8 }}
         {{- end }}

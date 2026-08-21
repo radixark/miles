@@ -3,10 +3,12 @@ from tests.fast.charts.utils import (
     NAMESPACE,
     RELEASE_NAME,
     container,
+    host_path_volume,
     pod_spec,
     render,
     requires_helm,
     single_object_of_kind,
+    volumes_args,
 )
 
 from miles.utils.workers.types import ClusterBackend
@@ -70,45 +72,40 @@ class TestWorkbenchStatefulSet:
         assert spec["serviceAccountName"] == RELEASE_NAME
         assert spec["automountServiceAccountToken"] is True
 
-    def test_host_path_storage_mounts_where_training_pods_see_it(self):
-        """Shared storage is mounted at the configured path verbatim so launch scripts need no path mapping."""
-        objects = render(
-            "--set", "infra.sharedStorage.hostPath=/gpfs", "--set", "infra.sharedStorage.mountPath=/cluster-storage"
-        )
-        volume = _volume(objects, "shared-storage")
+    def test_a_host_path_volume_mounts_where_training_pods_see_it(self):
+        """A volume is mounted at the configured path verbatim so launch scripts need no path mapping."""
+        objects = render(*volumes_args(host_path_volume(path="/gpfs")))
+        volume = _volume(objects, "cluster-storage")
 
         assert volume["hostPath"] == {"path": "/gpfs", "type": "Directory"}
-        assert {"name": "shared-storage", "mountPath": "/cluster-storage"} in container(objects)["volumeMounts"]
+        assert {"name": "cluster-storage", "mountPath": "/cluster-storage"} in container(objects)["volumeMounts"]
 
-    def test_pvc_storage_binds_the_named_claim(self):
+    def test_a_pvc_volume_binds_the_named_claim(self):
         """Clusters without host mounts point the same mount at a pre-existing RWX claim."""
         objects = render(
-            "--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=miles-shared"
+            "--set-json",
+            'infra.volumes=[{"name":"cluster-storage","persistentVolumeClaim":{"claimName":"miles-shared"},'
+            '"mounts":[{"mountPath":"/cluster-storage"}]}]',
         )
-        assert _volume(objects, "shared-storage")["persistentVolumeClaim"] == {"claimName": "miles-shared"}
 
-    def test_storage_type_none_leaves_the_pod_without_that_volume(self):
-        """Storage is optional; disabling it must not leave a dangling mount referencing a missing volume."""
-        objects = render("--set", "infra.sharedStorage.type=none")
+        assert _volume(objects, "cluster-storage")["persistentVolumeClaim"] == {"claimName": "miles-shared"}
+
+    def test_an_empty_volume_list_leaves_the_pod_with_no_storage_of_its_own(self):
+        """Storage is optional; declaring none must not leave a dangling mount referencing a missing volume."""
+        objects = render("--set-json", "infra.volumes=[]")
 
         assert [volume["name"] for volume in pod_spec(objects)["volumes"]] == ["infra-values"]
         assert [mount["name"] for mount in container(objects)["volumeMounts"]] == ["infra-values"]
 
-    def test_a_repo_on_shared_storage_replaces_the_copy_in_the_image(self):
+    def test_a_mount_over_the_image_checkout_replaces_it_in_this_pod_too(self):
         """Launch scripts run from this pod, so it must see the same checkout as the training pods do."""
-        objects = render("--set", "infra.paths.repos.miles=alice/miles")
+        objects = render(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/root/miles", "subPath": "alice/miles"}]))
+        )
 
-        assert {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "alice/miles"} in container(objects)[
+        assert {"name": "cluster-storage", "mountPath": "/root/miles", "subPath": "alice/miles"} in container(objects)[
             "volumeMounts"
         ]
-        assert dict(name="PYTHONPATH", value="/root/miles") in container(objects)["env"]
-
-    def test_repos_are_ignored_when_there_is_no_shared_storage_to_mount_them_from(self):
-        """A subPath mount of a volume that was never rendered would leave the pod stuck creating."""
-        objects = render("--set", "infra.sharedStorage.type=none", "--set", "infra.paths.repos.miles=alice/miles")
-
-        assert [mount["name"] for mount in container(objects)["volumeMounts"]] == ["infra-values"]
-        assert not [entry for entry in container(objects)["env"] if entry["name"] == "PYTHONPATH"]
 
     def test_a_run_launched_from_the_pod_picks_this_backend_without_being_told(self):
         """The pod exists to install runs into its own cluster, so naming the backend again is noise."""
@@ -129,10 +126,10 @@ class TestWorkbenchStatefulSet:
 
     def test_the_installed_helm_values_are_mounted_for_the_runs_launched_here(self):
         """A run rendered from a second copy of these values would schedule its pods against another cluster."""
-        objects = render("--set", "infra.sharedStorage.hostPath=/gpfs")
+        objects = render(*volumes_args(host_path_volume(path="/gpfs")))
         data = single_object_of_kind(objects, "ConfigMap")["data"]["infra.yaml"]
 
-        assert yaml.safe_load(data)["infra"]["sharedStorage"]["hostPath"] == "/gpfs"
+        assert yaml.safe_load(data)["infra"]["volumes"][0]["hostPath"]["path"] == "/gpfs"
         assert {"name": "infra-values", "mountPath": "/etc/miles"} in container(objects)["volumeMounts"]
         assert _volume(objects, "infra-values")["configMap"]["name"].endswith("-infra")
         assert dict(name="MILES_SCRIPT_HELM_VALUES", value="/etc/miles/infra.yaml") in container(objects)["env"]

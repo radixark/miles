@@ -39,7 +39,13 @@ def _minimal_run_values() -> dict[str, Any]:
     return {
         "infra": {
             "image": {"repository": "registry.local/miles", "tag": "v1"},
-            "sharedStorage": {"type": "none", "mountPath": "/cluster-storage"},
+            "volumes": [
+                {
+                    "name": "cluster-storage",
+                    "hostPath": {"path": "/cluster-storage"},
+                    "mounts": [{"mountPath": "/cluster-storage"}],
+                }
+            ],
         },
         "run": {
             "id": "260101-000000-000",
@@ -128,7 +134,7 @@ class TestRunSchemaRejectsBadValues:
             _validator(_run_schema(schemas)).validate(values)
 
     def test_a_pythonpath_override_in_the_shared_env_is_rejected(self, schemas):
-        """miles composes PYTHONPATH from the mounted checkouts; a user value would hide half of them."""
+        """The image installs its three source trees as editable, and a user PYTHONPATH would shadow them."""
         jsonschema = pytest.importorskip("jsonschema")
         values = _minimal_run_values()
         values["infra"]["env"] = {"PYTHONPATH": "/somewhere"}
@@ -136,11 +142,36 @@ class TestRunSchemaRejectsBadValues:
         with pytest.raises(jsonschema.ValidationError):
             _validator(_run_schema(schemas)).validate(values)
 
-    def test_a_shared_host_path_mount_without_the_path_is_rejected(self, schemas):
-        """A hostPath mount with no host path renders and installs, then leaves every pod unable to start."""
+    def test_a_host_path_volume_without_the_path_is_rejected(self, schemas):
+        """A hostPath volume with no host path renders and installs, then leaves every pod unable to start."""
         jsonschema = pytest.importorskip("jsonschema")
         values = _minimal_run_values()
-        values["infra"]["sharedStorage"] = {"type": "hostPath", "mountPath": "/cluster-storage"}
+        values["infra"]["volumes"] = [{"name": "v", "hostPath": {}, "mounts": [{"mountPath": "/mnt"}]}]
+
+        with pytest.raises(jsonschema.ValidationError):
+            _validator(_run_schema(schemas)).validate(values)
+
+    def test_a_volume_that_declares_two_sources_is_rejected(self, schemas):
+        """Nothing downstream can choose between them, and the free volume list has no type enum to catch it."""
+        jsonschema = pytest.importorskip("jsonschema")
+        values = _minimal_run_values()
+        values["infra"]["volumes"] = [
+            {
+                "name": "v",
+                "hostPath": {"path": "/s"},
+                "persistentVolumeClaim": {"claimName": "c"},
+                "mounts": [{"mountPath": "/mnt"}],
+            }
+        ]
+
+        with pytest.raises(jsonschema.ValidationError):
+            _validator(_run_schema(schemas)).validate(values)
+
+    def test_a_volume_that_declares_no_source_at_all_is_rejected(self, schemas):
+        """A sourceless volume is a mount kubernetes cannot satisfy, so every pod naming it stays pending."""
+        jsonschema = pytest.importorskip("jsonschema")
+        values = _minimal_run_values()
+        values["infra"]["volumes"] = [{"name": "v", "mounts": [{"mountPath": "/mnt"}]}]
 
         with pytest.raises(jsonschema.ValidationError):
             _validator(_run_schema(schemas)).validate(values)
