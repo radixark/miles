@@ -60,3 +60,33 @@ def icepop_function(
     }
     pg_loss = pg_loss * ice_weight
     return pg_loss, loss_masks, metrics
+
+
+def off_policy_is_function(
+    args: Namespace,
+    *,
+    pg_loss: torch.Tensor,
+    cur_log_probs: list[torch.Tensor],
+    rollout_log_probs: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+    **kwargs: Any,
+) -> tuple[torch.Tensor, list[torch.Tensor], dict[str, torch.Tensor]]:
+    """Off-policy truncated IS: like `vanilla_tis_function` but with the *current*
+    policy in the numerator instead of the old recompute, so the (detached) weight is
+    `clip(pi_theta / pi_rollout)` against the actual rollout logprob -- one weight that
+    corrects both the train/inference mismatch and async (multi-version) staleness.
+    Composed with `--advantage-estimator reinforce` it is the CISPO surrogate
+    (https://arxiv.org/abs/2506.13585); `--eps-clip 1.0` gives canonical single-sided
+    clipping. Same `(pg_loss, loss_masks, metrics)` contract; `loss_masks` unchanged.
+    """
+    cur = torch.cat([lp.detach() for lp in cur_log_probs], dim=0)
+    rollout = torch.cat(rollout_log_probs, dim=0)
+    ratio = torch.exp(cur - rollout)
+    is_weights = torch.clamp(ratio, min=1.0 - args.eps_clip, max=1.0 + args.eps_clip_high)
+    is_clipfrac = (is_weights != ratio).float()
+    metrics = {
+        "is_weight": ratio.clone().detach(),
+        "is_clipfrac": is_clipfrac.clone().detach(),
+    }
+    pg_loss = pg_loss * is_weights
+    return pg_loss, loss_masks, metrics
