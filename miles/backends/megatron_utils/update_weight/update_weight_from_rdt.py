@@ -40,6 +40,12 @@ from .update_weight_from_distributed.p2p_transfer_utils import RemoteTransferPla
 logger = logging.getLogger(__name__)
 
 
+def _staging_span(offset: int, dtype: torch.dtype, nbytes: int) -> tuple[int, int]:
+    """(aligned start, end) for placing nbytes of dtype at offset in the uint8 bucket."""
+    start = (offset + dtype.itemsize - 1) // dtype.itemsize * dtype.itemsize
+    return start, start + nbytes
+
+
 class _EngineRankBucket:
     """Transfer context for one engine rank: model replica, its fixed-size GPU
     bucket, the param specs used to carve views, and the actors that pull it."""
@@ -66,17 +72,16 @@ class _EngineRankBucket:
         capacity = self.gpu_bucket.numel()
         for name in names:
             shape, dtype, nbytes = self.param_specs[name]
-            itemsize = torch.empty((), dtype=dtype).element_size()
-            offset = ((offset + itemsize - 1) // itemsize) * itemsize
-            assert offset + nbytes <= capacity, (
+            offset, end = _staging_span(offset, dtype, nbytes)
+            assert end <= capacity, (
                 f"[RDT] Bucket overflow while staging '{name}': "
-                f"need {offset + nbytes} bytes but bucket is {capacity} bytes. "
+                f"need {end} bytes but bucket is {capacity} bytes. "
                 f"Increase --update-weight-buffer-size."
             )
-            view = self.gpu_bucket[offset : offset + nbytes].view(dtype).reshape(shape)
+            view = self.gpu_bucket[offset:end].view(dtype).reshape(shape)
             self.params_dict[name].data = view
             views.append(view)
-            offset += nbytes
+            offset = end
         return views
 
 
@@ -84,8 +89,9 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
     """RDT/NIXL weight transfer on the P2P bucketed all-gather + HF conversion.
 
     Per HF bucket flushed by the mixin: stage GPU bucket -> load_weights
-    -> ray.put(views, nixl) -> actor.pull_weights -> ray.get. One bucket per
-    engine rank, so concurrent pulls never clobber each other.
+    -> ray.put(views, nixl) -> actor.pull_weights -> ray.get. Ready params that
+    overflow the fixed bucket are split into sequential NIXL rounds. One bucket
+    per engine rank, so concurrent pulls never clobber each other.
     """
 
     def __init__(
@@ -307,12 +313,12 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
 
     def _get_transfer_ready_params(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]]
-    ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
-        """Determine which sglang params have all shards present, returning their accumulated tensors.
+    ) -> dict[str, list[tuple[str, torch.Tensor]]]:
+        """Return destination params whose shard set is complete, each mapped to its HF shards.
 
         Params fused on the rollout side (e.g. Megatron's separate Q/K/V vs sglang's
-        qkv_proj) are staged in self._staged_tensors until every shard has arrived,
-        so load_weights() is never called on a partial param.
+        qkv_proj) stay in ``self._staged_tensors`` until every shard has arrived, so
+        ``load_weights()`` is never called on a partial param.
         """
         transfer_ready_params = []
         params_dict = self._shared_params_dict
@@ -345,13 +351,11 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
                 if self._tensor_update_pending[mapped] == 0:
                     transfer_ready_params.append(mapped)
 
-        ready_hf_tensors: list[tuple[str, torch.Tensor]] = []
+        ready: dict[str, list[tuple[str, torch.Tensor]]] = {}
         for param_name in transfer_ready_params:
-            staged = self._staged_tensors.pop(param_name, [])
-            ready_hf_tensors.extend(staged)
+            ready[param_name] = self._staged_tensors.pop(param_name, [])
             self._tensor_update_pending.pop(param_name, None)
-
-        return transfer_ready_params, ready_hf_tensors
+        return ready
 
     def _update_weight_implementation(
         self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
@@ -359,35 +363,47 @@ class UpdateWeightFromRDT(DistBucketedWeightUpdateMixin):
         """Stage incoming tensors; once a param is complete, load it into each engine
         rank's bucket and pull via RDT.
 
-        Buckets are per engine rank, so all pulls stay in flight until the flush ends.
+        The GPU bucket is lifetime-registered with NIXL, so an oversized ready set is
+        packed into sequential rounds rather than grown. A flush that already fits is
+        one round.
         """
         if not self._is_source or not converted_named_tensors:
             return
 
-        transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
+        ready = self._get_transfer_ready_params(converted_named_tensors)
+        names = list(ready)
+        while names and self._engine_rank_buckets:
+            # Engines are homogeneous (enforced in connect_rollout_engines), so bucket 0
+            # decides the split; stage() still asserts per bucket as the backstop.
+            specs = self._engine_rank_buckets[0].param_specs
+            capacity = self._engine_rank_buckets[0].gpu_bucket.numel()
+            offset = count = 0
+            for name in names:
+                _, dtype, nbytes = specs[name]
+                _, end = _staging_span(offset, dtype, nbytes)
+                if count and end > capacity:
+                    break
+                offset, count = end, count + 1
+            chunk, names = names[:count], names[count:]
+            hf_chunk = [pair for name in chunk for pair in ready[name]]
 
-        if transfer_ready_params and ready_hf_tensors:
             weight_refs = []
             futures = []
             for bucket in self._engine_rank_buckets:
-                bucket.stage(transfer_ready_params)
-
-                bucket.model_replica.load_weights(ready_hf_tensors)
+                bucket.stage(chunk)
+                bucket.model_replica.load_weights(hf_chunk)
                 # The async copies must land before ray.put hands the views to NIXL.
                 torch.cuda.synchronize()
-
                 # Re-read post-load in case a weight loader reassigned param.data.
-                tensor_views = [bucket.params_dict[name].data for name in transfer_ready_params]
-
+                tensor_views = [bucket.params_dict[name].data for name in chunk]
                 weights_ref = ray.put(tensor_views, _tensor_transport="nixl")
                 weight_refs.append(weights_ref)
                 for actor in bucket.actors:
-                    futures.append(actor.pull_weights.remote([weights_ref], transfer_ready_params))
-
+                    futures.append(actor.pull_weights.remote([weights_ref], chunk))
             ray.get(futures)
             del weight_refs
             if pbar is not None:
-                pbar.update(len(transfer_ready_params))
+                pbar.update(len(chunk))
 
         converted_named_tensors.clear()
 
