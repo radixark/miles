@@ -17,8 +17,7 @@ MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"
 MODEL_TYPE = "glm5.2-744B-A40B_5layer"
 NUM_GPUS = 8
-ACTOR_NUM_GPUS = 4
-ROLLOUT_NUM_GPUS = 4
+ACTOR_NUM_GPUS = 8
 ROLLOUT_GPUS_PER_ENGINE = 2
 NUM_LAYERS_AT_START_IN_BF16 = 1
 NUM_LAYERS_AT_END_IN_BF16 = 1
@@ -280,7 +279,7 @@ def execute():
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {ACTOR_NUM_GPUS} "
         f"--num-gpus-per-node {NUM_GPUS} "
-        f"--rollout-num-gpus {ROLLOUT_NUM_GPUS} "
+        "--colocate "
         "--use-fault-tolerance "
         "--moe-enable-deepep "
         "--moe-token-dispatcher-type flex "
