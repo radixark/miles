@@ -8,6 +8,12 @@ from miles.backends.training_utils.loss_hub.math_utils import calculate_log_prob
 from miles.backends.training_utils.parallel import get_parallel_state
 
 
+def apply_rollout_temperature(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    if temperature == 0.0 or temperature == 1.0:
+        return logits
+    return logits.div(temperature)
+
+
 def get_responses(
     logits: torch.Tensor,
     *,
@@ -52,8 +58,8 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-        logits = logits.div(args.rollout_temperature)
+    if logits.size(-1) > 1:
+        logits = apply_rollout_temperature(logits, args.rollout_temperature)
     if args.true_on_policy_mode:
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)

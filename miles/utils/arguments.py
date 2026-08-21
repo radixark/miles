@@ -505,7 +505,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--rollout-temperature",
                 type=float,
                 default=1.0,
-                help="the temperature for the inference engine during rollout.",
+                help="the temperature for the inference engine during rollout. 0 is greedy; log-probs stay untempered.",
             )
             parser.add_argument(
                 "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
