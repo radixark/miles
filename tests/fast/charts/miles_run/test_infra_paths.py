@@ -2,7 +2,9 @@ import json
 from typing import Any
 
 from tests.fast.charts.utils import (
+    NAMESPACE,
     host_path_volume,
+    pod_spec_of,
     render_run,
     render_run_error,
     requires_helm,
@@ -375,3 +377,111 @@ class TestTheLaunchRecordIsNotAnEnvironmentVariable:
             """run.staticWorkers=[{"name":"router","objectName":"myrun-router","command":["sleep"],"""
             """"env":{"MILES_SCRIPT_ENV_REPORT":"hijacked"}}]""",
         )
+
+
+@requires_helm
+class TestNamespaceInterpolation:
+    def test_a_host_path_names_the_namespace_it_is_rendered_for(self):
+        """Two agents in two namespaces want two directories on the host, and one values file has to give both."""
+        objects = render_run(*volumes_args(host_path_volume(path="/data/${NAMESPACE}")))
+
+        volumes = pod_spec_of(objects, "StatefulSet", ORCHESTRATOR)["volumes"]
+        assert {"name": "cluster-storage", "hostPath": {"path": f"/data/{NAMESPACE}", "type": "Directory"}} in volumes
+
+    def test_a_mount_path_names_the_namespace(self):
+        """A node-local scratch disk is one path on every node, so only the namespace keeps two runs apart."""
+        container = orchestrator_container(
+            *volumes_args(
+                host_path_volume(mounts=[{"mountPath": "/cluster-storage"}, {"mountPath": "/scratch/${NAMESPACE}"}])
+            )
+        )
+
+        assert {"name": "cluster-storage", "mountPath": f"/scratch/{NAMESPACE}"} in container["volumeMounts"]
+
+    def test_a_sub_path_names_the_namespace(self):
+        """This is how five agents get five checkouts of the same repo out of one shared volume."""
+        container = orchestrator_container(
+            *volumes_args(
+                host_path_volume(
+                    mounts=[
+                        {"mountPath": "/cluster-storage"},
+                        {"mountPath": "/root/miles", "subPath": "repos/${NAMESPACE}/miles"},
+                    ]
+                )
+            )
+        )
+
+        assert {
+            "name": "cluster-storage",
+            "mountPath": "/root/miles",
+            "subPath": f"repos/{NAMESPACE}/miles",
+        } in container["volumeMounts"]
+
+    def test_a_path_that_names_no_variable_is_left_exactly_as_written(self):
+        """Several releases sharing one directory is a first-class choice, not an escape hatch."""
+        container = orchestrator_container(*volumes_args(host_path_volume(path="/cluster-storage")))
+
+        assert {"name": "cluster-storage", "mountPath": "/cluster-storage"} in container["volumeMounts"]
+
+    def test_the_default_runs_root_is_a_directory_this_namespace_has_to_itself(self):
+        """Isolation has to be what you get without asking: a default without it makes it one more thing to remember."""
+        error = render_run_error(*volumes_args(host_path_volume(mounts=[{"mountPath": "/elsewhere"}])))
+
+        assert f"/cluster-storage/{NAMESPACE}/miles_data" in error
+
+    def test_the_mount_check_compares_resolved_paths(self):
+        """Comparing an unresolved runs root against a resolved mount path would refuse one that is in fact mounted."""
+        container = orchestrator_container(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": f"/cluster-storage/{NAMESPACE}"}]))
+        )
+
+        assert container["image"]
+
+    def test_an_unknown_variable_in_a_host_path_is_refused(self):
+        """Left in place it would name one literal directory for every namespace, which is the collision itself."""
+        error = render_run_error(*volumes_args(host_path_volume(path="/data/${RELEASE}")))
+
+        assert "infra.volumes[cluster-storage].hostPath.path" in error
+        assert "${RELEASE}" in error
+
+    def test_an_unknown_variable_in_a_mount_path_is_refused(self):
+        """The refusal has to say which mount of which volume, because a values file has many of both."""
+        error = render_run_error(*volumes_args(host_path_volume(mounts=[{"mountPath": "/cluster-storage/${USER}"}])))
+
+        assert "infra.volumes[cluster-storage].mounts[0].mountPath" in error
+        assert "${USER}" in error
+
+    def test_an_unknown_variable_in_a_sub_path_is_refused(self):
+        """A misspelt ${NAMESPACE} is the likely typo, and it is the one that silently shares a directory."""
+        error = render_run_error(
+            *volumes_args(
+                host_path_volume(
+                    mounts=[
+                        {"mountPath": "/cluster-storage"},
+                        {"mountPath": "/root/miles", "subPath": "repos/${NAMESPCE}/miles"},
+                    ]
+                )
+            )
+        )
+
+        assert "infra.volumes[cluster-storage].mounts[1].subPath" in error
+        assert "${NAMESPCE}" in error
+
+    def test_an_unknown_variable_in_the_runs_root_is_refused(self):
+        """Every run writes its state and exit file here, so a directory shared by accident is a run lost."""
+        error = render_run_error("--set", "infra.paths.runsRoot=/cluster-storage/${NAMESPCE}/data")
+
+        assert "infra.paths.runsRoot" in error
+        assert "${NAMESPCE}" in error
+
+    def test_an_unknown_variable_is_refused_by_a_render_that_deploys_nothing(self):
+        """Every other template of this chart renders for some topology only, so the check needs a home without one."""
+        error = render_run_error(
+            "--set-json",
+            "run.orchestrator.command=[]",
+            "--set",
+            "infra.paths.runsRoot=/cluster-storage/${NAMESPCE}/data",
+        )
+
+        assert "infra.paths.runsRoot" in error
+        assert "${NAMESPCE}" in error
