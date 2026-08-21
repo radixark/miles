@@ -1,18 +1,33 @@
 import json
 from typing import Any
 
-from tests.fast.charts.utils import render_run, render_run_error, requires_helm, sole_container_of, with_object_names
+from tests.fast.charts.utils import (
+    host_path_volume,
+    render_run,
+    render_run_error,
+    requires_helm,
+    sole_container_of,
+    volumes_args,
+    with_object_names,
+)
 
 ORCHESTRATOR = "myrun-miles-run-orchestrator"
-ORCHESTRATOR_IDENTITY = {"MILES_K8S_NAMESPACE": "myns", "MILES_K8S_RELEASE": "myrun"}
+CODE_PYTHONPATH = "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang/python"
+ORCHESTRATOR_IDENTITY = {
+    "MILES_K8S_NAMESPACE": "myns",
+    "MILES_K8S_RELEASE": "myrun",
+    "PYTHONPATH": CODE_PYTHONPATH,
+}
 
-ALL_REPOS = (
-    "--set",
-    "infra.paths.repos.miles=myuser/miles",
-    "--set",
-    "infra.paths.repos.megatron=myuser/Megatron-LM",
-    "--set",
-    "infra.paths.repos.sglang=myuser/sglang",
+ALL_REPOS = volumes_args(
+    host_path_volume(
+        mounts=[
+            {"mountPath": "/cluster-storage"},
+            {"mountPath": "/root/miles", "subPath": "myuser/miles"},
+            {"mountPath": "/root/Megatron-LM", "subPath": "myuser/Megatron-LM"},
+            {"mountPath": "/sgl-workspace/sglang", "subPath": "myuser/sglang"},
+        ]
+    )
 )
 
 
@@ -25,38 +40,40 @@ def environment(container: dict[str, Any]) -> dict[str, str]:
 
 
 @requires_helm
-class TestCodeRepositoryOverrides:
+class TestCheckoutMounts:
     def test_a_configured_repo_mounts_over_the_copy_baked_into_the_image(self):
         """Editing code on shared storage is only picked up if the mount lands on the path the image imports from."""
         mounts = orchestrator_container(*ALL_REPOS)["volumeMounts"]
 
         assert mounts == [
-            {"name": "shared-storage", "mountPath": "/cluster-storage"},
-            {"name": "shared-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"},
-            {"name": "shared-storage", "mountPath": "/root/Megatron-LM", "subPath": "myuser/Megatron-LM"},
-            {"name": "shared-storage", "mountPath": "/sgl-workspace/sglang", "subPath": "myuser/sglang"},
+            {"name": "cluster-storage", "mountPath": "/cluster-storage"},
+            {"name": "cluster-storage", "mountPath": "/root/miles", "subPath": "myuser/miles"},
+            {"name": "cluster-storage", "mountPath": "/root/Megatron-LM", "subPath": "myuser/Megatron-LM"},
+            {"name": "cluster-storage", "mountPath": "/sgl-workspace/sglang", "subPath": "myuser/sglang"},
             {"name": "uninstall-manifest", "mountPath": "/etc/miles-uninstall", "readOnly": True},
         ]
 
-    def test_every_overridden_repo_joins_the_python_path_by_its_in_image_location(self):
-        """The mount alone does not reorder sys.path, so an installed copy would still win without this."""
-        assert environment(orchestrator_container(*ALL_REPOS))["PYTHONPATH"] == (
-            "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang"
-        )
-
     def test_only_the_repos_that_were_named_are_overridden(self):
         """Overriding one repo must not shadow the other two with an empty directory."""
-        container = orchestrator_container("--set", "infra.paths.repos.megatron=myuser/Megatron-LM")
+        container = orchestrator_container(
+            *volumes_args(
+                host_path_volume(
+                    mounts=[
+                        {"mountPath": "/cluster-storage"},
+                        {"mountPath": "/root/Megatron-LM", "subPath": "myuser/Megatron-LM"},
+                    ]
+                )
+            )
+        )
 
         assert [mount["mountPath"] for mount in container["volumeMounts"]] == [
             "/cluster-storage",
             "/root/Megatron-LM",
             "/etc/miles-uninstall",
         ]
-        assert environment(container)["PYTHONPATH"] == "/root/Megatron-LM"
 
     def test_the_defaults_override_no_repo_at_all(self):
-        """The image is self-contained, so a run that names no repo must not gain a PYTHONPATH of its own."""
+        """The image is self-contained, so a run that mounts no checkout of its own gets no extra environment."""
         container = orchestrator_container()
 
         assert [mount["mountPath"] for mount in container["volumeMounts"]] == [
@@ -64,6 +81,168 @@ class TestCodeRepositoryOverrides:
             "/etc/miles-uninstall",
         ]
         assert environment(container) == ORCHESTRATOR_IDENTITY
+
+
+@requires_helm
+class TestReadOnlyMounts:
+    def test_a_mount_marked_read_only_reaches_the_container_that_way(self):
+        """A shared model cache is everyone's, and a run that can write it can corrupt every other run."""
+        container = orchestrator_container(
+            *volumes_args(
+                host_path_volume(mounts=[{"mountPath": "/cluster-storage"}]),
+                {
+                    "name": "models",
+                    "hostPath": {"path": "/gpfs/models", "type": "Directory"},
+                    "mounts": [{"mountPath": "/models", "readOnly": True}],
+                },
+            )
+        )
+
+        assert {"name": "models", "mountPath": "/models", "readOnly": True} in container["volumeMounts"]
+
+    def test_an_ordinary_mount_says_nothing_about_being_read_only(self):
+        """readOnly: false is the kubernetes default, and spelling it out only makes every diff noisier."""
+        container = orchestrator_container(*volumes_args(host_path_volume()))
+
+        assert {"name": "cluster-storage", "mountPath": "/cluster-storage"} in container["volumeMounts"]
+
+
+@requires_helm
+class TestRunsRootIsOnAMountedVolume:
+    def test_a_runs_root_under_no_mount_at_all_is_refused(self):
+        """A run would write its state file into the container's own filesystem, where the launcher never looks."""
+        error = render_run_error(*volumes_args(host_path_volume()), "--set", "infra.paths.runsRoot=/elsewhere/data")
+
+        assert "/elsewhere/data" in error
+
+    def test_a_runs_root_on_a_read_only_mount_is_refused(self):
+        """The volume is there, but every run writes its state, values and exit file under this directory."""
+        error = render_run_error(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/cluster-storage", "readOnly": True}]))
+        )
+
+        assert "read-only" in error
+
+    def test_a_runs_root_that_is_a_mount_path_itself_is_accepted(self):
+        """A cluster that dedicates a whole volume to miles must not be forced into a subdirectory."""
+        container = orchestrator_container(
+            *volumes_args(host_path_volume()), "--set", "infra.paths.runsRoot=/cluster-storage"
+        )
+
+        assert container["image"]
+
+    def test_a_run_with_no_runs_root_at_all_is_refused(self):
+        """The launcher polls the exit file under it, so a run without one can only ever look like a hang."""
+        assert "runsRoot" in render_run_error("--set", "infra.paths.runsRoot=null")
+
+
+@requires_helm
+class TestRunsRootContainmentIgnoresHowAPathIsSpelled:
+    def test_a_mount_written_with_a_trailing_slash_still_covers_the_runs_root(self):
+        """The mount is the same directory however it is typed, and the refusal would be unexplainable."""
+        container = orchestrator_container(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/cluster-storage/"}])),
+            "--set",
+            "infra.paths.runsRoot=/cluster-storage/miles_data",
+        )
+
+        assert container["image"]
+
+    def test_a_mount_at_the_filesystem_root_covers_every_runs_root(self):
+        """A volume mounted at / holds every path, and trimming its slash must not leave an empty prefix."""
+        container = orchestrator_container(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/"}])),
+            "--set",
+            "infra.paths.runsRoot=/anywhere/miles_data",
+        )
+
+        assert container["image"]
+
+    def test_redundant_separators_on_either_side_name_the_same_directory(self):
+        """A path pasted together from two configured halves carries them, and names the mount all the same."""
+        container = orchestrator_container(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/cluster-storage/./data"}])),
+            "--set",
+            "infra.paths.runsRoot=/cluster-storage//data/miles_data",
+        )
+
+        assert container["image"]
+
+    def test_a_runs_root_beside_a_mount_is_not_taken_for_one_inside_it(self):
+        """/cluster-storage-2 starts with the mount path as text, and only the separator tells them apart."""
+        error = render_run_error(
+            *volumes_args(host_path_volume(mounts=[{"mountPath": "/cluster-storage/"}])),
+            "--set",
+            "infra.paths.runsRoot=/cluster-storage-2/miles_data",
+        )
+
+        assert "/cluster-storage-2/miles_data" in error
+
+    def test_a_runs_root_under_an_empty_dir_mount_is_refused_however_the_mount_is_spelled(self):
+        """Every pod would get a directory of its own, so no run could ever report a verdict."""
+        error = render_run_error(
+            *volumes_args({"name": "scratch", "emptyDir": {}, "mounts": [{"mountPath": "/scratch/"}]}),
+            "--set",
+            "infra.paths.runsRoot=/scratch/miles_data",
+        )
+
+        assert "emptyDir" in error
+
+
+@requires_helm
+class TestTheMountThatProvidesTheRunsRootDecides:
+    def test_a_read_only_mount_nested_under_a_writable_one_is_refused(self):
+        """Kubernetes hands the path to the innermost mount, so the writable one above it never sees a write."""
+        error = render_run_error(
+            *volumes_args(
+                host_path_volume(
+                    name="data",
+                    path="/data",
+                    mounts=[{"mountPath": "/data"}, {"mountPath": "/data/runs", "readOnly": True}],
+                )
+            ),
+            "--set",
+            "infra.paths.runsRoot=/data/runs",
+        )
+
+        assert "read-only" in error
+
+    def test_a_writable_mount_nested_under_a_read_only_one_is_accepted(self):
+        """The same rule the other way round: the run writes into the inner mount, and that one is writable."""
+        container = orchestrator_container(
+            *volumes_args(
+                host_path_volume(
+                    name="data",
+                    path="/data",
+                    mounts=[{"mountPath": "/data", "readOnly": True}, {"mountPath": "/data/runs"}],
+                )
+            ),
+            "--set",
+            "infra.paths.runsRoot=/data/runs",
+        )
+
+        assert container["image"]
+
+    def test_a_runs_root_provided_by_one_writable_mount_is_accepted(self):
+        """The ordinary cluster, where a single shared volume holds every run's directory."""
+        container = orchestrator_container(
+            *volumes_args(host_path_volume()), "--set", "infra.paths.runsRoot=/cluster-storage/miles_data"
+        )
+
+        assert container["image"]
+
+    def test_an_empty_dir_nested_under_a_shared_mount_is_refused(self):
+        """The shared volume above it is never written: each pod gets the emptyDir's own copy of the directory."""
+        error = render_run_error(
+            *volumes_args(
+                host_path_volume(name="data", path="/data", mounts=[{"mountPath": "/data"}]),
+                {"name": "scratch", "emptyDir": {}, "mounts": [{"mountPath": "/data/runs"}]},
+            ),
+            "--set",
+            "infra.paths.runsRoot=/data/runs",
+        )
+
+        assert "emptyDir" in error
 
 
 @requires_helm
@@ -90,32 +269,39 @@ class TestClusterEnvironment:
             "HF_ENDPOINT": "https://mirror",
         }
 
-    def test_the_cluster_environment_and_the_derived_python_path_both_reach_the_pod(self):
-        """One of the two overwriting the other would silently drop either the proxy or the code override."""
+    def test_the_cluster_environment_reaches_a_pod_that_mounts_its_own_checkouts(self):
+        """Mounting code must not cost a pod the cluster's proxy, nor the proxy cost it the mounts."""
         container = orchestrator_container(*ALL_REPOS, "--set", "infra.env.HTTP_PROXY=http://proxy:7890")
 
-        assert environment(container) == ORCHESTRATOR_IDENTITY | {
-            "HTTP_PROXY": "http://proxy:7890",
-            "PYTHONPATH": "/root/miles:/root/Megatron-LM:/sgl-workspace/sglang",
-        }
+        assert environment(container) == ORCHESTRATOR_IDENTITY | {"HTTP_PROXY": "http://proxy:7890"}
 
 
 @requires_helm
 class TestPythonPathIsNotAnEnvironmentVariable:
+    def test_the_platform_puts_every_checkout_before_the_stale_editable_install(self):
+        """Mounted checkouts must expose packages added after the image's editable metadata was built."""
+        containers = containers_of(render_run(*WHOLE_TOPOLOGY))
+
+        assert containers
+        assert all(
+            [entry["value"] for entry in container["env"] if entry["name"] == "PYTHONPATH"] == [CODE_PYTHONPATH]
+            for container in containers
+        )
+
     def test_the_schema_refuses_a_pythonpath_in_the_cluster_environment(self):
-        """A hand-set PYTHONPATH silently outranks the repo mounts, so the values file must not carry one."""
+        """The platform owns checkout precedence, so a hand-set PYTHONPATH cannot shadow it."""
         error = render_run_error("--set", "infra.env.PYTHONPATH=/somewhere")
 
         assert "PYTHONPATH" in error
 
     def test_the_schema_refuses_a_pythonpath_in_the_run_environment(self):
-        """The launcher derives PYTHONPATH from the mounted repos; a second source could only disagree."""
+        """Same shadowing, one level down: a per-run value would reach the pods just as an infra one does."""
         error = render_run_error("--set", "run.env.PYTHONPATH=/somewhere")
 
         assert "PYTHONPATH" in error
 
     def test_an_ordinary_cluster_variable_is_still_accepted(self):
-        """Only the variables the launcher derives are reserved; refusing the rest would make infra.env useless."""
+        """Only the variables the platform owns are reserved; refusing the rest would make infra.env useless."""
         objects = render_run("--set", "infra.env.NCCL_SOCKET_IFNAME=bond0")
 
         env = sole_container_of(objects, "StatefulSet", ORCHESTRATOR)["env"]
