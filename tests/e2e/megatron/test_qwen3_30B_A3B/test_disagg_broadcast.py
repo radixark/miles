@@ -4,7 +4,9 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_qwen3_30B_A3B._common import CaseConfig, execute, prepare
 
-register_cuda_ci(est_time=1300, suite="stage-c-8-gpu-h100", labels=["megatron", "weight-update"])
+register_cuda_ci(
+    est_time=1300, suite="stage-c-8-gpu-h100", labels=["megatron", "weight-update"], hardware=["hopper", "blackwell"]
+)
 register_rocm_ci(est_time=900, suite="nightly-stage-c-8-gpu-mi350", labels=["megatron", "weight-update"])
 
 register_ci_gate(metric_key="train/grad_norm")

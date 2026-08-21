@@ -51,7 +51,7 @@ def _write_test_file(tmp_path: Path, gate_lines: str, *, name: str = "test_e2e_f
     body = (
         "from tests.ci.ci_register import register_cuda_ci\n"
         "from tests.ci.metric_history import register_ci_gate\n"
-        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])\n'
+        'register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper"])\n'
         + textwrap.dedent(gate_lines).strip()
         + "\n"
     )
@@ -582,7 +582,7 @@ def test_no_gate_specs_is_vacuously_trusted(tmp_path, store):
     body = textwrap.dedent(
         """
         from tests.ci.ci_register import register_cuda_ci
-        register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"])
+        register_cuda_ci(est_time=600, suite="stage-c-8-gpu-h100", labels=["megatron"], hardware=["hopper"])
         """
     ).lstrip("\n")
     p = tmp_path / "test_nogate.py"
@@ -623,7 +623,7 @@ def _write_dual_register_file(tmp_path: Path, gate_lines: str, *, name: str = "t
     body = (
         "from tests.ci.ci_register import register_cuda_ci, register_rocm_ci\n"
         "from tests.ci.metric_history import register_ci_gate\n"
-        'register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"])\n'
+        'register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper"])\n'
         'register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short"])\n'
         + textwrap.dedent(gate_lines).strip()
         + "\n"
@@ -670,7 +670,7 @@ def test_dual_register_no_spec_registry_none_vacuously_trusted(tmp_path, store):
     body = textwrap.dedent(
         """
         from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
-        register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"])
+        register_cuda_ci(est_time=360, suite="stage-c-8-gpu-h100", labels=["short"], hardware=["hopper"])
         register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short"])
         """
     ).lstrip("\n")

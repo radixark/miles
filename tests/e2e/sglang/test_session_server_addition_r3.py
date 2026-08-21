@@ -22,6 +22,7 @@ register_cuda_ci(
     est_time=400,
     suite="stage-c-2-gpu-h200",
     labels=["sglang", "replay"],
+    hardware=["hopper"],
 )
 
 _MODEL_ID = "Qwen/Qwen3-30B-A3B"

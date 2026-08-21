@@ -9,6 +9,7 @@ register_cuda_ci(
     est_time=2400,
     suite="stage-c-8-gpu-h100",
     labels=["megatron", "precision"],
+    hardware=["hopper", "blackwell"],
     disabled="Disabled due to bugs.",
 )
 

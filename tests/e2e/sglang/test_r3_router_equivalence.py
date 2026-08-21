@@ -6,6 +6,7 @@ register_cuda_ci(
     est_time=1100,
     suite="stage-c-4-gpu-h200",
     labels=["sglang"],
+    hardware=["hopper", "blackwell"],
     disabled="Miles Router is deprecated.",
 )
 

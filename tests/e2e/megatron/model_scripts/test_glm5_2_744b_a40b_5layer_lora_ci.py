@@ -13,7 +13,12 @@ import miles.utils.external_utils.command_utils as U
 # cells across the pair. Functionality, not accuracy; 4 GPUs (TP=EP=4).
 
 
-register_cuda_ci(est_time=1200, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts", "lora"])
+register_cuda_ci(
+    est_time=1200,
+    suite="stage-c-4-gpu-h200",
+    labels=["megatron", "model-scripts", "lora"],
+    hardware=["hopper", "blackwell"],
+)
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)

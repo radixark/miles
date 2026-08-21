@@ -3,7 +3,13 @@ import os
 from scripts.run_joy_ai_llm_flash import ScriptArgs, execute, prepare
 from tests.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-b200", labels=["megatron"], disabled="Blackwell CI not supported")
+register_cuda_ci(
+    est_time=3600,
+    suite="stage-c-8-gpu-b200",
+    labels=["megatron"],
+    hardware=["blackwell"],
+    disabled="Blackwell CI not supported",
+)
 
 ARGS = ScriptArgs(
     rollout_mxfp8=True,
