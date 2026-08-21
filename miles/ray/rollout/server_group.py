@@ -232,6 +232,26 @@ class ServerGroup:
         for engine_index in engine_indices:
             self.all_engines[engine_index].mark_alive()
 
+    def pause_generation(self):
+        if not self.needs_offload:
+            return []
+        # abort: leftover requests at this boundary are unowned. retract would
+        # park them to be resumed into a released KV cache, and is unsupported
+        # in PD disaggregation.
+        return [
+            engine.actor_handle.pause_generation.remote(mode="abort") for engine in self.engines if engine.is_allocated
+        ]
+
+    def flush_cache(self):
+        if not self.needs_offload:
+            return []
+        return [engine.actor_handle.flush_cache.remote() for engine in self.engines if engine.is_allocated]
+
+    def continue_generation(self):
+        if not self.needs_offload:
+            return []
+        return [engine.actor_handle.continue_generation.remote() for engine in self.engines if engine.is_allocated]
+
     def offload(self, tags: list[str] | None = None):
         if not self.needs_offload:
             return []
