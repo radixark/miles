@@ -8,14 +8,7 @@ else:
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-# TODO: add back after megatron bump
-register_cuda_ci(
-    est_time=1900,
-    suite="stage-c-4-gpu-h200",
-    labels=["megatron", "model-scripts"],
-    disabled="DSv4 megatron support (the dsv4 attention variant) is not in miles-main-20260819 yet; "
-    "re-enable in the DSv4 follow-up PR.",
-)
+register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 register_rocm_ci(
     est_time=1900,
     suite="stage-c-4-gpu-mi350",

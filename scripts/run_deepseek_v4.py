@@ -309,7 +309,11 @@ def _prepare_spmd(args: ScriptArgs):
 
     num_gpus_for_convert = actor_num_gpus_per_node
     if is_4layer:
-        num_gpus_for_convert = min(num_gpus_for_convert, 4)
+        # Convert on a single GPU (PP1). convert_hf_to_torch_dist auto-forces PP=world_size when
+        # >1 GPU, but the bumped Megatron asserts hash-MoE layers + PP>1 require an explicit
+        # pipeline_model_parallel_layout (which the convert doesn't set). PP1 sidesteps it and is
+        # plenty for the 4-layer prune. (Full Flash/Pro use explicit multi-PP convert configs.)
+        num_gpus_for_convert = 1
 
     U.convert_checkpoint(
         model_name=args.model_name,

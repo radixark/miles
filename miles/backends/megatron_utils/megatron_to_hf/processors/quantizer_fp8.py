@@ -86,10 +86,8 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         "self_attention.linear_attn.in_proj_z.weight",
         "self_attention.linear_attn.out_proj.weight",
         # DeepSeek V4 attention
-        "self_attention.wq_a.weight",
-        "self_attention.wkv.weight",
-        "self_attention.wo_b.weight",
-        "self_attention.indexer.linear_wq_b.weight",
+        "self_attention.linear_kv_proj.weight",
+        "self_attention.core_attention.indexer.linear_wq_b.weight",
     ]
     if not getattr(args, "indexer_rope_interleave", False):
         # Non-interleaved indexers keep wk as a standalone FP8 parameter in SGLang.

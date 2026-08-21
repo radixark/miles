@@ -58,7 +58,6 @@ def model_args(
         "--moe-grouped-gemm "
         "--moe-router-topk-scaling-factor 2.5 "
         # DSV4 specific
-        "--experimental-attention-variant dsv4 "
         "--dsv4-hc-mult 4 "
         "--dsv4-hc-sinkhorn-iters 20 "
         f"--dsv4-compress-ratios {compress_ratios} "

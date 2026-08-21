@@ -14,44 +14,58 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
 
     _ATTENTION_MAPPING.update(
         {
-            "self_attention.wq_a.weight": ["model.layers.{layer_number}.self_attn.wq_a.weight"],
-            "self_attention.q_norm.weight": ["model.layers.{layer_number}.self_attn.q_norm.weight"],
-            "self_attention.wq_b.weight": ["model.layers.{layer_number}.self_attn.wq_b.weight"],
-            "self_attention.wkv.weight": ["model.layers.{layer_number}.self_attn.wkv.weight"],
-            "self_attention.kv_norm.weight": ["model.layers.{layer_number}.self_attn.kv_norm.weight"],
-            "self_attention.wo_a.weight": ["model.layers.{layer_number}.self_attn.wo_a.weight"],
-            "self_attention.wo_b.weight": ["model.layers.{layer_number}.self_attn.wo_b.weight"],
-            "self_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
-            "self_attention.compressor.ape": ["model.layers.{layer_number}.self_attn.compressor.ape"],
-            "self_attention.compressor.wkv.weight": ["model.layers.{layer_number}.self_attn.compressor.wkv.weight"],
-            "self_attention.compressor.wgate.weight": [
+            "self_attention.linear_q_down_proj.weight": ["model.layers.{layer_number}.self_attn.wq_a.weight"],
+            "self_attention.q_layernorm.weight": ["model.layers.{layer_number}.self_attn.q_norm.weight"],
+            "self_attention.linear_q_up_proj.weight": ["model.layers.{layer_number}.self_attn.wq_b.weight"],
+            "self_attention.linear_kv_proj.weight": ["model.layers.{layer_number}.self_attn.wkv.weight"],
+            "self_attention.kv_layernorm.weight": ["model.layers.{layer_number}.self_attn.kv_norm.weight"],
+            "self_attention.linear_o_group_proj": ["model.layers.{layer_number}.self_attn.wo_a.weight"],
+            "self_attention.linear_proj.weight": ["model.layers.{layer_number}.self_attn.wo_b.weight"],
+            "self_attention.core_attention.attn_sink": ["model.layers.{layer_number}.self_attn.attn_sink"],
+            "self_attention.core_attention.compressor.ape": ["model.layers.{layer_number}.self_attn.compressor.ape"],
+            "self_attention.core_attention.compressor.linear_wkv.weight": [
+                "model.layers.{layer_number}.self_attn.compressor.wkv.weight"
+            ],
+            "self_attention.core_attention.compressor.linear_wgate.weight": [
                 "model.layers.{layer_number}.self_attn.compressor.wgate.weight"
             ],
-            "self_attention.compressor.norm.weight": ["model.layers.{layer_number}.self_attn.compressor.norm.weight"],
-            "self_attention.indexer.linear_wq_b.weight": ["model.layers.{layer_number}.self_attn.indexer.wq_b.weight"],
-            "self_attention.indexer.linear_weights_proj.weight": [
+            "self_attention.core_attention.compressor.norm.weight": [
+                "model.layers.{layer_number}.self_attn.compressor.norm.weight"
+            ],
+            "self_attention.core_attention.indexer.linear_wq_b.weight": [
+                "model.layers.{layer_number}.self_attn.indexer.wq_b.weight"
+            ],
+            "self_attention.core_attention.indexer.linear_weights_proj.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.weights_proj.weight"
             ],
-            "self_attention.indexer.compressor.ape": ["model.layers.{layer_number}.self_attn.indexer.compressor.ape"],
-            "self_attention.indexer.compressor.wkv.weight": [
+            "self_attention.core_attention.indexer.compressor.ape": [
+                "model.layers.{layer_number}.self_attn.indexer.compressor.ape"
+            ],
+            "self_attention.core_attention.indexer.compressor.linear_wkv.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.wkv.weight"
             ],
-            "self_attention.indexer.compressor.wgate.weight": [
+            "self_attention.core_attention.indexer.compressor.linear_wgate.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.wgate.weight"
             ],
-            "self_attention.indexer.compressor.norm.weight": [
+            "self_attention.core_attention.indexer.compressor.norm.weight": [
                 "model.layers.{layer_number}.self_attn.indexer.compressor.norm.weight"
             ],
         }
     )
 
+    # The HF checkpoint keeps the three alphas packed as one hc_*_scale tensor, ordered
+    # [pre, post, res] — the same order both implementations feed their kernels.
     _OTHER_MAPPING = {
-        "hc_attn_fn": ["model.layers.{layer_number}.hc_attn_fn"],
-        "hc_attn_base": ["model.layers.{layer_number}.hc_attn_base"],
-        "hc_attn_scale": ["model.layers.{layer_number}.hc_attn_scale"],
-        "hc_ffn_fn": ["model.layers.{layer_number}.hc_ffn_fn"],
-        "hc_ffn_base": ["model.layers.{layer_number}.hc_ffn_base"],
-        "hc_ffn_scale": ["model.layers.{layer_number}.hc_ffn_scale"],
+        "self_attention_hyper_connection.mapping_proj.weight": ["model.layers.{layer_number}.hc_attn_fn"],
+        "self_attention_hyper_connection.bias": ["model.layers.{layer_number}.hc_attn_base"],
+        "self_attention_hyper_connection.alpha_pre": ["model.layers.{layer_number}.hc_attn_scale"],
+        "self_attention_hyper_connection.alpha_post": ["model.layers.{layer_number}.hc_attn_scale"],
+        "self_attention_hyper_connection.alpha_res": ["model.layers.{layer_number}.hc_attn_scale"],
+        "mlp_hyper_connection.mapping_proj.weight": ["model.layers.{layer_number}.hc_ffn_fn"],
+        "mlp_hyper_connection.bias": ["model.layers.{layer_number}.hc_ffn_base"],
+        "mlp_hyper_connection.alpha_pre": ["model.layers.{layer_number}.hc_ffn_scale"],
+        "mlp_hyper_connection.alpha_post": ["model.layers.{layer_number}.hc_ffn_scale"],
+        "mlp_hyper_connection.alpha_res": ["model.layers.{layer_number}.hc_ffn_scale"],
     }
 
     _MLP_MAPPING = DeepseekV3Bridge._MLP_MAPPING.copy()
@@ -64,9 +78,9 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
     _DIRECT_MAPPING = DeepseekV3Bridge._DIRECT_MAPPING.copy()
     _DIRECT_MAPPING.update(
         {
-            "decoder.hc_head_params.hc_head_fn": "model.hc_head_fn",
-            "decoder.hc_head_params.hc_head_base": "model.hc_head_base",
-            "decoder.hc_head_params.hc_head_scale": "model.hc_head_scale",
+            "decoder.hc_head_fn": "model.hc_head_fn",
+            "decoder.hc_head_base": "model.hc_head_base",
+            "decoder.hc_head_scale": "model.hc_head_scale",
         }
     )
 
@@ -76,7 +90,15 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         except NotImplementedError:
             return self._weight_name_mapping_other(mcore_weights_name)
 
+    _ALPHA_SEGMENTS = {"alpha_pre": 0, "alpha_post": 1, "alpha_res": 2}
+
     def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]) -> torch.Tensor:
+        # The checkpoint packs the hyper-connection alphas as one [pre, post, res] tensor;
+        # the model stores one parameter per segment, matching the native module.
+        for suffix, segment in self._ALPHA_SEGMENTS.items():
+            if mcore_weights_name.endswith(suffix):
+                return hf_weights[0].reshape(-1)[segment : segment + 1].float()
+
         # V4 keeps several params in fp32 (attn_sink, compressor.ape, and the
         # hyper-connection hc_* params, all marked _keep_fp32). The base bridge
         # downcasts every loaded weight to self.dtype (bf16), which would silently
@@ -103,21 +125,20 @@ class DeepseekV4Bridge(DeepseekV3Bridge):
         config.dsa_indexer_head_dim = getattr(self.hf_config, "index_head_dim", 128)
         config.dsa_indexer_topk = getattr(self.hf_config, "index_topk", 512)
 
-        config.dsv4_hc_mult = getattr(self.hf_config, "hc_mult", 4)
-        config.dsv4_hc_sinkhorn_iters = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
-        config.dsv4_hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
+        config.num_residual_streams = getattr(self.hf_config, "hc_mult", 4)
+        config.mhc_sinkhorn_iterations = getattr(self.hf_config, "hc_sinkhorn_iters", 20)
 
-        config.dsv4_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
-        config.dsv4_compress_rope_theta = getattr(self.hf_config, "compress_rope_theta", 160000)
+        config.csa_compress_ratios = getattr(self.hf_config, "compress_ratios", None)
+        config.csa_compress_rotary_base = getattr(self.hf_config, "compress_rope_theta", 160000)
 
-        config.dsv4_swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
-        if config.dsv4_swiglu_limit > 0:
+        swiglu_limit = getattr(self.hf_config, "swiglu_limit", 0.0)
+        if swiglu_limit > 0:
             config.bias_activation_fusion = False
-            config.activation_func_clamp_value = config.dsv4_swiglu_limit
+            config.activation_func_clamp_value = swiglu_limit
 
-        config.dsv4_o_groups = getattr(self.hf_config, "o_groups", 8)
-        config.dsv4_o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
-        config.dsv4_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
-        config.dsv4_window_size = getattr(self.hf_config, "window_size", 128)
+        config.o_groups = getattr(self.hf_config, "o_groups", 8)
+        config.o_lora_rank = getattr(self.hf_config, "o_lora_rank", 1024)
+        config.moe_n_hash_layers = getattr(self.hf_config, "n_hash_layers", 3)
+        config.csa_window_size = getattr(self.hf_config, "window_size", 128)
 
         return config

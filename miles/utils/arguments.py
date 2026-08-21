@@ -2424,7 +2424,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             Add custom Megatron plugins arguments.
             This is a placeholder for any additional arguments that might be needed.
             """
-            # Custom arguments can be added here
+            from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
+
+            add_dsv4_arguments(parser)
             parser.add_argument(
                 "--freeze-indexer",
                 action="store_true",
