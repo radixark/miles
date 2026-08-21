@@ -38,10 +38,6 @@ def _install_import_stubs(monkeypatch):
     sys.modules["sglang.srt.utils"].MultiprocessingSerializer = object
     sys.modules["sglang.srt.utils.patch_torch"].monkey_patch_torch_reductions = lambda: None
     sys.modules["sglang.srt.weight_sync.tensor_bucket"].FlattenedTensorBucket = object
-    fp8_utils = sys.modules["sglang.srt.layers.quantization.fp8_utils"]
-    fp8_utils.quant_weight_ue8m0 = lambda *args, **kwargs: None
-    fp8_utils.transform_scale_ue8m0 = lambda x, **kwargs: x
-
     ray = types.ModuleType("ray")
     ray_actor = types.ModuleType("ray.actor")
     ray_util = types.ModuleType("ray.util")
