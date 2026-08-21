@@ -1,6 +1,15 @@
 from typing import Any
 
-from tests.fast.charts.utils import RUN_RELEASE_NAME, objects_of_kind, render_run, requires_helm
+from tests.fast.charts.utils import (
+    RUN_RELEASE_NAME,
+    host_path_volume,
+    objects_of_kind,
+    pod_spec_of,
+    render_run,
+    requires_helm,
+    sole_container_of,
+    volumes_args,
+)
 
 MOONCAKE_MASTER_NAME = f"{RUN_RELEASE_NAME}-miles-run-mooncake-master"
 
@@ -53,3 +62,31 @@ class TestMooncakeMaster:
             "--metrics_port",
             str(metrics_port),
         ]
+
+    def test_the_master_receives_resources_environment_and_configured_volumes(self) -> None:
+        """An enabled master inherits its configured resources and the cluster runtime contract."""
+        objects = render_run(
+            "--set",
+            "run.mooncake.enabled=true",
+            "--set",
+            "run.mooncake.resources.requests.cpu=3",
+            "--set",
+            "infra.env.HTTP_PROXY=http://proxy:7890",
+            *volumes_args(
+                host_path_volume(),
+                host_path_volume(
+                    name="model-cache",
+                    path="/models",
+                    mounts=[{"mountPath": "/root/.cache/models", "readOnly": True}],
+                ),
+            ),
+        )
+        container = sole_container_of(objects, "StatefulSet", MOONCAKE_MASTER_NAME)
+        pod_spec = pod_spec_of(objects, "StatefulSet", MOONCAKE_MASTER_NAME)
+
+        assert container["resources"]["requests"]["cpu"] == 3
+        assert {"name": "HTTP_PROXY", "value": "http://proxy:7890"} in container["env"]
+        assert {"name": "model-cache", "mountPath": "/root/.cache/models", "readOnly": True} in container[
+            "volumeMounts"
+        ]
+        assert {"name": "model-cache", "hostPath": {"path": "/models", "type": "Directory"}} in pod_spec["volumes"]

@@ -97,33 +97,17 @@ affinity:
       fieldPath: metadata.annotations['{{ .annotation }}']
 {{- end }}
 
-{{- define "miles-run.nodeLocalVolume" -}}
-{{- with (.Values.infra.nodeLocalStorage | default dict).hostPath -}}
-- name: node-local
-  hostPath:
-    path: {{ . | quote }}
-    type: DirectoryOrCreate
-{{- end }}
-{{- end }}
-
 {{- define "miles-run.shmVolume" -}}
+{{- with .Values.infra.devShm -}}
 - name: dev-shm
-  hostPath:
-    path: /dev/shm
-    type: Directory
+  {{- include "miles-common.volumeSource" . | trim | nindent 2 }}
+{{- end }}
 {{- end }}
 
 {{- define "miles-run.shmVolumeMount" -}}
+{{- with .Values.infra.devShm -}}
 - name: dev-shm
-  mountPath: /dev/shm
-{{- end }}
-
-{{- define "miles-run.nodeLocalVolumeMount" -}}
-{{- with .Values.infra.nodeLocalStorage | default dict -}}
-{{- if .hostPath }}
-- name: node-local
   mountPath: {{ .mountPath | quote }}
-{{- end }}
 {{- end }}
 {{- end }}
 
@@ -136,7 +120,7 @@ affinity:
 image: {{ include "miles-common.image" $context }}
 imagePullPolicy: {{ $context.Values.infra.image.pullPolicy | quote }}
 workingDir: "/root/miles"
-{{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" $context | trim) (include "miles-common.codeVolumeMounts" $context | trim) (include "miles-run.nodeLocalVolumeMount" $context | trim) (.extraMounts | trim)) | join "\n" }}
+{{- $mounts := compact (list (include "miles-common.volumeMounts" $context | trim) (.extraMounts | trim)) | join "\n" }}
 {{- with $mounts }}
 volumeMounts:
   {{- . | nindent 2 }}

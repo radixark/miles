@@ -16,9 +16,21 @@ BASE_VALUES: dict[str, list[str]] = {
 }
 
 SHARED_INFRA_VARIANTS: list[list[str]] = [
-    ["--set", "infra.sharedStorage.type=pvc", "--set", "infra.sharedStorage.pvcClaimName=shared"],
-    ["--set", "infra.sharedStorage.type=none"],
-    ["--set", "infra.paths.repos.miles=alice/miles", "--set", "infra.paths.repos.megatron=alice/Megatron-LM"],
+    [
+        "--set-json",
+        'infra.volumes=[{"name":"cluster-storage","persistentVolumeClaim":{"claimName":"shared"},'
+        '"mounts":[{"mountPath":"/cluster-storage"}]}]',
+    ],
+    ["--set-json", "infra.volumes=[]", "--set", "infra.paths.runsRoot=null"],
+    [
+        "--set-json",
+        'infra.volumes=[{"name":"cluster-storage","hostPath":{"path":"/cluster-storage"},"mounts":['
+        '{"mountPath":"/cluster-storage"},'
+        '{"mountPath":"/root/miles","subPath":"alice/miles"},'
+        '{"mountPath":"/root/Megatron-LM","subPath":"alice/Megatron-LM"}]},'
+        '{"name":"models","hostPath":{"path":"/models"},"mounts":[{"mountPath":"/models","readOnly":true}]},'
+        '{"name":"scratch","emptyDir":{"medium":"Memory","sizeLimit":"8Gi"},"mounts":[{"mountPath":"/scratch"}]}]',
+    ],
 ]
 
 VARIANTS: dict[str, list[list[str]]] = {
