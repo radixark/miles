@@ -133,6 +133,7 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         if adapter_path is not None:
             loaded, iteration = load_lora_adapter(
                 ddp_model,
+                args,
                 adapter_path,
                 optimizer=optimizer,
                 opt_param_scheduler=opt_param_scheduler,
