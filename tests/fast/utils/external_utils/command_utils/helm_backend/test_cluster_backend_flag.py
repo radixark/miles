@@ -40,11 +40,11 @@ RUN_ID = "260101-000000-000"
 RUN_ID_SHORT_ENOUGH_FOR_FULL_OBJECT_NAMES = "260101-0000"
 
 
+SPLIT_RUN_UUID = "0123456789abcdef"
+
+
 def _release(deploy_component: DeployComponent = DeployComponent.ALL) -> str:
     return ReleaseName(run_id=RUN_ID, deploy_component=deploy_component, deploy_instance_id=None).serialize()
-
-
-SPLIT_RUN_UUID = "0123456789abcdef"
 
 
 def _config(run_id: str = RUN_ID, deploy_component: DeployComponent = DeployComponent.ALL) -> ExecuteTrainConfig:
@@ -314,17 +314,19 @@ class TestExecuteTrainTellsThePodsWhichPartOfTheRunTheyAre:
 class TestApiServerHost:
     def test_a_whole_run_answers_on_its_own_orchestrator(self):
         """The api server runs beside the orchestration script, which is a pod of the run's only release."""
-        host = KubernetesCommandBackend(_config()).api_server_host()
+        config = _config()
+        host = KubernetesCommandBackend(config).api_server_host(config)
 
         assert host == f"{_release()}-orchestrator.{NAMESPACE}.svc.cluster.local"
 
     @pytest.mark.parametrize("component", [DeployComponent.PRIMARY, DeployComponent.TRAINER])
     def test_no_deployment_of_a_split_run_has_an_api_server_to_name(self, component):
         """A split run is refused an api server, so any host answered here would only ever time out."""
-        backend = KubernetesCommandBackend(_config(deploy_component=component))
+        config = _config(deploy_component=component)
+        backend = KubernetesCommandBackend(config)
 
         with pytest.raises(AssertionError, match="--api-server-port 0"):
-            backend.api_server_host()
+            backend.api_server_host(config)
 
 
 def _values_of_release(train_argv: list[str], *, run_id: str, release: str) -> dict[str, Any]:

@@ -75,7 +75,7 @@ def _build_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = True) -> 
 def _inject_rollout_faults(
     mode: FTTestMode, dump_dir: str, config: command_utils.ExecuteTrainConfig
 ) -> Iterator[None]:
-    base_url: str = f"http://{config.create_backend().api_server_host()}:{API_SERVER_PORT}"
+    base_url: str = f"http://{config.create_backend().api_server_host(config)}:{API_SERVER_PORT}"
     print(f"Injecting into {ROLLOUT_CELL_TYPE} cells only, mean interval {CRASH_INTERVAL_SECONDS:.1f}s, seed {SEED}")
 
     armed: MutableBox[FaultInjectorHandle | None] = MutableBox(value=None)

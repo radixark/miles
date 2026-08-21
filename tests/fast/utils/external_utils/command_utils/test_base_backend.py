@@ -5,9 +5,15 @@ import os
 import pytest
 import typer
 
-from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig, default_config
+from miles.utils.external_utils.command_utils import CommandUtilConfig
+from miles.utils.external_utils.command_utils.base_backend import (
+    ExecuteTrainConfig,
+    ExecuteTrainRequest,
+    default_config,
+)
+from miles.utils.external_utils.command_utils.ray_backend.backend import RayCommandBackend
 from miles.utils.typer_utils import SCRIPT_ENV_VAR_PREFIX, dataclass_cli
-from miles.utils.workers.types import ClusterBackend
+from miles.utils.workers.types import ClusterBackend, DeployComponent
 
 
 @pytest.fixture(autouse=True)
@@ -100,3 +106,64 @@ class TestAHotRestartIsRefusedOutsideKubernetes:
         config = ExecuteTrainConfig(cluster_backend=ClusterBackend.RAY)
 
         assert config.parsed_hot_restart == []
+
+
+class TestCommandUtilConfig:
+    def test_backend_config_only_contains_connection_fields(self):
+        """Launch-only fields must remain on ExecuteTrainConfig rather than every command backend."""
+        assert [field.name for field in dataclasses.fields(CommandUtilConfig)] == [
+            "cluster_backend",
+            "namespace",
+            "helm_values",
+            "ci_run",
+        ]
+
+    def test_backend_rejects_an_unrelated_config_type(self):
+        """A backend must not retain an object that lacks its cluster connection fields."""
+        with pytest.raises(AssertionError, match="CommandUtilConfig"):
+            RayCommandBackend(object())
+
+
+class TestExecuteTrainConfigSelection:
+    def test_explicit_config_overrides_the_backend_default(self, monkeypatch):
+        """A caller can launch a different deployment through an existing cluster backend."""
+        recorded: list[tuple[ExecuteTrainRequest, ExecuteTrainConfig]] = []
+        monkeypatch.setattr(
+            RayCommandBackend,
+            "_execute_train_inner",
+            lambda self, *, request, config: recorded.append((request, config)),
+        )
+        backend_config = ExecuteTrainConfig()
+        launch_config = ExecuteTrainConfig(deploy_component=DeployComponent.TRAINER)
+
+        backend_config.create_backend().execute_train(
+            train_args="--train-backend fsdp",
+            num_gpus_per_node=8,
+            megatron_model_type=None,
+            config=launch_config,
+        )
+
+        assert recorded[0][1] is launch_config
+
+    def test_omitted_config_uses_the_backend_execute_train_config(self, monkeypatch):
+        """Existing launchers can keep constructing a backend and calling execute_train without config."""
+        recorded: list[tuple[ExecuteTrainRequest, ExecuteTrainConfig]] = []
+        monkeypatch.setattr(
+            RayCommandBackend,
+            "_execute_train_inner",
+            lambda self, *, request, config: recorded.append((request, config)),
+        )
+        config = ExecuteTrainConfig(deploy_component=DeployComponent.TRAINER)
+
+        config.create_backend().execute_train(
+            train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None
+        )
+
+        assert recorded[0][1] is config
+
+    def test_omitted_config_refuses_a_connection_only_backend(self):
+        """A backend without launch fields cannot guess the execute_train configuration."""
+        backend = CommandUtilConfig().create_backend()
+
+        with pytest.raises(AssertionError, match="ExecuteTrainConfig"):
+            backend.execute_train(train_args="--train-backend fsdp", num_gpus_per_node=8, megatron_model_type=None)
