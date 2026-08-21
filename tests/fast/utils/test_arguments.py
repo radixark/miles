@@ -323,6 +323,17 @@ class TestRdtValidation:
             self._validate(extra)
 
 
+def test_bshd_multi_sample_microbatch_warns(caplog):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--qkv-format", "bshd", "--micro-batch-size", "2", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+        miles_validate_args(args)
+
+    assert "Use --micro-batch-size 1 unless samples are bucketed by padded length." in caplog.text
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()

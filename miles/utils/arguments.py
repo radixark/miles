@@ -3526,6 +3526,12 @@ def miles_validate_args(args):
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+        if args.micro_batch_size > 1:
+            logger.warning(
+                "bshd with --micro-batch-size > 1 requires every sample in a microbatch to pad to the same "
+                "length; microbatches with multiple padded lengths are rejected during batch preparation. "
+                "Use --micro-batch-size 1 unless samples are bucketed by padded length."
+            )
 
     if args.skip_actor_forward_only:
         validate_skip_actor_forward_only(args)
