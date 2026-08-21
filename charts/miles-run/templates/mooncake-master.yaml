@@ -56,7 +56,7 @@ spec:
               containerPort: {{ .Values.run.mooncake.metricsPort }}
           resources:
             {{- toYaml .Values.run.mooncake.resources | nindent 12 }}
-      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim)) | join "\n" }}
+      {{- $volumes := compact (list (include "miles-common.volumes" . | trim)) | join "\n" }}
       {{- with $volumes }}
       volumes:
         {{- . | nindent 8 }}

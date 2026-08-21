@@ -108,12 +108,14 @@ def helm_values_file(sandbox: Path) -> Path:
             {
                 "infra": {
                     "image": {"repository": "myregistry.example/miles", "tag": "v1"},
-                    "sharedStorage": {
-                        "type": "hostPath",
-                        "hostPath": f"{sandbox}/cluster-storage",
-                        "mountPath": f"{sandbox}/cluster-storage",
-                    },
-                    "paths": {"runsSubPath": "miles_data"},
+                    "volumes": [
+                        {
+                            "name": "cluster-storage",
+                            "hostPath": {"path": f"{sandbox}/cluster-storage"},
+                            "mounts": [{"mountPath": f"{sandbox}/cluster-storage"}],
+                        }
+                    ],
+                    "paths": {"runsRoot": f"{sandbox}/cluster-storage/miles_data"},
                 }
             }
         )
