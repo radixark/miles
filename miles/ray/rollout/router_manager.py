@@ -24,6 +24,18 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     if not force_new and args.sglang_router_ip is not None:
         return args.sglang_router_ip, args.sglang_router_port
 
+    # Hand off to the Dynamo frontend launcher when that backend is active.
+    # It returns the same ``(ip, port)`` shape so the rest of this function
+    # never needs to know which router actually came up.
+    if getattr(args, "rollout_backend", "sglang") == "dynamo":
+        from miles.backends.dynamo_utils.dynamo_router import start_dynamo_router
+
+        return start_dynamo_router(
+            args,
+            has_pd_disaggregation=has_pd_disaggregation,
+            force_new=force_new,
+        )
+
     router_ip = _wrap_ipv6(get_host_info()[1])
     if force_new:
         router_port = find_available_port(random.randint(3000, 4000))
