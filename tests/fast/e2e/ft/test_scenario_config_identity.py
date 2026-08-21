@@ -21,9 +21,9 @@ class _RecordingBackend:
         self.config = config
         self._seen = seen
 
-    def api_server_host(self) -> str:
-        self._seen.asked_for_host.append(self.config)
-        return f"orchestrator-of-{self.config.run_id}"
+    def api_server_host(self, config: command_utils.ExecuteTrainConfig) -> str:
+        self._seen.asked_for_host.append(config)
+        return f"orchestrator-of-{config.run_id}"
 
     def execute_train(self, **kwargs: object) -> None:
         self._seen.trained.append(self.config)
