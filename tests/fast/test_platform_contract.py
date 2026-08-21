@@ -24,6 +24,7 @@ TRAIN_ONLY_SUBCOMMAND = "train"
 ORCHESTRATION_SCRIPTS = ("train.py", "train_async.py", "train_multi_lora_async.py")
 
 BACKEND_CAPABILITY_FN = "create_backend_capability"
+ORCHESTRATION_INIT_FN = "init_orchestration_script"
 
 UPPER_LAYER_MODULES = (
     "kubernetes",
@@ -50,9 +51,9 @@ UPPER_LAYER_NAMES = (
 UPPER_LAYER_EXEMPTIONS = {
     "miles/ray/specs": "the composition root of a worker process: a spec says what its worker is built from",
     "miles/ray/wiring.py": "the glue layer holding the driver process's single fork between the backends",
-    "train.py": "orchestration script: its first lines are the driver process's composition root",
-    "train_async.py": "orchestration script: its first lines are the driver process's composition root",
-    "train_multi_lora_async.py": "orchestration script: its first lines are the driver process's composition root",
+    "miles/utils/orchestration_utils.py": (
+        "the shared driver composition root that launches the selected worker manager"
+    ),
     "miles/utils/workers/worker_provider": "the infrastructure that owns every provider implementation",
     "miles/utils/workers/serving/serve_inner.py": "the composition root of a served worker process",
     "miles/utils/workers/ray_worker_manager.py": "the composition root of a worker process an actor wraps",
