@@ -3,9 +3,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 import train_async as train_async_driver
 from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
+
+from miles.ray import placement_group as placement_group_mod
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -53,6 +54,7 @@ def _install_driver_fakes(
         actor_model=FakeTrainingModel(events, "actor"),
         critic_model=FakeTrainingModel(events, "critic") if args.use_critic else None,
         api_server_calls=[],
+        cell_operations=object(),
     )
 
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
@@ -66,18 +68,20 @@ def _install_driver_fakes(
     ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(train_async_driver, "configure_logger", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(train_async_driver, "maybe_start_periodic_pyspy_dump", lambda: None)
-    monkeypatch.setattr(train_async_driver, "launch_worker_manager", lambda _args: None)
-    monkeypatch.setattr(train_async_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(train_async_driver, "init_tracking", lambda _args: None)
+    monkeypatch.setattr(train_async_driver, "init_orchestration_script", lambda _args: None)
     monkeypatch.setattr(train_async_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(train_async_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_async_driver, "maybe_start_mini_ft_controller", lambda _args: None)
     monkeypatch.setattr(train_async_driver, "update_weights", update_weights)
     monkeypatch.setattr(train_async_driver, "remove_rollout_data_refs", lambda *_args, **_kwargs: None)
+    # the driver reaches the server through maybe_start_api_server, whose gate the tests exercise
     monkeypatch.setattr(
-        train_async_driver, "start_api_server", lambda **kwargs: components.api_server_calls.append(kwargs)
+        placement_group_mod, "start_api_server", lambda **kwargs: components.api_server_calls.append(kwargs)
+    )
+    monkeypatch.setattr(
+        placement_group_mod,
+        "get_backend_capability",
+        lambda _args: SimpleNamespace(cell_operations=lambda: components.cell_operations),
     )
     return components
 
@@ -92,7 +96,8 @@ class TestApiServer:
         await train_async_driver.train(args)
 
         (call,) = components.api_server_calls
-        assert call["actor_model"] is components.actor_model
+        assert list(call["trainer_models"]) == ["actor"]
+        assert call["trainer_models"]["actor"] is components.actor_model
         assert call["inference_controller"] is components.inference_controller
         assert call["port"] == 8123
         assert call["ft_components"] == ["rollout"]

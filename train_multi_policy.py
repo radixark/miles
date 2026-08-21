@@ -7,15 +7,10 @@ from pathlib import Path
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
 from miles.ray.placement_group import create_rollout_components, maybe_start_api_server, update_weights
 from miles.ray.specs.train import compute_trainer_configs
-from miles.ray.wiring import launch_worker_manager
-from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.async_utils import wait_cancelling_pending_on_first_completion
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
-from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
-from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.multi_policy.parker import Parker
@@ -26,7 +21,8 @@ from miles.utils.multi_policy.utils import (
     define_policy_metric_groups,
     validate_multi_policy_args,
 )
-from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
+from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.tracking_utils.tracking import finish_tracking
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -35,12 +31,8 @@ logger = logging.getLogger(__name__)
 async def train_multi_policy(args) -> None:
     megatron_config = resolve_megatron_config(args)
     validate_multi_policy_args(args, megatron_config=megatron_config)
-    configure_logger(args, source=SimpleProcessIdentity(component="main"))
-    maybe_start_periodic_pyspy_dump()
-    init_tracking(args)
+    _worker_manager = init_orchestration_script(args)
     define_policy_metric_groups(megatron_config)
-    _worker_manager = launch_worker_manager(args)
-    object_store.init_instance(args, contribute_segment=False)
 
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
@@ -55,7 +47,6 @@ async def train_multi_policy(args) -> None:
         },
         inference_controller=inference_controller,
     )
-
     maybe_start_mini_ft_controller(args)
 
     for model_id, trainer in trainers.items():

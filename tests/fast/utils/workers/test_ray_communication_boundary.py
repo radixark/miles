@@ -18,6 +18,9 @@ EXCLUDED_DIRS = (REPO_ROOT / "tests",)
 RAY_USING_MODULES = {
     "miles/ray/placement_group.py": "launcher closure: placement groups are how ray is asked to schedule",
     "miles/utils/ray_utils.py": "launcher closure: node lookup and pinning options for the launcher's own calls",
+    "miles/utils/orchestration_utils.py": (
+        "launcher closure: the shared driver composition root returns its ray worker manager"
+    ),
     "miles/utils/workers/ray_worker_manager.py": "launcher closure: it is the launcher",
     "miles/utils/workers/ray_worker_handle.py": "launcher closure: the handle of the ray communication mode itself",
     "miles/utils/workers/worker_provider/ray.py": "launcher closure: it reads the launcher's own bookkeeping",

@@ -56,11 +56,7 @@ def _install_driver_fakes(
     ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(train_driver, "configure_logger", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(train_driver, "maybe_start_periodic_pyspy_dump", lambda: None)
-    monkeypatch.setattr(train_driver, "launch_worker_manager", lambda _args: None)
-    monkeypatch.setattr(train_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(train_driver, "init_tracking", lambda _args: None)
+    monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _args: None)
     monkeypatch.setattr(train_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(train_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_driver, "maybe_start_mini_ft_controller", lambda _args: None)

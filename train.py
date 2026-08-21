@@ -10,27 +10,19 @@ from miles.ray.placement_group import (
     maybe_start_api_server,
     update_weights,
 )
-from miles.ray.wiring import launch_worker_manager
-from miles.utils import object_store
 from miles.utils.arguments import parse_args
-from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
-from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
-from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
+from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.tracking_utils.tracking import finish_tracking
 
 logger = logging.getLogger(__name__)
 
 
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
-    configure_logger(args, source=SimpleProcessIdentity(component="main"))
-    maybe_start_periodic_pyspy_dump()
-    init_tracking(args)
-    _worker_manager = launch_worker_manager(args)
-    object_store.init_instance(args, contribute_segment=False)
+    _worker_manager = init_orchestration_script(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
@@ -40,7 +32,6 @@ async def train(args):
     actor_model, critic_model = await create_training_models(args, rollout_executor)
 
     maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
-
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.

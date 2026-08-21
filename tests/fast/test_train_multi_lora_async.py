@@ -86,10 +86,7 @@ def _install_driver_fakes(
     ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(multi_lora_driver, "configure_logger", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(multi_lora_driver, "launch_worker_manager", lambda _args: None)
-    monkeypatch.setattr(multi_lora_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(multi_lora_driver, "init_tracking", lambda _args: None)
+    monkeypatch.setattr(multi_lora_driver, "init_orchestration_script", lambda _args: None)
     monkeypatch.setattr(multi_lora_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(multi_lora_driver, "get_multi_lora_controller", lambda: components.controller)
     monkeypatch.setattr(multi_lora_driver, "create_training_models", create_training_models)

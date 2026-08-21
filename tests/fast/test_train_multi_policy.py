@@ -73,18 +73,14 @@ async def _run(
 def _stub_driver_environment(monkeypatch):
     """Everything the driver reaches outside its own loop: cluster, tracking and logging."""
     for name in (
-        "configure_logger",
-        "maybe_start_periodic_pyspy_dump",
-        "init_tracking",
+        "init_orchestration_script",
         "define_policy_metric_groups",
-        "launch_worker_manager",
         "maybe_start_api_server",
         "maybe_start_mini_ft_controller",
         "validate_multi_policy_args",
         "assert_consistent_restore",
     ):
         monkeypatch.setattr(multi_policy_driver, name, lambda *a, **kw: None)
-    monkeypatch.setattr(multi_policy_driver.object_store, "init_instance", lambda *a, **kw: None)
     monkeypatch.setattr(multi_policy_driver, "create_trainers", AsyncMock(return_value={}))
     monkeypatch.setattr(multi_policy_driver, "create_rollout_components", AsyncMock())
 
