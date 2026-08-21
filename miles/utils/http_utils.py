@@ -17,6 +17,16 @@ logger = logging.getLogger(__name__)
 MILES_HOST_IP_ENV = "MILES_HOST_IP"
 
 
+def bearer_auth_headers(api_key: str | None) -> dict[str, str]:
+    """Authorization headers for an SGLang/router API key, or empty if unset.
+
+    Falsy keys must not produce a literal ``Bearer None`` header.
+    """
+    if not api_key:
+        return {}
+    return {"Authorization": f"Bearer {api_key}"}
+
+
 def find_available_port(base_port: int):
     port = base_port + random.randint(100, 1000)
     while True:
@@ -361,8 +371,8 @@ async def post(url, payload, max_retries=60, action="post", headers=None):
 
 
 # TODO unify w/ `post` to add retries and remote-execution
-async def get(url):
-    response = await _http_client.get(url)
+async def get(url, headers=None):
+    response = await _http_client.get(url, headers=headers)
     response.raise_for_status()
     output = response.json()
     return output

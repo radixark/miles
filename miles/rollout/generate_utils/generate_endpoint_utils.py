@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pybase64
 
+from miles.utils.http_utils import bearer_auth_headers
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
@@ -44,9 +45,11 @@ def compute_routing_headers(args, sample: Sample) -> dict[str, str] | None:
             f"router policy {args.sglang_router_policy} routes by X-SMG-Routing-Key, "
             f"but sample (index={sample.index}) has no routing_key set"
         )
+    headers: dict[str, str] = {}
     if sample.routing_key:
-        return {"X-SMG-Routing-Key": sample.routing_key}
-    return None
+        headers["X-SMG-Routing-Key"] = sample.routing_key
+    headers.update(bearer_auth_headers(getattr(args, "router_api_key", None)))
+    return headers or None
 
 
 def compute_request_payload(
