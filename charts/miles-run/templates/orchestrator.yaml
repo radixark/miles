@@ -4,9 +4,10 @@
 {{- if not .Values.run.stateFile }}
 {{- fail "a run that carries the orchestration script needs run.stateFile: the launcher learns the run's outcome by reading it" }}
 {{- end }}
-{{- if eq ((.Values.infra.sharedStorage | default dict).type | default "none") "none" }}
-{{- fail "a run needs infra.sharedStorage: the launcher learns the run's outcome by reading its exit file, and without a shared volume the wrapper writes that file where nobody can read it" }}
+{{- if not (.Values.infra.paths | default dict).runsRoot }}
+{{- fail "a run needs infra.paths.runsRoot: the launcher learns the run's outcome by reading its exit file under that directory, and with no directory named the wrapper writes that file where nobody can read it" }}
 {{- end }}
+{{- include "miles-common.assertRunsRootIsMounted" . }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -70,7 +71,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.run.orchestrator.resources | nindent 12 }}
-      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim) (include "miles-run.uninstallManifestVolume" . | trim)) | join "\n" }}
+      {{- $volumes := compact (list (include "miles-common.volumes" . | trim) (include "miles-run.uninstallManifestVolume" . | trim)) | join "\n" }}
       {{- with $volumes }}
       volumes:
         {{- . | nindent 8 }}
