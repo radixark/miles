@@ -23,7 +23,7 @@ as a Ray job. The pieces involved:
 |---|---|---|
 | Launch script | `scripts/run_*.py` | Holds the recipe: per-model values and the flag blocks |
 | Model definition | `scripts/models/<type>.py` | Provides the Megatron architecture flags |
-| Command utilities | `miles/utils/external_utils/command_utils.py` | Starts Ray and submits the job |
+| Command utilities | `miles/utils/external_utils/command_utils/` | Starts Ray and submits the job |
 | Training entrypoint | `train.py` / `train_async.py` | The actual training process, run inside the Ray job |
 
 {/* FIGURE PLACEHOLDER — horizontal flow diagram:
@@ -35,6 +35,18 @@ as a Ray job. The pieces involved:
 
 When the script starts, it prints its resolved options as a table, then every shell
 command it issues with an `EXEC:` prefix — the log is a complete record of what ran.
+
+### Running a v1 launch script
+
+Older Ray launch scripts can keep the free-function API by importing its compatibility module:
+
+```python
+import miles.utils.external_utils.command_utils.legacy as U
+```
+
+It retains `execute_train`, the command and checkpoint helpers, dataset download,
+Mooncake startup, and the original `ExecuteTrainConfig`. New scripts build a backend
+with `config.create_backend()`; the compatibility API does not support Kubernetes.
 
 ## The structure of a launch script
 
