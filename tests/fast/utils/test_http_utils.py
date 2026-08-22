@@ -1,4 +1,4 @@
-"""Tests for wait_for_server_ready in http_utils.
+"""Tests for HTTP utilities.
 
 wait_for_server_ready() polls a TCP port in a loop until the server is
 accepting connections.  Each iteration:
@@ -23,13 +23,43 @@ This lets us simulate 20 seconds of polling in <1ms of real time.
 
 import multiprocessing
 import socket
+import sys
 import threading
 import time
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from miles.utils import http_utils
 from miles.utils.http_utils import wait_for_server_ready
+
+
+def test_distributed_post_actors_configure_non_detached_lifetime(monkeypatch):
+    actor_options = []
+
+    class FakeRemoteActor:
+        def options(self, **options):
+            actor_options.append(options)
+            return SimpleNamespace(remote=lambda concurrency: object())
+
+    ray = ModuleType("ray")
+    ray.nodes = lambda: [{"Alive": True, "NodeID": "node"}]
+    ray.remote = lambda actor_class: FakeRemoteActor()
+
+    ray_util = ModuleType("ray.util")
+    scheduling_strategies = ModuleType("ray.util.scheduling_strategies")
+    scheduling_strategies.NodeAffinitySchedulingStrategy = lambda node_id, soft: (node_id, soft)
+    monkeypatch.setitem(sys.modules, "ray", ray)
+    monkeypatch.setitem(sys.modules, "ray.util", ray_util)
+    monkeypatch.setitem(sys.modules, "ray.util.scheduling_strategies", scheduling_strategies)
+    monkeypatch.setattr(http_utils, "_post_actors", [])
+    monkeypatch.setattr(http_utils, "_client_concurrency", 1)
+
+    http_utils._init_ray_distributed_post(SimpleNamespace(num_gpus_per_node=1))
+
+    assert actor_options
+    assert all(options["lifetime"] == "non_detached" for options in actor_options)
 
 
 def _find_free_port() -> int:
