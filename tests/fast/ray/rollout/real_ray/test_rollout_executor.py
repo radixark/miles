@@ -156,7 +156,7 @@ class TestRolloutFunctionConstruction:
 
         monkeypatch.setattr(rexec, "load_rollout_function", fail_if_loaded)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
 
         assert executor.generate_rollout is None
         assert executor.eval_generate_rollout is None
@@ -182,7 +182,7 @@ class TestRolloutFunctionConstruction:
 
         monkeypatch.setattr(rexec, "load_rollout_function", record_load)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
 
         assert loaded_paths == [args.rollout_function_path, args.eval_function_path]
         assert executor.generate_rollout is not None
@@ -268,7 +268,7 @@ class TestGenerate:
         args = _make_test_args()
         args.global_batch_size = 8
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=2, group_size=4)], metrics=None
@@ -283,7 +283,7 @@ class TestGenerate:
         args = _make_test_args()
         args.global_batch_size = 8
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=2, group_size=4)], metrics=None
@@ -454,7 +454,7 @@ class TestCheckpointing:
         monkeypatch.setattr(rexec, "event_logger_checkpoint", recorder)
         args = _make_test_args(rollout_global_dataset=False)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = False
         executor.generate_rollout = _RecordingRolloutFn("train", [])
         executor.eval_generate_rollout = None
@@ -519,7 +519,7 @@ class TestRolloutFunctionLoading:
         monkeypatch.setattr(rexec, "load_rollout_function", lambda input, path: _NamedRolloutFn(path))
         args = _make_test_args(rollout_function_path="pkg.same_fn", eval_function_path="pkg.same_fn")
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
 
         assert executor.eval_generate_rollout is executor.generate_rollout
 
@@ -532,7 +532,7 @@ class TestRolloutFunctionLoading:
         monkeypatch.setattr(rexec, "load_rollout_function", lambda input, path: _NamedRolloutFn(path))
         args = _make_test_args(rollout_function_path="pkg.train_fn", eval_function_path="pkg.eval_fn")
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
 
         assert executor.generate_rollout.path == "pkg.train_fn"
         assert executor.eval_generate_rollout.path == "pkg.eval_fn"
@@ -559,7 +559,7 @@ class TestCustomHooks:
         )
         args = _make_test_args(global_batch_size=4, custom_convert_samples_to_train_data_path="pkg.convert")
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
@@ -568,8 +568,8 @@ class TestCustomHooks:
         result = await executor.get(rollout_id=1)
 
         assert [sample.index for sample in seen_samples[0]] == [0, 1, 2, 3]
-        assert result["sample_indices"] == [70, 71]
-        partitions = ray.get([box.inner for box in result["data_ref"]])
+        assert result.sample_indices == [70, 71]
+        partitions = ray.get([box.payload for box in result.data_ref])
         assert [partition["tokens"] for partition in partitions] == [[[1, 2]], [[3, 4]]]
 
     async def test_get_scores_the_batch_with_the_configured_reward_hook(
@@ -591,7 +591,7 @@ class TestCustomHooks:
         )
         args = _make_test_args(global_batch_size=4, custom_reward_post_process_path="pkg.reward")
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
@@ -600,7 +600,7 @@ class TestCustomHooks:
         result = await executor.get(rollout_id=1)
 
         assert [sample.index for sample in seen_samples[0]] == [0, 1, 2, 3]
-        partitions = ray.get([box.inner for box in result["data_ref"]])
+        partitions = ray.get([box.payload for box in result.data_ref])
         assert [partition["rewards"] for partition in partitions] == [[9.0, 9.0], [9.0, 9.0]]
 
 
@@ -610,7 +610,7 @@ class TestWeightVersion:
         """The rollout function is told which engine weight version this batch is generated under."""
         args = _make_test_args(global_batch_size=4, indep_dp=False)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 1})
         captured: list = []
 
@@ -628,7 +628,7 @@ class TestWeightVersion:
 
     async def test_a_decreasing_weight_version_is_rejected(self, ray_local_mode, patch_low_level):
         """Weight versions only move forward, so a lower one signals a broken update path."""
-        executor = _make_executor(_make_test_args(indep_dp=False))
+        executor = await _make_executor(_make_test_args(indep_dp=False))
         executor.set_weight_version(7)
 
         with pytest.raises(AssertionError, match="went backwards"):
@@ -640,7 +640,7 @@ class TestWeightVersion:
         self, ray_local_mode, patch_low_level, caplog
     ):
         """Independent-DP fault tolerance may rewind a replica, so the rewind warns instead of failing."""
-        executor = _make_executor(_make_test_args(indep_dp=True))
+        executor = await _make_executor(_make_test_args(indep_dp=True))
         executor.set_weight_version(7)
 
         with caplog.at_level(logging.WARNING):
@@ -656,7 +656,7 @@ class TestDelayedDpSplit:
         """With the split delayed to the training side, one whole-batch reference is published."""
         args = _make_test_args(global_batch_size=4, delay_split_train_data_by_dp=True)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 2})
         executor.generate_rollout = lambda input: RolloutFnTrainOutput(
             samples=[make_samples_grouped(n_groups=1, group_size=4)], metrics={}
@@ -664,10 +664,10 @@ class TestDelayedDpSplit:
 
         result = await executor.get(rollout_id=1)
 
-        assert not isinstance(result["data_ref"], list)
-        stored = ray.get(result["data_ref"].inner)
+        assert not isinstance(result.data_ref, list)
+        stored = ray.get(result.data_ref.payload)
         assert len(stored["tokens"]) == 4
-        assert result["sample_indices"] == stored["sample_indices"] == [0, 1, 2, 3]
+        assert result.sample_indices == stored["sample_indices"] == [0, 1, 2, 3]
 
 
 @pytest.mark.asyncio
@@ -684,7 +684,7 @@ class TestDebugRolloutData:
         )
         args = _make_test_args(load_debug_rollout_data=template)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
 
         def unreachable(input):
             raise AssertionError("the rollout function must not run when a recording is replayed")
@@ -718,7 +718,7 @@ class TestDebugRolloutData:
             ci_inject_rollout_data_start_rollout_id=2,
         )
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.set_train_parallel_config({"dp_size": 1})
 
         mismatched = make_samples_grouped(n_groups=1, group_size=4)
@@ -747,7 +747,7 @@ class TestLegacyRolloutProtocol:
         """Without the experimental flag the train fn is still called as (args, rollout_id, data_source)."""
         args = _make_test_args(global_batch_size=4)
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = True
         executor.data_source = SimpleNamespace()
         executor.set_train_parallel_config({"dp_size": 1})
@@ -769,7 +769,7 @@ class TestLegacyRolloutProtocol:
         """Without the experimental flag eval uses the same legacy protocol, flagged as evaluation."""
         args = _make_test_args()
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         executor.use_legacy_rollout_v1 = True
         executor.data_source = SimpleNamespace()
         calls: list[tuple] = []
@@ -797,6 +797,14 @@ class _RecordingMetricChecker:
         self.disposed = True
 
 
+class _RecordingDisposableRolloutFn:
+    def __init__(self) -> None:
+        self.disposed = False
+
+    async def dispose(self) -> None:
+        self.disposed = True
+
+
 class _RecordingCheckpointEvalFn(CheckpointEvalFn):
     def __init__(self) -> None:
         self.disposed = False
@@ -804,7 +812,7 @@ class _RecordingCheckpointEvalFn(CheckpointEvalFn):
     async def evaluate_checkpoint(self, checkpoint_dir, input):
         raise AssertionError("not exercised by the lifecycle tests")
 
-    def dispose(self) -> None:
+    async def dispose(self) -> None:
         self.disposed = True
 
 
@@ -820,7 +828,7 @@ class TestLifecycle:
             rexec, "log_eval_rollout_data", lambda rollout_id, args, data, metrics: {"eval/accuracy": 0.75}
         )
 
-        executor = _make_executor(_make_test_args())
+        executor = await _make_executor(_make_test_args())
         checker = _RecordingMetricChecker()
         executor._metric_checker = checker
         executor.eval_generate_rollout = lambda input: RolloutFnEvalOutput(
@@ -832,41 +840,45 @@ class TestLifecycle:
         assert checker.evaluated == [{"eval/accuracy": 0.75}]
 
     async def test_dispose_releases_every_executor_owned_resource(self, ray_local_mode, patch_low_level, monkeypatch):
-        """Teardown closes the data source, runs event analysis and disposes the checker and the eval fn."""
+        """Teardown closes the data source, runs event analysis and disposes the checker and both rollout fns."""
         import miles.ray.rollout.rollout_executor as rexec
 
         analyzed: list = []
         monkeypatch.setattr(rexec, "event_analyzer", SimpleNamespace(run_analysis_from_args=analyzed.append))
         args = _make_test_args()
 
-        executor = _make_executor(args)
+        executor = await _make_executor(args)
         closed: list = []
         executor.data_source = SimpleNamespace(close=lambda: closed.append("closed"))
         checker = _RecordingMetricChecker()
         executor._metric_checker = checker
         eval_fn = _RecordingCheckpointEvalFn()
         executor.eval_generate_rollout = eval_fn
+        train_fn = _RecordingDisposableRolloutFn()
+        executor.generate_rollout = train_fn
+        executor.use_legacy_rollout_v1 = False
 
-        executor.dispose()
+        await executor.dispose()
 
         assert closed == ["closed"]
         assert analyzed == [args]
         assert checker.disposed
         assert eval_fn.disposed
+        assert train_fn.disposed
 
 
 @pytest.mark.asyncio
 class TestNumRolloutPerEpoch:
     async def test_counts_only_complete_global_batches(self, ray_local_mode, patch_low_level):
         """A trailing partial batch is not a rollout, so the epoch length floors the division."""
-        executor = _make_executor(_make_test_args(rollout_global_dataset=True, rollout_batch_size=8))
+        executor = await _make_executor(_make_test_args(rollout_global_dataset=True, rollout_batch_size=8))
         executor.data_source = SimpleNamespace(dataset=list(range(20)))
 
         assert executor.get_num_rollout_per_epoch() == 2
 
     async def test_rejects_a_non_global_data_source(self, ray_local_mode, patch_low_level):
         """Without a global dataset there is no epoch length to report."""
-        executor = _make_executor(_make_test_args(rollout_global_dataset=False))
+        executor = await _make_executor(_make_test_args(rollout_global_dataset=False))
         executor.data_source = SimpleNamespace(dataset=list(range(20)))
 
         with pytest.raises(AssertionError):
