@@ -285,6 +285,9 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-first-pipeline-num-layers 11 "
                 "--decoder-last-pipeline-num-layers 10 "
                 "--context-parallel-size 1 "
+                # Raising context parallelism also needs --allgather-cp: DeepSeek V4 has no
+                # zigzag CP path, and arguments.py asserts on the flag rather than setting it.
+                # "--allgather-cp "
                 "--expert-model-parallel-size 8 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -435,7 +438,7 @@ def _train(args: ScriptArgs):
         "--sglang-watchdog-timeout 1800 "  # ROCm: slow aiter gemm tune under colocate; avoid watchdog SIGQUIT
         "--accumulate-allreduce-grads-in-fp32 "
         "--model-name deepseekv4 "  # for mbridge load
-        "--qkv-format bshd "
+        "--qkv-format thd "
         "--moe-router-freeze-gate "
         "--freeze-e-score-correction-bias "
         "--rollout-health-check-interval 300 "

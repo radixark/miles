@@ -1,4 +1,6 @@
+import fcntl
 import os
+from pathlib import Path
 
 if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
     from scripts.amd.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
@@ -39,9 +41,14 @@ def _args() -> ScriptArgs:
 
 
 def prepare(args: ScriptArgs):
-    _prepare_download(args)
-    _prepare_single(args)
-    _prepare_spmd(args)
+    model_dir = Path(args.model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = model_dir / f".{args.model_name}.ci-prepare.lock"
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        _prepare_download(args)
+        _prepare_single(args)
+        _prepare_spmd(args)
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"
 

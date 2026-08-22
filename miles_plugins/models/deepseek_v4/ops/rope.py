@@ -64,6 +64,22 @@ def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = F
     return y
 
 
+def apply_rotary_emb_thd(x: torch.Tensor, freqs_cis: torch.Tensor, inverse: bool = False) -> torch.Tensor:
+    """Apply RoPE in-place to the last dim of a packed ``x``.
+
+    ``x`` has shape ``[total, batch, dim]``; ``freqs_cis`` carries one row per token,
+    selected by the caller, because packed positions restart at every segment boundary.
+    """
+    y = x
+    x = torch.view_as_complex(x.float().unflatten(-1, (-1, 2)))
+    if inverse:
+        freqs_cis = freqs_cis.conj()
+    freqs_cis = freqs_cis.view(x.size(0), 1, x.size(-1))
+    x = torch.view_as_real(x * freqs_cis).flatten(-2)
+    y.copy_(x)
+    return y
+
+
 def wrapped_precompute_freqs_cis(
     config: TransformerConfig, rope_head_dim: int, base: float, yarn_disabled: bool, max_seq_len: int, device
 ):

@@ -247,7 +247,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-watchdog-timeout 1800
   --accumulate-allreduce-grads-in-fp32
   --model-name deepseekv4
-  --qkv-format bshd
+  --qkv-format thd
   --moe-router-freeze-gate
   --freeze-e-score-correction-bias
   --rollout-health-check-interval 300

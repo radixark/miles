@@ -15,6 +15,12 @@ from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
 )
 from miles_plugins.models.deepseek_v4.ops.qat import fp8_simulate_qat
 from miles_plugins.models.deepseek_v4.ops.rope import apply_rotary_emb, wrapped_precompute_freqs_cis
+from miles_plugins.models.deepseek_v4.ops.thd_utils import (
+    ThdLayout,
+    compressed_cu_seqlens,
+    get_indexer_cu_seqlens_thd,
+    get_q_positions_thd,
+)
 from miles_plugins.models.deepseek_v4.ops.utils import rotate_activation
 from miles_plugins.models.dsa_topk import get_dsa_topk_fn
 
@@ -69,14 +75,22 @@ class V4Indexer(MegatronModule):
             cp_group=pg_collection.cp,
         )
 
-    def forward(self, x: torch.Tensor, qr: torch.Tensor, mask=None, packed_seq_params=None):
+    def forward(
+        self,
+        x: torch.Tensor,
+        qr: torch.Tensor,
+        mask=None,
+        packed_seq_params=None,
+        thd_layout: ThdLayout | None = None,
+    ):
         """Forward pass.
 
         Args:
             x:  hidden states [seqlen, batch, hidden_size]
             qr: low-rank query [seqlen, batch, q_lora_rank]
-            mask: unused (causal mask generated internally via cu_seqlens)
+            mask: unused (the kernel's per-query KV bounds are generated internally)
             packed_seq_params: unused
+            thd_layout: packed-stream layout, or None when unpacked
 
         Returns:
             topk_indices: [batch, seqlen, index_topk] int64
@@ -101,7 +115,14 @@ class V4Indexer(MegatronModule):
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config, self.rope_head_dim, rope_base, False, seqlen * cp_size, x.device
         )
-        freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
+        if thd_layout is None:
+            freqs_cis = get_freqs_cis_for_cp(freqs_cis, seqlen, cp_size, cp_group, stride=1)
+        else:
+            # Packed positions restart at every segment boundary and index the whole table, so
+            # the rank's rows are selected here rather than by slicing it first.
+            freqs_cis = freqs_cis.index_select(
+                0, get_q_positions_thd(thd_layout.cu_seqlens, seqlen, thd_layout.global_start)
+            )
         q = q.clone()
         q = einops.rearrange(q, "s b ... -> b s ...")
         apply_rotary_emb(q[..., -rd:], freqs_cis)
@@ -111,7 +132,18 @@ class V4Indexer(MegatronModule):
         if self.use_fp8_qat:
             q = fp8_simulate_qat(q, 128)
 
-        k = self.compressor(x)
+        pre_grouped = thd_layout is not None and thd_layout.hidden_compact is not None
+        compressor_out = self.compressor(thd_layout.hidden_compact if pre_grouped else x, thd_layout)
+        if thd_layout is None:
+            k = compressor_out
+        else:
+            k, cu_seqlens_compressed = compressor_out
+            if cu_seqlens_compressed is None:
+                cu_seqlens_compressed = compressed_cu_seqlens(thd_layout.cu_seqlens, self.compress_ratio)
+            if k is None:
+                # Nothing to score when no segment reaches compress_ratio; -1 leaves each query
+                # on its sliding window.
+                return torch.full((bsz, seqlen, self.index_topk), -1, dtype=torch.int32, device=x.device)
 
         weights, _ = self.linear_weights_proj(x)
         softmax_scale = self.index_head_dim**-0.5
@@ -119,15 +151,27 @@ class V4Indexer(MegatronModule):
 
         if cp_size > 1 and cp_group is not None:
             k = all_gather_cp(k, dim=0, cp_group=cp_group)
+            if thd_layout is not None and thd_layout.seq_to_rank_row is not None:
+                # Per-row bounds are sequence-major, so reorder the rank-major gather first.
+                k = k.index_select(0, thd_layout.seq_to_rank_row.clamp(min=0).long())
 
         seqlen_global = seqlen * cp_size
         seqlen_kv = k.shape[0]
-        cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_global, seqlen_kv, self.compress_ratio, q.device)
-        # cu_seqlens are for global positions; slice to local query positions
-        if cp_size > 1 and cp_group is not None:
-            cp_rank = cp_group.rank()
-            cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
-            cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
+        if thd_layout is None:
+            cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_global, seqlen_kv, self.compress_ratio, q.device)
+            # cu_seqlens are for global positions; slice to local query positions
+            if cp_size > 1 and cp_group is not None:
+                cp_rank = cp_group.rank()
+                cu_ks = cu_ks[cp_rank * seqlen : (cp_rank + 1) * seqlen]
+                cu_ke = cu_ke[cp_rank * seqlen : (cp_rank + 1) * seqlen]
+        else:
+            cu_ks, cu_ke = get_indexer_cu_seqlens_thd(
+                thd_layout.cu_seqlens,
+                cu_seqlens_compressed,
+                ratio=self.compress_ratio,
+                total_tokens=seqlen,
+                global_start=thd_layout.global_start,
+            )
         index_scores = batched_indexer_fwd(q, k, weights.float(), cu_ks, cu_ke)
 
         topk_count = min(self.index_topk, index_scores.size(-1))
