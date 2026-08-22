@@ -23,7 +23,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, clear_quantized_weight_workspaces, print_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
@@ -301,6 +301,10 @@ class MegatronTrainRayActor(TrainRayActor):
         if self._asleep:
             logger.info("sleep() called while already offloaded; skipping")
             return
+
+        if self.args.clear_quantized_weight_workspaces_on_offload:
+            num_cleared = clear_quantized_weight_workspaces(self.model)
+            logger.info(f"Dropped {num_cleared} cached quantized weight workspaces before offload")
 
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
