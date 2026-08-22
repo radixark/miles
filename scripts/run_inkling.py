@@ -348,12 +348,15 @@ def _train(args: ScriptArgs):
         if args.rollout_num_gpus_per_engine >= 16:
             sglang_args += "--no-offload-rollout --no-offload-train "
 
+    # Read the platform here rather than at import so the rendered command depends on
+    # the run, not on the machine that imported the module.
+    is_rocm = os.getenv("MILES_HARDWARE_PLATFORM") == "rocm"
     sglang_args += (
-        "--sglang-attention-backend fa4 "
+        f"--sglang-attention-backend {'triton' if is_rocm else 'fa4'} "
         "--sglang-moe-runner-backend triton "
         "--sglang-mamba-scheduler-strategy extra_buffer "
-        "--sglang-enable-multimodal "
-        f"--sglang-context-length {args.sglang_context_length} "
+        + ("--sglang-enable-multimodal " if args.is_mm or not is_rocm else "")
+        + f"--sglang-context-length {args.sglang_context_length} "
         "--sglang-disable-custom-all-reduce "
     )
 
