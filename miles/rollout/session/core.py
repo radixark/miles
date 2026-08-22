@@ -18,9 +18,9 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import (
     MessageValidationError,
-    SessionNotFoundError,
     TokenizationError,
     UpstreamResponseError,
+    reclaimed_error,
 )
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import encode_samples
@@ -342,7 +342,7 @@ class SessionCore:
     async def delete_session(self, session_id: str) -> Response:
         session = self.registry.get_session(session_id)
         if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise reclaimed_error(session_id)
         session.closing = True
         # Acquire the lock so an in-flight chat finishes before we drop the session.
         await session.lock.acquire()
@@ -365,12 +365,12 @@ class SessionCore:
         request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise reclaimed_error(session_id)
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+                raise reclaimed_error(session_id)
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
                 body, self.args, self.registry.tito_tokenizer

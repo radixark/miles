@@ -11,7 +11,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    SessionReclaimedError,
+    TokenizationError,
+)
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.session_state import (
     SessionRegistryV2,
@@ -141,7 +146,8 @@ class TestSessionCRUD:
         session_id = registry.create_session()
         registry.remove_session(session_id)  # no raise = success
         assert session_id not in registry.sessions
-        with pytest.raises(SessionNotFoundError):
+        # V2 inherits the v1 registry's reclaimed-session bookkeeping.
+        with pytest.raises(SessionReclaimedError):
             registry.remove_session(session_id)
 
     def test_committed_generation_carries_its_record(self, registry: SessionRegistryV2):

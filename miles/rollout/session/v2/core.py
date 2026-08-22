@@ -15,7 +15,7 @@ from miles.rollout.session.core import (
     prepare_chat_request,
     proxy_result_to_response,
 )
-from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.errors import TokenizationError, reclaimed_error
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.session_state import (
@@ -139,12 +139,12 @@ class SessionCoreV2(SessionCore):
         request_timestamp = time.time()
         session = self.registry.get_session(session_id)
         if session.closing:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            raise reclaimed_error(session_id)
 
         # --- Phase 1: prepare request (lock held briefly) ---
         async with session.lock:
             if session.closing:
-                raise SessionNotFoundError(f"session not found: session_id={session_id}")
+                raise reclaimed_error(session_id)
 
             request_body, client_stream, tito_tokenizer = prepare_chat_request(
                 body, self.args, self.registry.tito_tokenizer
