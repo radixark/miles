@@ -13,10 +13,8 @@ def test_build_local_sampling_mask_selects_original_response_rows_and_tp_shard()
     logits = torch.zeros(2, 4)
     mask = build_local_sampling_mask(
         logits,
-        sampling_mask_ids=[1, 3, 4, 2, 5, 6, 7],
-        sampling_mask_offsets=[0, 2, 4, 7],
+        sampling_mask=[[1, 3], [4, 2], [5, 6, 7]],
         response_indices=[2, 0],
-        response_length=3,
         tp_rank=1,
     )
 
@@ -31,14 +29,12 @@ def test_build_local_sampling_mask_selects_original_response_rows_and_tp_shard()
     )
 
 
-def test_build_local_sampling_mask_requires_one_offset_per_response_token():
-    with pytest.raises(ValueError, match=r"offsets length 3 != response length \+ 1 \(4\)"):
+def test_build_local_sampling_mask_requires_non_empty_support():
+    with pytest.raises(ValueError, match="every response token must have a non-empty sampling support"):
         build_local_sampling_mask(
             torch.zeros(1, 4),
-            sampling_mask_ids=[0, 1],
-            sampling_mask_offsets=[0, 1, 2],
+            sampling_mask=[[], [1]],
             response_indices=[0],
-            response_length=3,
             tp_rank=0,
         )
 
@@ -47,10 +43,8 @@ def test_build_local_sampling_mask_rejects_out_of_range_response_index():
     with pytest.raises(ValueError, match=r"response indices must be in \[0, 1\)"):
         build_local_sampling_mask(
             torch.zeros(1, 4),
-            sampling_mask_ids=[0],
-            sampling_mask_offsets=[0, 1],
+            sampling_mask=[[0]],
             response_indices=[1],
-            response_length=1,
             tp_rank=0,
         )
 
@@ -107,8 +101,7 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
         unconcat_tokens=[torch.tensor([2, 0, 3])],
         total_lengths=[3],
         response_lengths=[2],
-        rollout_sampling_mask_ids=[[0, 2, 1, 3]],
-        rollout_sampling_mask_offsets=[[0, 2, 4]],
+        rollout_sampling_mask=[[[0, 2], [1, 3]]],
     )
 
     expected = torch.stack(
