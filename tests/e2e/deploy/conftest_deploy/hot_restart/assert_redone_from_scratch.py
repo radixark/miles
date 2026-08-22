@@ -36,30 +36,56 @@ def assert_unsaved_run_redone_from_scratch(
     )
 
     discarded_dirs = read_discarded_event_dirs(dump_dir)
-    assert not discarded_dirs, (
-        f"a run that had saved nothing resumes from --ref-load, which holds no snapshot to restore, so no log is "
-        f"moved aside; {[one.name for one in discarded_dirs]} was left behind, so this run resumed from a "
-        f"checkpoint after all"
+    assert len(discarded_dirs) == 1, (
+        f"the take-over of a run holding no checkpoint starts it over, and the log of what it threw away is moved "
+        f"aside; {[one.name for one in discarded_dirs]} was left behind instead of exactly one"
+    )
+    [discarded_dir] = discarded_dirs
+
+    discarded_log = _read_steps_written_once(discarded_dir, what=discarded_dir.name)
+    assert sorted(discarded_log) == list(range(scheduled.frozen_rollout_id + 1)), (
+        f"the run was frozen after step {scheduled.frozen_rollout_id}, and the log moved aside describes "
+        f"{sorted(discarded_log)}: what the take-over threw away is every step the frozen run had trained"
     )
 
+    surviving_log = _read_steps_written_once(Path(dump_dir) / EVENTS_DIRNAME, what="the surviving event log")
+    assert sorted(surviving_log) == list(range(num_rollouts)), (
+        f"the surviving event log describes {sorted(surviving_log)}, not each of the {num_rollouts} steps exactly "
+        f"once: a take-over of a run holding no checkpoint restarts it at step 0 and it trains to the end from there"
+    )
+
+    carried = sorted(one for one, event in discarded_log.items() if surviving_log.get(one) == event)
+    assert not carried, (
+        f"the steps {carried} appear in the log the take-over moved aside and again, unchanged, in the log that "
+        f"replaced it: the run carried them over instead of training them again from the reference weights"
+    )
+
+    logs = [discarded_log, surviving_log]
     attempts = {
-        rollout_id: len(logged) for rollout_id, logged in read_step_events(Path(dump_dir) / EVENTS_DIRNAME).items()
+        rollout_id: len({log[rollout_id] for log in logs if rollout_id in log}) for rollout_id in range(num_rollouts)
     }
-    assert sorted(attempts) == list(range(num_rollouts)), (
-        f"the run was asked for {num_rollouts} steps and its one event log describes {sorted(attempts)}; a "
-        f"take-over of a run holding no checkpoint restarts it at step 0 and it trains to the end from there"
-    )
-
     expected = compute_expected_attempts(num_rollouts=num_rollouts, schedule=schedule)
     assert attempts == expected, (
         f"the run was frozen after step {scheduled.frozen_rollout_id} holding no checkpoint, so the take-over threw "
-        f"away exactly the steps 0..{scheduled.frozen_rollout_id}: every step is written {expected} time(s), and "
-        f"this run left {attempts}"
+        f"away exactly the steps 0..{scheduled.frozen_rollout_id}: every step is written {expected} time(s) across "
+        f"the two logs, and this run left {attempts}"
     )
 
-    _assert_run_saved_after_restart(checkpoint_dir=checkpoint_dir, dump_dir=dump_dir)
+    _assert_run_saved_after_restart(
+        checkpoint_dir=checkpoint_dir, dump_dir=dump_dir, frozen_rollout_id=scheduled.frozen_rollout_id
+    )
 
     return RedoneFromScratch(frozen_rollout_id=scheduled.frozen_rollout_id, attempts_of_rollout_id=attempts)
+
+
+def _read_steps_written_once(events_dir: Path, *, what: str) -> dict[int, str]:
+    logged = read_step_events(events_dir)
+    repeated = {rollout_id: len(events) for rollout_id, events in logged.items() if len(events) != 1}
+    assert not repeated, (
+        f"{what} describes the step(s) {repeated} more than once; a run that starts over writes what it retrains "
+        f"into a log of its own, so no one log carries a step twice"
+    )
+    return {rollout_id: events[0] for rollout_id, events in logged.items()}
 
 
 def _read_only_freeze_without_prior_save(
@@ -90,10 +116,14 @@ def _read_only_record_without_save(records: Sequence[HotRestartRecord]) -> HotRe
     return record
 
 
-def _assert_run_saved_after_restart(*, checkpoint_dir: str, dump_dir: str) -> None:
+def _assert_run_saved_after_restart(*, checkpoint_dir: str, dump_dir: str, frozen_rollout_id: int) -> None:
     assert (saved := read_last_saved_iteration(Path(checkpoint_dir))) is not None, (
         f"{checkpoint_dir} holds no checkpoint even after the run ended, so this run says nothing about saving "
         f"once a take-over has restarted it"
+    )
+    assert saved > frozen_rollout_id, (
+        f"{checkpoint_dir} holds iteration {saved}, which the run had already trained when it was frozen after "
+        f"step {frozen_rollout_id}: nothing here was saved after the take-over restarted it"
     )
     snapshot_dirs = read_checkpoint_snapshot_dirs(checkpoint_dir)
     assert snapshot_dirs, (
