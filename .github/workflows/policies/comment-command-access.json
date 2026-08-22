@@ -24,6 +24,7 @@
         "run-ci-image",
         "run-ci-long",
         "run-ci-lora",
+        "run-ci-lora-native",
         "run-ci-megatron",
         "run-ci-miles-plugin",
         "run-ci-model-scripts",

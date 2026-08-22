@@ -1,119 +1,72 @@
-"""Unit tests for LoRA-related argument parsing in miles.utils.arguments.
-
-Covers the target-module expansion and exclude-module filtering logic
-inside miles_validate_args (lines 1634-1653 of arguments.py).
-We isolate the LoRA parsing logic to avoid triggering unrelated validations.
-"""
+"""Tests for the baseline LoRA target-module argument parsing contract."""
 
 from argparse import Namespace
-from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
+from miles.utils.arguments import parse_lora_target_modules
 
-def _apply_lora_arg_parsing(args: Namespace) -> Namespace:
-    """Extract and apply only the LoRA target-module parsing logic from
-    miles_validate_args, avoiding unrelated assertions."""
-    args = deepcopy(args)
-    if args.lora_rank > 0:
-        assert args.target_modules is not None, "'--target-modules' is required when LoRA is enabled."
+ALL_LINEAR = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-        if args.target_modules == "all-linear":
-            modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        elif "," in args.target_modules:
-            modules = [m.strip() for m in args.target_modules.split(",")]
-        else:
-            modules = [args.target_modules]
 
-        if args.exclude_modules:
-            exclude_set = (
-                set(m.strip() for m in args.exclude_modules.split(","))
-                if "," in args.exclude_modules
-                else {args.exclude_modules}
-            )
-            modules = [m for m in modules if m not in exclude_set]
-
-        args.target_modules = modules
+def _parse(**overrides) -> Namespace:
+    values = dict(
+        lora_rank=32,
+        target_modules="all-linear",
+        exclude_modules=None,
+        hf_checkpoint=None,
+        megatron_to_hf_mode="raw",
+        lora_provider_path=None,
+    )
+    values.update(overrides)
+    args = Namespace(**values)
+    parse_lora_target_modules(args)
     return args
 
 
-# ---------------------------------------------------------------------------
-# Target modules expansion
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _dense_hf_config(monkeypatch):
+    monkeypatch.setattr("miles.utils.arguments.load_hf_config", lambda _checkpoint: SimpleNamespace())
 
 
-class TestLoraTargetModuleParsing:
-    def test_all_linear_expands_to_seven_modules(self):
-        args = Namespace(lora_rank=32, target_modules="all-linear", exclude_modules=None)
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-
-    def test_comma_separated_split(self):
-        args = Namespace(lora_rank=16, target_modules="q_proj, k_proj, v_proj", exclude_modules=None)
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj", "k_proj", "v_proj"]
-
-    def test_comma_separated_no_spaces(self):
-        args = Namespace(lora_rank=16, target_modules="q_proj,k_proj", exclude_modules=None)
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj", "k_proj"]
-
-    def test_single_module(self):
-        args = Namespace(lora_rank=8, target_modules="q_proj", exclude_modules=None)
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj"]
-
-    def test_lora_rank_zero_skips_parsing(self):
-        args = Namespace(lora_rank=0, target_modules="all-linear", exclude_modules=None)
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == "all-linear"  # unchanged
-
-    def test_missing_target_modules_asserts(self):
-        args = Namespace(lora_rank=32, target_modules=None, exclude_modules=None)
-        with pytest.raises(AssertionError, match="--target-modules"):
-            _apply_lora_arg_parsing(args)
+def test_all_linear_expands_to_dense_projection_set():
+    args = _parse()
+    assert args.target_modules == ALL_LINEAR
+    assert args._target_modules_expanded_from_all_linear
 
 
-# ---------------------------------------------------------------------------
-# Exclude modules filtering
-# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("targets", "expected"),
+    [
+        ("q_proj, k_proj, v_proj", ["q_proj", "k_proj", "v_proj"]),
+        ("q_proj,k_proj", ["q_proj", "k_proj"]),
+        ("q_proj", ["q_proj"]),
+    ],
+)
+def test_explicit_targets_are_split(targets, expected):
+    assert _parse(target_modules=targets).target_modules == expected
 
 
-class TestLoraExcludeModules:
-    def test_single_exclude(self):
-        args = Namespace(lora_rank=32, target_modules="all-linear", exclude_modules="o_proj")
-        result = _apply_lora_arg_parsing(args)
-        assert "o_proj" not in result.target_modules
-        assert len(result.target_modules) == 6
+def test_zero_rank_skips_parsing():
+    assert _parse(lora_rank=0).target_modules == "all-linear"
 
-    def test_multiple_exclude_comma_separated(self):
-        args = Namespace(lora_rank=32, target_modules="all-linear", exclude_modules="o_proj, down_proj")
-        result = _apply_lora_arg_parsing(args)
-        assert "o_proj" not in result.target_modules
-        assert "down_proj" not in result.target_modules
-        assert len(result.target_modules) == 5
 
-    def test_exclude_all_results_in_empty(self):
-        args = Namespace(
-            lora_rank=32,
-            target_modules="q_proj,k_proj",
-            exclude_modules="q_proj,k_proj",
-        )
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == []
+def test_enabled_lora_requires_targets():
+    with pytest.raises(AssertionError, match="--target-modules"):
+        _parse(target_modules=None)
 
-    def test_exclude_nonexistent_module_no_effect(self):
-        args = Namespace(lora_rank=32, target_modules="q_proj,k_proj", exclude_modules="nonexistent")
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj", "k_proj"]
 
-    def test_no_exclude_modules(self):
-        args = Namespace(lora_rank=32, target_modules="q_proj,k_proj", exclude_modules=None)
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj", "k_proj"]
-
-    def test_empty_string_exclude(self):
-        """Empty string is truthy; should be treated as a single (non-matching) exclude."""
-        args = Namespace(lora_rank=32, target_modules="q_proj,k_proj", exclude_modules="")
-        result = _apply_lora_arg_parsing(args)
-        assert result.target_modules == ["q_proj", "k_proj"]
+@pytest.mark.parametrize(
+    ("targets", "excludes", "expected"),
+    [
+        ("all-linear", "o_proj", [name for name in ALL_LINEAR if name != "o_proj"]),
+        ("all-linear", "o_proj, down_proj", [name for name in ALL_LINEAR if name not in {"o_proj", "down_proj"}]),
+        ("q_proj,k_proj", "q_proj,k_proj", []),
+        ("q_proj,k_proj", "nonexistent", ["q_proj", "k_proj"]),
+        ("q_proj,k_proj", None, ["q_proj", "k_proj"]),
+        ("q_proj,k_proj", "", ["q_proj", "k_proj"]),
+    ],
+)
+def test_excludes_are_applied_exactly(targets, excludes, expected):
+    assert _parse(target_modules=targets, exclude_modules=excludes).target_modules == expected

@@ -12,8 +12,16 @@ import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
+from miles_plugins.lora.hf_adapter import MEGATRON_MLA_TO_HF, convert_target_modules_to_hf  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_LORA_PROVIDER = "miles_plugins.lora"
+_NATIVE_LORA_PROVIDER_PATHS = (
+    None,
+    "miles_plugins.lora",
+    "miles_plugins.lora.lora",
+)
 
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
@@ -58,48 +66,10 @@ _CANONICAL_LORA_ALL_MODULES = [
     "linear_fc2",
 ]
 
-# Megatron -> HF (inverse mapping, one-to-many)
-# Covers both standard LoRA (merged) and CanonicalLoRA (split) module names.
-_MEGATRON_TO_HF_MODULES = {
-    # Standard LoRA (merged layers)
-    "linear_qkv": ["q_proj", "k_proj", "v_proj"],
-    "linear_proj": ["o_proj"],
-    "linear_fc1": ["gate_proj", "up_proj"],
-    "linear_fc2": ["down_proj"],
-    # CanonicalLoRA (split layers)
-    "linear_q": ["q_proj"],
-    "linear_k": ["k_proj"],
-    "linear_v": ["v_proj"],
-    "linear_fc1_gate": ["gate_proj"],
-    "linear_fc1_up": ["up_proj"],
-    # GDN linear attention: SGLang serves the fused in_proj as two modules
-    "in_proj": ["in_proj_qkvz", "in_proj_ba"],
-}
-
-_HF_MODULE_NAMES = {
-    "q_proj",
-    "k_proj",
-    "v_proj",
-    "o_proj",
-    "gate_proj",
-    "up_proj",
-    "down_proj",
-    "in_proj_qkvz",
-    "in_proj_ba",
-}
+_HF_MODULE_NAMES = frozenset(_STANDARD_LORA_HF_TO_MEGATRON)
 
 # DeepSeek / Kimi MLA (HF names on checkpoint; Megatron uses linear_* from Megatron-Bridge mappings).
-_MLA_HF_TO_MEGATRON = {
-    "q_a_proj": "linear_q_down_proj",
-    "kv_a_proj_with_mqa": "linear_kv_down_proj",
-    "q_b_proj": "linear_q_up_proj",
-    "kv_b_proj": "linear_kv_up_proj",
-    # DSA indexer (GLM-5 / DeepSeek-V3.2): HF/SGLang leaf names vs Megatron-Bridge linear_* names.
-    "wq_b": "linear_wq_b",
-    "wk": "linear_wk",
-    "weights_proj": "linear_weights_proj",
-}
-_MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
+_MLA_HF_TO_MEGATRON = {hf: megatron for megatron, hf in MEGATRON_MLA_TO_HF.items()}
 
 # Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
 _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
@@ -115,58 +85,18 @@ def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
 
 
-def sglang_lora_target_all_sentinel(args) -> bool:
-    """Hand SGLang the ``"all"`` shorthand so it auto-detects module names (required for Inkling)."""
-    from miles.utils.chat_template_utils.inkling import is_inkling_checkpoint
-
-    return is_inkling_checkpoint(getattr(args, "hf_checkpoint", None) or "")
-
-
-_marked_lora_grad_params_cache: dict[int, list] = {}
+def uses_builtin_native_lora_provider(args: Namespace) -> bool:
+    """Whether this run uses the built-in native provider contract."""
+    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
+        return False
+    return getattr(args, "lora_provider_path", None) in _NATIVE_LORA_PROVIDER_PATHS
 
 
 def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
-    """Sum partial grads of replicated LoRA params over their tagged group ("tp"|"ep"), before the DP reduce-scatter."""
-    from megatron.core import parallel_state as ps
+    """Compatibility delegate to the native plugin's distributed gradient reducer."""
+    from miles_plugins.lora.distributed import reduce_marked_lora_grads as reduce_native_lora_grads
 
-    key = id(model[0]) if model else 0
-    marked = _marked_lora_grad_params_cache.get(key)
-    if marked is None:
-        marked = []
-        for chunk in model:
-            for param in chunk.parameters():
-                group_name = getattr(param, "_lora_grad_sum_group", None)
-                if group_name is not None and param.requires_grad:
-                    marked.append((param, group_name))
-        _marked_lora_grad_params_cache[key] = marked
-    if not marked:
-        return
-    groups = {
-        "tp": (ps.get_tensor_model_parallel_group(), ps.get_tensor_model_parallel_world_size()),
-        "ep": (ps.get_expert_model_parallel_group(), ps.get_expert_model_parallel_world_size()),
-    }
-    for group_name in ("tp", "ep"):
-        group, size = groups[group_name]
-        if size <= 1:
-            continue
-        grads = []
-        for param, g_name in marked:
-            if g_name != group_name:
-                continue
-            grad = getattr(param, "main_grad", None)
-            if grad is None:
-                grad = param.grad
-            if grad is not None:
-                grads.append(grad)
-        for dt in {g.dtype for g in grads}:
-            gs = [g for g in grads if g.dtype == dt]
-            if len(gs) == 1:
-                dist.all_reduce(gs[0], op=dist.ReduceOp.SUM, group=group)
-                continue
-            flat = torch._utils._flatten_dense_tensors(gs)
-            dist.all_reduce(flat, op=dist.ReduceOp.SUM, group=group)
-            for g, red in zip(gs, torch._utils._unflatten_dense_tensors(flat, gs), strict=False):
-                g.copy_(red)
+    reduce_native_lora_grads(model)
 
 
 def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
@@ -188,6 +118,74 @@ def is_lora_weight_name(name: str) -> bool:
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
+
+
+def _adapter_shard_name(tp_rank: int, pp_rank: int, ep_rank: int, *, ep_sharded: bool) -> str:
+    """Filename identifying this rank's adapter shard.
+
+    ``ep_sharded`` keys the name by EP rank, since bridge/custom providers may
+    hold routed-expert adapter state; native state is EP-invariant
+    (``native_adapter_shard_name``).
+    """
+    from miles_plugins.lora.checkpointing import native_adapter_shard_name
+
+    name = native_adapter_shard_name(tp_rank, pp_rank)
+    if ep_sharded and ep_rank > 0:
+        name = name.removesuffix(".pt") + f"_ep{ep_rank}.pt"
+    return name
+
+
+def _adapter_shards_are_ep_sharded(model: Sequence[torch.nn.Module]) -> bool:
+    """Derive the shard policy from the modules that were actually attached."""
+    from miles_plugins.lora.checkpointing import has_native_adapters
+
+    return not has_native_adapters(model)
+
+
+def _non_native_adapter_load_plan(model, state_dict):
+    """Reproduce the pre-refactor Bridge/custom name-matching contract.
+
+    Non-native checkpoints keep their historical unqualified keys: duplicate
+    VPP names receive the same surviving tensor, while missing/extra names are
+    ignored. Validation is deferred into a plan only so all ranks can agree
+    before any copy; the native codec remains the sole owner of strict,
+    chunk-qualified checkpoint semantics.
+    """
+    from miles_plugins.lora.checkpointing import AdapterLoadPlan
+
+    assignments = []
+    shape_mismatches = []
+    for chunk in model:
+        for name, parameter in chunk.named_parameters():
+            if not _is_adapter_param_name(name) or name not in state_dict:
+                continue
+            tensor = state_dict[name]
+            if not isinstance(tensor, torch.Tensor):
+                shape_mismatches.append(f"{name}: checkpoint value is {type(tensor).__name__}, expected a tensor")
+            elif tuple(tensor.shape) != tuple(parameter.shape):
+                shape_mismatches.append(
+                    f"{name}: checkpoint {tuple(tensor.shape)} != parameter {tuple(parameter.shape)}"
+                )
+            else:
+                assignments.append((name, parameter, tensor))
+    return AdapterLoadPlan(assignments, [], [], shape_mismatches)
+
+
+def _is_canonical_shard_writer(shard_name: str) -> bool:
+    """True on exactly one rank per distinct shard filename.
+
+    Elects the lowest global rank holding each filename, so every name some rank
+    asks for on resume gets written. Collective: all ranks must call it.
+
+    DP-rank-0 gating is not enough for EP-keyed names: under TP2/EP4 on 8 GPUs
+    DP-rank-0 is {0, 1}, so only EP 0-1 were written. With no EP component in
+    the name this election collapses to DP-rank-0.
+    """
+    if not dist.is_initialized():
+        return True
+    names: list[str | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(names, shard_name)
+    return names.index(shard_name) == dist.get_rank()
 
 
 _param_grad_buffer_patched = False
@@ -287,46 +285,17 @@ def convert_target_modules_to_megatron(
     return megatron_modules
 
 
-def convert_target_modules_to_hf(megatron_modules: list[str]) -> list[str]:
-    """Convert Megatron LoRA target module names to HuggingFace format.
-
-    Supports both standard LoRA and CanonicalLoRA module names.
-
-    Megatron standard:   linear_qkv, linear_proj, linear_fc1, linear_fc2
-    Megatron canonical:  linear_q, linear_k, linear_v, linear_proj,
-                         linear_fc1_up, linear_fc1_gate, linear_fc2
-    HF:                  q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
-    Kimi MLA Megatron:   linear_q_down_proj -> q_a_proj, linear_kv_down_proj -> kv_a_proj_with_mqa, ...
-
-    Wildcards (``*.layers.2.mlp.experts.linear_fc1``) get the last dotted
-    segment mapped to an HF leaf name; SGLang uses the result to choose
-    adapter-buffer types, not to scope by layer.
-    """
-    if isinstance(megatron_modules, tuple):
-        megatron_modules = list(megatron_modules)
-    hf_modules: list[str] = []
-    for module in megatron_modules:
-        lookup_key = module.rsplit(".", 1)[-1] if "." in module else module
-        if lookup_key in _MEGATRON_MLA_TO_HF:
-            hf_modules.append(_MEGATRON_MLA_TO_HF[lookup_key])
-        elif lookup_key in _MEGATRON_TO_HF_MODULES:
-            hf_modules.extend(_MEGATRON_TO_HF_MODULES[lookup_key])
-        else:
-            # same-name passthrough; SGLang needs the leaf, not a path or pattern
-            hf_modules.append(lookup_key)
-    seen: set[str] = set()
-    unique: list[str] = []
-    for m in hf_modules:
-        if m not in seen:
-            seen.add(m)
-            unique.append(m)
-    return unique
-
-
 def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
     """HF target_modules for SGLang LoRA init/sync (minus _SGLANG_UNSUPPORTED_HF_TARGETS, currently empty)."""
     raw = list(args.target_modules) if args.target_modules else []
-    hf = convert_target_modules_to_hf(raw)
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    checkpoint_readable = not hf_checkpoint or os.path.exists(os.path.join(hf_checkpoint, "config.json"))
+    if uses_builtin_native_lora_provider(args) and checkpoint_readable:
+        from miles_plugins.lora.sglang_adapter import sglang_target_modules
+
+        hf = sglang_target_modules(args)
+    else:
+        hf = convert_target_modules_to_hf(raw)
     out = [m for m in hf if m not in _SGLANG_UNSUPPORTED_HF_TARGETS]
     dropped = set(hf) - set(out)
     if dropped:
@@ -343,21 +312,15 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
-    """Parse and convert exclude_modules argument."""
-    exclude_modules: list[str] = []
-    raw = getattr(args, "exclude_modules", None)
-    if raw:
-        if isinstance(raw, str):
-            exclude_modules = [m.strip() for m in raw.split(",")]
-        else:
-            exclude_modules = list(raw)
-        exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=lora_type)
-    return exclude_modules
-
-
 def create_lora_instance(args: Namespace):
     """Create a LoRA or CanonicalLoRA instance based on args.
+
+    ``--exclude-modules`` is not forwarded: ``parse_lora_target_modules`` already
+    subtracted those names from ``--target-modules``.
+
+    Unsupported:
+
+    - Bridge excludes with targets: asserts at build (``peft/module_matcher.py``).
 
     Returns:
         A LoRA/CanonicalLoRA dataclass instance ready to be applied to a model.
@@ -373,11 +336,9 @@ def create_lora_instance(args: Namespace):
         lora_cls = LoRA
 
     target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
-    exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
 
     lora_kwargs = dict(
         target_modules=target_modules,
-        exclude_modules=exclude_modules,
         dim=args.lora_rank,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout,
@@ -393,15 +354,72 @@ def create_lora_instance(args: Namespace):
 
     logger.info(
         f"Created {lora_cls.__name__}: rank={args.lora_rank}, alpha={args.lora_alpha}, "
-        f"dropout={args.lora_dropout}, target_modules={target_modules}, "
-        f"exclude_modules={exclude_modules}"
+        f"dropout={args.lora_dropout}, target_modules={target_modules} "
+        f"(--exclude-modules {getattr(args, 'exclude_modules', None)!r} already applied by the parser)"
     )
     return lora
+
+
+def resolve_lora_provider(args: Namespace):
+    """Return the module implementing the native-LoRA provider protocol.
+
+    ``--lora-provider-path`` selects a model-specific implementation (a dotted
+    module path); the default is the ``miles_plugins.lora`` plugin.
+    """
+    import importlib
+
+    path = getattr(args, "lora_provider_path", None) or _DEFAULT_LORA_PROVIDER
+    module = importlib.import_module(path)
+    for entry_point in ("wrap_model_provider_with_lora", "load_lora_adapter_hf", "export_lora_hf_named"):
+        assert hasattr(module, entry_point), f"--lora-provider-path {path} must define {entry_point}()"
+    return module
 
 
 # ---------------------------------------------------------------------------
 # Checkpoint save/load
 # ---------------------------------------------------------------------------
+
+
+def pp_assemble_full_adapter(
+    hf_named_tensors: list[tuple[str, torch.Tensor]],
+) -> list[tuple[str, torch.Tensor]]:
+    """Assemble the complete adapter on every PP rank (the exporter gathers TP/EP, not PP)."""
+    import math
+
+    pp_group = get_parallel_state().pp.group
+    pp_size = dist.get_world_size(group=pp_group)
+    if pp_size == 1:
+        return hf_named_tensors
+    pp_rank = dist.get_rank(group=pp_group)
+    global_ranks = dist.get_process_group_ranks(pp_group)
+    device = torch.cuda.current_device()
+
+    local_meta = [(n, tuple(t.shape), t.dtype) for n, t in hf_named_tensors]
+    all_meta: list = [None] * pp_size
+    dist.all_gather_object(all_meta, local_meta, group=pp_group)
+
+    local_by_name = {n: t for n, t in hf_named_tensors}
+    merged: dict[str, torch.Tensor] = {}
+    for src_pp, meta in enumerate(all_meta):
+        by_dtype: dict = {}
+        for n, shape, dtype in meta:
+            by_dtype.setdefault(dtype, []).append((n, shape))
+        for dtype, entries in by_dtype.items():
+            numel = sum(math.prod(shape) for _, shape in entries)
+            flat = torch.empty(numel, dtype=dtype, device=device)
+            if src_pp == pp_rank:
+                off = 0
+                for n, shape in entries:
+                    k = math.prod(shape)
+                    flat[off : off + k].copy_(local_by_name[n].reshape(-1))
+                    off += k
+            dist.broadcast(flat, src=global_ranks[src_pp], group=pp_group)
+            off = 0
+            for n, shape in entries:
+                k = math.prod(shape)
+                merged[n] = flat[off : off + k].view(shape)
+                off += k
+    return sorted(merged.items())
 
 
 def save_lora_checkpoint(
@@ -416,23 +434,34 @@ def save_lora_checkpoint(
     """Save LoRA adapter checkpoint to disk.
 
     Saves in two formats:
-    1. **HF PEFT format** (``adapter_model.bin`` + ``adapter_config.json``) for
-       external tool compatibility. Uses Megatron-Bridge's ``export_adapter_weights``
-       which correctly handles fused QKV / gate-up weight splitting and TP gathering.
-    2. **Megatron-native format** (``adapter_megatron_rank{global_rank}.pt``) for fast
-       checkpoint resume without name/weight conversion. Each TP/PP rank saves its
-       own shard with original parameter names.
+    1. **HF PEFT format** (``adapter_model.safetensors`` + ``adapter_config.json``) for
+       external tool compatibility, and for reloading through ``--lora-adapter-path``.
+       Bridge mode exports via Megatron-Bridge's ``export_adapter_weights``; raw mode
+       via the native provider, whose adapters the bridge exporter cannot see. Both
+       handle fused QKV / gate-up splitting and TP gathering. Tensors are cloned before
+       writing because that splitting aliases them -- a fused ``linear_fc1`` has one
+       ``lora_A`` that exports under both ``gate_proj`` and ``up_proj``, and its ``B``
+       becomes two row views -- and ``safetensors`` refuses to write shared storage.
+    2. **Megatron-native format** for checkpoint resume without name/weight
+       conversion. The native provider writes one MCore distributed checkpoint
+       (``torch_dist/``) with standard sharded-state-dict keys, holding adapter
+       weights and optimizer/scheduler state together; it reshards on load
+       across TP/PP/DP layout changes. Bridge/custom providers retain their
+       per-rank ``adapter_megatron_tp{tp}_pp{pp}_ep{ep}.pt`` shard format plus
+       per-rank training-state files, which require the exact saved layout.
 
-    When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
-    also saved per-rank for checkpoint resume. Base model weights are frozen and
-    never change, so they are not saved.
+    Base model weights are frozen and never change, so they are not saved.
 
-    This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    This function is collective: **all ranks must call it** — the HF export
+    performs TP all-gathers, and the native dist-checkpoint save is a
+    collective in which every main replica writes its shard. The HF PEFT files
+    are written by one rank; legacy bridge/custom shards by one rank per
+    ``(tp, pp, ep)`` coordinate.
     """
     import json
 
     from megatron.bridge import AutoBridge
+    from safetensors.torch import save_file
 
     from miles.utils import megatron_bridge_utils
 
@@ -441,29 +470,39 @@ def save_lora_checkpoint(
     is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
     tp_rank = parallel_state.tp.rank
     pp_rank = parallel_state.pp.rank
+    ep_rank = parallel_state.ep.rank
+    bridge_mode = getattr(args, "megatron_to_hf_mode", "raw") == "bridge"
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
         dist.barrier()
 
-    adapter_state: dict[str, torch.Tensor] = {}
-    for model_chunk in model:
-        for name, param in model_chunk.named_parameters():
-            if _is_adapter_param_name(name):
-                adapter_state[name] = param.data.cpu()
+    ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
+    if ep_sharded_provider:
+        shard_name = _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=True)
+        if _is_canonical_shard_writer(shard_name):
+            adapter_state = {}
+            for model_chunk in model:
+                for name, parameter in model_chunk.named_parameters():
+                    if _is_adapter_param_name(name):
+                        adapter_state[name] = parameter.detach().cpu()
+            native_path = save_path / shard_name
+            torch.save(adapter_state, native_path)
+            logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
+    else:
+        from miles_plugins.lora.checkpointing import NATIVE_DIST_CKPT_DIRNAME, save_native_adapter_dist_checkpoint
 
-    global_rank = dist.get_rank() if dist.is_initialized() else 0
-    native_path = save_path / f"adapter_megatron_rank{global_rank}.pt"
-    torch.save(adapter_state, native_path)
-    logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
+        save_native_adapter_dist_checkpoint(
+            model,
+            save_path / NATIVE_DIST_CKPT_DIRNAME,
+            optimizer=optimizer,
+            opt_param_scheduler=opt_param_scheduler,
+            iteration=iteration,
+        )
 
-    # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
-    # Bridge export is collective: all TP ranks participate in the all-gather,
-    # so every rank must call export_adapter_weights.
-    try:
+    lora_state_dict: dict[str, torch.Tensor] = {}
+    if bridge_mode:
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
-
-        lora_state_dict: dict[str, torch.Tensor] = {}
         with megatron_bridge_utils.patch_megatron_model(model):
             for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
                 model,
@@ -471,37 +510,46 @@ def save_lora_checkpoint(
                 show_progress=False,
             ):
                 lora_state_dict[hf_name] = weight
+    else:
+        for hf_name, weight in resolve_lora_provider(args).export_lora_hf_named(model):
+            lora_state_dict[hf_name] = weight.cpu()
 
-        if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
-            torch.save(lora_state_dict, save_path / "adapter_model.bin")
+    if parallel_state.pp.size > 1:
+        assembled = pp_assemble_full_adapter([(name, w.cuda()) for name, w in lora_state_dict.items()])
+        lora_state_dict = {name: w.cpu() for name, w in assembled}
 
+    if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
+        save_file(
+            {name: weight.detach().contiguous().clone() for name, weight in lora_state_dict.items()},
+            save_path / "adapter_model.safetensors",
+        )
+
+        if bridge_mode:
             target_modules_hf = (
                 convert_target_modules_to_hf(list(args.target_modules))
                 if args.target_modules
                 else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
             )
-            config = {
-                "peft_type": "LORA",
-                "r": args.lora_rank,
-                "lora_alpha": args.lora_alpha,
-                "target_modules": target_modules_hf,
-                "lora_dropout": args.lora_dropout,
-                "bias": "none",
-                "task_type": "CAUSAL_LM",
-            }
-            with open(save_path / "adapter_config.json", "w") as f:
-                json.dump(config, f, indent=2)
+        else:
+            from miles_plugins.lora.hf_adapter import target_modules_from_hf_names
 
-            os.sync()
-            logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
-    except Exception as hf_export_err:
-        logger.warning(
-            f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
-            f"shards + training state are sufficient for training resume."
-        )
+            target_modules_hf = target_modules_from_hf_names(lora_state_dict)
+        config = {
+            "peft_type": "LORA",
+            "r": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
+            "target_modules": target_modules_hf,
+            "lora_dropout": args.lora_dropout,
+            "bias": "none",
+            "task_type": "CAUSAL_LM",
+        }
+        with open(save_path / "adapter_config.json", "w") as f:
+            json.dump(config, f, indent=2)
 
-    # ---- Training state (optimizer + scheduler) for resume ----
-    if optimizer is not None:
+        os.sync()
+        logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
+
+    if optimizer is not None and ep_sharded_provider:
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
             {
@@ -528,13 +576,22 @@ def load_lora_adapter(
 ) -> tuple[bool, int | None]:
     """Load LoRA adapter weights from a saved checkpoint into the model.
 
-    Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
-    which preserves the exact TP/PP sharding and requires no name conversion.
-    Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
-    (not yet implemented for HF PEFT format).
+    For the native provider, an MCore distributed checkpoint (``torch_dist/``)
+    is preferred: one collective load restores adapter weights plus
+    optimizer/scheduler state and reshards automatically if the TP/PP/DP layout
+    changed since the save. Incompatible contents (e.g. a different
+    ``--target-modules`` set) raise on every rank alike. Otherwise the legacy
+    per-rank ``.pt`` shard format is tried, which requires the exact saved
+    layout. HF PEFT adapters are not loaded here (``--lora-adapter-path``
+    handles that format through the provider).
 
-    When ``optimizer`` is provided, also restores training state (optimizer +
-    LR scheduler) from a co-located ``training_state_rank*.pt`` file.
+    In the legacy path every rank preflights its complete adapter shard
+    (existence, exact target names, and shapes), then collectively agrees
+    before any model parameter is mutated. When ``optimizer`` is provided,
+    training state (optimizer + LR scheduler) has a second consensus point so
+    iterations and LR schedules stay in lockstep. Either way the function is
+    collective — when ``torch.distributed`` is initialized, all ranks must
+    call it.
 
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
@@ -548,65 +605,201 @@ def load_lora_adapter(
         if no training state was found).
     """
     adapter_dir = Path(adapter_path)
-    if not adapter_dir.exists():
-        logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
-        return False, None
+    for chunk in model:
+        chunk._miles_lora_native_checkpoint_loaded = False
 
     tp_rank = get_parallel_state().tp.rank
     pp_rank = get_parallel_state().pp.rank
+    ep_rank = get_parallel_state().ep.rank
 
-    # ---- Try Megatron-native format first (fast, no conversion needed) ----
-    global_rank = dist.get_rank() if dist.is_initialized() else 0
-    native_path = adapter_dir / f"adapter_megatron_rank{global_rank}.pt"
-    if not native_path.exists():
-        legacy = adapter_dir / f"adapter_megatron_tp{tp_rank}_pp{pp_rank}.pt"
-        if legacy.exists():
-            logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
-            native_path = legacy
-    if native_path.exists():
-        state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        loaded = 0
-        for model_chunk in model:
-            for name, param in model_chunk.named_parameters():
-                if name in state_dict:
-                    param.data.copy_(state_dict[name].to(device=param.device))
-                    loaded += 1
-        logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
+    ep_sharded_provider = _adapter_shards_are_ep_sharded(model)
+    native_adapters = not ep_sharded_provider
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
-        return True, iteration
-
-    # ---- HF PEFT format (future work) ----
-    hf_path = adapter_dir / "adapter_model.bin"
-    if hf_path.exists():
-        logger.warning(
-            f"Found HF PEFT adapter at {hf_path} but direct HF PEFT loading into "
-            f"Megatron is not yet supported. Please save using Megatron-native format "
-            f"(adapter_megatron_tp*_pp*.pt files) for checkpoint resume."
+    if native_adapters:
+        from miles_plugins.lora.checkpointing import (
+            NATIVE_DIST_CKPT_DIRNAME,
+            is_native_adapter_dist_checkpoint,
+            load_native_adapter_dist_checkpoint,
         )
+
+        dist_ckpt_dir = adapter_dir / NATIVE_DIST_CKPT_DIRNAME
+        if _all_ranks_see_dist_checkpoint(is_native_adapter_dist_checkpoint(dist_ckpt_dir), dist_ckpt_dir):
+            iteration = load_native_adapter_dist_checkpoint(
+                model, dist_ckpt_dir, optimizer=optimizer, opt_param_scheduler=opt_param_scheduler
+            )
+            for chunk in model:
+                chunk._miles_lora_native_checkpoint_loaded = True
+            return True, iteration
+
+    from miles_plugins.lora.checkpointing import native_adapter_load_plan
+
+    native_path = adapter_dir / _adapter_shard_name(tp_rank, pp_rank, ep_rank, ep_sharded=ep_sharded_provider)
+    shard_found = native_path.exists()
+    plan = None
+    load_error: Exception | None = None
+    if shard_found:
+        try:
+            state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
+            if native_adapters:
+                plan = native_adapter_load_plan(model, state_dict)
+            else:
+                plan = _non_native_adapter_load_plan(model, state_dict)
+        except Exception as error:  # Keep every rank alive until the agreement point.
+            load_error = error
+
+    local_adapter_ok = shard_found and load_error is None and plan is not None and plan.compatible
+    all_adapters_ok = _all_ranks_can_restore_training_state(local_adapter_ok)
+    if not all_adapters_ok:
+        if not adapter_dir.exists():
+            logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
+        elif not shard_found:
+            logger.warning("Native LoRA adapter shard is missing: %s", native_path)
+        elif load_error is not None:
+            logger.warning("Could not preflight native LoRA adapter shard %s: %s", native_path, load_error)
+        elif plan is not None:
+            if plan.unexpected:
+                logger.warning(
+                    "Native adapter shard has %d tensors absent from the current exact target/chunk set: %s",
+                    len(plan.unexpected),
+                    plan.unexpected[:8],
+                )
+            if plan.missing:
+                logger.warning(
+                    "Native adapter shard is missing %d current adapter parameters: %s",
+                    len(plan.missing),
+                    plan.missing[:8],
+                )
+            if plan.shape_mismatches:
+                logger.warning("Native adapter shard has incompatible tensor shapes: %s", plan.shape_mismatches[:8])
+        logger.warning(
+            "Skipping adapter and optimizer/scheduler restore before mutation: at least one rank "
+            "reported a missing or incompatible native adapter shard."
+        )
+
+        hf_path = next(
+            (
+                adapter_dir / n
+                for n in ("adapter_model.safetensors", "adapter_model.bin")
+                if (adapter_dir / n).exists()
+            ),
+            None,
+        )
+        if hf_path is not None and not shard_found:
+            logger.warning(
+                f"Found HF PEFT adapter at {hf_path} but direct HF PEFT loading into "
+                f"Megatron is not yet supported. Please save using Megatron-native format "
+                f"(adapter_megatron_tp*_pp*.pt files) for checkpoint resume."
+            )
         return False, None
 
-    logger.warning(f"No adapter checkpoint found at {adapter_dir}")
-    return False, None
+    assert plan is not None
+    training_state = None
+    training_state_error: Exception | None = None
+    restore_training_state = False
+    if optimizer is not None:
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        state_path = adapter_dir / f"training_state_rank{rank}.pt"
+        training_state, training_state_error = _read_training_state(state_path)
+        local_training_ok = training_state_error is None and training_state is not None
+        local_iteration = training_state.get("iteration") if training_state is not None else None
+        restore_training_state = _all_ranks_agree_on_training_state(local_training_ok, local_iteration)
+
+    loaded = plan.apply()
+    for chunk in model:
+        chunk._miles_lora_native_checkpoint_loaded = True
+    logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
+
+    if optimizer is None:
+        iteration = None
+    elif restore_training_state:
+        assert training_state is not None
+        iteration = _apply_training_state(training_state, optimizer, opt_param_scheduler)
+    else:
+        iteration = None
+        if training_state_error is not None:
+            logger.warning("Could not preflight rank-local LoRA training state: %s", training_state_error)
+        logger.warning(
+            "Skipping optimizer/scheduler restore: at least one rank reported a missing/corrupt "
+            "training-state file or a different iteration; all ranks resume with fresh training "
+            "state for consistency."
+        )
+        reload_model_params = getattr(optimizer, "reload_model_params", None)
+        if callable(reload_model_params):
+            reload_model_params()
+    return True, iteration
 
 
-def _load_training_state(
-    adapter_dir: Path,
+def _all_ranks_see_dist_checkpoint(local_probe: bool, dist_ckpt_dir: Path) -> bool:
+    """Agree across ranks which load path to take before entering a collective.
+
+    The dist-vs-legacy choice comes from a rank-local filesystem probe; if
+    shared-FS visibility skews (e.g. attribute-cache lag right after a save),
+    ranks would enter mismatched collectives and hang. A partial view is an
+    environment fault, so it raises instead.
+    """
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return local_probe
+    probes: list[bool | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(probes, local_probe)
+    if any(probes) and not all(probes):
+        raise RuntimeError(
+            f"ranks disagree on whether {dist_ckpt_dir} is a dist checkpoint "
+            f"(visible on {sum(bool(p) for p in probes)}/{len(probes)} ranks); "
+            f"check shared-filesystem consistency before resuming."
+        )
+    return all(probes)
+
+
+def _all_ranks_can_restore_training_state(local_ok: bool) -> bool:
+    """Agree across ranks whether to restore optimizer/scheduler state.
+
+    Collective: every rank must call it. Restoring on some ranks only would
+    silently desync the resume iteration and LR schedule.
+    """
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return local_ok
+    decisions: list[bool | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(decisions, local_ok)
+    return all(decisions)
+
+
+def _all_ranks_agree_on_training_state(local_ok: bool, iteration: int | None) -> bool:
+    """Require every rank's training state to parse and name one iteration."""
+    local = (local_ok, iteration)
+    if not dist.is_initialized() or dist.get_world_size() == 1:
+        return local_ok
+    states: list[tuple[bool, int | None] | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(states, local)
+    valid = [state for state in states if state is not None]
+    return len(valid) == len(states) and all(ok for ok, _ in valid) and len({step for _, step in valid}) == 1
+
+
+def _read_training_state(state_path: Path) -> tuple[dict[str, Any] | None, Exception | None]:
+    """Parse and minimally validate one rank's optimizer checkpoint."""
+    if not state_path.exists():
+        return None, FileNotFoundError(f"training-state file is missing: {state_path}")
+    try:
+        state = torch.load(state_path, map_location="cpu", weights_only=False)
+        if not isinstance(state, dict):
+            raise TypeError(f"training-state root is {type(state).__name__}, expected dict")
+        if "optimizer" not in state:
+            raise KeyError("training-state file has no 'optimizer' entry")
+        iteration = state.get("iteration")
+        if iteration is not None and not isinstance(iteration, int):
+            raise TypeError(f"training-state iteration is {type(iteration).__name__}, expected int or None")
+        return state, None
+    except Exception as error:
+        return None, error
+
+
+def _apply_training_state(
+    training_state: dict[str, Any],
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
 ) -> int | None:
-    """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
+    """Apply a training-state dictionary that passed collective preflight."""
     if optimizer is None:
         return None
-
-    rank = dist.get_rank() if dist.is_initialized() else 0
-    state_path = adapter_dir / f"training_state_rank{rank}.pt"
-    if not state_path.exists():
-        return None
-
-    # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
-    # param group metadata), so full unpickling is required here.
-    training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
     optimizer.load_state_dict(training_state["optimizer"])
     logger.info("Restored optimizer state from LoRA checkpoint")
@@ -628,14 +821,13 @@ def _load_training_state(
 
 def build_lora_sync_config(args: Namespace) -> dict[str, Any]:
     """Build LoRA config dict for syncing weights to SGLang engines."""
-    if sglang_lora_target_all_sentinel(args):
-        target_modules_hf: Any = "all-linear"
-    else:
-        target_modules_hf = (
-            target_modules_hf_for_sglang_rollout(args)
-            if args.target_modules
-            else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-        )
+    target_modules_hf: Any = (
+        target_modules_hf_for_sglang_rollout(args)
+        if args.target_modules
+        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+    )
+    if target_modules_hf == ["all"]:
+        target_modules_hf = "all-linear"
     return {
         "peft_type": "LORA",
         "r": args.lora_rank,

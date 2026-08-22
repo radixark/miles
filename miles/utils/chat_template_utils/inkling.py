@@ -5,7 +5,7 @@ import json
 import os
 from typing import Any
 
-_MODEL_TYPES = ("inkling_mm_model", "inkling_mm_model")
+_MODEL_TYPES = ("inkling_mm_model",)
 
 
 @functools.cache
