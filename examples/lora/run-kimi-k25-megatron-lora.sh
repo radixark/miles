@@ -65,7 +65,6 @@ ROLLOUT_ARGS=(
    --rollout-temperature 1
 
    --global-batch-size 256
-   --filter-zero-reward-samples
    --use-dynamic-global-batch-size
 )
 
