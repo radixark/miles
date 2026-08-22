@@ -190,6 +190,7 @@ class Attention(HuggingfaceAttention):
         layer_number: int,
         cp_comm_type: str = "p2p",
         pg_collection=None,
+        name: str | None = None,
     ):
         super().__init__(
             args,
@@ -197,6 +198,7 @@ class Attention(HuggingfaceAttention):
             layer_number,
             cp_comm_type,
             pg_collection,
+            name=name,
         )
         # Qwen3.5 is a VLM model with nested text_config
         self.hf_config = _get_text_config(self.hf_config)

@@ -20,7 +20,7 @@ ARG SGLANG_BRANCH=sglang-miles
 ARG SGLANG_COMMIT=""
 
 ARG MEGATRON_REPO=radixark/Megatron-LM
-ARG MEGATRON_BRANCH=miles-main
+ARG MEGATRON_BRANCH=miles-main-20260819
 # Empty means the branch HEAD at build time; release builds set it to freeze one commit.
 ARG MEGATRON_COMMIT=""
 

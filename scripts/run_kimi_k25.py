@@ -213,6 +213,10 @@ def _execute_train(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--no-check-for-nan-in-loss-and-grad "
+        # Fake QAT (INT4 env vars below) swaps in straight-through weight tensors, while
+        # TE's fused wgrad accumulation writes main_grad onto the original ones, so the two
+        # together would drop the quantized weights' gradients.
+        "--no-gradient-accumulation-fusion "
         "--colocate "
         f"--update-weight-buffer-size {4 * 512 * 1024 * 1024} "
         f"--actor-num-nodes {args.num_nodes} "

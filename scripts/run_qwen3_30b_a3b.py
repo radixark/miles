@@ -219,6 +219,10 @@ def execute(args: ScriptArgs):
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+        # Fake QAT swaps in straight-through weight tensors, while TE's fused wgrad
+        # accumulation writes main_grad onto the original ones, so the two together
+        # would drop the quantized weights' gradients.
+        misc_args += "--no-gradient-accumulation-fusion "
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
