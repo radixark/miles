@@ -11,6 +11,7 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.driver import ScheduledFreeze
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord
 from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_deterministic import compute_checkpoint_dir
 
+from miles.backends.megatron_utils.checkpoint_tracker import read_checkpoint_tracker_iteration
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
@@ -57,6 +58,8 @@ class _Run:
 
     def take_over(self) -> None:
         event_logger_checkpoint.restore(self.megatron_args)
+        if read_checkpoint_tracker_iteration(self.checkpoint_dir) is None:
+            event_logger_checkpoint.discard(self.megatron_args)
 
     def assert_redone_from_scratch(
         self,
@@ -98,8 +101,8 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         assert redone.frozen_rollout_id == 1
         assert redone.attempts_of_rollout_id == {0: 2, 1: 2, 2: 1, 3: 1, 4: 1, 5: 1}
 
-    def test_a_take_over_that_found_a_checkpoint_after_all_fails(self, tmp_path):
-        """A save before the freeze turns this into the scenario the checkpointed mode covers."""
+    def test_a_carried_over_step_fails(self, tmp_path):
+        """A save before the freeze leaves a snapshot to restore, and the restored steps are not retrained ones."""
         run = _Run(dump_dir=tmp_path)
         run.train(0)
         run.save(0)
@@ -107,7 +110,7 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         run.take_over()
         run.train(1, 2, 3, 4, 5)
 
-        with pytest.raises(AssertionError, match="resumed from a checkpoint after all"):
+        with pytest.raises(AssertionError, match="carried them over"):
             run.assert_redone_from_scratch()
 
     def test_a_record_that_had_a_checkpoint_at_trigger_time_fails(self, tmp_path):
@@ -154,8 +157,8 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
                 records=[HotRestartRecord(index=0, saved_iteration_at_trigger=None, frozen_rollout_id=2)],
             )
 
-    def test_a_run_that_redid_more_than_the_freeze_bounds_fails(self, tmp_path):
-        """A run frozen after step 1 had not finished step 2, so nothing could have thrown it away."""
+    def test_a_freeze_later_than_the_schedule_fails(self, tmp_path):
+        """The log moved aside is what the frozen run had trained, so it ends where the freeze says."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1, 2)
         run.take_over()
@@ -163,54 +166,71 @@ class TestAssertARunThatHadSavedNothingWasRedoneFromScratch:
         run.save(3)
         run.train(4, 5)
 
-        with pytest.raises(AssertionError, match="every step is written"):
+        with pytest.raises(AssertionError, match="every step the frozen run had trained"):
             run.assert_redone_from_scratch()
 
-    def test_a_run_that_redid_a_window_instead_of_its_whole_history_fails(self, tmp_path):
-        """Redoing step 1 but not 0 is a resume from a checkpoint, however it came about."""
+    def test_a_restart_past_step_zero_fails(self, tmp_path):
+        """Resuming at step 1 is a resume from a checkpoint, however it came about."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1)
+        run.take_over()
         run.train(1, 2, 3)
         run.save(3)
         run.train(4, 5)
 
-        with pytest.raises(AssertionError, match="every step is written"):
+        with pytest.raises(AssertionError, match="not each of the 6 steps exactly once"):
             run.assert_redone_from_scratch()
 
-    def test_a_step_trained_a_third_time_fails(self, tmp_path):
+    def test_a_second_discarded_log_fails(self, tmp_path):
         """One take-over throws away one run's worth of work, and a third attempt is a second take-over."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1)
+        run.take_over()
         run.train(0, 1)
+        run.take_over()
         run.train(0, 1, 2, 3)
         run.save(3)
         run.train(4, 5)
 
-        with pytest.raises(AssertionError, match="every step is written"):
+        with pytest.raises(AssertionError, match="instead of exactly one"):
+            run.assert_redone_from_scratch()
+
+    def test_a_step_logged_twice_fails(self, tmp_path):
+        """This is the symptom the product fix removes: one log holding both attempts at a redone step."""
+        run = _Run(dump_dir=tmp_path)
+        run.train(0, 1)
+        run.take_over()
+        run.train(0, 0, 1, 2, 3)
+        run.save(3)
+        run.train(4, 5)
+
+        with pytest.raises(AssertionError, match="more than once"):
             run.assert_redone_from_scratch()
 
     def test_a_run_that_never_finished_every_step_fails(self, tmp_path):
         """A comparison over fewer steps than the run was asked for would quietly prove less."""
         run = _run_restarted_before_save(tmp_path)
 
-        with pytest.raises(AssertionError, match="the run was asked for 7 steps"):
+        with pytest.raises(AssertionError, match="not each of the 7 steps exactly once"):
             run.assert_redone_from_scratch(num_rollouts=7)
-
-    def test_a_step_the_take_over_should_have_redone_but_did_not_fails(self, tmp_path):
-        """The take-over throws away every step up to the freeze, so each of those is trained twice."""
-        run = _Run(dump_dir=tmp_path)
-        run.train(0, 1)
-        run.train(1, 2, 3, 4, 5)
-        run.save(5)
-
-        with pytest.raises(AssertionError, match="every step is written"):
-            run.assert_redone_from_scratch()
 
     def test_a_run_that_never_saved_after_it_was_restarted_fails(self, tmp_path):
         """The point of restarting before the first save is to watch the save that follows it."""
         run = _Run(dump_dir=tmp_path)
         run.train(0, 1)
+        run.take_over()
         run.train(0, 1, 2, 3, 4, 5)
 
         with pytest.raises(AssertionError, match="nothing about saving"):
+            run.assert_redone_from_scratch()
+
+    def test_a_checkpoint_predating_the_freeze_fails(self, tmp_path):
+        """A save the take-over threw away says nothing about the run saving once it had been restarted."""
+        run = _Run(dump_dir=tmp_path)
+        run.train(0, 1)
+        run.take_over()
+        run.train(0, 1, 2, 3, 4, 5)
+        run.save(1)
+
+        with pytest.raises(AssertionError, match="nothing here was saved after the take-over"):
             run.assert_redone_from_scratch()
