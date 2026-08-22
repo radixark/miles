@@ -541,6 +541,11 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.optimizer.step()
                 self.lr_scheduler.step()
 
+                r3_mismatch_fraction = None
+                if (stats := routing_replay.pop_and_reduce_check_stats(get_gloo_group())) is not None:
+                    mismatched, checked = stats
+                    r3_mismatch_fraction = mismatched / checked if checked else 0.0
+
                 if self.args.ci_test:
                     check_grad_norm(
                         args=self.args,
@@ -566,6 +571,7 @@ class FSDPTrainRayActor(TrainRayActor):
                     num_steps_per_rollout=num_steps_per_rollout,
                     role="actor",
                     extra_metrics=extra_metrics,
+                    r3_mismatch_fraction=r3_mismatch_fraction,
                 )
 
         routing_replay.reset()

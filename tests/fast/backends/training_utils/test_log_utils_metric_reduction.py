@@ -134,3 +134,19 @@ def test_log_multi_turn_data_passes_explicit_extrema_reductions(monkeypatch):
     assert captured["metric_name"] == "multi_turn"
     assert captured["rollout_id"] == 7
     assert captured["reduction_by_key"] == log_utils._MULTI_TURN_REDUCTION_BY_KEY
+
+
+def test_log_train_step_publishes_preaggregated_r3_fraction():
+    log_dict = log_utils.log_train_step(
+        args=SimpleNamespace(),
+        loss_dict={"loss": 1.0},
+        grad_norm=2.0,
+        rollout_id=3,
+        step_id=1,
+        num_steps_per_rollout=4,
+        r3_mismatch_fraction=0.125,
+        should_log=False,
+    )
+
+    assert log_dict["ci/r3_mismatch_fraction"] == 0.125
+    assert log_dict["train/step"] == 13

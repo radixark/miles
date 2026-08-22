@@ -14,6 +14,7 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(metric_key="ci/r3_mismatch_fraction")
 
 # Fully-async rollout on the disaggregated topology (it cannot colocate). Three
 # rollouts exercise the states that only exist with a persistent worker: a cold

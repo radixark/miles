@@ -30,9 +30,11 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.replay_base import reduce_check_stats, routing_replay_manager
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
@@ -791,6 +793,14 @@ def train(
             ft_test_action_executor=ft_test_action_executor,
         )
 
+        r3_mismatch_fraction = None
+        if routing_replay_manager.enable_check_replay_result:
+            local_stats = routing_replay_manager.pop_check_stats()
+            if train_step_outcome == TrainStepOutcome.NORMAL:
+                # Independent-DP cells can discard different attempts, so reduce within this cell only.
+                mismatched, checked = reduce_check_stats(local_stats, get_gloo_group())
+                r3_mismatch_fraction = mismatched / checked if checked else 0.0
+
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
             # forward passes will use the forward pre-hook / `param_sync_func` in
@@ -845,6 +855,7 @@ def train(
                 num_steps_per_rollout=num_steps_per_rollout,
                 role=role,
                 extra_metrics=extra_metrics,
+                r3_mismatch_fraction=r3_mismatch_fraction,
                 should_log=True,
             )
 

@@ -53,6 +53,7 @@ TARGET_METRIC_KEYS: tuple[str, ...] = (
     "rollout/raw_reward",
     "rollout/tito_session_mismatch_rate/v1/assistant_text",
     "rollout/tito_session_mismatch_rate/v2/assistant_text",
+    "ci/r3_mismatch_fraction",
 )
 
 # Env var naming the directory the harness assigns for this run's records.

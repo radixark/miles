@@ -401,6 +401,59 @@ def test_standard_rl_gate_defaults_capture_all_steps(metric_key):
     assert GATE_DEFAULTS[metric_key]["steps"] == "all"
 
 
+def test_r3_mismatch_fraction_gate_default():
+    assert GATE_DEFAULTS["ci/r3_mismatch_fraction"] == {
+        "steps": "all",
+        "constraint": {"rel_up": 1.0, "abs_floor_up": 0.01, "rel_down": 1.0},
+    }
+
+
+def test_routing_replay_e2e_declares_r3_history_gate():
+    case_files = (
+        "e2e/fsdp/r3/test_glm47_flash_r3.py",
+        "e2e/fsdp/r3/test_qwen3_30b_a3b_r3.py",
+        "e2e/fsdp/r3/test_qwen3_5_35b_a3b_r3.py",
+        "e2e/megatron/model_scripts/test_deepseek_v32_5layer_fp8.py",
+        "e2e/megatron/model_scripts/test_deepseek_v32_5layer_mxfp8.py",
+        "e2e/megatron/test_glm47_flash/test_amd_r3_mtp.py",
+        "e2e/megatron/test_glm47_flash/test_r3_mtp.py",
+        "e2e/megatron/test_glm47_flash/test_r3_mtp_deepep.py",
+        "e2e/megatron/test_glm5_2_744b_a40b_5layer_nvfp4.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_amd_moriep_fp8_bridge.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_baseline.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_deepep_fp8.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_deepep_fp8_bridge.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_disagg_broadcast.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_dp_attention.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_fully_async.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_int4_rollout.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_r3_baseline.py",
+        "e2e/megatron/test_qwen3_30B_A3B/test_r3_deepep_fp8.py",
+        "e2e/megatron/test_qwen3_5_35B_A3B_mtp/test_amd_mtp1_spec_v2_r3.py",
+        "e2e/megatron/test_qwen3_5_35B_A3B_mtp/test_mtp1_spec_v2_r3.py",
+    )
+    loose_glm47_files = {
+        "e2e/megatron/test_glm47_flash/test_amd_r3_mtp.py",
+        "e2e/megatron/test_glm47_flash/test_r3_mtp.py",
+        "e2e/megatron/test_glm47_flash/test_r3_mtp_deepep.py",
+    }
+    assert len(case_files) == 21
+
+    tests_root = Path(__file__).parents[2]
+    for relative_path in case_files:
+        specs = parse_ci_gate_specs(str(tests_root / relative_path))
+        r3_specs = [spec for spec in specs if spec.metric_key == "ci/r3_mismatch_fraction"]
+        assert len(r3_specs) == 1, relative_path
+        expected_floor = 0.05 if relative_path in loose_glm47_files else 0.01
+        assert r3_specs[0].steps == "all", relative_path
+        assert r3_specs[0].constraint == {
+            "rel_up": 1.0,
+            "abs_floor_up": expected_floor,
+            "rel_down": 1.0,
+            "abs_floor_down": 0.0,
+        }, relative_path
+
+
 @pytest.mark.parametrize("version", ["v1", "v2"])
 def test_session_tito_gate_default_is_loose(version):
     metric_key = f"rollout/tito_session_mismatch_rate/{version}/assistant_text"
