@@ -1604,6 +1604,42 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=1e-4,
                 help="The threshold for Off-Policy Sequence Masking (OPSM).",
             )
+            parser.add_argument(
+                "--use-delight",
+                action="store_true",
+                default=False,
+                help="Gate each per-token policy-gradient term by a sigmoid of delight "
+                "(advantage x surprisal), the Delightful Policy Gradient from "
+                "https://arxiv.org/abs/2603.14608.",
+            )
+            parser.add_argument(
+                "--delight-temperature",
+                type=float,
+                default=1.0,
+                help="Sharpness eta of the delight gate sigmoid(delight / eta). "
+                "Smaller values make the gate closer to a hard filter.",
+            )
+            parser.add_argument(
+                "--delight-max-surprisal",
+                type=float,
+                default=10.0,
+                help="Clamp per-token surprisal -log pi(a|h) before forming delight, so a "
+                "single very unlikely token cannot dominate the gate.",
+            )
+            parser.add_argument(
+                "--delight-unit-gain",
+                action="store_true",
+                default=False,
+                help="Use 2 * sigmoid so a zero-delight token keeps coefficient 1.0 instead of "
+                "0.5, holding the effective learning rate comparable to plain GRPO.",
+            )
+            parser.add_argument(
+                "--delight-whiten",
+                action="store_true",
+                default=False,
+                help="Standardise delight across the data-parallel group before gating "
+                "(Appendix E.1 of the DG paper).",
+            )
             return parser
 
         def add_on_policy_distillation_arguments(parser):
