@@ -42,11 +42,31 @@ def restore(args: Namespace) -> None:
 
     dst = Path(args.save_debug_event_data)
     if dst.exists():
-        trash = dst.parent / f".trash_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        dst.rename(trash)
+        trash = _move_aside(dst)
         logger.info("Moved pre-restore event dir %s -> %s", dst, trash)
     shutil.copytree(src, dst)
     logger.info("Restored event dir %s <- %s", dst, src)
+
+
+def discard(args: Namespace) -> None:
+    if args.save_debug_event_data is None:
+        return
+
+    dst = Path(args.save_debug_event_data)
+    assert not dst.is_symlink(), f"a take-over moves the event log aside, and {dst} is a symlink"
+    if not dst.is_dir() or not any(dst.iterdir()):
+        return
+
+    # TODO: startup events the new incarnation already wrote go into the trash with the abandoned log
+    trash = _move_aside(dst)
+    dst.mkdir(parents=True)
+    logger.info("Moved the log of the run a hot restart takes over %s -> %s", dst, trash)
+
+
+def _move_aside(dst: Path) -> Path:
+    trash = dst.parent / f".trash_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    dst.rename(trash)
+    return trash
 
 
 def _snapshot_dir(checkpoint_root: Path, iteration: int) -> Path:

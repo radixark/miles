@@ -3,6 +3,8 @@
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 
 
@@ -94,3 +96,66 @@ class TestNoOpCases:
         event_logger_checkpoint.snapshot(_args(event_dir=events), iteration=1)
 
         assert not (tmp_path / "ckpt").exists()
+
+
+class TestDiscardEventLog:
+    def test_moves_the_log_aside_and_leaves_an_empty_directory(self, tmp_path: Path) -> None:
+        """The live loggers reopen this path on every write, so a directory that vanished crashes them."""
+        events = tmp_path / "events"
+        events.mkdir()
+        (events / "main.jsonl").write_text("from the run being taken over\n")
+
+        event_logger_checkpoint.discard(_args(event_dir=events))
+
+        [trash] = list(tmp_path.glob(".trash_*"))
+        assert (trash / "main.jsonl").read_text() == "from the run being taken over\n"
+        assert events.is_dir() and list(events.iterdir()) == []
+
+    def test_leaves_an_empty_directory_alone(self, tmp_path: Path) -> None:
+        """A take-over of a run that logged nothing has nothing to throw away, and leaves no empty trash."""
+        events = tmp_path / "events"
+        events.mkdir()
+
+        event_logger_checkpoint.discard(_args(event_dir=events))
+
+        assert list(tmp_path.glob(".trash_*")) == []
+        assert events.is_dir()
+
+    def test_leaves_a_missing_directory_alone(self, tmp_path: Path) -> None:
+        """The run may be taken over before it opened its log at all."""
+        events = tmp_path / "events"
+
+        event_logger_checkpoint.discard(_args(event_dir=events))
+
+        assert list(tmp_path.glob(".trash_*")) == []
+        assert not events.exists()
+
+    def test_refuses_a_live_symlink(self, tmp_path: Path) -> None:
+        """Moving the link aside would leave the loggers writing into a directory nobody reads."""
+        target = tmp_path / "elsewhere"
+        target.mkdir()
+        (target / "main.jsonl").write_text("not this run's to move\n")
+        events = tmp_path / "events"
+        events.symlink_to(target)
+
+        with pytest.raises(AssertionError, match="is a symlink"):
+            event_logger_checkpoint.discard(_args(event_dir=events))
+
+        assert events.is_symlink()
+        assert (target / "main.jsonl").read_text() == "not this run's to move\n"
+
+    def test_refuses_a_dangling_symlink(self, tmp_path: Path) -> None:
+        """A dangling link is not a directory, so the emptiness check alone would pass it silently."""
+        events = tmp_path / "events"
+        events.symlink_to(tmp_path / "gone")
+
+        with pytest.raises(AssertionError, match="is a symlink"):
+            event_logger_checkpoint.discard(_args(event_dir=events))
+
+        assert events.is_symlink()
+
+    def test_leaves_a_run_that_logs_nowhere_alone(self, tmp_path: Path) -> None:
+        """Without --save-debug-event-data there is no log to move, and nothing may be created."""
+        event_logger_checkpoint.discard(_args(event_dir=None))
+
+        assert list(tmp_path.iterdir()) == []
