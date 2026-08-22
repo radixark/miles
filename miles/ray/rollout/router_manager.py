@@ -14,6 +14,11 @@ from miles.utils.http_utils import wait_for_server_ready
 
 logger = logging.getLogger(__name__)
 
+# Readiness budget for the spawned router/session-server children. The spawn
+# context re-imports the heavy transformers/megatron chain (~13s typical in
+# CI), and transient CI stalls have pushed startup past a 30s budget.
+_SERVER_READY_TIMEOUT_SECS = 120
+
 
 def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool = False) -> tuple[str, int]:
     """Start sgl router or miles router and return (router_ip, router_port).
@@ -72,7 +77,7 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     )
     process.daemon = True
     process.start()
-    wait_for_server_ready(router_ip, router_port, process, timeout=30)
+    wait_for_server_ready(router_ip, router_port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Router launched at {router_ip}:{router_port}")
     return router_ip, router_port
 
@@ -146,5 +151,5 @@ def start_session_server(args):
     # replacing the per-session /health probe.
     args.session_server_instance_ids = instance_ids
     for port, process in processes:
-        wait_for_server_ready(ip, port, process, timeout=30)
+        wait_for_server_ready(ip, port, process, timeout=_SERVER_READY_TIMEOUT_SECS)
     logger.info(f"Session servers launched at {ip}, ports {ports} ({len(ports)} instances)")
