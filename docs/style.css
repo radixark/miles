@@ -41,6 +41,21 @@ html.dark {
 }
 
 /* =============================================
+   Sidebar — nested group headers match page links
+
+   Sidebar page rows are <a> elements, so the global link rule above
+   recolors them (this file is unlayered, which beats Mintlify's layered
+   Tailwind utilities). Nested group headers ("Launch Script", "Agentic
+   Environments") are <button> toggles, which that rule misses, leaving
+   them gray. Recolor them through Mintlify's stable data attributes; if
+   Mintlify ever renames these, the headers fall back to gray — nothing
+   breaks.
+   ============================================= */
+#navigation-items li li[data-group-tag] > button {
+  color: #d55816;
+}
+
+/* =============================================
    Nav / UI — Inter (matches RadixArk buttons)
    ============================================= */
 #navbar, button {
