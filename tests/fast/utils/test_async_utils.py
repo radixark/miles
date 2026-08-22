@@ -13,6 +13,7 @@ from miles.utils.async_utils import (
     AsyncioGatherUtils,
     AsyncLoopThread,
     eager_create_task,
+    maybe_await,
     wait_cancelling_pending_on_first_completion,
 )
 
@@ -703,6 +704,24 @@ class TestGetAsyncLoop:
         first = async_utils.get_async_loop()
 
         assert async_utils.get_async_loop() is first
+
+
+class TestMaybeAwait:
+    async def test_a_plain_result_is_handed_back_as_it_is(self):
+        """An out-of-tree hook written against the older contract returns None, and awaiting it would raise."""
+        assert await maybe_await(None) is None
+
+    async def test_an_awaitable_result_is_awaited(self):
+        """The in-tree hooks are coroutines, and their teardown must still finish before the caller moves on."""
+        finished = False
+
+        async def dispose():
+            nonlocal finished
+            finished = True
+            return "done"
+
+        assert await maybe_await(dispose()) == "done"
+        assert finished
 
 
 class _ErrorWithoutAddNote(Exception):
