@@ -11,6 +11,8 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.process_group_utils import collective_bool_and
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -404,6 +406,140 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
+def _all_ranks_true(value: bool) -> bool:
+    if not dist.is_initialized():
+        return value
+    return collective_bool_and(value=value, group=get_gloo_group())
+
+
+def _raise_if_any_rank_failed(local_error: Exception | None, message: str) -> None:
+    if _all_ranks_true(local_error is None):
+        return
+    if local_error is not None:
+        raise RuntimeError(message) from local_error
+    raise RuntimeError(message)
+
+
+def _optimizer_param_state_path(directory: Path, optimizer_index: int) -> Path:
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    return directory / f"optimizer_param_state_rank{rank}_optimizer{optimizer_index}.pt"
+
+
+def _optimizer_children(optimizer: Any) -> list[tuple[int, Any]]:
+    children = getattr(optimizer, "chained_optimizers", [optimizer])
+    return list(enumerate(children))
+
+
+def _active_optimizer_children(optimizer: Any) -> list[tuple[int, Any]]:
+    return [
+        (index, child)
+        for index, child in _optimizer_children(optimizer)
+        if not getattr(child, "is_stub_optimizer", False)
+    ]
+
+
+def _distributed_optimizer_children(args: Namespace, optimizer: Any) -> list[tuple[int, Any]]:
+    if not getattr(args, "use_distributed_optimizer", False):
+        return []
+    return _active_optimizer_children(optimizer)
+
+
+def _optimizer_param_state_entries(
+    args: Namespace,
+    optimizer: Any,
+    directory: Path,
+) -> list[tuple[Any, Path]]:
+    return [
+        (child, _optimizer_param_state_path(directory, index))
+        for index, child in _distributed_optimizer_children(args, optimizer)
+    ]
+
+
+def _save_optimizer_param_state(args: Namespace, optimizer: Any, directory: Path) -> None:
+    save_error = None
+    for child, path in _optimizer_param_state_entries(args, optimizer, directory):
+        try:
+            child.save_parameter_state(str(path))
+        except Exception as error:
+            save_error = save_error or error
+    _raise_if_any_rank_failed(save_error, "Failed to save optimizer parameter state on at least one rank")
+
+
+def _optimizer_param_state_is_available(entries: list[tuple[Any, Path]]) -> bool:
+    local_files_exist = all(path.exists() for child, path in entries if child.data_parallel_group.rank() == 0)
+    return _all_ranks_true(local_files_exist)
+
+
+def _load_optimizer_param_state(entries: list[tuple[Any, Path]]) -> None:
+    states = []
+    load_error = None
+    for child, path in entries:
+        state = None
+        if child.data_parallel_group.rank() == 0:
+            try:
+                state = torch.load(path, weights_only=False)
+            except Exception as error:
+                load_error = load_error or error
+        states.append((child, state))
+
+    _raise_if_any_rank_failed(load_error, "Failed to read optimizer parameter state on at least one rank")
+    for child, state in states:
+        child.load_parameter_state_from_dp_zero(state)
+
+
+def _optimizer_metadata_state(optimizer: Any) -> dict[str, Any]:
+    children = _optimizer_children(optimizer)
+    active_children = _active_optimizer_children(optimizer)
+    if len(children) == len(active_children):
+        return {"optimizer": optimizer.state_dict()}
+    return {"optimizer_children": {index: child.state_dict() for index, child in active_children}}
+
+
+def _optimizer_metadata_compatibility_error(
+    optimizer: Any,
+    training_state: dict[str, Any],
+) -> str | None:
+    child_states = training_state.get("optimizer_children")
+    if child_states is None:
+        return None
+    saved_children = set(child_states)
+    active_children = {index for index, _ in _active_optimizer_children(optimizer)}
+    if saved_children == active_children:
+        return None
+    return (
+        "Active optimizer children changed between save and load: "
+        f"saved={sorted(saved_children)}, current={sorted(active_children)}"
+    )
+
+
+def _load_optimizer_metadata(optimizer: Any, training_state: dict[str, Any]) -> None:
+    compatibility_error = _optimizer_metadata_compatibility_error(optimizer, training_state)
+    if compatibility_error is not None:
+        raise RuntimeError(compatibility_error)
+
+    child_states = training_state.get("optimizer_children")
+    if child_states is None:
+        optimizer.load_state_dict(training_state["optimizer"])
+        return
+    active_children = dict(_active_optimizer_children(optimizer))
+    indices = sorted(active_children)
+    if not indices:
+        return
+    if len(indices) == 1:
+        active_children[indices[0]].load_state_dict(child_states[indices[0]])
+        return
+
+    from megatron.core.optimizer.optimizer import ChainedOptimizer
+
+    active_optimizer = ChainedOptimizer([active_children[index] for index in indices])
+    active_optimizer.load_state_dict([child_states[index] for index in indices])
+
+
+def _reload_optimizer_model_params(optimizer: Any) -> None:
+    for _, child in _active_optimizer_children(optimizer):
+        child.reload_model_params()
+
+
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -427,8 +563,8 @@ def save_lora_checkpoint(
     also saved per-rank for checkpoint resume. Base model weights are frozen and
     never change, so they are not saved.
 
-    This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    This function is collective: all ranks write native and training-state shards,
+    participate in optimizer parameter-state collectives, and enter Bridge export.
     """
     import json
 
@@ -501,16 +637,25 @@ def save_lora_checkpoint(
         )
 
     # ---- Training state (optimizer + scheduler) for resume ----
-    if optimizer is not None:
+    if optimizer is not None and not getattr(args, "no_save_optim", False):
         rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save(
-            {
-                "iteration": iteration,
-                "optimizer": optimizer.state_dict(),
-                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            },
-            save_path / f"training_state_rank{rank}.pt",
+        save_error = None
+        try:
+            torch.save(
+                dict(
+                    iteration=iteration,
+                    opt_param_scheduler=opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+                    **_optimizer_metadata_state(optimizer),
+                ),
+                save_path / f"training_state_rank{rank}.pt",
+            )
+        except Exception as error:
+            save_error = error
+        _raise_if_any_rank_failed(
+            save_error,
+            "Failed to save optimizer training state on at least one rank",
         )
+        _save_optimizer_param_state(args, optimizer, save_path)
         logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
@@ -521,6 +666,7 @@ def save_lora_checkpoint(
 
 def load_lora_adapter(
     model: Sequence[torch.nn.Module],
+    args: Namespace,
     adapter_path: str,
     *,
     optimizer: Any | None = None,
@@ -538,6 +684,7 @@ def load_lora_adapter(
 
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
+        args: Parsed training arguments.
         adapter_path: Path to the adapter checkpoint directory.
         optimizer: If provided, restore optimizer state for training resume.
         opt_param_scheduler: If provided, restore LR scheduler state.
@@ -548,8 +695,12 @@ def load_lora_adapter(
         if no training state was found).
     """
     adapter_dir = Path(adapter_path)
-    if not adapter_dir.exists():
-        logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
+    adapter_dir_exists = adapter_dir.exists()
+    if not _all_ranks_true(adapter_dir_exists):
+        if adapter_dir_exists:
+            logger.warning(f"LoRA adapter path is missing on some ranks: {adapter_dir}")
+        else:
+            logger.warning(f"LoRA adapter path does not exist: {adapter_dir}")
         return False, None
 
     tp_rank = get_parallel_state().tp.rank
@@ -563,18 +714,35 @@ def load_lora_adapter(
         if legacy.exists():
             logger.warning(f"Using legacy tp/pp-named adapter shard {legacy}; only valid when EP<=TP")
             native_path = legacy
-    if native_path.exists():
-        state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
+
+    if _all_ranks_true(native_path.exists()):
         loaded = 0
-        for model_chunk in model:
-            for name, param in model_chunk.named_parameters():
-                if name in state_dict:
-                    param.data.copy_(state_dict[name].to(device=param.device))
-                    loaded += 1
+        load_error = None
+        try:
+            state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
+            for model_chunk in model:
+                for name, param in model_chunk.named_parameters():
+                    if name in state_dict:
+                        param.data.copy_(state_dict[name].to(device=param.device))
+                        loaded += 1
+        except Exception as error:
+            load_error = error
+        if not _all_ranks_true(load_error is None):
+            message = f"Failed to read native LoRA adapter state on at least one rank ({native_path.name})"
+            if load_error is not None:
+                raise RuntimeError(message) from load_error
+            raise RuntimeError(message)
+
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        if optimizer is not None:
+            # Refresh active masters after the model-side copy. Exact parameter
+            # state, when present, overwrites them in the next step.
+            _reload_optimizer_model_params(optimizer)
+        iteration = _load_training_state(adapter_dir, args, optimizer, opt_param_scheduler)
         return True, iteration
+    if native_path.exists():
+        logger.warning(f"{native_path.name} is missing on some ranks; not loading the adapter on any")
 
     # ---- HF PEFT format (future work) ----
     hf_path = adapter_dir / "adapter_model.bin"
@@ -592,30 +760,70 @@ def load_lora_adapter(
 
 def _load_training_state(
     adapter_dir: Path,
+    args: Namespace,
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
 ) -> int | None:
     """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
-    if optimizer is None:
+    if getattr(args, "finetune", False):
         return None
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
-    if not state_path.exists():
+    if not _all_ranks_true(state_path.exists()):
+        if state_path.exists():
+            logger.warning(f"{state_path.name} is missing on some ranks; skipping the training state restore")
         return None
 
     # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
     # param group metadata), so full unpickling is required here.
-    training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+    training_state = None
+    load_error: Exception | None = None
+    try:
+        training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+    except Exception as error:
+        load_error = error
+    _raise_if_any_rank_failed(
+        load_error,
+        f"Failed to read optimizer training state on at least one rank ({state_path.name})",
+    )
 
-    optimizer.load_state_dict(training_state["optimizer"])
+    iteration = training_state.get("iteration")
+    if optimizer is None or getattr(args, "no_load_optim", False):
+        if iteration is not None:
+            logger.info(f"Resuming LoRA progress from iteration {iteration} without optimizer state")
+        return iteration
+
+    compatibility_error = _optimizer_metadata_compatibility_error(optimizer, training_state)
+    if not _all_ranks_true(compatibility_error is None):
+        raise RuntimeError(
+            compatibility_error or "Active optimizer children changed between save and load on at least one rank"
+        )
+
+    param_state_entries = _optimizer_param_state_entries(args, optimizer, adapter_dir)
+    if getattr(args, "use_distributed_optimizer", False) and not _optimizer_param_state_is_available(
+        param_state_entries
+    ):
+        logger.warning(
+            f"{state_path.name} has incomplete optimizer parameter state; warm-starting the optimizer "
+            "and scheduler. Re-save the checkpoint with a build that writes parameter-state shards "
+            "to resume exactly."
+        )
+        return None
+
+    metadata_error = None
+    try:
+        _load_optimizer_metadata(optimizer, training_state)
+    except Exception as error:
+        metadata_error = error
+    _raise_if_any_rank_failed(metadata_error, "Failed to restore optimizer metadata on at least one rank")
+    _load_optimizer_param_state(param_state_entries)
     logger.info("Restored optimizer state from LoRA checkpoint")
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
         logger.info("Restored LR scheduler state from LoRA checkpoint")
 
-    iteration = training_state.get("iteration")
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
     return iteration
