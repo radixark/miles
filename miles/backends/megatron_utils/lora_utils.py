@@ -573,6 +573,15 @@ def load_lora_adapter(
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
+        if optimizer is not None:
+            # The copies above changed the parameters outside the optimizer. With a
+            # main-params optimizer (fp16/bf16, precision-aware) the fp32 masters
+            # were built from the randomly initialised adapter, and the first step()
+            # writes those stale masters back over the weights just restored.
+            # Refresh them; when a training_state file is present the state restore
+            # below overwrites the masters again, so the call is correct either way.
+            optimizer.reload_model_params()
+
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration
 
