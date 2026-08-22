@@ -361,10 +361,13 @@ class TestFlattenedTensorBucketRoundTrip:
 class _FakeRemote:
     def __init__(self, result=None):
         self.calls = []
+        self.side_effect = None
         self._result = result
 
     def remote(self, **kwargs):
         self.calls.append(kwargs)
+        if self.side_effect is not None:
+            raise self.side_effect
         return self._result
 
 
@@ -378,18 +381,17 @@ class TestDistLoraUpdateOrchestration:
     """Shared ``_update_lora_weights``: transport-agnostic orchestration.
 
     It must enforce the silent-failure guards (zero chunks, no LoRA names), gate
-    on the source rank, unload a stale adapter before reload, and delegate the
+    on the source rank, unload any resident adapter before reload, and delegate the
     actual transmit to ``_update_lora_weight_implementation`` (mocked here).
     """
 
     @staticmethod
-    def _make_self(*, engines, chunks=None, is_source=True, lora_loaded=False):
+    def _make_self(*, engines, chunks=None, is_source=True):
         if chunks is None:
             chunks = [SAMPLE_LORA_WEIGHTS]
         return SimpleNamespace(
             _hf_weight_iterator=SimpleNamespace(get_hf_weight_chunks=lambda *a, **k: iter(chunks)),
             _is_lora_source=is_source,
-            _lora_loaded=lora_loaded,
             rollout_engines=engines,
             _update_lora_weight_implementation=MagicMock(name="impl"),
         )
@@ -407,7 +409,6 @@ class TestDistLoraUpdateOrchestration:
         fake_self._update_lora_weight_implementation.assert_called_once()
         (sent,) = fake_self._update_lora_weight_implementation.call_args.args
         assert sent == SAMPLE_LORA_WEIGHTS
-        assert fake_self._lora_loaded is True
 
     def test_non_source_rank_does_not_transmit(self):
         # Non-source ranks still iterate the bridge (TP collectives) but must not
@@ -432,27 +433,22 @@ class TestDistLoraUpdateOrchestration:
             self._run(fake_self)
         fake_self._update_lora_weight_implementation.assert_not_called()
 
-    def test_reload_unloads_existing_adapter_first(self):
-        # When an adapter is already loaded, the stale one must be unloaded before
-        # the new weights are pushed, else SGLang rejects the duplicate name.
+    def test_every_update_unloads_before_load(self):
+        # An engine that preloaded --lora-adapter-path is already holding the adapter
+        # on the very first update, so the unload cannot be skipped: SGLang rejects a
+        # duplicate name and the load is not an upsert.
         engines = [_FakeEngine()]
-        fake_self = self._make_self(engines=engines, lora_loaded=True)
+        fake_self = self._make_self(engines=engines)
         self._run(fake_self)
         assert engines[0].unload_lora_adapter.calls == [{"lora_name": LORA_ADAPTER_NAME}]
         fake_self._update_lora_weight_implementation.assert_called_once()
 
-    def test_first_load_does_not_unload(self):
+    def test_missing_adapter_does_not_block_load(self):
         engines = [_FakeEngine()]
-        fake_self = self._make_self(engines=engines, lora_loaded=False)
+        engines[0].unload_lora_adapter.side_effect = ValueError("adapter not found")
+        fake_self = self._make_self(engines=engines)
         self._run(fake_self)
-        assert engines[0].unload_lora_adapter.calls == []
-
-    def test_lora_loaded_stays_false_when_implementation_raises(self):
-        fake_self = self._make_self(engines=[_FakeEngine()])
-        fake_self._update_lora_weight_implementation.side_effect = RuntimeError("boom")
-        with pytest.raises(RuntimeError, match="boom"):
-            self._run(fake_self)
-        assert fake_self._lora_loaded is False
+        fake_self._update_lora_weight_implementation.assert_called_once()
 
 
 class TestBroadcastLoraImplementation:

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from miles.backends.sglang_utils.sglang_engine import _compute_server_args
+from miles.utils.lora import LORA_ADAPTER_NAME
 
 
 def make_args(**overrides) -> SimpleNamespace:
@@ -76,3 +77,25 @@ class TestSglangOverridePrecedence:
         assert server_args["dtype"] == "float16"
         assert server_args["enable_lora"] is True
         assert server_args["mem_fraction_static"] == 0.7
+
+
+class TestLoraAdapterPreload:
+    """Startup preload is optional: the adapter also arrives through the first weight sync."""
+
+    def test_preloads_a_directory_sglang_can_read(self, tmp_path):
+        (tmp_path / "adapter_config.json").write_text("{}")
+        args = make_args(lora_rank=8, lora_adapter_path=str(tmp_path))
+
+        server_args = compute(args)
+
+        assert server_args["lora_paths"] == {LORA_ADAPTER_NAME: str(tmp_path)}
+
+    def test_skips_a_native_only_checkpoint(self, tmp_path):
+        # Bridge declines the HF export for some MoE adapter layouts, and SGLang
+        # aborts at startup on the missing adapter_config.json.
+        (tmp_path / "adapter_megatron_tp0_pp0_ep0.pt").write_bytes(b"")
+        args = make_args(lora_rank=8, lora_adapter_path=str(tmp_path))
+
+        server_args = compute(args)
+
+        assert "lora_paths" not in server_args

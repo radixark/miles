@@ -777,10 +777,18 @@ def _compute_server_args(
         else:
             kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
-        if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
+        # A resumed checkpoint can hold only Megatron-native shards, because the HF
+        # PEFT export is best-effort and Bridge declines some MoE adapter layouts.
+        # SGLang would abort at startup on the missing adapter_config.json, so preload
+        # only a directory it can actually read; either way the adapter arrives through
+        # the weight sync that both drivers run before the first rollout.
+        peft_export_available = args.lora_adapter_path is not None and os.path.isfile(
+            os.path.join(args.lora_adapter_path, "adapter_config.json")
+        )
+        if peft_export_available and kwargs.get("load_format") != "dummy":
             kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
         elif args.lora_adapter_path is not None:
-            logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
+            logger.info("skipping startup lora_paths; adapter comes via weight-sync")
         else:
             logger.info("No pre-trained LoRA adapter_path provided, will use random initial weights")
 
