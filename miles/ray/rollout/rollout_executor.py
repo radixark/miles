@@ -129,14 +129,16 @@ class RolloutExecutor:
 
     # -------------------------- lifecycle -----------------------------
 
-    def dispose(self) -> None:
+    async def dispose(self) -> None:
+        if not self.use_legacy_rollout_v1 and self.generate_rollout is not None:
+            await self.generate_rollout.dispose()
         if (close := getattr(self.data_source, "close", None)) is not None:
             close()
         event_analyzer.run_analysis_from_args(self.args)
         if self._metric_checker is not None:
             self._metric_checker.dispose()
         if isinstance(self.eval_generate_rollout, CheckpointEvalFn):
-            self.eval_generate_rollout.dispose()
+            await self.eval_generate_rollout.dispose()
 
     # -------------------------- data generation -----------------------------
 

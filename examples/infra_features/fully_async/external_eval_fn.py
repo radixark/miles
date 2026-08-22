@@ -110,6 +110,6 @@ class ExternalSglangEvalFn(CheckpointEvalFn):
                 return
         raise RuntimeError(f"weight_version pin failed for {checkpoint_dir} (expected {weight_version})")
 
-    def dispose(self) -> None:
+    async def dispose(self) -> None:
         if self._proc is not None:
             self._proc.terminate()

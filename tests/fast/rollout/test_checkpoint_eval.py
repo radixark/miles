@@ -59,7 +59,7 @@ class CheckpointFnStub(CheckpointEvalFn):
             raise EvalSkip(self.skip_reason)
         return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
 
-    def dispose(self):
+    async def dispose(self):
         self.disposed = True
 
 
@@ -298,7 +298,7 @@ class FakeManagerActor:
         outer = self
 
         class _Eval:
-            def remote(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
+            def __call__(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
                 outer.eval_calls.append((rollout_id, hf_dir, export_time_seconds))
                 outer.marker_flags.append(require_marker)
                 fut = asyncio.get_event_loop().create_future()
@@ -306,7 +306,7 @@ class FakeManagerActor:
                 return fut
 
         class _Skip:
-            def remote(self, rollout_id, reason):
+            def __call__(self, rollout_id, reason):
                 outer.skip_calls.append((rollout_id, reason))
                 fut = asyncio.get_event_loop().create_future()
                 fut.set_result(None)
@@ -331,14 +331,10 @@ class FakeActorModel:
 
 
 @pytest.fixture
-def dispatcher_env(monkeypatch):
+def dispatcher_env():
+    """The dispatcher tracks its exports as asyncio tasks, so there is nothing left to stand in for."""
     import miles.ray.rollout.eval_dispatch as eval_dispatch
 
-    # ray.wait/ray.get over asyncio futures: done iff the future is resolved.
-    monkeypatch.setattr(
-        eval_dispatch.ray, "wait", lambda refs, timeout=0: (refs, []) if refs[0].done() else ([], refs)
-    )
-    monkeypatch.setattr(eval_dispatch.ray, "get", lambda ref: ref.result())
     return eval_dispatch
 
 
@@ -539,7 +535,7 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
         def __init__(self):
             self.calls = []
 
-        def remote(self, rollout_id):
+        def __call__(self, rollout_id):
             self.calls.append(rollout_id)
             fut = asyncio.get_event_loop().create_future()
             fut.set_result(None)
@@ -629,7 +625,7 @@ async def test_external_eval_fn_pin_failure_retries_then_raises(external_fn_env)
     assert not [c for c in external_fn_env.calls if c[0] == "eval"]
 
 
-def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
+async def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
     """Launch mode is the black-box promise: init prepares everything, pinned to
     the GPUs the user names, extra sglang flags passed through; dispose tears down."""
     procs = []
@@ -649,5 +645,5 @@ def test_external_eval_fn_launches_own_server(external_fn_env, monkeypatch):
     assert proc.cmd[proc.cmd.index("--model-path") + 1] == "/base"
     assert proc.cmd[-2:] == ["--attention-backend", "fa3"]
     assert fn._url == "http://127.0.0.1:31000"
-    fn.dispose()
+    await fn.dispose()
     assert proc.terminated
