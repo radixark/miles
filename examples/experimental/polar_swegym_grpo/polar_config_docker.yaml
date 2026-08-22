@@ -1,0 +1,138 @@
+# Polar bridge configuration for Miles' --custom-config-path (Docker task runtime).
+#
+# This YAML is read by miles/train.py at startup: every top-level key is
+# `setattr`'d onto the args namespace (see miles/utils/arguments.py, the
+# `if args.custom_config_path:` block). It is then consumed by
+# `miles.rollout.polar_config:resolve_polar_slime_config(args)`, which reads the
+# `polar_*` keys below and returns a `PolarSlimeConfig` used by
+# `miles.rollout.polar_rollout:generate_rollout_polar_async`.
+#
+# ── Fields consumed by resolve_polar_slime_config ─────────────────────────────
+#   polar_rollout_url               rollout server to drive (task submit/poll)
+#   polar_task_template             per-task payload; MUST include an `agent` spec
+#   polar_reward_key                reward field name extracted from each trace
+#   polar_max_async_level           in-flight task rounds; drives max_concurrency
+#   polar_request_timeout           per-session timeout (seconds)
+#   polar_callback_host             host the rollout server must be able to reach
+#   polar_min_complete_accept_fraction  min completed fraction to accept a group
+#   polar_task_id_template          task id rendered per group
+# ── Fields used only as {args.*} template vars (not read by the resolver) ─────
+#   polar_gateway_url               forwarded to the Polar gateway node
+#   polar_agent_cli_dir             host path mounted as /opt/node in task containers
+#
+# The task template is rendered per sample group with placeholders resolved
+# against {instruction}, {num_samples}, {sample.*} and {args.*} (see
+# miles/rollout/polar_config.py `render_task_payload`). Every metadata key the
+# template references (here `{sample.metadata.registry_image}` and
+# `{sample.metadata.instance}`) must be present in each JSONL row's `metadata`.
+
+polar_rollout_url: "http://127.0.0.1:8080"
+polar_gateway_url: "http://127.0.0.1:8100"
+polar_reward_key: "score"
+# Async depth: how many task rounds the rollout worker keeps in flight ahead of
+# the trainer. rollout_batch_size * polar_max_async_level bounds concurrent
+# sessions (max_concurrency in PolarSlimeConfig). A value of 2 keeps the polar
+# server warm while the trainer drains a completed round.
+polar_max_async_level: 2
+# Per-session ceiling. Agentic SWE trajectories routinely exceed 30 minutes, so
+# keep this generous — a short timeout aborts entire task groups.
+polar_request_timeout: 2400
+# The callback host the Polar rollout server uses to reach Miles with results.
+# Must be reachable from the Polar server (a wildcard bind address is rejected
+# by resolve_polar_slime_config).
+polar_callback_host: "127.0.0.1"
+# Minimum fraction of a task group that must finish with a usable (non-aborted)
+# sample before the group is accepted for training. 0.6 tolerates a couple of
+# agent timeouts per group without discarding the whole rollout step.
+polar_min_complete_accept_fraction: 0.6
+# Absolute host path to the shared Node/agent CLI dir, mounted read-only as
+# /opt/node inside each task container. Filled in at launch by run.sh via
+# envsubst (only ${AGENT_CLI_DIR} is expanded).
+polar_agent_cli_dir: ${AGENT_CLI_DIR}
+
+# Task template rendered per sample group.  Placeholders are filled from the
+# context: {instruction}, {num_samples}, {sample.*}, {args.*}.
+polar_task_template:
+  timeout_seconds: 2400
+  runtime:
+    # Docker backend: pull the SWE-Gym registry image recorded in each prompt's
+    # JSONL metadata (swegym_train_* docker variant). No local SIF/apptainer
+    # preparation is needed — the image is referenced directly by registry ref.
+    backend: "docker"
+    image: "{sample.metadata.registry_image}"
+    network: "host"
+    workdir: "/polar/session/workspace"
+    env:
+      HOME: "/polar/session/home"
+      PATH: "/polar/session/home/.venv/bin:/opt/node/bin:/opt/miniconda3/envs/testbed/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    kwargs:
+      volumes:
+        - "{args.polar_agent_cli_dir}:/opt/node:ro"
+    # Node 22 + agent CLIs are mounted from polar_agent_cli_dir — no npm install
+    # at session start. The testbed repo ships inside the registry image and is
+    # copied into a clean session workspace on each run.
+    prepare:
+      - type: exec
+        command: >-
+          rm -rf /polar/session/workspace &&
+          mkdir -p /polar/session/logs/agent /polar/session/workspace "$HOME/.venv/bin" &&
+          cp -a /testbed/. /polar/session/workspace/ &&
+          ln -sf /opt/miniconda3/envs/testbed/bin/python "$HOME/.venv/bin/python" &&
+          ln -sf /opt/miniconda3/envs/testbed/bin/python "$HOME/.venv/bin/python3" &&
+          git config --global core.pager '' &&
+          cd /polar/session/workspace &&
+          (git reset --hard || true)
+    # Fresh reward-test runtime applies the patch and runs swebench tests.
+    eval_prepare:
+      - type: exec
+        command: >-
+          mkdir -p /polar/session/logs/agent "$HOME/.venv/bin" &&
+          ln -sf /opt/miniconda3/envs/testbed/bin/python "$HOME/.venv/bin/python" &&
+          ln -sf /opt/miniconda3/envs/testbed/bin/python "$HOME/.venv/bin/python3" &&
+          git config --global core.pager ''
+  # Every trace the agent produces becomes one training sample
+  # (dynamic-history); the model served to the agent is the Miles-SGLang router.
+  agent:
+    harness: "codex"
+    model_name: "${POLAR_AGENT_MODEL}"
+  builder:
+    strategy: "prefix_merging"
+  evaluator:
+    strategy: "swebench_harness"
+    refresh_runtime: true
+    config:
+      repo_dir: "/testbed"
+      patch_command: "cd /polar/session/workspace && git add -A && git diff --cached --binary"
+      instance: "{sample.metadata.instance}"
+      # Strip per-harness config/session dirs and common stray artifacts that
+      # would otherwise get swept into `git add -A` and bloat the patch.
+      exclude_patterns:
+        - "trajectories/**"
+        - "**/trajectories/**"
+        - "node_modules/**"
+        - "**/node_modules/**"
+        - ".cache/**"
+        - "**/.cache/**"
+        - ".venv/**"
+        - "**/.venv/**"
+        - ".claude/**"
+        - "**/.claude/**"
+        - ".codex/**"
+        - "**/.codex/**"
+        - ".gemini/**"
+        - "**/.gemini/**"
+        - ".opencode/**"
+        - "**/.opencode/**"
+        - ".config/opencode/**"
+        - ".pi/**"
+        - "**/.pi/**"
+        - ".qwen/**"
+        - "**/.qwen/**"
+        # Guard against the historical claude_code $HOME-literal env bug
+        # (now fixed, but old workspaces may still carry these dirs).
+        - "$HOME/**"
+        - "**/$HOME/**"
+
+# Rendered task id — unique per (rollout, group) pair so re-submitted groups are
+# distinguishable in the Polar dashboard.
+polar_task_id_template: "polar-swegym-grpo-{rollout_id}-{sample.group_index}"
