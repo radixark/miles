@@ -101,6 +101,7 @@ class TestInit:
 
         assert len(group._cells) == 3
         assert [c.cell_index for c in group._cells] == [0, 1, 2]
+        assert group.role == "actor"
 
     def test_cells_are_allocated_after_init(self):
         group = _make_group(num_cells=2)
