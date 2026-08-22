@@ -86,7 +86,6 @@ class DistBucketedWeightUpdateMixin:
                 f"--pipeline-model-parallel-size 1 (got {args.pipeline_model_parallel_size})."
             )
             self._lora_config = build_lora_sync_config(args)
-            self._lora_loaded = False
             self._hf_weight_iterator = HfWeightIteratorBase.create(
                 args=args,
                 model=model,
@@ -258,12 +257,16 @@ class DistBucketedWeightUpdateMixin:
                 "(no lora_A/lora_B names found). Check weight iterator."
             )
 
-        if self._lora_loaded:
+        # An engine that preloaded --lora-adapter-path already holds the adapter, which
+        # this updater cannot know, and the load below is not an upsert. Always attempt
+        # the unload and tolerate its absence, matching UpdateWeightFromTensor.
+        try:
             ray.get(
                 [engine.unload_lora_adapter.remote(lora_name=LORA_ADAPTER_NAME) for engine in self.rollout_engines]
             )
+        except Exception as unload_err:
+            logger.debug("lora unload before load skipped: %s", unload_err)
         self._update_lora_weight_implementation(accumulated_named_tensors)
-        self._lora_loaded = True
 
     def _update_multi_lora_weights(self) -> None:
         """Upsert the actor-selected adapters; the push set is identical on every rank so TP collectives align."""
