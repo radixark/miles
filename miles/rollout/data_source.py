@@ -27,6 +27,12 @@ class DataSource(abc.ABC):
         Add samples to the data source
         """
 
+    def snapshot(self, rollout_id):
+        """
+        Snapshot the state of the data source after a successful rollout.
+        """
+        return None
+
     @abc.abstractmethod
     def save(self, rollout_id):
         """
@@ -55,6 +61,7 @@ class RolloutDataSource(DataSource):
         self.sample_offset = 0
         # TODO remove this
         self.metadata = {}
+        self._rollout_state_snapshots = {}
 
         if args.rollout_global_dataset:
             tokenizer = load_tokenizer(
@@ -121,30 +128,55 @@ class RolloutDataSource(DataSource):
     def add_samples(self, samples: list[list[Sample]]):
         raise RuntimeError(f"Cannot add samples to {self.__class__.__name__}. This is a read-only data source.")
 
+    def snapshot(self, rollout_id):
+        if not self.args.rollout_global_dataset:
+            return
+
+        self._rollout_state_snapshots[rollout_id] = copy.deepcopy(
+            {
+                "sample_offset": self.sample_offset,
+                "epoch_id": self.epoch_id,
+                "sample_group_index": self.sample_group_index,
+                "sample_index": self.sample_index,
+                "metadata": self.metadata,
+            }
+        )
+
     def save(self, rollout_id):
         if not self.args.rollout_global_dataset:
             return
 
-        state_dict = {
-            "sample_offset": self.sample_offset,
-            "epoch_id": self.epoch_id,
-            "sample_group_index": self.sample_group_index,
-            "sample_index": self.sample_index,
-            "metadata": self.metadata,
-        }
+        if rollout_id not in self._rollout_state_snapshots:
+            raise RuntimeError(f"No data-source snapshot found for rollout {rollout_id}.")
+        state_dict = self._rollout_state_snapshots[rollout_id]
         path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)
+        for snapshot_rollout_id in [
+            snapshot_rollout_id
+            for snapshot_rollout_id in self._rollout_state_snapshots
+            if snapshot_rollout_id <= rollout_id
+        ]:
+            del self._rollout_state_snapshots[snapshot_rollout_id]
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
             return
 
-        if self.args.load is None:
+        rollout_data_load = getattr(self.args, "rollout_data_load", None)
+        load_root = rollout_data_load or self.args.load
+        require_checkpoint = rollout_data_load is not None and rollout_id is not None and rollout_id >= 0
+        if load_root is None:
+            if require_checkpoint:
+                raise FileNotFoundError(
+                    f"Cannot load data-source checkpoint for rollout {rollout_id}: no checkpoint root is configured."
+                )
             return
 
-        path = os.path.join(self.args.load, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
+        path = os.path.join(load_root, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         if not os.path.exists(path):
+            if require_checkpoint:
+                raise FileNotFoundError(f"Expected data-source checkpoint does not exist: {path}")
             logger.info(f"Checkpoint {path} does not exist.")
             return
 

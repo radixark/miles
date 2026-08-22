@@ -521,6 +521,7 @@ def save_lora_checkpoint(
 
 def load_lora_adapter(
     model: Sequence[torch.nn.Module],
+    args: Namespace,
     adapter_path: str,
     *,
     optimizer: Any | None = None,
@@ -538,6 +539,7 @@ def load_lora_adapter(
 
     Args:
         model: List of DDP-wrapped model chunks with LoRA layers already applied.
+        args: Parsed training arguments.
         adapter_path: Path to the adapter checkpoint directory.
         optimizer: If provided, restore optimizer state for training resume.
         opt_param_scheduler: If provided, restore LR scheduler state.
@@ -573,7 +575,7 @@ def load_lora_adapter(
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
-        iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
+        iteration = _load_training_state(adapter_dir, args, optimizer, opt_param_scheduler)
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
@@ -592,11 +594,12 @@ def load_lora_adapter(
 
 def _load_training_state(
     adapter_dir: Path,
+    args: Namespace,
     optimizer: Any | None,
     opt_param_scheduler: Any | None,
 ) -> int | None:
     """Restore optimizer/scheduler state saved alongside a LoRA adapter checkpoint."""
-    if optimizer is None:
+    if getattr(args, "finetune", False) or not getattr(args, "lora_training_state_resume_enabled", True):
         return None
 
     rank = dist.get_rank() if dist.is_initialized() else 0
@@ -608,14 +611,25 @@ def _load_training_state(
     # param group metadata), so full unpickling is required here.
     training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
+    iteration = training_state.get("iteration")
+
+    # The scheduler position is progress, not optimizer state. Leaving it to the
+    # --no-load-optim path would rebuild it as iteration * global_batch_size, but the
+    # LoRA loop advances it by the samples in each global batch, so the two only agree
+    # when rollout_batch_size * n_samples_per_prompt == global_batch_size.
+    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
+        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
+        args.lora_scheduler_loaded = True
+        logger.info("Restored LR scheduler state from LoRA checkpoint")
+
+    if optimizer is None or getattr(args, "no_load_optim", False):
+        if iteration is not None:
+            logger.info(f"Resuming LoRA progress from iteration {iteration} without optimizer state")
+        return iteration
+
     optimizer.load_state_dict(training_state["optimizer"])
     logger.info("Restored optimizer state from LoRA checkpoint")
 
-    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
-        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
-        logger.info("Restored LR scheduler state from LoRA checkpoint")
-
-    iteration = training_state.get("iteration")
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
     return iteration

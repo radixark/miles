@@ -143,10 +143,18 @@ def _patch_initialize_side_effects(stack: ExitStack) -> None:
     stack.enter_context(patch("miles.backends.megatron_utils.model.check_model_hashes"))
 
 
-def test_initialize_does_not_step_scheduler_restored_from_checkpoint():
+@pytest.mark.parametrize(
+    "scheduler_resume_args",
+    [
+        {"use_checkpoint_opt_param_scheduler": True},
+        {"use_checkpoint_opt_param_scheduler": False, "lora_scheduler_loaded": True},
+    ],
+    ids=["checkpoint", "lora-checkpoint"],
+)
+def test_initialize_does_not_step_scheduler_restored_from_checkpoint(scheduler_resume_args):
     from miles.backends.megatron_utils.model import initialize_model_and_optimizer
 
-    args = Namespace(use_checkpoint_opt_param_scheduler=True, global_batch_size=8)
+    args = Namespace(global_batch_size=8, **scheduler_resume_args)
     model = [_FakeModelChunk()]
     optimizer = object()
     opt_param_scheduler = MagicMock()

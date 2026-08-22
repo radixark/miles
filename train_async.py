@@ -97,10 +97,10 @@ async def train(args):
             rollout_id, args.save_interval, num_rollout_per_epoch, args.num_rollout
         ):
             force_sync = external_save or rollout_id == args.num_rollout - 1
+            await rollout_manager.save.remote(rollout_id)
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_manager.save.remote(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
