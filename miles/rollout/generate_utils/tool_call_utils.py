@@ -16,6 +16,7 @@ from sglang.srt.function_call.function_call_parser import FunctionCallParser
 from miles.utils.types import Sample
 
 _DUMMY_USER = {"role": "user", "content": "dummy"}
+_INVALID_TOOL_ARGUMENTS_MESSAGE = "Error: Tool arguments must be a valid JSON object."
 
 
 def create_tool_call_parser(tool_specs, tool_call_parser):
@@ -40,19 +41,34 @@ async def _execute_tool_call(
 ) -> dict[str, Any]:
     if isinstance(call, ChatCompletionMessageToolCall):
         name = call.function.name
-        params = json.loads(call.function.arguments) if call.function.arguments else {}
+        raw_arguments = call.function.arguments
         tool_call_id = call.id
     elif isinstance(call, ToolCallItem):
         name = call.name
-        params = json.loads(call.parameters) if call.parameters else {}
+        raw_arguments = call.parameters
         tool_call_id = f"call_{uuid.uuid4().hex[:24]}"
     else:
         raise TypeError(f"Unsupported tool call type: {type(call)}")
 
-    result = await execute_one(name, params)
-    assert isinstance(result, str)
+    params = _parse_tool_arguments(raw_arguments)
+    if params is None:
+        result = _INVALID_TOOL_ARGUMENTS_MESSAGE
+    else:
+        result = await execute_one(name, params)
+        assert isinstance(result, str)
 
     return {"role": "tool", "tool_call_id": tool_call_id, "content": result, "name": name}
+
+
+def _parse_tool_arguments(raw_arguments: str | None) -> dict[str, Any] | None:
+    """Return executor kwargs, or None when recognized arguments are invalid."""
+    if not raw_arguments:
+        return {}
+    try:
+        params = json.loads(raw_arguments)
+    except json.JSONDecodeError:
+        return None
+    return params if isinstance(params, dict) else None
 
 
 def update_sample_with_tool_responses(sample: Sample, tool_messages: list[dict[str, Any]], tokenizer):
