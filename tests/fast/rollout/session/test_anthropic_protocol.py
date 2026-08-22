@@ -1,6 +1,15 @@
+import json
+
 import pytest
 
-from miles.rollout.session.anthropic import AnthropicProtocolError, anthropic_to_openai_request
+from miles.rollout.session.anthropic import (
+    AnthropicGenerationAbortedError,
+    AnthropicProtocolError,
+    anthropic_to_openai_request,
+    openai_error_to_anthropic,
+    openai_to_anthropic_response,
+    render_anthropic_sse,
+)
 
 
 def _request(**overrides: object) -> dict[str, object]:
@@ -11,6 +20,25 @@ def _request(**overrides: object) -> dict[str, object]:
     }
     request.update(overrides)
     return request
+
+
+def _response(**message_overrides: object) -> dict:
+    message = {"role": "assistant", "content": "hello back"}
+    message.update(message_overrides)
+    return {
+        "id": "chatcmpl-1",
+        "model": "glm-4.7-flash",
+        "choices": [{"index": 0, "message": message, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }
+
+
+def _parse_sse(body: bytes) -> list[tuple[str, dict]]:
+    events = []
+    for frame in body.decode().strip().split("\n\n"):
+        event_line, data_line = frame.splitlines()
+        events.append((event_line.removeprefix("event: "), json.loads(data_line.removeprefix("data: "))))
+    return events
 
 
 def test_request_converts_system_sampling_and_tools() -> None:
@@ -403,3 +431,220 @@ def test_request_rejects_unrepresentable_inputs(payload: object, error: str) -> 
         anthropic_to_openai_request(payload)
 
     assert error in str(exc_info.value)
+
+
+def test_response_converts_reasoning_text_tools_and_usage() -> None:
+    converted = openai_to_anthropic_response(
+        _response(
+            reasoning_content="I should inspect it.",
+            content="Running a command.",
+            tool_calls=[
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                }
+            ],
+        )
+    )
+
+    assert converted["id"].startswith("msg_")
+    assert converted["type"] == "message"
+    assert converted["content"] == [
+        {"type": "thinking", "thinking": "I should inspect it."},
+        {"type": "text", "text": "Running a command."},
+        {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "pwd"}},
+    ]
+    assert converted["stop_reason"] == "tool_use"
+    assert converted["usage"] == {"input_tokens": 11, "output_tokens": 7}
+
+
+def test_response_converts_null_content_tool_call() -> None:
+    converted = openai_to_anthropic_response(
+        _response(
+            content=None,
+            tool_calls=[
+                {
+                    "id": "toolu_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                }
+            ],
+        )
+    )
+
+    assert converted["content"] == [{"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {"command": "pwd"}}]
+    assert converted["stop_reason"] == "tool_use"
+
+
+def test_response_skips_malformed_tool_calls_and_sanitizes_arguments() -> None:
+    converted = openai_to_anthropic_response(
+        _response(
+            content=None,
+            tool_calls=[
+                None,
+                {"id": "bad_function", "function": None},
+                {"id": "bad_json", "function": {"name": "bash", "arguments": "{"}},
+                {"id": "array_json", "function": {"name": "bash", "arguments": "[]"}},
+            ],
+        )
+    )
+
+    assert converted["content"] == [
+        {"type": "tool_use", "id": "bad_json", "name": "bash", "input": {}},
+        {"type": "tool_use", "id": "array_json", "name": "bash", "input": {}},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (42, [{"type": "text", "text": "42"}]),
+        (
+            [
+                {"type": "text", "text": "kept"},
+                {"type": "image_url", "image_url": {"url": "ignored"}},
+                {"type": "text", "text": 42},
+                None,
+            ],
+            [{"type": "text", "text": "kept"}],
+        ),
+    ],
+)
+def test_response_normalizes_openai_content_parts(content: object, expected: list[dict[str, str]]) -> None:
+    assert openai_to_anthropic_response(_response(content=content))["content"] == expected
+
+
+def test_response_maps_tool_and_length_stop_reasons() -> None:
+    tool_response = _response(tool_calls=[])
+    tool_response["choices"][0]["finish_reason"] = "tool_calls"
+    length_response = _response()
+    length_response["choices"][0]["finish_reason"] = "length"
+
+    assert openai_to_anthropic_response(tool_response)["stop_reason"] == "tool_use"
+    assert openai_to_anthropic_response(length_response)["stop_reason"] == "max_tokens"
+
+
+def test_response_rejects_aborted_generation() -> None:
+    response = _response()
+    response["choices"][0]["finish_reason"] = "abort"
+
+    with pytest.raises(AnthropicGenerationAbortedError, match="upstream generation was aborted"):
+        openai_to_anthropic_response(response)
+    with pytest.raises(AnthropicGenerationAbortedError, match="upstream generation was aborted"):
+        render_anthropic_sse(response)
+
+
+def test_stream_has_protocol_order_for_text_and_tool_use() -> None:
+    events = _parse_sse(
+        render_anthropic_sse(
+            _response(
+                content="Running.",
+                tool_calls=[
+                    {
+                        "id": "toolu_1",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": '{"command":"pwd"}'},
+                    }
+                ],
+            )
+        )
+    )
+
+    assert [event_type for event_type, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[4][1]["content_block"]["type"] == "tool_use"
+    assert events[5][1]["delta"] == {"type": "input_json_delta", "partial_json": '{"command":"pwd"}'}
+    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
+    assert events[-2][1]["usage"] == {"output_tokens": 7}
+
+
+def test_stream_sanitizes_non_finite_tool_arguments() -> None:
+    events = _parse_sse(
+        render_anthropic_sse(
+            _response(
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "toolu_nan",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": '{"timeout":NaN}'},
+                    }
+                ],
+            )
+        )
+    )
+
+    tool_delta = next(payload["delta"] for event_type, payload in events if event_type == "content_block_delta")
+    assert tool_delta == {"type": "input_json_delta", "partial_json": "{}"}
+
+
+def test_stream_emits_thinking_delta() -> None:
+    events = _parse_sse(render_anthropic_sse(_response(reasoning_content="Think first.", content=None)))
+
+    assert [event_type for event_type, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[1][1]["content_block"] == {"type": "thinking", "thinking": ""}
+    assert events[2][1]["delta"] == {"type": "thinking_delta", "thinking": "Think first."}
+
+
+def test_stream_omits_delta_for_empty_content_fallback() -> None:
+    events = _parse_sse(render_anthropic_sse(_response(content="")))
+
+    assert [event_type for event_type, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    assert events[1][1]["content_block"] == {"type": "text", "text": ""}
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_type"),
+    [
+        (400, "invalid_request_error"),
+        (401, "authentication_error"),
+        (403, "permission_error"),
+        (404, "not_found_error"),
+        (413, "request_too_large"),
+        (429, "rate_limit_error"),
+        (500, "api_error"),
+        (503, "api_error"),
+        (529, "overloaded_error"),
+    ],
+)
+def test_error_conversion(status_code: int, expected_type: str) -> None:
+    converted = openai_error_to_anthropic(status_code, {"error": {"message": "bad request"}})
+    assert converted == {"type": "error", "error": {"type": expected_type, "message": "bad request"}}
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_message"),
+    [
+        ({"error": "string error"}, "string error"),
+        ({"message": "top-level message"}, "top-level message"),
+        ("not an object", "Upstream request failed with status 500"),
+        ({"error": {}}, "Upstream request failed with status 500"),
+    ],
+)
+def test_error_conversion_message_fallbacks(payload: object, expected_message: str) -> None:
+    converted = openai_error_to_anthropic(500, payload)
+
+    assert converted["error"]["message"] == expected_message
