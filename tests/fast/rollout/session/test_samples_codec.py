@@ -23,6 +23,8 @@ def _computed_sample(**overrides) -> Sample:
     s.response_length = 2
     s.loss_mask = [1, 1]
     s.rollout_log_probs = [-0.5, -0.1234567891234567]
+    s.rollout_sampling_mask_ids = [10, 4, 11]
+    s.rollout_sampling_mask_offsets = [0, 2, 3]
     s.rollout_routed_experts = np.arange(24, dtype=np.int32).reshape(4, 3, 2)
     s.rollout_indexer_topk = None
     s.status = Sample.Status.COMPLETED
@@ -68,6 +70,8 @@ class TestSamplesWireCodec:
         # computed fields overlaid, with exact types/values
         assert out.tokens == [1, 2, 3, 10, 11] and type(out.tokens) is list
         assert out.rollout_log_probs == [-0.5, -0.1234567891234567]
+        assert out.rollout_sampling_mask_ids == [10, 4, 11]
+        assert out.rollout_sampling_mask_offsets == [0, 2, 3]
         assert out.loss_mask == [1, 1]
         assert out.response == "[10][11]" and out.response_length == 2
         assert out.status == Sample.Status.COMPLETED
@@ -146,6 +150,8 @@ class TestSamplesWireCodec:
             "tokens.0",
             "loss_mask.0",
             "rollout_log_probs.0",
+            "rollout_sampling_mask_ids.0",
+            "rollout_sampling_mask_offsets.0",
             "rollout_routed_experts.0",
             "rollout_indexer_topk.0",
         }

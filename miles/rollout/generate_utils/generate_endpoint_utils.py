@@ -8,6 +8,11 @@ from typing import Any
 import numpy as np
 import pybase64
 
+from miles.rollout.generate_utils.sampling_mask import (
+    append_sampling_metadata,
+    set_sampling_mask_request_defaults,
+    should_return_sampling_mask,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
@@ -54,6 +59,8 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
+    *,
+    evaluation: bool = False,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -62,6 +69,15 @@ def compute_request_payload(
     if max_new_tokens <= 0:
         return None, Sample.Status.TRUNCATED
 
+    return_sampling_mask = should_return_sampling_mask(args, sampling_params, evaluation=evaluation)
+    if return_sampling_mask:
+        set_sampling_mask_request_defaults(
+            sampling_params,
+            top_p=args.rollout_top_p,
+            top_k=args.rollout_top_k,
+            temperature=args.rollout_temperature,
+        )
+
     payload = {
         "input_ids": input_ids,
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
@@ -69,6 +85,8 @@ def compute_request_payload(
         "return_routed_experts": args.use_rollout_routing_replay,
         "return_indexer_topk": args.use_rollout_indexer_replay,
     }
+    if return_sampling_mask:
+        payload["return_sampling_mask"] = True
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
@@ -89,6 +107,9 @@ async def update_sample_from_response(
         new_response_log_probs = [item[0] for item in x]
     else:
         new_response_tokens, new_response_log_probs = [], []
+
+    if payload.get("return_sampling_mask", False):
+        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens

@@ -7,6 +7,7 @@ from miles.utils import object_store
 from miles.utils.dp_schedule import build_dp_schedule, has_full_schedule_config
 from miles.utils.multi_lora import is_multi_lora_enabled
 from miles.utils.object_store import ValueSpec
+from miles.utils.sampling import sampling_mask_replay_enabled
 from miles.utils.seqlen_balancing import get_seqlen_balanced_partitions
 from miles.utils.timer import Timer
 from miles.utils.types import Sample
@@ -17,6 +18,8 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "tokens": "int32",
     "loss_masks": "int32",
     "rollout_log_probs": "float32",
+    "rollout_sampling_mask_ids": "int32",
+    "rollout_sampling_mask_offsets": "int32",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
     "rollout_routed_experts": "int32",
@@ -111,6 +114,25 @@ def convert_samples_to_train_data(
     # Add rollout log probabilities for off-policy correction
     if samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
+
+    if sampling_mask_replay_enabled(args):
+        sampling_mask_ids = []
+        sampling_mask_offsets = []
+        for position, sample in enumerate(samples):
+            sample.validate()
+            ids = sample.rollout_sampling_mask_ids
+            offsets = sample.rollout_sampling_mask_offsets
+            if ids is None:
+                raise ValueError(
+                    "truncated sampling requires sampling-mask data for every training sample; "
+                    f"missing at position={position}, sample_index={sample.index}, status={sample.status}"
+                )
+
+            sampling_mask_ids.append(ids)
+            sampling_mask_offsets.append(offsets)
+
+        train_data["rollout_sampling_mask_ids"] = sampling_mask_ids
+        train_data["rollout_sampling_mask_offsets"] = sampling_mask_offsets
 
     if samples[0].rollout_routed_experts is not None:
         train_data["rollout_routed_experts"] = [sample.rollout_routed_experts for sample in samples]
@@ -366,6 +388,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "rollout_ids",
             "rollout_mask_sums",
             "rollout_log_probs",
+            "rollout_sampling_mask_ids",
+            "rollout_sampling_mask_offsets",
             "rollout_routed_experts",
             "rollout_indexer_topk",
             "prompt",

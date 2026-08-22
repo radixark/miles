@@ -35,6 +35,8 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "response_length": ValueSpec("json"),
     "loss_mask": ValueSpec("tensor_list", np.dtype(np.uint8)),
     "rollout_log_probs": ValueSpec("tensor_list", np.dtype(np.float64)),
+    "rollout_sampling_mask_ids": ValueSpec("tensor_list", np.dtype(np.int32)),
+    "rollout_sampling_mask_offsets": ValueSpec("tensor_list", np.dtype(np.int32)),
     "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "status": ValueSpec("json"),

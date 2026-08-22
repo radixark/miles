@@ -41,6 +41,11 @@ from .generate_utils.generate_endpoint_utils import (
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
+from .generate_utils.sampling_mask import (
+    append_sampling_metadata,
+    set_sampling_mask_request_defaults,
+    should_return_sampling_mask,
+)
 from .rm_hub import async_rm, batched_async_rm
 
 __all__ = ["generate_rollout", "get_model_url"]
@@ -138,7 +143,13 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
-async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
+async def generate(
+    args: Namespace,
+    sample: Sample,
+    sampling_params: dict[str, Any],
+    *,
+    evaluation: bool = False,
+) -> Sample:
     """Generate using traditional SGLang router with token-based workflow"""
     if args.ci_test:
         assert isinstance(sample.prompt, str)
@@ -171,11 +182,22 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status = Sample.Status.TRUNCATED
         return sample
 
+    return_sampling_mask = should_return_sampling_mask(args, sampling_params, evaluation=evaluation)
+    if return_sampling_mask:
+        set_sampling_mask_request_defaults(
+            sampling_params,
+            top_p=args.rollout_top_p,
+            top_k=args.rollout_top_k,
+            temperature=args.rollout_temperature,
+        )
+
     # Prepare payload for sglang server
     payload = {
         "sampling_params": sampling_params,
         "return_logprob": True,
     }
+    if return_sampling_mask:
+        payload["return_sampling_mask"] = True
     opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
@@ -237,6 +259,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
     else:
         new_response_tokens, new_response_log_probs = [], []
+
+    if payload.get("return_sampling_mask", False):
+        new_response_log_probs = append_sampling_metadata(sample, new_response_tokens, output["meta_info"])
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
@@ -323,7 +348,7 @@ async def generate_and_rm(
                 )
                 sample = output.samples
             else:
-                sample = await generate(args, sample, sampling_params)
+                sample = await generate(args, sample, sampling_params, evaluation=evaluation)
 
     if sink is not None:
         sink.attempt_end(sample)

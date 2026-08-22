@@ -25,7 +25,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from tests.fast.rollout.session.test_samples import _make_record
 
-from miles.rollout.session.core import SessionCore
+from miles.rollout.session.core import SessionCore, prepare_chat_request
+from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample
 from miles.rollout.session.sessions import setup_session_routes
@@ -71,6 +72,52 @@ def _build_core(use_addition_r3: bool = False) -> SessionCore:
     return SessionCore(
         _UnusedBackend(), registry, _ARGS, _ARGS.session_server_instance_id, use_addition_r3=use_addition_r3
     )
+
+
+def test_session_request_uses_native_sampling_replay_without_overwriting_filters():
+    args = SimpleNamespace(
+        rollout_top_p=0.95,
+        rollout_top_k=32,
+        rollout_temperature=0.7,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+    tokenizer = SimpleNamespace(chat_template_kwargs={})
+    body = json.dumps(
+        {
+            "top_p": 0.8,
+            "custom_params": {"caller_option": "kept"},
+        }
+    ).encode()
+
+    request, _, _ = prepare_chat_request(body, args, tokenizer)
+
+    assert request["return_sampling_mask"] is True
+    assert request["temperature"] == 0.7
+    assert request["top_p"] == 0.8
+    assert request["top_k"] == 32
+    assert request["custom_params"] == {"caller_option": "kept"}
+
+
+def test_session_request_cannot_disable_required_sampling_replay():
+    args = SimpleNamespace(
+        rollout_top_p=0.95,
+        rollout_top_k=32,
+        rollout_temperature=1.0,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+    tokenizer = SimpleNamespace(chat_template_kwargs={})
+
+    with pytest.raises(
+        MessageValidationError,
+        match="return_sampling_mask cannot be disabled",
+    ):
+        prepare_chat_request(
+            json.dumps({"return_sampling_mask": False}).encode(),
+            args,
+            tokenizer,
+        )
 
 
 @pytest.fixture(scope="module")

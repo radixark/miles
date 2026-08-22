@@ -284,10 +284,10 @@ class TestInputStatusValidation:
 class TestPayloadStructure:
     def test_sampling_params_passed_through(self, variant, generation_env):
         result = _run_generate(
-            variant, generation_env, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9}
+            variant, generation_env, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 1.0}
         )
         assert result.requests == [
-            expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 0.9})
+            expected_request(variant, sampling_params={"max_new_tokens": 16, "temperature": 0.5, "top_p": 1.0})
         ]
         assert listify(result.sample) == [expected_sample(variant)]
 

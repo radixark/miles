@@ -35,6 +35,7 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
+from miles.rollout.generate_utils.sampling_mask import should_return_sampling_mask
 from miles.utils.misc import load_function
 from miles.utils.types import Sample
 
@@ -72,10 +73,17 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     t_start = time.monotonic()
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
+        request_kwargs = build_chat_request_kwargs(input.sampling_params)
+        if should_return_sampling_mask(
+            input.args,
+            input.sampling_params,
+            evaluation=input.evaluation,
+        ):
+            request_kwargs["return_sampling_mask"] = True
         agent_metadata = await custom_agent_function(
             base_url=tracer.base_url,
             prompt=input.sample.prompt,
-            request_kwargs=build_chat_request_kwargs(input.sampling_params),
+            request_kwargs=request_kwargs,
             metadata=metadata,
         )
         logger.debug(f"{log_prefix} Agent function returned in {time.monotonic()-t_start:.1f}s")
