@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -49,11 +49,24 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+@dataclass(frozen=True)
+class RolloutPostprocessOptions:
+    """Postprocessing policy declared by a rollout function for its output.
+
+    ``pad_to_dp`` appends zero-loss sentinel samples until the flattened batch
+    is divisible by the data-parallel size. Negative sample indices mark
+    padding for downstream correlation.
+    """
+
+    pad_to_dp: bool = False
+
+
 # TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
+    postprocess: RolloutPostprocessOptions = field(default_factory=RolloutPostprocessOptions)
 
 
 # TODO make it frozen

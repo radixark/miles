@@ -77,6 +77,23 @@ class TestPostprocessRolloutData:
         out, _meta = postprocess_rollout_data(args, nested, train_parallel_config={"dp_size": 1})
         assert len(out) == 3
 
+    def test_pad_to_dp_adds_zero_loss_rows_before_dynamic_batch_sizing(self):
+        args = make_args(global_batch_size=8, disable_rollout_trim_samples=False, use_dynamic_global_batch_size=True)
+        data = [make_sample(index=i, response_length=2, loss_mask=[1, 1]) for i in range(5)]
+
+        out, meta = postprocess_rollout_data(
+            args,
+            data,
+            train_parallel_config={"dp_size": 4},
+            pad_to_dp=True,
+        )
+
+        assert [sample.index for sample in out] == [0, 1, 2, 3, 4, -1, -1, -1]
+        assert all(sample.rollout_id is None for sample in out[-3:])
+        assert all(sample.loss_mask == [0, 0] for sample in out[-3:])
+        assert data[-1].index == 4 and data[-1].loss_mask == [1, 1]
+        assert meta["dynamic_global_batch_size"] == len(out) == 8
+
 
 class TestValidateRolloutIdAnnotated:
     def test_flat_list_skips_validation(self):
