@@ -352,8 +352,9 @@ class DistBucketedWeightUpdateMixin:
 
         Full: pause → base non-expert (TP) → base expert (EP) → resume.
         LoRA: pause → LoRA adapter (every iteration) → resume. The frozen base is
-        never pushed; the remote rollout engines already load it from
-        ``hf_checkpoint`` at init.
+        not pushed; the remote rollout engines already load it from
+        ``hf_checkpoint`` at init. The exception is the first update with
+        ``--check-weight-update-equal``, which restores the weights scrambled at startup.
         """
         self.weight_version += 1
 
@@ -366,9 +367,12 @@ class DistBucketedWeightUpdateMixin:
             is_lora = getattr(self, "is_lora", False)
             is_multi_lora = is_lora and is_multi_lora_enabled(self.args)
 
-            # LoRA: base weights are frozen and already loaded by the rollout engines
-            # from ``hf_checkpoint``, so only full-param runs sync the base.
-            if not is_lora:
+            # LoRA normally keeps the frozen base on the remote engines. The checker
+            # overwrites that copy only at startup, so restore it on the first update.
+            skip_base_sync = is_lora and not (
+                getattr(self.args, "check_weight_update_equal", False) and self.weight_version == 1
+            )
+            if not skip_base_sync:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
                 self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)

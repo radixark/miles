@@ -9,6 +9,7 @@ Verifies that silent failures are caught:
 """
 
 from argparse import Namespace
+from contextlib import nullcontext
 from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -16,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
+from miles.backends.megatron_utils.lora_utils import _is_adapter_param_name, is_lora_weight_name
 from miles.backends.megatron_utils.update_weight.common import _check_weight_sync_results
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
     UpdateWeightFromDistributed,
@@ -513,3 +514,128 @@ class TestBroadcastLoraImplementation:
         fake_self = self._make_self(engines=engines)
         with pytest.raises(RuntimeError, match="LoRA weight sync failed"):
             self._run(fake_self, SAMPLE_LORA_WEIGHTS)
+
+
+class TestDistBaseSyncGating:
+    """The weight checker forces a frozen-base sync that LoRA normally skips."""
+
+    @staticmethod
+    def _make_self(*, is_lora, check_equal):
+        return SimpleNamespace(
+            weight_version=0,
+            is_lora=is_lora,
+            args=Namespace(check_weight_update_equal=check_equal),
+            _is_source=True,
+            _group_name="g",
+            _update_weight_implementation=MagicMock(),
+            _pause_and_prepare_engines=MagicMock(),
+            _finalize_and_resume_engines=MagicMock(),
+            _gather_and_update_non_expert_weights=MagicMock(),
+            _gather_and_update_expert_weights=MagicMock(),
+            _update_lora_weights=MagicMock(),
+            _update_multi_lora_weights=MagicMock(),
+        )
+
+    @pytest.mark.parametrize(
+        ("is_lora", "check_equal", "expected_base_sync_counts"),
+        [
+            (True, False, (0, 0)),
+            (True, True, (1, 1)),
+            (False, False, (1, 2)),
+            (False, True, (1, 2)),
+        ],
+    )
+    def test_base_sync_gating(self, is_lora, check_equal, expected_base_sync_counts):
+        fake_self = self._make_self(is_lora=is_lora, check_equal=check_equal)
+        non_expert_sync_counts = []
+        expert_sync_counts = []
+        with (
+            patch(f"{_MIXIN_MODULE}.dist"),
+            patch(f"{_MIXIN_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_MIXIN_MODULE}.timer", lambda *a, **k: nullcontext()),
+            patch(f"{_MIXIN_MODULE}.tqdm", MagicMock()),
+            patch("miles.utils.multi_lora.is_multi_lora_enabled", return_value=False),
+        ):
+            for _ in range(2):
+                DistBucketedWeightUpdateMixin.update_weights(fake_self)
+                non_expert_sync_counts.append(fake_self._gather_and_update_non_expert_weights.call_count)
+                expert_sync_counts.append(fake_self._gather_and_update_expert_weights.call_count)
+
+        assert tuple(non_expert_sync_counts) == expected_base_sync_counts
+        assert tuple(expert_sync_counts) == expected_base_sync_counts
+        assert fake_self._update_lora_weights.call_count == (2 if is_lora else 0)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "module.decoder.layers.0.mlp.linear_fc1.adapter.linear_in.weight",
+        "module.decoder.layers.0.mlp.linear_fc1.adapters.0.linear_out.weight",
+        "module.decoder.layers.0.mlp.linear_fc1.lora_A.weight",
+    ],
+)
+def test_base_sync_filter_recognizes_single_and_multi_lora_params(name):
+    assert _is_adapter_param_name(name)
+
+
+class TestTensorBaseSyncGating:
+    """The tensor updater also restores checker-scrambled LoRA base weights only once."""
+
+    @staticmethod
+    def _make_self(*, is_lora, check_equal):
+        iterator = MagicMock()
+        iterator.get_hf_weight_chunks.side_effect = lambda *_args, weight_type: iter(
+            [SAMPLE_LORA_WEIGHTS if weight_type == "lora" else SAMPLE_BASE_ONLY_WEIGHTS]
+        )
+        return SimpleNamespace(
+            weight_version=0,
+            is_lora=is_lora,
+            args=Namespace(
+                check_weight_update_equal=check_equal,
+                colocate=True,
+                offload_rollout=False,
+                pause_generation_mode="retract",
+            ),
+            use_distribute=False,
+            rollout_engines=[MagicMock()],
+            weights_getter=MagicMock(return_value={}),
+            _hf_weight_iterator=iterator,
+            _send_base_params=MagicMock(return_value=([], None)),
+            _send_lora_params=MagicMock(return_value=([], None)),
+            _mm_tower_named_tensors=MagicMock(return_value=None),
+            _lora_base_synced=False,
+        )
+
+    @pytest.mark.parametrize(
+        ("is_lora", "check_equal", "expected_base_sync_counts"),
+        [
+            (True, False, (0, 0)),
+            (True, True, (1, 1)),
+            (False, False, (1, 2)),
+            (False, True, (1, 2)),
+        ],
+    )
+    def test_base_sync_gating(self, is_lora, check_equal, expected_base_sync_counts):
+        fake_self = self._make_self(is_lora=is_lora, check_equal=check_equal)
+        base_sync_counts = []
+        with (
+            patch(f"{_UW_MODULE}.dist") as dist_mock,
+            patch(f"{_UW_MODULE}.ray") as ray_mock,
+            patch(f"{_UW_MODULE}.get_gloo_group", return_value=MagicMock()),
+            patch(f"{_UW_MODULE}.lora_base_cpu_backup_enabled", return_value=False),
+            patch(f"{_UW_MODULE}.begin_weight_update") as begin_mock,
+            patch(f"{_UW_MODULE}.end_weight_update") as end_mock,
+            patch(f"{_UW_MODULE}._pp_assemble_full_adapter", side_effect=lambda tensors: tensors),
+            patch(f"{_UW_MODULE}.torch.cuda.ipc_collect"),
+            patch(f"{_UW_MODULE}.torch.cuda.empty_cache"),
+        ):
+            dist_mock.get_rank.return_value = 0
+            ray_mock.get.side_effect = lambda refs: refs
+            for _ in range(2):
+                UpdateWeightFromTensor.update_weights(fake_self)
+                base_sync_counts.append(fake_self._send_base_params.call_count)
+
+        assert tuple(base_sync_counts) == expected_base_sync_counts
+        assert begin_mock.call_count == expected_base_sync_counts[-1]
+        assert end_mock.call_count == expected_base_sync_counts[-1]
+        assert fake_self._send_lora_params.call_count == (2 if is_lora else 0)
