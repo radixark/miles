@@ -68,7 +68,7 @@ def execute():
             f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}",
             "--sglang-tokenizer-path Qwen/Qwen3-0.6B",
             f"--ref-load {MODEL_DIR}/{MODEL_NAME}_torch_dist",
-            "--rollout-function-path verifiers_rollout.generate_rollout",
+            "--rollout-function-path verifiers_rollout.VerifiersRolloutFn",
             "--disable-rollout-global-dataset",
             "--num-rollout 1",
             "--rollout-batch-size 3",
@@ -112,7 +112,6 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
-            "MILES_USE_LEGACY_ROLLOUT_V1": "1",
             "PYTHONPATH": (
                 f"{VERIFIERS_SITE_PACKAGES}:{CODE_GOLF_DIR}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}"
             ),
