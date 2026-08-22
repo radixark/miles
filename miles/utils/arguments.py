@@ -114,6 +114,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--critic-num-gpus-per-node", type=int, default=None, help="Number of gpus per node for training actor"
             )
+            parser.add_argument(
+                "--opd-teacher-num-nodes",
+                type=int,
+                default=None,
+                help=(
+                    "Number of nodes for a disaggregated OPD teacher (--opd-type=megatron run on its own "
+                    "device mesh instead of colocated on the actor's own GPUs). Leave unset to keep the "
+                    "original --opd-type=megatron weight-swap behavior. Must be set together with "
+                    "--opd-teacher-num-gpus-per-node."
+                ),
+            )
+            parser.add_argument(
+                "--opd-teacher-num-gpus-per-node",
+                type=int,
+                default=None,
+                help="Number of GPUs per node for a disaggregated OPD teacher. See --opd-teacher-num-nodes.",
+            )
 
             parser.add_argument(
                 "--rollout-num-gpus",
@@ -1626,7 +1643,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Type of on-policy distillation. "
                     "'sglang': Teacher log-probs are obtained from external SGLang server during rollout. "
-                    "'megatron': Teacher model is loaded via --opd-teacher-load and forwarded during training."
+                    "'megatron': Teacher model is loaded via --opd-teacher-load and forwarded during training, "
+                    "colocated on the actor's own GPUs unless --opd-teacher-num-nodes is also set, in which "
+                    "case the teacher runs on its own disaggregated device mesh and only hidden states "
+                    "(not full-vocab logits) are transferred to the student for a full-vocab reverse-KL."
                 ),
             )
             parser.add_argument(
@@ -3018,6 +3038,49 @@ def miles_validate_args(args):
                     f"opd_teacher_load {args.opd_teacher_load} does not have latest_checkpointed_iteration.txt, "
                     "please make sure it is a valid megatron checkpoint directory."
                 )
+            if (args.opd_teacher_num_nodes is None) != (args.opd_teacher_num_gpus_per_node is None):
+                raise ValueError(
+                    "--opd-teacher-num-nodes and --opd-teacher-num-gpus-per-node must be set together "
+                    "to run a disaggregated OPD teacher; leave both unset for the colocated weight-swap teacher."
+                )
+            if args.opd_teacher_num_nodes is not None and args.megatron_to_hf_mode == "bridge":
+                raise ValueError(
+                    "A disaggregated OPD teacher (--opd-teacher-num-nodes) is not supported with "
+                    "--megatron-to-hf-mode bridge: the bridge model provider has no output-layer hook "
+                    "to return hidden states instead of logits."
+                )
+            if args.opd_teacher_num_nodes is not None:
+                if args.fully_async:
+                    raise ValueError(
+                        "A disaggregated OPD teacher is not supported with --fully-async yet: only the "
+                        "synchronous driver (train.py) sends teacher hidden states each rollout step."
+                    )
+                teacher_gpus = args.opd_teacher_num_nodes * args.opd_teacher_num_gpus_per_node
+                actor_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
+                if teacher_gpus != actor_gpus:
+                    raise ValueError(
+                        f"A disaggregated OPD teacher needs the same total GPU count as the actor "
+                        f"({teacher_gpus} != {actor_gpus}): hidden states are transferred rank-for-rank between "
+                        "matching teacher/student ranks, which otherwise have no well-defined pairing."
+                    )
+                if getattr(args, "tensor_model_parallel_size", 1) != 1:
+                    raise ValueError(
+                        "A disaggregated OPD teacher requires --tensor-model-parallel-size=1 on the student: "
+                        "the local teacher-unembedding replica holds the full, unsharded vocab, and "
+                        "reconciling that against vocab-parallel-sharded student logits isn't implemented yet."
+                    )
+                if getattr(args, "context_parallel_size", 1) != 1:
+                    raise ValueError(
+                        "A disaggregated OPD teacher requires --context-parallel-size=1 on the student: the "
+                        "hidden-state transfer assumes one whole sequence per response length, which context "
+                        "parallelism (splitting sequences across ranks) isn't implemented to reconcile yet."
+                    )
+                if enable_experimental_ft_trainer():
+                    raise ValueError(
+                        "A disaggregated OPD teacher is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: "
+                        "the v2 fault-tolerant train group does not have the NCCL rank-pairing wiring yet. "
+                        "Unset MILES_EXPERIMENTAL_FT_TRAINER or use the colocated weight-swap teacher."
+                    )
 
         elif args.opd_type == "sglang":
             if args.opd_teacher_load is not None:
@@ -3025,11 +3088,21 @@ def miles_validate_args(args):
                     "--opd-teacher-load should not be set when --opd-type=sglang. "
                     "In sglang mode, teacher log-probs are obtained from external server during rollout."
                 )
+            if args.opd_teacher_num_nodes is not None or args.opd_teacher_num_gpus_per_node is not None:
+                raise ValueError(
+                    "--opd-teacher-num-nodes/--opd-teacher-num-gpus-per-node are only supported with "
+                    "--opd-type=megatron."
+                )
     else:
         if args.opd_teacher_load is not None:
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
+        if args.opd_teacher_num_nodes is not None or args.opd_teacher_num_gpus_per_node is not None:
+            raise ValueError(
+                "--opd-teacher-num-nodes/--opd-teacher-num-gpus-per-node are set but --use-opd is not enabled. "
+                "Please add --use-opd flag."
+            )
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":

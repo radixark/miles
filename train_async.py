@@ -34,7 +34,7 @@ async def train(args):
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model, _opd_teacher_model = await create_training_models(args, pgs, rollout_manager)
 
     if args.control_server_port:
         start_control_server(

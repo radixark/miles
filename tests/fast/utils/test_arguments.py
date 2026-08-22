@@ -529,6 +529,120 @@ def test_critic_rejects_reward_level_kl(tmp_path):
         miles_validate_args(args)
 
 
+@pytest.mark.parametrize(
+    "opd_args, needs_teacher_load, match",
+    [
+        (["--use-opd", "--opd-type", "megatron", "--opd-teacher-num-nodes", "1"], True, "must be set together"),
+        (
+            [
+                "--use-opd",
+                "--opd-type",
+                "sglang",
+                "--opd-teacher-num-nodes",
+                "1",
+                "--opd-teacher-num-gpus-per-node",
+                "8",
+            ],
+            False,
+            "only supported with --opd-type=megatron",
+        ),
+        (
+            ["--opd-teacher-num-nodes", "1", "--opd-teacher-num-gpus-per-node", "8"],
+            False,
+            "--use-opd is not enabled",
+        ),
+        (
+            ["--use-opd", "--opd-type", "megatron", "--opd-teacher-num-nodes", "1", "--opd-teacher-num-gpus-per-node", "1"],
+            True,
+            "needs the same total GPU count as the actor",
+        ),
+        (
+            [
+                "--use-opd",
+                "--opd-type",
+                "megatron",
+                "--opd-teacher-num-nodes",
+                "1",
+                "--opd-teacher-num-gpus-per-node",
+                "8",
+                "--fully-async",
+            ],
+            True,
+            "not supported with --fully-async",
+        ),
+    ],
+    ids=[
+        "node-flags-must-be-paired",
+        "rejected-for-sglang-type",
+        "rejected-without-use-opd",
+        "rejected-for-mismatched-gpu-count",
+        "rejected-for-fully-async",
+    ],
+)
+def test_opd_teacher_node_flags_validation(tmp_path, opd_args, needs_teacher_load, match):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    teacher_load_args = ["--opd-teacher-load", str(tmp_path)] if needs_teacher_load else []
+    args = parser.parse_args(
+        opd_args + teacher_load_args + ["--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(ValueError, match=match):
+        miles_validate_args(args)
+
+
+def test_opd_teacher_disaggregation_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
+    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--use-opd",
+            "--opd-type",
+            "megatron",
+            "--opd-teacher-load",
+            str(tmp_path),
+            "--opd-teacher-num-nodes",
+            "1",
+            "--opd-teacher-num-gpus-per-node",
+            "8",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(ValueError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
+        miles_validate_args(args)
+
+
+def test_opd_teacher_disaggregation_accepted_with_both_node_flags(tmp_path):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--use-opd",
+            "--opd-type",
+            "megatron",
+            "--opd-teacher-load",
+            str(tmp_path),
+            "--opd-teacher-num-nodes",
+            "1",
+            "--opd-teacher-num-gpus-per-node",
+            "8",
+            "--hf-checkpoint",
+            str(tmp_path),
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    miles_validate_args(args)
+
+
 class TestMultiLoRAValidation:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

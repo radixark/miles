@@ -19,6 +19,26 @@ from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 logger = logging.getLogger(__name__)
 
 
+async def _train_actor_with_opd_teacher(
+    actor_model, opd_teacher_model, rollout_id, rollout_data_pack, external_data=None
+):
+    """For a disaggregated OPD teacher, compute and stash its hidden states in the Ray
+    object store first, then run the actor's training step with those references merged
+    into its external_data (rank i's teacher output paired with rank i's actor)."""
+    if opd_teacher_model is None:
+        return await actor_model.train(rollout_id, rollout_data_pack, external_data=external_data)
+
+    teacher_results = await opd_teacher_model.send_teacher_hidden_states(rollout_id, rollout_data_pack)
+    if external_data is None:
+        combined_external_data = teacher_results
+    else:
+        combined_external_data = [
+            {**(rank_external_data or {}), **(rank_teacher_result or {})}
+            for rank_external_data, rank_teacher_result in zip(external_data, teacher_results, strict=True)
+        ]
+    return await actor_model.train(rollout_id, rollout_data_pack, external_data=combined_external_data)
+
+
 async def train(args):
     assert not args.fully_async, "--fully-async requires the async driver: run train_async.py"
     configure_logger(args, source=MainProcessIdentity())
@@ -33,7 +53,7 @@ async def train(args):
     rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model, opd_teacher_model = await create_training_models(args, pgs, rollout_manager)
 
     if args.control_server_port:
         start_control_server(
@@ -111,11 +131,13 @@ async def train(args):
             if args.offload_train:
                 await critic_model.offload()
             if rollout_id >= args.num_critic_only_steps:
-                await actor_model.train(rollout_id, rollout_data_pack, external_data=values)
+                await _train_actor_with_opd_teacher(
+                    actor_model, opd_teacher_model, rollout_id, rollout_data_pack, external_data=values
+                )
                 if args.offload_train:
                     await actor_model.offload()
         else:
-            await actor_model.train(rollout_id, rollout_data_pack)
+            await _train_actor_with_opd_teacher(actor_model, opd_teacher_model, rollout_id, rollout_data_pack)
         remove_rollout_data_refs(args, rollout_data_pack)
 
         external_save = args.save_trigger_sentinel is not None and os.path.exists(args.save_trigger_sentinel)

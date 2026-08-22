@@ -41,10 +41,13 @@ from ..training_utils.data import DataIterator, get_data_iterator, get_num_rollo
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import (
     compute_advantages_and_returns,
+    get_hidden_states,
     get_log_probs_and_entropy,
+    get_opd_full_kl,
     get_values,
     log_train_advantage_computation_event,
 )
+from ..training_utils.opd_teacher_unembedding import build_teacher_unembedding
 from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
@@ -55,6 +58,7 @@ from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
+from .model_provider import install_teacher_hidden_states_passthrough
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
@@ -175,6 +179,8 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.save = self.args.critic_save
             self.args.lr = self.args.critic_lr
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
+        elif role == "opd_teacher":
+            self.args.load = self.args.opd_teacher_load
         else:
             for m in all_replay_managers:
                 m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
@@ -212,8 +218,12 @@ class MegatronTrainRayActor(TrainRayActor):
         start_rollout_id = loaded_rollout_id + 1
         self._asleep = False
 
-        if role == "critic":
-            if self.args.offload_train:
+        if role == "opd_teacher":
+            for model_chunk in self.model:
+                install_teacher_hidden_states_passthrough(model_chunk)
+
+        if role in ("critic", "opd_teacher"):
+            if self.args.offload_train and role == "critic":
                 self.sleep()
             return start_rollout_id
 
@@ -239,6 +249,10 @@ class MegatronTrainRayActor(TrainRayActor):
         # Load teacher model for Megatron-based on-policy distillation
         if with_opd_teacher:
             self.load_other_checkpoint("teacher", args.opd_teacher_load)
+
+        self._teacher_unembedding = None
+        if self.args.opd_teacher_num_nodes is not None:
+            self._teacher_unembedding = build_teacher_unembedding(self.args, device=torch.cuda.current_device())
 
         if self.args.keep_old_actor:
             # Load old_actor checkpoint
@@ -378,6 +392,60 @@ class MegatronTrainRayActor(TrainRayActor):
             )
 
     @with_logs
+    def compute_teacher_hidden_states(
+        self,
+        data_iterator: list[DataIterator],
+        num_microbatches: list[int],
+        rollout_id: int,
+    ) -> dict[str, list[torch.Tensor]]:
+        with timer("teacher_hidden_states"):
+            return forward_only(
+                get_hidden_states,
+                self.args,
+                self.model,
+                data_iterator,
+                num_microbatches,
+                rollout_id=rollout_id,
+            )
+
+    @with_logs
+    def send_teacher_hidden_states(self, rollout_id: int, rollout_data_ref: Box) -> dict[str, Box]:
+        rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
+        with store_get_result:
+            data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+            result = self.compute_teacher_hidden_states(data_iterator, num_microbatches, rollout_id=rollout_id)
+        tensors = result.get("teacher_hidden_states", [])
+        return {"teacher_hidden_states": Box(ray.put([tensor.detach().cpu() for tensor in tensors]))}
+
+    @with_logs
+    def compute_opd_full_kl(
+        self,
+        data_iterator: list[DataIterator],
+        num_microbatches: list[int],
+        rollout_id: int,
+        teacher_hidden_states: list[torch.Tensor],
+    ) -> dict[str, list[torch.Tensor]]:
+        teacher_hidden_states_iter = iter(teacher_hidden_states)
+
+        def _callback(logits, **kwargs):
+            return get_opd_full_kl(
+                logits,
+                teacher_unembedding=self._teacher_unembedding,
+                teacher_hidden_states_iter=teacher_hidden_states_iter,
+                **kwargs,
+            )
+
+        with timer("opd_full_kl"):
+            return forward_only(
+                _callback,
+                self.args,
+                self.model,
+                data_iterator,
+                num_microbatches,
+                rollout_id=rollout_id,
+            )
+
+    @with_logs
     @event_logger_context(
         lambda _self, rollout_id, rollout_data_ref, witness_info=None, attempt=0, external_data=None: dict(
             rollout_id=rollout_id, attempt=attempt
@@ -460,6 +528,21 @@ class MegatronTrainRayActor(TrainRayActor):
     def _use_rollout_replay(self, m) -> bool:
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
+    def _receive_teacher_hidden_states(self, external_data: dict) -> dict[str, list[torch.Tensor]]:
+        if not get_parallel_state().is_pp_last_stage:
+            return {}
+        hidden_states_ref = external_data.get("teacher_hidden_states")
+        assert hidden_states_ref is not None, (
+            "opd_teacher and actor share the same parallel topology, so the opd_teacher rank "
+            "paired with a pp-last-stage actor rank must have shipped 'teacher_hidden_states'"
+        )
+        device = torch.cuda.current_device()
+        return {
+            "teacher_hidden_states": [
+                tensor.to(device=device, non_blocking=True) for tensor in ray.get(hidden_states_ref.inner)
+            ]
+        }
+
     @with_logs
     def train_actor(
         self,
@@ -519,6 +602,8 @@ class MegatronTrainRayActor(TrainRayActor):
                             store_prefix="teacher_",
                         )
                     )
+                elif external_data is not None and "teacher_hidden_states" in external_data:
+                    rollout_data.update(self._receive_teacher_hidden_states(external_data))
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
                 if not skip_actor_forward_only and (
                     not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics
@@ -540,6 +625,16 @@ class MegatronTrainRayActor(TrainRayActor):
                     for m in all_replay_managers:
                         if self._use_rollout_replay(m):
                             m.clear_all_forward()
+
+                if "teacher_hidden_states" in rollout_data:
+                    rollout_data.update(
+                        self.compute_opd_full_kl(
+                            data_iterator,
+                            num_microbatches,
+                            rollout_id,
+                            rollout_data["teacher_hidden_states"],
+                        )
+                    )
 
                 if self.args.use_critic:
                     if external_data is not None and get_parallel_state().is_pp_last_stage:

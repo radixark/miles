@@ -45,7 +45,7 @@ class TrainRayActor(RayActor):
         master_addr,
         master_port,
         indep_dp_store_addr: str,
-        role: Literal["actor", "critic"],
+        role: Literal["actor", "critic", "opd_teacher"],
         cell_index: int,
     ):
         configure_logger(
