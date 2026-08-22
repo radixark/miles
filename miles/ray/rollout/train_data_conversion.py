@@ -19,6 +19,10 @@ ROLLOUT_DATA_TENSOR_DTYPES = {
     "rollout_log_probs": "float32",
     "teacher_log_probs": "float32",
     "opd_reverse_kl": "float32",
+    # Client-supplied per-token channels (tinker adapters); the binary
+    # loss_masks stay int32, these carry the float semantics.
+    "loss_weights": "float32",
+    "advantages": "float32",
     "rollout_routed_experts": "int32",
     "rollout_indexer_topk": "int32",
 }
@@ -60,12 +64,18 @@ def convert_samples_to_train_data(
     if (f := custom_convert_samples_to_train_data_func) is not None:
         return f(args, samples)
 
-    raw_rewards, rewards = _post_process_rewards(
-        args,
-        samples,
-        custom_reward_post_process_func=custom_reward_post_process_func,
-        prompt_group_sizes=metadata.get("prompt_group_sizes"),
-    )
+    tinker = metadata.get("batch_kind") == "tinker"
+    if tinker:
+        # Tinker batches carry no rewards: losses come from client-supplied
+        # per-token channels, never from reward post-processing.
+        raw_rewards = rewards = [0.0] * len(samples)
+    else:
+        raw_rewards, rewards = _post_process_rewards(
+            args,
+            samples,
+            custom_reward_post_process_func=custom_reward_post_process_func,
+            prompt_group_sizes=metadata.get("prompt_group_sizes"),
+        )
 
     assert len(raw_rewards) == len(samples)
     assert len(rewards) == len(samples)
@@ -109,7 +119,12 @@ def convert_samples_to_train_data(
         train_data["round_number"] = [sample.metadata["round_number"] for sample in samples]
 
     # Add rollout log probabilities for off-policy correction
-    if samples[0].rollout_log_probs is not None:
+    if tinker and any(sample.rollout_log_probs is not None for sample in samples):
+        train_data["rollout_log_probs"] = [
+            sample.rollout_log_probs if sample.rollout_log_probs is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+    elif samples[0].rollout_log_probs is not None:
         train_data["rollout_log_probs"] = [sample.rollout_log_probs for sample in samples]
 
     if samples[0].rollout_routed_experts is not None:
@@ -130,20 +145,39 @@ def convert_samples_to_train_data(
     if samples[0].teacher_log_probs is not None:
         train_data["teacher_log_probs"] = [sample.teacher_log_probs for sample in samples]
 
+    # Client-supplied per-token channels (tinker adapters). Absent tensors
+    # default to zeros so one selection may mix CE (weights) and IS/PPO
+    # (advantages) adapters.
+    if any(sample.loss_weights is not None for sample in samples):
+        train_data["loss_weights"] = [
+            sample.loss_weights if sample.loss_weights is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+    if any(sample.advantages is not None for sample in samples):
+        train_data["advantages"] = [
+            sample.advantages if sample.advantages is not None else [0.0] * sample.response_length
+            for sample in samples
+        ]
+
+    if tinker:
+        train_data["batch_kind"] = "tinker"
+        train_data["tinker_operation_lanes"] = _tinker_sample_lanes(metadata["tinker_operation_lanes"], len(samples))
+        train_data["tinker_loss_by_lane"] = metadata["tinker_loss_by_lane"]
+        train_data["operation_by_lane"] = metadata["operation_by_lane"]
+        train_data["registration_by_lane"] = metadata["registration_by_lane"]
+        if (lease := metadata.get("batch_execution_lease")) is not None:
+            train_data["batch_execution_lease"] = lease
+        if metadata.get("tinker_forward_only"):
+            train_data["tinker_forward_only"] = True
+
     if any(sample.adapter is not None for sample in samples):
         assert all(sample.adapter is not None for sample in samples), "Cannot mix adapter and adapter-less samples"
-        train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
-        # Slots whose adapter batch completes with this batch: the trainer scales their
-        # accumulated gradients by 1/adapter-batch-size and advances the LR schedule.
-        step_slots = sorted(metadata.get("step_slots", []))
-        train_data["step_slots"] = step_slots
-        train_data["step_adapter_names"] = sorted(metadata.get("step_adapter_names", []))
-        step_slot_set = set(step_slots)
-        train_data["step_adapter_batch_sizes"] = {
-            sample.adapter.slot: sample.metadata["adapter_global_batch_size"]
-            for sample in samples
-            if sample.adapter.slot in step_slot_set
-        }
+        if tinker and metadata.get("batch_execution_lease") is not None:
+            train_data["adapter_slots"] = _adapter_slots_from_lease(
+                metadata, train_data["tinker_operation_lanes"], samples
+            )
+        else:
+            train_data["adapter_slots"] = [sample.adapter.slot for sample in samples]
 
     if (prompt_group_sizes := metadata.get("prompt_group_sizes")) is not None:
         train_data["prompt_group_sizes"] = prompt_group_sizes
@@ -157,6 +191,44 @@ def convert_samples_to_train_data(
         train_data["dynamic_global_batch_size"] = x
 
     return train_data
+
+
+def tinker_dispatch_summary(train_data: dict[str, Any]) -> dict[str, Any] | None:
+    if train_data.get("batch_kind") != "tinker":
+        return None
+    return {
+        "operation_ids": [op_id for op_id in train_data.get("operation_by_lane", {}).values() if op_id],
+        "lease": train_data.get("batch_execution_lease"),
+    }
+
+
+def _adapter_slots_from_lease(metadata: dict, sample_lanes: list[int], samples: list[Sample]) -> list[int]:
+    lease = metadata["batch_execution_lease"]
+    binding_by_op = {op_id: tuple(binding) for op_id, binding in lease["bindings_by_operation"]}
+    operation_by_lane = metadata["operation_by_lane"]
+    lane_ops = list(operation_by_lane.values())
+    if len(set(lane_ops)) != len(lane_ops) or set(lane_ops) != set(binding_by_op):
+        raise ValueError(
+            f"batch lease and lane plan disagree: lanes carry {sorted(lane_ops)}, "
+            f"lease carries {sorted(binding_by_op)}"
+        )
+    slots = []
+    for sample, lane in zip(samples, sample_lanes, strict=True):
+        name, registration_id, slot = binding_by_op[operation_by_lane[lane]]
+        if sample.adapter.name != name or sample.adapter.registration_id != registration_id:
+            raise ValueError(
+                f"sample stamped for adapter '{sample.adapter.name}' "
+                f"(registration '{sample.adapter.registration_id}') rides lane {lane}, "
+                f"which the batch lease binds to '{name}' (registration '{registration_id}')"
+            )
+        slots.append(slot)
+    return slots
+
+
+def _tinker_sample_lanes(lanes: list[int], num_samples: int) -> list[int]:
+    if not lanes or len(lanes) > num_samples:
+        raise ValueError(f"tinker selection has {len(lanes)} planned rows but {num_samples} samples")
+    return lanes + [lanes[-1]] * (num_samples - len(lanes))
 
 
 def _compute_rollout_mask_sums(rollout_ids: list[int], loss_masks: list[list[int]]) -> list[int]:
@@ -371,9 +443,14 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "prompt",
             "teacher_log_probs",
             "opd_reverse_kl",
+            # Client-supplied per-token channels (tinker adapters).
+            "loss_weights",
+            "advantages",
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
+            # Per-sample batch-local operation lane (tinker correlation plane).
+            "tinker_operation_lanes",
         ]:
             if key not in data:
                 continue
@@ -384,9 +461,12 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "raw_reward",
             "total_lengths",
             "dynamic_global_batch_size",
-            "step_slots",
-            "step_adapter_names",
-            "step_adapter_batch_sizes",
+            "tinker_loss_by_lane",
+            "operation_by_lane",
+            "registration_by_lane",
+            "batch_execution_lease",
+            "tinker_forward_only",
+            "batch_kind",
             "prompt_group_sizes",
         ]:
             if key not in data:

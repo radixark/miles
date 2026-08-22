@@ -505,6 +505,80 @@ def sft_loss_function(
     )
 
 
+def tinker_loss_function(
+    args: Namespace,
+    batch: RolloutBatch,
+    logits: torch.Tensor,
+    sum_of_sample_mean: Callable[[torch.Tensor], torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    specs_by_lane = batch["tinker_loss_by_lane"]
+    operation_lanes = batch["tinker_operation_lanes"]
+    response_lengths = batch["response_lengths"]
+    total_lengths = batch["total_lengths"]
+    max_seq_lens = batch.get("max_seq_lens", None)
+
+    log_probs = get_log_probs_and_entropy(
+        logits,
+        args=args,
+        unconcat_tokens=batch["unconcat_tokens"],
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        with_entropy=False,
+        max_seq_lens=max_seq_lens,
+    )["log_probs"]
+    local_masks = get_local_response_loss_masks(
+        total_lengths, response_lengths, batch["loss_masks"], args.qkv_format, max_seq_lens
+    )
+
+    def channel(key: str, i: int, loss_fn: str) -> torch.Tensor:
+        values = batch.get(key)
+        if values is None or values[i] is None:
+            raise ValueError(f"tinker loss '{loss_fn}' needs per-token '{key}'")
+        return values[i]
+
+    collector = batch.get("tinker_logprob_collector")
+    if collector is not None:
+        sample_indices = batch["sample_indices"]
+        for i, logp in enumerate(log_probs):
+            full = logp
+            if get_parallel_state().cp.size > 1:
+                full = all_gather_with_cp(logp, total_lengths[i], response_lengths[i])
+            collector[(operation_lanes[i], sample_indices[i])] = full.detach().float().cpu().tolist()
+
+    if batch.get("tinker_forward_only"):
+        loss = 0 * logits.sum()
+        return loss, {"loss": loss.clone().detach()}
+
+    loss = None
+    for i, logp in enumerate(log_probs):
+        spec = specs_by_lane.get(operation_lanes[i])
+        if spec is None:
+            raise ValueError(f"tinker backward batch has no loss spec for lane {operation_lanes[i]}")
+        loss_fn = spec.get("loss_fn", "cross_entropy")
+        config = spec.get("loss_fn_config") or {}
+        mask = local_masks[i].to(device=logp.device, dtype=logp.dtype)
+        if loss_fn == "cross_entropy":
+            sample_loss = -(logp * channel("loss_weights", i, loss_fn) * mask).sum()
+        elif loss_fn in ("importance_sampling", "ppo"):
+            ratio = torch.exp(logp - channel("rollout_log_probs", i, loss_fn))
+            advantages = channel("advantages", i, loss_fn)
+            surrogate = ratio * advantages
+            if loss_fn == "ppo":
+                low = config.get("clip_low_threshold", 0.8)
+                high = config.get("clip_high_threshold", 1.2)
+                surrogate = torch.minimum(surrogate, ratio.clamp(low, high) * advantages)
+            sample_loss = -(surrogate * mask).sum()
+        else:
+            raise ValueError(f"tinker operation in lane {operation_lanes[i]} requests unknown loss_fn '{loss_fn}'")
+        loss = sample_loss if loss is None else loss + sample_loss
+
+    if loss is None:
+        raise ValueError("tinker backward batch produced no loss terms; selections must be homogeneous")
+    loss = loss + 0 * logits.sum()
+
+    return loss, {"loss": loss.clone().detach()}
+
+
 def get_loss_function(args: Namespace) -> LossFunction:
     match args.loss_type:
         case "policy_loss":

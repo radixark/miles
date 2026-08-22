@@ -1,35 +1,39 @@
-"""Multi-LoRA control-plane HTTP API over a MultiLoRABackend.
-
-Subclass via ``--multi-lora-http-server-path`` (override add_routes /
-create_app)."""
-
 import asyncio
 from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from miles.ray.multi_lora.config import AdapterRunConfig, parse_adapter_run_yaml
 from miles.ray.multi_lora.registry import AdapterState
-from miles.utils.adapter_config import AdapterRunConfig, parse_adapter_run_yaml
+
+_NAMES_QUERY = Query(default_factory=list)
+
+
+class PublicRunConfig(BaseModel):
+    rank: int | None = None
+    save: str | None = None
+    num_step: int | None = None
+    metadata: dict[str, Any] = {}
+
+    def to_config(self) -> AdapterRunConfig:
+        return AdapterRunConfig(rank=self.rank, save=self.save, num_step=self.num_step, metadata=self.metadata)
 
 
 class RegisterAdapterRequest(BaseModel):
     """Exactly one of ``config`` (inline) or ``yaml_path`` must be set."""
 
     name: str
-    config: AdapterRunConfig | None = None
+    config: PublicRunConfig | None = None
     yaml_path: str | None = None
 
 
-_NAMES_QUERY = Query(default_factory=list)
-
-
-class MultiLoRAHTTPServer:
-    """Control-plane API over a MultiLoRABackend. Subclass via
-    --multi-lora-http-server-path (add_routes / create_app)."""
+class AdapterRunControlServer:
+    """Subclass via --multi-lora-http-server-path (add_routes / create_app)."""
 
     def __init__(self, backend, host="127.0.0.1", api_port=0):
         self.backend = backend
@@ -44,22 +48,26 @@ class MultiLoRAHTTPServer:
             return self.api_server.servers[0].sockets[0].getsockname()[1]
         return self.api_port
 
+    @property
+    def advertised_host(self) -> str:
+        if self.host in ("0.0.0.0", "::", ""):
+            from miles.utils.misc import get_current_node_ip
+
+            return get_current_node_ip()
+        return self.host
+
     def create_app(self) -> FastAPI:
-        app = FastAPI(title="Miles Multi-LoRA Controller")
+        app = FastAPI(title="Miles Multi-LoRA operation backend")
 
         @app.exception_handler(ValueError)
         async def value_error_handler(request: Request, exc: ValueError):
             return JSONResponse({"detail": str(exc)}, status_code=400)
 
-        @app.exception_handler(RuntimeError)
-        async def runtime_error_handler(request: Request, exc: RuntimeError):
-            status = 409 if "No free adapter slots" in str(exc) else 500
-            return JSONResponse({"detail": str(exc)}, status_code=status)
-
         return app
 
     def add_routes(self, app: FastAPI) -> None:
         app.get("/health")(self.health)
+        app.get("/info")(self.service_info)
         app.get("/adapter_runs")(self.list_adapters)
         app.get("/adapter_runs/state")(self.adapter_states)  # before /adapter_runs/{name}
         app.get("/adapter_runs/{name}")(self.get_adapter)
@@ -112,13 +120,16 @@ class MultiLoRAHTTPServer:
                 return status
         raise HTTPException(status_code=404, detail=f"Adapter '{name}' not registered")
 
+    async def service_info(self) -> dict:
+        return self.backend.service_info()
+
     async def register_adapter(self, request: RegisterAdapterRequest) -> dict:
         if (request.config is None) == (request.yaml_path is None):
             raise HTTPException(status_code=400, detail="Exactly one of 'config' or 'yaml_path' must be set")
         if request.yaml_path is not None:
             config = parse_adapter_run_yaml(Path(request.yaml_path))
         else:
-            config = request.config
+            config = request.config.to_config()
         return await self.backend.register(request.name, config)
 
     async def deregister_adapter(self, name: str) -> dict:

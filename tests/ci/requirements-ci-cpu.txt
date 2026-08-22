@@ -9,6 +9,8 @@ partial_json_parser==0.2.1.1.post7
 pyzmq==27.1.0
 sentencepiece==0.2.1
 tiktoken==0.13.0
+# The official tinker SDK wheel: the metrics-combiner contract test importorskips without it.
+tinker==0.24.1
 torch==2.11.0
 torchvision==0.26.0
 xgrammar==0.2.1

@@ -537,6 +537,7 @@ class TestMultiLoRAValidation:
             [
                 "--multi-lora-n-adapters",
                 "2",
+                "--tinker-backend",
                 "--lora-rank",
                 "8",
                 "--target-modules",
@@ -547,6 +548,27 @@ class TestMultiLoRAValidation:
             + extra
             + REQUIRED_ARGS
         )
+
+    def test_rejects_multi_lora_without_tinker_backend(self):
+        # The operation backend is currently the only supported Multi-LoRA path.
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            [
+                "--multi-lora-n-adapters",
+                "2",
+                "--lora-rank",
+                "8",
+                "--target-modules",
+                "linear_qkv",
+                "--num-rollout",
+                "1",
+            ]
+            + REQUIRED_ARGS
+        )
+
+        with pytest.raises(AssertionError, match="requires --tinker-backend"):
+            miles_validate_args(args)
 
     def test_rejects_multiple_tokenizer_workers(self):
         # Each sglang tokenizer worker holds its own LoRA registry, so per-step
@@ -563,13 +585,13 @@ class TestMultiLoRAValidation:
 
         assert args.multi_lora is True
 
-    def test_defaults_rollout_fn_and_data_source_to_multi_lora(self):
+    def test_defaults_rollout_fn_and_data_source_to_tinker(self):
         args = self._parse([])
 
         miles_validate_args(args)
 
-        assert args.rollout_function_path == "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-        assert args.data_source_path == "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+        assert args.rollout_function_path == "miles.rollout.multi_lora.rollout_fn.MultiLoraOperationBatchFn"
+        assert args.data_source_path == "miles.rollout.multi_lora.rollout_fn.TinkerNullDataSource"
         assert args.rollout_global_dataset is True
 
     def test_keeps_user_supplied_rollout_fn_and_data_source(self):
@@ -583,8 +605,8 @@ class TestMultiLoRAValidation:
         assert args.data_source_path == "my.custom.DataSource"
 
     def test_empty_wait_is_a_registered_argument(self):
-        assert self._parse([]).multi_lora_max_empty_wait_s == 30.0
-        assert self._parse(["--multi-lora-max-empty-wait-s", "5"]).multi_lora_max_empty_wait_s == 5.0
+        assert self._parse([]).tinker_max_empty_wait_s == 5.0
+        assert self._parse(["--tinker-max-empty-wait-s", "9"]).tinker_max_empty_wait_s == 9.0
 
     def test_rejects_non_adam_optimizer(self):
         # Per-slot optimizer isolation (state init, retirement cleanup, step

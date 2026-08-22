@@ -1796,12 +1796,63 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
             parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
+                "--tinker-backend",
+                action="store_true",
+                default=False,
+                help="Enable the Tinker protocol adapter for the Multi-LoRA operation backend "
+                "(client-driven forward_backward/optim_step; no dataset or reward on the server). "
+                "Requires --multi-lora-n-adapters > 0.",
+            )
+            parser.add_argument(
+                "--tinker-max-coalesce-wait-s",
+                type=float,
+                default=2.0,
+                help="After the first child batch is selected, keep coalescing further ready "
+                "batches into the same train call for this long (default: 2.0)",
+            )
+            parser.add_argument(
+                "--tinker-max-empty-wait-s",
+                type=float,
+                default=5.0,
+                help="End generate with EmptyBatchTimeoutError when no adapter produces a "
+                "batch within this window. Deliberately short: the driver treats it as a "
+                "yield back to the control phase, so queued optim_step/save/load operations "
+                "never wait behind an idle data queue (default: 5.0)",
+            )
+            parser.add_argument(
+                "--tinker-operation-gap-timeout",
+                type=float,
+                default=600.0,
+                help="Seconds a registration's operation stream may stall on a never-arriving "
+                "ordinal before the backend terminal-fails the blocked operations with a typed "
+                "user error naming the missing ordinal and seals the hole (the tinker SDK can "
+                "consume a seq_id and then fail client-side before HTTP: non-finite JSON "
+                "serialization, a cancelled future — no retry ever fills that ordinal). Sealed "
+                "ordinals never execute (a late arrival is a conflict) and nothing overtakes "
+                "them, so strict per-registration ordering is preserved; the client resubmits "
+                "as new operations. <= 0 disables (default: 600)",
+            )
+            parser.add_argument(
+                "--tinker-operation-claimed-ttl",
+                type=float,
+                default=1800.0,
+                help="Seconds an operation may hold CLAIMED without reaching a terminal state before "
+                "the backend terminal-fails it with a typed server error naming the operation and its "
+                "age. This is the liveness backstop for orphaned claims (e.g. a restarted rollout "
+                "executor whose in-memory runtimes vanished): an orphaned CLAIMED head otherwise "
+                "blocks its registration's queue forever — the gap-timeout sweep only covers "
+                "never-arrived QUEUED ordinals. Generous by design: legitimate train steps hold "
+                "CLAIMED for minutes. <= 0 disables (default: 1800)",
+            )
+            parser.add_argument(
+                "--multi-lora-max-consecutive-generate-failures",
+                type=int,
+                default=10,
+                help="Consecutive non-idle generate failures the multi-LoRA driver tolerates (log and "
+                "skip the round — failure paths restore unconsumed claims to READY, so a skipped round "
+                "self-heals) before re-raising and ending the run. A successful generate resets the "
+                "count. The driver owns the shared multi-tenant controller, so dying here takes every "
+                "tenant's service down. 0 fails fast on the first error (default: 10)",
             )
             parser.add_argument(
                 "--multi-lora-idle-poll-s",
@@ -1814,8 +1865,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                    "Dotted path to an AdapterRunControlServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: AdapterRunControlServer)"
                 ),
             )
             parser.add_argument(
@@ -1823,8 +1874,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
+                    "Dotted path to a MultiLoraOperationBackend subclass for the multi-LoRA controller, "
+                    "e.g. to add custom adapter validation via validate_adapter "
+                    "(default: MultiLoraOperationBackend)"
                 ),
             )
             parser.add_argument(
@@ -1832,40 +1884,6 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=int,
                 default=8068,
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
-            )
-            parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
-            )
-            parser.add_argument(
-                "--multi-lora-max-adapter-global-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "Registration-time upper bound on an adapter's samples per optimizer "
-                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
-                    "--global-batch-size."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-coalesce-wait-s",
-                type=float,
-                default=0.5,
-                help=(
-                    "Maximum time ready groups wait for the batch to fill toward "
-                    "--global-batch-size before training starts on what is ready (default: 0.5)."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-empty-wait-s",
-                type=float,
-                default=30.0,
-                help=(
-                    "How long a generate call waits for the first poppable group before "
-                    "failing with an empty-batch timeout (default: 30)."
-                ),
             )
             return parser
 
@@ -3130,6 +3148,10 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+
+    from miles.utils.tinker import validate_tinker_args
+
+    validate_tinker_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

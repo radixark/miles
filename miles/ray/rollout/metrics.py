@@ -173,6 +173,11 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
     if args.advantage_estimator == "ppo":
         return {}
 
+    # Reward-less batches (e.g. tinker client operations) have no reward
+    # plane: zero-std over missing rewards is meaningless, not zero.
+    if any(sample.get_reward_value(args) is None for sample in all_samples):
+        return {}
+
     def _is_zero_std(samples: list[Sample]):
         rewards = [sample.get_reward_value(args) for sample in samples]
         return len(rewards) == 0 or all(rewards[0] == r for r in rewards)
