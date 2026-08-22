@@ -34,7 +34,7 @@ Useful build args:
 | Arg | Default | What it does |
 |---|---|---|
 | `SGLANG_IMAGE_TAG` | `v0.5.12-cu129` | Base `lmsysorg/sglang` image. |
-| `SGLANG_DIFFUSION_BRANCH` | `main` | sglang branch the rollout engine is built from. |
+| `SGLANG_DIFFUSION_BRANCH` | `sglang-miles-h3` | sglang branch the rollout engine is built from; carries upstream `main` plus the diffusion rollouts this repo needs ahead of it. |
 | `SGLANG_DIFFUSION_COMMIT` | `none` | Pin a sglang sha; `none` follows the branch tip. |
 | `FA3_WHEELS_TAG` | `cu129-x86_64` | Which prebuilt FlashAttention-3 wheel to pull. |
 | `MILES_DIFFUSION_COMMIT` | `main` | Ref of miles_diffusion baked into the image. |
