@@ -48,6 +48,8 @@ def test_qwen3_dense_profile_resolves_model_names():
     assert profile.supports_tp_invariant
     assert get_megatron_model_type("Qwen3-4B") == "qwen3-4B"
     assert get_megatron_model_type("Qwen3-4B-Instruct-2507") == "qwen3-4B-Instruct-2507"
+    assert get_megatron_model_type("Qwen3-8B") == "qwen3-8B"
+    assert get_megatron_model_type("Qwen3-32B") == "qwen3-32B"
 
 
 def test_unknown_true_on_policy_model_fails_early():
