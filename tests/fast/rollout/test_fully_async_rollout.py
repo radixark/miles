@@ -352,6 +352,7 @@ async def test_sample_cancellation_aborts_group_without_stopping_worker(
 
 
 async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A cancelled worker fails the waiting step loudly instead of being filtered away as an abort."""
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -373,7 +374,7 @@ async def test_worker_cancellation_still_propagates(monkeypatch: pytest.MonkeyPa
     fn._worker.cancel()
 
     try:
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(RuntimeError, match="disposed while a step waited"):
             await asyncio.wait_for(drain, timeout=2)
         assert fn._worker.cancelled()
         assert data_source.recycled == []
@@ -979,6 +980,55 @@ class MultiPolicyDataSource(FakeDataSource):
         for sample in group:
             sample.trainer_model_id = "a" if self.num_get_calls % 2 == 1 else "b"
         return [group]
+
+
+class WedgedBuffer(data_buffer.DataBuffer):
+    def __init__(self, input: data_buffer.DataBufferConstructorInput):
+        self._never = asyncio.Event()
+
+    async def put(self, input: data_buffer.DataBufferInput) -> None:
+        await self._never.wait()
+
+    async def get(self, **context) -> data_buffer.DataBufferInput:
+        await self._never.wait()
+        raise AssertionError("the wedged buffer never hands out a group")
+
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+        return {}
+
+
+class TestDisposal:
+    async def test_disposing_ends_the_producer_before_it_returns(self, monkeypatch):
+        """Teardown has to be done when it returns, or the rest of it races the producer's unwinding."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await asyncio.sleep(0.05)
+        assert not step.done()
+
+        await asyncio.wait_for(fn.dispose(), timeout=5)
+
+        assert fn._worker.cancelled()
+
+    async def test_disposing_fails_a_step_that_is_waiting_for_groups(self, monkeypatch):
+        """A run whose producer is parked when it ends must not leave the waiting step there forever."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await asyncio.sleep(0.05)
+
+        await fn.dispose()
+
+        with pytest.raises(RuntimeError, match="disposed while a step waited for groups"):
+            await asyncio.wait_for(step, timeout=5)
+
+    async def test_disposing_a_run_that_never_started_is_quiet(self, monkeypatch):
+        """dispose runs on every teardown path, including one that failed before the first step."""
+        fn = make_fn(monkeypatch, make_args(), FakeDataSource())
+
+        await fn.dispose()
+
+        assert fn._worker is None
 
 
 class RecordingMultiBuffer(data_buffer.DefaultMultiDataBuffer):
