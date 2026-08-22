@@ -64,6 +64,8 @@ ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 # Patches + requirements consumed below.
 # TODO: remove these patches once the changes are merged into the main codebase.
 COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
+COPY docker/amd_patch/latest/mooncake_rocm_p2p.patch /tmp/amd_patch/mooncake_rocm_p2p.patch
+COPY docker/amd_patch/latest/mooncake_rdma_mr_split.patch /tmp/amd_patch/mooncake_rdma_mr_split.patch
 COPY docker/amd_patch/latest/tile_kernels.patch /tmp/amd_patch/tile_kernels.patch
 COPY docker/amd_patch/latest/tilelang_hip_fp8.patch /tmp/amd_patch/tilelang_hip_fp8.patch
 COPY requirements.txt /tmp/requirements.txt
@@ -106,6 +108,31 @@ RUN pip install /tmp/wheels/flash_attn-*.whl
 RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}" && \
     cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')" && \
     rm -rf /tmp/mc
+
+# The ROCm base image's Mooncake native module does not include this upstream HIP DMA-BUF fix:
+# https://github.com/kvcache-ai/Mooncake/commit/45b84d36cfac14d5b6016a4d37832ff64d4c4293
+# Apply it and rebuild only the Python TransferEngine module so MI355X VRAM can be registered
+# for RDMA weight updates. The second patch backports upstream Mooncake commits
+# 7a938fb3 (max-MR chunking) and 4c2fa8ab (MR-boundary transfer slicing).
+RUN if git -C /sgl-workspace/Mooncake apply --check /tmp/amd_patch/mooncake_rocm_p2p.patch; then \
+      git -C /sgl-workspace/Mooncake apply /tmp/amd_patch/mooncake_rocm_p2p.patch; \
+    elif git -C /sgl-workspace/Mooncake apply --reverse --check /tmp/amd_patch/mooncake_rocm_p2p.patch; then \
+      echo "Mooncake ROCm P2P fix is already present"; \
+    else \
+      echo "Mooncake ROCm P2P patch does not apply cleanly" >&2; exit 1; \
+    fi && \
+    if git -C /sgl-workspace/Mooncake apply --check /tmp/amd_patch/mooncake_rdma_mr_split.patch; then \
+      git -C /sgl-workspace/Mooncake apply /tmp/amd_patch/mooncake_rdma_mr_split.patch; \
+    elif git -C /sgl-workspace/Mooncake apply --reverse --check /tmp/amd_patch/mooncake_rdma_mr_split.patch; then \
+      echo "Mooncake RDMA MR splitting fix is already present"; \
+    else \
+      echo "Mooncake RDMA MR splitting patch does not apply cleanly" >&2; exit 1; \
+    fi && \
+    cmake -S /sgl-workspace/Mooncake -B /sgl-workspace/Mooncake/build \
+      -DUSE_HIP=ON -DUSE_HIP_DMABUF=ON && \
+    cmake --build /sgl-workspace/Mooncake/build --target engine -j${MAX_JOBS} && \
+    cp /sgl-workspace/Mooncake/build/mooncake-integration/engine*.so \
+      "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')/"
 
 RUN pip install flash-linear-attention==0.4.2
 
