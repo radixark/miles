@@ -272,12 +272,16 @@ def save_multi_lora_checkpoints(
         try:
             if is_shard_writer:
                 tmp_dir.mkdir(parents=True, exist_ok=True)
-                shard: dict[str, torch.Tensor] = {
-                    name: param.data.cpu()
-                    for batch in model
-                    for name, param in batch.named_parameters()
-                    if ".adapter." in name
-                }
+                # The slot must stay exposed while walking named_parameters(): outside the
+                # context the parameters are named ``.adapters.{slot}.`` and the shard would
+                # be empty, so resume would silently restart from a fresh adapter.
+                with expose_adapter_slot(model, adapter.slot):
+                    shard: dict[str, torch.Tensor] = {
+                        name: param.data.cpu()
+                        for batch in model
+                        for name, param in batch.named_parameters()
+                        if ".adapter." in name
+                    }
                 native_path = tmp_dir / megatron_shard_name(tp_rank, pp_rank, ep_rank, ep_size)
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
