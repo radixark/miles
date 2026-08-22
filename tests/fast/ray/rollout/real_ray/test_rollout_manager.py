@@ -20,7 +20,27 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 
 from miles.ray.rollout.rollout_manager import RolloutManager
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    LeasedRolloutFnTrainOutput,
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    RolloutFnTrainInput,
+    RolloutFnTrainOutput,
+    TrainBatchLease,
+    TrainBatchRollbackReason,
+)
+
+
+class RecordingTrainBatchLease(TrainBatchLease):
+    def __init__(self, rollout_id: int, events: list[str]) -> None:
+        super().__init__(rollout_id=rollout_id)
+        self._events = events
+
+    def _commit(self) -> None:
+        self._events.append("commit")
+
+    def _rollback(self, reason: TrainBatchRollbackReason) -> None:
+        self._events.append(f"rollback:{reason.name}")
 
 
 @pytest.fixture
@@ -625,6 +645,42 @@ class TestGenerate:
             assert "loss_masks" in partition
             # 8 samples / 2 dp = 4 per rank
             assert len(partition["tokens"]) == 4
+
+    async def test_commits_leased_output_after_every_dp_shard_is_published(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+        monkeypatch,
+    ):
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.global_batch_size = 8
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        manager.train_parallel_config = {"dp_size": 2}
+
+        events: list[str] = []
+        lease = RecordingTrainBatchLease(rollout_id=42, events=events)
+        manager.generate_rollout = lambda input: LeasedRolloutFnTrainOutput(
+            samples=[make_samples_grouped(n_groups=2, group_size=4)],
+            metrics={"my_metric": 1.23},
+            lease=lease,
+        )
+        original_ray_put = ray.put
+
+        def recording_ray_put(value):
+            events.append("publish")
+            return original_ray_put(value)
+
+        monkeypatch.setattr(ray, "put", recording_ray_put)
+
+        result = await manager.generate(rollout_id=42)
+
+        assert events == ["publish", "publish", "commit"]
+        assert set(result) == {"sample_indices", "data_ref"}
+        assert len(result["data_ref"]) == 2
 
 
 @pytest.mark.asyncio
