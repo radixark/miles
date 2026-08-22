@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -49,11 +49,27 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+@dataclass(frozen=True)
+class RolloutPostprocessOptions:
+    """Postprocess policy the rollout fn declares for its own output, so the
+    generic manager never has to recognize fn-specific metadata keys.
+
+    pad_to_dp: zero-weight pad the flat sample list up to the DP grid instead
+    of trimming — for whole-batch selections (e.g. tinker client operations)
+    where dropping samples would corrupt the result plane.
+    """
+
+    pad_to_dp: bool = False
+
+
 # TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
+    metadata: dict[str, Any] | None = None
+    conversion_metadata: dict[str, Any] | None = None
+    postprocess: RolloutPostprocessOptions = field(default_factory=RolloutPostprocessOptions)
 
 
 # TODO make it frozen

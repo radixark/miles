@@ -146,7 +146,6 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
     reload_groups = Mock()
     destroy_groups = Mock()
     monkeypatch.setattr(actor_module, "save", save)
-    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
     monkeypatch.setattr(actor_module, "reload_process_groups", reload_groups)
     monkeypatch.setattr(actor_module, "destroy_process_groups", destroy_groups)
 
@@ -329,6 +328,8 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "witness_info": None,
         "attempt": 0,
         "ft_test_action_executor": None,
+        # Dataset-driven batches never request Tinker forward-only execution.
+        "forward_only": False,
     }
 
 

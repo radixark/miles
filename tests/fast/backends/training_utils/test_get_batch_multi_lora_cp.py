@@ -24,7 +24,8 @@ class _FakeIterator:
         self.rollout_data = {"n_adapters": n_adapters}
 
     def get_next(self, keys):
-        return {key: self._batch[key] for key in keys}
+        # DataIterator returns None for optional channels absent from a batch.
+        return {key: self._batch.get(key) for key in keys}
 
 
 KEYS = ["tokens", "loss_masks", "total_lengths", "response_lengths", "adapter_slots"]

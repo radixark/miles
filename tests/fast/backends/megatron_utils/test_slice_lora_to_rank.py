@@ -4,7 +4,7 @@ used by weight-sync and HF PEFT export (PEFT rejects tensors padded past the dec
 import pytest
 import torch
 
-from miles.backends.megatron_utils.multi_lora_utils import slice_lora_to_rank
+from miles.backends.megatron_utils.api_backends.multi_lora.model import slice_lora_to_rank
 
 
 def _padded(shape, live_rows=None, live_cols=None):

@@ -90,7 +90,7 @@ def get_rollout_data(
         rollout_data["max_seq_lens"] = [max_seq_len] * len(rollout_data["tokens"])
 
     # Full-response SGLang OPD fields share rollout CP slicing but retain float32 precision.
-    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl"):
+    for key in ("rollout_log_probs", "teacher_log_probs", "opd_reverse_kl", "loss_weights", "advantages"):
         if key in rollout_data:
             dtype = _rollout_logprob_dtype(args) if key == "rollout_log_probs" else torch.float32
             rollout_data[key] = [
@@ -155,12 +155,17 @@ def get_batch(
     assert "tokens" in keys
     # get_batch consumes adapter_slots itself (per-adapter token counts below);
     # fetch it here so callers don't have to know. None for non-multi-LoRA runs.
-    if "adapter_slots" not in keys:
-        keys = [*keys, "adapter_slots"]
+    for auto_key in ("adapter_slots", "tinker_operation_lanes"):
+        if auto_key not in keys:
+            keys = [*keys, auto_key]
     batch = data_iterator.get_next(keys)
 
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
+
+    for key in ("tinker_loss_by_lane", "tinker_forward_only", "tinker_logprob_collector"):
+        if key in data_iterator.rollout_data:
+            batch[key] = data_iterator.rollout_data[key]
 
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)

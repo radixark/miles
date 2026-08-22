@@ -606,8 +606,9 @@ class TestPostProcessRewardsProperties:
 
 class TestSplitTrainDataByDp:
     @pytest.fixture(autouse=True)
-    def _init_object_store(self):
+    def _init_object_store(self, monkeypatch):
         """split_train_data_by_dp puts through the object store singleton."""
+        monkeypatch.setattr(object_store, "_INSTANCE", None)
         object_store.init_instance(make_args())
 
     def test_strided_partition_when_balance_data_off(self):
