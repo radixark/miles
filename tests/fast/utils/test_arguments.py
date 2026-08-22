@@ -277,6 +277,58 @@ def test_custom_megatron_post_save_hook_path_requires_save():
         miles_validate_args(args)
 
 
+@pytest.mark.parametrize("rollout_num_gpus", [None, "0", "-1"])
+@pytest.mark.parametrize("rollout_external", [False, True])
+def test_debug_rollout_only_without_colocate_requires_positive_rollout_num_gpus(rollout_num_gpus, rollout_external):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    extra = [] if rollout_num_gpus is None else ["--rollout-num-gpus", rollout_num_gpus]
+    if rollout_external:
+        extra.append("--rollout-external")
+    args = parser.parse_args(["--debug-rollout-only", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="'--rollout-num-gpus' is required"):
+        miles_validate_args(args)
+
+
+def test_debug_modes_report_mutual_exclusion_before_missing_gpu_count():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--debug-rollout-only", "--debug-train-only", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="cannot be set at the same time"):
+        miles_validate_args(args)
+
+
+@pytest.mark.parametrize("rollout_num_gpus", [None, "0", "-1"])
+def test_rollout_external_requires_positive_logical_fleet_size(rollout_num_gpus):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    extra = [] if rollout_num_gpus is None else ["--rollout-num-gpus", rollout_num_gpus]
+    args = parser.parse_args(["--rollout-external", "--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    with pytest.raises(AssertionError, match="'--rollout-num-gpus' is required with '--rollout-external'"):
+        miles_validate_args(args)
+
+
+def test_rollout_external_colocate_derives_logical_fleet_size():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--rollout-external", "--colocate", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    miles_validate_args(args)
+
+    assert args.rollout_num_gpus == args.actor_num_gpus_per_node * args.actor_num_nodes
+
+
+def test_debug_train_only_external_does_not_require_rollout_fleet_size():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--rollout-external", "--debug-train-only", "--num-rollout", "1"] + REQUIRED_ARGS)
+
+    miles_validate_args(args)
+
+
 def test_dynamic_global_batch_size_requires_dynamic_batch_size():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
