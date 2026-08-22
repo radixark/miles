@@ -3,7 +3,7 @@ import logging
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import ray
 from ray.util.placement_group import PlacementGroup
@@ -12,6 +12,15 @@ from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.train.actor_factory import allocate_gpus_for_actor
 from miles.ray.train.cell import RayTrainCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
+from miles.ray.train_batch_admission import (
+    TrainBatchPublication,
+    TrainerAdmissionReceipt,
+    TrainerCellCohort,
+    TrainerCohort,
+    TrainerCohortChangedError,
+    TrainerRankReceipt,
+    validate_publication_data_ref,
+)
 from miles.utils.async_utils import AsyncioGatherUtils
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
@@ -37,6 +46,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RETRY_MAX_ATTEMPTS = 30
+
+
+def _same_identity_sequence(actual: Sequence[object], expected: Sequence[object]) -> bool:
+    return len(actual) == len(expected) and all(
+        actual_item is expected_item for actual_item, expected_item in zip(actual, expected, strict=True)
+    )
 
 
 class RayTrainGroup:
@@ -72,6 +87,7 @@ class RayTrainGroup:
     ) -> None:
         self.args = args
         self._rollout_manager = rollout_manager
+        self.role = role
 
         total_gpus = num_nodes * num_gpus_per_node
         num_cells = (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
@@ -121,6 +137,7 @@ class RayTrainGroup:
             return cell
 
         self._cells: list[RayTrainCell] = [_create_cell(cell_index) for cell_index in range(num_cells)]
+        self._train_batch_pins: dict[TrainBatchPublication, tuple] = {}
 
         self._witness_allocator: WitnessIdAllocator | None = (
             WitnessIdAllocator(buffer_size=args.witness_buffer_size) if args.enable_witness else None
@@ -132,38 +149,203 @@ class RayTrainGroup:
 
     # ------------------------ API :: train ------------------------
 
-    async def train(self, rollout_id: int, rollout_data_pack):
+    async def train(self, rollout_id: int, rollout_data_pack, *, admission_receipt=None):
         """Do one rollout training"""
 
         event_analyzer.run_analysis_from_args(self.args)
+        cohort_error: TrainerCohortChangedError | None = None
 
         async def _fn(attempt: int):
-            witness_info = self._allocate_witness_info(
-                rollout_id=rollout_id,
-                attempt=attempt,
-                sample_indices=rollout_data_pack["sample_indices"],
-            )
+            nonlocal cohort_error
+            try:
+                await self._train_one_attempt(
+                    rollout_id=rollout_id,
+                    rollout_data_pack=rollout_data_pack,
+                    admission_receipt=admission_receipt,
+                    attempt=attempt,
+                )
+            except TrainerCohortChangedError as error:
+                cohort_error = error
 
-            log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+        try:
+            await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
+            if cohort_error is not None:
+                raise cohort_error
+            self._test_action_executor.run_after_step(rollout_id=rollout_id)
+        finally:
+            if admission_receipt is not None:
+                self.discard_train_batch_admission(admission_receipt)
+
+    async def _train_one_attempt(
+        self,
+        *,
+        rollout_id: int,
+        rollout_data_pack,
+        admission_receipt: TrainerAdmissionReceipt | None,
+        attempt: int,
+    ) -> None:
+        expected_cells = None
+        expected_handles = None
+        if admission_receipt is None:
             await self._refresh_cells(rollout_id=rollout_id)
-            snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
-                "train",
+        else:
+            expected_cells, expected_handles = self._validate_train_batch_pin(
                 rollout_id=rollout_id,
-                rollout_data_ref=rollout_data_pack["data_ref"],
-                witness_info=witness_info,
-                attempt=attempt,
-            )
-            self._check_train_one_attempt(snapshot_alive_cells, results)
-
-            self._log_step_end_event(
-                rollout_id=rollout_id,
-                snapshot_alive_cells=snapshot_alive_cells,
-                results=results,
+                rollout_data_pack=rollout_data_pack,
+                receipt=admission_receipt,
             )
 
-        await retry(_fn, max_attempts=_RETRY_MAX_ATTEMPTS)
+        witness_info = self._allocate_witness_info(
+            rollout_id=rollout_id,
+            attempt=attempt,
+            sample_indices=rollout_data_pack["sample_indices"],
+        )
+        log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+        snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
+            "train",
+            rollout_id=rollout_id,
+            rollout_data_ref=rollout_data_pack["data_ref"],
+            witness_info=witness_info,
+            attempt=attempt,
+            expected_cells=expected_cells,
+            expected_actor_handles=expected_handles,
+        )
+        cohort_errors = [result for result in results if isinstance(result, TrainerCohortChangedError)]
+        if cohort_errors:
+            raise cohort_errors[0]
+        self._check_train_one_attempt(snapshot_alive_cells, results)
+        self._log_step_end_event(
+            rollout_id=rollout_id,
+            snapshot_alive_cells=snapshot_alive_cells,
+            results=results,
+        )
 
-        self._test_action_executor.run_after_step(rollout_id=rollout_id)
+    async def admit_train_batch(
+        self,
+        rollout_id: int,
+        rollout_data_pack: dict[str, Any],
+    ) -> TrainerAdmissionReceipt:
+        """Read-proof one exact publication across a stable v2 cohort."""
+        publication = rollout_data_pack.get("trainer_admission")
+        if not isinstance(publication, TrainBatchPublication) or publication.rollout_id != rollout_id:
+            raise ValueError(f"Invalid trainer admission for rollout {rollout_id}.")
+        if "data_ref" not in rollout_data_pack:
+            raise ValueError(f"Trainer admission for rollout {rollout_id} has no published data reference.")
+        data_ref = rollout_data_pack["data_ref"]
+        validate_publication_data_ref(publication, data_ref)
+
+        await self._refresh_cells(rollout_id=rollout_id)
+        quorum_id = self._indep_dp_quorum_id
+        live_cells = tuple(cell for cell in self._cells if cell.is_alive)
+        if not live_cells:
+            raise RuntimeError(f"Trainer admission {publication.admission_id} has no live trainer cells.")
+        expected_cell_ids = tuple(cell.cell_index for cell in live_cells)
+        actor_handle_snapshots = tuple(cell._snapshot_actor_handles() for cell in live_cells)
+        expected_ranks = tuple(tuple(range(len(handles))) for handles in actor_handle_snapshots)
+
+        snapshot_cells, results = await self._execute_all_alive_and_catch("admit_train_batch", publication, data_ref)
+        current_live_cells = tuple(cell for cell in self._cells if cell.is_alive)
+        response_cells = tuple(snapshot_cells)
+        current_cell_ids = tuple(cell.cell_index for cell in current_live_cells)
+        response_cell_ids = tuple(cell.cell_index for cell in response_cells)
+        cell_identity_stable = _same_identity_sequence(current_live_cells, live_cells) and _same_identity_sequence(
+            response_cells, live_cells
+        )
+        handles_identity_stable = False
+        if cell_identity_stable:
+            handles_identity_stable = all(
+                _same_identity_sequence(cell._snapshot_actor_handles(), expected_handles)
+                for cell, expected_handles in zip(live_cells, actor_handle_snapshots, strict=True)
+            )
+        if (
+            self._indep_dp_quorum_id != quorum_id
+            or current_cell_ids != expected_cell_ids
+            or response_cell_ids != expected_cell_ids
+            or len(results) != len(expected_cell_ids)
+            or not cell_identity_stable
+            or not handles_identity_stable
+        ):
+            raise RuntimeError(f"Trainer admission {publication.admission_id} received a changed cohort.")
+
+        cohort_cells: list[TrainerCellCohort] = []
+        for cell, cell_result, expected in zip(snapshot_cells, results, expected_ranks, strict=True):
+            if isinstance(cell_result, BaseException):
+                raise RuntimeError(
+                    f"Trainer admission {publication.admission_id} failed on a trainer cell."
+                ) from cell_result
+            if len(cell_result) != len(expected):
+                raise RuntimeError(f"Trainer admission {publication.admission_id} missed a trainer rank response.")
+            ranks: list[int] = []
+            for response in cell_result:
+                if not isinstance(response, TrainerRankReceipt) or response.publication != publication:
+                    raise RuntimeError(f"Trainer admission {publication.admission_id} received a stale rank response.")
+                if response.rank not in expected or response.rank in ranks:
+                    raise RuntimeError(
+                        f"Trainer admission {publication.admission_id} received a duplicate or foreign rank."
+                    )
+                ranks.append(response.rank)
+            if tuple(sorted(ranks)) != expected:
+                raise RuntimeError(f"Trainer admission {publication.admission_id} missed a trainer rank response.")
+            cohort_cells.append(TrainerCellCohort(cell_index=cell.cell_index, ranks=expected))
+
+        receipt = TrainerAdmissionReceipt(
+            publication=publication,
+            role=self.role,
+            cohort=TrainerCohort(quorum_id=quorum_id, cells=tuple(cohort_cells)),
+        )
+        self._train_batch_pins_for_write()[publication] = (
+            receipt,
+            quorum_id,
+            tuple(live_cells),
+            tuple(actor_handle_snapshots),
+        )
+        return receipt
+
+    def discard_train_batch_admission(self, receipt: TrainerAdmissionReceipt) -> None:
+        """Discard the private cohort pin for an admission receipt."""
+        pins = self._train_batch_pins_for_write()
+        pin = pins.get(receipt.publication)
+        if pin is not None and pin[0] == receipt:
+            pins.pop(receipt.publication, None)
+
+    def _validate_train_batch_pin(
+        self,
+        rollout_id: int,
+        rollout_data_pack: dict[str, Any],
+        receipt: TrainerAdmissionReceipt,
+    ) -> tuple[tuple[RayTrainCell, ...], tuple[tuple[object, ...], ...]]:
+        publication = rollout_data_pack.get("trainer_admission")
+        if publication != receipt.publication or publication.rollout_id != rollout_id:
+            raise TrainerCohortChangedError("Trainer admission receipt does not match the train batch publication.")
+        try:
+            validate_publication_data_ref(publication, rollout_data_pack["data_ref"])
+        except (TypeError, ValueError) as error:
+            raise TrainerCohortChangedError("Trainer admission data reference changed before training.") from error
+        pin = self._train_batch_pins_for_write().get(publication)
+        if pin is None or pin[0] != receipt:
+            raise TrainerCohortChangedError(f"Trainer admission {publication.admission_id} has no exact trainer pin.")
+        expected_quorum_id, expected_cells, expected_handles = pin[1:]
+        current_cells = tuple(cell for cell in self._cells if cell.is_alive)
+        if self._indep_dp_quorum_id != expected_quorum_id or not _same_identity_sequence(
+            current_cells, expected_cells
+        ):
+            raise TrainerCohortChangedError(
+                f"Trainer admission {publication.admission_id} detected trainer cohort drift."
+            )
+        current_handles = tuple(cell._snapshot_actor_handles() for cell in current_cells)
+        if len(current_handles) != len(expected_handles) or any(
+            not _same_identity_sequence(current, expected)
+            for current, expected in zip(current_handles, expected_handles, strict=True)
+        ):
+            raise TrainerCohortChangedError(
+                f"Trainer admission {publication.admission_id} detected trainer cohort drift."
+            )
+        return expected_cells, expected_handles
+
+    def _train_batch_pins_for_write(self) -> dict:
+        if not hasattr(self, "_train_batch_pins"):
+            self._train_batch_pins = {}
+        return self._train_batch_pins
 
     def _allocate_witness_info(self, *, rollout_id: int, attempt: int, sample_indices):
         if self._witness_allocator is None:
@@ -309,14 +491,37 @@ class RayTrainGroup:
 
     # ------------------------ utils to forward calls to cells ------------------------
 
-    async def _execute_all_alive_and_catch(self, fn_name: str, *args, **kwargs):
+    async def _execute_all_alive_and_catch(
+        self,
+        fn_name: str,
+        *args,
+        expected_cells: tuple[RayTrainCell, ...] | None = None,
+        expected_actor_handles: tuple[tuple[object, ...], ...] | None = None,
+        **kwargs,
+    ):
         snapshot_alive_cells = [c for c in self._cells if c.is_alive]
         assert snapshot_alive_cells, "No alive cells"
+        if expected_cells is not None and not _same_identity_sequence(snapshot_alive_cells, expected_cells):
+            raise TrainerCohortChangedError("Trainer cells changed after admission and before training dispatch.")
+        if expected_actor_handles is not None and len(expected_actor_handles) != len(snapshot_alive_cells):
+            raise TrainerCohortChangedError(
+                "Trainer actor handles changed after admission and before training dispatch."
+            )
         # NOTE: no timeout here. If a cell hangs, the external FT controller
         # detects stale heartbeat via cell_status(), calls cell.stop() to kill
         # actors, which unblocks this gather with ActorDiedError.
         outputs = await asyncio.gather(
-            *[cell.execute(fn_name, *args, **kwargs) for cell in snapshot_alive_cells],
+            *[
+                cell.execute(
+                    fn_name,
+                    *args,
+                    expected_actor_handles=(
+                        None if expected_actor_handles is None else expected_actor_handles[cell_index]
+                    ),
+                    **kwargs,
+                )
+                for cell_index, cell in enumerate(snapshot_alive_cells)
+            ],
             return_exceptions=True,
         )
         AsyncioGatherUtils.log_error(outputs, debug_name=f"execute_all_alive_and_catch#{fn_name}")
