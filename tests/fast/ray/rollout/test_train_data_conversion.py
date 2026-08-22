@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 import ray
@@ -695,6 +695,21 @@ class TestSplitTrainDataByDp:
         parts = [ray.get(r.inner) for r in refs]
         all_indices = sorted(i for p in parts for i in p["partition"])
         assert all_indices == list(range(n))
+
+    def test_publication_failure_removes_every_published_ref_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        args = make_args(balance_data=False)
+        data = {"tokens": [[1], [2], [3]]}
+        published_refs = [object_store.StoreObjectRef("dp-0"), object_store.StoreObjectRef("dp-1")]
+        publication_error = RuntimeError("third shard publication failed")
+        store = MagicMock()
+        store.put.side_effect = [*published_refs, publication_error]
+        monkeypatch.setattr(object_store, "get_instance", lambda: store)
+
+        with pytest.raises(RuntimeError, match="third shard publication failed") as exc_info:
+            split_train_data_by_dp(args, data, {"dp_size": 3})
+
+        assert exc_info.value is publication_error
+        assert store.remove.call_args_list == [call(published_refs[0]), call(published_refs[1])]
 
 
 class TestSplitTrainDataRaw:

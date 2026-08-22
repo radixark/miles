@@ -4,7 +4,7 @@ import uuid
 from argparse import Namespace
 from collections.abc import Callable
 from copy import deepcopy
-from typing import Any
+from typing import Any, cast
 
 from miles.rollout.base_types import (
     GenerateFnInput,
@@ -144,6 +144,9 @@ async def generate_and_rm_group(
     args = state.args
 
     if state.aborted:
+        if sample_done_callback is not None:
+            for _ in group:
+                sample_done_callback()
         return group
 
     if policy_uses_routing_key(args):
@@ -153,7 +156,7 @@ async def generate_and_rm_group(
 
     log_prefix = f"[group indices={[getattr(s, 'index', '?') for s in group]}]"
     logger.debug(f"{log_prefix} Starting group with {len(group)} samples")
-    tasks = []
+    tasks: list[asyncio.Task[Sample | list[Sample]]] = []
     for idx, sample in enumerate(group):
         current_sampling_params = sampling_params.copy()
         if getattr(args, "sglang_enable_deterministic_inference", False):
@@ -164,15 +167,61 @@ async def generate_and_rm_group(
             task.add_done_callback(lambda _task: sample_done_callback())
         tasks.append(task)
 
-    try:
-        group = await asyncio.gather(*tasks)
-    except BaseException:
-        # cancel siblings and let them settle: the group returns only after every
-        # sample task is done, so no orphan generation or in-flight credit outlives it
+    group_wait = asyncio.gather(*tasks)
+    cancellation: asyncio.CancelledError | None = None
+    group_error: BaseException | None = None
+    while not group_wait.done():
+        try:
+            await asyncio.shield(group_wait)
+        except asyncio.CancelledError as error:
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                if cancellation is None:
+                    cancellation = error
+                continue
+            group_error = error
+            break
+        except BaseException as error:
+            group_error = error
+            break
+
+    if group_error is None and group_wait.done():
+        try:
+            group_wait.result()
+        except BaseException as error:
+            group_error = error
+
+    if group_error is not None:
         for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+            if not task.done():
+                task.cancel()
+
+    terminal_wait = asyncio.gather(*tasks, return_exceptions=True)
+    while not terminal_wait.done():
+        try:
+            await asyncio.shield(terminal_wait)
+        except asyncio.CancelledError as error:
+            if cancellation is None:
+                cancellation = error
+    terminal_results = terminal_wait.result()
+    terminal_errors = [result for result in terminal_results if isinstance(result, BaseException)]
+    if cancellation is not None:
+        cause = group_error
+        if cause is None or isinstance(cause, asyncio.CancelledError):
+            cause = next(
+                (error for error in terminal_errors if not isinstance(error, asyncio.CancelledError)),
+                cause,
+            )
+        if cause is None and terminal_errors:
+            cause = terminal_errors[0]
+        if cause is not None:
+            raise cancellation from cause
+        raise cancellation
+    if group_error is not None:
+        raise group_error
+    if terminal_errors:
+        raise terminal_errors[0]
+    group = cast(list[Sample], [task.result() for task in tasks])
     logger.debug(f"{log_prefix} [group] All {len(group)} samples completed")
     if state.aborted:
         return group
