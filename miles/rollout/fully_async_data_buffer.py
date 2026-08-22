@@ -37,6 +37,17 @@ def first_sample(group: Group) -> Sample:
     return group[0][0] if isinstance(group[0], list) else group[0]
 
 
+def _group_response_tokens(group: Group) -> int:
+    """Decode already spent on a group, i.e. what discarding it throws away."""
+    return sum(s.response_length for s in iter_samples(group))
+
+
+def group_oldest_start_weight_version(group: Group) -> int | None:
+    """Submit-time counterpart of group_oldest_weight_version."""
+    versions = [v for s in iter_samples(group) if (v := s.start_weight_version) is not None]
+    return min(versions) if versions else None
+
+
 def group_oldest_weight_version(group: Group) -> int | None:
     """Return the minimum weight version across all trajectories and turns in a group."""
     versions = [v for s in iter_samples(group) if (v := s.oldest_weight_version) is not None]
@@ -121,11 +132,18 @@ class DefaultDataBuffer(DataBuffer):
         self._metric_aborted_groups = 0
         self._metric_stale_groups = 0
         self._metric_consumed_staleness: list[int] = []
+        self._metric_consumed_start_staleness: list[int] = []
+        # Tokens inside discarded groups, split by where the group died. Group
+        # counts cannot show what early eviction buys: the group dies either way,
+        # only the decode it burned first differs.
+        self._metric_wasted_tokens_at_abort = 0
+        self._metric_wasted_tokens_at_consume = 0
 
     async def put(self, input: DataBufferInput) -> None:
         # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
+            self._metric_wasted_tokens_at_abort += _group_response_tokens(input.group)
             self._unused_handler_fn(input.prompt_group)
             return
         filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
@@ -155,10 +173,13 @@ class DefaultDataBuffer(DataBuffer):
                 if staleness is None:
                     return entry
                 self._metric_consumed_staleness.append(staleness)
+                if (from_start := self._start_staleness(entry.group, current_version)) is not None:
+                    self._metric_consumed_start_staleness.append(from_start)
                 if self._args.max_weight_staleness is None or staleness <= self._args.max_weight_staleness:
                     return entry
                 logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
                 self._metric_stale_groups += 1
+                self._metric_wasted_tokens_at_consume += _group_response_tokens(entry.group)
                 self._unused_handler_fn(entry.prompt_group)
 
     def get_metrics(self) -> dict[str, float]:
@@ -166,12 +187,22 @@ class DefaultDataBuffer(DataBuffer):
         metrics = {
             f"{prefix}queue_size": len(self._buffer),
             f"{prefix}aborted_groups_filtered": self._metric_aborted_groups,
+            # The pair that actually measures early eviction: same groups die,
+            # but a group killed in flight burned less decode first.
+            f"{prefix}wasted_tokens_at_abort": self._metric_wasted_tokens_at_abort,
+            f"{prefix}wasted_tokens_at_consume": self._metric_wasted_tokens_at_consume,
+            f"{prefix}wasted_tokens_total": (
+                self._metric_wasted_tokens_at_abort + self._metric_wasted_tokens_at_consume
+            ),
             f"{prefix}stale_groups_filtered": self._metric_stale_groups,
             **self._metric_gatherer.collect(),
         }
         if consumed := self._metric_consumed_staleness:
             metrics[f"{prefix}avg_staleness"] = sum(consumed) / len(consumed)
             metrics[f"{prefix}max_staleness"] = max(consumed)
+        if from_start := self._metric_consumed_start_staleness:
+            metrics[f"{prefix}avg_start_staleness"] = sum(from_start) / len(from_start)
+            metrics[f"{prefix}max_start_staleness"] = max(from_start)
         buffered = [
             s for entry in self._buffer if (s := self._staleness(entry.group, self._current_version)) is not None
         ]
@@ -181,12 +212,27 @@ class DefaultDataBuffer(DataBuffer):
 
         self._metric_gatherer = MetricGatherer()
         self._metric_consumed_staleness = []
+        self._metric_consumed_start_staleness = []
         self._metric_aborted_groups = self._metric_stale_groups = 0
+        self._metric_wasted_tokens_at_abort = 0
+        self._metric_wasted_tokens_at_consume = 0
         return metrics
 
     @staticmethod
     def _staleness(group: Group, current_version: int | None) -> int | None:
         oldest = group_oldest_weight_version(group)
+        if oldest is None or current_version is None:
+            return None
+        return current_version - oldest
+
+    @staticmethod
+    def _start_staleness(group: Group, current_version: int | None) -> int | None:
+        """Staleness measured from submit instead of emission.
+
+        Reported alongside the emission-based number: the gap between the two is
+        the version span a generation call went through while decoding, which the
+        emission stamp cannot see."""
+        oldest = group_oldest_start_weight_version(group)
         if oldest is None or current_version is None:
             return None
         return current_version - oldest
