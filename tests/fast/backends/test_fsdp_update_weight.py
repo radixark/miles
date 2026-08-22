@@ -1,6 +1,7 @@
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.backends.fsdp_utils import update_weight_utils
@@ -14,14 +15,15 @@ class _RemoteMethod:
 
     def remote(self, *args, **kwargs):
         self._submissions.append(self._name)
-        return _RemoteRef(self._fn, args, kwargs)
+        return _RemoteRef(self._fn, args, kwargs, self._name)
 
 
 class _RemoteRef:
-    def __init__(self, fn, args, kwargs):
+    def __init__(self, fn, args, kwargs, name):
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self.name = name
 
     def resolve(self):
         return self._fn(*self._args, **self._kwargs)
@@ -32,9 +34,10 @@ class _SessionEngine:
         self.name = name
         self.events = events
         self.calls = []
+        self.pause_modes = []
         self.submissions = []
         self.session_open = False
-        self.pause_generation = self._remote(lambda: self._record("pause_generation"), "pause_generation")
+        self.pause_generation = self._remote(self._pause_generation, "pause_generation")
         self.flush_cache = self._remote(lambda: self._record("flush_cache"), "flush_cache")
         self.begin_weight_update = self._remote(self._begin_weight_update, "begin_weight_update")
         self.update_weights_from_tensor = self._remote(
@@ -50,6 +53,10 @@ class _SessionEngine:
     def _record(self, name):
         self.calls.append(name)
         self.events.append(f"{self.name}.{name}")
+
+    def _pause_generation(self, mode):
+        self.pause_modes.append(mode)
+        self._record("pause_generation")
 
     def _begin_weight_update(self):
         self._record("begin_weight_update")
@@ -92,21 +99,35 @@ def _resolve_refs(value):
     return value.resolve()
 
 
-def _make_updater(model, rollout_engines):
+def _make_updater(model, rollout_engines, pause_generation_mode="retract"):
     updater = _SessionAwareUpdater(
-        Namespace(update_weight_buffer_size=1024),
+        Namespace(
+            pause_generation_mode=pause_generation_mode,
+            update_weight_buffer_size=1024,
+        ),
         SimpleNamespace(config=SimpleNamespace(model_type=""), state_dict=lambda: model),
     )
     updater.connect_rollout_engines(rollout_engines, None)
     return updater
 
 
-def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
+@pytest.mark.parametrize("pause_generation_mode", ["abort", "retract", "in_place"])
+def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch, pause_generation_mode):
     events = []
+    ray_get_batches = []
     engines = [_SessionEngine("engine0", events), _SessionEngine("engine1", events)]
-    updater = _make_updater({"weight": torch.ones(1)}, engines)
+    updater = _make_updater(
+        {"weight": torch.ones(1)},
+        engines,
+        pause_generation_mode=pause_generation_mode,
+    )
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
+    def resolve_and_record_refs(value):
+        refs = value if isinstance(value, list) else [value]
+        ray_get_batches.append([ref.name for ref in refs])
+        return _resolve_refs(value)
+
+    monkeypatch.setattr(update_weight_utils.ray, "get", resolve_and_record_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
@@ -114,11 +135,18 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
 
     updater.update_weights()
 
+    expected_flush_events = (
+        []
+        if pause_generation_mode == "in_place"
+        else [
+            "engine0.flush_cache",
+            "engine1.flush_cache",
+        ]
+    )
     assert events == [
         "engine0.pause_generation",
         "engine1.pause_generation",
-        "engine0.flush_cache",
-        "engine1.flush_cache",
+        *expected_flush_events,
         "engine0.begin_weight_update",
         "engine1.begin_weight_update",
         "barrier",
@@ -130,6 +158,20 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
         "engine1.continue_generation",
         "barrier",
     ]
+    assert engines[0].pause_modes == [pause_generation_mode]
+    assert engines[1].pause_modes == [pause_generation_mode]
+    expected_ray_get_batches = [["pause_generation", "pause_generation"]]
+    if pause_generation_mode != "in_place":
+        expected_ray_get_batches.append(["flush_cache", "flush_cache"])
+    expected_ray_get_batches.extend(
+        [
+            ["begin_weight_update", "begin_weight_update"],
+            ["update_weights_from_tensor"],
+            ["end_weight_update", "end_weight_update"],
+            ["continue_generation", "continue_generation"],
+        ]
+    )
+    assert ray_get_batches == expected_ray_get_batches
     assert engines[0].submissions == engines[0].calls
     assert engines[1].submissions == engines[1].calls
 
