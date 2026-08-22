@@ -120,7 +120,9 @@ def load(actor: Any) -> dict[str, Any] | None:
         return None
 
     # Load optimizer state (optional)
-    load_optimizer = not getattr(actor.args, "no_load_optim", False) and hasattr(actor, "optimizer")
+    load_optimizer = (
+        not getattr(actor.args, "no_load_optim", False) and getattr(actor, "optimizer", None) is not None
+    )
     if load_optimizer and optimizer_dir.exists():
         optimizer_state = OptimizerState(actor.model, actor.optimizer)
         optim_state_dict = {"optim_state": optimizer_state}
@@ -133,7 +135,7 @@ def load(actor: Any) -> dict[str, Any] | None:
         logger.info(f"[FSDP] Optimizer checkpoint not found at {optimizer_dir}, skipping optimizer load.")
 
     # Load LR scheduler state (optional)
-    load_lr_scheduler = hasattr(actor, "lr_scheduler") and lr_scheduler_dir.exists()
+    load_lr_scheduler = getattr(actor, "lr_scheduler", None) is not None and lr_scheduler_dir.exists()
     if load_lr_scheduler:
         lr_scheduler_state = LRSchedulerState(actor.lr_scheduler)
         lr_scheduler_state_dict = {"lr_scheduler_state": lr_scheduler_state}
@@ -142,7 +144,7 @@ def load(actor: Any) -> dict[str, Any] | None:
             logger.info(f"[FSDP] Loaded LR scheduler from {lr_scheduler_dir}")
         except Exception as e:
             logger.warning(f"[FSDP] Failed to load LR scheduler from {lr_scheduler_dir}: {e}")
-    elif hasattr(actor, "lr_scheduler"):
+    elif getattr(actor, "lr_scheduler", None) is not None:
         logger.info(f"[FSDP] LR scheduler checkpoint not found at {lr_scheduler_dir}, skipping LR scheduler load.")
 
     rng_state = None

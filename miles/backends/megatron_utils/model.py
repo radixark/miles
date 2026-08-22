@@ -161,6 +161,10 @@ def setup_model_and_optimizer(
             provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
+    if args.num_rollout == 0:
+        args.no_load_optim = True
+        return model, None, None
+
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():
             logger.warning(
