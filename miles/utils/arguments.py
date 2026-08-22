@@ -1695,6 +1695,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--opd-privileged-context-key",
+                type=str,
+                default=None,
+                help=(
+                    "Sample metadata key holding teacher-only context, enabling privileged-context "
+                    "OPD (--opd-type=sglang). The student generates from the public prompt as usual; "
+                    "the teacher then scores that same response on a prompt with this text appended "
+                    "to the last user message, so the distillation target is conditioned on "
+                    "information the student never saw. Works whether or not --apply-chat-template "
+                    "is set, and on both the sampled-token and top-k paths. Samples without the key "
+                    "are scored normally. Unset disables the feature. Populated from the dataset's "
+                    "metadata column (see --metadata-key)."
+                ),
+            )
+            parser.add_argument(
                 "--opd-teacher-load",
                 type=str,
                 default=None,
@@ -3002,6 +3017,9 @@ def miles_validate_args(args):
             from miles.rollout.on_policy_distillation import parse_teacher_urls
 
             parse_teacher_urls(args.opd_teacher_urls)  # fail fast on malformed/duplicate entries
+
+        if args.opd_privileged_context_key and args.opd_type != "sglang":
+            raise ValueError("--opd-privileged-context-key is only supported with --opd-type=sglang.")
 
         if args.opd_type == "megatron":
             if args.opd_teacher_load is None:

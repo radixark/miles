@@ -15,5 +15,9 @@ This directory contains runnable examples:
   Qwen3-Coder-30B-A3B teacher, selected via `--opd-teacher-urls` and a per-row
   `{"metadata": {"opd_teacher": ...}}` tag in the dataset.
 - `run-qwen3-8B-opd-megatron.sh`: Megatron-loaded teacher OPD.
+- `run-qwen3-8b-opsd.sh`: Privileged-context self-distillation. Teacher and
+  student are the same Qwen3-8B weights, but the teacher scores the student's
+  response on a prompt carrying the verified answer
+  (`--opd-privileged-context-key`).
 
 Use `--opd-log-prob-top-k 0` to run the original sampled-token OPD path.
