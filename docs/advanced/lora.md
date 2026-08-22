@@ -186,8 +186,10 @@ alternative aligned-expert path.
   `adapter_config.json` export for external serving and warns if that export
   fails. Direct HF PEFT-to-Bridge resume is not implemented yet; native Inkling
   supplies a model-specific HF adapter importer. A native
-  `iter_*/adapter` resume also restores the next rollout ID and global-dataset
-  cursor; weight-only adapters start a new run.
+  `iter_*/adapter` resume also restores the next rollout ID, the LR schedule
+  position and the global-dataset cursor; weight-only adapters start a new run.
+  The schedule length is derived from `--num-rollout`, so resuming with a
+  different one needs `--override-opt-param-scheduler`.
 - **Weight synchronization.** Colocated IPC and remote NCCL broadcast both ship
   adapter tensors at each configured update boundary without merging them into
   the base. A checksum checker is available for the colocated path.
