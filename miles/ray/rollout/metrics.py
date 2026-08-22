@@ -199,11 +199,14 @@ def _compute_zero_std_metrics(args, all_samples: list[Sample]):
 def _compute_spec_metrics(args, all_samples: list[Sample]):
     if args.sglang_speculative_algorithm is None:
         return {}
-    num_samples = len(all_samples)
-    metrics = {}
-    metrics["spec_accept_rate"] = sum(sample.spec_info.spec_accept_rate for sample in all_samples) / num_samples
-    metrics["spec_accept_length"] = sum(sample.spec_info.spec_accept_length for sample in all_samples) / num_samples
-    return metrics
+    num_correct_drafts = sum(sample.spec_info.spec_num_correct_drafts for sample in all_samples)
+    num_proposed_drafts = sum(sample.spec_info.spec_num_proposed_drafts for sample in all_samples)
+    spec_verify_ct = sum(sample.spec_info.spec_verify_ct for sample in all_samples)
+    completion_tokens = sum(sample.spec_info.completion_tokens for sample in all_samples)
+    return {
+        "spec_accept_rate": num_correct_drafts / num_proposed_drafts if num_proposed_drafts > 0 else 0.0,
+        "spec_accept_length": completion_tokens / spec_verify_ct if spec_verify_ct > 0 else 0.0,
+    }
 
 
 def _compute_prefix_cache_metrics(args, all_samples: list[Sample]):

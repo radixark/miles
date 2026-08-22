@@ -42,23 +42,23 @@ class TestProcessResultMetaInfo:
         assert ProcessResultMetaInfo(weight_version="v1").to_dict() == {"weight_version": "v1"}
 
     def test_to_dict_partial_fields(self):
-        assert ProcessResultMetaInfo(weight_version="v1", spec_accept_token_num=10).to_dict() == {
+        assert ProcessResultMetaInfo(weight_version="v1", spec_num_correct_drafts=10).to_dict() == {
             "weight_version": "v1",
-            "spec_accept_token_num": 10,
+            "spec_num_correct_drafts": 10,
         }
 
     def test_to_dict_all_fields(self):
         assert ProcessResultMetaInfo(
             weight_version="v1",
             routed_experts="abc",
-            spec_accept_token_num=10,
-            spec_draft_token_num=15,
+            spec_num_correct_drafts=10,
+            spec_num_proposed_drafts=15,
             spec_verify_ct=3,
         ).to_dict() == {
             "weight_version": "v1",
             "routed_experts": "abc",
-            "spec_accept_token_num": 10,
-            "spec_draft_token_num": 15,
+            "spec_num_correct_drafts": 10,
+            "spec_num_proposed_drafts": 15,
             "spec_verify_ct": 3,
         }
 
@@ -190,8 +190,8 @@ class TestGenerateEndpoint:
                 meta_info=ProcessResultMetaInfo(
                     weight_version="v2.0",
                     routed_experts="encoded_data",
-                    spec_accept_token_num=10,
-                    spec_draft_token_num=15,
+                    spec_num_correct_drafts=10,
+                    spec_num_proposed_drafts=15,
                     spec_verify_ct=3,
                 ),
             )
@@ -213,8 +213,8 @@ class TestGenerateEndpoint:
                     "output_token_logprobs": [[-0.0, 562]],
                     "weight_version": "v2.0",
                     "routed_experts": "encoded_data",
-                    "spec_accept_token_num": 10,
-                    "spec_draft_token_num": 15,
+                    "spec_num_correct_drafts": 10,
+                    "spec_num_proposed_drafts": 15,
                     "spec_verify_ct": 3,
                 },
             }

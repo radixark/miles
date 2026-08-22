@@ -21,8 +21,8 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 class ProcessResultMetaInfo:
     weight_version: str | None = None
     routed_experts: str | None = None
-    spec_accept_token_num: int | None = None
-    spec_draft_token_num: int | None = None
+    spec_num_correct_drafts: int | None = None
+    spec_num_proposed_drafts: int | None = None
     spec_verify_ct: int | None = None
 
     def to_dict(self) -> dict:

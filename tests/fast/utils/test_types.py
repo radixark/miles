@@ -1,4 +1,4 @@
-"""Unit tests for Sample.strip_last_output_tokens."""
+"""Unit tests for Sample helpers."""
 
 from unittest.mock import MagicMock
 
@@ -105,3 +105,32 @@ class TestStripLastOutputTokens:
         original_tokens = list(s.tokens)
         s.strip_last_output_tokens(-1, tokenizer)
         assert s.tokens == original_tokens
+
+
+class TestSpecInfo:
+    def test_add_ignores_completion_without_speculative_verification(self):
+        info = Sample.SpecInfo()
+
+        info.add({"completion_tokens": 1})
+
+        assert info == Sample.SpecInfo()
+
+    def test_from_dict_reads_legacy_miles_fields(self):
+        sample = Sample.from_dict(
+            {
+                "status": "completed",
+                "spec_info": {
+                    "spec_accept_token_num": 3,
+                    "spec_draft_token_num": 5,
+                    "spec_verify_ct": 2,
+                    "completion_token_num": 7,
+                },
+            }
+        )
+
+        assert sample.spec_info == Sample.SpecInfo(
+            spec_num_correct_drafts=3,
+            spec_num_proposed_drafts=5,
+            spec_verify_ct=2,
+            completion_tokens=7,
+        )

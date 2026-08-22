@@ -6,9 +6,11 @@ from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_spec_metrics,
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+from miles.utils.types import Sample
 
 
 class TestComputeZeroStdMetrics:
@@ -52,6 +54,31 @@ class TestComputeZeroStdMetrics:
         # No groups → no all_zero/all_one keys (the function guards on total_groups>0).
         assert "zero_std/all_zero_percentage" not in out
         assert "zero_std/all_one_percentage" not in out
+
+
+class TestComputeSpecMetrics:
+    def test_aggregates_sglang_counters_before_computing_ratios(self):
+        args = make_args(sglang_speculative_algorithm="EAGLE")
+        samples = make_samples_grouped(1, 2)
+        samples[0].spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=1,
+            spec_num_proposed_drafts=2,
+            spec_verify_ct=1,
+            completion_tokens=2,
+        )
+        samples[1].spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=9,
+            spec_num_proposed_drafts=10,
+            spec_verify_ct=9,
+            completion_tokens=27,
+        )
+
+        out = _compute_spec_metrics(args, samples)
+
+        assert out == {
+            "spec_accept_rate": pytest.approx(10 / 12),
+            "spec_accept_length": pytest.approx(29 / 10),
+        }
 
 
 class TestTitoMismatchMetrics:

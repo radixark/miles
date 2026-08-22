@@ -34,7 +34,10 @@ def expected_sample(*, group_index: int | None) -> Sample:
         train_metadata=None,
         non_generation_time=0.0,
         spec_info=Sample.SpecInfo(
-            spec_accept_token_num=0, spec_draft_token_num=0, spec_verify_ct=0, completion_token_num=0
+            spec_num_correct_drafts=0,
+            spec_num_proposed_drafts=0,
+            spec_verify_ct=0,
+            completion_tokens=0,
         ),
         prefix_cache_info=Sample.PrefixCacheInfo(cached_tokens=0, total_prompt_tokens=7),
     )

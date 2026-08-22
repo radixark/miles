@@ -83,40 +83,45 @@ class Sample:
 
     @dataclass
     class SpecInfo:
-        spec_accept_token_num: int = 0
-        spec_draft_token_num: int = 0
+        spec_num_correct_drafts: int = 0
+        spec_num_proposed_drafts: int = 0
         spec_verify_ct: int = 0
-        completion_token_num: int = 0
+        completion_tokens: int = 0
 
         @property
         def spec_accept_rate(self) -> float:
-            return self.spec_accept_token_num / self.spec_draft_token_num if self.spec_draft_token_num > 0 else 0.0
+            if self.spec_num_proposed_drafts == 0:
+                return 0.0
+            return self.spec_num_correct_drafts / self.spec_num_proposed_drafts
 
         @property
         def spec_accept_length(self) -> float:
-            return self.completion_token_num / self.spec_verify_ct if self.spec_verify_ct > 0 else 0.0
+            return self.completion_tokens / self.spec_verify_ct if self.spec_verify_ct > 0 else 0.0
 
         def add(self, meta_info: dict):
-            self.spec_accept_token_num += meta_info.get("spec_accept_token_num", 0)
-            self.spec_draft_token_num += meta_info.get("spec_draft_token_num", 0)
-            self.spec_verify_ct += meta_info.get("spec_verify_ct", 0)
-            self.completion_token_num += meta_info.get("completion_tokens", 0)
+            spec_verify_ct = meta_info.get("spec_verify_ct") or 0
+            if spec_verify_ct <= 0:
+                return
+            self.spec_num_correct_drafts += meta_info.get("spec_num_correct_drafts", 0)
+            self.spec_num_proposed_drafts += meta_info.get("spec_num_proposed_drafts", 0)
+            self.spec_verify_ct += spec_verify_ct
+            self.completion_tokens += meta_info.get("completion_tokens", 0)
 
         def to_dict(self):
             return {
-                "spec_accept_token_num": self.spec_accept_token_num,
-                "spec_draft_token_num": self.spec_draft_token_num,
+                "spec_num_correct_drafts": self.spec_num_correct_drafts,
+                "spec_num_proposed_drafts": self.spec_num_proposed_drafts,
                 "spec_verify_ct": self.spec_verify_ct,
-                "completion_token_num": self.completion_token_num,
+                "completion_tokens": self.completion_tokens,
             }
 
         @staticmethod
         def from_dict(data: dict):
             info = Sample.SpecInfo()
-            info.spec_accept_token_num = data.get("spec_accept_token_num", 0)
-            info.spec_draft_token_num = data.get("spec_draft_token_num", 0)
+            info.spec_num_correct_drafts = data.get("spec_num_correct_drafts", data.get("spec_accept_token_num", 0))
+            info.spec_num_proposed_drafts = data.get("spec_num_proposed_drafts", data.get("spec_draft_token_num", 0))
             info.spec_verify_ct = data.get("spec_verify_ct", 0)
-            info.completion_token_num = data.get("completion_token_num", 0)
+            info.completion_tokens = data.get("completion_tokens", data.get("completion_token_num", 0))
             return info
 
     spec_info: SpecInfo = field(default_factory=SpecInfo)

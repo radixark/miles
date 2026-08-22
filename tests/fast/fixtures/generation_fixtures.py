@@ -271,8 +271,8 @@ def generation_env(request, variant):
             meta_info=ProcessResultMetaInfo(
                 weight_version=x.get("weight_version"),
                 routed_experts=x.get("routed_experts"),
-                spec_accept_token_num=x.get("spec_accept_token_num"),
-                spec_draft_token_num=x.get("spec_draft_token_num"),
+                spec_num_correct_drafts=x.get("spec_num_correct_drafts"),
+                spec_num_proposed_drafts=x.get("spec_num_proposed_drafts"),
                 spec_verify_ct=x.get("spec_verify_ct"),
             ),
         )

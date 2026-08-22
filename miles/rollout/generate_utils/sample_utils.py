@@ -187,10 +187,10 @@ def _merge_spec_info(a: Sample.SpecInfo, b: Sample.SpecInfo) -> Sample.SpecInfo:
 
     return _create_with_all_fields(
         Sample.SpecInfo,
-        spec_accept_token_num=_merge_plus_value("spec_accept_token_num"),
-        spec_draft_token_num=_merge_plus_value("spec_draft_token_num"),
+        spec_num_correct_drafts=_merge_plus_value("spec_num_correct_drafts"),
+        spec_num_proposed_drafts=_merge_plus_value("spec_num_proposed_drafts"),
         spec_verify_ct=_merge_plus_value("spec_verify_ct"),
-        completion_token_num=_merge_plus_value("completion_token_num"),
+        completion_tokens=_merge_plus_value("completion_tokens"),
     )
 
 

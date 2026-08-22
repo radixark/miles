@@ -248,7 +248,11 @@ class TestMetaInfo:
         [
             {
                 "args_kwargs": {"sglang_speculative_algorithm": "EAGLE"},
-                "process_fn_kwargs": {"spec_accept_token_num": 10, "spec_draft_token_num": 15, "spec_verify_ct": 3},
+                "process_fn_kwargs": {
+                    "spec_num_correct_drafts": 10,
+                    "spec_num_proposed_drafts": 15,
+                    "spec_verify_ct": 3,
+                },
             }
         ],
         indirect=True,
@@ -260,7 +264,10 @@ class TestMetaInfo:
             expected_sample(
                 variant,
                 spec_info=Sample.SpecInfo(
-                    spec_accept_token_num=10, spec_draft_token_num=15, spec_verify_ct=3, completion_token_num=5
+                    spec_num_correct_drafts=10,
+                    spec_num_proposed_drafts=15,
+                    spec_verify_ct=3,
+                    completion_tokens=5,
                 ),
             )
         ]
