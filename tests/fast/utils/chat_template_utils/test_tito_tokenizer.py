@@ -8,6 +8,9 @@ TestConfig
     them to the comparator.  These are NOT behavioral tests — they guard
     against accidental config regressions when modifying __init__.
 
+TestCompletionPostprocess
+    Verifies that the default completion hook is an identity operation.
+
 TestMergeTokensBoundary
     Unit tests for the core merge_tokens boundary logic, using *synthetic*
     prefix IDs ([100, 200, ...]) so the assertions are purely about prefix
@@ -276,6 +279,30 @@ class TestConfig:
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
 
 
+class TestCompletionPostprocess:
+    def test_default_returns_upstream_message_unchanged(self):
+        tito = TITOTokenizer(MagicMock())
+        assistant_message = {"role": "assistant", "content": "upstream"}
+        choice = {
+            "message": assistant_message,
+            "finish_reason": "stop",
+            "meta_info": {"existing": True},
+        }
+
+        stored_message = tito.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=[1, 2, 3],
+        )
+
+        assert stored_message is assistant_message
+        assert choice == {
+            "message": assistant_message,
+            "finish_reason": "stop",
+            "meta_info": {"existing": True},
+        }
+
+
 class TestInklingComparatorBoundaries:
     @staticmethod
     def _build_comparator():
@@ -383,6 +410,65 @@ class TestInklingFixedTemplate:
             "<|message_model|><|content_text|>done<|end_message|>"
             "<|content_model_end_sampling|>"
         ) in rendered
+
+    def test_ordered_blocks_preserve_thinking_tool_call_and_text_order(self):
+        raw_json = '{ "args": {"command": "pwd"}, "name": "bash_command" }'
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "flattened-text",
+                    "reasoning_content": "flattened-thinking",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "bash_command", "arguments": {"command": "pwd"}},
+                        }
+                    ],
+                    "content_blocks": [
+                        {"type": "thinking", "text": "think-1"},
+                        {"type": "text", "text": ""},
+                        {
+                            "type": "tool_call",
+                            "recipient": "bash",
+                            "name": "bash_command",
+                            "arguments": {"command": "pwd"},
+                            "raw_json": raw_json,
+                        },
+                        {"type": "thinking", "text": "think-2"},
+                        {"type": "text", "text": "done"},
+                    ],
+                },
+            ]
+        )
+
+        assert (
+            "<|message_model|><|content_thinking|>think-1<|end_message|>"
+            "<|message_model|><|content_text|><|end_message|>"
+            f"<|message_model|>bash<|content_invoke_tool_json|>{raw_json}<|end_message|>"
+            "<|message_model|><|content_thinking|>think-2<|end_message|>"
+            "<|message_model|><|content_text|>done<|end_message|>"
+            "<|content_model_end_sampling|>"
+        ) in rendered
+        assert "flattened-text" not in rendered
+        assert "flattened-thinking" not in rendered
+        assert rendered.count("<|content_invoke_tool_json|>") == 1
+
+    def test_empty_ordered_block_sequence_keeps_sampling_terminator(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "content_blocks": [],
+                },
+            ]
+        )
+
+        assert rendered.endswith("<|content_model_end_sampling|>")
 
 
 class TestDeepSeekV32IncrementalAppend:
@@ -732,7 +818,7 @@ class TestParserBinding:
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
             (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
-            (TITOTokenizerType.INKLING, "inkling", "inkling"),
+            (TITOTokenizerType.INKLING, None, None),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )
