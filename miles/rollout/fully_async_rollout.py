@@ -33,7 +33,6 @@ from miles.rollout.fully_async_data_buffer import (
     DataBufferConstructorInput,
     DataBufferInput,
     DefaultDataBuffer,
-    Group,
     first_sample,
 )
 from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -41,7 +40,7 @@ from miles.rollout.inference_rollout.inference_rollout_common import GenerateSta
 from miles.rollout.inference_rollout.inference_rollout_eval import run_eval_datasets
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils.misc import load_function
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
 

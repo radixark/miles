@@ -21,14 +21,11 @@ from miles.utils.metric_utils import compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
 from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
 
 GenerateFn = Callable[..., Any]
-
-# Generate fns may return several samples per rollout; the manager flattens later.
-Group = list[Sample | list[Sample]]
 
 
 def iter_group_samples(group: Group):

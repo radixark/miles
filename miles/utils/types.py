@@ -297,6 +297,11 @@ class Sample:
                 self.status = Sample.Status.COMPLETED
 
 
+# One prompt's finished trajectories. A generate function may expand one trajectory
+# into several samples (e.g. multi-agent), so an element is a Sample or a list of them.
+Group = list[Sample | list[Sample]]
+
+
 @dataclass(frozen=True)
 class ParamInfo:
     name: str

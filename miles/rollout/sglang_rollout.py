@@ -32,7 +32,7 @@ from miles.utils.processing_utils import (
     load_processor,
     load_tokenizer,
 )
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 from .generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
@@ -356,7 +356,7 @@ async def generate_and_rm(
 
 async def generate_and_rm_group(
     args: Namespace, group: list[Sample], sampling_params: dict[str, Any], evaluation: bool = False
-) -> list[Sample]:
+) -> Group:
     state = GenerateState(args)
 
     if state.aborted:

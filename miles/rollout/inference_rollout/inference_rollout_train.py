@@ -16,7 +16,7 @@ from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook, load_function
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ async def generate_rollout_async(
         logger.debug(f"[rollout] asyncio.wait returned: {len(done)} done, {len(pendings)} pending")
         for task in done:
             try:
-                group: list[Sample] = task.result()
+                group: Group = task.result()
             except Exception as e:
                 logger.error(f"[rollout] Task raised exception: {e!r}", exc_info=True)
                 continue

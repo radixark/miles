@@ -16,13 +16,9 @@ from dataclasses import dataclass
 
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.utils.misc import load_function
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
-
-# A finished group is list[Sample], or list[list[Sample]] when a generate function
-# returns multiple samples per trajectory (e.g. multi-agent).
-Group = list[Sample | list[Sample]]
 
 
 def iter_samples(group: Group) -> Iterator[Sample]:

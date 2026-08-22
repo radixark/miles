@@ -22,7 +22,7 @@ from miles.rollout.inference_rollout.compatibility import load_generate_function
 from miles.rollout.rm_hub import async_rm, batched_async_rm
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.processing_utils import load_processor, load_tokenizer
-from miles.utils.types import Sample
+from miles.utils.types import Group, Sample
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ async def generate_and_rm_group(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
     sample_done_callback: Callable[[], None] | None = None,
-) -> list[Sample]:
+) -> Group:
     args = state.args
 
     if state.aborted:
