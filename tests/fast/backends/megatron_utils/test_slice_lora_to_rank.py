@@ -1,10 +1,19 @@
 """slice_lora_to_rank trims max-rank-padded LoRA tensors to the adapter's real rank;
 used by weight-sync and HF PEFT export (PEFT rejects tensors padded past the declared rank)."""
 
+from typing import NamedTuple
+from unittest.mock import patch
+
 import pytest
 import torch
 
-from miles.backends.megatron_utils.multi_lora_utils import slice_lora_to_rank
+from miles.backends.megatron_utils.multi_lora_utils import _build_multi_lora_peft_export, slice_lora_to_rank
+
+
+class _Weight(NamedTuple):
+    param_name: str
+    weight: torch.Tensor
+    megatron_param_name: str | None = None
 
 
 def _padded(shape, live_rows=None, live_cols=None):
@@ -81,3 +90,32 @@ def test_packed_expert_fewer_experts_than_rank_is_not_confused():
     tensor[:, :4] = 1.0
     out = slice_lora_to_rank("x.experts.gate_proj.lora_A.weight", tensor, 4)
     assert out.shape == (2, 4, 8)
+
+
+def test_multi_lora_slices_before_bridge_conversion():
+    tensor = torch.zeros(2, 8, 4, dtype=torch.bfloat16)
+    tensor[:, :4] = 1
+    weights = [_Weight("x.experts.gate_proj.lora_A.weight", tensor)]
+
+    with patch(
+        "miles.backends.megatron_utils.lora_utils._build_peft_export",
+        return_value=({"weight": torch.ones(1)}, {"r": 4}),
+    ) as convert:
+        result = _build_multi_lora_peft_export(
+            iter(weights),
+            rank=4,
+            alpha=8,
+            dropout=0.0,
+            base_model_name_or_path="/base",
+        )
+
+    converted_weights = convert.call_args.args[0]
+    assert converted_weights[0].weight.shape == (2, 4, 4)
+    assert converted_weights[0].weight.dtype == torch.float32
+    assert convert.call_args.kwargs == {
+        "rank": 4,
+        "alpha": 8,
+        "dropout": 0.0,
+        "base_model_name_or_path": "/base",
+    }
+    assert result[1]["r"] == 4

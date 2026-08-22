@@ -20,6 +20,21 @@ logger = logging.getLogger(__name__)
 _shard_topology: tuple[bool, tuple[tuple[int, int, int], ...]] | None = None
 
 
+def _raise_if_any_rank_failed(local_error: Exception | None, operation: str) -> None:
+    message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
+    if dist.is_initialized():
+        group = get_gloo_group()
+        messages: list[str | None] = [None] * dist.get_world_size(group=group)
+        dist.all_gather_object(messages, message, group=group)
+        message = next((item for item in messages if item is not None), None)
+
+    if message is not None:
+        error = RuntimeError(f"{operation} failed on at least one rank: {message}")
+        if local_error is not None:
+            raise error from local_error
+        raise error
+
+
 def create_multi_lora_instance(args: Namespace):
     """Create a MultiLoRA instance from training args."""
     from megatron.bridge.peft.multi_lora import MultiLoRA
@@ -181,6 +196,29 @@ def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) ->
     return tensor
 
 
+def _build_multi_lora_peft_export(
+    adapter_weights,
+    *,
+    rank: int,
+    alpha: int,
+    dropout: float,
+    base_model_name_or_path: str,
+):
+    from miles.backends.megatron_utils.lora_utils import _build_peft_export
+
+    sliced_weights = [
+        item._replace(weight=slice_lora_to_rank(item.param_name, item.weight, rank).clone().float())
+        for item in adapter_weights
+    ]
+    return _build_peft_export(
+        sliced_weights,
+        rank=rank,
+        alpha=alpha,
+        dropout=dropout,
+        base_model_name_or_path=base_model_name_or_path,
+    )
+
+
 def save_multi_lora_checkpoints(
     args,
     model,
@@ -200,7 +238,6 @@ def save_multi_lora_checkpoints(
     from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
     from safetensors.torch import save_file as save_safetensors
 
-    from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
     from miles.utils import megatron_bridge_utils
 
     parallel_state = get_parallel_state()
@@ -212,13 +249,13 @@ def save_multi_lora_checkpoints(
     is_shard_writer, _ = adapter_shard_topology()
     is_global_writer = is_shard_writer and tp_rank == 0 and pp_rank == 0 and ep_rank == 0
 
-    target_modules_hf = (
-        convert_target_modules_to_hf(list(args.target_modules))
-        if args.target_modules
-        else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
-    )
-
-    bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    bridge = None
+    setup_error = None
+    try:
+        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    except Exception as error:
+        setup_error = error
+    _raise_if_any_rank_failed(setup_error, "Multi-LoRA checkpoint export setup")
 
     for adapter_name, adapter in adapters.items():
         config = adapter.config
@@ -231,69 +268,73 @@ def save_multi_lora_checkpoints(
 
         final_dir = config.save / "checkpoints" / f"step_{iteration}"
         tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
-        if is_shard_writer:
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-        if dist.is_initialized():
-            dist.barrier()
-
-        with expose_adapter_slot(model, adapter.slot):
-            # Megatron checkpoints
+        native_error = None
+        try:
             if is_shard_writer:
-                shard: dict[str, torch.Tensor] = {
-                    name: param.data.cpu()
-                    for batch in model
-                    for name, param in batch.named_parameters()
-                    if ".adapter." in name
-                }
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                # The slot must stay exposed while walking named_parameters(): outside the
+                # context the parameters are named ``.adapters.{slot}.`` and the shard would
+                # be empty, so resume would silently restart from a fresh adapter.
+                with expose_adapter_slot(model, adapter.slot):
+                    shard: dict[str, torch.Tensor] = {
+                        name: param.data.cpu()
+                        for batch in model
+                        for name, param in batch.named_parameters()
+                        if ".adapter." in name
+                    }
                 native_path = tmp_dir / megatron_shard_name(tp_rank, pp_rank, ep_rank, ep_size)
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
+        except Exception as error:
+            native_error = error
+        _raise_if_any_rank_failed(native_error, f"{log_prefix} native checkpoint save")
 
-            hf_state: dict[str, torch.Tensor] = {}
-            with megatron_bridge_utils.patch_megatron_model(model):
-                for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
-                    model,
-                    cpu=True,
-                    show_progress=False,
-                ):
-                    # Slice from the shared --lora-rank down to this adapter's real rank to
-                    # match adapter_config's r; clone() since safetensors rejects aliased views.
-                    hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, config.rank).clone()
+        hf_state = None
+        adapter_config_json = None
+        export_error = None
+        try:
+            with expose_adapter_slot(model, adapter.slot), megatron_bridge_utils.patch_megatron_model(model):
+                hf_state, adapter_config_json = _build_multi_lora_peft_export(
+                    bridge.export_adapter_weights(model, cpu=True, show_progress=False),
+                    rank=config.rank,
+                    alpha=config.alpha,
+                    dropout=getattr(args, "lora_dropout", 0.0),
+                    base_model_name_or_path=args.hf_checkpoint,
+                )
+        except Exception as error:
+            export_error = error
+        _raise_if_any_rank_failed(export_error, f"{log_prefix} PEFT conversion")
 
-        if is_global_writer:
-            save_safetensors(
-                hf_state,
-                str(tmp_dir / "adapter_model.safetensors"),
-                metadata={"format": "pt"},
-            )
-            adapter_config_json = {
-                "peft_type": "LORA",
-                "r": config.rank,
-                "lora_alpha": config.alpha,
-                "target_modules": target_modules_hf,
-                "lora_dropout": getattr(args, "lora_dropout", 0.0),
-                "bias": "none",
-                "task_type": "CAUSAL_LM",
-            }
-            with open(tmp_dir / "adapter_config.json", "w") as f:
-                json.dump(adapter_config_json, f, indent=2)
-            os.sync()
-            logger.info(f"{log_prefix} saved HF PEFT to {tmp_dir} " f"({len(hf_state)} tensors)")
-
-        if dist.is_initialized():
-            dist.barrier()
+        peft_write_error = None
+        try:
+            if is_global_writer:
+                save_safetensors(
+                    hf_state,
+                    str(tmp_dir / "adapter_model.safetensors"),
+                    metadata={"format": "pt"},
+                )
+                with open(tmp_dir / "adapter_config.json", "w") as f:
+                    json.dump(adapter_config_json, f, indent=2)
+                os.sync()
+                logger.info(f"{log_prefix} saved HF PEFT to {tmp_dir} " f"({len(hf_state)} tensors)")
+        except Exception as error:
+            peft_write_error = error
+        _raise_if_any_rank_failed(peft_write_error, f"{log_prefix} PEFT checkpoint write")
 
         # Write to a temp dir and move into place so readers never see a
         # partially written checkpoint.
-        if is_global_writer:
-            if final_dir.exists():
-                import shutil
+        promotion_error = None
+        try:
+            if is_global_writer:
+                if final_dir.exists():
+                    import shutil
 
-                shutil.rmtree(final_dir)
-            os.replace(tmp_dir, final_dir)
-            logger.info(f"{log_prefix} promoted checkpoint to {final_dir}")
-        if dist.is_initialized():
-            dist.barrier()
+                    shutil.rmtree(final_dir)
+                os.replace(tmp_dir, final_dir)
+                logger.info(f"{log_prefix} promoted checkpoint to {final_dir}")
+        except Exception as error:
+            promotion_error = error
+        _raise_if_any_rank_failed(promotion_error, f"{log_prefix} checkpoint promotion")
 
 
 def _register_adapter(adapter: AdapterRun, model) -> int:
