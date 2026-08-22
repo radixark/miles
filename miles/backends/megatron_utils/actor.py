@@ -812,36 +812,27 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     def load_other_checkpoint(self, model_tag: str, path: str) -> None:
-        old_args = self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune
-        self.args.load = path
-        self.args.no_load_optim = True
-        self.args.no_load_rng = True
-        self.args.finetune = True
+        ckpt_step = self.args.ckpt_step
+        if model_tag == "ref":
+            ckpt_step = self.args.ref_ckpt_step
+        elif model_tag == "teacher":
+            ckpt_step = self.args.opd_teacher_ckpt_step
 
-        # load_checkpoint reads self.args.ckpt_step to pick which iteration to load.
-        # Temporarily override it for ref/teacher loads, then restore after the load below.
-        if model_tag == "ref" and self.args.ref_ckpt_step is not None:
-            old_ckpt_step = self.args.ckpt_step
-            self.args.ckpt_step = self.args.ref_ckpt_step
-
-        if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
-            old_ckpt_step = self.args.ckpt_step
-            self.args.ckpt_step = self.args.opd_teacher_ckpt_step
-
-        _, _ = load_checkpoint(
-            self.model,
-            None,
-            None,
-            checkpointing_context={},
-            skip_load_to_model_and_opt=False,
+        load_overrides = dict(
+            load=path,
+            no_load_optim=True,
+            no_load_rng=True,
+            finetune=True,
+            ckpt_step=ckpt_step,
         )
-        self.args.load, self.args.no_load_optim, self.args.no_load_rng, self.args.finetune = old_args
-
-        if model_tag == "ref" and self.args.ref_ckpt_step is not None:
-            self.args.ckpt_step = old_ckpt_step
-
-        if model_tag == "teacher" and self.args.opd_teacher_ckpt_step is not None:
-            self.args.ckpt_step = old_ckpt_step
+        with inplace_modify_args(self.args, load_overrides):
+            _, _ = load_checkpoint(
+                self.model,
+                None,
+                None,
+                checkpointing_context={},
+                skip_load_to_model_and_opt=False,
+            )
 
         self.weights_backuper.backup(model_tag)
         self._active_model_tag = model_tag
