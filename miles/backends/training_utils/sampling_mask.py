@@ -16,9 +16,9 @@ def get_rollout_sampling_mask(batch: Mapping[str, object]) -> tuple[object, obje
 
 def build_local_sampling_mask(
     logits: torch.Tensor,
-    sampling_mask_ids: Sequence[int] | torch.Tensor,
-    sampling_mask_offsets: Sequence[int] | torch.Tensor,
-    response_indices: Sequence[int] | torch.Tensor,
+    sampling_mask_ids: list[int],
+    sampling_mask_offsets: list[int],
+    response_indices: Sequence[int],
     *,
     response_length: int,
     tp_rank: int,
@@ -74,14 +74,11 @@ def build_local_sampling_mask(
     return mask.view_as(logits)
 
 
-def _to_cpu_integer_tensor(values: Sequence[int] | torch.Tensor) -> torch.Tensor:
-    if isinstance(values, torch.Tensor):
-        tensor = values.detach().cpu()
+def _to_cpu_integer_tensor(values: Sequence[int]) -> torch.Tensor:
+    if isinstance(values, range):
+        tensor = torch.arange(values.start, values.stop, values.step, device="cpu")
     else:
-        if isinstance(values, range):
-            tensor = torch.arange(values.start, values.stop, values.step, device="cpu")
-        else:
-            tensor = torch.as_tensor(values, device="cpu")
+        tensor = torch.as_tensor(values, device="cpu")
     if tensor.ndim != 1 or tensor.dtype == torch.bool or torch.is_floating_point(tensor) or torch.is_complex(tensor):
         raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
     return tensor

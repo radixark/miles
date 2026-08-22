@@ -191,8 +191,8 @@ def get_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
-    rollout_sampling_mask_ids: Sequence[Sequence[int] | torch.Tensor] | None = None,
-    rollout_sampling_mask_offsets: Sequence[Sequence[int] | torch.Tensor] | None = None,
+    rollout_sampling_mask_ids: list[list[int]] | None = None,
+    rollout_sampling_mask_offsets: list[list[int]] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
