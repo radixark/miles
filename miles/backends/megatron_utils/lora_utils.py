@@ -612,6 +612,16 @@ def _load_training_state(
     training_state = torch.load(state_path, map_location="cpu", weights_only=False)
 
     iteration = training_state.get("iteration")
+
+    # The scheduler position is progress, not optimizer state. Leaving it to the
+    # --no-load-optim path would rebuild it as iteration * global_batch_size, but the
+    # LoRA loop advances it by the samples in each global batch, so the two only agree
+    # when rollout_batch_size * n_samples_per_prompt == global_batch_size.
+    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
+        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
+        args.lora_scheduler_loaded = True
+        logger.info("Restored LR scheduler state from LoRA checkpoint")
+
     if optimizer is None or getattr(args, "no_load_optim", False):
         if iteration is not None:
             logger.info(f"Resuming LoRA progress from iteration {iteration} without optimizer state")
@@ -619,11 +629,6 @@ def _load_training_state(
 
     optimizer.load_state_dict(training_state["optimizer"])
     logger.info("Restored optimizer state from LoRA checkpoint")
-
-    if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
-        opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
-        args.lora_scheduler_loaded = True
-        logger.info("Restored LR scheduler state from LoRA checkpoint")
 
     if iteration is not None:
         logger.info(f"Resuming LoRA training from iteration {iteration}")
