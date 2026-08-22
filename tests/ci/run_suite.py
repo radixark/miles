@@ -159,7 +159,10 @@ def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[
     `-x` so every file runs; pytest still exits non-zero if any failed, so the
     stage stays red.
     """
-    cmd = ["pytest", *filenames, "-v"]
+    # sorted so every directory is named in one run of arguments: pytest loads a directory's
+    # conftest once, and an argument list that returns to a directory after naming its parent
+    # leaves the tests of that second visit without the fixtures their own conftest defines
+    cmd = ["pytest", *sorted(filenames), "-v"]
     if not continue_on_error:
         cmd.append("-x")
     return cmd
@@ -237,6 +240,7 @@ def run_a_suite(args):
         gate_store=gate_store,
         gate_write_baseline=policy.write_baseline,
         gate_provenance=gate_provenance,
+        reap_leftovers=True,
     )
 
 

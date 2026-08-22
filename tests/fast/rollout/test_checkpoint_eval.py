@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import miles.ray.rollout.rollout_manager as rollout_manager_mod
+import miles.ray.rollout.rollout_executor as rollout_executor_mod
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, retarget_args
 
@@ -63,7 +63,9 @@ class CheckpointFnStub(CheckpointEvalFn):
 
 
 def make_manager(args, eval_fn=None, fleet=None):
-    mgr = object.__new__(rollout_manager_mod.RolloutManager.__ray_actor_class__)
+    mgr = object.__new__(
+        getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor)
+    )
     mgr.args = args
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
@@ -79,14 +81,14 @@ def make_manager(args, eval_fn=None, fleet=None):
 @pytest.fixture
 def controller_env(monkeypatch):
     logged = {}
-    monkeypatch.setattr(rollout_manager_mod, "save_debug_rollout_data", lambda *a, **k: None)
+    monkeypatch.setattr(rollout_executor_mod, "save_debug_rollout_data", lambda *a, **k: None)
     monkeypatch.setattr(
-        rollout_manager_mod,
+        rollout_executor_mod,
         "log_eval_rollout_data",
         lambda rollout_id, args, data, extra: logged.setdefault("eval", (rollout_id, data, extra)) or {},
     )
     monkeypatch.setattr(
-        rollout_manager_mod,
+        rollout_executor_mod,
         "log_eval_skip",
         lambda rollout_id, args, reason: logged.setdefault("skip", (rollout_id, reason)),
     )
@@ -136,7 +138,7 @@ async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, mon
             return "fleet-state"
 
     fleet = FakeFleet()
-    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
+    monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
     mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
 
@@ -187,7 +189,7 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
         seen_inputs.append(input)
         return RolloutFnEvalOutput(data={})
 
-    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
+    monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_num_gpus=0)
     mgr = make_manager(args, eval_fn=eval_generate_rollout)
 
@@ -199,6 +201,76 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
     assert seen_inputs[0].hf_dir is None
     _rollout_id, _data, extra = controller_env.logged["eval"]
     assert extra is None
+
+
+class TestSnapshotEvalGuards:
+    async def test_snapshot_eval_without_an_hf_dir_is_rejected(self, controller_env):
+        """Snapshot eval has no checkpoint to evaluate without a dir, so it must fail loudly."""
+        fn = CheckpointFnStub()
+        args = make_args(hf_checkpoint="/base", eval_keep_snapshots=2)
+        mgr = make_manager(args, eval_fn=fn)
+
+        with pytest.raises(AssertionError, match="checkpoint eval requires an HF snapshot dir"):
+            await mgr.eval(5)
+
+        assert fn.inputs == []
+
+    async def test_marker_bypass_evaluates_a_dir_without_a_complete_marker(self, controller_env, tmp_path):
+        """A caller-supplied checkpoint was never exported here, so there is no marker to wait for."""
+        snapshot = tmp_path / "step_5"
+        snapshot.mkdir()
+
+        fn = CheckpointFnStub()
+        args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+        mgr = make_manager(args, eval_fn=fn)
+
+        await mgr.eval(5, hf_dir=str(snapshot), require_marker=False)
+
+        assert len(fn.inputs) == 1
+        assert fn.inputs[0].hf_dir == str(snapshot)
+        assert "skip" not in controller_env.logged
+
+
+class BlockingFleet:
+    def __init__(self):
+        self.pins = []
+        self.release = asyncio.Event()
+
+    async def pin(self, checkpoint_dir, weight_version):
+        self.pins.append(weight_version)
+        await self.release.wait()
+        return "fleet-state"
+
+
+class TestEvalFleetSerialization:
+    async def test_set_eval_fleet_serializes_concurrent_checkpoint_pins(self, controller_env, monkeypatch, tmp_path):
+        """One fleet holds one pinned checkpoint, so a second eval point cannot pin until the first finishes."""
+        for rollout_id in (5, 6):
+            snapshot = tmp_path / f"step_{rollout_id}"
+            snapshot.mkdir()
+            (snapshot / ".complete").touch()
+
+        def eval_generate_rollout(input):
+            return RolloutFnEvalOutput(data={"ds": {"rewards": [1.0]}})
+
+        monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
+        args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
+        mgr = make_manager(args, eval_fn=eval_generate_rollout)
+        args.eval_uses_snapshots = True
+        fleet = BlockingFleet()
+        mgr._eval_fleet = fleet
+
+        first = asyncio.create_task(mgr.eval(5, hf_dir=str(tmp_path / "step_5")))
+        second = asyncio.create_task(mgr.eval(6, hf_dir=str(tmp_path / "step_6")))
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert fleet.pins == ["5"]
+
+        fleet.release.set()
+        await asyncio.gather(first, second)
+
+        assert fleet.pins == ["5", "6"]
 
 
 # ---------------- driver (train_async.EvalDispatcher) ----------------
@@ -214,7 +286,7 @@ class FakeManagerActor:
         outer = self
 
         class _Eval:
-            def remote(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
+            def __call__(self, rollout_id, hf_dir=None, export_time_seconds=None, require_marker=True):
                 outer.eval_calls.append((rollout_id, hf_dir, export_time_seconds))
                 outer.marker_flags.append(require_marker)
                 fut = asyncio.get_event_loop().create_future()
@@ -222,7 +294,7 @@ class FakeManagerActor:
                 return fut
 
         class _Skip:
-            def remote(self, rollout_id, reason):
+            def __call__(self, rollout_id, reason):
                 outer.skip_calls.append((rollout_id, reason))
                 fut = asyncio.get_event_loop().create_future()
                 fut.set_result(None)
@@ -247,14 +319,10 @@ class FakeActorModel:
 
 
 @pytest.fixture
-def dispatcher_env(monkeypatch):
+def dispatcher_env():
+    """The dispatcher tracks its exports as asyncio tasks, so there is nothing left to stand in for."""
     import miles.ray.rollout.eval_dispatch as eval_dispatch
 
-    # ray.wait/ray.get over asyncio futures: done iff the future is resolved.
-    monkeypatch.setattr(
-        eval_dispatch.ray, "wait", lambda refs, timeout=0: (refs, []) if refs[0].done() else ([], refs)
-    )
-    monkeypatch.setattr(eval_dispatch.ray, "get", lambda ref: ref.result())
     return eval_dispatch
 
 
@@ -455,7 +523,7 @@ async def test_dispatcher_shared_engine_blocks_like_today(dispatcher_env):
         def __init__(self):
             self.calls = []
 
-        def remote(self, rollout_id):
+        def __call__(self, rollout_id):
             self.calls.append(rollout_id)
             fut = asyncio.get_event_loop().create_future()
             fut.set_result(None)

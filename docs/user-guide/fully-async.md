@@ -119,15 +119,17 @@ The **data buffer** is the store of finished groups between the two loops, and e
 group-level decision lives in it. The producer puts each group in as it completes, the
 trainer takes groups back out one at a time, and everything in between — what to keep,
 what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+replaceable component with five methods:
 
 | Method | Called by | Purpose |
 |---|---|---|
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
 | `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
 | `get_metrics()` | The trainer, once per step | Report what the buffer did since the previous step |
+| `wait_failed()` | The rollout owner | Surface terminal failures from background buffer work |
+| `aclose()` | The rollout owner during teardown | Stop background work and wake blocked operations; repeated calls must be safe |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
+Those five methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
 
 ```mermaid
@@ -160,6 +162,50 @@ The buffer decouples the two loops. As long as it holds finished groups, the tra
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
 cannot hide it.
 
+In a multi-policy run, the built-in composite routes one complete
+`n_samples_per_prompt` subgroup to each policy. If one trajectory produces no sample
+for a policy, that policy's short subgroup is discarded instead of being combined with
+a later prompt group. Complete sibling subgroups remain eligible, and the next complete
+group for the missing policy wakes its waiting trainer. This per-policy discard does not
+invoke `--async-unused-samples-handler`, because retrying the shared prompt group would
+also duplicate the complete sibling policy's samples.
+
+Each policy has one FIFO dispatcher. A completed outer group is first validated for
+every policy, then all complete sibling subgroups reserve dispatch slots atomically.
+This prevents a full solver buffer from hiding a verifier batch while also preventing
+half of a group from becoming visible when cancellation arrives during admission.
+The rollout worker moves completed generation into bounded publish tasks instead of
+waiting for one blocked `put()`. Each pending publish reserves one whole group of
+submission capacity. Under sample granularity, completed generation samples still free
+their sample credits, but those credits cannot consume capacity reserved by blocked
+publishes. If those samples remain in group-level post-processing, the worker admits at
+most one replacement wave: active generation and publish wrappers together stay at or
+below twice the group budget. A short subgroup is excluded from the worker's ordering
+signature before the complete siblings are published. Publish tasks with disjoint
+policy targets may progress independently; tasks that share any complete policy wait
+for that policy's preceding publish, preserving FIFO.
+
+The composite lazily creates one bounded credit window for each target signature it
+observes, such as `{solver}` or `{solver, verifier}`. Each signature may hold at most
+`rollout_batch_size` admitted outer groups. Different signatures do not consume each
+other's credit, so a follower can collect one full training batch from shared groups
+even while a solver-only route is blocked. A policy still has one dispatcher across
+all signatures, preserving its global FIFO order. With `P` policies there are at most
+`2^P - 1` non-empty signatures; total admitted outer groups are bounded by the sum of
+the observed signature windows. The bound is finite: a permanently unconsumed policy
+eventually stops each route that includes it instead of dropping or replaying a
+complete subgroup.
+
+Once a subgroup has been admitted, a custom inner buffer may accept it before a sibling
+fails. That outcome cannot be rolled back safely. The composite therefore latches the
+first asynchronous dispatch error, wakes blocked producers and consumers, and rejects
+the rest of the run without retrying the outer group. One fixed watcher per policy also
+propagates failures reported by a custom inner buffer after `put()` returns. An inner
+cancellation outside teardown is a terminal error rather than a clean policy-task
+cancellation. Run teardown closes the rollout worker, all fixed dispatchers and
+watchers, and every inner buffer before worker-manager shutdown. Cleanup attempts every
+owned resource and then surfaces any terminal run error that occurred before teardown.
+
 ### Arguments: Buffer options
 
 Buffer capacity bounds how far generation can run ahead of training:
@@ -167,6 +213,11 @@ Buffer capacity bounds how far generation can run ahead of training:
 | Flag | Effect |
 |---|---|
 | `--async-data-buffer-capacity-factor` | Buffer holds `floor(factor * rollout_batch_size)` groups, `2.0` by default. When it is full the producer blocks until training consumes |
+
+For the built-in multi-policy composite, each policy's inner buffer keeps that capacity
+and dispatch adds the route windows described above. If `R` target signatures have
+appeared, the additional admitted-group bound is `R * rollout_batch_size`, where
+`R <= 2^P - 1`; route state is created only when that signature first appears.
 
 Staleness control decides which of those groups training is allowed to see:
 
@@ -177,7 +228,9 @@ Staleness control decides which of those groups training is allowed to see:
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
+must implement `put()`, `get()`, and `get_metrics()` and may override the default
+no-background-work implementations of `wait_failed()` and `aclose()`. It therefore
+takes over every group-level decision, and the flags in
 this section apply only if your class reads them. The one decision that stays outside is
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
@@ -297,6 +350,8 @@ alongside the standard rollout metrics:
 
 ```text
 rollout/fully_async/queue_size
+rollout/fully_async/dispatch_pending
+rollout/fully_async/dispatch_route_pending
 rollout/fully_async/aborted_groups_filtered
 rollout/fully_async/stale_groups_filtered
 rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
@@ -306,7 +361,13 @@ rollout/dynamic_filter/drop_<reason>
 
 The `avg_staleness` and `max_staleness` pair covers the groups training actually
 consumed, while the `buffer_` pair covers the groups still sitting in the buffer when
-the step drained it.
+the step drained it. In a multi-policy run, `queue_size` includes both the selected
+policy's inner buffer and only those admitted subgroups that have not entered that
+inner buffer yet. `dispatch_pending` isolates the latter without double-counting a
+subgroup after its inner `put()` completes. `dispatch_route_pending` is the total
+admitted outer-group count across all signatures; an outer group remains there until
+every targeted inner `put()` completes, so the value is bounded by the sum of the
+signatures' `rollout_batch_size` windows.
 
 A `queue_size` pinned at zero means rollout is the bottleneck, so scale rollout capacity
 or lower per-sample generation cost. A `queue_size` pinned at capacity means training is

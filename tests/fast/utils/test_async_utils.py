@@ -1,11 +1,20 @@
 """Tests for eager_create_task and AsyncioGatherUtils."""
 
 import asyncio
+import concurrent.futures
 import logging
+import threading
+import time
 
 import pytest
 
-from miles.utils.async_utils import AsyncioGatherUtils, eager_create_task
+from miles.utils import async_utils
+from miles.utils.async_utils import (
+    AsyncioGatherUtils,
+    AsyncLoopThread,
+    eager_create_task,
+    wait_cancelling_pending_on_first_completion,
+)
 
 
 @pytest.mark.asyncio
@@ -152,6 +161,20 @@ class TestAsyncioGatherUtilsLogError:
         assert "index=0" in error_records[0].message
         assert "index=2" in error_records[1].message
 
+    def test_a_caller_can_name_each_failure_itself(self, caplog):
+        """A cell of a server means more to whoever reads the log than the index it happened to gather at."""
+        with caplog.at_level(logging.WARNING):
+            AsyncioGatherUtils.log_error([_ERR1, "ok"], describe_failure=lambda index: f"cell-{index} refused")
+
+        assert [r.message for r in caplog.records] == ["cell-0 refused"]
+
+    def test_a_caller_can_choose_the_level_it_is_logged_at(self, caplog):
+        """A failure that is about to be raised is an error, while a gather that carries on is a warning."""
+        with caplog.at_level(logging.ERROR):
+            AsyncioGatherUtils.log_error([_ERR1], debug_name="test_op", log=logging.getLogger("x").error)
+
+        assert [r.levelno for r in caplog.records] == [logging.ERROR]
+
     def test_logs_include_debug_name(self, caplog):
         with caplog.at_level(logging.WARNING):
             AsyncioGatherUtils.log_error([_ERR1], debug_name="refresh_cells#coop")
@@ -165,3 +188,475 @@ class TestAsyncioGatherUtilsLogError:
 
         record = [r for r in caplog.records if "op" in r.message][0]
         assert record.exc_info[1] is err
+
+
+# ---- AsyncLoopThread.submit / wait_futures ----
+
+
+@pytest.fixture
+def loop_thread():
+    thread = AsyncLoopThread()
+    yield thread
+    thread.loop.call_soon_threadsafe(thread.loop.stop)
+
+
+class TestSubmit:
+    def test_submit_returns_before_the_coroutine_finishes(self, loop_thread):
+        """Non-blocking dispatch is the whole point: the caller must get control back."""
+        release = threading.Event()
+
+        async def blocked():
+            await asyncio.get_running_loop().run_in_executor(None, release.wait)
+            return "done"
+
+        future = loop_thread.submit(blocked())
+        assert not future.done()
+
+        release.set()
+        assert future.result(timeout=10) == "done"
+
+    def test_run_blocks_until_the_result_is_available(self, loop_thread):
+        """``run`` is the blocking sibling used by the synchronous ray actor shells."""
+
+        async def compute():
+            await asyncio.sleep(0)
+            return 7
+
+        assert loop_thread.run(compute()) == 7
+
+    def test_exceptions_surface_at_the_collection_point(self, loop_thread):
+        """A failed request must not disappear into the background loop."""
+
+        async def failing():
+            raise ValueError("boom")
+
+        future = loop_thread.submit(failing())
+
+        with pytest.raises(ValueError, match="boom"):
+            future.result(timeout=10)
+
+    def test_run_propagates_the_coroutine_exception(self, loop_thread):
+        """``run`` blocks on the future, so a failure must land on the synchronous caller."""
+
+        async def failing():
+            raise ValueError("boom")
+
+        with pytest.raises(ValueError, match="boom"):
+            loop_thread.run(failing())
+
+    def test_cancelling_submitted_future_cancels_the_coroutine(self, loop_thread):
+        """Dropping a fired request must stop the background work, not orphan it on the loop."""
+        started = threading.Event()
+        cancelled = threading.Event()
+
+        async def blocked():
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        future = loop_thread.submit(blocked())
+        assert started.wait(timeout=10)
+
+        assert future.cancel()
+        assert cancelled.wait(timeout=10)
+        assert future.cancelled()
+
+    def test_submitting_from_inside_the_loop_thread_is_refused(self, loop_thread):
+        """Blocking on that future would freeze the very loop that must resolve it."""
+
+        async def submit_from_the_loop():
+            with pytest.raises(AssertionError, match="deadlock"):
+                loop_thread.submit(asyncio.sleep(0))
+
+        loop_thread.run(submit_from_the_loop())
+
+    def test_a_fan_out_larger_than_any_thread_pool_still_all_lands(self, loop_thread):
+        """This is why the dispatch is a loop and not a thread pool."""
+        arrived = threading.Semaphore(0)
+        release = threading.Event()
+
+        async def blocked():
+            arrived.release()
+            await asyncio.get_running_loop().run_in_executor(_UNBOUNDED_POOL, release.wait)
+            return "ok"
+
+        futures = [loop_thread.submit(blocked()) for _ in range(200)]
+        for _ in range(200):
+            assert arrived.acquire(timeout=30)
+
+        release.set()
+        assert [f.result(timeout=30) for f in futures] == ["ok"] * 200
+
+
+_UNBOUNDED_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=256)
+
+
+class TestFireThenRendezvous:
+    """The blocking endpoints need every engine asked before the caller joins."""
+
+    def test_every_request_is_on_the_wire_before_the_caller_joins_the_collective(self, loop_thread):
+        num_engines = 32
+        barrier = threading.Barrier(num_engines + 1)
+
+        async def engine_call(engine_index: int):
+            await asyncio.get_running_loop().run_in_executor(_UNBOUNDED_POOL, barrier.wait)
+            return engine_index
+
+        futures = [loop_thread.submit(engine_call(i)) for i in range(num_engines)]
+
+        barrier.wait(timeout=30)
+
+        assert async_utils.wait_futures(futures) == list(range(num_engines))
+
+    def test_collecting_before_firing_the_rest_deadlocks(self, loop_thread):
+        """A caller that blocks on the first response never sends the second."""
+        barrier = threading.Barrier(2)
+
+        async def engine_call(engine_index: int):
+            await asyncio.get_running_loop().run_in_executor(_UNBOUNDED_POOL, barrier.wait, 1.0)
+            return engine_index
+
+        first = loop_thread.submit(engine_call(0))
+
+        with pytest.raises(concurrent.futures.TimeoutError):
+            first.result(timeout=0.5)
+
+        with pytest.raises(threading.BrokenBarrierError):
+            first.result(timeout=10)
+
+
+async def _failing(message: str):
+    raise ValueError(message)
+
+
+class TestWaitFutures:
+    def test_it_preserves_the_submission_order(self, loop_thread):
+        """Results are positional: caller i's result must stay at index i."""
+
+        async def slow_first(delay: float, value: int):
+            await asyncio.sleep(delay)
+            return value
+
+        futures = [loop_thread.submit(slow_first(0.05, 1)), loop_thread.submit(slow_first(0.0, 2))]
+
+        assert async_utils.wait_futures(futures) == [1, 2]
+
+    def test_it_drains_every_future_before_raising(self, loop_thread):
+        """Bailing early leaves requests running against engines the caller considers done."""
+        finished: list[int] = []
+
+        async def failing():
+            raise ValueError("boom")
+
+        async def slow_success(index: int):
+            await asyncio.sleep(0.1)
+            finished.append(index)
+            return index
+
+        futures = [loop_thread.submit(failing()), loop_thread.submit(slow_success(1))]
+
+        with pytest.raises(ValueError, match="boom"):
+            async_utils.wait_futures(futures)
+
+        assert finished == [1]
+
+    def test_it_raises_the_first_error_in_submission_order(self, loop_thread):
+        """A stable error keeps failures reproducible when several engines fail."""
+
+        async def failing(message: str, delay: float):
+            await asyncio.sleep(delay)
+            raise ValueError(message)
+
+        futures = [loop_thread.submit(failing("second", 0.1)), loop_thread.submit(failing("first", 0.0))]
+
+        with pytest.raises(ValueError, match="second"):
+            async_utils.wait_futures(futures)
+
+    def test_an_empty_fan_out_is_not_an_error(self):
+        """A group with no live engines must not blow up the weight update."""
+        assert async_utils.wait_futures([]) == []
+
+    def test_every_failure_is_logged_not_just_the_one_that_is_raised(self, caplog):
+        """Only the first error propagates, so the others are only ever seen in the log."""
+        futures = [async_utils.submit(_failing("first")), async_utils.submit(_failing("second"))]
+
+        with caplog.at_level(logging.WARNING), pytest.raises(ValueError, match="first"):
+            async_utils.wait_futures(futures)
+
+        assert [record.message for record in caplog.records if "wait_futures" in record.message] == [
+            "wait_futures index=0 failed",
+            "wait_futures index=1 failed",
+        ]
+
+    def test_each_wait_future_failure_logs_its_exception_info(self, caplog):
+        """The attached exception is the only detail available for failures that never propagate."""
+        futures = [async_utils.submit(_failing("first")), async_utils.submit(_failing("second"))]
+
+        with caplog.at_level(logging.WARNING), pytest.raises(ValueError, match="first"):
+            async_utils.wait_futures(futures)
+
+        records = [record for record in caplog.records if "wait_futures" in record.message]
+        assert [str(record.exc_info[1]) for record in records] == ["first", "second"]
+
+    def test_an_interrupt_is_not_held_back_by_the_remaining_futures(self):
+        """One Ctrl-C must kill a hung weight update, not queue behind a silent engine."""
+        touched: list[str] = []
+
+        class _Interrupted(concurrent.futures.Future):
+            def result(self, timeout=None):
+                raise KeyboardInterrupt
+
+        class _NeverFinishes(concurrent.futures.Future):
+            def result(self, timeout=None):
+                touched.append("second")
+                raise AssertionError("the interrupt should have propagated before this")
+
+        with pytest.raises(KeyboardInterrupt):
+            async_utils.wait_futures([_Interrupted(), _NeverFinishes()])
+
+        assert touched == []
+
+    def test_a_module_level_submit_reaches_the_shared_background_loop(self):
+        """Production fires through the module-level facade, not through a hand-built loop thread."""
+
+        async def record():
+            return threading.get_ident()
+
+        idents = async_utils.wait_futures([async_utils.submit(record()) for _ in range(50)])
+
+        assert len(set(idents)) == 1, "every request must run on the one background loop"
+        assert threading.get_ident() not in idents, "the caller thread must stay free to enter the collective"
+
+
+@pytest.mark.asyncio
+class TestWaitCancellingPendingOnFirstCompletion:
+    async def test_the_first_task_to_return_cancels_the_rest(self):
+        """The leader owns the length of a multi policy run, and its followers loop until it is over."""
+        cancelled = False
+
+        async def leader():
+            await asyncio.sleep(0.01)
+
+        async def follower():
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        await wait_cancelling_pending_on_first_completion(
+            [asyncio.create_task(leader()), asyncio.create_task(follower())]
+        )
+
+        assert cancelled
+
+    async def test_the_failure_reaches_the_caller(self):
+        """A member that raises must fail the whole fan-out instead of being swallowed."""
+
+        async def failing():
+            raise ValueError("boom")
+
+        async def slow():
+            await asyncio.sleep(30)
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+    async def test_a_failure_cancels_the_members_that_are_still_running(self):
+        """A survivor left running would keep working for a run that is already dead."""
+        cancelled = asyncio.Event()
+
+        async def failing():
+            await asyncio.sleep(0.01)
+            raise ValueError("boom")
+
+        async def slow():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+        assert cancelled.is_set()
+
+    async def test_two_members_failing_at_once_report_the_first_one_and_log_the_rest(self, caplog):
+        """Which failure surfaced used to depend on set iteration order, and the other root cause vanished."""
+
+        async def failing(message: str):
+            raise ValueError(message)
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="first"):
+                await wait_cancelling_pending_on_first_completion(
+                    [asyncio.create_task(failing("first")), asyncio.create_task(failing("second"))]
+                )
+
+        assert len([record for record in caplog.records if record.getMessage() == "task failed"]) == 2
+
+    async def test_python310_preserves_the_primary_when_two_members_fail(self, caplog):
+        """A missing BaseException.add_note must not replace the first task failure."""
+
+        class _Python310Error(ValueError):
+            def add_note(self, note: str) -> None:
+                raise AttributeError("BaseException.add_note is unavailable on Python 3.10")
+
+        primary = _Python310Error("first")
+
+        async def failing(error: Exception) -> None:
+            raise error
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(_Python310Error, match="first") as failed:
+                await wait_cancelling_pending_on_first_completion(
+                    [
+                        asyncio.create_task(failing(primary)),
+                        asyncio.create_task(failing(RuntimeError("second"))),
+                    ]
+                )
+
+        assert failed.value is primary
+        assert len([record for record in caplog.records if record.getMessage() == "task failed"]) == 2
+
+    async def test_a_member_that_fails_while_being_cancelled_is_not_lost(self):
+        """Cleanup that raises is the second root cause of a run that is already failing."""
+
+        async def failing():
+            await asyncio.sleep(0.01)
+            raise ValueError("boom")
+
+        async def slow():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+    async def test_primary_failure_precedes_a_cleanup_failure_from_an_earlier_task(self):
+        """Cancellation cleanup is attached without masking the failure that ended the run."""
+
+        async def cleanup_failure():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise RuntimeError("cleanup exploded") from None
+
+        async def primary_failure():
+            await asyncio.sleep(0.01)
+            raise ValueError("training failed")
+
+        with pytest.raises(ValueError, match="training failed") as exc_info:
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(cleanup_failure()), asyncio.create_task(primary_failure())]
+            )
+
+        assert any("RuntimeError: cleanup exploded" in note for note in exc_info.value.__notes__)
+
+    async def test_the_cancelled_members_are_awaited_before_the_error_is_raised(self):
+        """Raising before the cleanup lands would let a half-cancelled task outlive the caller."""
+        cleaned_up = False
+
+        async def failing():
+            raise ValueError("boom")
+
+        async def slow():
+            nonlocal cleaned_up
+            try:
+                await asyncio.sleep(30)
+            finally:
+                await asyncio.sleep(0)
+                cleaned_up = True
+
+        with pytest.raises(ValueError, match="boom"):
+            await wait_cancelling_pending_on_first_completion(
+                [asyncio.create_task(failing()), asyncio.create_task(slow())]
+            )
+
+        assert cleaned_up
+
+
+class TestGatherAndRaiseFirst:
+    async def test_it_answers_every_result_when_nothing_fails(self):
+        """Callers use the results, so the happy path has to hand back what a plain gather would."""
+
+        async def answer(value: int) -> int:
+            return value
+
+        assert await async_utils.gather_and_raise_first([answer(1), answer(2)]) == [1, 2]
+
+    async def test_it_logs_a_failure_and_raises_it(self, caplog):
+        """A caller that describes its failures wants them named, and still wants the error to reach it."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="only one"):
+                await async_utils.gather_and_raise_first(
+                    [_failing("only one")], describe_failure=lambda index: f"awaitable {index} failed"
+                )
+
+        assert "awaitable 0 failed" in caplog.text
+
+    async def test_it_logs_every_failure_before_raising_the_first(self, caplog):
+        """The point of gathering is to see the whole set of sick peers, not whichever one finished first."""
+
+        async def answer() -> int:
+            return 0
+
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="first"):
+                await async_utils.gather_and_raise_first(
+                    [_failing("first"), answer(), _failing("second")],
+                    describe_failure=lambda index: f"awaitable {index} failed",
+                )
+
+        assert "awaitable 0 failed" in caplog.text and "awaitable 2 failed" in caplog.text
+        assert "awaitable 1 failed" not in caplog.text
+
+    async def test_it_says_nothing_when_no_description_is_given(self, caplog):
+        """A caller that logs its own failures would otherwise have every one of them reported twice."""
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(ValueError, match="quiet"):
+                await async_utils.gather_and_raise_first([_failing("quiet")])
+
+        assert caplog.text == ""
+
+
+class TestGetAsyncLoop:
+    def test_threads_arriving_together_share_one_loop(self, monkeypatch):
+        """A second loop would strand whatever already awaits on the first, which no caller can recover from."""
+        monkeypatch.setattr(async_utils, "async_loop", None)
+        built: list[object] = []
+
+        class SlowToBuild:
+            def __init__(self):
+                time.sleep(0.05)
+                built.append(self)
+
+        monkeypatch.setattr(async_utils, "AsyncLoopThread", SlowToBuild)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            loops = [future.result() for future in [pool.submit(async_utils.get_async_loop) for _ in range(8)]]
+
+        assert len(built) == 1
+        assert all(loop is built[0] for loop in loops)
+
+    def test_a_later_caller_is_answered_from_the_loop_already_built(self, monkeypatch):
+        """The guard must not rebuild the loop once one exists, nor pay a lock on every rollout call."""
+        monkeypatch.setattr(async_utils, "async_loop", None)
+        monkeypatch.setattr(async_utils, "AsyncLoopThread", lambda: object())
+
+        first = async_utils.get_async_loop()
+
+        assert async_utils.get_async_loop() is first

@@ -296,7 +296,12 @@ def compute_log_probs(
     # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
-    return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+    if torch.is_grad_enabled():
+        return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+    with torch.enable_grad():
+        log_probs = -fused_vocab_parallel_cross_entropy(logits.detach().requires_grad_(True), tokens, process_group)
+    return log_probs.detach()
 
 
 def _prepare_true_on_policy_full_logits(

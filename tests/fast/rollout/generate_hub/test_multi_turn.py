@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from itertools import groupby
@@ -120,6 +119,7 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
             tokens=[],
             loss_mask=[],
             rollout_log_probs=[],
+            weight_versions=[],
             prefix_cache_info=Sample.PrefixCacheInfo(),
         )
         # Session server populates diagnostic metadata (token IDs,
@@ -271,9 +271,36 @@ class TestExitConditions:
         assert {m["name"] for m in messages[2:4]} == {"get_year", "get_temperature"}
         assert messages[4]["content"] == S.SECOND_RESPONSE
 
+    def test_weight_version_spans_from_the_engine_are_anchored_per_turn(self, variant, generation_env):
+        """Spans returned by the engine land as absolute token positions, one call per turn."""
+        if variant != "multi_turn":
+            pytest.skip("span anchoring asserted once, on the engine multi-turn path")
+
+        S = TwoTurnStub
+
+        def process_fn(prompt: str) -> ProcessResult:
+            base_result = S.process_fn(prompt)
+            num_tokens = len(TOKENIZER.encode(base_result.text, add_special_tokens=False))
+            version = "7" if base_result.text == S.FIRST_RESPONSE else "8"
+            return replace(
+                base_result,
+                meta_info=ProcessResultMetaInfo(weight_versions=[{"version": version, "start": 0, "end": num_tokens}]),
+            )
+
+        generation_env.mock_server.process_fn = process_fn
+        result = _run_generate(variant, generation_env, make_sample(prompt=S.PROMPT))
+
+        sample = result.sample
+        assert [[span.version for span in call.spans] for call in sample.weight_versions] == [["7"], ["8"]]
+        first, second = sample.weight_versions[0].spans[0], sample.weight_versions[1].spans[0]
+        n1 = len(TOKENIZER.encode(S.FIRST_RESPONSE, add_special_tokens=False))
+        n2 = len(TOKENIZER.encode(S.SECOND_RESPONSE, add_special_tokens=False))
+        assert (first.abs_end - first.abs_start, second.abs_end - second.abs_start) == (n1, n2)
+        assert first.abs_start == len(S.FIRST_PROMPT_TOKEN_IDS)
+        assert first.abs_end < second.abs_start
+        assert second.abs_end == len(sample.tokens)
+
     def test_partial_rollout_not_supported(self, variant, generation_env):
-        if is_agentic_variant(variant):
-            pytest.skip("agentic_tool_call does not check partial_rollout flag")
         generation_env.args.partial_rollout = True
 
         with pytest.raises(AssertionError, match="Partial rollout is not supported"):
@@ -666,11 +693,12 @@ class TestAgentMetadata:
             mock_tools.AGENTIC_RETURN_METADATA = None
 
         samples = listify(result.sample)
-        (session_server_port,) = generation_env.args.session_server_ports
+        (session_server_addr,) = generation_env.args.session_server_addrs
+        session_server_port = int(session_server_addr.rsplit(":", 1)[1])
         expected_session_server_id = f"127.0.0.1:{session_server_port}"
         for s in samples:
             assert s.metadata["session_server_id"] == expected_session_server_id
-            assert re.fullmatch(r"[0-9a-f]{32}", s.metadata["session_server_instance_id"])
+            assert s.metadata["session_server_instance_id"] == f"{generation_env.args.run_uuid}-0"
 
 
 class TestAgentCollectionFailure:
@@ -736,8 +764,7 @@ class TestAgentNoRecords:
                 extra_argv=noop_argv,
             )
             with with_session_server(mock_server.url, args, port=session_port):
-                args.session_server_ip = "127.0.0.1"
-                args.session_server_ports = [session_port]
+                args.session_server_addrs = [f"127.0.0.1:{session_port}"]
                 env = GenerateEnv(args=args, mock_server=mock_server)
                 result = _run_generate(agentic_variant, env, make_sample(prompt=TwoTurnStub.PROMPT))
 

@@ -1,26 +1,102 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
+import contextlib
 import os
 import shutil
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
+from tests.e2e.ft.conftest_ft.cli_options import (
+    DumpDirOption,
+    EnableDumperOption,
+    ModeOption,
+    OptionalModeOption,
+    PhaseOption,
+)
+
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, prepare, run_training
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrapper import Helm, Kubectl
+from miles.utils.external_utils.command_utils.helm_backend.launcher.observability.pod_facts import selected_pods
+from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName
+from miles.utils.workers.types import ClusterBackend
+
+
+BASELINE_SIDE: str = "baseline"
+TARGET_SIDE: str = "target"
+
+_DUMPS_ROOT_ENV = "MILES_TEST_DUMPS_ROOT"
+_DEFAULT_DUMPS_ROOT = Path("/node_public/dumps")
+_RELEASE_POLL_INTERVAL_SECONDS = 1.0
+_RELEASE_TIMEOUT_SECONDS = 300.0
 
 BuildArgsFn = Callable[[FTTestMode, str, bool], str]
+ConfigForSideFn = Callable[[str, command_utils.ExecuteTrainConfig], command_utils.ExecuteTrainConfig]
+TargetSideContextFn = Callable[
+    [FTTestMode, str, command_utils.ExecuteTrainConfig], contextlib.AbstractContextManager[None]
+]
+
+
+@dataclass(frozen=True)
+class RunSideRequest:
+    side: str
+    mode: FTTestMode
+    train_args: str
+    dump_dir: str
+    config: command_utils.ExecuteTrainConfig
+    enable_dumper: bool
+
+
+RunSideFn = Callable[[RunSideRequest], None]
+ReleaseSideFn = Callable[[RunSideRequest], None]
+ResolveModeFn = Callable[[str | None], FTTestMode]
+
+
+def run_one_release(request: RunSideRequest) -> None:
+    run_training(train_args=request.train_args, mode=request.mode, dump_dir=request.dump_dir, config=request.config)
+
+
+def _release_comparison_side(request: RunSideRequest) -> None:
+    config = request.config
+    if config.cluster_backend is not ClusterBackend.KUBERNETES:
+        return
+
+    assert config.namespace, "A kubernetes comparison side needs a namespace before its release can be removed"
+    release = ReleaseName(
+        run_id=config.run_id,
+        deploy_component=config.deploy_component,
+        deploy_instance_id=config.deploy_instance_id,
+    ).serialize()
+    selector = Kubectl.release_selector(release)
+    deadline = time.monotonic() + _RELEASE_TIMEOUT_SECONDS
+
+    Helm.uninstall_if_present(release=release, namespace=config.namespace)
+    while True:
+        manifest = Helm.get_manifest(release, config.namespace)
+        pods = selected_pods(config.namespace, selector)
+        if manifest is None and not pods:
+            return
+        if time.monotonic() >= deadline:
+            pod_names = sorted(pod.metadata.name for pod in pods)
+            raise TimeoutError(
+                f"Timed out removing comparison release {release!r} from namespace {config.namespace!r}; "
+                f"release_exists={manifest is not None}, pods={pod_names}"
+            )
+        time.sleep(_RELEASE_POLL_INTERVAL_SECONDS)
 
 
 def resolve_dump_dir(test_name: str) -> str:
-    # TODO make it configurable, but on local disk instead of remote disk
-    output_dir = "/node_public"
-    dump_dir = str(Path(output_dir) / "dumps" / test_name)
+    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
+    dump_dir = Path(root) / command_utils.default_config().run_id / test_name
     os.makedirs(dump_dir, exist_ok=True)
-    return dump_dir
+    return str(dump_dir)
 
 
 def _dump_subdir(side: str, phase: str) -> str:
@@ -34,12 +110,17 @@ def run_pipeline(
     build_target_args: BuildArgsFn,
     compare_fn: Callable[[str, FTTestMode], None],
     phases: list[str] | None,
-    mode: str,
+    mode: str | None,
     enable_dumper: bool = True,
+    target_side_context: TargetSideContextFn | None = None,
+    config_for_side: ConfigForSideFn | None = None,
+    run_side: RunSideFn = run_one_release,
+    release_side: ReleaseSideFn = _release_comparison_side,
+    resolve_mode_fn: ResolveModeFn = resolve_mode,
 ) -> None:
     """Full pipeline (prepare + every phase's baseline/target + compare) for one mode."""
     effective_phases: list[str] = phases or [""]
-    ft_mode: FTTestMode = resolve_mode(mode)
+    ft_mode: FTTestMode = resolve_mode_fn(mode)
     dump_dir: str = resolve_dump_dir(test_name)
     print(f"Dump directory: {dump_dir}")
 
@@ -47,19 +128,30 @@ def run_pipeline(
 
     try:
         for phase in effective_phases:
-            baseline_dump = f"{dump_dir}/{_dump_subdir('baseline', phase)}"
-            run_training(
-                train_args=build_baseline_args(ft_mode, baseline_dump, enable_dumper),
-                mode=ft_mode,
-                dump_dir=baseline_dump,
-            )
-
-            target_dump = f"{dump_dir}/{_dump_subdir('target', phase)}"
-            run_training(
-                train_args=build_target_args(ft_mode, target_dump, enable_dumper),
-                mode=ft_mode,
-                dump_dir=target_dump,
-            )
+            for side, build_args in (
+                (BASELINE_SIDE, build_baseline_args),
+                (TARGET_SIDE, build_target_args),
+            ):
+                side_dump = f"{dump_dir}/{_dump_subdir(side, phase)}"
+                config = _resolve_config_for_side(side, config_for_side=config_for_side)
+                context = (
+                    target_side_context(ft_mode, side_dump, config)
+                    if side == TARGET_SIDE and target_side_context is not None
+                    else contextlib.nullcontext()
+                )
+                request = RunSideRequest(
+                    side=side,
+                    mode=ft_mode,
+                    train_args=build_args(ft_mode, side_dump, enable_dumper),
+                    dump_dir=side_dump,
+                    config=config,
+                    enable_dumper=enable_dumper,
+                )
+                try:
+                    with context:
+                        run_side(request)
+                finally:
+                    release_side(request)
 
         if enable_dumper:
             compare_fn(dump_dir, ft_mode)
@@ -74,7 +166,11 @@ def create_comparison_app_and_run_ci(
     build_target_args: BuildArgsFn,
     compare_fn: Callable[[str, FTTestMode], None],
     phases: list[str] | None = None,
-) -> tuple[typer.Typer, Callable[[str], None]]:
+    target_side_context: TargetSideContextFn | None = None,
+    config_for_side: ConfigForSideFn | None = None,
+    run_side: RunSideFn = run_one_release,
+    resolve_mode_fn: ResolveModeFn = resolve_mode,
+) -> tuple[typer.Typer, Callable[[str | None], None]]:
     """Build, from one wiring, the manual typer app and a run_ci(mode) one-shot runner.
 
     Returns ``(app, run_ci)``: ``app`` exposes run/baseline/target/compare for manual use;
@@ -86,57 +182,74 @@ def create_comparison_app_and_run_ci(
     """
     app: typer.Typer = typer.Typer()
 
-    def _run_side(
+    def _execute_one_side(
         side: str,
         build_fn: BuildArgsFn,
-        mode: str,
+        mode: str | None,
         dump_dir: str | None,
         phase: str,
         *,
         enable_dumper: bool = True,
     ) -> None:
-        ft_mode = resolve_mode(mode)
+        ft_mode = resolve_mode_fn(mode)
         if dump_dir is None:
             dump_dir = resolve_dump_dir(test_name)
         sub = _dump_subdir(side, phase)
         full_dump_dir = f"{dump_dir}/{sub}"
         args = build_fn(ft_mode, full_dump_dir, enable_dumper)
         prepare(ft_mode)
-        run_training(train_args=args, mode=ft_mode, dump_dir=full_dump_dir)
+
+        config = _resolve_config_for_side(side, config_for_side=config_for_side)
+        context = (
+            target_side_context(ft_mode, full_dump_dir, config)
+            if side == TARGET_SIDE and target_side_context is not None
+            else contextlib.nullcontext()
+        )
+        with context:
+            run_side(
+                RunSideRequest(
+                    side=side,
+                    mode=ft_mode,
+                    train_args=args,
+                    dump_dir=full_dump_dir,
+                    config=config,
+                    enable_dumper=enable_dumper,
+                )
+            )
 
     @app.command()
     def baseline(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
-        dump_dir: Annotated[str | None, typer.Option(help="Dump base directory")] = None,
-        phase: Annotated[str, typer.Option(help="Phase name (multi-phase tests)")] = "",
-        enable_dumper: Annotated[bool, typer.Option(help="Enable dumper output")] = True,
+        mode: OptionalModeOption = None,
+        dump_dir: DumpDirOption = None,
+        phase: PhaseOption = "",
+        enable_dumper: EnableDumperOption = True,
     ) -> None:
         """Run baseline (normal DP) training."""
-        _run_side("baseline", build_baseline_args, mode, dump_dir, phase, enable_dumper=enable_dumper)
+        _execute_one_side(BASELINE_SIDE, build_baseline_args, mode, dump_dir, phase, enable_dumper=enable_dumper)
 
     @app.command()
     def target(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
-        dump_dir: Annotated[str | None, typer.Option(help="Dump base directory")] = None,
-        phase: Annotated[str, typer.Option(help="Phase name (multi-phase tests)")] = "",
-        enable_dumper: Annotated[bool, typer.Option(help="Enable dumper output")] = True,
+        mode: OptionalModeOption = None,
+        dump_dir: DumpDirOption = None,
+        phase: PhaseOption = "",
+        enable_dumper: EnableDumperOption = True,
     ) -> None:
         """Run target (indep_dp) training."""
-        _run_side("target", build_target_args, mode, dump_dir, phase, enable_dumper=enable_dumper)
+        _execute_one_side(TARGET_SIDE, build_target_args, mode, dump_dir, phase, enable_dumper=enable_dumper)
 
     @app.command()
     def compare(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
         dump_dir: Annotated[str, typer.Option(help="Dump base directory")],
+        mode: OptionalModeOption = None,
     ) -> None:
         """Compare baseline and target dumps."""
-        ft_mode = resolve_mode(mode)
+        ft_mode = resolve_mode_fn(mode)
         compare_fn(dump_dir, ft_mode)
 
     @app.command()
     def run(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
-        enable_dumper: Annotated[bool, typer.Option(help="Enable dumper output")] = True,
+        mode: OptionalModeOption = None,
+        enable_dumper: EnableDumperOption = True,
     ) -> None:
         """Full pipeline: prepare + all phases + compare."""
         run_pipeline(
@@ -147,6 +260,10 @@ def create_comparison_app_and_run_ci(
             phases=phases,
             mode=mode,
             enable_dumper=enable_dumper,
+            target_side_context=target_side_context,
+            config_for_side=config_for_side,
+            run_side=run_side,
+            resolve_mode_fn=resolve_mode_fn,
         )
 
     @app.command()
@@ -158,24 +275,35 @@ def create_comparison_app_and_run_ci(
         ] = "/tmp/generated_rollout_data",
     ) -> None:
         """Generate debug rollout data using real rollout (no dumper)."""
-        ft_mode = resolve_mode(mode)
+        ft_mode = resolve_mode_fn(mode)
         assert ft_mode.has_real_rollout, f"Mode {mode} does not have real rollout engines"
         prepare(ft_mode)
         args = get_common_train_args(ft_mode, dump_dir=output_dir, num_steps=num_steps, enable_dumper=False)
         run_training(train_args=args, mode=ft_mode)
 
-    def run_ci(mode: str) -> None:
+    def run_ci(mode: str | None = None) -> None:
         """Run one mode's full pipeline (entry point for the per-mode CI files)."""
         run_pipeline(
-            test_name=f"{test_name}_{mode}",
+            test_name=f"{test_name}_{mode}" if mode is not None else test_name,
             build_baseline_args=build_baseline_args,
             build_target_args=build_target_args,
             compare_fn=compare_fn,
             phases=phases,
             mode=mode,
+            target_side_context=target_side_context,
+            config_for_side=config_for_side,
+            run_side=run_side,
+            resolve_mode_fn=resolve_mode_fn,
         )
 
     return app, run_ci
+
+
+def _resolve_config_for_side(
+    side: str, *, config_for_side: ConfigForSideFn | None
+) -> command_utils.ExecuteTrainConfig:
+    config = command_utils.default_config()
+    return config_for_side(side, config) if config_for_side is not None else config
 
 
 def create_non_comparison_app(
@@ -189,7 +317,7 @@ def create_non_comparison_app(
 
     @app.command()
     def run(
-        mode: Annotated[str, typer.Option(help="Test mode variant")],
+        mode: ModeOption,
     ) -> None:
         """Full pipeline: prepare + execute + verify."""
         ft_mode = resolve_mode(mode)

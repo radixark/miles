@@ -44,7 +44,7 @@ python scripts/run_deepseek_v4.py full-train \
    --num-nodes 16 --num-gpus-per-node 8 --rollout-num-nodes 8
 ```
 
-The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
+The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
 ### 3.2 Launcher path defaults
 
@@ -54,7 +54,7 @@ The Python launcher (`scripts/run_deepseek_v4.py`) takes its path arguments from
 |---|---|---|
 | `--data-dir` | `/root/datasets` | HF datasets (e.g. dapo-math-17k, …) |
 | `--model-dir` | `/root/models` | parent directory holding the HF checkpoint and Megatron `_torch_dist` artifacts as separate sibling sub-directories |
-| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; `prepare-cp` rsyncs the HF checkpoint and `_torch_dist` here so the trainer reads from local disk instead of shared storage (only worth setting when `--model-dir` is on shared/remote storage) |
+| `--model-local-dir` | unset → same as `--model-dir` | local NVMe path on each node; when it differs from `--model-dir`, every trainer rsyncs the HF checkpoint and `_torch_dist` here before training starts, so the trainer reads from local disk instead of shared storage (only worth setting when `--model-dir` is on shared/remote storage) |
 | `--save-dir` | `/root/models` | training checkpoints under `{save-dir}/{run-id}/checkpoints/` |
 
 You can override these via the CLI flags above or equivalently via env vars — every launcher option binds to `MILES_SCRIPT_<FIELD_NAME_UPPER>` (e.g. `MILES_SCRIPT_MODEL_DIR`), with precedence CLI flag > env var > built-in default; run `train --help` to see each option's `[env var: …]` name.

@@ -21,7 +21,7 @@ import os
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=2400, suite="stage-c-8-gpu-h200", labels=["megatron", "eval", "fully-async"])
 
@@ -31,7 +31,7 @@ register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
 
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -42,6 +42,7 @@ EVAL_MODES = ("shared", "fleet", "external")
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
@@ -56,6 +57,7 @@ def prepare():
 
 
 def execute(eval_mode: str):
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -146,7 +148,7 @@ def execute(eval_mode: str):
 
     train_args = (
         f"{ckpt_args} {rollout_args} {eval_args} {optimizer_args} {grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} {perf_args} {sglang_args} {ci_args} {misc_args} "
+        f"{command_utils.get_default_wandb_args(__file__)} {perf_args} {sglang_args} {ci_args} {misc_args} "
     )
 
     U.execute_train(

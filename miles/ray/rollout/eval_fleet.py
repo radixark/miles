@@ -1,83 +1,124 @@
 """The dedicated in-job eval engines (``--eval-num-gpus``).
 
-Weight delivery only: ``pin`` loads a snapshot onto every engine, verifies each one
-reports the expected version, and hands back the state to generate against. Who
-generates is the eval fn's business, exactly as on the training engines.
+Weight delivery only: ``pin`` loads a snapshot onto every engine and verifies each
+one reports the expected version. The fleet lives beside its engines, in the
+inference controller; the executor holds an ``RolloutExecutorEvalFleet`` over the wire and
+builds the state to generate against from the fleet's description. Who generates is
+the eval fn's business, exactly as on the training engines.
 """
 
 import asyncio
+import dataclasses
 import logging
 from argparse import Namespace
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
+from miles.ray.specs.inference import inference_controller_worker_name
 from miles.rollout.checkpoint_eval import EvalSkip, retarget_args
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState
 from miles.utils.http_utils import wait_http_ok
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
+from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
 
 EVAL_WEIGHT_LOAD_TIMEOUT_SECS = 600.0
 
 
-class EvalFleet:
+@dataclasses.dataclass(frozen=True)
+class EvalFleetInfo:
+    router: HostAndPort
+    num_gpus: int
+    num_gpus_per_engine: int
+
+
+@dataclasses.dataclass(frozen=True)
+class EvalFleetPin:
+    skip_reason: str | None
+
+
+UNREACHABLE_CONTROLLER_ERRORS = (WorkerUnreachableError, ServerRestartedError, TimeoutError)
+
+
+class RolloutExecutorEvalFleet:
+    """The executor's side of the fleet: one state to generate against, pinned over rpc."""
+
+    def __init__(
+        self, args: Namespace, *, info: EvalFleetInfo, inference_controller_provider: BaseWorkerProvider
+    ) -> None:
+        self._inference_controller: BaseWorkerHandle = inference_controller_provider.get_handle(
+            inference_controller_worker_name()
+        )
+        self._state = GenerateState(
+            retarget_args(args, info.router.host, info.router.port, info.num_gpus, info.num_gpus_per_engine)
+        )
+
+    async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
+        try:
+            pin = await self._inference_controller.pin_eval_fleet(
+                checkpoint_dir=checkpoint_dir, weight_version=weight_version
+            )
+        except UNREACHABLE_CONTROLLER_ERRORS as e:
+            logger.warning(f"Eval fleet controller could not be reached: {e!r}")
+            raise EvalSkip("controller_unreachable") from e
+
+        if (skip_reason := pin.skip_reason) is not None:
+            raise EvalSkip(skip_reason)
+        return self._state
+
+
+class InferenceControllerEvalFleet:
     """The dedicated in-job eval engines (``--eval-num-gpus``)."""
 
     def __init__(self, args: Namespace, *, srv):
         self.args = args
         self._srv = srv
-        self._state = GenerateState(self._fleet_args())
 
-    async def pin(self, checkpoint_dir: str, weight_version: str) -> GenerateState:
-        """Load the snapshot onto every engine, then return the state to generate against.
+    @property
+    def info(self) -> EvalFleetInfo:
+        return EvalFleetInfo(
+            router=HostAndPort(host=self._srv.router_ip, port=self._srv.router_port),
+            num_gpus=self.args.eval_num_gpus,
+            num_gpus_per_engine=self.args.eval_num_gpus_per_engine,
+        )
 
-        On the manager's event loop: keep everything here awaiting rather than blocking.
+    async def pin(self, checkpoint_dir: str, weight_version: str) -> EvalFleetPin:
+        """Load the snapshot onto every engine, then report whether it can be generated against.
+
+        On the controller's event loop: keep everything here awaiting rather than blocking.
         """
-        try:
-            if not self.args.use_fault_tolerance:
-                # Otherwise RolloutHealthMonitor owns the probing for these engines.
-                await self._srv.probe_and_mark_dead()
-            await self._srv.recover()
-            await self._srv.wait_all_engines_alive()
-        except Exception as e:
-            logger.warning(f"Eval fleet unhealthy: {e}")
-            raise EvalSkip("unhealthy") from e
-
         if not await self._pin_fleet(checkpoint_dir, weight_version):
-            raise EvalSkip("pin_violation")
+            return EvalFleetPin(skip_reason="pin_violation")
 
         try:
             await self._wait_router_ready()
         except Exception as e:
             logger.warning(f"Eval router not ready: {e}")
-            raise EvalSkip("unhealthy") from e
+            return EvalFleetPin(skip_reason="unhealthy")
 
-        return self._state
-
-    def _fleet_args(self) -> Namespace:
-        router_ip, router_port = self.args.sglang_model_routers["eval"]
-        return retarget_args(
-            self.args, router_ip, router_port, self.args.eval_num_gpus, self.args.eval_num_gpus_per_engine
-        )
+        return EvalFleetPin(skip_reason=None)
 
     async def _pin_fleet(self, checkpoint_dir: str, weight_version: str, *, retries: int = 2) -> bool:
         """Load the snapshot into every fleet engine and confirm all report
         ``weight_version`` — the router load-balances across engines, so a single
         stale engine would mix versions. Never raises: transient failures and
         mismatches are retried, then ``False`` lets the caller skip the point."""
-        actors = [e.actor_handle for e in self._srv.engines]
         versions: list = []
         for attempt in range(retries):
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
                         *[
-                            a.update_weights_from_disk.remote(checkpoint_dir, weight_version=weight_version)
-                            for a in actors
+                            client.update_weights_from_disk(checkpoint_dir, weight_version=weight_version)
+                            for client in await self._fleet_api_clients()
                         ]
                     ),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
                 versions = await asyncio.wait_for(
-                    asyncio.gather(*[a.get_weight_version.remote() for a in actors]),
+                    asyncio.gather(*[client.get_weight_version() for client in await self._fleet_api_clients()]),
                     timeout=EVAL_WEIGHT_LOAD_TIMEOUT_SECS,
                 )
             except Exception as e:
@@ -87,6 +128,10 @@ class EvalFleet:
                 return True
         logger.warning(f"Failed to pin weight_version={weight_version} to {checkpoint_dir} (got {versions})")
         return False
+
+    async def _fleet_api_clients(self) -> list[SGLangApiClient]:
+        async with self._srv.context_lock:
+            return list(self._srv.api_clients)
 
     async def _wait_router_ready(self, timeout: float = 180.0) -> None:
         """After a revival the router 503s until its health cycle evicts the dead

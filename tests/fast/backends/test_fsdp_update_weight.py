@@ -1,30 +1,13 @@
+import asyncio
 from argparse import Namespace
 from types import SimpleNamespace
 
+import pytest
 import torch
 
+from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils import update_weight_utils
-
-
-class _RemoteMethod:
-    def __init__(self, fn, submissions, name):
-        self._fn = fn
-        self._submissions = submissions
-        self._name = name
-
-    def remote(self, *args, **kwargs):
-        self._submissions.append(self._name)
-        return _RemoteRef(self._fn, args, kwargs)
-
-
-class _RemoteRef:
-    def __init__(self, fn, args, kwargs):
-        self._fn = fn
-        self._args = args
-        self._kwargs = kwargs
-
-    def resolve(self):
-        return self._fn(*self._args, **self._kwargs)
+from miles.backends.training_utils.conn_status import ConnStatusManager
 
 
 class _SessionEngine:
@@ -34,47 +17,91 @@ class _SessionEngine:
         self.calls = []
         self.submissions = []
         self.session_open = False
-        self.pause_generation = self._remote(lambda: self._record("pause_generation"), "pause_generation")
-        self.flush_cache = self._remote(lambda: self._record("flush_cache"), "flush_cache")
-        self.begin_weight_update = self._remote(self._begin_weight_update, "begin_weight_update")
-        self.update_weights_from_tensor = self._remote(
-            self._update_weights_from_tensor,
-            "update_weights_from_tensor",
-        )
-        self.end_weight_update = self._remote(self._end_weight_update, "end_weight_update")
-        self.continue_generation = self._remote(self._continue_generation, "continue_generation")
-
-    def _remote(self, fn, name):
-        return _RemoteMethod(fn, self.submissions, name)
 
     def _record(self, name):
+        self.submissions.append(name)
         self.calls.append(name)
         self.events.append(f"{self.name}.{name}")
 
-    def _begin_weight_update(self):
+    async def pause_generation(self):
+        self._record("pause_generation")
+
+    async def flush_cache(self):
+        self._record("flush_cache")
+
+    async def begin_weight_update(self, selector: str = "all"):
         self._record("begin_weight_update")
         assert not self.session_open
         self.session_open = True
 
-    def _update_weights_from_tensor(self):
+    async def update_weights_from_tensor(self):
         self._record("update_weights_from_tensor")
         assert self.session_open, "update_weights_from_tensor requires an open begin_weight_update session"
 
-    def _end_weight_update(self):
+    async def end_weight_update(self):
         self._record("end_weight_update")
         assert self.session_open
         self.session_open = False
 
-    def _continue_generation(self):
+    async def continue_generation(self):
         self._record("continue_generation")
         assert not self.session_open
+
+
+class _FailingPhaseEngine(_SessionEngine):
+    def __init__(self, name, events, failing_phase):
+        super().__init__(name, events)
+        self.failing_phase = failing_phase
+
+    def _record(self, name):
+        super()._record(name)
+        if name == self.failing_phase:
+            raise RuntimeError(f"{self.name} rejected {name}")
+
+
+_SESSION_PHASES = [
+    "pause_generation",
+    "flush_cache",
+    "begin_weight_update",
+    "end_weight_update",
+    "continue_generation",
+]
+
+
+class _SlowPhaseEngine(_SessionEngine):
+    def __init__(self, name, events, slow_phase):
+        super().__init__(name, events)
+        self.slow_phase = slow_phase
+
+    async def _delay_slow_phase(self, phase):
+        if phase == self.slow_phase:
+            await asyncio.sleep(0.05)
+
+    async def pause_generation(self):
+        await self._delay_slow_phase("pause_generation")
+        await super().pause_generation()
+
+    async def flush_cache(self):
+        await self._delay_slow_phase("flush_cache")
+        await super().flush_cache()
+
+    async def begin_weight_update(self, selector: str = "all"):
+        await self._delay_slow_phase("begin_weight_update")
+        await super().begin_weight_update(selector)
+
+    async def end_weight_update(self):
+        await self._delay_slow_phase("end_weight_update")
+        await super().end_weight_update()
+
+    async def continue_generation(self):
+        await self._delay_slow_phase("continue_generation")
+        await super().continue_generation()
 
 
 class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
     def connect_rollout_engines(
         self,
         rollout_engines,
-        rollout_engine_lock,
         engine_gpu_counts=None,
         engine_gpu_offsets=None,
     ):
@@ -83,13 +110,9 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
     def update_bucket_weights(self, named_tensors, weight_version=None):
         assert named_tensors
         self.last_named_tensors = named_tensors
-        update_weight_utils.ray.get(self.rollout_engines[0].update_weights_from_tensor.remote())
-
-
-def _resolve_refs(value):
-    if isinstance(value, list):
-        return [ref.resolve() for ref in value]
-    return value.resolve()
+        update_weight_utils.async_utils.wait_futures(
+            [update_weight_utils.async_utils.submit(self.rollout_engines[0].update_weights_from_tensor())]
+        )
 
 
 def _make_updater(model, rollout_engines):
@@ -106,7 +129,6 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
     engines = [_SessionEngine("engine0", events), _SessionEngine("engine1", events)]
     updater = _make_updater({"weight": torch.ones(1)}, engines)
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
@@ -139,7 +161,6 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
     engine = _SessionEngine("engine0", events)
     updater = _make_updater({}, [engine])
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 1)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
@@ -148,6 +169,31 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
 
     assert events == ["barrier", "barrier", "barrier"]
     assert engine.submissions == []
+
+
+class TestUpdateWeight:
+    @pytest.mark.parametrize("failing_phase", _SESSION_PHASES)
+    def test_phase_failure_settles_all_engines_and_propagates(self, monkeypatch, failing_phase):
+        """A failure in any session phase still lets the slower engine's request for that phase settle, then propagates."""
+        events = []
+        engines = [
+            _FailingPhaseEngine("engine0", events, failing_phase),
+            _SlowPhaseEngine("engine1", events, failing_phase),
+        ]
+        updater = _make_updater({"weight": torch.ones(1)}, engines)
+
+        monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
+        monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
+        monkeypatch.setattr(update_weight_utils, "gather_full_param", lambda param, async_op=False: param)
+
+        with pytest.raises(RuntimeError, match=f"engine0 rejected {failing_phase}"):
+            updater.update_weights()
+
+        reached_phases = _SESSION_PHASES[: _SESSION_PHASES.index(failing_phase) + 1]
+        assert events[-2:] == [f"engine0.{failing_phase}", f"engine1.{failing_phase}"]
+        assert [call for call in engines[0].calls if call in _SESSION_PHASES] == reached_phases
+        assert engines[1].calls == reached_phases
 
 
 def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
@@ -166,7 +212,6 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
         "bf16_weight": torch.bfloat16,
     }
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: None)
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
@@ -179,3 +224,221 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
     assert torch.equal(synced["fp32_weight"], fp32_value)
     assert synced["bf16_weight"].dtype is torch.bfloat16
     assert not torch.equal(synced["bf16_weight"].to(torch.float32), fp32_value)
+
+
+class _RecordingWeightUpdater:
+    def __init__(self) -> None:
+        self.conn_status: ConnStatusManager = ConnStatusManager()
+        self.connect_calls: list[list[object]] = []
+        self.connect_topologies: list[tuple[list[int] | None, list[int] | None]] = []
+        self.update_weights_calls: int = 0
+        self.weight_version: int = 0
+
+    def connect_rollout_engines(
+        self,
+        rollout_engines: list[object],
+        engine_gpu_counts: list[int] | None = None,
+        engine_gpu_offsets: list[int] | None = None,
+    ) -> None:
+        self.connect_calls.append(list(rollout_engines))
+        self.connect_topologies.append((engine_gpu_counts, engine_gpu_offsets))
+
+    def update_weights(self) -> None:
+        self.update_weights_calls += 1
+        self.weight_version += 1
+
+
+class _VersionReportingEngine:
+    def __init__(self, weight_version: int) -> None:
+        self.weight_version = weight_version
+
+    async def get_weight_version(self) -> int:
+        return self.weight_version
+
+
+def _make_updatable_engines(
+    rollout_engines: list[object],
+    *,
+    has_new_engines: bool,
+    snapshot_cell_id_to_hashes: dict[str, str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        rollout_engines=rollout_engines,
+        has_new_engines=has_new_engines,
+        engine_gpu_counts=[1] * len(rollout_engines),
+        engine_gpu_offsets=list(range(len(rollout_engines))),
+        snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes if snapshot_cell_id_to_hashes is not None else {},
+    )
+
+
+def _make_weight_update_actor(monkeypatch, *, ci_test: bool):
+    actor = object.__new__(actor_module.FSDPTrainRayActor)
+    actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=ci_test)
+    actor.weight_updater = _RecordingWeightUpdater()
+
+    monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
+    monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 1)
+    monkeypatch.setattr(actor_module, "get_gloo_group", lambda: object())
+    monkeypatch.setattr(actor_module, "clear_memory", lambda: None)
+    return actor
+
+
+def test_fsdp_actor_connects_engines_once_across_consecutive_windows(monkeypatch):
+    """Two weight-update windows over a stable engine set connect the rollout engines exactly once."""
+    actor = _make_weight_update_actor(monkeypatch, ci_test=False)
+    updater = actor.weight_updater
+    engines: list[object] = [object(), object()]
+
+    first_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+    second_version = actor.update_weights(_make_updatable_engines(engines, has_new_engines=False))
+
+    assert updater.connect_calls == [engines]
+    assert updater.update_weights_calls == 2
+    assert (first_version, second_version) == (1, 2)
+    assert not updater.conn_status.needs_reconnect({})
+
+
+class _FakeFlattenedTensorBucket:
+    def __init__(self, named_tensors):
+        self.named_tensors = named_tensors
+
+    def get_metadata(self):
+        return [name for name, _ in self.named_tensors]
+
+    def get_flattened_tensor(self):
+        return torch.cat([tensor.flatten() for _, tensor in self.named_tensors])
+
+
+class _FakeMultiprocessingSerializer:
+    @staticmethod
+    def serialize(obj, output_str=False):
+        return "serialized-bucket"
+
+
+class _TensorUpdateEngine:
+    def __init__(self, response):
+        self.response = response
+        self.update_kwargs = []
+        self.flush_cache_calls = 0
+
+    async def update_weights_from_tensor(self, **kwargs):
+        self.update_kwargs.append(kwargs)
+        return self.response
+
+    async def flush_cache(self):
+        self.flush_cache_calls += 1
+
+
+class TestUpdateWeightFromTensor:
+    def test_raises_on_unsuccessful_engine_response(self, monkeypatch):
+        """An engine answering success=false makes the bucket update raise its error message and skip the flush."""
+        engine = _TensorUpdateEngine({"success": False, "error_message": "rollout engine rejected the bucket"})
+        updater = update_weight_utils.UpdateWeightFromTensor(
+            Namespace(update_weight_buffer_size=1024), torch.nn.Module()
+        )
+        updater._ipc_gather_src = 0
+        updater._ipc_gather_group = object()
+        updater._ipc_engine = engine
+
+        def _fake_gather_object(obj, object_gather_list=None, dst=0, group=None):
+            object_gather_list[0] = obj
+
+        monkeypatch.setattr(update_weight_utils, "monkey_patch_torch_reductions", lambda: None)
+        monkeypatch.setattr(update_weight_utils, "FlattenedTensorBucket", _FakeFlattenedTensorBucket)
+        monkeypatch.setattr(update_weight_utils, "MultiprocessingSerializer", _FakeMultiprocessingSerializer)
+        monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(update_weight_utils.dist, "get_world_size", lambda *_args, **_kwargs: 1)
+        monkeypatch.setattr(update_weight_utils.dist, "gather_object", _fake_gather_object)
+
+        with pytest.raises(RuntimeError, match="rollout engine rejected the bucket"):
+            updater.update_bucket_weights([("weight", torch.ones(2))], weight_version=7)
+
+        assert [kwargs["weight_version"] for kwargs in engine.update_kwargs] == ["7"]
+        assert engine.flush_cache_calls == 0
+
+
+class _BroadcastHandle:
+    def __init__(self):
+        self.waited = False
+
+    def wait(self):
+        self.waited = True
+
+
+class _DistributedUpdateEngine:
+    def __init__(self, name, should_fail=False):
+        self.name = name
+        self.should_fail = should_fail
+        self.requests = []
+
+    async def update_weights_from_distributed(self, **kwargs):
+        self.requests.append(kwargs)
+        if self.should_fail:
+            raise RuntimeError(f"{self.name} rejected the distributed update")
+
+
+class TestUpdateWeightFromDistributed:
+    def test_propagates_engine_request_failure(self, monkeypatch):
+        """A failing update_weights_from_distributed request surfaces after every broadcast handle is waited on."""
+        engines = [_DistributedUpdateEngine("engine0", should_fail=True), _DistributedUpdateEngine("engine1")]
+        updater = object.__new__(update_weight_utils.UpdateWeightFromDistributed)
+        updater.rollout_engines = engines
+        updater._is_src_rank = True
+        updater._group_name = "miles"
+        updater._model_update_groups = object()
+
+        handles = []
+
+        def _fake_broadcast(tensor, src, group=None, async_op=False):
+            handles.append(_BroadcastHandle())
+            return handles[-1]
+
+        monkeypatch.setattr(update_weight_utils.dist, "broadcast", _fake_broadcast)
+        monkeypatch.setattr(update_weight_utils.dist, "get_world_size", lambda *_args, **_kwargs: 2)
+        monkeypatch.setattr(update_weight_utils.torch.cuda, "empty_cache", lambda: None)
+
+        with pytest.raises(RuntimeError, match="engine0 rejected the distributed update"):
+            updater.update_bucket_weights([("a", torch.ones(2)), ("b", torch.zeros(3))], weight_version=3)
+
+        assert len(handles) == 2
+        assert all(handle.waited for handle in handles)
+        assert [kwargs["names"] for kwargs in engines[1].requests] == [["a", "b"]]
+
+
+def test_fsdp_actor_reconnects_after_rollout_cell_hash_changes(monkeypatch):
+    """A changed rollout-cell snapshot reconnects to the replacement engines with their own GPU topology."""
+    actor = _make_weight_update_actor(monkeypatch, ci_test=False)
+    updater = actor.weight_updater
+    engines: list[object] = [object()]
+    replacement_engines: list[object] = [object(), object()]
+
+    actor.update_weights(
+        _make_updatable_engines(engines, has_new_engines=True, snapshot_cell_id_to_hashes={"cell-0": "hash-a"})
+    )
+    actor.update_weights(
+        _make_updatable_engines(
+            replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
+        )
+    )
+    actor.update_weights(
+        _make_updatable_engines(
+            replacement_engines, has_new_engines=False, snapshot_cell_id_to_hashes={"cell-0": "hash-b"}
+        )
+    )
+
+    assert updater.connect_calls == [engines, replacement_engines]
+    assert updater.connect_topologies[1] == ([1, 1], [0, 1])
+    assert updater.update_weights_calls == 3
+    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
+
+
+def test_fsdp_actor_rejects_a_mismatched_engine_weight_version(monkeypatch):
+    """An engine reporting a weight version other than the updater's must fail the run under --ci-test."""
+    actor = _make_weight_update_actor(monkeypatch, ci_test=True)
+    updater = actor.weight_updater
+    engines: list[object] = [_VersionReportingEngine(7)]
+
+    with pytest.raises(RuntimeError, match="Weight version mismatch"):
+        actor.update_weights(_make_updatable_engines(engines, has_new_engines=True))
+
+    assert updater.update_weights_calls == 1

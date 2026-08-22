@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import pytest
-import ray
 import torch
 
 from miles.ray.rollout.train_data_conversion import ROLLOUT_DATA_VALUE_SPEC
@@ -221,7 +220,7 @@ class TestFieldSchemasForValue:
 class TestSingletonContract:
     def test_double_init_rejected(self):
         """Calling init_instance twice in one process asserts."""
-        args = Namespace(object_store_backend="ray")
+        args = Namespace(object_store_backend="ray", worker_comm_backend="ray")
         object_store.init_instance(args)
         with pytest.raises(AssertionError):
             object_store.init_instance(args)
@@ -246,14 +245,12 @@ class TestObjectStoreGetResult:
 
 class TestRayObjectStore:
     @pytest.fixture(scope="class", autouse=True)
-    def _ray_minicluster(self):
-        if not ray.is_initialized():
-            ray.init(ignore_reinit_error=True, include_dashboard=False, log_to_driver=False)
+    def _ray_minicluster(self, ray_local_mode):
         yield
 
     def test_roundtrip_and_noop_remove(self):
         """RayObjectStore puts/gets a rollout dict and remove is a no-op."""
-        args = Namespace(object_store_backend="ray")
+        args = Namespace(object_store_backend="ray", worker_comm_backend="ray")
         store = object_store.init_instance(args)
         assert isinstance(store, object_store.RayObjectStore)
 

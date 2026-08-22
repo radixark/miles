@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 from argparse import Namespace
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -32,6 +33,8 @@ class RolloutFnBaseInput:
 class RolloutFnTrainInput(RolloutFnBaseInput):
     # engine weight version, None before the first weight update
     weight_version: int | None = None
+    # which policy model asked for this rollout; None when the run trains one policy
+    trainer_model_id: str | None = None
 
     @property
     def evaluation(self):
@@ -65,6 +68,24 @@ class RolloutFnEvalOutput:
 
 RolloutFnInput = RolloutFnTrainInput | RolloutFnEvalInput
 RolloutFnOutput = RolloutFnTrainOutput | RolloutFnEvalOutput
+
+
+class BaseRolloutFn(abc.ABC):
+    def __init__(self, input: RolloutFnConstructorInput) -> None:
+        self.constructor_input = input
+
+    @abc.abstractmethod
+    def __call__(self, input: RolloutFnInput) -> RolloutFnOutput:
+        raise NotImplementedError
+
+    def save(self, rollout_id: int) -> None:
+        return None
+
+    def load(self, rollout_id: int | None) -> None:
+        return None
+
+    def dispose(self) -> None:
+        return None
 
 
 @dataclass(frozen=True)

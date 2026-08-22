@@ -1,0 +1,32 @@
+Workbench "{{ include "miles-workbench.fullname" . }}" installed in namespace {{ .Release.Namespace }}.
+
+Get a shell:
+
+  kubectl exec -it statefulset/{{ include "miles-workbench.fullname" . }} -n {{ .Release.Namespace }} -- bash
+
+Inside the pod, run long-lived launches under tmux; helm and kubectl act as the
+ServiceAccount "{{ include "miles-workbench.serviceAccountName" . }}".
+
+This chart also creates the ServiceAccount "{{ .Values.uninstaller.serviceAccount }}", one per
+namespace, and a finished run uninstalls its own release as that account: a release
+cannot delete itself with an account its own uninstall deletes halfway through.
+Delete that account to keep every finished run installed instead.
+
+{{- if not .Values.rbac.create }}
+
+rbac.create=false: the ServiceAccounts "{{ include "miles-workbench.serviceAccountName" . }}" and
+"{{ .Values.uninstaller.serviceAccount }}" and their bindings must already exist, otherwise the pod
+has no cluster permissions and finished runs cannot uninstall themselves.
+{{- end }}
+{{- if not .Values.rbac.leaderWorkerSets }}
+
+rbac.leaderWorkerSets=false: neither Role carries LeaderWorkerSet rules, so a
+cluster admin must have granted them to
+"{{ include "miles-workbench.serviceAccountName" . }}" and
+"{{ .Values.uninstaller.serviceAccount }}" separately; otherwise miles-run cannot
+create LeaderWorkerSets, nor uninstall a run that has them.
+{{- end }}
+
+Remove it with: helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}
+(training releases installed from the workbench keep running, but they can no
+longer uninstall themselves once they finish).

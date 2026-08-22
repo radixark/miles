@@ -1,13 +1,20 @@
 import importlib
 import sys
 from argparse import Namespace
+from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import ray
 import torch
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils.conn_status import ConnStatusManager
+from miles.utils import object_store
+from miles.utils.ray_utils import Box
 from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 
 
@@ -75,7 +82,8 @@ def _worker(actor_module, role, *, asleep=True):
 
 def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
-    worker.train_critic = Mock(return_value={"values": ["cpu-value"]})
+    critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
+    worker._train_critic = Mock(return_value=critic_output)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -91,32 +99,34 @@ def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypat
     result = worker.train(3, object())
 
     worker.wake_up.assert_called_once_with()
-    worker.train_critic.assert_called_once()
+    worker._train_critic.assert_called_once()
     worker.sleep.assert_not_called()
-    assert result == {"values": ["cpu-value"]}
+    assert result is critic_output
+    assert result.outcome is TrainStepOutcome.NORMAL
+    assert result.values.inner == "cpu-values-ref"
     assert phases == ["data_preprocess", "critic_train"]
 
 
 def test_actor_receives_critic_payload_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor")
-    worker.train_actor = Mock(return_value=None)
+    worker._train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
-    values = {"values": ["cpu-value"]}
+    values = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))
 
     result = worker.train(4, object(), external_data=values)
 
     worker.wake_up.assert_called_once_with()
-    worker.train_actor.assert_called_once()
-    assert worker.train_actor.call_args.kwargs["external_data"] is values
+    worker._train_actor.assert_called_once()
+    assert worker._train_actor.call_args.kwargs["external_data"] is values
     worker.sleep.assert_not_called()
     assert result is None
 
 
 def test_train_keeps_model_resident(actor_module, monkeypatch):
     worker = _worker(actor_module, "actor", asleep=False)
-    worker.train_actor = Mock(return_value=None)
+    worker._train_actor = Mock(return_value=None)
     monkeypatch.setattr(
         actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
@@ -161,6 +171,9 @@ def test_save_model_does_not_manage_lifecycle(actor_module, monkeypatch):
 
 @pytest.mark.parametrize("asleep", [False, True])
 def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_module, monkeypatch, asleep):
+    """Weight update reloads and destroys temporary process groups only when the model is offloaded."""
+    from miles.ray.rollout.inference_controller import UpdatableEngines
+
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
         debug_rollout_only=False,
@@ -172,13 +185,13 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     worker._asleep = asleep
     worker._heartbeat = Mock()
     worker.weight_updater = Mock()
-    worker.weight_updater.is_rollout_engines_fresh.return_value = True
-    info = Namespace(
+    worker.weight_updater.conn_status = Mock(spec=ConnStatusManager)
+    worker.weight_updater.conn_status.needs_reconnect.return_value = False
+    info = UpdatableEngines(
+        rollout_engines=[],
         engine_gpu_counts=[],
         engine_gpu_offsets=[],
-        has_new_engines=False,
-        rollout_engine_lock=None,
-        rollout_engines=[],
+        snapshot_cell_id_to_hashes={},
     )
     reload_groups = Mock()
     destroy_groups = Mock()
@@ -261,7 +274,7 @@ def _actor_reuse_worker(actor_module, **args_overrides):
     worker._active_model_tag = "actor"
     worker._switch_model = Mock()
     worker._set_replay_stage = Mock()
-    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker._compute_log_prob = Mock(return_value={"log_probs": [object()]})
     worker.rollout_data_postprocess = None
     worker.prof = Mock()
     worker._ft_test_action_executor = None
@@ -319,9 +332,9 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
         "total_lengths": [1] * sum(num_microbatches),
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
+    assert worker._compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
     actor_module.compute_advantages_and_returns.assert_called_once_with(worker.args, rollout_data)
     train_call = actor_module.train.call_args
     assert train_call.args[6] is rollout_data["num_rollouts"]
@@ -335,15 +348,15 @@ def test_actor_logprob_forward_is_explicit_single_step_opt_in(
 def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwards(actor_module, monkeypatch):
     worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
     worker.weights_backuper.backup_tags = {"ref", "teacher"}
-    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
+    worker._compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
         f"{store_prefix}log_probs": [object()]
     }
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
     rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
+    assert [call.kwargs["store_prefix"] for call in worker._compute_log_prob.call_args_list] == ["ref_", "teacher_"]
     actor_module.train.assert_called_once()
 
 
@@ -407,9 +420,9 @@ def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_traini
         data_key: [expected_top_indices],
     }
 
-    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+    worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     fill_replay_data.assert_called_once()
     replay.pop_backward.assert_called_once()
     assert queued_top_indices == []
@@ -421,9 +434,9 @@ def test_skip_actor_forward_only_rejects_multiple_optimizer_steps(actor_module, 
     rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
 
     with pytest.raises(AssertionError, match="requires 1 optimizer step"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
 
@@ -435,8 +448,283 @@ def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, 
     rollout_data["log_probs"] = [object()]
 
     with pytest.raises(AssertionError, match="without actor log probs"):
-        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+        worker._train_actor(7, rollout_data, witness_info=None, attempt=0)
 
-    worker.compute_log_prob.assert_not_called()
+    worker._compute_log_prob.assert_not_called()
     actor_module.compute_advantages_and_returns.assert_not_called()
     actor_module.train.assert_not_called()
+
+
+_OBJECT_REF_ID_BYTES = 28
+
+
+class _FakeRay:
+    """A store ref is typed as holding a real ObjectRef, so the stand-in hands out real ones."""
+
+    def __init__(self) -> None:
+        self._objects: dict[bytes, Any] = {}
+
+    def put(self, value: Any) -> ray.ObjectRef:
+        key = len(self._objects).to_bytes(_OBJECT_REF_ID_BYTES, "little")
+        self._objects[key] = value
+        return ray.ObjectRef(key)
+
+    def get(self, ref: ray.ObjectRef) -> Any:
+        return self._objects[ref.binary()]
+
+
+@contextmanager
+def _noop_timer(_name: str) -> Iterator[None]:
+    yield
+
+
+def _patch_shared_train_helpers(actor_module: Any, monkeypatch: pytest.MonkeyPatch, fake_ray: _FakeRay) -> None:
+    monkeypatch.setattr(object_store, "ray", fake_ray)
+    monkeypatch.setattr(object_store, "_INSTANCE", object_store.RayObjectStore(frees_objects=False))
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(actor_module, "get_data_iterator", lambda *_args, **_kwargs: (object(), [1]))
+    monkeypatch.setattr(actor_module, "compute_advantages_and_returns", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "train", lambda *_args, **_kwargs: TrainStepOutcome.NORMAL)
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(is_pp_last_stage=True))
+    monkeypatch.setattr(actor_module, "timer", _noop_timer)
+
+
+def _critic_worker(actor_module: Any) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(global_batch_size=1, loss_type=None)
+    worker.role = "critic"
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker._heartbeat = Mock()
+    return worker
+
+
+def _actor_worker(actor_module: Any) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        colocate=True,
+        compute_advantages_and_returns=True,
+        get_mismatch_metrics=False,
+        global_batch_size=1,
+        keep_old_actor=False,
+        ref_update_interval=None,
+        skip_actor_forward_only=False,
+        use_critic=True,
+        use_rollout_logprobs=True,
+    )
+    worker.role = "actor"
+    worker.with_ref = False
+    worker.with_opd_teacher = False
+    worker.model = object()
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.prof = Mock()
+    worker.rollout_data_postprocess = None
+    worker.weight_updater = Mock()
+    worker.weights_backuper = Mock()
+    worker.weights_backuper.backup_tags = ()
+    worker._active_model_tag = "actor"
+    worker._ft_test_action_executor = None
+    worker._heartbeat = Mock()
+    worker._switch_model = Mock()
+    return worker
+
+
+def test_critic_output_roundtrips_into_actor_external_data(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Real _train_critic ships values that real _train_actor reads back through TrainStepOutput.values."""
+    fake_ray = _FakeRay()
+    _patch_shared_train_helpers(actor_module, monkeypatch, fake_ray)
+    monkeypatch.setattr(actor_module, "forward_only", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
+    monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "log_perf_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
+    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module.torch.cuda, "current_device", lambda: torch.device("cpu"))
+    critic_values = [torch.tensor([1.0, 2.0]), torch.tensor([3.0])]
+
+    critic_output = _critic_worker(actor_module)._train_critic(rollout_id=7, rollout_data={"values": critic_values})
+
+    assert isinstance(critic_output, TrainStepOutput)
+    assert critic_output.outcome is TrainStepOutcome.NORMAL
+    assert critic_output.values is not None
+
+    actor_rollout_data: dict[str, Any] = {"tokens": []}
+    actor_output = _actor_worker(actor_module)._train_actor(
+        8, actor_rollout_data, critic_output, witness_info=None, attempt=0
+    )
+
+    assert isinstance(actor_output, TrainStepOutput)
+    assert actor_output.outcome is TrainStepOutcome.NORMAL
+    assert [value.tolist() for value in actor_rollout_data["values"]] == [[1.0, 2.0], [3.0]]
+
+
+def test_debug_rollout_only_train_answers_with_a_normal_train_step_output(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A debug-rollout-only step skips training yet still answers the driver with a NORMAL output."""
+    worker = _worker(actor_module, "actor", asleep=False)
+    worker.args.debug_rollout_only = True
+    worker._train_actor = Mock()
+    worker._train_critic = Mock()
+    monkeypatch.setattr(
+        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+    )
+    monkeypatch.setattr(actor_module, "log_rollout_data", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(actor_module, "timer", _noop_timer)
+
+    result = worker.train(9, object())
+
+    assert result == TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
+    worker._train_actor.assert_not_called()
+    worker._train_critic.assert_not_called()
+
+
+@pytest.mark.parametrize("is_pp_last_stage,rollout_data_values", [(False, [torch.tensor([1.0])]), (True, None)])
+def test_critic_without_shippable_values_returns_an_output_carrying_none(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch, is_pp_last_stage: bool, rollout_data_values: Any
+) -> None:
+    """A critic rank that is not pp-last or has no values still returns a TrainStepOutput with values=None."""
+    _patch_shared_train_helpers(actor_module, monkeypatch, _FakeRay())
+    monkeypatch.setattr(actor_module, "forward_only", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace(is_pp_last_stage=is_pp_last_stage))
+    rollout_data: dict[str, Any] = {} if rollout_data_values is None else {"values": rollout_data_values}
+
+    output = _critic_worker(actor_module)._train_critic(rollout_id=7, rollout_data=rollout_data)
+
+    assert output == TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=None)
+
+
+def test_actor_last_stage_rejects_a_critic_output_without_values(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pp-last actor using a critic refuses to train on a TrainStepOutput that shipped no values."""
+    _patch_shared_train_helpers(actor_module, monkeypatch, _FakeRay())
+    monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
+    empty_critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=None)
+
+    with pytest.raises(AssertionError, match="must have shipped 'values'"):
+        _actor_worker(actor_module)._train_actor(8, {"tokens": []}, empty_critic_output, witness_info=None, attempt=0)
+
+
+class _RecordingWeightUpdater:
+    def __init__(self) -> None:
+        self.conn_status = ConnStatusManager()
+        self.connect_calls: list[dict[str, Any]] = []
+        self.update_weights_calls: int = 0
+        self.weight_version: int = 0
+        self.multi_lora_adapters: dict[str, Any] = {}
+
+    def connect_rollout_engines(
+        self,
+        rollout_engines: list[Any],
+        engine_gpu_counts: list[int] | None = None,
+        engine_gpu_offsets: list[int] | None = None,
+    ) -> None:
+        self.connect_calls.append(
+            dict(
+                rollout_engines=list(rollout_engines),
+                engine_gpu_counts=engine_gpu_counts,
+                engine_gpu_offsets=engine_gpu_offsets,
+            )
+        )
+
+    def update_weights(self) -> None:
+        self.update_weights_calls += 1
+        self.weight_version += 1
+
+
+def _weight_update_worker(actor_module: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        ci_test=False,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
+        debug_train_only=False,
+        keep_old_actor=False,
+        offload_train=False,
+        rematerialize_param_from_master_weight=False,
+    )
+    worker._asleep = False
+    worker._heartbeat = Mock()
+    worker.weight_updater = _RecordingWeightUpdater()
+    monkeypatch.setattr(actor_module, "print_memory", Mock())
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
+    monkeypatch.setattr(actor_module, "get_gloo_group", lambda: None)
+    monkeypatch.setattr(actor_module.dist, "barrier", lambda **_kwargs: None)
+    return worker
+
+
+def _updatable_engines(rollout_engines: list[Any], snapshot: dict[str, str], gpu_count: int) -> Any:
+    from miles.ray.rollout.inference_controller import UpdatableEngines
+
+    return UpdatableEngines(
+        rollout_engines=rollout_engines,
+        engine_gpu_counts=[gpu_count] * len(rollout_engines),
+        engine_gpu_offsets=[index * gpu_count for index in range(len(rollout_engines))],
+        snapshot_cell_id_to_hashes=snapshot,
+    )
+
+
+def test_update_weights_reconnects_once_per_rollout_snapshot(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actor connects to a rollout snapshot once and reconnects with the new topology only when it changes."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    updater = worker.weight_updater
+    first_engines = [object()]
+    replacement_engines = [object(), object()]
+
+    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
+    worker.update_weights(_updatable_engines(first_engines, {"cell-0": "hash-a"}, gpu_count=4))
+    weight_version = worker.update_weights(_updatable_engines(replacement_engines, {"cell-0": "hash-b"}, gpu_count=2))
+
+    assert [call["rollout_engines"] for call in updater.connect_calls] == [first_engines, replacement_engines]
+    assert updater.connect_calls[1]["engine_gpu_counts"] == [2, 2]
+    assert updater.connect_calls[1]["engine_gpu_offsets"] == [0, 2]
+    assert updater.update_weights_calls == 3
+    assert weight_version == 3
+    assert not updater.conn_status.needs_reconnect({"cell-0": "hash-b"})
+
+
+def test_reconnecting_engines_receive_every_loaded_multi_lora_adapter(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reconnecting engines get all loaded adapters even with none pending; a settled connection gets only pending."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    updater = worker.weight_updater
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: True)
+    worker.loaded_adapters = {"alpha": "alpha-weights", "beta": "beta-weights"}
+    worker._multi_lora_pending_push = set()
+    worker._is_first_replica_megatron_main_rank = False
+    engines = [object()]
+
+    worker.update_weights(_updatable_engines(engines, {"cell-0": "hash-a"}, gpu_count=4))
+    adapters_on_reconnect = updater.multi_lora_adapters
+    worker._multi_lora_pending_push = {"beta"}
+    worker.update_weights(_updatable_engines(engines, {"cell-0": "hash-a"}, gpu_count=4))
+
+    assert adapters_on_reconnect == {"alpha": "alpha-weights", "beta": "beta-weights"}
+    assert updater.multi_lora_adapters == {"beta": "beta-weights"}
+
+
+def test_reconfigure_indep_dp_forces_the_next_weight_update_to_reconnect(
+    actor_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rebuilding the independent-DP groups invalidates the trainer side, so the next update reconnects."""
+    worker = _weight_update_worker(actor_module, monkeypatch)
+    updater = worker.weight_updater
+    monkeypatch.setattr(actor_module, "reconfigure_indep_dp_group", Mock())
+    monkeypatch.setattr(actor_module, "get_parallel_state", lambda: SimpleNamespace())
+    monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(actor_module.dist, "get_world_size", lambda: 2)
+    engines = [object()]
+    snapshot = {"cell-0": "hash-a"}
+
+    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+    worker.reconfigure_indep_dp(object(), "10.0.0.1:1234")
+    worker.update_weights(_updatable_engines(engines, snapshot, gpu_count=4))
+
+    assert len(updater.connect_calls) == 2

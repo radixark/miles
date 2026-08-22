@@ -2,29 +2,35 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.common import data_dir, model_dir
+from miles.utils.workers.types import WorkerCommBackend
 
 register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short", "mooncake"])
 register_rocm_ci(est_time=360, suite="stage-c-8-gpu-mi350", labels=["short", "mooncake"])
 
-FEW_GPU = U.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
+FEW_GPU = command_utils.get_bool_env_var("MILES_TEST_FEW_GPU", "0")
 
+MODEL_DIR = model_dir()
+DATA_DIR = data_dir()
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4 if FEW_GPU else 8
 
 
 def prepare():
-    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
+    U = command_utils.default_config().create_backend()
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
-def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}/ "
+def execute(*, comm_backend: WorkerCommBackend, test_file: str) -> None:
+    U = command_utils.default_config().create_backend()
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME}/ " f"--ref-load {MODEL_DIR}/{MODEL_NAME}/ "
 
     rollout_args = (
-        "--prompt-data /root/datasets/gsm8k/train.parquet "
+        f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
@@ -42,7 +48,7 @@ def execute():
 
     eval_args = (
         "--eval-interval 20 "
-        "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+        f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 1024 "
         "--eval-top-k 1 "
@@ -101,26 +107,28 @@ def execute():
         "--megatron-to-hf-mode bridge "
     )
 
+    worker_comm_args = "" if comm_backend is WorkerCommBackend.RAY else f"--worker-comm-backend {comm_backend.value} "
+
     train_args = (
         f"{ckpt_args} "
-        f"{U.get_mooncake_object_store_args()} "
+        f"{command_utils.get_mooncake_object_store_args()} "
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(test_file)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
         f"{ci_args} "
         f"{fault_tolerance_args} "
         f"{misc_args} "
+        f"{worker_comm_args} "
     )
 
     U.execute_train(
         train_args=train_args,
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
-        before_ray_job_submit=U.start_mooncake_master,
         extra_env_vars={"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"},
     )
 
@@ -129,4 +137,4 @@ if __name__ == "__main__":
     prepare()
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
-    execute()
+    execute(comm_backend=WorkerCommBackend.RAY, test_file=__file__)

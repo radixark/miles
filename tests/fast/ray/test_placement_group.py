@@ -1,0 +1,681 @@
+from __future__ import annotations
+
+import logging
+from argparse import Namespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
+from tests.fast.fixtures.megatron_config_fixtures import write_megatron_config, write_megatron_config_trainers
+
+from miles.ray import placement_group as placement_group_module
+from miles.ray.placement_group import (
+    create_rollout_components,
+    create_training_model,
+    create_training_models,
+    take_over_trainers,
+)
+from miles.ray.rollout.eval_fleet import EvalFleetInfo
+from miles.utils.workers.types import DeployComponent, DeploymentIdentity
+from miles.utils.workers.worker_spec import HostAndPort
+
+pytestmark = pytest.mark.asyncio
+
+
+def _make_args(**overrides) -> Namespace:
+    defaults = dict(
+        rollout_num_gpus=8,
+        pin_rollout_manager_to_head=False,
+        num_rollout=None,
+        num_epoch=2,
+        sglang_router_ip=None,
+        sglang_router_port=None,
+        cluster_backend="ray",
+        eval_num_gpus=0,
+        debug_train_only=False,
+        use_session_server=False,
+    )
+    defaults.update(overrides)
+    return Namespace(**{**parser_defaults(), **defaults})
+
+
+@pytest.fixture
+def fake_components():
+    events: list[str] = []
+
+    controller_handle = MagicMock(name="inference_controller")
+    controller_handle.check_weights = AsyncMock()
+    controller_handle.offload = AsyncMock()
+    controller_handle.is_initialized = AsyncMock(return_value=False)
+    controller_handle.init = AsyncMock(side_effect=lambda: events.append("controller_init"))
+    controller_handle.get_eval_fleet_info = AsyncMock(return_value=None)
+
+    async def resolve_router_addrs(args, *, router_providers) -> dict:
+        args.sglang_router_ip = "10.0.0.1"
+        args.sglang_router_port = 4321
+        return {}
+
+    async def fake_wait_session_server_ready(args, *, provider):
+        # the real one returns before touching anything when the run asked for no session server
+        if provider is None:
+            return
+        args.session_server_addrs = ["10.0.0.2:5000"]
+        args.session_server_instance_ids = ["session-0"]
+        events.append("session_servers_ready")
+
+    async def fake_executor_is_initialized() -> bool:
+        events.append("executor_not_initialized_checked")
+        return False
+
+    executor_handle = MagicMock(name="rollout_executor")
+    executor_handle.wait_ready = AsyncMock(return_value=None)
+    executor_handle.is_initialized = AsyncMock(side_effect=fake_executor_is_initialized)
+    executor_handle.init = AsyncMock(side_effect=lambda: events.append("executor_init"))
+    executor_handle.get_num_rollout_per_epoch = AsyncMock(return_value=5)
+    executor_handle.set_eval_fleet_info = AsyncMock(return_value=None)
+
+    capability = FakeBackendCapability(static_provider=object())
+
+    with patch(
+        "miles.ray.placement_group.create_inference_controller_handle", lambda *, capability: controller_handle
+    ), patch("miles.ray.placement_group.resolve_router_addrs", resolve_router_addrs), patch(
+        "miles.ray.placement_group.wait_session_server_ready", fake_wait_session_server_ready
+    ), patch(
+        "miles.ray.placement_group.create_rollout_executor_handle", lambda *, capability: executor_handle
+    ), patch(
+        "miles.ray.placement_group.get_backend_capability", lambda args: capability
+    ):
+        yield Namespace(
+            controller_handle=controller_handle,
+            executor_handle=executor_handle,
+            capability=capability,
+            events=events,
+        )
+
+
+class TestCreateRolloutComponents:
+    async def test_the_executor_is_inited_after_the_session_servers_are_known(self, fake_components):
+        """The executor reads the session contract off args, so it must be written before init() runs."""
+        args = _make_args(num_rollout=1, use_session_server=True)
+
+        await create_rollout_components(args)
+
+        assert fake_components.events == [
+            "session_servers_ready",
+            "executor_not_initialized_checked",
+            "controller_init",
+            "executor_init",
+        ]
+        assert args.session_server_addrs == ["10.0.0.2:5000"]
+        assert args.session_server_instance_ids == ["session-0"]
+
+    async def test_partial_component_creation_disposes_every_allocated_handle(self, fake_components):
+        """An executor init failure must not leak either handle created inside this helper."""
+        fake_components.executor_handle.init.side_effect = RuntimeError("executor init failed")
+        fake_components.executor_handle.dispose = AsyncMock()
+        fake_components.controller_handle.dispose = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="executor init failed"):
+            await create_rollout_components(_make_args(num_rollout=1))
+
+        fake_components.executor_handle.dispose.assert_awaited_once_with()
+        fake_components.controller_handle.dispose.assert_awaited_once_with()
+
+    async def test_the_executor_is_waited_out_before_anything_is_initialized(self, fake_components):
+        """A hot restart finds the previous script's executor up, and initializing anything against it is the bug."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        assert fake_components.events == ["executor_not_initialized_checked", "controller_init", "executor_init"]
+
+    async def test_returns_two_worker_handles(self, fake_components):
+        """Both halves of rollout are independent workers, so the driver only ever holds handles."""
+        args = _make_args(num_rollout=1)
+
+        controller, executor, _ = await create_rollout_components(args)
+
+        assert controller is fake_components.controller_handle
+        assert executor is fake_components.executor_handle
+
+    async def test_the_router_addresses_are_resolved_before_the_workers_are_initialized(self, fake_components):
+        """The driver's args copy must carry the contract before anything downstream reads it."""
+        args = _make_args(num_rollout=1)
+
+        await create_rollout_components(args)
+
+        assert (args.sglang_router_ip, args.sglang_router_port) == ("10.0.0.1", 4321)
+
+    async def test_num_rollout_derived_from_executor_epoch_length(self, fake_components):
+        """num_rollout comes from the dataset, which the executor owns."""
+        args = _make_args(num_rollout=None, num_epoch=2)
+
+        _, _, num_rollout_per_epoch = await create_rollout_components(args)
+
+        fake_components.executor_handle.get_num_rollout_per_epoch.assert_awaited_once_with()
+        assert num_rollout_per_epoch == 5
+        assert args.num_rollout == 10
+
+    async def test_num_rollout_left_alone_when_explicitly_set(self, fake_components):
+        """An explicit --num-rollout skips asking the executor for the epoch length."""
+        args = _make_args(num_rollout=3)
+
+        _, _, num_rollout_per_epoch = await create_rollout_components(args)
+
+        fake_components.executor_handle.get_num_rollout_per_epoch.assert_not_awaited()
+        assert num_rollout_per_epoch is None
+        assert args.num_rollout == 3
+
+    async def test_a_train_only_run_resolves_no_inference_addresses(self, fake_components):
+        """--debug-train-only deploys no routers or session servers, so nothing can be waited on."""
+        args = _make_args(num_rollout=1, debug_train_only=True)
+
+        await create_rollout_components(args)
+
+        assert fake_components.capability.requested_static_pool_ids == []
+        assert args.sglang_router_ip is None
+
+
+class TestTakeOverInference:
+    @staticmethod
+    async def _take_over(fake_components) -> None:
+        await create_rollout_components(_make_args(num_rollout=1))
+
+    async def test_a_cold_run_builds_the_controller_it_found_uninitialized(self, fake_components):
+        """A cold start reaches plain init() and none of the reset, so the whole call sequence is pinned."""
+        await self._take_over(fake_components)
+
+        controller = fake_components.controller_handle
+        assert [name for name, _args, _kwargs in controller.mock_calls] == [
+            "is_initialized",
+            "init",
+            "get_eval_fleet_info",
+        ]
+
+    async def test_a_surviving_controller_is_reset_instead_of_built_again(self, fake_components):
+        """Initializing it a second time would rebuild the fleet this run just adopted."""
+        fake_components.controller_handle.is_initialized = AsyncMock(return_value=True)
+        for name in ("wait_idle", "wait_expected_num_cells", "abort_all"):
+            setattr(fake_components.controller_handle, name, AsyncMock(return_value=False))
+
+        await self._take_over(fake_components)
+
+        assert [name for name, _args, _kwargs in fake_components.controller_handle.mock_calls] == [
+            "is_initialized",
+            "wait_idle",
+            "wait_expected_num_cells",
+            "abort_all",
+            "get_eval_fleet_info",
+        ]
+
+        fake_components.controller_handle.init.assert_not_awaited()
+        fake_components.controller_handle.abort_all.assert_awaited_once_with()
+
+    async def test_the_eval_fleet_reaches_the_executor_through_an_rpc_call(self, fake_components):
+        """The controller is a worker: its fleet is only knowable by calling it, never by reading it."""
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+        fake_components.controller_handle.get_eval_fleet_info = AsyncMock(return_value=info)
+
+        await self._take_over(fake_components)
+
+        fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
+
+    async def test_a_run_without_an_eval_fleet_wires_nothing_up(self, fake_components):
+        """The controller answers that it deploys no fleet, and the executor is left alone."""
+        await self._take_over(fake_components)
+
+        fake_components.controller_handle.get_eval_fleet_info.assert_awaited_once_with()
+        fake_components.executor_handle.set_eval_fleet_info.assert_not_awaited()
+
+    async def test_the_executor_is_handed_the_fleet_the_controller_just_built(self, fake_components):
+        """Checkpoint eval pins snapshots to these engines, so publishing a pre-init fleet evaluates nothing."""
+        info = EvalFleetInfo(router=HostAndPort(host="10.0.0.2", port=31000), num_gpus=2, num_gpus_per_engine=1)
+
+        async def _publish_fleet_on_init():
+            fake_components.controller_handle.get_eval_fleet_info = AsyncMock(return_value=info)
+
+        fake_components.controller_handle.init = AsyncMock(side_effect=_publish_fleet_on_init)
+
+        await self._take_over(fake_components)
+
+        fake_components.executor_handle.set_eval_fleet_info.assert_awaited_once_with(info)
+
+
+class TestCreatePlacementGroups:
+    @staticmethod
+    def _args(**overrides) -> Namespace:
+        defaults = dict(
+            debug_train_only=False,
+            debug_rollout_only=False,
+            rollout_external=False,
+            colocate=False,
+            use_critic=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=2,
+            critic_num_nodes=1,
+            critic_num_gpus_per_node=1,
+            rollout_num_gpus=3,
+            eval_num_gpus=0,
+            megatron_config=None,
+            critic_load=None,
+            critic_save=None,
+            critic_lr=None,
+            critic_lr_warmup_iters=None,
+            deploy_component="all",
+        )
+        defaults.update(overrides)
+        return Namespace(**{**parser_defaults(), **defaults})
+
+    @staticmethod
+    def _patched(monkeypatch, requested: list[int]):
+        from miles.ray import placement_group as placement_group_module
+        from miles.ray.placement_group import PlacementGroupInfo
+
+        def _fake_create(num_gpus):
+            requested.append(num_gpus)
+            return PlacementGroupInfo(
+                pg="pg-sentinel",
+                pg_reordered_bundle_indices=[(index * 3 + 1) % num_gpus for index in range(num_gpus)],
+                pg_reordered_gpu_ids=[100 + index for index in range(num_gpus)],
+            )
+
+        monkeypatch.setattr(placement_group_module, "_create_placement_group", _fake_create)
+
+    def test_each_role_views_the_shared_pg_from_its_own_offset(self, monkeypatch):
+        """Roles share one placement group; the critic reuses the actor slice and rollout starts after it."""
+        from miles.ray.placement_group import create_placement_groups
+
+        requested: list[int] = []
+        self._patched(monkeypatch, requested)
+
+        pgs = create_placement_groups(self._args())
+
+        assert requested == [5]
+        assert {name: info.pg for name, info in pgs.items()} == {role: "pg-sentinel" for role in pgs}
+        assert pgs["actor"].pg_reordered_gpu_ids == [100, 101, 102, 103, 104]
+        assert pgs["critic"] == pgs["actor"]
+        assert pgs["rollout"].pg_reordered_gpu_ids == [102, 103, 104]
+        assert pgs["rollout"].pg_reordered_bundle_indices == pgs["actor"].pg_reordered_bundle_indices[2:]
+
+    def test_a_disabled_critic_gets_no_entry_at_all(self, monkeypatch):
+        """Without a critic the role map simply omits it, so consumers never see a None placement group."""
+        from miles.ray.placement_group import create_placement_groups
+
+        requested: list[int] = []
+        self._patched(monkeypatch, requested)
+
+        pgs = create_placement_groups(self._args(use_critic=False))
+
+        assert sorted(pgs) == ["actor", "rollout"]
+        assert requested == [5]
+        assert pgs["rollout"].pg_reordered_gpu_ids == [102, 103, 104]
+
+    def test_a_trainer_deployment_hands_the_rollout_entry_no_bundle(self, monkeypatch):
+        """Its release installs no engine, so a rollout entry over the trainer's bundles would double-book them."""
+        from miles.ray.placement_group import create_placement_groups
+
+        requested: list[int] = []
+        self._patched(monkeypatch, requested)
+
+        pgs = create_placement_groups(self._args(deploy_component="trainer"))
+
+        assert requested == [2]
+        assert pgs["actor"].pg_reordered_gpu_ids == [100, 101]
+        assert pgs["rollout"].pg_reordered_gpu_ids == []
+        assert pgs["rollout"].pg_reordered_bundle_indices == []
+
+
+class TestUpdateWeights:
+    def _fakes(self, *, weight_version: int | None):
+        actor_model = MagicMock()
+        actor_model.update_weights = AsyncMock(return_value=weight_version)
+        rollout_executor = MagicMock()
+        rollout_executor.set_weight_version = AsyncMock()
+        return actor_model, rollout_executor
+
+    @staticmethod
+    def _args():
+        return Namespace(**{**parser_defaults(), "debug_train_only": True, "debug_rollout_only": False})
+
+    async def test_the_executor_is_told_which_version_the_engines_now_serve(self):
+        """Without this the executor stamps every sample it collects with weight_version=None."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3)
+
+        info = inference_controller.start_update_weights.await_args.kwargs["model_id"]
+        assert info is None
+        rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id=None)
+
+    async def test_the_published_version_names_the_policy_it_belongs_to(self):
+        """A version published under the wrong policy judges another policy's samples against these weights."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(
+            self._args(), actor_model, rollout_executor, inference_controller, rollout_id=3, trainer_model_id="alpha"
+        )
+
+        rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id="alpha")
+
+    async def test_a_trainer_that_skipped_the_broadcast_publishes_nothing(self):
+        """--debug-skip-weight-update leaves the engines on their old weights, so the version must not move."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=None)
+
+        inference_controller = MagicMock(start_update_weights=AsyncMock(), end_update_weights=AsyncMock())
+
+        await update_weights(self._args(), actor_model, rollout_executor, inference_controller)
+
+        rollout_executor.set_weight_version.assert_not_awaited()
+
+
+def _make_trainer_handle(*, initialized: bool = False) -> MagicMock:
+    handle = MagicMock()
+    handle.is_initialized = AsyncMock(return_value=initialized)
+    handle.wait_idle = AsyncMock(return_value=None)
+    handle.init = AsyncMock(return_value=[0])
+    handle.load_state = AsyncMock(return_value=[0])
+    handle.get_deployment_identity = AsyncMock(return_value=None)
+    handle.get_train_parallel_config = AsyncMock(return_value=None)
+    return handle
+
+
+class TestCreateTrainingModels:
+    @staticmethod
+    def _patched(monkeypatch, requested: list[str], *, initialized: bool = False) -> list[MagicMock]:
+        handles: list[MagicMock] = []
+
+        def _create_handle(args, *, capability, trainer_id: str):
+            requested.append(trainer_id)
+            handle = _make_trainer_handle(initialized=initialized)
+            handles.append(handle)
+            return handle
+
+        monkeypatch.setattr(placement_group_module, "create_trainer_controller_handle", _create_handle)
+        monkeypatch.setattr(placement_group_module, "get_backend_capability", lambda args: object())
+        return handles
+
+    @staticmethod
+    def _rollout_executor() -> MagicMock:
+        rollout_executor = MagicMock()
+        rollout_executor.set_train_parallel_config = AsyncMock()
+        rollout_executor.load = AsyncMock()
+        return rollout_executor
+
+    @staticmethod
+    def _args(tmp_path, **overrides) -> Namespace:
+        defaults = dict(
+            megatron_config=write_megatron_config(tmp_path, "alpha"),
+            use_critic=False,
+            start_rollout_id=None,
+            trainer_controller_addrs=None,
+        )
+        defaults.update(overrides)
+        return Namespace(**{**parser_defaults(), **defaults})
+
+    async def test_a_configured_policy_is_addressed_by_its_own_trainer_id(self, tmp_path, monkeypatch):
+        """A single entry --megatron-config names the pool '<model_id>-actor'; 'actor' addresses nothing."""
+        requested: list[str] = []
+        self._patched(monkeypatch, requested)
+
+        await create_training_models(self._args(tmp_path), self._rollout_executor())
+
+        assert requested == ["alpha-actor"]
+
+    async def test_the_handles_it_drives_are_built_exactly_once(self, tmp_path, monkeypatch):
+        """The take-over reads a trainer and then drives it, and a second handle would repeat the readiness handshake."""
+        requested: list[str] = []
+        handles = self._patched(monkeypatch, requested)
+
+        await create_training_models(self._args(tmp_path), self._rollout_executor())
+
+        assert len(handles) == 1
+
+    async def test_every_trainer_is_asked_what_it_is_before_anything_drives_it(self, tmp_path, monkeypatch):
+        """Initializing a trainer a previous script already built would throw away the state it is holding."""
+        handles = self._patched(monkeypatch, [])
+
+        await create_training_models(self._args(tmp_path), self._rollout_executor())
+
+        [handle] = handles
+        called = [name for name, _args, _kwargs in handle.mock_calls]
+        assert called.index("is_initialized") < called.index("init")
+
+    async def test_the_executor_is_loaded_at_the_position_the_trainers_start_from(self, tmp_path, monkeypatch):
+        """The dataset has to stand where the trainers do, whether the run was built or taken over."""
+        self._patched(monkeypatch, [], initialized=False)
+        rollout_executor = self._rollout_executor()
+
+        await create_training_models(self._args(tmp_path), rollout_executor)
+
+        rollout_executor.load.assert_awaited_once_with(-1)
+
+    async def test_an_external_trainer_is_identified_and_driven_through_one_handle(self, tmp_path, monkeypatch):
+        """A second handle would identify one connection and drive another, so the check would guard nothing."""
+        handles = self._patched(monkeypatch, [])
+        monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            placement_group_module, "_assert_external_trainer_belongs_to_this_run", lambda identity, **kwargs: None
+        )
+        args = self._args(tmp_path, trainer_controller_addrs=["alpha-actor=10.0.0.5:1234"])
+
+        await create_training_models(args, self._rollout_executor())
+
+        [handle] = handles
+        called = [name for name, _args, _kwargs in handle.mock_calls]
+        assert called.index("get_deployment_identity") < called.index("is_initialized") < called.index("init")
+
+    async def test_a_run_without_a_megatron_config_still_addresses_the_actor_and_critic_pools(self, monkeypatch):
+        """Every existing single policy deployment names its two pools 'actor' and 'critic'."""
+        requested: list[str] = []
+        self._patched(monkeypatch, requested)
+        args = Namespace(
+            megatron_config=None,
+            use_critic=True,
+            start_rollout_id=None,
+            trainer_model_id=None,
+            kl_coef=0,
+            use_opd=False,
+            disable_param_buffers_cpu_backup=False,
+            load=None,
+            save=None,
+            lr=1e-6,
+            lr_warmup_iters=None,
+            critic_load=None,
+            critic_save=None,
+            critic_lr=None,
+            critic_lr_warmup_iters=None,
+            trainer_controller_addrs=None,
+        )
+
+        await create_training_models(args, self._rollout_executor())
+
+        assert requested == ["actor", "critic"]
+
+    async def test_a_config_declaring_a_critic_is_refused_while_reading_that_config(self, tmp_path, monkeypatch):
+        """The critic pool would be deployed and never inited, so the run would hang waiting for it."""
+        self._patched(monkeypatch, [])
+        args = Namespace(
+            megatron_config=write_megatron_config_trainers(
+                tmp_path, [{"model_id": "alpha"}, {"model_id": "alpha", "role": "critic"}]
+            ),
+            use_critic=False,
+            start_rollout_id=None,
+            trainer_controller_addrs=None,
+        )
+
+        with pytest.raises(AssertionError, match="declares a critic for"):
+            await create_training_models(args, self._rollout_executor())
+
+
+class TestTakeOverTrainers:
+    @staticmethod
+    def _args(**overrides) -> Namespace:
+        defaults = dict(
+            trainer_controller_addrs=["alpha-actor=10.0.0.5:1234"],
+            megatron_config=None,
+            run_uuid="run-a",
+            deploy_component="all",
+        )
+        defaults.update(overrides)
+        return Namespace(**{**parser_defaults(), **defaults})
+
+    @staticmethod
+    def _identity(**overrides) -> DeploymentIdentity:
+        defaults = dict(
+            run_uuid="run-a", deploy_component=DeployComponent.TRAINER.value, deploy_instance_id="alpha-actor"
+        )
+        defaults.update(overrides)
+        return DeploymentIdentity(**defaults)
+
+    @staticmethod
+    def _patched(monkeypatch, *, events: list[str]) -> None:
+        async def wait_static_addrs_ready(addrs) -> None:
+            events.append("addrs_ready")
+
+        monkeypatch.setattr(placement_group_module, "wait_static_addrs_ready", wait_static_addrs_ready)
+
+    async def test_the_addresses_are_waited_for_before_anything_reads_a_trainer(self, monkeypatch):
+        """Reading a trainer at an address nothing answers at yet fails a take-over on a pod that is merely starting."""
+        events: list[str] = []
+        self._patched(monkeypatch, events=events)
+        handle = _make_trainer_handle()
+        handle.get_deployment_identity = AsyncMock(
+            side_effect=lambda: events.append("identity") or self._identity(),
+        )
+        handle.is_initialized = AsyncMock(side_effect=lambda: events.append("is_initialized") or False)
+
+        assert await take_over_trainers(self._args(), handles={"alpha-actor": handle}) is False
+
+        assert events == ["addrs_ready", "identity", "is_initialized"]
+
+    async def test_an_external_trainer_of_another_run_is_refused(self, monkeypatch):
+        """Driving another run's trainer would mix its weight updates into this run's samples."""
+        self._patched(monkeypatch, events=[])
+        handle = _make_trainer_handle()
+        handle.get_deployment_identity = AsyncMock(return_value=self._identity(run_uuid="run-b"))
+
+        with pytest.raises(AssertionError, match="but this launch drives run"):
+            await take_over_trainers(self._args(), handles={"alpha-actor": handle})
+
+    async def test_a_run_that_deploys_its_own_trainers_verifies_no_identity(self, monkeypatch):
+        """Without --trainer-controller-addrs the trainers are this release's own pools, so there is nothing to check."""
+        self._patched(monkeypatch, events=[])
+        handle = _make_trainer_handle()
+
+        await take_over_trainers(self._args(trainer_controller_addrs=None), handles={"alpha-actor": handle})
+
+        handle.get_deployment_identity.assert_not_awaited()
+
+
+class TestCreateTrainingModel:
+    @staticmethod
+    def _handle(*, restored: list[int]) -> MagicMock:
+        handle = MagicMock()
+        handle.init = AsyncMock(return_value=restored)
+        handle.load_state = AsyncMock(return_value=restored)
+        return handle
+
+    async def test_a_trainer_whose_cells_restored_different_rollouts_is_refused(self):
+        """Cells of one trainer hold one model, so disagreeing positions mean a corrupted checkpoint set."""
+        with pytest.raises(AssertionError, match=r"trainer 'alpha-actor' restored \[5, 4\]"):
+            await create_training_model(
+                Namespace(start_rollout_id=None),
+                handle=self._handle(restored=[5, 4]),
+                trainer_id="alpha-actor",
+                resumed=False,
+            )
+
+    async def test_a_trainer_starts_where_its_cells_restored(self):
+        """The restored position is what makes a resume continue instead of retraining old rounds."""
+        info = await create_training_model(
+            Namespace(start_rollout_id=None),
+            handle=self._handle(restored=[3, 3]),
+            trainer_id="alpha-actor",
+            resumed=False,
+        )
+
+        assert info.start_rollout_id == 3
+
+    async def test_an_explicit_start_rollout_id_wins_over_the_restored_one_on_a_cold_run(self):
+        """--start-rollout-id is the manual override for replaying or skipping rounds of a run being built."""
+        info = await create_training_model(
+            Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor", resumed=False
+        )
+
+        assert info.start_rollout_id == 9
+
+    async def test_a_trainer_told_to_start_elsewhere_than_it_restored_says_so(self, caplog):
+        """A trainer that silently starts somewhere other than where it restored gives the operator nothing to read."""
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(
+                Namespace(start_rollout_id=9),
+                handle=self._handle(restored=[3]),
+                trainer_id="alpha-actor",
+                resumed=False,
+            )
+
+        assert "alpha-actor" in caplog.text and "--start-rollout-id 9" in caplog.text
+
+    async def test_a_trainer_told_to_start_where_it_restored_says_nothing(self, caplog):
+        """Logging every trainer that was told where it already stands is noise on every ordinary launch."""
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(
+                Namespace(start_rollout_id=3),
+                handle=self._handle(restored=[3]),
+                trainer_id="alpha-actor",
+                resumed=False,
+            )
+
+        assert "--start-rollout-id" not in caplog.text
+
+    async def test_a_trainer_left_to_its_restored_position_says_nothing(self, caplog):
+        """The ordinary resume names no rollout at all, and it must not be reported as an override."""
+        with caplog.at_level(logging.INFO, logger="miles.ray.placement_group"):
+            await create_training_model(
+                Namespace(start_rollout_id=None),
+                handle=self._handle(restored=[3]),
+                trainer_id="alpha-actor",
+                resumed=False,
+            )
+
+        assert "--start-rollout-id" not in caplog.text
+
+    async def test_the_restored_position_is_kept_beside_the_overridden_start(self):
+        """Cross trainer checks compare where checkpoints actually were, which an override must not rewrite."""
+        info = await create_training_model(
+            Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor", resumed=False
+        )
+
+        assert info.restored_rollout_id == 3
+
+    async def test_an_explicit_start_rollout_id_wins_over_the_reload_of_a_taken_over_run_too(self):
+        """A take-over reads the same argument a cold start does, so one flag cannot mean two things."""
+        info = await create_training_model(
+            Namespace(start_rollout_id=9), handle=self._handle(restored=[3]), trainer_id="alpha-actor", resumed=True
+        )
+
+        assert info.start_rollout_id == 9
+        assert info.restored_rollout_id == 3
+
+    async def test_a_trainer_a_previous_script_built_is_reloaded_instead_of_inited(self):
+        """A survivor already holds the model, so building it again would throw away the run's own progress."""
+        handle = self._handle(restored=[4])
+
+        info = await create_training_model(
+            Namespace(start_rollout_id=None), handle=handle, trainer_id="alpha-actor", resumed=True
+        )
+
+        assert info.start_rollout_id == 4
+        handle.load_state.assert_awaited_once_with()
+        handle.init.assert_not_awaited()

@@ -54,6 +54,12 @@ def generate_rollout(args, rollout_id, data_source, evaluation=False) \
 `miles.rollout.inference_rollout.inference_rollout_common.InferenceRolloutFn` when
 `enable_experimental_rollout_refactor()` is on.
 
+Class-based rollout implementations subclass `BaseRolloutFn`. Its `dispose()` lifecycle
+hook is synchronous: Miles calls it directly and does not await its return value. An
+implementation that owns asynchronous resources must run and finish that cleanup inside
+`dispose()` before returning. When training and evaluation share the same rollout object,
+Miles disposes that object once.
+
 **Reference:** [`examples/experimental/multi_agent/rollout_with_multi_agents.py`](https://github.com/radixark/miles/blob/main/examples/experimental/multi_agent/rollout_with_multi_agents.py).
 
 ### `--custom-generate-function-path`

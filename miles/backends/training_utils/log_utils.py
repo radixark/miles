@@ -10,7 +10,7 @@ import torch.distributed as dist
 from miles.utils import train_metric_utils
 from miles.utils.flops_utils import fwd_tflops_per_gpu
 from miles.utils.ft_utils.process_group_utils import MultiPGUtil
-from miles.utils.metric_utils import compute_rollout_step
+from miles.utils.metric_utils import compute_rollout_step, namespace_metrics, strip_metrics_namespace
 from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.types import RolloutBatch
 
@@ -97,16 +97,19 @@ def gather_log_data(
     parallel_state = get_parallel_state()
 
     pg = parallel_state.effective_dp_cp
-    log_structured(logger.info, op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
+    log_structured(logger.info, tag="ft", op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
     try:
         gathered_log_dict = MultiPGUtil.gather_object(
             obj=log_dict,
             groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
         )
-        log_structured(logger.info, op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True)
+        log_structured(
+            logger.info, tag="ft", op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True
+        )
     except RuntimeError:
         log_structured(
             logger.warning,
+            tag="ft",
             op="cross_cell",
             phase="end",
             kind="log_gather",
@@ -124,8 +127,10 @@ def gather_log_data(
 
         # Calculate step once to avoid duplication
         step = compute_rollout_step(args, rollout_id)
-        reduced_log_dict["rollout/step"] = step
-        tracking.log(args, reduced_log_dict, step_key="rollout/step")
+        reduced_log_dict, step_key = namespace_metrics(
+            reduced_log_dict, trainer_model_id=args.trainer_model_id, step_name="rollout/step", step=step
+        )
+        tracking.log(args, reduced_log_dict, step_key=step_key)
 
         return reduced_log_dict
     else:
@@ -260,6 +265,7 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
 
         reduced_log_dict = gather_log_data("rollout", args, rollout_id, log_dict)
         if args.ci_test and not args.ci_disable_logprobs_checker and reduced_log_dict is not None:
+            reduced_log_dict = strip_metrics_namespace(reduced_log_dict, trainer_model_id=args.trainer_model_id)
             if (
                 rollout_id == 0
                 and "rollout/log_probs" in reduced_log_dict
@@ -429,11 +435,13 @@ def log_cpu_memory(rollout_id: int, args: Namespace, label: str) -> None:
     cpu_mem_gb = psutil.virtual_memory().used / 1e9
     step = compute_rollout_step(args, rollout_id)
     logger.info(f"[CPU memory] {label}: {cpu_mem_gb:.2f} GB (rollout_id={rollout_id}, step={step})")
-    tracking.log(
-        args,
-        {f"perf/cpu_memory_{label}_gb": cpu_mem_gb, "rollout/step": step},
-        step_key="rollout/step",
+    log_dict, step_key = namespace_metrics(
+        {f"perf/cpu_memory_{label}_gb": cpu_mem_gb},
+        trainer_model_id=args.trainer_model_id,
+        step_name="rollout/step",
+        step=step,
     )
+    tracking.log(args, log_dict, step_key=step_key)
 
 
 def aggregate_train_losses(
@@ -532,13 +540,18 @@ def log_train_step(
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val
 
-    log_dict_out["train/step"] = accumulated_step_id
+    log_dict_out, step_key = namespace_metrics(
+        log_dict_out,
+        trainer_model_id=args.trainer_model_id,
+        step_name="train/step",
+        step=accumulated_step_id,
+    )
 
     if should_log is None:
         should_log = dist.get_rank() == 0
 
     if should_log:
-        tracking.log(args, log_dict_out, step_key="train/step")
+        tracking.log(args, log_dict_out, step_key=step_key)
         logger.info(f"{role_tag}step {accumulated_step_id}: {log_dict_out}")
 
     return log_dict_out

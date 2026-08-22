@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 
+from miles.utils.function_registry import load_function
 from miles.utils.iter_utils import group_by
 from miles.utils.metric_utils import (
     compute_pass_rate,
@@ -10,8 +11,8 @@ from miles.utils.metric_utils import (
     compute_statistics,
     dict_add_prefix,
     has_repetition,
+    namespace_metrics,
 )
-from miles.utils.misc import load_function
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
@@ -69,7 +70,9 @@ def log_eval_skip(rollout_id, args, reason: str):
     tracking.log(args, log_dict, step_key="eval/step")
 
 
-def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+def log_rollout_data(
+    rollout_id, args, samples, rollout_extra_metrics, rollout_time, trainer_model_id: str | None = None
+):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
@@ -87,9 +90,13 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
             "passrate/",
         )
     logger.info(f"perf {rollout_id}: {log_dict}")
-    step = compute_rollout_step(args, rollout_id)
-    log_dict["rollout/step"] = step
-    tracking.log(args, log_dict, step_key="rollout/step")
+    log_dict, step_key = namespace_metrics(
+        log_dict,
+        trainer_model_id=trainer_model_id,
+        step_name="rollout/step",
+        step=compute_rollout_step(args, rollout_id),
+    )
+    tracking.log(args, log_dict, step_key=step_key)
 
 
 def _compute_metrics_from_samples(args, samples):
@@ -107,7 +114,7 @@ def _compute_metrics_from_samples(args, samples):
     oldest_versions = [s.oldest_weight_version for s in samples if s.oldest_weight_version is not None]
     if oldest_versions:
         log_dict |= dict_add_prefix(compute_statistics(oldest_versions), "weight_version/")
-        mixed = sum(1 for s in samples if len(set(s.weight_versions)) > 1)
+        mixed = sum(1 for s in samples if len({span.version for span in s.all_weight_version_spans}) > 1)
         log_dict["weight_version/mixed_version_ratio"] = mixed / len(samples)
 
     tito_vals = [s.metadata.get("tito_session_mismatch") for s in samples]

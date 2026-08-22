@@ -1,69 +1,34 @@
 import asyncio
-import importlib
-import inspect
 import logging
-from collections.abc import Sequence
-from contextlib import contextmanager
-from typing import Any
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 import ray
 
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import is_port_available
 
 logger = logging.getLogger(__name__)
 
+# ray uses 10002-19999, and 32768+ is the ephemeral range, so wrapped scans restart above ray's block
+_MIN_DYNAMIC_PORT = 20000
+_MAX_PORT = 65535
 
-# Mainly used for test purpose where `load_function` needs to load many in-flight generated functions
-class FunctionRegistry:
-    def __init__(self):
-        self._registry: dict[str, object] = {}
-
-    @contextmanager
-    def temporary(self, name: str, fn: object):
-        self._register(name, fn)
-        try:
-            yield
-        finally:
-            self._unregister(name)
-
-    def get(self, name: str) -> object | None:
-        return self._registry.get(name)
-
-    def _register(self, name: str, fn: object) -> None:
-        assert name not in self._registry
-        self._registry[name] = fn
-
-    def _unregister(self, name: str) -> None:
-        assert name in self._registry
-        self._registry.pop(name)
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+_T = TypeVar("_T")
 
 
-function_registry = FunctionRegistry()
+@dataclass
+class MutableBox(Generic[_T]):
+    value: _T
 
 
-# TODO may rename to `load_object` since it can be used to load things like tool_specs
-def load_function(path, *, sync_required=False):
-    """
-    Load a function from registry or module.
-    :param path: The path to the function, e.g. "module.submodule.function".
-    :param sync_required: Reject coroutine functions, for callers that run the
-        loaded function synchronously on an event loop.
-    :return: The function object.
-    """
-    if not path:
-        return None
-
-    fn = function_registry.get(path)
-    if fn is None:
-        module_path, _, attr = path.rpartition(".")
-        module = importlib.import_module(module_path)
-        fn = getattr(module, attr)
-    if sync_required:
-        if not callable(fn):
-            raise ValueError(f"load_function({path!r}) did not resolve to a callable")
-        if inspect.iscoroutinefunction(fn):
-            raise ValueError(f"load_function({path!r}) resolved to an async function; a synchronous one is required")
-    return fn
+def merge_asserting_consistency(a: dict[_K, _V], b: dict[_K, _V]) -> dict[_K, _V]:
+    conflicts = {key: (a[key], b[key]) for key in a.keys() & b.keys() if a[key] != b[key]}
+    assert not conflicts, f"cannot merge two dicts that disagree: {conflicts}"
+    return a | b
 
 
 async def call_agent_abort_hook(args) -> None:
@@ -120,11 +85,49 @@ def get_current_node_ip():
 
 
 def get_free_port(start_port=10000, consecutive=1):
-    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available
+    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
+    # scanning upwards from start_port and wrapping around once the ports run out
+    highest_start = _MAX_PORT - consecutive + 1
+    assert start_port <= highest_start, f"{start_port=} leaves no room for {consecutive=} ports below {_MAX_PORT}"
+    lowest_start = min(start_port, _MIN_DYNAMIC_PORT)
+
     port = start_port
-    while not all(is_port_available(port + i) for i in range(consecutive)):
-        port += 1
-    return port
+    for _ in range(highest_start - lowest_start + 1):
+        if all(is_port_available(port + i) for i in range(consecutive)):
+            return port
+        port = port + 1 if port < highest_start else lowest_start
+
+    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {_MAX_PORT}]")
+
+
+def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
+
+
+class NodeProbeMixin:
+    @staticmethod
+    def _get_node_ip() -> str:
+        return get_current_node_ip()
+
+    @staticmethod
+    def _get_free_port_block(*, start_port: int, count: int) -> int:
+        return get_free_port(start_port=start_port, consecutive=count)
+
+    @staticmethod
+    def _is_port_available(*, port: int) -> bool:
+        return is_port_available(port)
+
+    @staticmethod
+    def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+        return get_gpu_uuids(gpu_ids)
 
 
 def should_run_periodic_action(
@@ -162,3 +165,25 @@ def filter_keys(d: dict[str, Any], interest_keys: Sequence[str]) -> dict[str, An
     except Exception:
         logger.error(f"filter_keys d.keys={list(d)} {interest_keys=}", exc_info=True)
         raise
+
+
+class SimpleTicker:
+    def __init__(self, fn: Callable[[], Awaitable[None]], *, interval_seconds: float):
+        self._fn = fn
+        self._interval_seconds = interval_seconds
+        self._task = asyncio.create_task(self._loop())
+
+    async def dispose(self) -> None:
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            try:
+                await self._fn()
+            except Exception:
+                logger.exception(f"Ticking {self._fn} failed; retrying")

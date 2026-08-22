@@ -169,6 +169,64 @@ def test_policy_loss_only_backpropagates_through_current_policy(monkeypatch, use
     assert advantage_source.grad is None
 
 
+def test_ppo_kl_uses_double_accumulation_and_preserves_metric_dtype(monkeypatch):
+    """Signed KL uses precise accumulation without changing its schema or training path."""
+    args = _make_args(use_rollout_logprobs=False)
+    num_tokens = 512
+    stored_ppo_kl = torch.empty(num_tokens, dtype=torch.float32)
+    stored_ppo_kl[0::2] = 0.01
+    stored_ppo_kl[1::2] = -0.01 + 1.8e-9
+    batch = {
+        "advantages": [torch.ones(num_tokens, dtype=torch.float32)],
+        "log_probs": [stored_ppo_kl],
+        "rollout_log_probs": [torch.zeros(num_tokens, dtype=torch.float32)],
+        "unconcat_tokens": [torch.zeros(num_tokens + 1, dtype=torch.long)],
+        "response_lengths": [num_tokens],
+        "total_lengths": [num_tokens + 1],
+        "loss_masks": [torch.ones(num_tokens, dtype=torch.float32)],
+    }
+
+    monkeypatch.setattr(
+        loss_utils,
+        "get_parallel_state",
+        lambda: SimpleNamespace(tp=SimpleNamespace(group=None)),
+    )
+    _patch_single_rank_loss_helpers(monkeypatch)
+    monkeypatch.setattr(
+        loss_utils,
+        "get_log_probs_and_entropy",
+        lambda logits, *args, **kwargs: {"log_probs": [logits.flatten()[:num_tokens]]},
+    )
+
+    current_logits = torch.zeros((1, num_tokens + 1, 1), dtype=torch.float32, requires_grad=True)
+    loss, metrics = loss_utils.policy_loss_function(
+        args,
+        batch,
+        logits=current_logits,
+        sum_of_sample_mean=lambda tensor: tensor.mean(),
+    )
+    loss.backward()
+
+    reference_logits = torch.zeros_like(current_logits, requires_grad=True)
+    reference_ppo_kl = stored_ppo_kl - reference_logits.flatten()[:num_tokens]
+    reference_pg_loss, _ = loss_utils.compute_policy_loss(
+        reference_ppo_kl,
+        batch["advantages"][0],
+        args.eps_clip,
+        args.eps_clip_high,
+    )
+    reference_loss = reference_pg_loss.mean()
+    reference_loss.backward()
+
+    assert stored_ppo_kl.mean().abs() >= 1e-9
+    assert stored_ppo_kl.double().mean().abs() < 1e-9
+    expected_ppo_kl = stored_ppo_kl.double().mean().to(stored_ppo_kl.dtype)
+    torch.testing.assert_close(metrics["ppo_kl"], expected_ppo_kl, rtol=0, atol=0)
+    assert metrics["ppo_kl"].dtype == stored_ppo_kl.dtype
+    assert torch.equal(loss, reference_loss)
+    assert torch.equal(current_logits.grad, reference_logits.grad)
+
+
 def test_kl_loss_does_not_backpropagate_through_reference_scores(monkeypatch):
     args = _make_args(use_rollout_logprobs=False)
     args.use_kl_loss = True

@@ -1,0 +1,293 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Miles shared infra values",
+  "description": "Cluster-shaped values that every Miles chart accepts under the same paths, so one user-maintained values.yaml drives miles-workbench and miles-run alike. Helm does not resolve cross-file $ref, so each chart inlines these definitions verbatim into its own values.schema.json; tools/kubernetes/generate_chart_schema.py writes all three from the same Python types.",
+  "type": "object",
+  "properties": {
+    "infra": {
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/Image"
+        },
+        "volumes": {
+          "items": {
+            "$ref": "#/definitions/VolumeEntry"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "$ref": "#/definitions/Paths"
+        },
+        "devShm": {
+          "$ref": "#/definitions/DevShm"
+        },
+        "scheduling": {
+          "$ref": "#/definitions/Scheduling"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT",
+                "MILES_CELL_INDEX",
+                "MILES_POD_INDEX",
+                "MILES_BASE_GPU_ID",
+                "MILES_K8S_NAMESPACE",
+                "MILES_K8S_RELEASE"
+              ]
+            },
+            "pattern": "^[ -<>-~]+$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "image",
+        "volumes"
+      ],
+      "type": "object"
+    }
+  },
+  "definitions": {
+    "DevShm": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "hostPath"
+          ]
+        },
+        {
+          "required": [
+            "emptyDir"
+          ]
+        }
+      ],
+      "properties": {
+        "mountPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "hostPath": {
+          "$ref": "#/definitions/HostPathSource"
+        },
+        "emptyDir": {
+          "$ref": "#/definitions/EmptyDirSource"
+        }
+      },
+      "required": [
+        "mountPath"
+      ],
+      "type": "object"
+    },
+    "EmptyDirSource": {
+      "additionalProperties": false,
+      "properties": {
+        "medium": {
+          "enum": [
+            "",
+            "Memory"
+          ],
+          "type": "string"
+        },
+        "sizeLimit": {
+          "pattern": "^[0-9]+(\\.[0-9]+)?([EPTGMk]i?|m)?$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "HostPathSource": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "Directory",
+            "DirectoryOrCreate"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "Image": {
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tag": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ],
+          "type": "string"
+        },
+        "pullSecrets": {
+          "items": {
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "repository",
+        "tag"
+      ],
+      "type": "object"
+    },
+    "Paths": {
+      "additionalProperties": false,
+      "properties": {
+        "runsRoot": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PersistentVolumeClaimSource": {
+      "additionalProperties": false,
+      "properties": {
+        "claimName": {
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claimName"
+      ],
+      "type": "object"
+    },
+    "Scheduling": {
+      "additionalProperties": false,
+      "properties": {
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "tolerations": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "affinity": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "VolumeEntry": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "hostPath"
+          ]
+        },
+        {
+          "required": [
+            "persistentVolumeClaim"
+          ]
+        },
+        {
+          "required": [
+            "emptyDir"
+          ]
+        }
+      ],
+      "properties": {
+        "name": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "hostPath": {
+          "$ref": "#/definitions/HostPathSource"
+        },
+        "persistentVolumeClaim": {
+          "$ref": "#/definitions/PersistentVolumeClaimSource"
+        },
+        "emptyDir": {
+          "$ref": "#/definitions/EmptyDirSource"
+        },
+        "mounts": {
+          "items": {
+            "$ref": "#/definitions/VolumeMount"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "mounts"
+      ],
+      "type": "object"
+    },
+    "VolumeMount": {
+      "additionalProperties": false,
+      "properties": {
+        "mountPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "subPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^([^/].*)?$",
+          "type": "string"
+        },
+        "readOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mountPath"
+      ],
+      "type": "object"
+    }
+  }
+}

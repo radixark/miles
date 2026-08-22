@@ -5,18 +5,23 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from tests.e2e.conftest_dumper import MEGATRON_PATCHER_YAMLS
 from tests.e2e.ft.conftest_ft.modes import DEBUG_ROLLOUT_DATA_HF_REPO, FTTestMode
+from tests.fast.cluster_backends import create_backend_for_run
 
-import miles.utils.external_utils.command_utils as U
+from miles.true_on_policy import build_true_on_policy_launch_plan
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
+from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.common import data_dir, model_dir
 
 _RUN_DIR: Path = Path(tempfile.mkdtemp(prefix="ft_test_dumper_"))
 _MEGATRON_SOURCE_PATCHER_CONFIG_PATH: Path = _RUN_DIR / "megatron_source_patcher.yaml"
 _MEGATRON_PATH: str = os.environ.get("MILES_SCRIPT_MEGATRON_PATH", "/root/Megatron-LM")
-_MODEL_DIR: str = os.environ.get("MILES_SCRIPT_MODEL_DIR", "/root/models")
-_DATA_DIR: str = os.environ.get("MILES_SCRIPT_DATA_DIR", "/root/datasets")
-_DEBUG_ROLLOUT_DATA_DIR: str = f"{_DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
+MODEL_DIR: str = model_dir()
+DATA_DIR: str = data_dir()
+_DEBUG_ROLLOUT_DATA_DIR: str = f"{DATA_DIR}/{DEBUG_ROLLOUT_DATA_HF_REPO.split('/')[-1]}"
 
 
 def materialize_cyclic_debug_rollout_data(count: int) -> str:
@@ -35,11 +40,14 @@ def _get_hf_num_layers(model_path: str) -> int:
         return json.load(f)["num_hidden_layers"]
 
 
-def prepare(mode: FTTestMode) -> None:
-    U.exec_command_cpu(f"mkdir -p {_MODEL_DIR} {_DATA_DIR}")
-    U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {_MODEL_DIR}/{mode.model_name}")
+def prepare(mode: FTTestMode, *, config: command_utils.ExecuteTrainConfig | None = None) -> None:
+    config = _resolve_config(config)
 
-    hf_model_path = f"{_MODEL_DIR}/{mode.model_name}"
+    U = create_backend_for_run(config)
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download {mode.model_hf_repo} --local-dir {MODEL_DIR}/{mode.model_name}")
+
+    hf_model_path = f"{MODEL_DIR}/{mode.model_name}"
     num_layers = _get_hf_num_layers(hf_model_path)
     convert_gpus = min(mode.train_gpus_per_node, num_layers)
 
@@ -49,14 +57,18 @@ def prepare(mode: FTTestMode) -> None:
         num_gpus_per_node=convert_gpus,
         megatron_path=_MEGATRON_PATH,
         hf_checkpoint=hf_model_path,
-        dir_dst=_MODEL_DIR,
+        dir_dst=MODEL_DIR,
     )
     if not mode.has_real_rollout:
-        U.hf_download_dataset(DEBUG_ROLLOUT_DATA_HF_REPO, data_dir=_DATA_DIR)
-    U.hf_download_dataset("zhuzilin/gsm8k", data_dir=_DATA_DIR)
+        U.hf_download_dataset(DEBUG_ROLLOUT_DATA_HF_REPO, data_dir=DATA_DIR)
+    U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
     megatron_yaml: str = MEGATRON_PATCHER_YAMLS["thd"]
     _MEGATRON_SOURCE_PATCHER_CONFIG_PATH.write_text(megatron_yaml)
+
+
+def _resolve_config(config: command_utils.ExecuteTrainConfig | None) -> command_utils.ExecuteTrainConfig:
+    return config or command_utils.default_config()
 
 
 def get_common_train_args(
@@ -66,10 +78,9 @@ def get_common_train_args(
     num_steps: int | None = None,
     enable_dumper: bool = True,
     debug_rollout_data_dir: str | None = None,
+    deterministic_rollout: bool = True,
 ) -> str:
-    ckpt_args = (
-        f"--hf-checkpoint {_MODEL_DIR}/{mode.model_name} " f"--ref-load {_MODEL_DIR}/{mode.model_name}_torch_dist "
-    )
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{mode.model_name} --ref-load {MODEL_DIR}/{mode.model_name}_torch_dist "
 
     optimizer_args = (
         "--optimizer adam "
@@ -86,7 +97,7 @@ def get_common_train_args(
     if not mode.has_real_rollout:
         rollout_dir = debug_rollout_data_dir or _DEBUG_ROLLOUT_DATA_DIR
         rollout_args = (
-            f"--prompt-data {_DATA_DIR}/gsm8k/train.parquet "
+            f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
             f"--load-debug-rollout-data {rollout_dir}/{{rollout_id}}.pt "
             "--debug-train-only "
             "--rollout-batch-size 32 "
@@ -94,7 +105,7 @@ def get_common_train_args(
         )
     else:
         rollout_args = (
-            f"--prompt-data {_DATA_DIR}/gsm8k/train.parquet "
+            f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
             "--input-key messages "
             "--label-key label "
             "--apply-chat-template "
@@ -105,15 +116,11 @@ def get_common_train_args(
             "--rollout-batch-size 32 "
             "--n-samples-per-prompt 8 "
             # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
-            "--sglang-enable-deterministic-inference "
-            "--sglang-attention-backend flashinfer "
-            "--deterministic-mode "
-            f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
+            + (DETERMINISTIC_ROLLOUT_ARGS if deterministic_rollout else "")
+            + f"--save-debug-rollout-data {dump_dir}/rollout_data/{{rollout_id}}.pt "
             f"--rollout-num-gpus {mode.total_rollout_gpus} "
-            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} "
+            f"--rollout-num-gpus-per-engine {mode.rollout_gpus_per_engine} " + ("--colocate " if mode.colocate else "")
         )
-
-    event_logger_args = f"--save-debug-event-data {dump_dir}/events "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -132,7 +139,22 @@ def get_common_train_args(
         f"--num-rollout {num_steps if num_steps is not None else mode.num_steps} "
     )
 
-    dumper_args = ""
+    train_args = (
+        f"{ckpt_args} "
+        f"{optimizer_args} "
+        f"{rollout_args} "
+        f"{get_debug_dump_args(dump_dir=dump_dir, enable_dumper=enable_dumper)} "
+        "--save-inference-engine-weight-checksum "
+        f"{mode.parallel_args} "
+        f"{misc_args} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
+    )
+
+    return train_args
+
+
+def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
+    dumper_args: str = ""
     if enable_dumper:
         dumper_args = (
             f"--dumper-dir {dump_dir}/dumps "
@@ -140,23 +162,69 @@ def get_common_train_args(
             f"--dumper-source-patcher-config-train {_MEGATRON_SOURCE_PATCHER_CONFIG_PATH} "
         )
 
-    train_args = (
-        f"{ckpt_args} "
-        f"{optimizer_args} "
-        f"{rollout_args} "
-        f"{event_logger_args} "
-        f"{mode.parallel_args} "
-        f"{misc_args} "
-        f"{dumper_args} "
-        f"{U.get_default_wandb_args(__file__)} "
-    )
-
-    return train_args
+    return f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} {dumper_args}"
 
 
 def get_ft_args(mode: FTTestMode) -> str:
-    return "--use-fault-tolerance " "--ft-components train " "--control-server-port 0 "
+    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
 
+
+DEFAULT_TRAIN_SCRIPT: str = "train.py"
+FULLY_ASYNC_TRAIN_SCRIPT: str = "train_async.py"
+
+
+def get_train_script(*, fully_async: bool) -> str:
+    return FULLY_ASYNC_TRAIN_SCRIPT if fully_async else DEFAULT_TRAIN_SCRIPT
+
+
+def get_fully_async_args(*, fully_async: bool) -> str:
+    if not fully_async:
+        return ""
+    return "--fully-async --pause-generation-mode in_place "
+
+
+def get_true_on_policy_args(mode: FTTestMode) -> str:
+    assert "--sequence-parallel" not in mode.parallel_args, (
+        f"mode {mode.model_name} enables Megatron sequence parallelism, which the true-on-policy "
+        f"contract disables (parallel_args={mode.parallel_args!r})"
+    )
+
+    context_parallel_size = _get_parallel_size(mode, "--context-parallel-size")
+    plan = build_true_on_policy_launch_plan(
+        SimpleNamespace(
+            true_on_policy=True,
+            model_name=mode.model_name,
+            train_backend="megatron",
+            tensor_model_parallel_size=_get_parallel_size(mode, "--tensor-model-parallel-size"),
+            context_parallel_size=context_parallel_size,
+            pipeline_model_parallel_size=_get_parallel_size(mode, "--pipeline-model-parallel-size"),
+            rollout_num_gpus_per_engine=mode.rollout_gpus_per_engine,
+            true_on_policy_contract=None,
+        )
+    )
+    assert plan.env_vars.items() <= _DETERMINISTIC_ENV_VARS.items(), (
+        f"the true-on-policy launch plan wants env vars {plan.env_vars} that the deterministic "
+        f"recipe {_DETERMINISTIC_ENV_VARS} does not already set"
+    )
+
+    for required in ("--sglang-enable-deterministic-inference", "--deterministic-mode", "--sglang-attention-backend"):
+        assert required in plan.train_args, (
+            f"the true-on-policy launch plan omits {required}, so a caller that dropped the deterministic rollout "
+            f"recipe in favour of this plan would run without it"
+        )
+
+    ulysses_args: str = "--cp-comm-type a2a " if context_parallel_size > 1 else ""
+    return plan.train_args + ulysses_args
+
+
+def _get_parallel_size(mode: FTTestMode, flag: str) -> int:
+    tokens: list[str] = mode.parallel_args.split()
+    return int(tokens[tokens.index(flag) + 1]) if flag in tokens else 1
+
+
+DETERMINISTIC_ROLLOUT_ARGS: str = (
+    "--sglang-enable-deterministic-inference --sglang-attention-backend flashinfer --deterministic-mode "
+)
 
 # Required for reproducibility (ref: https://github.com/THUDM/slime/pull/370)
 _DETERMINISTIC_ENV_VARS: dict[str, str] = {
@@ -168,19 +236,14 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
 }
 
-# Selects v2 RayTrainGroup (miles.ray.train.group). Required because
-# --ft-components train depends on cell-based indep_dp; the v1 default path
-# does not support it.
-_TRAINER_FT_ENV_VARS: dict[str, str] = {
-    "MILES_EXPERIMENTAL_FT_TRAINER": "1",
-}
-
 
 def get_train_env_vars_arg(mode: FTTestMode, *, deterministic: bool) -> str:
     env_vars: dict[str, str] = {}
     if deterministic:
         env_vars.update(_DETERMINISTIC_ENV_VARS)
-    if mode.has_real_rollout:
+    if mode.has_real_rollout and not mode.colocate:
+        # a colocated engine gives its memory back through TorchMemorySaver, which refuses to
+        # run at all under expandable segments, so the two cannot be asked for together
         env_vars["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if not env_vars:
         return ""
@@ -193,12 +256,14 @@ def run_training(
     *,
     dump_dir: str | None = None,
     extra_env_vars: dict[str, str] | None = None,
+    config: command_utils.ExecuteTrainConfig | None = None,
+    train_script: str = DEFAULT_TRAIN_SCRIPT,
 ) -> None:
+    U = _resolve_config(config).create_backend()
     if dump_dir is not None and os.path.exists(dump_dir):
         shutil.rmtree(dump_dir)
     merged_env_vars = {
         **_DETERMINISTIC_ENV_VARS,
-        **_TRAINER_FT_ENV_VARS,
         # Run eager (no torch.compile). A cell respawned after a crash cold-recompiles its first
         # forward; under dynamic batch sizes that is a per-shape Inductor compile that is slow
         # (observed 124s..1510s, growing) and memory-heavy enough to OOM-kill the actor. That
@@ -220,4 +285,5 @@ def run_training(
         megatron_model_type=mode.megatron_model_type,
         extra_env_vars=merged_env_vars,
         megatron_path=_MEGATRON_PATH,
+        train_script=train_script,
     )

@@ -27,11 +27,16 @@ The Dockerfile is the build recipe: it provides the cu13 defaults and emits one 
 | `WHEELS_REPO`                                                                                          | prebuilt-wheels GitHub repo (`yueming-yuan/miles-wheels`)                                                                                                                                                                                                                                                                                           |
 | `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64`                                                                  | the two **complete** wheels release tags selected by `TARGETARCH` and installed **verbatim**. cu13 uses the rolling `cu130-x86_64` / `cu130-aarch64` releases; cu12-x86 overrides `WHEELS_TAG_X86` with the rolling `cu129-x86_64` release                                                                                                                                                                                              |
 | `SGLANG_BRANCH` / `SGLANG_COMMIT`, `MEGATRON_REPO` / `MEGATRON_BRANCH`, `MILES_COMMIT`, `SGL_ROUTER_*` | source pins for the layered repos                                                                                                                                                                                                                                                                                                                   |
+| `TARGETARCH`                                                                                           | set by buildx; also the one argument `docker/install-kube-tools.sh` takes                                                                                                                                                                                                                                                                           |
 
 
-**Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
+**Output** — one `radixark/miles` image for the platform buildx targets: the sglang base, then the Python dependencies declared in `requirements.txt`, Megatron-LM (`radixark/Megatron-LM@miles-main`), miles, and the prebuilt wheels (`sgl-router` among them). It also carries `kubectl`, `helm` and `tmux`, which the k8s-native launch path drives the cluster with. A multi-arch build is one `buildx` run executed once per platform — `TARGETARCH` differs each time, so each arch installs its own wheels — and buildx pushes the two as a single manifest.
 
 `docker/Dockerfile.rocm` is the ROCm counterpart (build-args `GPU_ARCH` + a ROCm `SGLANG_IMAGE_TAG`; the 7.2 variants also set `APPLY_ROCR_VMMFIX=1`, which downloads the ROCr VMM-pause fix `.so` from the `WHEELS_TAG_ROCM` release and installs it — ROCm 7.0 has no such regression and leaves it off).
+
+### `docker/install-kube-tools.sh`
+
+`kubectl` and `helm` are not optional extras of a training image: the workbench installs releases with them and the launcher drives the run with them, so **every** image `docker/build.py` can build must carry them. The pinned versions and their checksum verification therefore live in one script that each training Dockerfile copies and runs, rather than in a `RUN` block per Dockerfile that only one of them ever got. Bumping either client is an edit to `docker/install-kube-tools.sh` alone.
 
 ## Build script
 
@@ -126,7 +131,7 @@ gh workflow run docker-build.yml -f variant=cu13-x86 -f image_tag=custom -f cust
 
 ### Steps (`build-and-push`)
 
-1. checkout → Buildx → install Python + typer → Docker Hub login.
+1. checkout → Buildx → install `uv 0.12.5` through the `setup-uv` v5.4.2 commit → Docker Hub login. Build commands resolve their isolated interpreter environment with `typer 0.27.1`.
 2. **Build + push** via `build.py` — automatic runs build **both** `cu13` and `cu12-x86`; a manual dispatch builds only the one variant you picked.
 3. **schedule only** — point `latest`→`dev` and `latest-cu12`→`dev-cu12`.
 4. **schedule only** — prune each timestamp series to the newest 20.

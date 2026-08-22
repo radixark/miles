@@ -20,13 +20,13 @@ from pathlib import Path
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     megatron_model_type: str = "qwen3-0.6B"
     num_gpus_per_node: int = 2
     megatron_path: str = "/root/Megatron-LM"
@@ -60,6 +60,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def prepare(args: ScriptArgs):
+    U = args.create_backend()
     U.exec_command_cpu(f"hf download Qwen/{args.model_name} --local-dir {args.hf_checkpoint}")
     U.convert_checkpoint(
         model_name=args.model_name,
@@ -72,6 +73,7 @@ def prepare(args: ScriptArgs):
 
 
 def execute(args: ScriptArgs):
+    U = args.create_backend()
     config_path = Path(args.verifiers_config)
     if not config_path.exists():
         config_path.write_text(f'[taskset]\nid = "{args.taskset_id}"\n')
@@ -160,18 +162,17 @@ def execute(args: ScriptArgs):
         train_args=(
             f"{ckpt_args}{rollout_args}{eval_args}{grpo_args}{optimizer_args}{perf_args}{sglang_args}{misc_args}"
         ),
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         megatron_path=args.megatron_path,
         extra_env_vars={
-            "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
+            "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{command_utils.repo_base_dir}",
             "VERIFIERS_CONFIG": str(config_path),
         },
     )
 
 
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def main(args: ScriptArgs):
     if not args.skip_prepare:
         prepare(args)

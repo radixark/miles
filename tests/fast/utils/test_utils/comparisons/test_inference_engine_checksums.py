@@ -5,15 +5,25 @@ from typing import Any
 
 import pytest
 
-from miles.utils.audit_utils.event_logger.logger import EventLogger
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, EventLogger
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.test_utils.comparisons.inference_engine_checksums import compare_inference_engine_checksums
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainerControllerProcessIdentity
+from miles.utils.test_utils.comparisons.inference_engine_checksums import (
+    assert_engine_count,
+    compare_inference_engine_checksums,
+)
 
 
-def _write_inference_engine_events(side_dir: Path, partials: list[dict[str, Any]]) -> None:
+def _write_inference_engine_events(
+    side_dir: Path, partials: list[dict[str, Any]], *, model_id: str | None = None
+) -> None:
     events_dir = side_dir / "events"
-    event_logger = EventLogger(log_dir=events_dir, source=MainProcessIdentity())
+    source = (
+        SimpleProcessIdentity(component="main")
+        if model_id is None
+        else TrainerControllerProcessIdentity(trainer_id=f"{model_id}-actor", model_id=model_id)
+    )
+    event_logger = EventLogger(log_dir=events_dir, source=source, file_name=f"{source.to_name()}.jsonl")
     for partial in partials:
         event_logger.log(InferenceEngineWeightChecksumEvent, partial, print_log=False)
     event_logger.close()
@@ -135,7 +145,7 @@ class TestCompareInferenceEngineChecksums:
             tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])]
         )
 
-        with pytest.raises(AssertionError, match="rollout_id sets differ"):
+        with pytest.raises(AssertionError, match=r"\(model_id, rollout_id\) sets differ"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
 
     def test_empty_baseline_fails(self, tmp_path: Path) -> None:
@@ -147,3 +157,82 @@ class TestCompareInferenceEngineChecksums:
 
         with pytest.raises(AssertionError, match="No InferenceEngineWeightChecksumEvents found in baseline"):
             compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+
+class TestSeveralPolicies:
+    def test_the_same_rollout_id_of_two_policies_is_not_a_duplicate(self, tmp_path: Path) -> None:
+        """Every policy counts its own rollouts, so keying by rollout id alone rejects a legal multi policy run."""
+        for side in ("baseline", "target"):
+            _write_inference_engine_events(
+                tmp_path / side, [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])], model_id="a"
+            )
+            _write_inference_engine_events(
+                tmp_path / side, [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "bbb"}])], model_id="b"
+            )
+
+        compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+    def test_a_policy_whose_weights_differ_is_reported(self, tmp_path: Path) -> None:
+        """Comparing only one of the two policies would hide exactly the drift this comparison exists to catch."""
+        _write_inference_engine_events(
+            tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])], model_id="a"
+        )
+        _write_inference_engine_events(
+            tmp_path / "baseline", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "bbb"}])], model_id="b"
+        )
+        _write_inference_engine_events(
+            tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "aaa"}])], model_id="a"
+        )
+        _write_inference_engine_events(
+            tmp_path / "target", [_partial(rollout_id=1, engine_checksums=[{"rank0/w": "ccc"}])], model_id="b"
+        )
+
+        with pytest.raises(AssertionError, match=r"baseline/b/rollout_1 vs target/b/rollout_1"):
+            compare_inference_engine_checksums(str(tmp_path / "baseline"), str(tmp_path / "target"))
+
+
+class TestAssertEngineCount:
+    def test_a_run_every_update_of_which_covered_both_engines_passes(self, tmp_path: Path) -> None:
+        """The happy path has to stay reachable, or the refusals below prove nothing."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "bbb"}, {"rank0/w": "bbb"}]),
+            ],
+        )
+
+        assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_an_update_that_reached_one_engine_of_two_is_caught(self, tmp_path: Path) -> None:
+        """An engine that dropped out mid-run still leaves a run that trains, so nothing else notices."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "aaa"}]),
+                _partial(rollout_id=1, engine_checksums=[{"rank0/w": "bbb"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"pushed to \[1, 2\] engine"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_a_startup_sync_that_reached_one_engine_of_two_is_caught(self, tmp_path: Path) -> None:
+        """The engines are synced before the first rollout, and one that joined late missed those weights."""
+        _write_inference_engine_events(
+            tmp_path / "target",
+            [
+                _partial(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}]),
+                _partial(rollout_id=0, engine_checksums=[{"rank0/w": "bbb"}, {"rank0/w": "bbb"}]),
+            ],
+        )
+
+        with pytest.raises(AssertionError, match=r"pushed to \[1, 2\] engine"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)
+
+    def test_a_side_that_pushed_weights_to_no_engine_at_all_is_caught(self, tmp_path: Path) -> None:
+        """A side whose engines never registered would otherwise report every count it was asked for."""
+        (tmp_path / "target" / EVENTS_DIRNAME).mkdir(parents=True)
+
+        with pytest.raises(AssertionError, match="no engine ever took weights"):
+            assert_engine_count(side="target", dump_dir=str(tmp_path / "target"), expected=2)

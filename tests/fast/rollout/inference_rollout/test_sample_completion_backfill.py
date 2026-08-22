@@ -221,6 +221,7 @@ class TestSubmissionSchedulers:
         assert scheduler.sample_done_callback is None
         assert scheduler.has_capacity(pending_groups=1, group_budget=2)
         assert not scheduler.has_capacity(pending_groups=2, group_budget=2)
+        assert not scheduler.has_capacity(pending_groups=1, group_budget=2, reserved_groups=1)
 
     def test_backfill_counts_samples(self):
         scheduler = SampleBackfillSubmission(GROUP_SIZE)
@@ -250,6 +251,17 @@ class TestSubmissionSchedulers:
 
         scheduler.has_capacity(pending_groups=1, group_budget=2)
         assert scheduler.samples_in_flight == GROUP_SIZE
+
+    def test_reserved_groups_consume_whole_backfill_slots(self):
+        """A buffered publish consumes one full group while active generation still frees sample-level credits."""
+        scheduler = SampleBackfillSubmission(GROUP_SIZE)
+        scheduler.on_submit([make_group(1)])
+
+        assert not scheduler.has_capacity(pending_groups=1, group_budget=2, reserved_groups=1)
+        for _ in range(GROUP_SIZE):
+            scheduler.sample_done_callback()
+        assert scheduler.has_capacity(pending_groups=1, group_budget=2, reserved_groups=1)
+        assert not scheduler.has_capacity(pending_groups=1, group_budget=1, reserved_groups=1)
 
     @pytest.mark.parametrize("scheduler_cls", [GroupLevelSubmission, lambda: SampleBackfillSubmission(GROUP_SIZE)])
     async def test_wait_for_progress_returns_on_group_completion(self, scheduler_cls):

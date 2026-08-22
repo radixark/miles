@@ -21,15 +21,20 @@ delays (5s / 10s / 20s) without actually waiting.  The trick:
 This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
+import asyncio
 import multiprocessing
 import socket
+import subprocess
+import sys
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.http_utils import wait_for_server_ready
+from miles.utils import http_utils
+from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready, wait_tcp_ready
 
 
 def _find_free_port() -> int:
@@ -101,6 +106,44 @@ class TestWaitForServerReady:
 
         with pytest.raises(RuntimeError, match="process died"):
             wait_for_server_ready("127.0.0.1", port, process=proc, timeout=5)
+
+    def test_raises_when_subprocess_dies(self) -> None:
+        """Subprocess exits before port is ready and raises immediately."""
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "raise SystemExit(2)"])
+        process.wait(timeout=5)
+
+        with pytest.raises(RuntimeError, match="process died"):
+            wait_for_server_ready("127.0.0.1", 0, process=process, timeout=5)
+
+    def test_waits_for_a_live_subprocess_to_open_its_port(self) -> None:
+        """A still-running subprocess counts as alive, so a port opened later is awaited."""
+        port = _find_free_port()
+        stop = threading.Event()
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        listener = threading.Thread(target=_listen_after_delay, args=("127.0.0.1", port, 1.0, stop))
+        listener.daemon = True
+        listener.start()
+
+        try:
+            wait_for_server_ready("127.0.0.1", port, process=process, timeout=10)
+            assert process.poll() is None
+        finally:
+            stop.set()
+            process.kill()
+            process.wait(timeout=5)
+
+    def test_raises_when_subprocess_exits_while_waiting_for_port(self) -> None:
+        """A subprocess alive at the first poll but exiting later fails as a dead process."""
+        port = _find_free_port()
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
+
+        try:
+            assert process.poll() is None
+            with pytest.raises(RuntimeError, match="process died"):
+                wait_for_server_ready("127.0.0.1", port, process=process, timeout=30)
+        finally:
+            process.kill()
+            process.wait(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -194,3 +237,175 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class _FakeWriter:
+    """Minimal stand-in for the writer half of an opened connection."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        pass
+
+
+class TestWaitTcpReady:
+    async def test_keeps_retrying_until_the_port_accepts(self, monkeypatch):
+        """Readiness depends on the endpoint alone, retrying while it refuses connections."""
+        attempts: list[tuple[str, int]] = []
+        writer = _FakeWriter()
+
+        async def fake_open_connection(host, port):
+            attempts.append((host, port))
+            if len(attempts) < 3:
+                raise OSError("Connection refused")
+            return object(), writer
+
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        await wait_tcp_ready("[2001:db8::7]", 23456, timeout=30)
+
+        assert attempts == [("2001:db8::7", 23456)] * 3
+        assert writer.closed
+
+    async def test_gives_up_when_the_deadline_passes(self, monkeypatch):
+        """A port that never opens fails with a timeout instead of blocking forever."""
+
+        async def fake_open_connection(host, port):
+            raise OSError("Connection refused")
+
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 0.05s"):
+            await wait_tcp_ready("127.0.0.1", 23456, timeout=0.05)
+
+    async def test_a_connection_that_never_answers_is_one_refused_attempt(self, monkeypatch):
+        """A syn that hangs must not hold the whole budget; each attempt has its own small timeout."""
+        attempts: list[tuple[str, int]] = []
+
+        async def fake_open_connection(host, port):
+            attempts.append((host, port))
+            await asyncio.sleep(10)
+
+        monkeypatch.setattr(http_utils, "_CONNECT_ATTEMPT_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(http_utils, "_CONNECT_RETRY_INTERVAL_SECONDS", 0)
+        monkeypatch.setattr(http_utils.asyncio, "open_connection", fake_open_connection)
+
+        with pytest.raises(RuntimeError, match="not ready"):
+            await wait_tcp_ready("127.0.0.1", 23456, timeout=0.05)
+
+        assert len(attempts) > 1
+
+
+class TestGeneralHttpClientProvider:
+    """The provider hands out one httpx client per event loop."""
+
+    async def test_the_same_loop_gets_the_same_client(self):
+        """Two calls on one loop must share one connection pool."""
+        assert GeneralHttpClientProvider.client() is GeneralHttpClientProvider.client()
+
+    async def test_a_different_loop_gets_a_different_client(self):
+        """A client's connections belong to the loop that opened them; reusing it elsewhere fails."""
+        mine = GeneralHttpClientProvider.client()
+        others: list[object] = []
+
+        async def _on_the_other_loop():
+            return GeneralHttpClientProvider.client()
+
+        thread = threading.Thread(target=lambda: others.append(asyncio.run(_on_the_other_loop())))
+        thread.start()
+        thread.join(timeout=10)
+
+        assert others and others[0] is not mine
+
+    def test_calling_it_off_loop_fails_loudly(self):
+        """Building the client outside a loop would bind it to whichever loop ran next."""
+        with pytest.raises(RuntimeError):
+            GeneralHttpClientProvider.client()
+
+    async def test_the_client_has_no_read_timeout_but_a_short_connect_timeout(self):
+        """A weight-update request blocks until the collective forms; an unreachable host must not."""
+        timeout = GeneralHttpClientProvider.client().timeout
+
+        assert timeout.read is None
+        assert timeout.write is None
+        assert timeout.pool is None
+        assert timeout.connect == 10.0
+
+    async def test_the_pool_is_configured_without_a_connection_cap(self):
+        """A capped pool queues the last requests behind the collective waiting for them."""
+        assert GeneralHttpClientProvider._LIMITS.max_connections is None
+        assert GeneralHttpClientProvider._LIMITS.max_keepalive_connections is None
+
+    async def test_more_requests_than_httpxs_default_cap_reach_the_server_at_once(self):
+        """101 engines must all arrive before the caller joins the collective, and httpx caps
+        connections at 100 by default."""
+        num_requests = 101
+        arrived = _ArrivalGate()
+        server = _BlockingHttpServer(arrived)
+
+        try:
+            client = GeneralHttpClientProvider.client()
+            requests = [asyncio.create_task(client.get(server.url)) for _ in range(num_requests)]
+
+            deadline = time.monotonic() + 60
+            while arrived.count < num_requests:
+                assert time.monotonic() < deadline, (
+                    f"only {arrived.count}/{num_requests} requests reached the server; the rest are "
+                    "queued behind the connection cap"
+                )
+                await asyncio.sleep(0.01)
+
+            arrived.release()
+            assert [response.status_code for response in await asyncio.gather(*requests)] == [200] * num_requests
+        finally:
+            arrived.release()
+            server.close()
+
+
+class _ArrivalGate:
+    def __init__(self):
+        self.count = 0
+        self._lock = threading.Lock()
+        self._released = threading.Event()
+
+    def wait_for_release(self) -> None:
+        with self._lock:
+            self.count += 1
+        self._released.wait(timeout=60)
+
+    def release(self) -> None:
+        self._released.set()
+
+
+class _BlockingHttpServer:
+    def __init__(self, gate: _ArrivalGate):
+        handler = self._make_handler(gate)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/health_generate"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+    @staticmethod
+    def _make_handler(gate: _ArrivalGate):
+        class _Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                gate.wait_for_release()
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        return _Handler

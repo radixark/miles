@@ -93,3 +93,17 @@ class TestDiscovery:
 
         assert discovered == recorded
         assert len(discovered) > 30
+
+    def test_a_shell_script_outside_the_snapshots_only_delegates(self):
+        """Shell launchers stay Ray only, so the snapshots are their whole protection against drift."""
+        recorded = {path.stem for path in _SNAPSHOT_DIR.rglob("*.txt")}
+        undiscovered = [
+            path
+            for path in (REPO_ROOT / "scripts").rglob("*.sh")
+            if path.name not in recorded and "ray job submit" not in path.read_text(errors="replace")
+        ]
+
+        for path in undiscovered:
+            text = path.read_text(errors="replace")
+            delegates_to = [line for line in text.splitlines() if ".py" in line and "python" in line]
+            assert delegates_to, f"{path.name} launches training without a snapshot covering it"

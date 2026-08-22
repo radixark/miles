@@ -1,0 +1,1643 @@
+---
+# Source: miles-run/templates/colocate-pairing.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "myrun-miles-run-colocate-pairing"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "colocate-pairing"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+---
+# Source: miles-run/templates/orchestrator-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "myrun-miles-run-orchestrator"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+---
+# Source: miles-run/templates/platform-reader-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "myrun-miles-run-platform-reader"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-reader"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+---
+# Source: miles-run/templates/uninstall-manifest.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "myrun-miles-run-uninstall-manifest"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "uninstall"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+data:
+  uninstall-job.yaml: |
+    apiVersion: batch/v1
+    kind: Job
+    metadata:
+      name: "myrun-miles-run-uninstall"
+      namespace: "myns"
+      labels:
+        miles.radixark.io/uninstall-of: "myrun"
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 3600
+      activeDeadlineSeconds: 1020
+      template:
+        metadata:
+          labels:
+            miles.radixark.io/uninstall-of: "myrun"
+        spec:
+          enableServiceLinks: false
+          imagePullSecrets:
+            - name: "myregistry-pull-secret"
+          nodeSelector:
+            nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+          tolerations:
+            - effect: NoSchedule
+              key: nvidia.com/gpu
+              operator: Exists
+          serviceAccountName: "miles-uninstaller"
+          restartPolicy: Never
+          containers:
+            - name: uninstall
+              image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+              imagePullPolicy: "IfNotPresent"
+              command:
+                - sh
+                - -c
+                - "sleep 120 && helm uninstall myrun --namespace myns --ignore-not-found"
+
+---
+# Source: miles-run/templates/colocate-pairing.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "myrun-miles-run-colocate-pairing"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "colocate-pairing"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+---
+# Source: miles-run/templates/orchestrator-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "myrun-miles-run-orchestrator"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create"]
+---
+# Source: miles-run/templates/platform-reader-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "myrun-miles-run-platform-reader"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-reader"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: miles-run/templates/colocate-pairing.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "myrun-miles-run-colocate-pairing"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "colocate-pairing"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "myrun-miles-run-colocate-pairing"
+subjects:
+  - kind: ServiceAccount
+    name: "myrun-miles-run-colocate-pairing"
+    namespace: "myns"
+---
+# Source: miles-run/templates/orchestrator-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "myrun-miles-run-orchestrator"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "myrun-miles-run-orchestrator"
+subjects:
+  - kind: ServiceAccount
+    name: "myrun-miles-run-orchestrator"
+    namespace: "myns"
+
+---
+# Source: miles-run/templates/platform-reader-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "myrun-miles-run-platform-reader"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-reader"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "myrun-miles-run-platform-reader"
+subjects:
+  - kind: ServiceAccount
+    name: "myrun-miles-run-platform-reader"
+    namespace: "myns"
+
+---
+# Source: miles-run/templates/orchestrator.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "myrun-miles-run-orchestrator"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "orchestrator"
+  ports:
+    - name: placeholder
+      port: 1
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "myrun-miles-run-rollout-executor"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "rollout-executor"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "rollout-executor"
+  ports:
+    - name: "rpc"
+      port: 8000
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "myrun-miles-run-inference-controller"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-controller"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-controller"
+  ports:
+    - name: "rpc"
+      port: 8000
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "myrun-miles-run-inference-router-0"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-router-0"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-router-0"
+  ports:
+    - name: "primary"
+      port: 8000
+    - name: "prometheus"
+      port: 9000
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "myrun-miles-run-session-server"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "session-server"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "session-server"
+  ports:
+    - name: "primary"
+      port: 8000
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: "myrun-miles-run-trainer-controller-actor"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "trainer-controller-actor"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "trainer-controller-actor"
+  ports:
+    - name: "rpc"
+      port: 8000
+---
+# Source: miles-run/templates/colocate-pairing.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "myrun-miles-run-colocate-pairing"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "colocate-pairing"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "colocate-pairing"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "colocate-pairing"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+    spec:
+      serviceAccountName: "myrun-miles-run-colocate-pairing"
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      containers:
+        - name: pairing
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+          command:
+            - python
+            - -m
+            - miles.utils.external_utils.colocate_pairing
+            - --config
+            - "{\"inference_pools\":[{\"layout\":{\"gpu_offset\":0,\"num_gpus_per_inference_pod\":8,\"num_gpus_per_node\":8,\"num_inference_cells\":1,\"num_pods_per_inference_cell\":2,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-0\"},{\"layout\":{\"gpu_offset\":16,\"num_gpus_per_inference_pod\":8,\"num_gpus_per_node\":8,\"num_inference_cells\":2,\"num_pods_per_inference_cell\":1,\"num_pods_per_trainer_cell\":4,\"num_trainer_cells\":1},\"pool_id\":\"inference-engine-all-0-1\"}],\"namespace\":\"rl\",\"release\":\"myrun\",\"trainer_pool_id\":\"trainer-engine-actor\"}"
+          env:
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+
+---
+# Source: miles-run/templates/orchestrator.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "myrun-miles-run-orchestrator"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  serviceName: "myrun-miles-run-orchestrator"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "orchestrator"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "orchestrator"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      serviceAccountName: "myrun-miles-run-orchestrator"
+      restartPolicy: Always
+      containers:
+        - name: orchestrator
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+            - name: uninstall-manifest
+              mountPath: "/etc/miles-uninstall"
+              readOnly: true
+          command:
+            - python
+            - -m
+            - miles.utils.external_utils.command_utils.helm_backend.orchestrator.wrapper
+            - --state-file
+            - "/cluster-storage/myteam/miles_data/miles-runs/260101-000000-000/state/orchestrator-260101-000000-000001.state"
+            - --uninstall-manifest
+            - "/etc/miles-uninstall/uninstall-job.yaml"
+            - --
+            - "python"
+            - "scripts/run_qwen3_4b.py"
+            - "train"
+            - "--cluster-backend"
+            - "kubernetes"
+          env:
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          resources:
+            limits: {}
+            requests:
+              cpu: "2"
+              memory: 8Gi
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+        - name: uninstall-manifest
+          configMap:
+            name: "myrun-miles-run-uninstall-manifest"
+
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "myrun-miles-run-rollout-executor"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "rollout-executor"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  serviceName: "myrun-miles-run-rollout-executor"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "rollout-executor"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "rollout-executor"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+        miles.radixark.io/pool: "rollout-executor"
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      restartPolicy: Always
+      containers:
+        - name: worker
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+          workingDir: /root/miles
+          command:
+            - "<PYTHON>"
+            - "-m"
+            - "miles.utils.workers.serving.serve"
+            - "--specs"
+            - "miles.ray.specs.entrypoint.compute_specs_from_argv"
+            - "--pool-id"
+            - "rollout-executor"
+            - "--"
+            - "--cluster-backend"
+            - "kubernetes"
+            - "--rollout-num-gpus"
+            - "32"
+          env:
+            - name: MILES_CELL_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          ports:
+            - name: "rpc"
+              containerPort: 8000
+          resources:
+            {}
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "myrun-miles-run-inference-controller"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-controller"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  serviceName: "myrun-miles-run-inference-controller"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "inference-controller"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "inference-controller"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+        miles.radixark.io/pool: "inference-controller"
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      serviceAccountName: "myrun-miles-run-platform-reader"
+      restartPolicy: Always
+      containers:
+        - name: worker
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+          workingDir: /root/miles
+          command:
+            - "<PYTHON>"
+            - "-m"
+            - "miles.utils.workers.serving.serve"
+            - "--specs"
+            - "miles.ray.specs.entrypoint.compute_specs_from_argv"
+            - "--pool-id"
+            - "inference-controller"
+            - "--"
+            - "--cluster-backend"
+            - "kubernetes"
+            - "--rollout-num-gpus"
+            - "32"
+          env:
+            - name: MILES_CELL_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          ports:
+            - name: "rpc"
+              containerPort: 8000
+          resources:
+            {}
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "myrun-miles-run-inference-router-0"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-router-0"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  serviceName: "myrun-miles-run-inference-router-0"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "inference-router-0"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "inference-router-0"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+        miles.radixark.io/pool: "inference-router-0"
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      restartPolicy: Always
+      containers:
+        - name: worker
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+          workingDir: /root/miles
+          command:
+            - "<PYTHON>"
+            - "-m"
+            - "sglang_router.launch_router"
+            - "--policy"
+            - "manual"
+            - "--assignment-mode"
+            - "min_load"
+            - "--pd-disaggregation"
+            - "--log-level"
+            - "warn"
+            - "--prometheus-port"
+            - "9000"
+            - "--request-timeout-secs"
+            - "14400"
+            - "--port"
+            - "8000"
+          env:
+            - name: MILES_CELL_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          ports:
+            - name: "primary"
+              containerPort: 8000
+            - name: "prometheus"
+              containerPort: 9000
+          resources:
+            {}
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "myrun-miles-run-session-server"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "session-server"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  serviceName: "myrun-miles-run-session-server"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "session-server"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "session-server"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+        miles.radixark.io/pool: "session-server"
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      restartPolicy: Always
+      containers:
+        - name: worker
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+          workingDir: /root/miles
+          command:
+            - "<PYTHON>"
+            - "-m"
+            - "miles.rollout.session.server"
+            - "--config-json"
+            - "{\"host\":\"0.0.0.0\",\"port\":8000,\"instance_id\":\"0123456789abcdef-0\",\"backend_url\":\"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000\",\"timeout\":null,\"hf_checkpoint\":\"<FIXTURE_DIR>/typical-model\",\"chat_template_path\":null,\"tito_model\":\"default\",\"apply_chat_template_kwargs\":{},\"use_rollout_routing_replay\":false,\"use_rollout_indexer_replay\":false,\"sglang_speculative_algorithm\":null,\"num_layers\":36,\"moe_router_topk\":2,\"save_debug_trajectory_data\":null,\"lora_rank\":0,\"lora_adapter_path\":null,\"use_session_server\":true,\"session_message_matcher\":\"strict\",\"pause_generation_mode\":\"retract\",\"session_sample_picker_path\":\"miles.rollout.session.v2.picker_hub.drop_retries\",\"session_sample_postprocessor_path\":\"miles.rollout.session.v2.postprocessor_hub.default_postprocess\"}"
+          env:
+            - name: MILES_CELL_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          ports:
+            - name: "primary"
+              containerPort: 8000
+          resources:
+            {}
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+---
+# Source: miles-run/templates/static-workers.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "myrun-miles-run-trainer-controller-actor"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "trainer-controller-actor"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  serviceName: "myrun-miles-run-trainer-controller-actor"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "miles-run"
+      app.kubernetes.io/instance: "myrun"
+      app.kubernetes.io/component: "trainer-controller-actor"
+  template:
+    metadata:
+      labels:
+        helm.sh/chart: "miles-run-0.1.0"
+        app.kubernetes.io/name: "miles-run"
+        app.kubernetes.io/instance: "myrun"
+        app.kubernetes.io/component: "trainer-controller-actor"
+        app.kubernetes.io/version: "0.1.0"
+        app.kubernetes.io/managed-by: "Helm"
+        miles.radixark.io/pool: "trainer-controller-actor"
+    spec:
+      enableServiceLinks: false
+      imagePullSecrets:
+        - name: "myregistry-pull-secret"
+      nodeSelector:
+        nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+      tolerations:
+        - effect: NoSchedule
+          key: nvidia.com/gpu
+          operator: Exists
+      serviceAccountName: "myrun-miles-run-orchestrator"
+      restartPolicy: Always
+      containers:
+        - name: worker
+          image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: "cluster-storage"
+              mountPath: "/cluster-storage"
+            - name: "cluster-storage"
+              mountPath: "/root/miles"
+              subPath: "myuser/miles"
+            - name: "cluster-storage"
+              mountPath: "/root/Megatron-LM"
+              subPath: "myuser/Megatron-LM"
+            - name: "models"
+              mountPath: "/models"
+              readOnly: true
+            - name: "scratch"
+              mountPath: "/scratch"
+          workingDir: /root/miles
+          command:
+            - "<PYTHON>"
+            - "-m"
+            - "miles.utils.workers.serving.serve"
+            - "--specs"
+            - "miles.ray.specs.entrypoint.compute_specs_from_argv"
+            - "--pool-id"
+            - "trainer-controller-actor"
+            - "--"
+            - "--cluster-backend"
+            - "kubernetes"
+            - "--rollout-num-gpus"
+            - "32"
+          env:
+            - name: MILES_CELL_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+              value: "1"
+            - name: "HF_ENDPOINT"
+              value: "https://hf-mirror.example"
+            - name: "MILES_K8S_NAMESPACE"
+              value: "myns"
+            - name: "MILES_K8S_RELEASE"
+              value: "myrun"
+            - name: "NCCL_IB_HCA"
+              value: "mlx5_0,mlx5_1"
+            - name: "NCCL_SOCKET_IFNAME"
+              value: "bond0"
+            - name: "PYTHONUNBUFFERED"
+              value: "1"
+          ports:
+            - name: "rpc"
+              containerPort: 8000
+          resources:
+            {}
+      volumes:
+        - name: "cluster-storage"
+          persistentVolumeClaim:
+            claimName: miles-shared-nvme
+        - name: "models"
+          hostPath:
+            path: "/gpfs/models"
+            type: "Directory"
+        - name: "scratch"
+          hostPath:
+            path: "/mnt/local-nvme/miles-staging"
+            type: "DirectoryOrCreate"
+
+---
+# Source: miles-run/templates/inference-engines.yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: "myrun-miles-run-inference-engine-all-0-0"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-engine-all-0-0"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  startupPolicy: LeaderCreated
+  leaderWorkerTemplate:
+    size: 2
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          helm.sh/chart: "miles-run-0.1.0"
+          app.kubernetes.io/name: "miles-run"
+          app.kubernetes.io/instance: "myrun"
+          app.kubernetes.io/component: "inference-engine-all-0-0"
+          app.kubernetes.io/version: "0.1.0"
+          app.kubernetes.io/managed-by: "Helm"
+          miles.radixark.io/pool: "inference-engine-all-0-0"
+        annotations:
+          miles.radixark.io/meta-gpu_ids: "0,1,2,3,4,5,6,7"
+      spec:
+        enableServiceLinks: false
+        imagePullSecrets:
+          - name: "myregistry-pull-secret"
+        nodeSelector:
+          nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+        tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+        hostIPC: true
+        schedulingGates:
+          - name: "miles.radixark.io/colocate-pairing"
+        containers:
+          - name: "engine"
+            image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+            imagePullPolicy: "IfNotPresent"
+            volumeMounts:
+              - name: "cluster-storage"
+                mountPath: "/cluster-storage"
+              - name: "cluster-storage"
+                mountPath: "/root/miles"
+                subPath: "myuser/miles"
+              - name: "cluster-storage"
+                mountPath: "/root/Megatron-LM"
+                subPath: "myuser/Megatron-LM"
+              - name: "models"
+                mountPath: "/models"
+                readOnly: true
+              - name: "scratch"
+                mountPath: "/scratch"
+              - name: dev-shm
+                mountPath: "/dev/shm"
+            command:
+              - "<PYTHON>"
+              - "-m"
+              - "sglang.launch_server"
+              - "--trust-remote-code"
+              - "--model-path"
+              - "<FIXTURE_DIR>/typical-model"
+              - "--host"
+              - "0.0.0.0"
+              - "--port"
+              - "8000"
+              - "--device"
+              - "cuda"
+              - "--enable-memory-saver"
+              - "--nccl-port"
+              - "10000"
+              - "--nnodes"
+              - "2"
+              - "--node-rank"
+              - "$(LWS_WORKER_INDEX)"
+              - "--dist-init-addr"
+              - "$(LWS_LEADER_ADDRESS):9000"
+              - "--gated-launch-port"
+              - "13000"
+              - "--tp-size"
+              - "16"
+              - "--skip-server-warmup"
+              - "--enable-draft-weights-cpu-backup"
+              - "--enable-metrics"
+              - "--disaggregation-mode"
+              - "prefill"
+              - "--load-balance-method"
+              - "round_robin"
+              - "--disaggregation-bootstrap-port"
+              - "11000"
+              - "--engine-info-bootstrap-port"
+              - "12000"
+              - "--mem-fraction-static"
+              - "0.7"
+              - "--chunked-prefill-size"
+              - "4096"
+              - "--cuda-graph-backend-prefill"
+              - "disabled"
+              - "--lora-use-virtual-experts"
+            env:
+              - name: MILES_CELL_INDEX
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/group-index']
+              - name: MILES_POD_INDEX
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MILES_BASE_GPU_ID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['miles.radixark.io/base-gpu-id']
+              - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+                value: "1"
+              - name: "HF_ENDPOINT"
+                value: "https://hf-mirror.example"
+              - name: "MILES_K8S_NAMESPACE"
+                value: "myns"
+              - name: "MILES_K8S_RELEASE"
+                value: "myrun"
+              - name: "NCCL_IB_HCA"
+                value: "mlx5_0,mlx5_1"
+              - name: "NCCL_SOCKET_IFNAME"
+                value: "bond0"
+              - name: "NVIDIA_VISIBLE_DEVICES"
+                value: "all"
+              - name: "NVSHMEM_DISABLE_NCCL"
+                value: "1"
+              - name: "PYTHONUNBUFFERED"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_HABANA_VISIBLE_MODULES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_NEURON_RT_VISIBLE_CORES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_ONEAPI_DEVICE_SELECTOR"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS"
+                value: "1"
+              - name: "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT"
+                value: "true"
+              - name: "SGLANG_DG_CACHE_DIR_PER_PROCESS"
+                value: "1"
+              - name: "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"
+                value: "false"
+              - name: "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE"
+                value: "false"
+              - name: "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK"
+                value: "false"
+              - name: "SGLANG_EXPOSE_OWN_ENV_VARS"
+                value: "1"
+              - name: "SGLANG_JIT_DEEPGEMM_PRECOMPILE"
+                value: "false"
+              - name: "SGLANG_MEMORY_SAVER_CUDA_GRAPH"
+                value: "true"
+              - name: "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
+                value: "0"
+            ports:
+              - name: "primary"
+                containerPort: 8000
+              - name: "dist-init"
+                containerPort: 9000
+              - name: "nccl"
+                containerPort: 10000
+              - name: "disaggregation-"
+                containerPort: 11000
+              - name: "engine-info-boo"
+                containerPort: 12000
+              - name: "gate"
+                containerPort: 13000
+            resources:
+              limits:
+                nvidia.com/gpu: 0
+        volumes:
+          - name: "cluster-storage"
+            persistentVolumeClaim:
+              claimName: miles-shared-nvme
+          - name: "models"
+            hostPath:
+              path: "/gpfs/models"
+              type: "Directory"
+          - name: "scratch"
+            hostPath:
+              path: "/mnt/local-nvme/miles-staging"
+              type: "DirectoryOrCreate"
+          - name: dev-shm
+            hostPath:
+              path: "/dev/shm"
+              type: "Directory"
+---
+# Source: miles-run/templates/inference-engines.yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: "myrun-miles-run-inference-engine-all-0-1"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "inference-engine-all-0-1"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 2
+  startupPolicy: LeaderCreated
+  leaderWorkerTemplate:
+    size: 1
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          helm.sh/chart: "miles-run-0.1.0"
+          app.kubernetes.io/name: "miles-run"
+          app.kubernetes.io/instance: "myrun"
+          app.kubernetes.io/component: "inference-engine-all-0-1"
+          app.kubernetes.io/version: "0.1.0"
+          app.kubernetes.io/managed-by: "Helm"
+          miles.radixark.io/pool: "inference-engine-all-0-1"
+        annotations:
+          miles.radixark.io/meta-gpu_ids: "0,1,2,3,4,5,6,7"
+      spec:
+        enableServiceLinks: false
+        imagePullSecrets:
+          - name: "myregistry-pull-secret"
+        nodeSelector:
+          nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+        tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+        hostIPC: true
+        schedulingGates:
+          - name: "miles.radixark.io/colocate-pairing"
+        containers:
+          - name: "engine"
+            image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+            imagePullPolicy: "IfNotPresent"
+            volumeMounts:
+              - name: "cluster-storage"
+                mountPath: "/cluster-storage"
+              - name: "cluster-storage"
+                mountPath: "/root/miles"
+                subPath: "myuser/miles"
+              - name: "cluster-storage"
+                mountPath: "/root/Megatron-LM"
+                subPath: "myuser/Megatron-LM"
+              - name: "models"
+                mountPath: "/models"
+                readOnly: true
+              - name: "scratch"
+                mountPath: "/scratch"
+              - name: dev-shm
+                mountPath: "/dev/shm"
+            command:
+              - "<PYTHON>"
+              - "-m"
+              - "sglang.launch_server"
+              - "--trust-remote-code"
+              - "--model-path"
+              - "<FIXTURE_DIR>/typical-model"
+              - "--host"
+              - "0.0.0.0"
+              - "--port"
+              - "8000"
+              - "--device"
+              - "cuda"
+              - "--enable-memory-saver"
+              - "--nccl-port"
+              - "10000"
+              - "--node-rank"
+              - "$(LWS_WORKER_INDEX)"
+              - "--dist-init-addr"
+              - "$(LWS_LEADER_ADDRESS):9000"
+              - "--gated-launch-port"
+              - "13000"
+              - "--tp-size"
+              - "8"
+              - "--skip-server-warmup"
+              - "--enable-draft-weights-cpu-backup"
+              - "--enable-metrics"
+              - "--disaggregation-mode"
+              - "decode"
+              - "--engine-info-bootstrap-port"
+              - "12000"
+              - "--mem-fraction-static"
+              - "0.7"
+              - "--chunked-prefill-size"
+              - "4096"
+              - "--cuda-graph-backend-prefill"
+              - "disabled"
+              - "--lora-use-virtual-experts"
+            env:
+              - name: MILES_CELL_INDEX
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/group-index']
+              - name: MILES_POD_INDEX
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: MILES_BASE_GPU_ID
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.annotations['miles.radixark.io/base-gpu-id']
+              - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+                value: "1"
+              - name: "HF_ENDPOINT"
+                value: "https://hf-mirror.example"
+              - name: "MILES_K8S_NAMESPACE"
+                value: "myns"
+              - name: "MILES_K8S_RELEASE"
+                value: "myrun"
+              - name: "NCCL_IB_HCA"
+                value: "mlx5_0,mlx5_1"
+              - name: "NCCL_SOCKET_IFNAME"
+                value: "bond0"
+              - name: "NVIDIA_VISIBLE_DEVICES"
+                value: "all"
+              - name: "NVSHMEM_DISABLE_NCCL"
+                value: "1"
+              - name: "PYTHONUNBUFFERED"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_ASCEND_RT_VISIBLE_DEVICES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_CUDA_VISIBLE_DEVICES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_HABANA_VISIBLE_MODULES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_HIP_VISIBLE_DEVICES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_NEURON_RT_VISIBLE_CORES"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_ONEAPI_DEVICE_SELECTOR"
+                value: "1"
+              - name: "RAY_EXPERIMENTAL_NOSET_TPU_VISIBLE_CHIPS"
+                value: "1"
+              - name: "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT"
+                value: "true"
+              - name: "SGLANG_DG_CACHE_DIR_PER_PROCESS"
+                value: "1"
+              - name: "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION"
+                value: "false"
+              - name: "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE"
+                value: "false"
+              - name: "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK"
+                value: "false"
+              - name: "SGLANG_EXPOSE_OWN_ENV_VARS"
+                value: "1"
+              - name: "SGLANG_JIT_DEEPGEMM_PRECOMPILE"
+                value: "false"
+              - name: "SGLANG_MEMORY_SAVER_CUDA_GRAPH"
+                value: "true"
+              - name: "SGLANG_OPT_USE_CUSTOM_ALL_REDUCE_V2"
+                value: "0"
+            ports:
+              - name: "primary"
+                containerPort: 8000
+              - name: "dist-init"
+                containerPort: 9000
+              - name: "nccl"
+                containerPort: 10000
+              - name: "engine-info-boo"
+                containerPort: 12000
+              - name: "gate"
+                containerPort: 13000
+            resources:
+              limits:
+                nvidia.com/gpu: 0
+        volumes:
+          - name: "cluster-storage"
+            persistentVolumeClaim:
+              claimName: miles-shared-nvme
+          - name: "models"
+            hostPath:
+              path: "/gpfs/models"
+              type: "Directory"
+          - name: "scratch"
+            hostPath:
+              path: "/mnt/local-nvme/miles-staging"
+              type: "DirectoryOrCreate"
+          - name: dev-shm
+            hostPath:
+              path: "/dev/shm"
+              type: "Directory"
+
+---
+# Source: miles-run/templates/trainer-engines.yaml
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: "myrun-miles-run-trainer-engine-actor"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "trainer-engine-actor"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+spec:
+  replicas: 1
+  startupPolicy: LeaderCreated
+  leaderWorkerTemplate:
+    size: 4
+    restartPolicy: RecreateGroupOnPodRestart
+    workerTemplate:
+      metadata:
+        labels:
+          helm.sh/chart: "miles-run-0.1.0"
+          app.kubernetes.io/name: "miles-run"
+          app.kubernetes.io/instance: "myrun"
+          app.kubernetes.io/component: "trainer-engine-actor"
+          app.kubernetes.io/version: "0.1.0"
+          app.kubernetes.io/managed-by: "Helm"
+          miles.radixark.io/pool: "trainer-engine-actor"
+        annotations:
+          miles.radixark.io/meta-gpu_ids: "0,1,2,3,4,5,6,7"
+      spec:
+        enableServiceLinks: false
+        imagePullSecrets:
+          - name: "myregistry-pull-secret"
+        nodeSelector:
+          nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+        tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+        hostIPC: true
+        containers:
+          - name: "trainer"
+            image: "myregistry.example/myteam/miles:v0.9.3-cu128"
+            imagePullPolicy: "IfNotPresent"
+            volumeMounts:
+              - name: "cluster-storage"
+                mountPath: "/cluster-storage"
+              - name: "cluster-storage"
+                mountPath: "/root/miles"
+                subPath: "myuser/miles"
+              - name: "cluster-storage"
+                mountPath: "/root/Megatron-LM"
+                subPath: "myuser/Megatron-LM"
+              - name: "models"
+                mountPath: "/models"
+                readOnly: true
+              - name: "scratch"
+                mountPath: "/scratch"
+              - name: dev-shm
+                mountPath: "/dev/shm"
+            command:
+              - "bash"
+              - "-c"
+              - "mkdir -p /scratch/Qwen3-4B && rsync -a --info=progress2 /cluster-storage/models/Qwen3-4B/ /scratch/Qwen3-4B && exec <PYTHON> -m miles.utils.workers.process_supervisor --num-subprocesses 8 -- <PYTHON> -m miles.utils.workers.serving.serve --specs miles.ray.specs.entrypoint.compute_specs_from_argv --pool-id trainer-engine-actor -- --cluster-backend kubernetes --rollout-num-gpus 32"
+            env:
+              - name: MILES_CELL_INDEX
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/group-index']
+              - name: MILES_POD_INDEX
+                valueFrom:
+                  fieldRef:
+                    fieldPath: metadata.labels['leaderworkerset.sigs.k8s.io/worker-index']
+              - name: "CUDA_DEVICE_MAX_CONNECTIONS"
+                value: "1"
+              - name: "HF_ENDPOINT"
+                value: "https://hf-mirror.example"
+              - name: "MILES_K8S_NAMESPACE"
+                value: "myns"
+              - name: "MILES_K8S_RELEASE"
+                value: "myrun"
+              - name: "NCCL_IB_HCA"
+                value: "mlx5_0,mlx5_1"
+              - name: "NCCL_SOCKET_IFNAME"
+                value: "bond0"
+              - name: "PYTHONUNBUFFERED"
+                value: "1"
+            ports:
+              - name: "master"
+                containerPort: 9000
+              - name: "rpc"
+                containerPort: 8000
+            resources:
+              limits:
+                nvidia.com/gpu: 8
+        volumes:
+          - name: "cluster-storage"
+            persistentVolumeClaim:
+              claimName: miles-shared-nvme
+          - name: "models"
+            hostPath:
+              path: "/gpfs/models"
+              type: "Directory"
+          - name: "scratch"
+            hostPath:
+              path: "/mnt/local-nvme/miles-staging"
+              type: "DirectoryOrCreate"
+          - name: dev-shm
+            hostPath:
+              path: "/dev/shm"
+              type: "Directory"

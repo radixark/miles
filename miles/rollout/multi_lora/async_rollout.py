@@ -17,8 +17,8 @@ from miles.rollout.filter_hub.base_types import call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
+from miles.utils.function_registry import load_function
 from miles.utils.metric_utils import compute_statistics, dict_add_prefix
-from miles.utils.misc import load_function
 from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
@@ -337,7 +337,7 @@ class AsyncMultiLoRAWorker:
                     active.discard(t)
 
                 while len(active) < max_concurrent and self.running:
-                    samples = self.data_source.get_samples(1)
+                    samples = await self.data_source.get_samples(1)
                     if not samples:
                         break
                     active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
@@ -508,7 +508,7 @@ async def generate_rollout_multi_lora_async(
     queue_sizes = worker.queue_sizes()
 
     # Driver contract: adapter state only changes between generate calls, so one snapshot serves the collection.
-    snapshot = await get_multi_lora_controller().snapshot.remote()
+    snapshot = await get_multi_lora_controller().snapshot()
     assert snapshot["active"] or snapshot["retiring"], "generate called with no live adapters"
 
     batch = await collect_batch(args, worker, snapshot)
@@ -533,7 +533,7 @@ async def generate_rollout_multi_lora_async(
         head.metadata["step_slots"] = list(batch.step_slots)
         head.metadata["step_adapter_names"] = list(batch.step_names)
 
-    await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch.group_counts, batch.step_names)
+    await get_multi_lora_controller().record_batch_adapters(rollout_id, batch.group_counts, batch.step_names)
 
     if (x := args.rollout_sample_filter_path) is not None:
         load_function(x)(args, data)

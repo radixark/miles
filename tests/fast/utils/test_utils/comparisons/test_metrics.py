@@ -1,12 +1,25 @@
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import MetricEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.test_utils.comparisons.metrics import _check_single_metric, _keep_only_final_attempt
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.test_utils.comparisons import metrics as metric_comparisons
+from miles.utils.test_utils.comparisons.metrics import (
+    _check_events_line_up,
+    _check_single_metric,
+    _keep_only_final_attempt,
+    assert_metric_was_finite_and_nonzero,
+)
+
+_KEY: str = "train/grad_norm"
+_VERSION_KEY: str = "rollout/weight_version/max"
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
-_FIXED_SOURCE = MainProcessIdentity()
+_FIXED_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _metric_event(
@@ -111,3 +124,155 @@ class TestCheckSingleMetric:
         issues = _check_single_metric(0, "k", 0.0, 5e-13, rtol=0.1, atol=0.0)
         assert len(issues) == 1
         assert "rel_diff" in issues[0]
+
+    def test_an_expected_nonzero_delta_is_compared_exactly(self) -> None:
+        """A monotonic counter may advance by a scenario-proven delta without being dropped from comparison."""
+        assert _check_single_metric(0, "k", 5.0, 7.0, rtol=0.0, atol=0.0, expected_delta=2.0) == []
+
+    def test_a_wrong_nonzero_delta_reports_the_actual_and_expected_values(self) -> None:
+        """An expected delta is a strict contract, not a tolerance that accepts larger counter drift."""
+        issues = _check_single_metric(3, "k", 5.0, 8.0, rtol=0.0, atol=0.0, expected_delta=2.0)
+
+        assert len(issues) == 1
+        assert "actual_delta=3.0" in issues[0]
+        assert "expected_delta=2.0" in issues[0]
+
+
+class TestExpectedMetricDeltaSequences:
+    def test_a_sequence_follows_the_keys_ordered_occurrences_after_unrelated_events(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real tracker writes six version events after eighteen events whose rollout_id is also None."""
+        expected = [0.0, 0.0, 1.0, 1.0, 2.0, 2.0]
+        baseline, target = _metric_events_with_weight_version_deltas(expected)
+        _replace_metric_event_reader(monkeypatch, baseline=baseline, target=target)
+
+        metric_comparisons.compare_metrics(
+            "/dumps/baseline",
+            "/dumps/target",
+            rtol=0.0,
+            atol=0.0,
+            key_prefixes=["train/", "rollout/"],
+            exclude_keys=[],
+            expected_deltas={_VERSION_KEY: expected},
+        )
+
+    @pytest.mark.parametrize("expected", [[0.0, 0.0, 1.0, 1.0, 2.0], [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0]])
+    def test_a_sequence_with_fewer_or_more_entries_than_key_occurrences_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, expected: list[float]
+    ) -> None:
+        """Every occurrence needs one explicit delta, so neither omission nor an unused formula entry can hide."""
+        baseline, target = _metric_events_with_weight_version_deltas([0.0, 0.0, 1.0, 1.0, 2.0, 2.0])
+        _replace_metric_event_reader(monkeypatch, baseline=baseline, target=target)
+
+        with pytest.raises(AssertionError, match="expected delta sequence has .* entries.*6 occurrence"):
+            metric_comparisons.compare_metrics(
+                "/dumps/baseline",
+                "/dumps/target",
+                rtol=0.0,
+                atol=0.0,
+                key_prefixes=["train/", "rollout/"],
+                exclude_keys=[],
+                expected_deltas={_VERSION_KEY: expected},
+            )
+
+    def test_a_sequence_with_the_right_values_in_the_wrong_order_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sequence is the exact scenario formula per ordered occurrence, not an unordered allowance."""
+        baseline, target = _metric_events_with_weight_version_deltas([0.0, 0.0, 1.0, 1.0, 2.0, 2.0])
+        _replace_metric_event_reader(monkeypatch, baseline=baseline, target=target)
+
+        with pytest.raises(AssertionError, match="actual_delta=1.0, expected_delta=2.0"):
+            metric_comparisons.compare_metrics(
+                "/dumps/baseline",
+                "/dumps/target",
+                rtol=0.0,
+                atol=0.0,
+                key_prefixes=["train/", "rollout/"],
+                exclude_keys=[],
+                expected_deltas={_VERSION_KEY: [0.0, 0.0, 1.0, 2.0, 1.0, 2.0]},
+            )
+
+
+class TestCheckEventsLineUp:
+    def test_two_sides_describing_different_rollouts_are_reported(self) -> None:
+        """Comparing by read order passes silently when the sides are offset but the numbers happen to agree."""
+        baseline = [_metric_event(rollout_id=0, attempt=0), _metric_event(rollout_id=1, attempt=0)]
+        target = [_metric_event(rollout_id=1, attempt=0), _metric_event(rollout_id=2, attempt=0)]
+
+        issues = _check_events_line_up(baseline, target)
+
+        assert len(issues) == 2
+
+    def test_a_retried_rollout_still_lines_up_with_its_baseline(self) -> None:
+        """The target retries a crashed rollout, and comparing its winning attempt is the point of the run."""
+        baseline = [_metric_event(rollout_id=3, attempt=0)]
+        target = [_metric_event(rollout_id=3, attempt=1)]
+
+        assert _check_events_line_up(baseline, target) == []
+
+
+class TestAssertMetricWasFiniteAndNonzero:
+    def test_a_run_that_trained_as_many_rollouts_as_asked_passes(self, dump_dir) -> None:
+        """The happy path has to stay reachable, or the refusals below prove nothing."""
+        _write_metrics(dump_dir, [(0, 0.5), (1, 0.4)])
+
+        assert_metric_was_finite_and_nonzero(side="target", dump_dir=dump_dir, key=_KEY, min_rollouts=2)
+
+    def test_one_rollout_reported_over_several_steps_is_not_several_rollouts(self, dump_dir) -> None:
+        """Several optimizer steps of one rollout say that one rollout trained, however many events they write."""
+        _write_metrics(dump_dir, [(0, 0.5), (0, 0.4), (0, 0.3)])
+
+        with pytest.raises(AssertionError, match="in only 1 of 1 rollout"):
+            assert_metric_was_finite_and_nonzero(side="target", dump_dir=dump_dir, key=_KEY, min_rollouts=2)
+
+    def test_a_rollout_whose_only_usable_step_is_zero_does_not_count(self, dump_dir) -> None:
+        """A gradient of zero moved no weights, which is what this assertion exists to catch."""
+        _write_metrics(dump_dir, [(0, 0.5), (1, 0.0)])
+
+        with pytest.raises(AssertionError, match="in only 1 of 2 rollout"):
+            assert_metric_was_finite_and_nonzero(side="target", dump_dir=dump_dir, key=_KEY, min_rollouts=2)
+
+
+def _metric_events_with_weight_version_deltas(deltas: list[float]) -> tuple[list[MetricEvent], list[MetricEvent]]:
+    unrelated = [
+        _metric_event(rollout_id=None, attempt=None, metrics={"train/grad_norm": 1.0, "train/loss": 1.0})
+        for _ in range(18)
+    ]
+    baseline = unrelated + [
+        _metric_event(
+            rollout_id=None,
+            attempt=None,
+            metrics={"rollout/step": float(step), _VERSION_KEY: 3.0 + step},
+        )
+        for step in range(len(deltas))
+    ]
+    target = unrelated + [
+        _metric_event(
+            rollout_id=None,
+            attempt=None,
+            metrics={"rollout/step": float(step), _VERSION_KEY: 3.0 + step + delta},
+        )
+        for step, delta in enumerate(deltas)
+    ]
+    return baseline, target
+
+
+def _replace_metric_event_reader(
+    monkeypatch: pytest.MonkeyPatch, *, baseline: list[MetricEvent], target: list[MetricEvent]
+) -> None:
+    events_by_dir = {Path("/dumps/baseline"): baseline, Path("/dumps/target"): target}
+    monkeypatch.setattr(metric_comparisons, "_read_metric_events", events_by_dir.__getitem__)
+
+
+@pytest.fixture
+def dump_dir(tmp_path) -> str:
+    return str(tmp_path / "run")
+
+
+def _write_metrics(dump_dir: str, points: list[tuple[int, float]]) -> None:
+    event_logger = EventLogger(log_dir=Path(dump_dir) / "events", source=_FIXED_SOURCE, file_name="main.jsonl")
+    for rollout_id, value in points:
+        event_logger.log(MetricEvent, dict(rollout_id=rollout_id, attempt=0, metrics={_KEY: value}), print_log=False)
+    event_logger.close()

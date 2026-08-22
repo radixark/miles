@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
     _compute_zero_std_metrics,
+    log_eval_rollout_data,
     log_rollout_data,
 )
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
 class TestComputeZeroStdMetrics:
@@ -197,3 +199,86 @@ class TestComputePassrateFromSamples:
             "pass@2": pytest.approx(1.0),
             "pass@4": pytest.approx(1.0),
         }
+
+
+class TestWeightVersionMetrics:
+    def test_reports_oldest_version_statistics_and_mixed_ratio(self):
+        """weight_version/* summarises each sample's oldest version; mixed counts samples spanning an update."""
+        samples = [
+            _make_versioned_sample(["4"], index=0),
+            _make_versioned_sample(["5", "6"], index=1),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
+        assert out["weight_version/min"] == 4
+        assert out["weight_version/max"] == 5
+        assert out["weight_version/mixed_version_ratio"] == 0.5
+
+    def test_a_call_spanning_no_update_is_not_mixed(self):
+        """Two calls that both saw the same version must not count as mixed."""
+        samples = [_make_versioned_sample(["7", "7"], index=0)]
+
+        out = _compute_metrics_from_samples(make_args(), samples)
+
+        assert out["weight_version/mixed_version_ratio"] == 0.0
+
+    def test_a_single_call_spanning_two_versions_counts_as_mixed(self):
+        """A weight update landing mid-call makes that single call mixed, just like two calls seeing two versions."""
+        sample = make_sample(index=0, group_index=0)
+        sample.weight_versions = [
+            WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 2), WeightVersionSpan("4", 2, 4)])
+        ]
+
+        out = _compute_metrics_from_samples(make_args(), [sample])
+
+        assert out["weight_version/mixed_version_ratio"] == 1.0
+
+    def test_no_version_metrics_when_nothing_was_stamped(self):
+        """SFT-style batches carry no versions and must not synthesise the series."""
+        out = _compute_metrics_from_samples(make_args(), [make_sample(index=0, group_index=0)])
+
+        assert not any(key.startswith("weight_version/") for key in out)
+
+
+def _make_versioned_sample(versions: list[str], *, index: int) -> Sample:
+    sample = make_sample(index=index, group_index=0)
+    sample.weight_versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan(version, i, i + 1)]) for i, version in enumerate(versions)
+    ]
+    return sample
+
+
+class TestLogRolloutData:
+    def test_the_model_id_comes_from_the_caller_not_from_the_args(self, monkeypatch):
+        """One rollout executor serves every policy, so the id must travel with the call, not with the run."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, payload, step_key: calls.append((payload, step_key)),
+        )
+        args = make_args(advantage_estimator="ppo", ci_test=False, log_passrate=False, trainer_model_id=None)
+
+        log_rollout_data(0, args, make_samples_grouped(1, 4), None, 1.0, trainer_model_id="alpha")
+
+        [(payload, step_key)] = calls
+        assert step_key == "alpha/rollout/step"
+        assert all(key.startswith("alpha/") for key in payload)
+
+
+class TestEvalMetrics:
+    def test_eval_metrics_are_not_namespaced_by_policy(self, monkeypatch):
+        """Pinning the status quo: a run training several policies is refused an eval, so eval keeps one step axis."""
+        calls: list[tuple[dict, str]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.metrics.tracking.log",
+            lambda _args, payload, step_key: calls.append((payload, step_key)),
+        )
+        args = make_args(log_passrate=False, trainer_model_id="alpha")
+
+        log_eval_rollout_data(0, args, {"gsm8k": {"rewards": [1.0, 0.0]}})
+
+        [(payload, step_key)] = calls
+        assert step_key == "eval/step"
+        assert payload["eval/gsm8k"] == 0.5
+        assert not any(key.startswith("alpha/") for key in payload)

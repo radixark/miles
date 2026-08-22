@@ -1,4 +1,6 @@
 import json
+import logging
+import math
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,12 +12,13 @@ from miles.utils.audit_utils.event_logger.logger import (
     EventLogger,
     event_logger_context,
     get_event_logger,
+    read_events,
     set_event_logger,
 )
 from miles.utils.audit_utils.event_logger.models import MetricEvent, WitnessAllocateIdEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity, TrainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity, TrainProcessIdentity
 
-_TEST_SOURCE = MainProcessIdentity()
+_TEST_SOURCE = SimpleProcessIdentity(component="main")
 
 
 def _make_logger(log_dir: Path, file_name: str = "events.jsonl") -> EventLogger:
@@ -26,6 +29,12 @@ _EVENT_CLS = WitnessAllocateIdEvent
 _EVENT_PARTIAL: dict = dict(
     rollout_id=0, attempt=0, witness_id_to_sample_index={10: 0, 11: 1, 12: 2}, counter_after=13
 )
+
+_LOGGER_MODULE_LOGGER = "miles.utils.audit_utils.event_logger.logger"
+
+
+def _structured_messages(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records if record.name == _LOGGER_MODULE_LOGGER]
 
 
 class TestEventLoggerWritesJsonl:
@@ -44,6 +53,21 @@ class TestEventLoggerWritesJsonl:
             parsed = json.loads(line)
             assert "timestamp" in parsed
             assert "type" in parsed
+
+
+class TestEventLoggerStructuredPrint:
+    def test_printed_event_uses_audit_structured_log_tag(self, tmp_path: Path, caplog) -> None:
+        """A printed event is echoed as one audit-tagged op=event record naming the event class and its fields."""
+        logger = _make_logger(tmp_path)
+
+        with caplog.at_level(logging.INFO, logger=_LOGGER_MODULE_LOGGER):
+            logger.log(_EVENT_CLS, _EVENT_PARTIAL)
+        logger.close()
+
+        messages = _structured_messages(caplog)
+        assert len(messages) == 1
+        assert messages[0].startswith("audit op=event event=WitnessAllocateIdEvent ")
+        assert "counter_after=13" in messages[0]
 
 
 class TestEventLoggerAutoFillsMetadata:
@@ -186,6 +210,18 @@ class TestReadEvents:
 
         events = read_events(tmp_path)
         assert len(events) == 3
+
+
+class TestEventLoggerKeepsNonFiniteMetrics:
+    def test_a_nan_metric_reads_back_as_a_nan(self, tmp_path: Path) -> None:
+        """Written as json null it reads back absent, so a diverged run would look like one that never reported."""
+        logger = _make_logger(tmp_path)
+        logger.log(MetricEvent, dict(rollout_id=0, attempt=0, metrics={"train/loss": math.nan}), print_log=False)
+        logger.close()
+
+        [event] = read_events(tmp_path)
+
+        assert math.isnan(event.metrics["train/loss"])
 
 
 class TestWithContext:

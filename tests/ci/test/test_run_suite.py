@@ -16,6 +16,7 @@ parsing fixture files -- the AST-side validation lives in
 `test_ci_register.py`; this module exercises the runtime filter.
 """
 
+import itertools
 import os
 import re
 import subprocess
@@ -83,6 +84,22 @@ class TestBuildCpuPytestCmd:
         assert cmd[0] == "pytest"
         assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
 
+    def test_a_directory_is_never_returned_to_after_its_parent(self):
+        """pytest loads a directory's conftest when it first reaches it. Naming that directory again
+        after its parent leaves the second visit's tests without their own conftest's fixtures, which
+        reads as `fixture ... not found` on tests that have always had one."""
+        cmd = build_cpu_pytest_cmd(
+            [
+                "tests/fast/backends/megatron_utils/test_broadcast_engine_gpu_counts.py",
+                "tests/fast/backends/test_fsdp_routing_replay.py",
+                "tests/fast/backends/megatron_utils/test_model.py",
+            ],
+            continue_on_error=True,
+        )
+
+        directories = [name.rsplit("/", 1)[0] for name in cmd if name.endswith(".py")]
+        assert len(set(directories)) == len(list(itertools.groupby(directories)))
+
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
 
@@ -99,6 +116,10 @@ class TestCISuites:
             "stage-c-4-gpu-h200",
             "stage-c-2-gpu-h200",
         ]
+
+    def test_rocm_suites_include_the_pr_stage(self):
+        """The trusted ROCm PR workflow can request the suite its stage runs."""
+        assert "stage-c-4-gpu-mi350" in CI_SUITES[HWBackend.ROCM]
 
     def test_no_legacy_suite_names_remain(self):
         legacy = {
@@ -367,6 +388,28 @@ class TestWorkflowScopeSeam:
         for job_name in ("resolve-ci-policy", "docker-paths", "docker-build"):
             job_header = workflow.split(f"  {job_name}:", 1)[1].split("    runs-on:", 1)[0]
             assert "github.event.action != 'closed'" in job_header
+
+
+class TestDockerBuildWorkflowTooling:
+    _SETUP_UV_SHA = "d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86"
+    _TYPER_VERSION = "0.27.1"
+    _UV_VERSION = "0.12.5"
+
+    @staticmethod
+    def _workflow(name: str) -> str:
+        return (Path(__file__).resolve().parents[3] / ".github" / "workflows" / name).read_text()
+
+    @pytest.mark.parametrize("name, expected_invocations", [("pr-test.yml", 1), ("docker-build.yml", 2)])
+    def test_docker_builders_install_pinned_tooling(self, name: str, expected_invocations: int) -> None:
+        """Credentialed Docker builders must not execute drifting installer code or resolve mutable tools."""
+        workflow = self._workflow(name)
+
+        assert "astral.sh/uv/install.sh" not in workflow
+        assert "command -v uv" not in workflow
+        assert workflow.count(f"uses: astral-sh/setup-uv@{self._SETUP_UV_SHA}") == 1
+        assert workflow.count(f'version: "{self._UV_VERSION}"') == 1
+        typer_specs = re.findall(r"--with (typer(?:==[^\s\\]+)?)", workflow)
+        assert typer_specs == [f"typer=={self._TYPER_VERSION}"] * expected_invocations
 
 
 class TestRocmWorkflowScopeSeam:

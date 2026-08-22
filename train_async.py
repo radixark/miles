@@ -2,18 +2,21 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.placement_group import (
+    create_rollout_components,
+    create_training_models,
+    maybe_start_api_server,
+    update_weights,
+)
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
-from miles.utils import object_store
+from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
-from miles.utils.data import remove_rollout_data_refs
-from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
-from miles.utils.ft_utils.control_server.server import start_control_server
+from miles.utils.async_utils import eager_create_task
+from miles.utils.data import remove_rollout_data_refs, remove_train_output_refs
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
-from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
-from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
+from miles.utils.orchestration_utils import init_orchestration_script
+from miles.utils.tracking_utils.tracking import finish_tracking
 
 logger = logging.getLogger(__name__)
 
@@ -22,44 +25,33 @@ logger = logging.getLogger(__name__)
 async def train(args):
     assert not args.colocate, "Colocation is not supported for async training."
     validate_async_off_policy_correction(args)
-    configure_logger(args, source=MainProcessIdentity())
-    maybe_start_periodic_pyspy_dump()
-    # allocate the GPUs
-    pgs = create_placement_groups(args)
-    object_store.init_instance(args, contribute_segment=False)
-    init_tracking(args)
+    _worker_manager = init_orchestration_script(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    rollout_manager, num_rollout_per_epoch = create_rollout_manager(args, pgs["rollout"])
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
+    actor_model, critic_model = await create_training_models(args, rollout_executor)
 
-    if args.control_server_port:
-        start_control_server(
-            actor_model=actor_model,
-            rollout_manager=rollout_manager,
-            port=args.control_server_port,
-            ft_components=args.ft_components,
-        )
-
+    maybe_start_api_server(args, trainer_models={"actor": actor_model}, inference_controller=inference_controller)
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
-    await actor_model.update_weights()
+    await update_weights(args, actor_model, rollout_executor, inference_controller)
 
     if args.check_weight_update_equal:
-        await rollout_manager.check_weights.remote(
+        await inference_controller.check_weights(
             action="compare",
             allow_quant_error=args.check_weight_update_allow_quant_error,
             selector=args.check_weight_update_selector,
             skip_list=args.check_weight_update_skip_list,
         )
 
-    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
+    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_executor)
 
     if args.eval_interval is not None and args.start_rollout_id == 0 and not args.skip_eval_before_train:
+        await inference_controller.prepare_eval()
         await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
     async def save_training_model(model, rollout_id, force_sync):
@@ -69,8 +61,12 @@ async def train(args):
         if args.use_critic and args.offload_train:
             await model.offload()
 
+    async def prepare_and_generate(rollout_id):
+        await inference_controller.prepare_rollout(rollout_id)
+        return await rollout_executor.get(rollout_id)
+
     # async train loop.
-    rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
+    rollout_data_next_future = await eager_create_task(prepare_and_generate(args.start_rollout_id))
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         # Sync the last generation
         if rollout_data_next_future is not None:
@@ -78,7 +74,7 @@ async def train(args):
 
         # Start the next rollout early.
         if rollout_id + 1 < args.num_rollout:
-            rollout_data_next_future = rollout_manager.generate.remote(rollout_id + 1)
+            rollout_data_next_future = await eager_create_task(prepare_and_generate(rollout_id + 1))
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_curr_ref)
@@ -88,6 +84,7 @@ async def train(args):
                 await actor_model.train(rollout_id, rollout_data_curr_ref, external_data=values)
                 if args.offload_train:
                     await actor_model.offload()
+            remove_train_output_refs(values)
         else:
             await actor_model.train(rollout_id, rollout_data_curr_ref)
         remove_rollout_data_refs(args, rollout_data_curr_ref)
@@ -100,7 +97,7 @@ async def train(args):
             await save_training_model(actor_model, rollout_id, force_sync)
             if args.use_critic:
                 await save_training_model(critic_model, rollout_id, force_sync)
-            await rollout_manager.save.remote(rollout_id)
+            await rollout_executor.save(rollout_id)
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
@@ -108,9 +105,10 @@ async def train(args):
             # sync generate before update weights to prevent update weight in the middle of generation
             rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
             rollout_data_next_future = None
-            await actor_model.update_weights(rollout_id=rollout_id)
+            await update_weights(args, actor_model, rollout_executor, inference_controller, rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
+            await inference_controller.prepare_eval()
             await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         if (
@@ -125,7 +123,12 @@ async def train(args):
             break
 
     await eval_dispatcher.drain()
-    await rollout_manager.dispose.remote()
+    await rollout_executor.dispose()
+    await inference_controller.dispose()
+    await actor_model.dispose()
+    if critic_model is not None:
+        await critic_model.dispose()
+    await shutdown_worker_manager(_worker_manager)
 
 
 if __name__ == "__main__":

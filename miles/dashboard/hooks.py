@@ -10,6 +10,7 @@ rate-limited warnings — a deliberate exception to fail-loud (design doc
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -27,6 +28,7 @@ from miles.dashboard.store import (
 )
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.timer import Timer
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +56,8 @@ def _default_resolve_identity() -> _Identity:
     )
 
 
-def _default_ray_get(refs: list):
-    import ray
-
-    return ray.get(refs)
-
-
 # test seams; production always uses the defaults
 _resolve_identity = _default_resolve_identity
-_ray_get = _default_ray_get
 
 
 class PhaseSink:
@@ -220,7 +215,7 @@ class TrajectorySink:
 
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
-            versions = getattr(sample, "weight_versions", None) or []
+            versions = [span.version for span in getattr(sample, "all_weight_version_spans", None) or []]
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,
@@ -306,9 +301,11 @@ def register_router(args) -> None:
     """Called by the rollout manager AFTER start_rollout_servers: only then are
     ``args.sglang_router_ip/port`` filled in. init_tracking runs earlier in
     __init__, so the backend cannot register the router at init time."""
+    if not args.use_miles_dashboard:
+        return
     from miles.dashboard import backend
 
-    handle = backend.current_collector()
+    handle = backend.resolve_collector()
     if handle is None:
         return
     # a None ip here is a wiring-order bug, not runtime flakiness: fail loud
@@ -319,10 +316,11 @@ def register_router(args) -> None:
         _warner.warn("dashboard router registration failed; engine metrics will be missing")
 
 
-def register_engines(servers) -> None:
-    """Called at the top of every RolloutManager.generate(): pushes an engine
+async def register_engines(servers, *, provider: BaseWorkerProvider) -> None:
+    """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
-    fault-tolerance recovery). Steady state costs one local tuple compare."""
+    fault-tolerance recovery). Steady state costs one worker-manager round trip
+    and a local tuple compare."""
     global _engines_fingerprint
     from miles.dashboard import backend
 
@@ -330,19 +328,24 @@ def register_engines(servers) -> None:
     if handle is None:
         return
     try:
-        chunks = _alive_engine_chunks(servers)
-        fingerprint = tuple(id(engine.actor_handle) for chunk in chunks for engine in chunk)
+        cells = _alive_engine_cells(servers)
+        worker_infos_per_cell = _collect_worker_infos(cells, provider=provider)
+        fingerprint = tuple(
+            (info.name, info.generation, info.self_addrs["primary"].host, info.self_addrs["primary"].port)
+            for worker_infos in worker_infos_per_cell
+            for info in worker_infos
+        )
         if fingerprint == _engines_fingerprint:
             return
-        infos = _ray_get([engine.actor_handle.get_topology_info.remote() for chunk in chunks for engine in chunk])
-        handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=_group_engines(chunks, infos)))
+        engines = await _compute_engine_infos(cells, worker_infos_per_cell, provider=provider)
+        handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=engines))
         _engines_fingerprint = fingerprint
     except Exception:
         _warner.warn("dashboard engine registration failed; topology may be stale")
 
 
 def report_data_buffer(length: int | None) -> None:
-    """Called at the top of every ``RolloutManager.generate()`` alongside
+    """Called at the top of every ``RolloutExecutor.get()`` alongside
     ``register_engines``, with ``getattr(data_source, "get_buffer_length",
     lambda: None)()``. A no-op for ``length is None`` — most data sources
     (plain ``RolloutDataSource``) never buffer samples across steps."""
@@ -359,36 +362,56 @@ def report_data_buffer(length: int | None) -> None:
         _warner.warn("dashboard data-buffer report failed")
 
 
-def _alive_engine_chunks(servers) -> list[list]:
-    """Multi-node engines occupy ``nodes_per_engine`` consecutive entries of
-    ``group.all_engines``; only the first (master) owns the router-visible
-    URL. Chunks with any dead member are skipped until recovery completes."""
-    chunks = []
+def _alive_engine_cells(servers) -> list:
+    """A multi-node engine's cell holds ``num_nodes`` actors; only the first
+    (master) owns the router-visible URL. Cells that are not alive are skipped
+    until recovery completes."""
+    cells = []
     for server in servers.values():
-        for group in server.server_groups:
-            stride = group.nodes_per_engine
-            engines = group.all_engines
-            for i in range(0, len(engines), stride):
-                chunk = engines[i : i + stride]
-                if all(engine.is_allocated and engine.is_alive for engine in chunk):
-                    chunks.append(chunk)
-    return chunks
+        for cell in server.server_cells.values():
+            if cell.is_pending_weights_or_serving:
+                cells.append(cell)
+    return cells
 
 
-def _group_engines(chunks: list[list], infos: list[dict]) -> list[EngineInfo]:
+def _collect_worker_infos(cells, *, provider: BaseWorkerProvider) -> list[list]:
+    return provider.get_worker_infos(cell_ids=[cell.meta.cell_id for cell in cells])
+
+
+async def _no_gpu_uuids(info) -> list[str | None]:
+    return [None] * len(info.gpu_ids)
+
+
+async def _compute_engine_infos(cells, worker_infos_per_cell, *, provider: BaseWorkerProvider) -> list[EngineInfo]:
+    flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
+    handles = provider.get_handles_of_worker_infos(flat_infos)
+    probed_uuids = iter(
+        await asyncio.gather(
+            *[
+                (
+                    handle._get_gpu_uuids(gpu_ids=info.gpu_ids)
+                    if (handle := handles.get(info.name)) is not None
+                    else _no_gpu_uuids(info)
+                )
+                for info in flat_infos
+            ]
+        )
+    )
+
     engines = []
-    index = 0
-    for engine_rank, chunk in enumerate(chunks):
-        chunk_infos = infos[index : index + len(chunk)]
-        index += len(chunk)
-        master = chunk_infos[0]
+    for engine_rank, (cell, worker_infos) in enumerate(zip(cells, worker_infos_per_cell, strict=True)):
+        worker_gpu_uuids = [next(probed_uuids) for _ in worker_infos]
         engines.append(
             EngineInfo(
-                addr=master["url"],
-                worker_type=master["worker_type"],
+                addr=cell.server_url,
+                worker_type=cell.meta.worker_type,
                 engine_rank=engine_rank,
-                gpus=[[info["node_ip"], gpu] for info in chunk_infos for gpu in info["gpu_ids"]],
-                gpu_uuids=[uuid for info in chunk_infos for uuid in info["gpu_uuids"]],
+                gpus=[
+                    [info.self_addrs["primary"].host.strip("[]"), gpu_id]
+                    for info in worker_infos
+                    for gpu_id in info.gpu_ids
+                ],
+                gpu_uuids=[uuid for uuids in worker_gpu_uuids for uuid in uuids],
             )
         )
     return engines

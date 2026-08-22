@@ -1,0 +1,80 @@
+{{- if not .Values.commandJob.enabled }}
+{{- $name := .Values.run.objectNames.orchestrator }}
+{{- if .Values.run.orchestrator.command }}
+{{- if not .Values.run.stateFile }}
+{{- fail "a run that carries the orchestration script needs run.stateFile: the launcher learns the run's outcome by reading it" }}
+{{- end }}
+{{- if not (.Values.infra.paths | default dict).runsRoot }}
+{{- fail "a run needs infra.paths.runsRoot: the launcher learns the run's outcome by reading its exit file under that directory, and with no directory named the wrapper writes that file where nobody can read it" }}
+{{- end }}
+{{- include "miles-common.assertRunsRootIsMounted" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "miles-run.selectorLabels" (dict "context" . "component" "orchestrator") | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 1
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name | quote }}
+  selector:
+    matchLabels:
+      {{- include "miles-run.selectorLabels" (dict "context" . "component" "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-run.labels" (dict "context" . "component" "orchestrator") | nindent 8 }}
+      {{- with .Values.run.orchestrator.restartAt }}
+      annotations:
+        miles.radixark.io/restart-at: {{ . | quote }}
+      {{- end }}
+    spec:
+      {{- include "miles-run.podDefaults" . | nindent 6 }}
+      serviceAccountName: {{ $name | quote }}
+      restartPolicy: Always
+      containers:
+        - name: orchestrator
+          {{- $extraMounts := include "miles-run.uninstallManifestVolumeMount" . }}
+          {{- include "miles-run.containerDefaultsWith" (dict "context" . "extraMounts" $extraMounts) | nindent 10 }}
+          command:
+            - python
+            - -m
+            - miles.utils.external_utils.command_utils.helm_backend.orchestrator.wrapper
+            - --state-file
+            - {{ .Values.run.stateFile | quote }}
+            {{- if include "miles-run.autoUninstallEnabled" . }}
+            - --uninstall-manifest
+            - {{ printf "%s/%s" (include "miles-run.uninstallManifestDir" .) (include "miles-run.uninstallManifestFileName" .) | quote }}
+            {{- end }}
+            - --
+            {{- range .Values.run.orchestrator.command }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- with include "miles-run.env" (dict "context" . "entry" dict) }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.run.orchestrator.resources | nindent 12 }}
+      {{- $volumes := compact (list (include "miles-common.volumes" . | trim) (include "miles-run.uninstallManifestVolume" . | trim)) | join "\n" }}
+      {{- with $volumes }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

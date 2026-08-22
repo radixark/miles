@@ -1,29 +1,63 @@
 """Tests for process_identity module."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from miles.utils.audit_utils.process_identity import (
-    MainProcessIdentity,
-    RolloutManagerProcessIdentity,
+    ProcessIdentity,
+    SimpleProcessIdentity,
+    TrainerControllerProcessIdentity,
     TrainProcessIdentity,
 )
 
 
 class TestProcessIdentityToName:
     def test_main(self) -> None:
-        assert MainProcessIdentity().to_name() == "main"
+        assert SimpleProcessIdentity(component="main").to_name() == "main"
 
-    def test_rollout_manager(self) -> None:
-        assert RolloutManagerProcessIdentity().to_name() == "rollout_manager"
+    def test_rollout_executor(self) -> None:
+        assert SimpleProcessIdentity(component="rollout_executor").to_name() == "rollout_executor"
 
     def test_actor(self) -> None:
         source = TrainProcessIdentity(component="actor", cell_index=1, rank_within_cell=3)
-        assert source.to_name() == "actor_cell1_rank3"
+        assert source.to_name() == "actor_cell00001_rank00003"
 
     def test_critic(self) -> None:
         source = TrainProcessIdentity(component="critic", cell_index=0, rank_within_cell=2)
-        assert source.to_name() == "critic_cell0_rank2"
+        assert source.to_name() == "critic_cell00000_rank00002"
+
+    def test_trainer_controller(self) -> None:
+        assert TrainerControllerProcessIdentity(trainer_id="actor").to_name() == "trainer_controller_actor"
+
+    def test_a_policy_trainer_controller_of_a_multi_policy_run(self) -> None:
+        """A generic trainer id must survive validation, or a multi policy worker cannot configure its logger."""
+        assert TrainerControllerProcessIdentity(trainer_id="alpha-actor").to_name() == "trainer_controller_alpha-actor"
+
+    def test_a_policy_worker_names_the_policy_it_serves(self) -> None:
+        """Two policies write to the same log directory, so their file names must differ."""
+        source = TrainProcessIdentity(component="actor", model_id="alpha", cell_index=1, rank_within_cell=3)
+        assert source.to_name() == "alpha_actor_cell00001_rank00003"
+
+    def test_inference_controller(self) -> None:
+        assert SimpleProcessIdentity(component="inference_controller").to_name() == "inference_controller"
+
+    def test_multi_lora_controller(self) -> None:
+        assert SimpleProcessIdentity(component="multi_lora_controller").to_name() == "multi_lora_controller"
+
+    def test_worker_manager(self) -> None:
+        assert SimpleProcessIdentity(component="worker_manager").to_name() == "worker_manager"
+
+    def test_an_unknown_component_is_rejected(self) -> None:
+        """A simple identity only names the components that exist."""
+        with pytest.raises(ValidationError):
+            SimpleProcessIdentity(component="nope")
+
+
+class TestControllerIdentityRoundtrip:
+    def test_trainer_controller_keeps_its_trainer_id(self) -> None:
+        """Two trainer controllers share a component, so only the trainer id tells their events apart."""
+        source = TrainerControllerProcessIdentity(trainer_id="critic")
+        assert TrainerControllerProcessIdentity.model_validate_json(source.model_dump_json()) == source
 
 
 class TestTrainProcessIdentityValidation:
@@ -36,6 +70,29 @@ class TestTrainProcessIdentityValidation:
         """A negative rank_within_cell fails validation."""
         with pytest.raises(ValidationError):
             TrainProcessIdentity(component="actor", cell_index=0, rank_within_cell=-1)
+
+
+class TestProcessIdentityUnion:
+    def test_process_identity_union_deserializes_rollout_executor(self) -> None:
+        """The discriminated union maps the wire component "rollout_executor" to SimpleProcessIdentity."""
+        parsed = TypeAdapter(ProcessIdentity).validate_python({"component": "rollout_executor"})
+
+        assert isinstance(parsed, SimpleProcessIdentity)
+        assert parsed.to_name() == "rollout_executor"
+
+    def test_rollout_executor_survives_a_union_json_roundtrip(self) -> None:
+        """A serialized rollout executor identity is parsed back to the same value through the union."""
+        adapter = TypeAdapter(ProcessIdentity)
+        source = SimpleProcessIdentity(component="rollout_executor")
+
+        parsed = adapter.validate_json(source.model_dump_json())
+
+        assert parsed == source
+
+    def test_unknown_component_is_rejected_by_the_union(self) -> None:
+        """An unknown component discriminator fails validation instead of falling back to a member."""
+        with pytest.raises(ValidationError):
+            TypeAdapter(ProcessIdentity).validate_python({"component": "rollout_manager"})
 
 
 class TestTrainProcessIdentityRoundtrip:

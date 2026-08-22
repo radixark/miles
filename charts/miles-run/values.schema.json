@@ -1,0 +1,782 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "miles-run values",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "infra",
+    "run"
+  ],
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Helm injects the umbrella chart's global values into every subchart, so a strict root has to accept them."
+    },
+    "miles-common": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "global": {
+          "type": "object"
+        }
+      },
+      "description": "Helm reserves a values section per dependency; the library chart itself consumes none."
+    },
+    "infra": {
+      "$ref": "#/definitions/InfraValues"
+    },
+    "run": {
+      "$ref": "#/definitions/RunValues"
+    },
+    "extraManifests": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "commandJob": {
+      "$ref": "#/definitions/CommandJobValues"
+    }
+  },
+  "definitions": {
+    "AutoUninstallSection": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "serviceAccount": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "CommandJobValues": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "properties": {
+              "name": {
+                "minLength": 1
+              },
+              "objectName": {
+                "minLength": 1
+              },
+              "command": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "name",
+              "objectName",
+              "command"
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "maxLength": 40,
+          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$",
+          "type": "string"
+        },
+        "objectName": {
+          "maxLength": 63,
+          "pattern": "^([a-z0-9]([-a-z0-9]*[a-z0-9])?)?$",
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "completions": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "gpusPerPod": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "activeDeadlineSeconds": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ttlSecondsAfterFinished": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "DevShm": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "hostPath"
+          ]
+        },
+        {
+          "required": [
+            "emptyDir"
+          ]
+        }
+      ],
+      "properties": {
+        "mountPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "hostPath": {
+          "$ref": "#/definitions/HostPathSource"
+        },
+        "emptyDir": {
+          "$ref": "#/definitions/EmptyDirSource"
+        }
+      },
+      "required": [
+        "mountPath"
+      ],
+      "type": "object"
+    },
+    "EmptyDirSource": {
+      "additionalProperties": false,
+      "properties": {
+        "medium": {
+          "enum": [
+            "",
+            "Memory"
+          ],
+          "type": "string"
+        },
+        "sizeLimit": {
+          "pattern": "^[0-9]+(\\.[0-9]+)?([EPTGMk]i?|m)?$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "HostPathSource": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "Directory",
+            "DirectoryOrCreate"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "Image": {
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "tag": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ],
+          "type": "string"
+        },
+        "pullSecrets": {
+          "items": {
+            "maxLength": 253,
+            "minLength": 1,
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "repository",
+        "tag"
+      ],
+      "type": "object"
+    },
+    "InferencePool": {
+      "additionalProperties": false,
+      "properties": {
+        "pool_id": {
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/definitions/PairingLayout"
+        }
+      },
+      "required": [
+        "pool_id",
+        "layout"
+      ],
+      "type": "object"
+    },
+    "InfraValues": {
+      "additionalProperties": false,
+      "properties": {
+        "image": {
+          "$ref": "#/definitions/Image"
+        },
+        "volumes": {
+          "items": {
+            "$ref": "#/definitions/VolumeEntry"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "$ref": "#/definitions/Paths"
+        },
+        "devShm": {
+          "$ref": "#/definitions/DevShm"
+        },
+        "scheduling": {
+          "$ref": "#/definitions/Scheduling"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT",
+                "MILES_CELL_INDEX",
+                "MILES_POD_INDEX",
+                "MILES_BASE_GPU_ID",
+                "MILES_K8S_NAMESPACE",
+                "MILES_K8S_RELEASE"
+              ]
+            },
+            "pattern": "^[ -<>-~]+$"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "image",
+        "volumes"
+      ],
+      "type": "object"
+    },
+    "MooncakeSection": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "rpcPort": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "metricsPort": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "resources": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "ObjectNames": {
+      "additionalProperties": false,
+      "properties": {
+        "orchestrator": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "platformReader": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "mooncakeMaster": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "colocatePairing": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "uninstall": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "uninstallManifest": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "orchestrator",
+        "platformReader",
+        "mooncakeMaster",
+        "colocatePairing",
+        "uninstall",
+        "uninstallManifest"
+      ],
+      "type": "object"
+    },
+    "OrchestratorSection": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resources": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "restartAt": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PairingConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        },
+        "trainer_pool_id": {
+          "type": "string"
+        },
+        "inference_pools": {
+          "items": {
+            "$ref": "#/definitions/InferencePool"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "namespace",
+        "release",
+        "trainer_pool_id",
+        "inference_pools"
+      ],
+      "type": "object"
+    },
+    "PairingLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "num_inference_cells": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_trainer_cells": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_pods_per_inference_cell": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_pods_per_trainer_cell": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_gpus_per_node": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "num_gpus_per_inference_pod": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "gpu_offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "num_inference_cells",
+        "num_trainer_cells",
+        "num_pods_per_inference_cell",
+        "num_pods_per_trainer_cell",
+        "num_gpus_per_node",
+        "num_gpus_per_inference_pod",
+        "gpu_offset"
+      ],
+      "type": "object"
+    },
+    "Paths": {
+      "additionalProperties": false,
+      "properties": {
+        "runsRoot": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "PersistentVolumeClaimSource": {
+      "additionalProperties": false,
+      "properties": {
+        "claimName": {
+          "maxLength": 253,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "claimName"
+      ],
+      "type": "object"
+    },
+    "PoolEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "objectName": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "poolId": {
+          "type": "string"
+        },
+        "command": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "ports": {
+          "items": {
+            "$ref": "#/definitions/PortEntry"
+          },
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT",
+                "MILES_CELL_INDEX",
+                "MILES_POD_INDEX",
+                "MILES_BASE_GPU_ID",
+                "MILES_K8S_NAMESPACE",
+                "MILES_K8S_RELEASE"
+              ]
+            },
+            "pattern": "^[ -<>-~]+$"
+          },
+          "type": "object"
+        },
+        "meta": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "replicas": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "size": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "resources": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "restartAt": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "serviceAccountName": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "objectName",
+        "command"
+      ],
+      "type": "object"
+    },
+    "PortEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 15,
+          "minLength": 1,
+          "type": "string"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "port"
+      ],
+      "type": "object"
+    },
+    "RunValues": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 33,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "stateFile": {
+          "minLength": 1,
+          "pattern": "^/",
+          "type": "string"
+        },
+        "launchRecord": {
+          "minLength": 1,
+          "pattern": "^/",
+          "type": "string"
+        },
+        "objectNames": {
+          "$ref": "#/definitions/ObjectNames"
+        },
+        "orchestrator": {
+          "$ref": "#/definitions/OrchestratorSection"
+        },
+        "staticWorkers": {
+          "items": {
+            "$ref": "#/definitions/PoolEntry"
+          },
+          "type": "array"
+        },
+        "inferenceEngines": {
+          "items": {
+            "$ref": "#/definitions/PoolEntry"
+          },
+          "type": "array"
+        },
+        "trainerEngines": {
+          "items": {
+            "$ref": "#/definitions/PoolEntry"
+          },
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "propertyNames": {
+            "not": {
+              "enum": [
+                "PYTHONPATH",
+                "MILES_SCRIPT_ENV_REPORT",
+                "MILES_CELL_INDEX",
+                "MILES_POD_INDEX",
+                "MILES_BASE_GPU_ID",
+                "MILES_K8S_NAMESPACE",
+                "MILES_K8S_RELEASE"
+              ]
+            },
+            "pattern": "^[ -<>-~]+$"
+          },
+          "type": "object"
+        },
+        "mooncake": {
+          "$ref": "#/definitions/MooncakeSection"
+        },
+        "colocate": {
+          "$ref": "#/definitions/PairingConfig"
+        },
+        "autoUninstall": {
+          "$ref": "#/definitions/AutoUninstallSection"
+        }
+      },
+      "required": [
+        "id",
+        "objectNames"
+      ],
+      "type": "object"
+    },
+    "Scheduling": {
+      "additionalProperties": false,
+      "properties": {
+        "nodeSelector": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "tolerations": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "affinity": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "VolumeEntry": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "hostPath"
+          ]
+        },
+        {
+          "required": [
+            "persistentVolumeClaim"
+          ]
+        },
+        {
+          "required": [
+            "emptyDir"
+          ]
+        }
+      ],
+      "properties": {
+        "name": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "hostPath": {
+          "$ref": "#/definitions/HostPathSource"
+        },
+        "persistentVolumeClaim": {
+          "$ref": "#/definitions/PersistentVolumeClaimSource"
+        },
+        "emptyDir": {
+          "$ref": "#/definitions/EmptyDirSource"
+        },
+        "mounts": {
+          "items": {
+            "$ref": "#/definitions/VolumeMount"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "mounts"
+      ],
+      "type": "object"
+    },
+    "VolumeMount": {
+      "additionalProperties": false,
+      "properties": {
+        "mountPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^/",
+          "type": "string"
+        },
+        "subPath": {
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          },
+          "pattern": "^([^/].*)?$",
+          "type": "string"
+        },
+        "readOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "mountPath"
+      ],
+      "type": "object"
+    }
+  }
+}

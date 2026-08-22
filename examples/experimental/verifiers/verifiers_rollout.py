@@ -28,6 +28,7 @@ import httpx
 from packaging.version import InvalidVersion, Version
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnEvalOutput,
@@ -585,8 +586,9 @@ def _validate_args(args: Namespace) -> None:
         )
 
 
-class VerifiersRolloutFn:
+class VerifiersRolloutFn(BaseRolloutFn):
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         runtime = _import_verifiers()
         self.args = input.args
         self.data_source = input.data_source

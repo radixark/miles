@@ -1,0 +1,77 @@
+{{- if .Values.commandJob.enabled }}
+{{- $name := .Values.commandJob.objectName }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "miles-run.selectorLabels" (dict "context" . "component" .Values.commandJob.name) | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 1
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 4 }}
+spec:
+  backoffLimit: 0
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+  activeDeadlineSeconds: {{ .Values.commandJob.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.commandJob.ttlSecondsAfterFinished }}
+  completions: {{ .Values.commandJob.completions }}
+  parallelism: {{ .Values.commandJob.completions }}
+  {{- if gt (int .Values.commandJob.completions) 1 }}
+  completionMode: Indexed
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-run.labels" (dict "context" . "component" .Values.commandJob.name) | nindent 8 }}
+    spec:
+      {{- $spread := dict "requiredDuringSchedulingIgnoredDuringExecution" (list (dict
+            "topologyKey" "kubernetes.io/hostname"
+            "labelSelector" (dict "matchLabels" (dict
+              "app.kubernetes.io/name" .Chart.Name
+              "app.kubernetes.io/instance" .Release.Name
+              "app.kubernetes.io/component" .Values.commandJob.name)))) }}
+      {{- if gt (int .Values.commandJob.completions) 1 }}
+      {{- include "miles-run.podDefaultsWithAntiAffinity" (dict "context" . "podAntiAffinity" $spread) | nindent 6 }}
+      {{- else }}
+      {{- include "miles-run.podDefaults" . | nindent 6 }}
+      {{- end }}
+      restartPolicy: Never
+      subdomain: {{ $name | quote }}
+      containers:
+        - name: command-job
+          {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          command:
+            {{- range .Values.commandJob.command }}
+            - {{ . | quote }}
+            {{- end }}
+          {{- with include "miles-run.env" (dict "context" . "entry" dict) }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          {{- if .Values.commandJob.gpusPerPod }}
+          resources:
+            limits:
+              nvidia.com/gpu: {{ .Values.commandJob.gpusPerPod }}
+          {{- end }}
+      {{- $volumes := compact (list (include "miles-common.volumes" . | trim)) | join "\n" }}
+      {{- with $volumes }}
+      volumes:
+        {{- . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -3,7 +3,19 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
 import torch
+
+
+@pytest.fixture(autouse=True)
+def _stubs_do_not_outlive_the_test():
+    # the stub standing in for megatron is a plain module rather than a package, so a stub left behind
+    # makes every later import of a megatron submodule fail in whichever test happens to run next
+    saved = dict(sys.modules)
+    yield
+    for name in set(sys.modules) - set(saved):
+        del sys.modules[name]
+    sys.modules.update(saved)
 
 
 def install_bridge_stubs():
@@ -200,3 +212,10 @@ def test_raw_qwen3_5_mtp_export_keeps_eh_proj_column_order():
     )
 
     assert converted == [("mtp.fc.weight", weight)]
+
+
+def test_the_stubs_do_not_outlive_the_test_that_installed_them():
+    """A megatron left stubbed is not a package, so the next test to import one of its submodules fails."""
+    stub = sys.modules.get("megatron")
+
+    assert stub is None or hasattr(stub, "__path__")

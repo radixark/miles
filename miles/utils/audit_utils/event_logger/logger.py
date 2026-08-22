@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 _event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
 
+EVENTS_DIRNAME: str = "events"
+
 
 class EventLogger:
     def __init__(self, *, log_dir: Path | str, file_name: str = "events.jsonl", source: ProcessIdentity) -> None:
@@ -67,7 +69,7 @@ class EventLogger:
                 f.write(line)
         if print_log:
             payload = prune_for_log(event.model_dump(mode="json", exclude={"timestamp", "source"}))
-            log_structured(logger.info, op="event", event=type(event).__name__, **payload)
+            log_structured(logger.info, tag="audit", op="event", event=type(event).__name__, **payload)
 
     def close(self) -> None:
         pass

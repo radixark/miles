@@ -1,19 +1,46 @@
 import json
+import os
+import sys
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from tests.e2e.ft.conftest_ft.execution import DEFAULT_TRAIN_SCRIPT
 
-from miles.utils.test_utils.ft_test_actions import _ACTOR_ACTIONS, _GROUP_ACTIONS, FTTestAction, _load_actions
+from miles.utils.test_utils.ft_test_actions import (
+    _ACTOR_ACTIONS,
+    _CONTROLLER_ACTIONS,
+    _ORCHESTRATION_ACTIONS,
+    PARKABLE_TRAIN_SCRIPT,
+    SLEEP_FOREVER_AT_END_ACTION,
+    FTTestAction,
+    FTTestActionActorExecutor,
+    FTTestActionControllerExecutor,
+    FTTestActionOrchestrationExecutor,
+    _load_actions,
+    read_frozen_rollout_id,
+    read_ft_test_actions,
+    write_frozen_sentinel,
+    write_ft_test_actions,
+)
+
+_POOL_ID = "trainer-engine-actor"
 
 
-def _args(ci_ft_test_actions: object) -> SimpleNamespace:
-    return SimpleNamespace(ci_ft_test_actions=ci_ft_test_actions)
+def _args(ci_ft_test_actions: object = None, **overrides: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        **{
+            "ci_ft_test_actions": ci_ft_test_actions,
+            "ci_ft_test_actions_path": None,
+            "update_weights_interval": 1,
+            **overrides,
+        }
+    )
 
 
 def test_load_actions_returns_empty_when_attr_is_none() -> None:
     """None ci_ft_test_actions yields an empty action list without parsing."""
-    assert _load_actions(_args(None), _GROUP_ACTIONS) == []
+    assert _load_actions(_args(None), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
@@ -21,21 +48,22 @@ def test_load_actions_returns_empty_when_attr_is_empty_string() -> None:
     assert _load_actions(_args(""), _ACTOR_ACTIONS) == []
 
 
-def test_load_actions_returns_empty_when_attr_missing() -> None:
-    """A missing ci_ft_test_actions attribute defaults to None and yields []."""
-    assert _load_actions(SimpleNamespace(), _GROUP_ACTIONS) == []
+def test_load_actions_refuses_arguments_that_declare_no_plan_at_all() -> None:
+    """Every run registers both flags, so arguments carrying neither are not a run's arguments."""
+    with pytest.raises(AttributeError):
+        _load_actions(SimpleNamespace(), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_parses_single_crash_action_with_defaults() -> None:
     """A single crash_before_allreduce action loads with the model's default fields."""
-    raw = json.dumps([{"at_rollout": 3, "action": "crash_before_allreduce"}])
+    raw = json.dumps([{"at_rollout": 3, "action": "crash_before_allreduce", "cell_id": "trainer-engine-actor-00002"}])
     actions = _load_actions(_args(raw), _ACTOR_ACTIONS)
     assert len(actions) == 1
     action = actions[0]
     assert isinstance(action, FTTestAction)
     assert action.at_rollout == 3
     assert action.action == "crash_before_allreduce"
-    assert action.cell_index == -1
+    assert action.cell_id == "trainer-engine-actor-00002"
     assert action.rank == 0
     assert action.attempt == 0
 
@@ -44,12 +72,12 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
     """Mixed actions are filtered down to those whose action is in the filter set."""
     raw = json.dumps(
         [
-            {"at_rollout": 1, "action": "stop_cell_at_end"},
-            {"at_rollout": 2, "action": "crash_before_allreduce"},
-            {"at_rollout": 3, "action": "start_cell_at_end"},
+            {"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-0"},
+            {"at_rollout": 2, "action": "crash_before_allreduce", "cell_id": "trainer-engine-actor-1"},
+            {"at_rollout": 3, "action": "start_cell_at_end", "cell_id": "trainer-engine-actor-0"},
         ]
     )
-    group_actions = _load_actions(_args(raw), _GROUP_ACTIONS)
+    group_actions = _load_actions(_args(raw), _CONTROLLER_ACTIONS)
     assert [a.action for a in group_actions] == ["stop_cell_at_end", "start_cell_at_end"]
     actor_actions = _load_actions(_args(raw), _ACTOR_ACTIONS)
     assert [a.action for a in actor_actions] == ["crash_before_allreduce"]
@@ -57,116 +85,620 @@ def test_load_actions_filters_to_only_matching_actions() -> None:
 
 def test_load_actions_returns_empty_when_no_action_matches_filter() -> None:
     """Valid actions that fall outside the filter set produce an empty result."""
-    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce"}])
-    assert _load_actions(_args(raw), _GROUP_ACTIONS) == []
+    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "trainer-engine-actor-1"}])
+    assert _load_actions(_args(raw), _CONTROLLER_ACTIONS) == []
 
 
 def test_load_actions_rejects_extra_field() -> None:
     """An unexpected JSON field is rejected because the model forbids extras."""
-    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "bogus": 5}])
+    raw = json.dumps(
+        [{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-0", "bogus": 5}]
+    )
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
 def test_load_actions_rejects_invalid_action_literal() -> None:
     """An action string outside the allowed Literal set raises a validation error."""
-    raw = json.dumps([{"at_rollout": 1, "action": "not_a_real_action"}])
+    raw = json.dumps([{"at_rollout": 1, "action": "not_a_real_action", "cell_id": "trainer-engine-actor-0"}])
     with pytest.raises(ValidationError):
-        _load_actions(_args(raw), _GROUP_ACTIONS)
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-def test_resolve_cell_index_uses_last_cell_for_default() -> None:
-    """A default cell_index of -1 resolves to the last cell index (num_cells - 1)."""
-    action = FTTestAction(at_rollout=0, action="stop_cell_at_end")
-    assert action.resolve_cell_index(num_cells=4) == 3
+def test_load_actions_rejects_missing_cell_id() -> None:
+    """cell_id is required, so an action that omits it fails to load instead of guessing a target."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end"}])
+    with pytest.raises(ValidationError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-def test_resolve_cell_index_keeps_explicit_index() -> None:
-    """A non-negative cell_index is returned unchanged by resolve_cell_index."""
-    action = FTTestAction(at_rollout=0, action="stop_cell_at_end", cell_index=1)
-    assert action.resolve_cell_index(num_cells=4) == 1
+def test_load_actions_rejects_legacy_cell_index_field() -> None:
+    """The retired cell_index field is an extra field now, so stale JSON fails loudly."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_index": -1}])
+    with pytest.raises(ValidationError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
+def test_load_actions_rejects_cell_id_without_index_suffix() -> None:
+    """A cell_id that carries no trailing index cannot be parsed and is rejected at load time."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "traineractor"}])
+    with pytest.raises(ValueError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-class FakeGroup:
-    def __init__(self, num_cells: int) -> None:
-        self.num_cells = num_cells
-        self.stopped: list[int] = []
-        self.started: list[int] = []
-
-    def stop_cell(self, cell_index: int) -> None:
-        self.stopped.append(cell_index)
-
-    def start_cell(self, cell_index: int) -> None:
-        self.started.append(cell_index)
+def test_load_actions_rejects_cell_id_with_non_numeric_index() -> None:
+    """A cell_id whose suffix is not an integer is rejected at load time."""
+    raw = json.dumps([{"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-last"}])
+    with pytest.raises(ValueError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
 
-class TestResolveCellIndex:
-    def test_non_negative_index_returned_as_is(self):
-        """resolve_cell_index returns the explicit index when it is non-negative."""
-        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        assert action.resolve_cell_index(num_cells=3) == 1
+def test_load_actions_validates_cell_id_of_actions_outside_the_filter() -> None:
+    """Validation runs over every action, so a typo in another executor's action still fails here."""
+    raw = json.dumps([{"at_rollout": 1, "action": "crash_before_allreduce", "cell_id": "bogus"}])
+    with pytest.raises(ValueError):
+        _load_actions(_args(raw), _CONTROLLER_ACTIONS)
 
-    def test_negative_index_resolves_to_last_cell(self):
-        """resolve_cell_index maps the default -1 to the last cell (num_cells - 1)."""
-        action = FTTestAction(at_rollout=5, action="start_cell_at_end", cell_index=-1)
-        assert action.resolve_cell_index(num_cells=3) == 2
+
+class FakeController:
+    def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID, observed_after_reads: int = 0) -> None:
+        self.pool_id = pool_id
+        self.expected_num_cells = num_cells
+        self.cell_ids_reads = 0
+        self._observed_after_reads = observed_after_reads
+
+    @property
+    def cell_ids(self) -> list[str]:
+        self.cell_ids_reads += 1
+        if self.cell_ids_reads <= self._observed_after_reads:
+            return []
+        return [f"{self.pool_id}-{index}" for index in range(self.expected_num_cells)]
+
+
+class FakeCellOperations:
+    def __init__(self) -> None:
+        self.stopped: list[str] = []
+        self.started: list[str] = []
+
+    async def suspend(self, cell_id: str) -> None:
+        self.stopped.append(cell_id)
+
+    async def resume(self, cell_id: str) -> None:
+        self.started.append(cell_id)
 
 
 class TestRunAfterStep:
-    def test_stop_cell_fires_on_matching_rollout(self):
-        """stop_cell_at_end triggers group.stop_cell with the resolved cell index on its rollout."""
-        group = FakeGroup(num_cells=3)
-        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+    @pytest.mark.asyncio
+    async def test_stop_cell_fires_on_matching_rollout(self):
+        """stop_cell_at_end suspends the action's cell_id through the backend's operations."""
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        executor.run_after_step(5)
+        await executor.run_after_step(5)
 
-        assert group.stopped == [1]
-        assert group.started == []
+        assert operations.stopped == ["trainer-engine-actor-1"]
+        assert operations.started == []
 
-    def test_no_action_on_non_matching_rollout(self):
+    @pytest.mark.asyncio
+    async def test_no_action_on_non_matching_rollout(self):
         """run_after_step does nothing when no action's at_rollout matches the given rollout."""
-        group = FakeGroup(num_cells=3)
-        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_index=1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        executor.run_after_step(4)
+        await executor.run_after_step(4)
 
-        assert group.stopped == []
-        assert group.started == []
+        assert operations.stopped == []
+        assert operations.started == []
 
-    def test_start_cell_with_default_index_resolves_to_last_cell(self):
-        """start_cell_at_end with cell_index -1 calls group.start_cell on the last cell."""
-        group = FakeGroup(num_cells=3)
-        action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_index=-1)
-        executor = FTTestActionGroupExecutor(actions=[action], group=group)
+    @pytest.mark.asyncio
+    async def test_start_cell_targets_the_named_cell(self):
+        """start_cell_at_end resumes exactly the cell_id the action names."""
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_id="trainer-engine-actor-2")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
 
-        executor.run_after_step(2)
+        await executor.run_after_step(2)
 
-        assert group.started == [2]
-        assert group.stopped == []
+        assert operations.started == ["trainer-engine-actor-2"]
+        assert operations.stopped == []
 
-    def test_two_actions_same_rollout_both_fire(self):
-        """Two actions sharing the same rollout both dispatch to their respective group methods."""
-        group = FakeGroup(num_cells=3)
-        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_index=0)
-        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_index=2)
-        executor = FTTestActionGroupExecutor(actions=[stop_action, start_action], group=group)
+    @pytest.mark.asyncio
+    async def test_start_cell_does_not_return_until_the_controller_observes_the_cell(self):
+        """The next step reconfigures against what is observed, so returning early races the heal."""
+        operations = FakeCellOperations()
+        controller = FakeController(num_cells=2, observed_after_reads=1)
+        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller, cell_operations=operations)
 
-        executor.run_after_step(7)
+        await executor.run_after_step(3)
 
-        assert group.stopped == [0]
-        assert group.started == [2]
+        assert operations.started == ["trainer-engine-actor-1"]
+        assert controller.cell_ids_reads > 1, "the resume returned on the read that still lacked the cell"
 
-    def test_empty_actions_is_noop(self):
-        """An executor with no actions performs no group calls."""
-        group = FakeGroup(num_cells=3)
-        executor = FTTestActionGroupExecutor(actions=[], group=group)
+    @pytest.mark.asyncio
+    async def test_stop_cell_does_not_wait_for_anything_to_be_observed(self):
+        """Only the resume has a cell to wait for; making suspend wait would hang on the cell it removed."""
+        operations = FakeCellOperations()
+        controller = FakeController(num_cells=2)
+        action = FTTestAction(at_rollout=3, action="stop_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller, cell_operations=operations)
 
-        executor.run_after_step(5)
+        await executor.run_after_step(3)
 
-        assert group.stopped == []
-        assert group.started == []
+        assert operations.stopped == ["trainer-engine-actor-1"]
+        assert controller.cell_ids_reads == 0
+
+    @pytest.mark.asyncio
+    async def test_start_cell_after_that_cell_was_dropped_still_targets_it(self):
+        """A stopped cell no longer being live does not change the cell_id the action names."""
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-engine-actor-1")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=2), cell_operations=operations
+        )
+
+        await executor.run_after_step(3)
+
+        assert operations.started == ["trainer-engine-actor-1"]
+        assert operations.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_two_actions_same_rollout_both_fire(self):
+        """Two actions sharing the same rollout both dispatch to their respective cell operations."""
+        operations = FakeCellOperations()
+        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-engine-actor-0")
+        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-engine-actor-2")
+        executor = FTTestActionControllerExecutor(
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
+
+        await executor.run_after_step(7)
+
+        assert operations.stopped == ["trainer-engine-actor-0"]
+        assert operations.started == ["trainer-engine-actor-2"]
+
+    @pytest.mark.asyncio
+    async def test_empty_actions_is_noop(self):
+        """An executor with no actions performs no cell operations."""
+        operations = FakeCellOperations()
+        executor = FTTestActionControllerExecutor(
+            actions=[], controller=FakeController(num_cells=3), cell_operations=operations
+        )
+
+        await executor.run_after_step(5)
+
+        assert operations.stopped == []
+        assert operations.started == []
+
+    @pytest.mark.asyncio
+    async def test_action_naming_another_spec_raises(self):
+        """An action aimed at a different spec is a misconfiguration and must fail, not silently no-op."""
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="rollout-engine-0")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
+
+        with pytest.raises(AssertionError):
+            await executor.run_after_step(1)
+
+        assert operations.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_action_index_beyond_expected_num_cells_raises(self):
+        """A cell index the group can never have is a misconfiguration and must fail at dispatch."""
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-engine-actor-9")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
+
+        with pytest.raises(AssertionError):
+            await executor.run_after_step(1)
+
+        assert operations.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_the_index_one_past_the_last_cell_is_rejected(self):
+        """Cell indices are half-open, so index N of an N-cell pool is the easiest off-by-one to write in CI config."""
+        operations = FakeCellOperations()
+        action = FTTestAction(at_rollout=1, action="stop_cell_at_end", cell_id="trainer-engine-actor-3")
+        executor = FTTestActionControllerExecutor(
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
+
+        with pytest.raises(AssertionError):
+            await executor.run_after_step(1)
+
+        assert operations.stopped == []
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_stop_propagates_and_the_later_action_never_fires(self):
+        """Carrying on after the requested transition failed turns a broken scenario into a green run."""
+
+        class _RejectingOperations(FakeCellOperations):
+            async def suspend(self, cell_id: str) -> None:
+                raise RuntimeError("worker manager rejected the stop")
+
+        operations = _RejectingOperations()
+        stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-engine-actor-0")
+        start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-engine-actor-2")
+        executor = FTTestActionControllerExecutor(
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3), cell_operations=operations
+        )
+
+        with pytest.raises(RuntimeError, match="rejected the stop"):
+            await executor.run_after_step(7)
+
+        assert operations.stopped == []
+        assert operations.started == []
+
+
+_CRASH_ACTION = FTTestAction(
+    at_rollout=4, action="crash_before_allreduce", cell_id="trainer-engine-actor-1", rank=0, attempt=0
+)
+
+
+def _make_actor_executor(*, cell_id: str, rank: int) -> FTTestActionActorExecutor:
+    return FTTestActionActorExecutor(actions=[_CRASH_ACTION], cell_id=cell_id, rank=rank)
+
+
+@pytest.fixture
+def recorded_exit_codes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    exit_codes: list[int] = []
+    monkeypatch.setattr(os, "_exit", lambda code: exit_codes.append(code))
+    return exit_codes
+
+
+class TestMaybeCrash:
+    def test_targeted_cell_and_rank_exits(self, recorded_exit_codes: list[int]) -> None:
+        """The rank named by the action reaches os._exit(1) on the target rollout and attempt."""
+        executor = _make_actor_executor(cell_id="trainer-engine-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == [1]
+
+    def test_other_cell_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """A worker in a cell the action does not name keeps running."""
+        executor = _make_actor_executor(cell_id="trainer-engine-actor-0", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_cell_of_another_spec_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """Matching is exact string equality, so a same-index cell of another spec survives."""
+        executor = _make_actor_executor(cell_id="rollout-engine-1", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_other_rank_in_targeted_cell_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """Only the named rank of the named cell crashes, not its siblings."""
+        executor = _make_actor_executor(cell_id="trainer-engine-actor-1", rank=1)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_other_rollout_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """The crash is armed for one rollout only."""
+        executor = _make_actor_executor(cell_id="trainer-engine-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=3, attempt=0)
+
+        assert recorded_exit_codes == []
+
+    def test_other_attempt_does_not_exit(self, recorded_exit_codes: list[int]) -> None:
+        """The retry after the injected crash must not crash again."""
+        executor = _make_actor_executor(cell_id="trainer-engine-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=1)
+
+        assert recorded_exit_codes == []
+
+    def test_no_actions_never_exits(self, recorded_exit_codes: list[int]) -> None:
+        """An actor executor with no actions never crashes its worker."""
+        executor = FTTestActionActorExecutor(actions=[], cell_id="trainer-engine-actor-1", rank=0)
+
+        executor.maybe_crash(rollout_id=4, attempt=0)
+
+        assert recorded_exit_codes == []
+
+
+_SLEEP_ACTION = FTTestAction(at_rollout=2, action="sleep_forever_at_end")
+
+
+class _SleptEnough(Exception):
+    pass
+
+
+def _sleeper(*, wakes: list[float], limit: int):
+    async def sleep(seconds: float) -> None:
+        wakes.append(seconds)
+        if len(wakes) >= limit:
+            raise _SleptEnough
+
+    return sleep
+
+
+class TestLoadingASleepForeverAction:
+    def test_the_action_that_freezes_the_orchestration_script_is_not_offered_to_the_cell_side_executors(self) -> None:
+        """A cell executor acting on it would suspend a cell where the scenario asked for a frozen script."""
+        assert SLEEP_FOREVER_AT_END_ACTION in _ORCHESTRATION_ACTIONS
+        assert not _ORCHESTRATION_ACTIONS & (_CONTROLLER_ACTIONS | _ACTOR_ACTIONS)
+
+    def test_a_sleep_forever_action_loads_without_naming_a_cell(self) -> None:
+        """The script that drives the run is not a cell, so this action has no cell id to carry."""
+        raw = json.dumps([{"at_rollout": 2, "action": "sleep_forever_at_end"}])
+
+        [action] = _load_actions(_args(raw), _ORCHESTRATION_ACTIONS)
+
+        assert action == _SLEEP_ACTION
+
+    def test_a_sleep_forever_action_that_names_a_cell_is_refused(self) -> None:
+        """A cell id here would read as a cell being frozen, and nothing freezes a cell."""
+        raw = json.dumps([{"at_rollout": 2, "action": "sleep_forever_at_end", "cell_id": "trainer-engine-actor-0"}])
+
+        with pytest.raises(ValidationError):
+            _load_actions(_args(raw), _ORCHESTRATION_ACTIONS)
+
+    def test_the_orchestration_executor_ignores_the_actions_of_the_other_sides(self) -> None:
+        """The orchestration script runs beside the cells, and suspending one from here would drive it twice."""
+        raw = json.dumps(
+            [
+                {"at_rollout": 1, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-0"},
+                {"at_rollout": 2, "action": "sleep_forever_at_end"},
+            ]
+        )
+
+        assert _load_actions(_args(raw), _ORCHESTRATION_ACTIONS) == [_SLEEP_ACTION]
+
+
+class TestSleepForeverAtEnd:
+    @pytest.mark.asyncio
+    async def test_the_step_the_action_names_never_returns(self) -> None:
+        """The whole point is that the run stands still, so the loop is never handed the next step."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[_SLEEP_ACTION], sleep=_sleeper(wakes=wakes, limit=3), interval_seconds=0.5
+        )
+
+        with pytest.raises(_SleptEnough):
+            await executor.run_after_step(rollout_id=2)
+
+        assert wakes == [0.5, 0.5, 0.5]
+
+    @pytest.mark.asyncio
+    async def test_every_other_step_returns_at_once(self) -> None:
+        """A run frozen a step early would resume from another checkpoint than the one pinned."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(actions=[_SLEEP_ACTION], sleep=_sleeper(wakes=wakes, limit=1))
+
+        for rollout_id in (0, 1, 3, 4):
+            await executor.run_after_step(rollout_id=rollout_id)
+
+        assert wakes == []
+
+    @pytest.mark.asyncio
+    async def test_an_orchestration_executor_with_no_actions_never_sleeps(self) -> None:
+        """Every run outside this scenario carries no plan and has to train straight through."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(actions=[], sleep=_sleeper(wakes=wakes, limit=1))
+
+        await executor.run_after_step(rollout_id=2)
+
+        assert wakes == []
+
+    @pytest.mark.asyncio
+    async def test_a_cell_action_that_reached_the_orchestration_side_is_refused(self) -> None:
+        """Sleeping on a cell action would swallow the suspend the scenario armed and freeze the run instead."""
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[FTTestAction(at_rollout=2, action="stop_cell_at_end", cell_id="trainer-engine-actor-0")],
+            sleep=_sleeper(wakes=[], limit=1),
+        )
+
+        with pytest.raises(AssertionError, match="stop_cell_at_end"):
+            await executor.run_after_step(rollout_id=2)
+
+    @pytest.mark.asyncio
+    async def test_a_plan_the_run_never_reaches_leaves_it_training(self) -> None:
+        """An armed step past the end of the run is a scenario bug, not a freeze."""
+        wakes: list[float] = []
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[FTTestAction(at_rollout=99, action="sleep_forever_at_end")],
+            sleep=_sleeper(wakes=wakes, limit=1),
+        )
+
+        await executor.run_after_step(rollout_id=5)
+
+        assert wakes == []
+
+
+# ============ adhoc file delivery (revert after the args refactor) ============
+
+
+def _args_of_path(path: object) -> SimpleNamespace:
+    return _args(ci_ft_test_actions_path=path)
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestActionsDeliveredThroughAFile:
+    def test_a_plan_written_to_the_file_is_the_plan_the_run_performs(self, tmp_path) -> None:
+        """Every worker pod's command carries the arguments, so a changing plan cannot live in one."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+
+        assert _load_actions(_args_of_path(str(path)), _ORCHESTRATION_ACTIONS) == [_SLEEP_ACTION]
+
+    def test_a_file_rewritten_between_two_reads_is_read_again_rather_than_remembered(self, tmp_path) -> None:
+        """A take-over relaunches the same command, so only a fresh read can arm the next freeze."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        args = _args_of_path(str(path))
+        assert _load_actions(args, _ORCHESTRATION_ACTIONS) == [_SLEEP_ACTION]
+
+        write_ft_test_actions(path, [])
+
+        assert _load_actions(args, _ORCHESTRATION_ACTIONS) == []
+
+    def test_a_file_the_run_was_pointed_at_but_nobody_wrote_is_refused(self, tmp_path) -> None:
+        """A plan nothing wrote would leave the run performing no action while looking armed."""
+        with pytest.raises(AssertionError, match="does not exist"):
+            _load_actions(_args_of_path(str(tmp_path / "absent.json")), _ORCHESTRATION_ACTIONS)
+
+    def test_a_run_told_both_the_plan_and_a_file_holding_one_is_refused(self, tmp_path) -> None:
+        """Two plans mean the run silently follows one of them, and nobody can tell which."""
+        args = _args(
+            json.dumps([{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}]),
+            ci_ft_test_actions_path=str(tmp_path / "plan.json"),
+        )
+
+        with pytest.raises(AssertionError, match="both name the actions"):
+            _load_actions(args, _ORCHESTRATION_ACTIONS)
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestTheSentinelAFrozenRunLeaves:
+    @pytest.mark.asyncio
+    async def test_a_run_that_parked_says_so_where_the_plan_was_read_from(self, tmp_path) -> None:
+        """Only the run knows it is parked; a reader of its metrics sees the step end, not the sleep."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[_SLEEP_ACTION], sleep=_stop_after_one_sleep, actions_path=path
+        )
+
+        with pytest.raises(_SleptOnce):
+            await executor.run_after_step(rollout_id=2)
+
+        assert read_frozen_rollout_id(path) == 2
+
+    @pytest.mark.asyncio
+    async def test_a_run_that_never_parked_leaves_no_sentinel(self, tmp_path) -> None:
+        """Reading a stale sentinel as this freeze would take a still-training run over."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        executor = FTTestActionOrchestrationExecutor(actions=[_SLEEP_ACTION], actions_path=path)
+
+        await executor.run_after_step(rollout_id=1)
+
+        assert read_frozen_rollout_id(path) is None
+
+    @pytest.mark.asyncio
+    async def test_each_freeze_overwrites_what_the_previous_one_left(self, tmp_path) -> None:
+        """A take-over waits for its own step, so the value has to move on with the run."""
+        path = tmp_path / "plan.json"
+        write_frozen_sentinel(path, rollout_id=2)
+        executor = FTTestActionOrchestrationExecutor(
+            actions=[FTTestAction(at_rollout=4, action=SLEEP_FOREVER_AT_END_ACTION)],
+            sleep=_stop_after_one_sleep,
+            actions_path=path,
+        )
+
+        with pytest.raises(_SleptOnce):
+            await executor.run_after_step(rollout_id=4)
+
+        assert read_frozen_rollout_id(path) == 4
+
+
+class _SleptOnce(Exception):
+    pass
+
+
+async def _stop_after_one_sleep(_seconds: float) -> None:
+    raise _SleptOnce
+
+
+# TODO ad hoc hack: revert after the args refactor
+class TestHowOftenThePlanIsReadOffDisk:
+    def test_a_plan_whose_stamp_has_not_moved_is_not_read_again(self, tmp_path) -> None:
+        """The run consults this once per step, and the file sits on shared storage."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        first = read_ft_test_actions(path)
+        stamp = path.stat()
+
+        path.write_text(" " * len(first))
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+
+        assert read_ft_test_actions(path) == first
+
+    def test_a_rewritten_plan_is_read_again(self, tmp_path) -> None:
+        """A relaunch arms the next freeze by rewriting the file, and the run has to see it."""
+        path = tmp_path / "plan.json"
+        write_ft_test_actions(path, [{"at_rollout": 2, "action": SLEEP_FOREVER_AT_END_ACTION}])
+        assert json.loads(read_ft_test_actions(path)) != []
+
+        write_ft_test_actions(path, [])
+
+        assert json.loads(read_ft_test_actions(path)) == []
+
+
+class TestWhichLoopsCanBeParked:
+    def test_a_plan_reaching_a_loop_of_another_train_script_is_refused(self, driven_by) -> None:
+        """train_async.py has already started the next rollout, so the run would not be where the action names."""
+        driven_by("train_async.py")
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
+
+        with pytest.raises(AssertionError, match="train_async.py has already started"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_loop_is_judged_by_the_script_driving_it_and_not_by_a_flag_it_declares(self, driven_by) -> None:
+        """--fully-async is one way to reach an async loop; the train script is what actually chooses one."""
+        driven_by("train_async.py")
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]), fully_async=False)
+
+        with pytest.raises(AssertionError, match="train_async.py has already started"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_plan_reaching_a_run_that_syncs_weights_every_other_step_is_refused(self, driven_by) -> None:
+        """The action parks the run where it updates weights; a gated update skips that point."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]), update_weights_interval=2)
+
+        with pytest.raises(AssertionError, match="update-weights-interval"):
+            FTTestActionOrchestrationExecutor.from_args(args)
+
+    def test_a_plan_reaching_one_policy_of_a_multi_policy_run_is_refused(self, driven_by) -> None:
+        """Only that policy's coroutine would park; the others would train past the step."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
+
+        with pytest.raises(AssertionError, match="several policies"):
+            FTTestActionOrchestrationExecutor.from_args(args, trainer_model_id="solver")
+
+    def test_the_parkable_script_is_the_one_the_harness_launches_by_default(self) -> None:
+        """A literal of its own would go on naming train.py after the harness moved to another script."""
+        assert PARKABLE_TRAIN_SCRIPT == DEFAULT_TRAIN_SCRIPT
+
+    def test_the_loop_the_action_was_written_for_is_accepted(self, driven_by) -> None:
+        """train.py updates weights once per step, for one policy, after the step is done."""
+        driven_by(PARKABLE_TRAIN_SCRIPT)
+        args = _args(json.dumps([_SLEEP_ACTION.model_dump()]))
+
+        assert FTTestActionOrchestrationExecutor.from_args(args)._actions == [_SLEEP_ACTION]
+
+    def test_a_run_with_no_plan_is_never_asked_which_loop_it_is(self, driven_by) -> None:
+        """Every run passes through here; only the ones carrying the action are constrained."""
+        driven_by("train_async.py")
+
+        FTTestActionOrchestrationExecutor.from_args(_args(fully_async=True))
+
+
+@pytest.fixture
+def driven_by(monkeypatch):
+    def install(train_script: str) -> None:
+        monkeypatch.setattr(sys, "argv", [f"/miles/{train_script}", "--some-flag", "some-value"])
+
+    return install

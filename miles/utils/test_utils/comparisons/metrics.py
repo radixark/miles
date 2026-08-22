@@ -1,12 +1,13 @@
 import logging
 import math
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
 from sglang.srt.debug_utils.comparator.display import _render_polars_as_text
 
-from miles.utils.audit_utils.event_logger.logger import read_events
+from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME, read_events
 from miles.utils.audit_utils.event_logger.models import MetricEvent
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ def compare_metrics(
     atol: float,
     key_prefixes: list[str],
     exclude_keys: list[str],
+    expected_deltas: dict[str, list[float]] | None = None,
 ) -> None:
     baseline_events = _read_metric_events(Path(baseline_dir))
     target_events = _read_metric_events(Path(target_dir))
@@ -33,12 +35,34 @@ def compare_metrics(
 
     issues: list[str] = []
     issues += _check_event_counts(baseline_events, target_events, baseline_dir, target_dir)
+    issues += _check_events_line_up(baseline_events, target_events)
+    issues += _check_expected_delta_sequence_lengths(baseline_events, target_events, expected_deltas or {})
 
     if not issues:
+        next_occurrence_by_key: dict[str, int] = defaultdict(int)
         for step_idx, (b_event, t_event) in enumerate(zip(baseline_events, target_events, strict=True)):
-            _print_step_comparison_table(step_idx, b_event, t_event, key_prefixes, exclude_keys=exclude_keys)
+            expected_deltas_for_step = _take_expected_deltas_for_step(
+                b_event,
+                expected_deltas=expected_deltas or {},
+                next_occurrence_by_key=next_occurrence_by_key,
+            )
+            _print_step_comparison_table(
+                step_idx,
+                b_event,
+                t_event,
+                key_prefixes,
+                exclude_keys=exclude_keys,
+                expected_deltas=expected_deltas_for_step,
+            )
             issues += _check_step_metrics(
-                step_idx, b_event, t_event, key_prefixes, rtol, atol=atol, exclude_keys=exclude_keys
+                step_idx,
+                b_event,
+                t_event,
+                key_prefixes,
+                rtol,
+                atol=atol,
+                exclude_keys=exclude_keys,
+                expected_deltas=expected_deltas_for_step,
             )
 
     issues += _check_required_keys_exist(baseline_events)
@@ -49,13 +73,68 @@ def compare_metrics(
     print(f"MetricEvent comparison passed: {len(baseline_events)} steps compared")
 
 
+def read_metric_series(dump_dir: str, *, key: str) -> list[tuple[int, float]]:
+    events = _keep_only_final_attempt(_read_metric_events(Path(dump_dir)))
+    return [
+        (event.rollout_id, float(value))
+        for event in events
+        if isinstance(value := event.metrics.get(key), (int, float)) and not isinstance(value, bool)
+    ]
+
+
+def assert_gradients_were_nonzero(*, side: str, dump_dir: str, min_trained_rollouts: int) -> None:
+    assert_metric_was_finite_and_nonzero(
+        side=side, dump_dir=dump_dir, key="train/grad_norm", min_rollouts=min_trained_rollouts
+    )
+
+
+def assert_metric_was_finite_and_nonzero(*, side: str, dump_dir: str, key: str, min_rollouts: int) -> None:
+    series = read_metric_series(dump_dir, key=key)
+    usable = [(rollout_id, value) for rollout_id, value in series if math.isfinite(value) and value != 0.0]
+    usable_rollouts = {rollout_id for rollout_id, _ in usable}
+
+    assert len(usable_rollouts) >= min_rollouts, (
+        f"{side}: {key} is finite and non-zero in only {len(usable_rollouts)} of "
+        f"{len({rollout_id for rollout_id, _ in series})} rollout(s) ({series}), so this run's weights may have "
+        f"moved on nothing training produced"
+    )
+
+
+def assert_every_metric_is_classified(dump_dir: str, *, compared: tuple[str, ...], ignored: tuple[str, ...]) -> None:
+    keys = {key for event in _keep_only_final_attempt(_read_metric_events(Path(dump_dir))) for key in event.metrics}
+    unclassified: list[str] = sorted(key for key in keys if not key.startswith(compared + ignored))
+
+    assert not unclassified, (
+        f"metrics {unclassified} belong to no namespace this comparison has classified, so they would be dropped "
+        f"from one that claims to cover everything; add them to the compared prefixes {list(compared)}, or to the "
+        f"ignored ones {list(ignored)} with a reason they cannot match"
+    )
+
+
+def read_rollout_completion_times(dump_dir: str) -> list[tuple[int, datetime]]:
+    events = _keep_only_final_attempt(_read_metric_events(Path(dump_dir)))
+    return sorted(
+        ((event.rollout_id, event.timestamp) for event in events if event.rollout_id is not None),
+        key=lambda one: one[1],
+    )
+
+
+def _check_events_line_up(baseline_events: list[MetricEvent], target_events: list[MetricEvent]) -> list[str]:
+    return [
+        f"step {index}: baseline is rollout {b.rollout_id} while target is rollout {t.rollout_id}, so the two "
+        f"sides are not describing the same step"
+        for index, (b, t) in enumerate(zip(baseline_events, target_events, strict=False))
+        if b.rollout_id != t.rollout_id
+    ]
+
+
 def _keep_only_final_attempt(events: list[MetricEvent]) -> list[MetricEvent]:
     """Keep only events from the highest-attempt for each rollout_id.
 
     During FT healing, a crashed rollout is retried at attempt+1; events from
     the failed attempt are partial and should be discarded for comparison.
 
-    Rollout-side metrics (e.g. RolloutManager log_rollout_metrics) have
+    Rollout-side metrics (e.g. RolloutExecutor log_rollout_metrics) have
     attempt=None — they are not part of the FT retry stream, so we treat them
     as a single attempt (normalized to 0).
     """
@@ -85,6 +164,40 @@ def _check_event_counts(
     return issues
 
 
+def _check_expected_delta_sequence_lengths(
+    baseline: list[MetricEvent],
+    target: list[MetricEvent],
+    expected_deltas: dict[str, list[float]],
+) -> list[str]:
+    issues: list[str] = []
+    for key, sequence in expected_deltas.items():
+        for side, events in (("baseline", baseline), ("target", target)):
+            occurrences = sum(key in event.metrics for event in events)
+            if occurrences != len(sequence):
+                issues.append(
+                    f"Metric '{key}' expected delta sequence has {len(sequence)} entries, but {side} has "
+                    f"{occurrences} occurrence(s)"
+                )
+    return issues
+
+
+def _take_expected_deltas_for_step(
+    event: MetricEvent,
+    *,
+    expected_deltas: dict[str, list[float]],
+    next_occurrence_by_key: dict[str, int],
+) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for key in event.metrics:
+        if key not in expected_deltas:
+            continue
+
+        occurrence = next_occurrence_by_key[key]
+        result[key] = expected_deltas[key][occurrence]
+        next_occurrence_by_key[key] += 1
+    return result
+
+
 def _check_step_metrics(
     step_idx: int,
     baseline_event: MetricEvent,
@@ -94,6 +207,7 @@ def _check_step_metrics(
     *,
     atol: float,
     exclude_keys: list[str] | None = None,
+    expected_deltas: dict[str, float] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     for key in baseline_event.metrics:
@@ -106,8 +220,15 @@ def _check_step_metrics(
             issues.append(f"Step {step_idx}: metric '{key}' present in baseline but missing in target")
             continue
 
+        expected_delta = (expected_deltas or {}).get(key, 0.0)
         issues += _check_single_metric(
-            step_idx, key, baseline_event.metrics[key], target_event.metrics[key], rtol, atol=atol
+            step_idx,
+            key,
+            baseline_event.metrics[key],
+            target_event.metrics[key],
+            rtol,
+            atol=atol,
+            expected_delta=expected_delta,
         )
     return issues
 
@@ -119,6 +240,8 @@ def _check_single_metric(
     target_val: object,
     rtol: float,
     atol: float,
+    *,
+    expected_delta: float = 0.0,
 ) -> list[str]:
     if not isinstance(baseline_val, (int, float)) or not isinstance(target_val, (int, float)):
         return []
@@ -130,18 +253,19 @@ def _check_single_metric(
             return [f"Step {step_idx}, metric '{key}': inf mismatch (baseline={baseline_val}, target={target_val})"]
         return []
 
-    if baseline_val == 0.0 and target_val == 0.0:
+    if baseline_val == 0.0 and target_val == 0.0 and expected_delta == 0.0:
         return []
 
-    abs_diff = abs(baseline_val - target_val)
-    if abs_diff <= atol:
+    actual_delta = target_val - baseline_val
+    abs_error = abs(actual_delta - expected_delta)
+    if abs_error <= atol:
         return []
 
-    rel_diff = abs_diff / max(abs(baseline_val), abs(target_val), 1e-12)
+    rel_diff = abs_error / max(abs(baseline_val), abs(target_val), abs(actual_delta), abs(expected_delta), 1e-12)
     if rel_diff > rtol:
         return [
             f"Step {step_idx}, metric '{key}': baseline={baseline_val}, target={target_val}, "
-            f"rel_diff={rel_diff:.6f} > rtol={rtol}"
+            f"actual_delta={actual_delta}, expected_delta={expected_delta}, rel_diff={rel_diff:.6f} > rtol={rtol}"
         ]
     return []
 
@@ -153,6 +277,7 @@ def _print_step_comparison_table(
     key_prefixes: list[str],
     *,
     exclude_keys: list[str] | None = None,
+    expected_deltas: dict[str, float] | None = None,
 ) -> None:
     rows: list[dict[str, str]] = []
     for key in sorted(baseline_event.metrics):
@@ -163,16 +288,19 @@ def _print_step_comparison_table(
         if not isinstance(b_val, (int, float)) or t_val is None or not isinstance(t_val, (int, float)):
             continue
         excluded = "(excluded)" if exclude_keys and key in exclude_keys else ""
-        abs_diff = abs(b_val - t_val)
-        denom = max(abs(b_val), abs(t_val), 1e-12)
-        rel_diff = abs_diff / denom
+        actual_delta = t_val - b_val
+        expected_delta = (expected_deltas or {}).get(key, 0.0)
+        abs_error = abs(actual_delta - expected_delta)
+        denom = max(abs(b_val), abs(t_val), abs(actual_delta), abs(expected_delta), 1e-12)
+        rel_diff = abs_error / denom
         rows.append(
             {
                 "metric": key,
                 "baseline": f"{b_val:.6e}",
                 "target": f"{t_val:.6e}",
-                "abs_diff": f"{abs_diff:.2e}",
-                "rel_diff": f"{rel_diff:.4%}{excluded}",
+                "actual_delta": f"{actual_delta:.2e}",
+                "expected_delta": f"{expected_delta:.2e}",
+                "rel_error": f"{rel_diff:.4%}{excluded}",
             }
         )
 
@@ -197,10 +325,13 @@ def _check_required_keys_exist(events: list[MetricEvent]) -> list[str]:
     return issues
 
 
-def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
-    """Read all MetricEvents from the events directory."""
-    events_dir: Path = dump_dir / "events"
+def read_metric_events(events_dir: Path) -> list[MetricEvent]:
+    """Read all MetricEvents written into one events directory."""
     if not events_dir.exists():
         return []
     all_events = read_events(events_dir)
     return [e for e in all_events if isinstance(e, MetricEvent)]
+
+
+def _read_metric_events(dump_dir: Path) -> list[MetricEvent]:
+    return read_metric_events(dump_dir / EVENTS_DIRNAME)

@@ -26,6 +26,7 @@ This page has two passes.
 | `--rollout-num-gpus` | derived | GPUs for SGLang rollout (ignored when `--colocate`). |
 | `--rollout-num-gpus-per-engine` | `1` | TP size of each SGLang engine. |
 | `--colocate` | off | Share GPUs between actor and rollout. |
+| `--run-uuid` | generated | Machine-readable id for this launch; 16 lowercase hex characters. |
 
 See [Training Backends](/user-guide/training-backend) for what `--colocate` flips on under the hood.
 
@@ -140,6 +141,7 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
+| `--cluster-backend` | enum | `ray` | `ray` launches workers from the driver; `kubernetes` expects them to already exist. `kubernetes` is refused during validation until a later milestone provisions those workers. Under `kubernetes`, `--use-prometheus` is ignored. |
 | `--actor-num-nodes` | int | `1` | Total nodes for actor training. |
 | `--actor-num-gpus-per-node` | int | `8` | GPUs per actor node. |
 | `--rollout-num-gpus` | int | derived | Ignored under `--colocate`. |
@@ -283,8 +285,8 @@ Sections mirror the launch-script argument groups.
 
 | Flag | Type | Default | Notes |
 |---|---|---|---|
-| `--sglang-router-ip` | str | – | External router IP. Miles starts its own router if unset. |
-| `--sglang-router-port` | int | – | External router port. |
+| `--sglang-router-ip` | str | – | Must stay unset: external router mode was removed. Miles always starts its own router. |
+| `--sglang-router-port` | int | – | Pins the port of the router miles starts; model `i` gets `port + i`. Unset lets it move off a busy port. |
 | `--sglang-*` | passthrough | | Any flag accepted by `python -m sglang.launch_server` works with this prefix. |
 | `--router-*` | passthrough | | Any flag accepted by the active router works with this prefix. |
 

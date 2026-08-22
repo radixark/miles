@@ -1,6 +1,6 @@
 import dataclasses
 from argparse import Namespace
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 
 import torch
 import torch.distributed as dist
@@ -26,11 +26,13 @@ from .hf_weight_iterator_base import HfWeightIteratorBase
 class HfWeightIteratorDirect(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.megatron_local_param_info_buckets = _get_megatron_local_param_info_buckets(
-            self.args, self.model, self.model_name
-        )
+        self._param_info_buckets: list[list[ParamInfo]] | None = None
 
-    def get_hf_weight_chunks(self, megatron_local_weights, weight_type="base"):
+    def get_hf_weight_chunks(
+        self,
+        megatron_local_weights: Mapping[str, torch.Tensor],
+        weight_type: str = "base",
+    ) -> Iterator[list[tuple[str, torch.Tensor]]]:
         rank = dist.get_rank()
 
         if weight_type == "lora":
@@ -39,15 +41,21 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
             yield export_inkling_lora_hf_named(self.model)
             return
 
-        for megatron_local_param_infos in tqdm(
-            self.megatron_local_param_info_buckets, disable=rank != 0, desc="Update weights"
-        ):
+        param_info_buckets = self._resolve_param_info_buckets()
+        _validate_param_info_snapshot(param_info_buckets, megatron_local_weights)
+
+        for megatron_local_param_infos in tqdm(param_info_buckets, disable=rank != 0, desc="Update weights"):
             megatron_full_params = _get_megatron_full_params(
                 self.args, megatron_local_param_infos, megatron_local_weights
             )
             hf_named_tensors = self._convert_to_hf_named_tensors(megatron_full_params, megatron_local_param_infos)
             yield hf_named_tensors
             del megatron_full_params
+
+    def _resolve_param_info_buckets(self) -> list[list[ParamInfo]]:
+        if self._param_info_buckets is None:
+            self._param_info_buckets = _get_megatron_local_param_info_buckets(self.args, self.model, self.model_name)
+        return self._param_info_buckets
 
     def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
         hf_named_tensors = []
@@ -61,7 +69,7 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
 def _get_megatron_full_params(
     args: Namespace,
     megatron_local_param_infos: Sequence[ParamInfo],
-    megatron_local_weights,
+    megatron_local_weights: Mapping[str, torch.Tensor],
 ) -> Sequence[torch.Tensor]:
     monkey_patch_torch_reductions()
     pp_size = get_parallel_state().pp.size
@@ -71,9 +79,10 @@ def _get_megatron_full_params(
     params = []
     for info in megatron_local_param_infos:
         if dist.get_rank() == info.src_rank:
+            local_weight = megatron_local_weights[info.name]
             params.append(
                 torch.nn.Parameter(
-                    megatron_local_weights[info.name].to(device=torch.cuda.current_device(), non_blocking=True),
+                    local_weight.to(device=torch.cuda.current_device(), non_blocking=True),
                     requires_grad=False,
                 )
             )
@@ -121,6 +130,40 @@ def _get_megatron_full_params(
     gathered_params = all_gather_params_async(args, list(zip(megatron_local_param_infos, params, strict=False)))
 
     return gathered_params
+
+
+def _validate_param_info_snapshot(
+    param_info_buckets: Sequence[Sequence[ParamInfo]],
+    megatron_local_weights: Mapping[str, torch.Tensor],
+) -> None:
+    rank = dist.get_rank()
+    local_errors: list[str] = []
+    for param_infos in param_info_buckets:
+        for info in param_infos:
+            if rank != info.src_rank:
+                continue
+            if info.name not in megatron_local_weights:
+                local_errors.append(f"rank {rank}: {info.name} is absent from the live weight mapping")
+                continue
+
+            local_weight = megatron_local_weights[info.name]
+            live_shape = tuple(local_weight.shape)
+            recorded_shape = tuple(info.shape)
+            if local_weight.dtype != info.dtype or live_shape != recorded_shape:
+                local_errors.append(
+                    f"rank {rank}: {info.name} drifted from the param info snapshot: live "
+                    f"{local_weight.dtype}/{live_shape} vs recorded {info.dtype}/{recorded_shape}"
+                )
+
+    all_errors: list[list[str] | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(
+        object_list=all_errors,
+        obj=local_errors,
+        group=get_gloo_group(),
+    )
+    errors: list[str] = [error for rank_errors in all_errors if rank_errors is not None for error in rank_errors]
+    if errors:
+        raise RuntimeError("Param info snapshot validation failed before weight collectives:\n" + "\n".join(errors))
 
 
 def _get_megatron_local_param_info_buckets(

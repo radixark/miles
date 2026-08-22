@@ -26,7 +26,7 @@ from typing import Any, ClassVar
 import polars as pl
 import torch
 
-from miles.utils.types import Sample
+from miles.utils.types import LEGACY_WEIGHT_VERSIONS_KEY, Sample, WeightVersionsPerCall
 
 
 class DumpStillWriting(Exception):
@@ -45,6 +45,13 @@ STEP_AGGREGATE_METRICS = (
     "mean_entropy",
     "mixed_version_frac",
 )
+
+
+def _weight_version_summary(sample: Sample) -> tuple[list[str], int | None]:
+    if sample.weight_versions:
+        return [span.version for span in sample.all_weight_version_spans], len(sample.weight_versions)
+    legacy = list(getattr(sample, LEGACY_WEIGHT_VERSIONS_KEY, None) or [])
+    return legacy, len(legacy) or None
 
 
 def _min_numeric_version(versions: list[str] | None) -> int | None:
@@ -96,7 +103,7 @@ class TrainRow:
     returns: torch.Tensor | None
     raw_reward: Any
     truncated: int | None
-    weight_versions: list[str] | None
+    weight_versions: list[WeightVersionsPerCall] | None
 
     @classmethod
     def from_columns(cls, columns: dict, row: int, *, rank: int, raw_reward) -> TrainRow:
@@ -146,7 +153,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 2  # v2: staleness/turns/tool columns
+    SUMMARY_VERSION: ClassVar[int] = 3  # v3: turns counts unstamped calls, mixed_version spans flattened
 
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
@@ -454,6 +461,7 @@ class DumpReader:
     def _summary_row(self, sample: Sample, row: TrainRow | None) -> dict:
         spec = sample.spec_info
         cache_info = sample.prefix_cache_info
+        versions, turns = _weight_version_summary(sample)
         entry = dict(
             sample_index=sample.index,
             group_index=sample.group_index,
@@ -462,10 +470,10 @@ class DumpReader:
             response_length=sample.response_length,
             total_length=len(sample.tokens),
             reward=float(sample.reward) if isinstance(sample.reward, (int, float)) else None,
-            weight_version=sample.weight_versions[-1] if sample.weight_versions else None,
-            weight_version_min=_min_numeric_version(sample.weight_versions),
-            mixed_version=len(set(sample.weight_versions)) > 1 if sample.weight_versions else None,
-            turns=len(sample.weight_versions) if sample.weight_versions else None,
+            weight_version=versions[-1] if versions else None,
+            weight_version_min=_min_numeric_version(versions),
+            mixed_version=len(set(versions)) > 1 if versions else None,
+            turns=turns,
             tool_calls=_tool_call_count(sample),
             non_generation_time=sample.non_generation_time,
             spec_accept_rate=(

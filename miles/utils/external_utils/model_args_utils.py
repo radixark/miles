@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-MODEL_SCRIPT_DIR = REPO_ROOT / "scripts" / "models"
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_MODEL_SCRIPT_DIR = _REPO_ROOT / "scripts" / "models"
 
 
 # ==================== loading a model script ====================
@@ -13,10 +13,10 @@ MODEL_SCRIPT_DIR = REPO_ROOT / "scripts" / "models"
 
 def load_model_args(model_type: str, model_script_dir: Path | None = None, **kwargs: object) -> str:
     """Collapse scripts/models/<model_type>.py to one line; a newline would truncate the shell's read -ra."""
-    path = (model_script_dir or MODEL_SCRIPT_DIR) / f"{model_type}.py"
-    assert path.exists(), f"no model args script at {path}"
+    path = (model_script_dir or _MODEL_SCRIPT_DIR) / f"{model_type}.py"
+    assert path.exists(), f"No model args script at {path}"
     sys.modules.setdefault("model_args_utils", sys.modules[__name__])
-    module = import_module_from_path(path, f"miles_model_args_{path.stem.replace('.', '_').replace('-', '_')}")
+    module = _import_module_from_path(path, f"miles_model_args_{path.stem.replace('.', '_').replace('-', '_')}")
     args = " ".join(module.model_args(**kwargs).split())
     assert args, f"{path} declared no model args"
     return args
@@ -46,10 +46,10 @@ def moe_layer_freq(*, nlayers: int, first_k_dense_replace: int) -> str:
 # ==================== importing a file by path ====================
 
 
-def import_module_from_path(path: Path, module_name: str) -> ModuleType:
+def _import_module_from_path(path: Path, module_name: str) -> ModuleType:
     """Import a python file that is not reachable as a dotted module path."""
     spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None, f"cannot load {path}"
+    assert spec is not None and spec.loader is not None, f"Cannot load {path}"
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:

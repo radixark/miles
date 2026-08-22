@@ -14,12 +14,15 @@ import torch
 import torch.distributed as dist
 from sglang.srt.debug_utils.dumper import DumperConfig, _get_rank, dumper
 
+from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.environ import enable_experimental_ft_trainer
 from miles.utils.ft_utils.process_group_utils import GeneralPGUtil
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
+
+_WORKER_REGISTRATION_TIMEOUT_SECONDS = 120.0
 
 
 class DumperPhase(enum.Enum):
@@ -56,16 +59,13 @@ async def configure_sglang(args: Namespace) -> None:
     if not _is_phase_enabled(args, DumperPhase.INFERENCE):
         return
 
-    from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
     from miles.utils.http_utils import post
 
-    worker_urls = await get_worker_urls(args)
+    worker_urls = await _wait_registered_worker_urls(args)
     overrides = _get_phase_override_configs(args, DumperPhase.INFERENCE)
 
     engines_dir: Path = _get_dir(args) / "engines"
     _cleanup_dump_dir(engines_dir, indep_dp_rank=0)
-    if not enable_experimental_ft_trainer() and dist.is_initialized():
-        dist.barrier()
 
     coros = []
     for i, url in enumerate(worker_urls):
@@ -79,6 +79,26 @@ async def configure_sglang(args: Namespace) -> None:
 
     await asyncio.gather(*coros)
     logger.info("Configured dumper on %d SGLang engines", len(worker_urls))
+
+
+async def _wait_registered_worker_urls(args: Namespace) -> list[str]:
+    from miles.rollout.inference_rollout.inference_rollout_train import get_worker_urls
+
+    expected_worker_count = resolve_sglang_config(args).models[0].num_server_cells
+
+    async def _attempt(_remaining_seconds: float) -> list[str]:
+        worker_urls = await get_worker_urls(args)
+        assert (
+            len(worker_urls) >= expected_worker_count
+        ), f"router reports {len(worker_urls)}/{expected_worker_count} inference engines to configure the dumper on"
+        return worker_urls
+
+    return await retry_until_deadline(
+        _attempt,
+        total_seconds=_WORKER_REGISTRATION_TIMEOUT_SECONDS,
+        retry_on=AssertionError,
+        log_fields=dict(op="dumper_wait_workers"),
+    )
 
 
 # ------------------------------- Megatron -------------------------------------
@@ -117,8 +137,7 @@ class DumperMegatronUtil:
         get_grad: Callable[[torch.nn.Parameter], torch.Tensor | None] | None = None
         if self.phase is DumperPhase.FWD_BWD and self.overrides.get("enable_model_grad"):
             _log_model_grad_coverage(extracted_model)
-            if enable_experimental_ft_trainer():
-                get_grad = _build_full_grad_getter(extracted_model)
+            get_grad = _build_full_grad_getter(extracted_model)
 
         # Weights/grads are a once-per-rollout end-state, so pin them to step 0 instead of
         # the running per-microbatch step. _configure already cleaned the scoped paths;
@@ -293,6 +312,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
     if indep_dp.group is not None:
         log_structured(
             logger.info,
+            tag="ft",
             op="cross_cell",
             phase="start",
             kind="dump_barrier",
@@ -304,6 +324,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             GeneralPGUtil.create(indep_dp.group).barrier(indep_dp.group)
             log_structured(
                 logger.info,
+                tag="ft",
                 op="cross_cell",
                 phase="end",
                 kind="dump_barrier",
@@ -318,6 +339,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             # later in the step turns the abort into DISCARDED_SHOULD_RETRY.
             log_structured(
                 logger.error,
+                tag="ft",
                 op="cross_cell",
                 phase="end",
                 kind="dump_barrier",

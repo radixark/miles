@@ -170,6 +170,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             adapter=_merge_equal_value("adapter"),
             reward_spec=_merge_equal_value("reward_spec"),
             routing_key=_merge_equal_value("routing_key"),
+            trainer_model_id=_merge_equal_value("trainer_model_id"),
             non_generation_time=_merge_equal_value("non_generation_time"),
             spec_info=_merge_spec_info(a.spec_info, b.spec_info),
             prefix_cache_info=_merge_prefix_cache_info(a.prefix_cache_info, b.prefix_cache_info),

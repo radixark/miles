@@ -19,7 +19,7 @@ from miles.backends.training_utils.loss_hub.math_utils import (
     compute_policy_loss,
 )
 from miles.backends.training_utils.parallel import get_parallel_state
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.types import RolloutBatch
 
 
@@ -298,7 +298,7 @@ def policy_loss_function(
 
     pg_loss = pg_loss_reducer(pg_loss)
     pg_clipfrac = sum_of_sample_mean(pg_clipfrac)
-    ppo_kl = sum_of_sample_mean(ppo_kl)
+    ppo_kl = sum_of_sample_mean(ppo_kl.double()).to(dtype=ppo_kl.dtype)
 
     entropy_loss = pg_loss.new_zeros(())
     loss = pg_loss

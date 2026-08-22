@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "miles-workbench.fullname" . | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "miles-workbench.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ include "miles-workbench.fullname" . | quote }}
+  selector:
+    matchLabels:
+      {{- include "miles-workbench.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "miles-workbench.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "miles-workbench.serviceAccountName" . | quote }}
+      automountServiceAccountToken: true
+      {{- with include "miles-common.imagePullSecrets" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      {{- with include "miles-common.scheduling" . }}
+      {{- . | nindent 6 }}
+      {{- end }}
+      containers:
+        - name: workbench
+          image: {{ include "miles-common.image" . }}
+          imagePullPolicy: {{ .Values.infra.image.pullPolicy | quote }}
+          command: ["sleep", "infinity"]
+          {{- with include "miles-workbench.env" . }}
+          {{- . | nindent 10 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- $mounts := include "miles-common.volumeMounts" . | trim }}
+          volumeMounts:
+            - name: infra-values
+              mountPath: {{ include "miles-workbench.infraValuesDir" . | quote }}
+            {{- with $mounts }}
+            {{- . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: infra-values
+          configMap:
+            name: {{ include "miles-workbench.infraConfigMapName" . | quote }}
+        {{- with include "miles-common.volumes" . }}
+        {{- . | nindent 8 }}
+        {{- end }}

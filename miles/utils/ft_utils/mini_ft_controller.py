@@ -11,9 +11,10 @@ from typing import Any
 
 import httpx
 
-from miles.utils.ft_utils.control_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
+from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, CellPatchSpec, TriState
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.types import ClusterBackend
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,10 @@ def maybe_start_mini_ft_controller(args: Any) -> None:
         return
 
     runner = _MiniFTControllerRunner(
-        control_server_url=f"http://127.0.0.1:{args.control_server_port}",
+        api_server_url=f"http://127.0.0.1:{args.api_server_port}",
         poll_interval=args.mini_ft_controller_poll_interval,
         resume_delay=args.mini_ft_controller_resume_delay,
+        cells_auto_resume=ClusterBackend(args.cluster_backend) == ClusterBackend.KUBERNETES,
     )
 
     def _run() -> None:
@@ -46,11 +48,12 @@ class _MiniFTControllerRunner:
     def __init__(
         self,
         *,
-        control_server_url: str,
+        api_server_url: str,
         poll_interval: float,
         resume_delay: float,
+        cells_auto_resume: bool,
     ) -> None:
-        url = control_server_url.rstrip("/")
+        url = api_server_url.rstrip("/")
         self._client = httpx.AsyncClient(base_url=url, timeout=30.0)
         self._controller = _MiniFTController(
             get_cells=self._get_cells,
@@ -58,6 +61,7 @@ class _MiniFTControllerRunner:
             resume_cell=self._resume_cell,
             poll_interval=poll_interval,
             resume_delay=resume_delay,
+            cells_auto_resume=cells_auto_resume,
         )
 
     async def run(self) -> None:
@@ -133,6 +137,7 @@ class _MiniFTController:
         resume_cell: Callable[[str], Awaitable[None]],
         poll_interval: float,
         resume_delay: float,
+        cells_auto_resume: bool = False,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._get_cells = get_cells
@@ -140,6 +145,7 @@ class _MiniFTController:
         self._resume_cell = resume_cell
         self._poll_interval = poll_interval
         self._resume_delay = resume_delay
+        self._cells_auto_resume = cells_auto_resume
         self._clock = clock
 
         self._running: bool = False
@@ -165,6 +171,7 @@ class _MiniFTController:
             cells = await self._get_cells()
             log_structured(
                 logger.info,
+                tag="ft",
                 op="controller",
                 phase="poll",
                 cells=",".join(f"{c.name}:{c.status.value}" for c in cells),
@@ -192,19 +199,27 @@ class _MiniFTController:
 
     async def _heal(self, *, cell_name: str, backoff: _CellBackoff) -> None:
         try:
-            log_structured(logger.info, op="heal", phase="suspend", cell=cell_name)
+            log_structured(logger.info, tag="ft", op="heal", phase="suspend", cell=cell_name)
             await self._suspend_cell(cell_name)
 
-            log_structured(logger.info, op="heal", phase="sleep", cell=cell_name, resume_delay_s=self._resume_delay)
+            log_structured(
+                logger.info, tag="ft", op="heal", phase="sleep", cell=cell_name, resume_delay_s=self._resume_delay
+            )
             await asyncio.sleep(self._resume_delay)
 
-            log_structured(logger.info, op="heal", phase="resume", cell=cell_name)
-            await self._resume_cell(cell_name)
+            if not self._cells_auto_resume:
+                log_structured(logger.info, tag="ft", op="heal", phase="resume", cell=cell_name)
+                await self._resume_cell(cell_name)
 
             backoff.consecutive_failures = 0
             backoff.next_attempt_at = self._clock() + self._resume_delay
             log_structured(
-                logger.info, op="heal", phase="done", cell=cell_name, cooldown_until=round(backoff.next_attempt_at)
+                logger.info,
+                tag="ft",
+                op="heal",
+                phase="done",
+                cell=cell_name,
+                cooldown_until=round(backoff.next_attempt_at),
             )
         except Exception:
             backoff.consecutive_failures += 1
@@ -212,6 +227,7 @@ class _MiniFTController:
             backoff.next_attempt_at = self._clock() + delay
             log_structured(
                 logger.warning,
+                tag="ft",
                 op="heal",
                 phase="fail",
                 cell=cell_name,

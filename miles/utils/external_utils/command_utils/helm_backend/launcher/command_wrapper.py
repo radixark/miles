@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+import json
+import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, TypeVar
+
+import yaml
+from pydantic import BaseModel
+
+from miles.utils.external_utils.command_utils.common import run_process
+from miles.utils.external_utils.command_utils.helm_backend.launcher.manifest_types import Manifest
+from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+CI_LABEL = "miles.radixark.io/ci-run"
+_JOB_NAME_LABEL = "batch.kubernetes.io/job-name"
+_ALREADY_EXISTS = "AlreadyExists"
+
+
+class Helm:
+    @staticmethod
+    def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return run_process(["helm", *arguments], capture_output=True, check=False)
+
+    @staticmethod
+    def upgrade(
+        *,
+        release: str,
+        namespace: str,
+        chart: str | Path,
+        values_files: list[str | Path],
+        ci_run: bool,
+    ) -> None:
+        _run(Helm.upgrade_command(release, namespace, chart, values_files, ci_run=ci_run), capture_output=False)
+
+    @staticmethod
+    def render_upgrade(*, release: str, namespace: str, chart: str | Path, values_files: list[str | Path]) -> Manifest:
+        rendered = _run(
+            [
+                *Helm.upgrade_command(release, namespace, chart, values_files, ci_run=False),
+                "--dry-run",
+                "--output",
+                "json",
+            ],
+            capture_output=True,
+        )
+        return Manifest.parse(json.loads(rendered.stdout)["manifest"], namespace=namespace)
+
+    @staticmethod
+    def template(
+        *,
+        release: str,
+        chart: str | Path,
+        namespace: str,
+        show_only: str,
+        values: dict[str, Any],
+        values_files: list[str],
+    ) -> str:
+        command = [
+            "helm",
+            "template",
+            release,
+            str(chart),
+            "--namespace",
+            namespace,
+            "--show-only",
+            show_only,
+            *_compute_helm_args(values),
+        ]
+        for values_file in values_files:
+            command += ["--values", values_file]
+        return _run(command, capture_output=True).stdout
+
+    @staticmethod
+    def get_manifest(release: str, namespace: str) -> Manifest | None:
+        listed = run_process(
+            ["helm", "get", "manifest", release, "--namespace", namespace], capture_output=True, check=False
+        )
+        if listed.returncode == 0:
+            return Manifest.parse(listed.stdout, namespace=namespace)
+        if "not found" in (listed.stderr + listed.stdout).lower():
+            return None
+        raise RuntimeError(
+            f"Cannot tell whether release {release} exists: {listed.stderr.strip() or listed.stdout.strip()}"
+        )
+
+    @staticmethod
+    def build_dependencies(chart: str | Path) -> None:
+        if all((Path(chart) / "charts" / name).exists() for name in _locked_dependency_names(chart)):
+            return
+        _run(["helm", "dependency", "build", str(chart)], capture_output=False)
+
+    @staticmethod
+    def list_releases(*, namespace: str, selector: str | None = None) -> list[str]:
+        command = ["helm", "list", "--namespace", namespace, "--output", "json"]
+        if selector is not None:
+            command += ["--selector", selector]
+        listed = _run(command, capture_output=True)
+        return [release["name"] for release in json.loads(listed.stdout or "[]")]
+
+    @staticmethod
+    def uninstall(*, release: str, namespace: str) -> None:
+        _run(["helm", "uninstall", release, "--namespace", namespace], capture_output=False)
+
+    @staticmethod
+    def uninstall_if_present(*, release: str, namespace: str) -> None:
+        result = Helm.run_raw("uninstall", release, "--namespace", namespace)
+        if result.returncode == 0:
+            return
+
+        reason = (result.stderr or result.stdout or "").strip()
+        if "not found" in reason.lower():
+            return
+        raise RuntimeError(
+            f"Could not uninstall Helm release {release!r} from namespace {namespace!r}: "
+            f"exit code {result.returncode}: {reason}"
+        )
+
+    @staticmethod
+    def upgrade_command(
+        release: str, namespace: str, chart: str | Path, values_files: list[str | Path], *, ci_run: bool
+    ) -> list[str]:
+        command = ["helm", "upgrade", "--install", release, str(chart), "--namespace", namespace]
+        if ci_run:
+            command += ["--labels", f"{CI_LABEL}=true"]
+        for values_file in values_files:
+            command += ["--values", str(values_file)]
+        return command
+
+
+class Kubectl:
+    @staticmethod
+    def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return Kubectl._run(list(arguments))
+
+    @staticmethod
+    def apply(manifest: str, *, namespace: str) -> None:
+        result = Kubectl._run(["apply", "--namespace", namespace, "-f", "-"], input=manifest)
+        assert result.returncode == 0, f"Could not submit the job: {result.stderr}"
+
+    @staticmethod
+    def create_if_absent(manifest_path: str) -> bool:
+        result = Kubectl._run(["create", "-f", manifest_path])
+        if result.returncode == 0:
+            return True
+        if _ALREADY_EXISTS in result.stderr:
+            return False
+        raise RuntimeError(f"Could not create the objects of {manifest_path}: {result.stderr.strip()}")
+
+    @staticmethod
+    def delete_job(name: str, *, namespace: str, check: bool = False) -> None:
+        Kubectl._run(["delete", "job", name, "--namespace", namespace, "--ignore-not-found"], check=check)
+
+    @staticmethod
+    def get_json(
+        kind: str,
+        *,
+        return_type: type[_ModelT],
+        name: str | None = None,
+        namespace: str,
+        selector: str | None = None,
+        field_selector: str | None = None,
+    ) -> _ModelT | None:
+        command = ["get", kind]
+        if name is not None:
+            command.append(name)
+        command += ["--namespace", namespace, "--output", "json", "--ignore-not-found"]
+        if selector is not None:
+            command += ["--selector", selector]
+        if field_selector is not None:
+            command += ["--field-selector", field_selector]
+        result = Kubectl._run(command)
+        if result.returncode != 0:
+            raise RuntimeError(f"kubectl get {kind} failed with code {result.returncode}: {result.stderr.strip()}")
+        if not result.stdout.strip():
+            return None
+        return return_type.model_validate_json(result.stdout)
+
+    @staticmethod
+    def logs(target: str, *, namespace: str, tail: int) -> str:
+        result = run_process(
+            Kubectl.logs_command(namespace=namespace, target=target, tail=tail), capture_output=True, check=False
+        )
+        return result.stdout or result.stderr
+
+    @staticmethod
+    def logs_command(
+        *,
+        namespace: str,
+        target: str,
+        container: str | None = None,
+        follow: bool = False,
+        previous: bool = False,
+        tail: int | None = None,
+        since_time: str | None = None,
+    ) -> list[str]:
+        command = ["kubectl", "logs", target, "--namespace", namespace, "--timestamps"]
+        command += ["-c", container] if container is not None else ["--all-containers"]
+        if follow:
+            command.append("--follow")
+        if previous:
+            command.append("--previous")
+        if tail is not None:
+            command += ["--tail", str(tail)]
+        if since_time is not None:
+            command += ["--since-time", since_time]
+        return command
+
+    @staticmethod
+    def release_selector(release: str) -> str:
+        return f"{INSTANCE_LABEL}={release}"
+
+    @staticmethod
+    def releases_selector(releases: Sequence[str]) -> str:
+        if len(releases) == 1:
+            return Kubectl.release_selector(releases[0])
+        return f"{INSTANCE_LABEL} in ({','.join(releases)})"
+
+    @staticmethod
+    def job_selector(name: str) -> str:
+        return f"{_JOB_NAME_LABEL}={name}"
+
+    @staticmethod
+    def _run(
+        arguments: list[str], *, input: str | None = None, check: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        return run_process(["kubectl", *arguments], capture_output=True, check=check, input=input)
+
+
+def _compute_helm_args(values: dict[str, Any]) -> list[str]:
+    arguments: list[str] = []
+    for key, value in values.items():
+        if isinstance(value, (list, dict)):
+            arguments += ["--set-json", f"{key}={json.dumps(value)}"]
+        elif isinstance(value, bool):
+            arguments += ["--set", f"{key}={str(value).lower()}"]
+        else:
+            arguments += ["--set", f"{key}={value}"]
+    return arguments
+
+
+def _run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess[str]:
+    return run_process(command, capture_output=capture_output, check=True)
+
+
+def _locked_dependency_names(chart: str | Path) -> list[str]:
+    lock = Path(chart) / "Chart.lock"
+    if not lock.exists():
+        return []
+    return [entry["name"] for entry in (yaml.safe_load(lock.read_text()) or {}).get("dependencies", [])]

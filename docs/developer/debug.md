@@ -83,6 +83,16 @@ legitimately not hold.
 | Log-probs | At rollout 0, trainer `rollout/log_probs` matches `rollout/ref_log_probs` within `1e-8` (`5e-3` under R3, whose reference does not replay routing); trainer versus engine log-probs within `0.03`; rollout entropy in `(0, 0.7)`. Under `--true-on-policy-mode` the two must be exactly equal | `--ci-disable-logprobs-checker` |
 | Weight update | Sets `check_weight_update_equal`, comparing trainer and engine weights after a sync. Skipped automatically under either `--debug-*-only` | `--ci-disable-weight-update-checker` |
 
+`train/ppo_kl` is a signed diagnostic over stored float32 log probabilities. Its
+reduction accumulates in float64 after the policy loss is computed, then publishes in
+the original float32 dtype. The training loss and gradient stay in their original dtype,
+and the `1e-9` checker threshold is unchanged.
+
+Stored actor log probabilities and training log probabilities invoke Megatron's fused
+vocabulary-parallel cross entropy through the same grad-enabled forward contract. The
+stored result is detached immediately, so this alignment does not retain an inference
+autograd graph or change the training loss and gradient path.
+
 Three more take values rather than switching off:
 
 **Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>` asserts
@@ -102,10 +112,13 @@ JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer gr
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
 **Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions such as
-`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_index": -1}`, with
-`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and
-`cell_index: -1` meaning the last cell. It is how the fault-tolerance suite kills things on
-purpose. See [Fault Tolerance](/advanced/fault-tolerance).
+`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-2"}`. The
+cell-targeted actions are `stop_cell_at_end`, `start_cell_at_end` and
+`crash_before_allreduce`, and `cell_id` is the full cell id (spec name plus cell index).
+`sleep_forever_at_end` names no cell: it puts the orchestration script itself to sleep once
+the step it names is trained and saved, freezing the run between two steps so an external
+take-over lands at an exact place instead of racing the run. It is how the fault-tolerance
+suite kills and freezes things on purpose. See [Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision
 

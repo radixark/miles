@@ -3,20 +3,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
-from miles.utils.ft_utils.control_server.models import (
-    Cell,
-    CellCondition,
-    CellMetadata,
-    CellSpec,
-    CellStatus,
-    TriState,
+from miles.utils.arguments import (
+    _DEFAULT_FT_API_SERVER_PORT,
+    _resolve_api_server_port,
+    _resolve_mini_ft_controller_enable,
 )
+from miles.utils.ft_utils import mini_ft_controller
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.ft_utils.mini_ft_controller import (
     CellHealthStatus,
     _CellSnapshot,
@@ -101,7 +101,7 @@ def _build_cell_json(
         "kind": "Cell",
         "metadata": {
             "name": name,
-            "labels": {"miles.io/cell-type": "actor", "miles.io/cell-index": "0"},
+            "labels": {"miles.io/cell-type": "actor", "miles.io/cell-id": name},
         },
         "spec": {"suspend": False},
         "status": {
@@ -120,9 +120,10 @@ def _build_cell_list_json(cells: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _create_runner() -> _MiniFTControllerRunner:
     return _MiniFTControllerRunner(
-        control_server_url="http://127.0.0.1:8080",
+        api_server_url="http://127.0.0.1:8080",
         poll_interval=10.0,
         resume_delay=5.0,
+        cells_auto_resume=False,
     )
 
 
@@ -205,6 +206,17 @@ class TestComputeCellSnapshot:
         snapshot = _compute_cell_snapshot(cell)
 
         assert snapshot == _CellSnapshot(name="actor-0", status=NOT_APPLICABLE)
+
+    def test_a_pending_cell_that_blew_its_startup_deadline_is_healed(self):
+        """A rollout cell stuck booting reports Pending plus Healthy=False; without healing it is
+        stranded until the next hour-long readiness timeout."""
+        cell = _make_cell_object(
+            healthy=[CellCondition.healthy(TriState.FALSE, reason="StartupDeadlineExceeded")], phase="Pending"
+        )
+
+        snapshot = _compute_cell_snapshot(cell)
+
+        assert snapshot == _CellSnapshot(name="actor-0", status=UNHEALTHY)
 
     def test_any_false_among_multiple_conditions_wins(self):
         """If any Healthy condition is FALSE, the cell is unhealthy regardless of
@@ -654,22 +666,91 @@ class TestRunnerPatchCell:
         assert body == {"spec": {"suspend": False}}
 
 
-class TestArgumentValidation:
-    def test_requires_control_server_port(self) -> None:
-        """mini_ft_controller_enable=True + control_server_port=0 → error."""
-        from miles.utils.arguments import miles_validate_args
-
+class TestFtControllerDefaults:
+    @staticmethod
+    def _resolve(**overrides) -> tuple[int, bool]:
         args = argparse.Namespace(
-            mini_ft_controller_enable=True,
-            control_server_port=0,
-            use_fault_tolerance=False,
-            ft_components=None,
-            eval_datasets=None,
-            eval_data=None,
-            eval_config=None,
-            eval_prompt_data=None,
-            use_miles_dashboard=False,
+            **{
+                "api_server_port": None,
+                "mini_ft_controller_enable": None,
+                "ft_components": [],
+                **overrides,
+            }
+        )
+        args.api_server_port = _resolve_api_server_port(args)
+        return args.api_server_port, _resolve_mini_ft_controller_enable(args)
+
+    def test_asking_for_fault_tolerance_opens_the_port_and_starts_the_healing_loop(self) -> None:
+        """The health checkers only publish a status; without both of these a run watches an
+        engine die and leaves it routed."""
+        assert self._resolve(ft_components=["rollout"]) == (_DEFAULT_FT_API_SERVER_PORT, True)
+
+    def test_a_run_without_fault_tolerance_opens_no_port_and_starts_no_loop(self) -> None:
+        """There is nothing to heal, so the port would be surface area for nobody."""
+        assert self._resolve(ft_components=[]) == (0, False)
+
+    def test_an_explicitly_disabled_port_also_disables_the_healing_loop(self) -> None:
+        """The loop drives cells over that port, so leaving it on would fail every poll."""
+        assert self._resolve(ft_components=["rollout"], api_server_port=0) == (0, False)
+
+    def test_an_explicit_port_is_kept_as_given(self) -> None:
+        """A run that pins the port has an external controller expecting to find it there."""
+        assert self._resolve(ft_components=["rollout"], api_server_port=9999) == (9999, True)
+
+    def test_an_explicit_healing_choice_wins_over_the_default(self) -> None:
+        """The flag is how a run opts out of healing while keeping the health reporting."""
+        assert self._resolve(ft_components=["rollout"], mini_ft_controller_enable=False)[1] is False
+
+
+class _FakeRunner:
+    def __init__(
+        self, *, api_server_url: str, poll_interval: float, resume_delay: float, cells_auto_resume: bool
+    ) -> None:
+        self.api_server_url = api_server_url
+        self.poll_interval = poll_interval
+        self.resume_delay = resume_delay
+        self.cells_auto_resume = cells_auto_resume
+        self.ran = threading.Event()
+        self.thread_was_daemon: bool | None = None
+        self.thread_was_main_thread: bool | None = None
+
+    async def run(self) -> None:
+        current_thread = threading.current_thread()
+        self.thread_was_daemon = current_thread.daemon
+        self.thread_was_main_thread = current_thread is threading.main_thread()
+        self.ran.set()
+
+
+class TestMaybeStartMiniFtController:
+    def test_enabled_controller_uses_api_server_port_and_starts_a_daemon_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enabling the mini FT controller aims the runner at the local API server port and runs it on a daemon thread."""
+        created_runners: list[_FakeRunner] = []
+
+        def _create_runner_spy(**kwargs: Any) -> _FakeRunner:
+            runner = _FakeRunner(**kwargs)
+            created_runners.append(runner)
+            return runner
+
+        monkeypatch.setattr(mini_ft_controller, "_MiniFTControllerRunner", _create_runner_spy)
+
+        mini_ft_controller.maybe_start_mini_ft_controller(
+            argparse.Namespace(
+                mini_ft_controller_enable=True,
+                api_server_port=18231,
+                mini_ft_controller_poll_interval=1.5,
+                mini_ft_controller_resume_delay=2.5,
+                cluster_backend="kubernetes",
+            )
         )
 
-        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --control-server-port"):
-            miles_validate_args(args)
+        assert len(created_runners) == 1
+        runner = created_runners[0]
+        assert runner.api_server_url == "http://127.0.0.1:18231"
+        assert runner.poll_interval == 1.5
+        assert runner.resume_delay == 2.5
+        assert runner.cells_auto_resume is True
+        assert runner.ran.wait(timeout=5.0)
+        assert runner.thread_was_daemon is True
+        assert runner.thread_was_main_thread is False

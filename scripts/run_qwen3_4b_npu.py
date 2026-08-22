@@ -1,6 +1,6 @@
 import os
 
-import miles.utils.external_utils.exec_command as U
+from miles.utils.external_utils import command_utils
 from miles.utils.external_utils.command_utils import execute_train_npu
 
 MODEL_NAME = os.environ.get("MILES_SCRIPT_MODEL_NAME", "Qwen3-4B-Instruct-2507")
@@ -25,6 +25,7 @@ def get_megatron_model_type(model_name: str) -> str:
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     data_missing = not os.path.exists(TRAIN_DATA_PATH)

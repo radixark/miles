@@ -18,7 +18,7 @@ import tempfile
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=400, suite="stage-c-8-gpu-h100", labels=["short"])
 register_rocm_ci(est_time=300, suite="stage-c-8-gpu-mi350", labels=["short"])
@@ -46,12 +46,14 @@ sglang:
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     config_file = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", prefix="sglang_mixed_offload_", delete=False)
     config_file.write(SGLANG_CONFIG_YAML)
     config_file.flush()
@@ -137,7 +139,7 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

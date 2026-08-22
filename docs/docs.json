@@ -218,6 +218,12 @@
       "pages": [
        "advanced/miles-router"
       ]
+     },
+     {
+      "group": "Cluster & Deployment",
+      "pages": [
+       "advanced/cluster-backend"
+      ]
      }
     ]
    },
@@ -231,6 +237,7 @@
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
        "examples/multi-lora",
+       "examples/multi-policy",
        "examples/on-policy-distillation",
        "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
        "examples/ppo",
@@ -243,9 +250,11 @@
       "pages": [
        "examples/infra-features",
        "examples/infra-features/fully-async",
+       "examples/infra-features/hot-restart",
        "examples/infra-features/low-precision",
        "examples/infra-features/p2p-weight-transfer",
        "examples/infra-features/random-async",
+       "examples/infra-features/split-deployment",
        "examples/infra-features/train-infer-mismatch-helper",
        "examples/infra-features/true-on-policy"
       ]
@@ -258,6 +267,7 @@
      "developer/index",
      "developer/contributor-guide",
      "developer/architecture",
+     "developer/reconcile-loop",
      "developer/versions",
      "developer/debug",
      {

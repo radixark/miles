@@ -1,0 +1,43 @@
+objectName: ""
+
+infra:
+  image:
+    repository: radixark/miles
+    tag: dev
+    pullPolicy: Always
+    pullSecrets: []
+  volumes:
+    - name: cluster-storage
+      hostPath:
+        path: /cluster-storage
+        type: Directory
+      mounts:
+        - mountPath: /cluster-storage
+  paths:
+    runsRoot: /cluster-storage/${NAMESPACE}/miles_data
+  devShm:
+    mountPath: /dev/shm
+    hostPath:
+      path: /dev/shm
+      type: Directory
+  scheduling:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+  env: {}
+
+resources:
+  requests:
+    cpu: "2"
+    memory: 8Gi
+  limits: {}
+
+rbac:
+  create: true
+  leaderWorkerSets: true
+
+serviceAccount:
+  name: ""
+
+uninstaller:
+  serviceAccount: miles-uninstaller

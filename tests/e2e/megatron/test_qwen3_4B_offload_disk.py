@@ -13,7 +13,8 @@ import os
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
+from miles.utils.workers.naming import format_name_index
 
 MODEL_NAME = "Qwen3-4B"
 MODEL_TYPE = "qwen3-4B"
@@ -34,6 +35,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -58,12 +60,16 @@ def _assert_offloaded_to_disk():
                 if "Train disk-offload reclaim armed" in line:
                     armed.add(line.split("reclaim armed for ")[1].split()[0])
 
-    expected = {os.path.join(OFFLOAD_DIR, f"cell0_rank{rank}") for rank in range(NUM_GPUS)}
+    expected = {
+        os.path.join(OFFLOAD_DIR, f"cell{format_name_index(0)}_rank{format_name_index(rank)}")
+        for rank in range(NUM_GPUS)
+    }
     assert armed == expected, f"expected disk offload armed for {sorted(expected)}, saw {sorted(armed)}"
     print(f"disk offload armed for {len(armed)} ranks under {OFFLOAD_DIR}")
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -143,7 +149,7 @@ def execute():
         f"{optimizer_args} "
         f"{grpo_args} "
         f"{offload_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{sglang_args} "
         f"{ci_args} "

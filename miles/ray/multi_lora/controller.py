@@ -1,24 +1,31 @@
-"""Named Ray actor wrapping the multi-LoRA backend + HTTP server."""
+"""Worker wrapping the multi-LoRA backend + HTTP server."""
 
 import time
+from collections.abc import Sequence
 from functools import cache
 from typing import Any
 
-import ray
-
 from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
+from miles.ray.rollout.router_manager import resolve_router_addrs
+from miles.ray.specs.multi_lora import create_multi_lora_controller_handle
 from miles.utils.adapter_config import AdapterRun
-from miles.utils.misc import SingletonMeta, get_current_node_ip, load_function
-from miles.utils.ray_utils import compute_ray_pin_head_options
-
-CONTROLLER_NAME = "miles_multi_lora_controller"
-CONTROLLER_NAMESPACE = "miles"
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
+from miles.utils.function_registry import load_function
+from miles.utils.init_once import InitOnce, init_once
+from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import SingletonMeta, get_current_node_ip
+from miles.utils.workers.backend_capability.ray import RayBackendCapability
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_handle import BaseWorkerHandle
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
 
 @cache
-def get_multi_lora_controller():
-    return ray.get_actor(CONTROLLER_NAME, namespace=CONTROLLER_NAMESPACE)
+def get_multi_lora_controller() -> BaseWorkerHandle:
+    # TODO inject the factory instead of assuming the ray backend
+    capability = RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
+    return create_multi_lora_controller_handle(capability=capability)
 
 
 class AdaptersCache(metaclass=SingletonMeta):
@@ -34,7 +41,7 @@ class AdaptersCache(metaclass=SingletonMeta):
         now = time.monotonic()
         if self.last_refresh is None or now - self.last_refresh >= self.ttl_s:
             try:
-                self.snapshot = await get_multi_lora_controller().snapshot.remote()
+                self.snapshot = await get_multi_lora_controller().snapshot()
                 self.last_refresh = now
             except Exception:
                 pass
@@ -56,15 +63,28 @@ def _load_subclass(path: str | None, base_cls):
     return cls
 
 
-@ray.remote(num_cpus=0)
 class MultiLoRAController:
-    def __init__(self, args, router_url: str, host: str = "0.0.0.0") -> None:
+    def __init__(self, *, args, router_providers: Sequence[BaseWorkerProvider], host: str = "0.0.0.0") -> None:
+        configure_logger(args, source=SimpleProcessIdentity(component="multi_lora_controller"))
+
+        self.args = args
+        self._router_providers = router_providers
+        self.host = host
+        self.backend: MultiLoRABackend | None = None
+        self.server: MultiLoRAHTTPServer | None = None
+        self._init_once = InitOnce(type(self).__name__)
+
+    @init_once
+    async def init(self) -> int:
+        args = self.args
+        await resolve_router_addrs(args, router_providers=self._router_providers)
+        router_url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}"
+
         backend_cls = _load_subclass(getattr(args, "multi_lora_backend_path", None), MultiLoRABackend)
         server_cls = _load_subclass(getattr(args, "multi_lora_http_server_path", None), MultiLoRAHTTPServer)
         self.backend = backend_cls(args, router_url)
-        self.server = server_cls(self.backend, host, api_port=getattr(args, "multi_lora_api_port", 0))
+        self.server = server_cls(self.backend, self.host, api_port=getattr(args, "multi_lora_api_port", 0))
 
-    async def start(self) -> int:
         await self.backend.init()
         await self.server.start()
         return self.server.actual_api_port
@@ -111,12 +131,3 @@ class MultiLoRAController:
 
     def api_port(self) -> int:
         return self.server.actual_api_port
-
-
-def create_multilora_controller(args, router_url: str, host: str = "0.0.0.0"):
-    # Pinned to the head node so the API sits at a port-forwardable address.
-    return MultiLoRAController.options(
-        name=CONTROLLER_NAME,
-        namespace=CONTROLLER_NAMESPACE,
-        **compute_ray_pin_head_options(),
-    ).remote(args, router_url, host)

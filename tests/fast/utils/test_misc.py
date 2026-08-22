@@ -1,63 +1,22 @@
+import asyncio
 import logging
-import os
+import socket
+import sys
+from contextlib import ExitStack
+from dataclasses import dataclass
 
 import pytest
 
-from miles.utils.misc import FunctionRegistry, filter_keys, function_registry, load_function
-
-
-def _fn_a():
-    return "a"
-
-
-def _fn_b():
-    return "b"
-
-
-class TestFunctionRegistry:
-    def test_register_and_get(self):
-        registry = FunctionRegistry()
-        with registry.temporary("my_fn", _fn_a):
-            assert registry.get("my_fn") is _fn_a
-
-    def test_register_duplicate_raises(self):
-        registry = FunctionRegistry()
-        with registry.temporary("my_fn", _fn_a):
-            with pytest.raises(AssertionError):
-                with registry.temporary("my_fn", _fn_b):
-                    pass
-
-    def test_unregister(self):
-        registry = FunctionRegistry()
-        with registry.temporary("my_fn", _fn_a):
-            assert registry.get("my_fn") is _fn_a
-        assert registry.get("my_fn") is None
-
-    def test_temporary_cleanup_on_exception(self):
-        registry = FunctionRegistry()
-        with pytest.raises(RuntimeError):
-            with registry.temporary("temp_fn", _fn_a):
-                raise RuntimeError("test")
-        assert registry.get("temp_fn") is None
-
-
-class TestLoadFunction:
-    def test_load_from_module(self):
-        import os.path
-
-        assert load_function("os.path.join") is os.path.join
-
-    def test_load_none_returns_none(self):
-        assert load_function(None) is None
-
-    def test_load_from_registry(self):
-        with function_registry.temporary("test:my_fn", _fn_a):
-            assert load_function("test:my_fn") is _fn_a
-
-    def test_registry_takes_precedence(self):
-        with function_registry.temporary("os.path.join", _fn_b):
-            assert load_function("os.path.join") is _fn_b
-        assert load_function("os.path.join") is os.path.join
+from miles.utils import misc
+from miles.utils.misc import (
+    MutableBox,
+    NodeProbeMixin,
+    SimpleTicker,
+    filter_keys,
+    get_free_port,
+    get_gpu_uuids,
+    merge_asserting_consistency,
+)
 
 
 class TestFilterKeys:
@@ -92,3 +51,212 @@ class TestFilterKeys:
             with pytest.raises(KeyError):
                 filter_keys(d, ["a", "missing"])
         assert any("filter_keys" in record.message for record in caplog.records)
+
+
+@dataclass(frozen=True)
+class _FakeGpuHandle:
+    index: int
+
+
+@dataclass(frozen=True)
+class _FakeNvmlUuid:
+    text: str
+
+    def __str__(self) -> str:
+        return self.text
+
+
+class _FakeNvml:
+    def __init__(
+        self,
+        *,
+        uuid_by_index: dict[int, str],
+        init_error: Exception | None = None,
+        uuid_error_indices: frozenset[int] = frozenset(),
+    ) -> None:
+        self._uuid_by_index = uuid_by_index
+        self._init_error = init_error
+        self._uuid_error_indices = uuid_error_indices
+
+    def nvmlInit(self) -> None:
+        if self._init_error is not None:
+            raise self._init_error
+
+    def nvmlDeviceGetHandleByIndex(self, index: int) -> _FakeGpuHandle:
+        return _FakeGpuHandle(index=index)
+
+    def nvmlDeviceGetUUID(self, handle: _FakeGpuHandle) -> _FakeNvmlUuid:
+        if handle.index in self._uuid_error_indices:
+            raise RuntimeError(f"nvml uuid lookup failed for {handle.index}")
+        return _FakeNvmlUuid(text=self._uuid_by_index[handle.index])
+
+
+class TestGetGpuUuids:
+    def test_get_gpu_uuids_returns_requested_nvml_uuids_in_order(self, monkeypatch) -> None:
+        """Each requested gpu index is resolved through NVML, coerced to str, and answered in request order."""
+        fake_nvml = _FakeNvml(uuid_by_index={0: "GPU-zero", 1: "GPU-one", 2: "GPU-two"})
+        monkeypatch.setitem(sys.modules, "pynvml", fake_nvml)
+
+        uuids = get_gpu_uuids([2, 0])
+
+        assert uuids == ["GPU-two", "GPU-zero"]
+        assert all(isinstance(uuid, str) for uuid in uuids)
+
+    def test_get_gpu_uuids_returns_none_per_gpu_when_nvml_fails(self, monkeypatch) -> None:
+        """A failing NVML init is swallowed and answered with exactly one None per requested gpu."""
+        fake_nvml = _FakeNvml(uuid_by_index={}, init_error=RuntimeError("nvml unavailable"))
+        monkeypatch.setitem(sys.modules, "pynvml", fake_nvml)
+
+        assert get_gpu_uuids([0, 1, 3]) == [None, None, None]
+
+    def test_get_gpu_uuids_returns_all_none_when_one_lookup_fails(self, monkeypatch) -> None:
+        """A single failing uuid lookup yields all-None rather than a partial or short list."""
+        fake_nvml = _FakeNvml(
+            uuid_by_index={0: "GPU-zero", 1: "GPU-one"},
+            uuid_error_indices=frozenset({1}),
+        )
+        monkeypatch.setitem(sys.modules, "pynvml", fake_nvml)
+
+        assert get_gpu_uuids([0, 1]) == [None, None]
+
+
+class TestNodeProbeMixin:
+    def test_get_node_ip_returns_nonempty_string(self):
+        """The node ip probe answers with a usable address string."""
+        node_ip = NodeProbeMixin._get_node_ip()
+        assert isinstance(node_ip, str) and node_ip
+
+    def test_get_free_port_block_returns_bindable_consecutive_ports(self) -> None:
+        """A block request returns five ports that can be bound simultaneously."""
+        candidate_start: int = get_free_port(start_port=15000, consecutive=10)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_socket:
+            occupied_socket.bind(("", candidate_start + 4))
+            occupied_socket.listen()
+            first_port: int = NodeProbeMixin._get_free_port_block(start_port=candidate_start, count=5)
+
+            with ExitStack() as stack:
+                for port in range(first_port, first_port + 5):
+                    available_socket: socket.socket = stack.enter_context(
+                        socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    )
+                    available_socket.bind(("", port))
+
+    def test_the_scan_wraps_instead_of_walking_past_the_last_port(self, monkeypatch):
+        """The allocator cursor only grows, so an unbounded scan spun forever and wedged its caller."""
+        free_port = 20005
+        monkeypatch.setattr(misc, "is_port_available", lambda port: port == free_port)
+
+        assert get_free_port(start_port=65530, consecutive=1) == free_port
+
+    def test_a_range_with_nothing_free_raises(self, monkeypatch):
+        """Reporting exhaustion is the whole point: the old loop incremented past 65535 forever."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: False)
+
+        with pytest.raises(RuntimeError, match="consecutive free ports"):
+            get_free_port(start_port=65000, consecutive=4)
+
+    def test_a_block_that_cannot_fit_below_the_last_port_is_rejected(self, monkeypatch):
+        """Asking for a block that runs off the end is a caller bug, not something to scan for."""
+        monkeypatch.setattr(misc, "is_port_available", lambda port: True)
+
+        with pytest.raises(AssertionError):
+            get_free_port(start_port=65535, consecutive=2)
+
+    def test_get_gpu_uuids_returns_one_entry_per_gpu(self):
+        """The uuid probe is best-effort: without NVML it still answers per gpu."""
+        uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
+        assert len(uuids) == 3
+        assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)
+
+
+async def _append(calls: list[int]) -> None:
+    calls.append(1)
+
+
+class TestSimpleTicker:
+    async def test_it_keeps_calling_its_function(self):
+        """The ticked work only makes progress while the loop keeps coming back."""
+        calls: list[int] = []
+
+        ticker = SimpleTicker(lambda: _append(calls), interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+
+        assert len(calls) > 1
+
+    async def test_it_survives_a_failing_call(self):
+        """A raising sweep must not silently kill the loop for every later round."""
+        calls: list[int] = []
+
+        async def _boom() -> None:
+            calls.append(1)
+            raise RuntimeError("tick exploded")
+
+        ticker = SimpleTicker(_boom, interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+
+        assert len(calls) > 1
+
+    async def test_dispose_stops_the_loop(self):
+        """A surviving loop would keep working after its owner is gone."""
+        calls: list[int] = []
+
+        ticker = SimpleTicker(lambda: _append(calls), interval_seconds=0.0)
+        await asyncio.sleep(0.02)
+        await ticker.dispose()
+        calls_after_dispose = len(calls)
+        await asyncio.sleep(0.02)
+
+        assert len(calls) == calls_after_dispose
+
+    async def test_disposing_twice_is_harmless(self):
+        """Teardown paths overlap, so a second dispose must not raise."""
+        ticker = SimpleTicker(lambda: _append([]), interval_seconds=0.0)
+
+        await ticker.dispose()
+        await ticker.dispose()
+
+
+class TestMergeAssertingConsistency:
+    def test_disjoint_keys_are_merged(self):
+        """The common case: two views of the same cell describe different fields of it."""
+        assert merge_asserting_consistency({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+    def test_a_key_both_sides_agree_on_is_kept_once(self):
+        """Two pods of one cell repeat the cell-wide annotations, which is not a conflict."""
+        assert merge_asserting_consistency({"a": 1, "b": 2}, {"b": 2, "c": 3}) == {"a": 1, "b": 2, "c": 3}
+
+    def test_a_key_the_two_sides_disagree_on_is_rejected(self):
+        """Silently picking a winner would hand the caller one pod's answer as the whole cell's."""
+        with pytest.raises(AssertionError, match="disagree"):
+            merge_asserting_consistency({"a": 1}, {"a": 2})
+
+
+class TestMutableBox:
+    def test_a_closure_writes_through_the_box_its_caller_reads(self):
+        """A name rebound inside a nested function rebinds nothing its caller can see, which is the point."""
+        box: MutableBox[int] = MutableBox(value=0)
+
+        def advance() -> None:
+            box.value += 2
+
+        advance()
+        advance()
+
+        assert box.value == 4
+
+    def test_a_box_holds_whatever_it_was_opened_with(self):
+        """Callers open it on an optional handle as readily as on a counter."""
+        assert MutableBox(value=None).value is None
+        assert MutableBox(value="a").value == "a"
+
+    def test_two_boxes_of_the_same_value_do_not_share_it(self):
+        """Each caller's box is its own; a shared default would let one run's cursor drive another's."""
+        first: MutableBox[int] = MutableBox(value=0)
+        second: MutableBox[int] = MutableBox(value=0)
+
+        first.value = 7
+
+        assert second.value == 0

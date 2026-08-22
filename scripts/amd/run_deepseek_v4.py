@@ -16,13 +16,12 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 1 --num-gpus-per-node 8
-       python scripts/run_deepseek_v4.py prepare-cp       --model-name DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py train            --model-name DeepSeek-V4-Flash-FP8 \
            --num-nodes 4 --num-gpus-per-node 8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
@@ -34,7 +33,7 @@ from typing import Literal
 
 import typer
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 app = typer.Typer()
 
@@ -51,9 +50,9 @@ _MEGATRON_MODEL_TYPE = {
 
 
 @dataclass
-class ScriptArgs(U.ExecuteTrainConfig):
+class ScriptArgs(command_utils.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "debug_minimal"
-    run_id: str = U.create_run_id()
+    run_id: str = command_utils.create_run_id()
     model_org: str = ""
     model_name: Literal[
         "DeepSeek-V4-Flash-FP8",
@@ -131,6 +130,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 def _download_dataset(args: ScriptArgs):
     """Download the task-specific dataset(s)."""
+    U = args.create_backend()
     match args.task:
         case "dapo_aime":
             U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
@@ -159,6 +159,7 @@ def _ensure_4layer_model_type(args: ScriptArgs):
 
 def _prepare_download(args: ScriptArgs):
     """Download HF checkpoint + task dataset. Idempotent: hf skips existing blobs."""
+    U = args.create_backend()
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.data_dir}")
     # Only download if the user has NOT supplied a pre-existing checkpoint dir.
     # (prepare_single / train with --hf-checkpoint bypass this.)
@@ -170,13 +171,14 @@ def _prepare_download(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_download(args: ScriptArgs):
     """Download HF checkpoint + dataset from HuggingFace. Run on one node (shared NFS)."""
     _prepare_download(args)
 
 
 def _prepare_single(args: ScriptArgs):
+    U = args.create_backend()
     _download_dataset(args)
 
     src = _hf_checkpoint_path(args)
@@ -187,13 +189,14 @@ def _prepare_single(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_single(args: ScriptArgs):
     """FP8 -> BF16 cast for Megatron. Needs --hf-checkpoint (or pre-downloaded). One node."""
     _prepare_single(args)
 
 
 def _prepare_spmd(args: ScriptArgs):
+    U = args.create_backend()
     is_4layer = args.model_name == "DeepSeek-V4-Flash-FP8-4layer"
     actor_num_nodes = args.actor_num_nodes
     actor_num_gpus_per_node = args.actor_num_gpus_per_node
@@ -231,28 +234,22 @@ def _prepare_spmd(args: ScriptArgs):
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def prepare_spmd(args: ScriptArgs):
     _prepare_spmd(args)
 
 
-@app.command()
-@U.dataclass_cli
-def prepare_cp(args: ScriptArgs):
-    _prepare_cp(args)
+def _prepare_cmd(args: ScriptArgs) -> dict[str, str]:
+    if args.model_local_dir == args.model_dir:
+        return {}
 
-
-def _prepare_cp(args: ScriptArgs):
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.torch_dist_name}",
-        path_dst=f"{args.model_local_dir}/{args.torch_dist_name}",
-        num_nodes=args.num_nodes,
-    )
-    U.rsync_simple(
-        path_src=f"{args.model_dir}/{args.model_name}",
-        path_dst=f"{args.model_local_dir}/{args.model_name}",
-        num_nodes=args.num_nodes,
-    )
+    copies = [
+        command_utils.rsync_cmd(
+            f"{args.model_dir}/{args.torch_dist_name}", f"{args.model_local_dir}/{args.torch_dist_name}"
+        ),
+        command_utils.rsync_cmd(f"{args.model_dir}/{args.model_name}", f"{args.model_local_dir}/{args.model_name}"),
+    ]
+    return {"trainer": " && ".join(copies)}
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
@@ -296,6 +293,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 
 def _train(args: ScriptArgs):
+    U = args.create_backend()
     print(f"[precision] fp8_training={args.fp8_training}")
     print(
         f"running on {args.num_nodes} nodes "
@@ -503,7 +501,7 @@ def _train(args: ScriptArgs):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{command_utils.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "
@@ -513,23 +511,23 @@ def _train(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
         extra_env_vars={**extra_env_vars},
         megatron_path=args.megatron_path,
+        prepare_cmd=_prepare_cmd(args),
     )
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def train(args: ScriptArgs):
     """Run training. Assumes data/model/torch_dist are already prepared on {model_local_dir}."""
     _train(args)
 
 
 @app.command()
-@U.dataclass_cli
+@command_utils.dataclass_cli
 def full_train(args: ScriptArgs):
     _prepare_download(args)
 
@@ -546,11 +544,6 @@ def full_train(args: ScriptArgs):
         _prepare_spmd(args)
     else:
         print(f"[full_train] Skipping BF16->torch_dist conversion: {torch_dist_sentinel} already exists.")
-
-    if args.model_local_dir != args.model_dir:
-        _prepare_cp(args)
-    else:
-        print(f"[full_train] Skipping rsync: model_local_dir == model_dir ({args.model_dir})")
 
     if args.hf_checkpoint is None:
         args.hf_checkpoint = f"{args.model_local_dir}/{args.model_name}"
