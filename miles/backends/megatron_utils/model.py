@@ -174,6 +174,8 @@ def setup_model_and_optimizer(
     for f in dataclasses.fields(OptimizerConfig):
         if hasattr(args, f.name):
             kwargs[f.name] = getattr(args, f.name)
+    if args.stream_optimizer_state_to_disk:
+        kwargs["defer_main_param_initialization"] = True
     config = OptimizerConfig(**kwargs)
     config.timers = None
 
