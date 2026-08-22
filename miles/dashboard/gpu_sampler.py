@@ -35,10 +35,7 @@ def _text(value) -> str:
     return value.decode() if isinstance(value, bytes) else str(value)
 
 
-# The two providers adapt one vendor SMI each to the same small interface, in
-# the dashboard's units: initialize() -> (handles, uuids), read_device(handle)
-# -> (util %, mem MiB, power W), read_processes(handle) -> [(pid, name, mem MiB)].
-# Both raise from initialize() when unusable so auto-detection can fall through.
+# Providers share initialize/read_device/read_processes; initialization errors enable auto-detection fallback.
 
 
 class _NvmlProvider:
@@ -86,9 +83,7 @@ class _AmdSmiProvider:
         handles = self._api.amdsmi_get_processor_handles()
         if not handles:
             raise RuntimeError("no AMD SMI devices")
-        # Keep the SMI slot as the dashboard lane id — Ray numbers the node's
-        # GPUs in the same order. Partitioned MI300+ cards repeat one UUID per
-        # physical GPU, so uuids are not necessarily unique.
+        # SMI slot order matches Ray; partitioned MI300+ cards may repeat physical-GPU UUIDs.
         return list(handles), [_text(self._api.amdsmi_get_gpu_device_uuid(handle)) for handle in handles]
 
     def read_device(self, handle) -> tuple[int, int, int]:
@@ -98,8 +93,6 @@ class _AmdSmiProvider:
         try:
             power_w = _amd_socket_power(self._api.amdsmi_get_power_info(handle))
         except Exception:
-            # Power sensors can be unexposed (VM guests, some partition modes)
-            # while activity/VRAM read fine; report 0 W rather than losing the sample.
             power_w = 0
         return util, mem_mb, power_w
 
@@ -116,9 +109,7 @@ class _AmdSmiProvider:
 
 
 def _amd_socket_power(power: dict) -> int:
-    # socket_power reads current power on MI300+ and average power on older
-    # cards; older wrappers only have the split fields. Unavailable sensors
-    # come back as "N/A" (ROCm >= 6.1) or a raw sentinel like 0xFFFF (ROCm 6.0).
+    # Prefer MI300+ socket power, then split fields; unavailable sensors use "N/A" or 0xFFFF.
     for field in ("socket_power", "current_socket_power", "average_socket_power"):
         value = power.get(field, "N/A")
         if value != "N/A" and 0 <= value < 0xFFFF:

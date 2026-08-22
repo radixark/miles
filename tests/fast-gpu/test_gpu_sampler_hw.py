@@ -1,13 +1,3 @@
-"""Dashboard GPU sampler smoke test on real hardware.
-
-Runs on both CI GPU fleets with no backend injected, so GpuSampler's own
-auto-detection must pick the vendor path matching the runner: NVML on the
-NVIDIA suite, AMD SMI on the MI350 suite. The fake-backed unit tests live in
-tests/fast/dashboard/test_gpu_sampler.py; this file only covers what a CPU
-worker cannot — that the real vendor library initializes, reports every
-device, and returns sane telemetry.
-"""
-
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
 register_cuda_ci(est_time=60, suite="stage-b-2-gpu-h200", labels=["short"])

@@ -79,8 +79,7 @@ class FakeAmdSmi:
         return {"vram_total": 192 * 1024, "vram_used": (handle + 1) * 2048}
 
     def amdsmi_get_power_info(self, handle):
-        # socket_power carries current power on MI300+; all three fields kept
-        # distinct so tests catch the sampler selecting the wrong key.
+        # Keep values distinct to catch selection of the wrong power field.
         return {
             "socket_power": 500 + handle,
             "current_socket_power": 475 + handle,
@@ -96,8 +95,6 @@ class FakeAmdSmi:
                 "name": f"amd-proc-{handle}" if handle == 0 else "N/A",
                 "memory_usage": {"vram_mem": (handle + 1) * 768 * 1024 * 1024},
             },
-            # KFD lists pids that merely opened the device; they hold no VRAM
-            # and must not become dashboard rows.
             {"pid": 9000 + handle, "name": "kfd-bystander", "memory_usage": {"vram_mem": 0}},
         ]
 
@@ -175,8 +172,6 @@ def test_amd_socket_power_raises_when_all_fields_unavailable():
 def test_amd_unavailable_power_reports_zero_but_keeps_util_and_mem():
     push = PushSpy()
     amdsmi = FakeAmdSmi(count=1)
-    # ROCm >= 6.1 reports each unavailable sensor as "N/A"; the sample must
-    # still flow with util/mem intact rather than being dropped.
     amdsmi.amdsmi_get_power_info = lambda handle: {"socket_power": "N/A", "current_socket_power": "N/A"}
     sampler = GpuSampler(push, node="n", amdsmi=amdsmi)
 
@@ -286,8 +281,6 @@ def test_amd_failing_device_is_skipped_while_others_report(caplog):
     ],
 )
 def test_amd_degraded_metric_value_skips_device_while_others_report(method, payload, caplog):
-    # The amdsmi wrapper substitutes "N/A" for unsupported metrics instead of
-    # raising; such a device must be skipped without silencing its siblings.
     push = PushSpy()
     amdsmi = FakeAmdSmi(count=2)
     original = getattr(amdsmi, method)
@@ -381,9 +374,6 @@ def test_amd_failing_device_is_skipped_for_process_sampling(caplog):
 
 
 def test_process_batch_dropped_silently_without_push_processes():
-    # sampling still works if called directly, but flush() must not crash or
-    # invent a push destination — the buffer is just discarded (design: the
-    # feature is a no-op end-to-end when the collector never wires it up)
     push = PushSpy()
     sampler = GpuSampler(push, node="n", nvml=FakeNvml(count=1))
     assert sampler.sample_processes_once(ts=1.0) == 1
@@ -426,8 +416,6 @@ def test_real_nvml_when_gpus_present():
 
 
 def test_real_amdsmi_when_gpus_present():
-    # Guards the fake against the API installed by the ROCm dashboard image
-    # (ROCm >= 6.1 dict shapes); skips on the ordinary CPU/NVIDIA fast-test workers.
     amdsmi = pytest.importorskip("amdsmi")
     push = PushSpy()
     push_processes = ProcessPushSpy()
