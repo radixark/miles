@@ -140,7 +140,7 @@ async def generate_and_rm_group(
     sampling_params: dict[str, Any],
     evaluation: bool = False,
     sample_done_callback: Callable[[], None] | None = None,
-) -> list[Sample]:
+) -> list[Sample | list[Sample]]:
     args = state.args
 
     if state.aborted:

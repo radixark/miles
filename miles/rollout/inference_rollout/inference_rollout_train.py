@@ -120,7 +120,7 @@ async def generate_rollout_async(
         logger.debug(f"[rollout] asyncio.wait returned: {len(done)} done, {len(pendings)} pending")
         for task in done:
             try:
-                group: list[Sample] = task.result()
+                group: list[Sample | list[Sample]] = task.result()
             except Exception as e:
                 logger.error(f"[rollout] Task raised exception: {e!r}", exc_info=True)
                 continue
