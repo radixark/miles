@@ -155,6 +155,30 @@ class MultiLoraOperationBackend:
                 f"re-registered ({record.registration_id[:8]}); operations from the stale handle are fenced"
             )
 
+    def reject_operation(
+        self,
+        name: str,
+        operation_id: str,
+        ordinal: int,
+        kind: str,
+        payload: dict | None,
+        error: str,
+        expected_registration_id: str | None = None,
+    ) -> dict:
+        """Record a boundary-rejected submission as terminal FAILED(user) at
+        its ordinal (see ``OperationLedger.record_rejected``): a frontend that
+        refuses a request AFTER the client spent the ordinal must still keep
+        the registration's arrival sequence gap-free. Like ``enqueue_operation``,
+        a pinned ``expected_registration_id`` fences stale handles — a rejection
+        must never consume an ordinal slot of a same-name successor."""
+        record = self.registry.find(name)
+        if record is None or record.state not in (AdapterState.PENDING, AdapterState.READY):
+            raise ValueError(f"Adapter '{name}' is not accepting operations (not registered or retiring)")
+        self._check_expected_registration(name, record, expected_registration_id)
+        return self.operations.record_rejected(
+            operation_id, name, record.registration_id, ordinal, kind, payload or {}, error
+        )
+
     def _preflight(self, name: str, kind: str, payload: dict) -> None:
         if kind in ("forward_backward", "forward"):
             samples = payload.get("samples")
@@ -390,7 +414,27 @@ class MultiLoraOperationBackend:
     async def abort_adapter_requests(self, adapter_name: str, registration_id: str) -> None:
         await self.inference_admin.abort_registration(rid_prefix(adapter_name, registration_id))
 
-    # ---------------- info ----------------
+    # ---------------- frontend facade ----------------
+    # The HTTP frontend sees projections and verbs only — never the registry,
+    # the ledger, or the router URL (codex-rollout-fullparameter-design-0810
+    # §4.2; §3.7 dependency rule: frontend -> backend facade + sampling
+    # transport). A future lifecycle strategy replaces what sits behind these
+    # without forking the frontend.
+
+    def registration_view(self, name: str) -> dict | None:
+        """Projection of the name's CURRENT registration: identity, lifecycle
+        state, resolved rank, bound-ness, and serving version."""
+        record = self.registry.find(name)
+        if record is None:
+            return None
+        return dict(
+            name=record.name,
+            registration_id=record.registration_id,
+            state=record.state.value,
+            rank=getattr(record.config, "rank", None),
+            bound=record.slot is not None,
+            serving_version=record.serving_version,
+        )
 
     def operation_view(self, operation_id: str) -> dict | None:
         self.sweep_operation_timeouts()
@@ -401,6 +445,16 @@ class MultiLoraOperationBackend:
                     view["waiting_on_ordinal"] = stall["missing_ordinal"]
                     view["gap_stalled_for"] = stall["stalled_for"]
         return view
+
+    def ack_operation(self, operation_id: str) -> None:
+        self.operations.ack(operation_id)
+
+    def sampling_endpoint(self) -> str:
+        """Base URL sampling requests go to: the SGLang router today, the
+        InferenceController-provided endpoint after PR #1842."""
+        return self.router_url
+
+    # ---------------- info ----------------
 
     def service_info(self) -> dict:
         self.sweep_operation_timeouts()

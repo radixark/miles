@@ -281,6 +281,98 @@ class TestFencing:
         assert fresh["state"] == "QUEUED"
 
 
+class TestRecordRejected:
+    def test_rejected_ordinal_keeps_the_sequence_gap_free(self):
+        # seq 1 ok, seq 2 rejected at the boundary, seq 3 ok: 3 must still
+        # become claimable once 1 completes (2 is terminal on arrival).
+        ledger = OperationLedger()
+        enqueue(ledger, "op1", 1)
+        rejected = ledger.record_rejected("op2", "A", "ra", 2, "optim_step", {"adam_params": {}}, "bad params")
+        assert rejected["state"] == "FAILED"
+        assert rejected["error_category"] == "user"
+        enqueue(ledger, "op3", 3)
+        assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op1"
+        ledger.complete("op1", {})
+        assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op3"
+
+    def test_identical_retry_replays_the_terminal_record(self):
+        ledger = OperationLedger()
+        first = ledger.record_rejected("op1", "A", "ra", 1, "forward", {"samples": []}, "empty")
+        again = ledger.record_rejected("op1", "A", "ra", 1, "forward", {"samples": []}, "empty")
+        assert again == first
+
+    def test_different_payload_at_the_same_id_is_a_conflict(self):
+        ledger = OperationLedger()
+        ledger.record_rejected("op1", "A", "ra", 1, "forward", {"samples": []}, "empty")
+        with pytest.raises(ValueError, match="different content"):
+            ledger.record_rejected("op1", "A", "ra", 1, "forward", {"samples": [1]}, "empty")
+
+    def test_taken_ordinal_and_fence_still_refuse(self):
+        ledger = OperationLedger()
+        enqueue(ledger, "op1", 1)
+        with pytest.raises(ValueError, match="already taken"):
+            ledger.record_rejected("op1b", "A", "ra", 1, "forward", {}, "x")
+        ledger.fence("A", "ra")
+        with pytest.raises(ValueError, match="fenced"):
+            ledger.record_rejected("op2", "A", "ra", 2, "forward", {}, "x")
+
+    def test_rejected_flood_hits_the_unacked_results_budget(self):
+        # An invalid-request flood must not grow born-terminal records without
+        # bound: past the budget it backpressures like any unretrieved pile-up.
+        ledger = OperationLedger(max_unacked_results=8)
+        accepted = 0
+        for i in range(1, 1001):
+            try:
+                ledger.record_rejected(f"op{i}", "A", "ra", i, "forward_backward", {"i": i}, "bad")
+                accepted += 1
+            except OperationBackpressure:
+                break
+        assert accepted == 8
+        assert ledger.queues[("A", "ra")].unacked_terminal_count() == 8
+        # Acking terminal records frees budget for the retried rejection.
+        ledger.ack("op1")
+        assert ledger.record_rejected("op9", "A", "ra", 9, "forward_backward", {"i": 9}, "bad")["state"] == "FAILED"
+
+    def test_rejected_hole_filler_bypasses_the_unacked_budget(self):
+        # Refusing the blocking-gap rejection would deadlock the buffered tail.
+        ledger = OperationLedger(max_unacked_results=1)
+        enqueue(ledger, "fb1", 1)
+        enqueue(ledger, "fb3", 3)  # buffered above the future hole
+        ledger.claim_data_operation("A", "ra")
+        ledger.fail("fb1", "boom", "user")  # the budget is now full
+        with pytest.raises(OperationBackpressure):
+            ledger.record_rejected("tail", "A", "ra", 4, "forward_backward", {}, "bad")
+        # ...but ordinal 2 is the blocking gap below buffered fb3: always admitted.
+        ledger.record_rejected("hole", "A", "ra", 2, "forward_backward", {}, "bad")
+        assert ledger.claim_data_operation("A", "ra")["operation_id"] == "fb3"
+
+    def test_born_terminal_optim_is_no_window_delimiter(self):
+        # A rejected optim_step never executed: it cleared nothing, so a
+        # poisoned window stays poisoned across it.
+        ledger = OperationLedger()
+        enqueue(ledger, "fb1", 1)
+        ledger.claim_data_operation("A", "ra")
+        ledger.fail("fb1", "bad chunk", "user")
+        ledger.record_rejected("opt2", "A", "ra", 2, "optim_step", {"adam_params": {"beta1": 9}}, "bad params")
+        assert ledger.poisoned_window_blocker("A", "ra", 3) is not None
+
+    def test_rejection_bypasses_backpressure_like_a_hole_filler(self):
+        ledger = OperationLedger(max_pending=1)
+        enqueue(ledger, "op1", 1)
+        with pytest.raises(OperationBackpressure):
+            enqueue(ledger, "op3", 3)
+        # A terminal-on-arrival record occupies no execution capacity.
+        assert ledger.record_rejected("op2", "A", "ra", 2, "forward", {}, "x")["state"] == "FAILED"
+
+    def test_rejected_record_is_ackable(self):
+        ledger = OperationLedger()
+        ledger.record_rejected("op1", "A", "ra", 1, "forward", {}, "x")
+        ledger.ack("op1")
+        assert ledger.get("op1") is None
+        enqueue(ledger, "op2", 2)
+        assert ledger.claim_data_operation("A", "ra")["operation_id"] == "op2"
+
+
 class Clock:
     def __init__(self, now: float = 1000.0) -> None:
         self.now = now

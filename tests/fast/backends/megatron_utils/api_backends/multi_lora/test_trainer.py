@@ -188,9 +188,16 @@ class TestLoadAdapters:
         monkeypatch.setitem(sys.modules, "megatron.bridge.peft.multi_lora_layers", bridge)
         monkeypatch.setattr(trainer, "load_slot_state", lambda args, model, optimizer, adapter: restored[adapter.name])
         monkeypatch.setattr(trainer, "reload_adapter_slot_model_params", lambda optimizer, slot: reloaded.append(slot))
-        monkeypatch.setattr(
-            "miles.backends.megatron_utils.initialize.is_first_replica_megatron_main_rank", lambda: False
-        )
+        # Patch the CANONICAL module instance (fresh import -> sys.modules),
+        # not the string path: pytest's string resolution walks package
+        # ATTRIBUTES from the top, and a sys.modules-restoring fixture
+        # elsewhere (test_model_initialize) leaves a stale submodule attribute
+        # on the parent package — the string form then patches the evicted
+        # instance while load_adapters' function-level import gets the fresh
+        # one (real function -> "ParallelState not initialized").
+        import miles.backends.megatron_utils.initialize as megatron_initialize
+
+        monkeypatch.setattr(megatron_initialize, "is_first_replica_megatron_main_rank", lambda: False)
 
         adapters = [make_run("fresh", slot=0), make_run("resumed", slot=1), make_run("resumed-at-zero", slot=2)]
         assert trainer.load_adapters(SimpleNamespace(), None, None, adapters) == 3
@@ -222,9 +229,10 @@ class TestGatherAndCommit:
 
         monkeypatch.setattr(trainer, "get_multi_lora_controller", lambda: FakeController)
         monkeypatch.setattr(trainer.ray, "get", lambda ref: ref)
-        monkeypatch.setattr(
-            "miles.backends.megatron_utils.initialize.is_first_replica_megatron_main_rank", lambda: True
-        )
+        # Canonical-instance patch; see test_master_reload_skips_restored_slots.
+        import miles.backends.megatron_utils.initialize as megatron_initialize
+
+        monkeypatch.setattr(megatron_initialize, "is_first_replica_megatron_main_rank", lambda: True)
 
         rollout_data = {
             "registration_by_lane": {0: ("A", "r-A"), 1: ("B", "r-B")},

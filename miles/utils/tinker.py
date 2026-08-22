@@ -13,7 +13,13 @@ def is_tinker_enabled(args) -> bool:
 def validate_tinker_args(args) -> None:
     """Validate the Tinker adapter and select its queue-backed rollout path."""
     if not getattr(args, "tinker_backend", False):
+        assert not getattr(args, "tinker_frontend", False), "--tinker-frontend requires --tinker-backend"
+        assert not getattr(args, "tinker_api_key", None), "--tinker-api-key requires --tinker-frontend"
         return
+
+    assert not (
+        getattr(args, "tinker_api_key", None) and not getattr(args, "tinker_frontend", False)
+    ), "--tinker-api-key requires --tinker-frontend (only the SDK frontend authenticates requests)"
 
     from miles.utils.environ import use_legacy_rollout_v1
 
@@ -21,6 +27,8 @@ def validate_tinker_args(args) -> None:
     assert (
         not use_legacy_rollout_v1()
     ), "--tinker-backend needs the class-based rollout API (the default); unset MILES_USE_LEGACY_ROLLOUT_V1"
+    if getattr(args, "tinker_frontend", False) and not getattr(args, "multi_lora_http_server_path", None):
+        args.multi_lora_http_server_path = "miles.ray.tinker_frontend.http_server.TinkerFrontendHTTPServer"
     if args.rollout_function_path is None:
         args.rollout_function_path = "miles.rollout.multi_lora.rollout_fn.MultiLoraOperationBatchFn"
     if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":

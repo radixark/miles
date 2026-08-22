@@ -94,6 +94,20 @@ class MultiLoraOperationController:
     ) -> dict:
         return self.backend.enqueue_operation(name, operation_id, ordinal, kind, payload, expected_registration_id)
 
+    def reject_operation(
+        self,
+        name: str,
+        operation_id: str,
+        ordinal: int,
+        kind: str,
+        payload: dict | None = None,
+        error: str = "",
+        expected_registration_id: str | None = None,
+    ) -> dict:
+        return self.backend.reject_operation(
+            name, operation_id, ordinal, kind, payload, error, expected_registration_id
+        )
+
     def claim_data_operation(self, name: str, registration_id: str) -> dict | None:
         # Claim-and-bind in this single actor call: no binding, no CLAIMED.
         return self.backend.claim_data_operation(name, registration_id)
