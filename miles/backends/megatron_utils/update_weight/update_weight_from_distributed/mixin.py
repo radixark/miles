@@ -95,6 +95,75 @@ class DistBucketedWeightUpdateMixin:
                 is_lora=True,
             )
 
+    @property
+    def _convert_base_via_bridge(self) -> bool:
+        """Whether base weights must be converted by the bridge rather than megatron_to_hf/.
+
+        In bridge mode the model is built by AutoBridge, so its parameter names
+        are the bridge's and not the ones ``--spec`` would have produced --
+        ``args.spec`` is ignored on that path. The hand-written converters only
+        know the ``--spec`` names, so they raise "Unknown parameter name" on
+        architectures where the two disagree (Qwen3.5/3.6/3.8 GDN, Qwen3-VL).
+
+        A property rather than state set in __init__, so it holds for all three
+        transports; p2p does not call _init_lora.
+        """
+        return self.args.megatron_to_hf_mode == "bridge"
+
+    def _base_hf_weight_iterator(self) -> HfWeightIteratorBase:
+        """The base-weight bridge iterator, created on first use.
+
+        Built lazily for the same reason: the transports construct themselves
+        differently, and LoRA runs already build their own adapter iterator in
+        _init_lora, which this must not replace.
+        """
+        iterator = getattr(self, "_hf_weight_iterator", None)
+        if iterator is None:
+            iterator = HfWeightIteratorBase.create(
+                args=self.args,
+                model=self.model,
+                model_name=self.model_name,
+                quantization_config=self.quantization_config,
+                is_lora=False,
+            )
+            self._hf_weight_iterator = iterator
+        return iterator
+
+    def _update_base_weights_via_bridge(
+        self,
+        update_bucket_weight_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None],
+        pbar: tqdm | None = None,
+    ) -> None:
+        """Convert and push base weights using megatron.bridge's mapping table.
+
+        Used whenever the model was built by the bridge, because only the bridge
+        knows that model's parameter names. It also owns conversions that are
+        more than a rename -- Qwen3.5 alone needs a fused ``in_proj`` split four
+        ways, a zero-centered RMSNorm offset, and a TP-aware conv1d shard
+        interleave -- so reimplementing them in megatron_to_hf/ would be
+        duplicating logic that already exists here.
+
+        This replaces both the non-expert and expert passes: the bridge exports
+        routed experts as part of the same walk, and applies its own TP/EP
+        sharding rather than consuming pre-gathered tensors.
+
+        Rank handling follows _update_lora_weights: every rank has to iterate
+        the bridge because it runs collectives internally, but only the source
+        rank transmits.
+        """
+        produced_any = False
+        for hf_named_tensors in self._base_hf_weight_iterator().get_hf_weight_chunks({}, weight_type="base"):
+            produced_any = True
+            if self._is_source:
+                update_bucket_weight_func(hf_named_tensors, pbar)
+
+        if not produced_any:
+            raise RuntimeError(
+                "Base weight sync produced zero chunks from the bridge, so no weights "
+                "reached the rollout engines. This usually means the Megatron-Bridge "
+                "version does not support this architecture."
+            )
+
     def _gather_and_update_non_expert_weights(
         self,
         update_bucket_weight_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None],
@@ -371,10 +440,15 @@ class DistBucketedWeightUpdateMixin:
             if not is_lora:
                 pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
 
-                self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
-                dist.barrier(group=get_gloo_group())
-                self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
-                dist.barrier(group=get_gloo_group())
+                if self._convert_base_via_bridge:
+                    # One pass: the bridge exports non-expert and expert params together.
+                    self._update_base_weights_via_bridge(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
+                else:
+                    self._gather_and_update_non_expert_weights(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
+                    self._gather_and_update_expert_weights(self._update_weight_implementation, pbar)
+                    dist.barrier(group=get_gloo_group())
 
             # Adapter weights: every iteration.
             if is_lora:
