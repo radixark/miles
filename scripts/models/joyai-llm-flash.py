@@ -18,6 +18,7 @@ def model_args(nlayers: int | None = None, rotary_base: str | None = None) -> st
         "--kv-channels 128 "
         "--normalization RMSNorm "
         "--position-embedding-type rope "
+        "--rope-type rope "
         "--norm-epsilon 1e-6 "
         "--swiglu "
         "--untie-embeddings-and-output-weights "

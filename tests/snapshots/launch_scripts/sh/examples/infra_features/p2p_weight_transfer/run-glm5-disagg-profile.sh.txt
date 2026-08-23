@@ -128,6 +128,8 @@
 "--untie-embeddings-and-output-weights"
 "--position-embedding-type"
 "rope"
+"--rope-type"
+"rope"
 "--no-position-embedding"
 "--normalization"
 "RMSNorm"
