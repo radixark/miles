@@ -111,7 +111,7 @@ def _snapshot(canonical_messages, *, include_system: bool):
                             "message": response_message,
                             "meta_info": {"output_token_logprobs": [[-0.1, completion_id, None]]},
                         }
-                    ]
+                    ],
                 },
             }
         )
