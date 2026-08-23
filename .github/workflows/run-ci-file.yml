@@ -47,7 +47,38 @@ concurrency:
   queue: max
 
 jobs:
+  # The run owns its own status comment: it is the only party that knows when
+  # execution starts, how long it takes, and how it ends. Announcing here
+  # (rather than from the gateway's reply) also covers direct dispatches.
+  announce-file-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      comment_id: ${{ steps.announce.outputs.comment_id }}
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out the trusted reporter
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
+          sparse-checkout-cone-mode: false
+
+      - name: Announce the file run on its pull request
+        id: announce
+        env:
+          CI_COMMAND_API_TOKEN: ${{ github.token }}
+          CI_COMMAND_FILE_RUN_STATUS: announce
+          FILE_RUN_PULL_NUMBER: ${{ inputs.pull_number }}
+          FILE_RUN_TEST_FILE: ${{ inputs.test_file }}
+          FILE_RUN_RUN_ID: ${{ github.run_id }}
+        run: python3 .github/workflows/scripts/comment_ci_command.py
+
   resolve-file-run:
+    needs: announce-file-run
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -134,3 +165,37 @@ jobs:
         pytest '${{ inputs.test_file }}' -v -x
     secrets:
       HF_TOKEN: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.HF_TOKEN || '' }}
+
+  # No `if` beyond always(): a resolver failure, a cancelled run, and a failing
+  # test must all reach the pull request, or a silent run reads as a pass.
+  report-file-run:
+    needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file]
+    if: always()
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the trusted reporter
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
+          sparse-checkout-cone-mode: false
+
+      - name: Report the file run's result on its pull request
+        env:
+          CI_COMMAND_API_TOKEN: ${{ github.token }}
+          CI_COMMAND_FILE_RUN_STATUS: report
+          FILE_RUN_COMMENT_ID: ${{ needs.announce-file-run.outputs.comment_id }}
+          FILE_RUN_PULL_NUMBER: ${{ inputs.pull_number }}
+          FILE_RUN_TEST_FILE: ${{ inputs.test_file }}
+          FILE_RUN_RUN_ID: ${{ github.run_id }}
+          FILE_RUN_SUITE: ${{ needs.resolve-file-run.outputs.suite }}
+          FILE_RUN_RESOLVE_RESULT: ${{ needs.resolve-file-run.result }}
+          FILE_RUN_CUDA_RESULT: ${{ needs.run-cuda-file.result }}
+          FILE_RUN_CPU_RESULT: ${{ needs.run-cpu-file.result }}
+        run: python3 .github/workflows/scripts/comment_ci_command.py

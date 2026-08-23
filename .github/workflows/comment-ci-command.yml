@@ -83,8 +83,6 @@ jobs:
   # Actions-capability commands: /rerun-failed-ci and /rerun-test <test-file>.
   actions-command:
     needs: handle-command
-    outputs:
-      workflow_run_url: ${{ steps.run-command.outputs.workflow_run_url }}
     if: needs.handle-command.outputs.capability == 'actions'
     concurrency:
       group: comment-ci-actions-${{ github.event.issue.number }}
@@ -108,7 +106,6 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Authorize and run the actions command
-        id: run-command
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
@@ -141,33 +138,4 @@ jobs:
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
-        run: python3 .github/workflows/scripts/comment_ci_command.py
-
-  reply-command:
-    needs: actions-command
-    if: >-
-      needs.actions-command.result == 'success' &&
-      needs.actions-command.outputs.workflow_run_url != ''
-    # The reply is a comment on a pull request; same PR-target gating as
-    # acknowledge-command above.
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check out the trusted handler
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
-          sparse-checkout-cone-mode: false
-
-      - name: Reply with the workflow run
-        env:
-          CI_COMMAND_API_TOKEN: ${{ github.token }}
-          CI_COMMAND_REPLY: "true"
-          CI_COMMAND_WORKFLOW_RUN_URL: ${{ needs.actions-command.outputs.workflow_run_url }}
         run: python3 .github/workflows/scripts/comment_ci_command.py

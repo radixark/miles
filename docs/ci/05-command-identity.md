@@ -37,7 +37,11 @@ The handler evaluates the caller against the checked-in policy twice: once in th
 
 ## Token identity
 
-Authorization decides who may ask; token identity decides as whom the gateway acts. `/rerun-test` and `/rerun-failed-ci` execute on the workflow's own `GITHUB_TOKEN` with job-scoped permissions (`actions: write` plus `pull-requests: read` for the command job; `issues: write` plus `pull-requests: write` for the reaction and reply jobs, because GitHub gates issues-API calls whose target issue is a pull request on the pull-requests scope), so their mutations and feedback appear as `github-actions[bot]`. Label commands execute on a command-App token minted with `Issues: write` only, because a label added with `GITHUB_TOKEN` would never fire the `pull_request(labeled)` CI workflows. Neither token reaches the jobs that execute PR code, and the App private key never leaves the label path.
+Authorization decides who may ask; token identity decides as whom the gateway acts. `/rerun-test` and `/rerun-failed-ci` execute on the workflow's own `GITHUB_TOKEN` with job-scoped permissions: the command job has `actions: write` plus `pull-requests: read`.
+
+The reaction and file-run status jobs have `issues: write` plus `pull-requests: write`, because GitHub gates issues-API calls whose target issue is a pull request on the pull-requests scope. The final file-run status job adds `actions: read` to calculate elapsed time from its run. Their mutations and feedback therefore appear as `github-actions[bot]`.
+
+Label commands execute on a command-App token minted with `Issues: write` only, because a label added with `GITHUB_TOKEN` would never fire the `pull_request(labeled)` CI workflows. Neither token reaches the jobs that execute PR code, and the App private key never leaves the label path.
 
 ## Non-goals
 

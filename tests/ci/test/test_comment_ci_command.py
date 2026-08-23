@@ -1,3 +1,4 @@
+import datetime
 import importlib.util
 import json
 import urllib.error
@@ -33,7 +34,42 @@ RUN_FILE_PATH = "tests/e2e/precision/test_hf_attention_cp_relayout.py"
 WORKFLOW_RUN_ID = 987654321
 WORKFLOW_RUN_API_URL = f"https://api.github.com/repos/radixark/miles/actions/runs/{WORKFLOW_RUN_ID}"
 WORKFLOW_RUN_URL = f"https://github.com/radixark/miles/actions/runs/{WORKFLOW_RUN_ID}"
-WORKFLOW_REPLY = f"Started `{RUN_FILE_BODY}`.\n\n[View workflow run]({WORKFLOW_RUN_URL})"
+RUN_MARKER = f"<!-- rerun-test-run:{WORKFLOW_RUN_ID} -->"
+RUN_STARTED_AT = "2026-08-23T09:25:25Z"
+# 3m11s after RUN_STARTED_AT, the shape of a real 4-GPU file run.
+REPORT_NOW = datetime.datetime(2026, 8, 23, 9, 28, 36, tzinfo=datetime.timezone.utc)
+NEW_COMMENT_ID = 4242
+EXISTING_COMMENT_ID = 777
+ANNOUNCE_BODY = (
+    f"⏳ `{RUN_FILE_PATH}` is **running** — [workflow run]({WORKFLOW_RUN_URL})\n\n"
+    "Started at 2026-08-23 09:28:36 UTC; elapsed time and the result will be recorded "
+    f"here when it finishes.\n\n{RUN_MARKER}"
+)
+
+
+def file_run_env(mode, **overrides):
+    environ = {
+        "CI_COMMAND_FILE_RUN_STATUS": mode,
+        "FILE_RUN_PULL_NUMBER": "123",
+        "FILE_RUN_TEST_FILE": RUN_FILE_PATH,
+        "FILE_RUN_RUN_ID": str(WORKFLOW_RUN_ID),
+    }
+    if mode == "report":
+        environ.update(
+            {
+                "FILE_RUN_COMMENT_ID": str(EXISTING_COMMENT_ID),
+                "FILE_RUN_SUITE": "stage-c-4-gpu-h200",
+                "FILE_RUN_RESOLVE_RESULT": "success",
+                "FILE_RUN_CUDA_RESULT": "success",
+                "FILE_RUN_CPU_RESULT": "skipped",
+            }
+        )
+    environ.update(overrides)
+    return environ
+
+
+def file_run_status(mode="report", **overrides):
+    return HANDLER._file_run_status_inputs(file_run_env(mode, **overrides))[1]
 
 
 class FakeAPI:
@@ -55,6 +91,9 @@ class FakeAPI:
         self.dispatch_calls = []
         self.reaction_calls = []
         self.comment_calls = []
+        self.update_calls = []
+        self.run_calls = []
+        self.workflow_run = {"run_started_at": RUN_STARTED_AT}
         self.head_pulls = [pull]
 
     def get_pull(self, pull_number):
@@ -104,6 +143,16 @@ class FakeAPI:
     def create_issue_comment(self, pull_number, body):
         self.calls.append(("create_issue_comment", pull_number, body))
         self.comment_calls.append((pull_number, body))
+        return NEW_COMMENT_ID
+
+    def update_issue_comment(self, comment_id, body):
+        self.calls.append(("update_issue_comment", comment_id, body))
+        self.update_calls.append((comment_id, body))
+
+    def get_workflow_run(self, run_id):
+        self.calls.append(("get_workflow_run", run_id))
+        self.run_calls.append(run_id)
+        return self.workflow_run
 
 
 def event(*, body="/run-ci-short", actor_id=ACTOR_ID, author_association="NONE"):
@@ -1520,7 +1569,7 @@ def test_repository_writer_dispatches_a_file_run(permission):
     }
 
 
-def test_file_run_main_writes_the_confirmed_workflow_url(monkeypatch, tmp_path, capsys):
+def test_file_run_main_reports_the_dispatched_run_without_writing_an_output(monkeypatch, tmp_path, capsys):
     api = FakeAPI(pull())
     output_path = tmp_path / "github-output"
     monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
@@ -1532,8 +1581,10 @@ def test_file_run_main_writes_the_confirmed_workflow_url(monkeypatch, tmp_path, 
     monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
 
     assert HANDLER.main() == 0
-    assert output_path.read_text() == f"workflow_run_url={WORKFLOW_RUN_URL}\n"
+    # The dispatched run URL stays in the audit record; the dispatched run now
+    # owns the pull-request status comment, so no job output carries it.
     assert json.loads(capsys.readouterr().out)["workflow_run_url"] == WORKFLOW_RUN_URL
+    assert not output_path.exists()
 
 
 def test_file_run_forwards_validated_pr_body_pins():
@@ -1840,27 +1891,28 @@ def test_create_issue_comment_uses_exact_endpoint_and_confirms_body(monkeypatch)
             return False
 
         def read(self):
-            return json.dumps({"body": WORKFLOW_REPLY}).encode("utf-8")
+            return json.dumps({"body": ANNOUNCE_BODY, "id": NEW_COMMENT_ID}).encode("utf-8")
 
     def urlopen(request, *, timeout):
         requests.append((request, timeout))
         return Response()
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
-    HANDLER.GitHubAPI("secret-token").create_issue_comment(123, WORKFLOW_REPLY)
+    assert HANDLER.GitHubAPI("secret-token").create_issue_comment(123, ANNOUNCE_BODY) == NEW_COMMENT_ID
 
     request, timeout = requests[0]
     assert request.full_url == "https://api.github.com/repos/radixark/miles/issues/123/comments"
     assert request.method == "POST"
-    assert json.loads(request.data.decode("utf-8")) == {"body": WORKFLOW_REPLY}
+    assert json.loads(request.data.decode("utf-8")) == {"body": ANNOUNCE_BODY}
     assert timeout == 15
 
 
 @pytest.mark.parametrize(
     ("status", "body", "message"),
     [
-        (200, {"body": WORKFLOW_REPLY}, "expected 201"),
-        (201, {"body": "wrong"}, "did not confirm"),
+        (200, {"body": ANNOUNCE_BODY, "id": NEW_COMMENT_ID}, "expected 201"),
+        (201, {"body": "wrong", "id": NEW_COMMENT_ID}, "did not confirm"),
+        (201, {"body": ANNOUNCE_BODY}, "comment ID"),
     ],
 )
 def test_create_issue_comment_rejects_unconfirmed_response_without_retry(
@@ -1892,7 +1944,7 @@ def test_create_issue_comment_rejects_unconfirmed_response_without_retry(
 
     monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
     with pytest.raises(HANDLER.CommentCommandError, match=message):
-        HANDLER.GitHubAPI("secret-token").create_issue_comment(123, WORKFLOW_REPLY)
+        HANDLER.GitHubAPI("secret-token").create_issue_comment(123, ANNOUNCE_BODY)
     assert attempts == 1
 
 
@@ -2049,48 +2101,209 @@ def test_acknowledge_mode_rejects_a_command_without_a_success_reaction(monkeypat
     assert api.calls == []
 
 
-def test_reply_event_posts_the_exact_workflow_link_only_for_run_test_file():
+def test_announce_posts_a_running_status_comment_keyed_to_the_run(monkeypatch):
     api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
 
-    result = HANDLER.reply_event(event(body=RUN_FILE_BODY), api, WORKFLOW_RUN_URL)
+    result = HANDLER.announce_file_run(api, file_run_status("announce"))
 
-    assert api.comment_calls == [(123, WORKFLOW_REPLY)]
+    pull_number, body = api.comment_calls[0]
+    assert pull_number == 123
+    assert body == ANNOUNCE_BODY
     assert result == {
-        "actor_id": ACTOR_ID,
-        "decision": "ALLOW_WORKFLOW_REPLY_CONFIRMED",
+        "comment_id": NEW_COMMENT_ID,
+        "decision": "FILE_RUN_ANNOUNCED",
         "pull_number": 123,
-        "workflow_run_url": WORKFLOW_RUN_URL,
+        "run_id": WORKFLOW_RUN_ID,
+        "test_file": RUN_FILE_PATH,
+    }
+
+
+def test_report_updates_the_announced_comment_with_the_result_and_duration(monkeypatch):
+    api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    result = HANDLER.report_file_run(api, file_run_status(), EXISTING_COMMENT_ID)
+
+    assert api.comment_calls == []
+    comment_id, body = api.update_calls[0]
+    assert comment_id == EXISTING_COMMENT_ID
+    assert body == (
+        f"\u2705 `{RUN_FILE_PATH}` **passed** on `stage-c-4-gpu-h200` in 3m11s "
+        f"\u2014 [workflow run]({WORKFLOW_RUN_URL})\n\n{RUN_MARKER}"
+    )
+    assert result == {
+        "comment_id": EXISTING_COMMENT_ID,
+        "decision": "FILE_RUN_PASSED",
+        "duration": "3m11s",
+        "pull_number": 123,
+        "run_id": WORKFLOW_RUN_ID,
+        "test_file": RUN_FILE_PATH,
     }
 
 
 @pytest.mark.parametrize(
-    ("body", "workflow_run_url", "message"),
+    ("overrides", "decision", "icon", "explanation"),
     [
-        ("/rerun-failed-ci", WORKFLOW_RUN_URL, "does not define a workflow reply"),
-        (RUN_FILE_BODY, "https://example.invalid/actions/runs/1", "workflow run URL is invalid"),
+        (
+            {"FILE_RUN_CUDA_RESULT": "failure"},
+            "FILE_RUN_FAILED",
+            "\u274c",
+            "The execution job failed; inspect the workflow run for the failing step.",
+        ),
+        (
+            {"FILE_RUN_RESOLVE_RESULT": "failure", "FILE_RUN_CUDA_RESULT": "skipped"},
+            "FILE_RUN_FAILED",
+            "\u274c",
+            "The run never started: resolving the test file's execution plan failed.",
+        ),
+        (
+            {"FILE_RUN_CUDA_RESULT": "cancelled"},
+            "FILE_RUN_CANCELLED",
+            "\u26aa",
+            "The run was cancelled.",
+        ),
+        (
+            {"FILE_RUN_RESOLVE_RESULT": "cancelled", "FILE_RUN_CUDA_RESULT": "skipped"},
+            "FILE_RUN_CANCELLED",
+            "\u26aa",
+            "The run was cancelled.",
+        ),
+        (
+            {"FILE_RUN_CUDA_RESULT": "skipped", "FILE_RUN_CPU_RESULT": "skipped"},
+            "FILE_RUN_FAILED",
+            "\u274c",
+            "No execution job ran: the resolved plan selected neither the CUDA nor the CPU job.",
+        ),
     ],
 )
-def test_reply_event_fails_closed_before_posting(body, workflow_run_url, message):
+def test_report_never_calls_a_non_passing_run_a_pass(monkeypatch, overrides, decision, icon, explanation):
     api = FakeAPI(pull())
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
 
-    with pytest.raises(HANDLER.CommentCommandError, match=message):
-        HANDLER.reply_event(event(body=body), api, workflow_run_url)
+    result = HANDLER.report_file_run(api, file_run_status(**overrides), EXISTING_COMMENT_ID)
+
+    body = api.update_calls[0][1]
+    assert body.startswith(icon)
+    assert "**passed**" not in body
+    assert explanation in body
+    assert result["decision"] == decision
+
+
+def test_report_reads_the_run_start_from_the_api_not_from_an_input(monkeypatch):
+    api = FakeAPI(pull())
+    api.workflow_run = {"run_started_at": "2026-08-23T08:25:25Z"}
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    result = HANDLER.report_file_run(api, file_run_status(), EXISTING_COMMENT_ID)
+
+    assert api.run_calls == [WORKFLOW_RUN_ID]
+    assert result["duration"] == "1h03m11s"
+
+
+@pytest.mark.parametrize(
+    "workflow_run",
+    [
+        {},
+        {"created_at": RUN_STARTED_AT},
+        {"run_started_at": ""},
+        {"run_started_at": "not-a-timestamp"},
+        {"run_started_at": "2026-08-23T09:25:25"},
+        {"run_started_at": 17},
+        "nope",
+    ],
+)
+def test_report_fails_closed_on_an_unusable_run_start(monkeypatch, workflow_run):
+    api = FakeAPI(pull())
+    api.workflow_run = workflow_run
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+
+    with pytest.raises(HANDLER.CommentCommandError):
+        HANDLER.report_file_run(api, file_run_status(), EXISTING_COMMENT_ID)
+    assert api.update_calls == []
     assert api.comment_calls == []
 
 
-def test_reply_mode_posts_without_loading_policy(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("seconds", "formatted"),
+    [(0, "0s"), (9, "9s"), (59, "59s"), (60, "1m00s"), (191, "3m11s"), (3600, "1h00m00s"), (3791, "1h03m11s")],
+)
+def test_duration_formatting_is_stable(seconds, formatted):
+    assert HANDLER._format_duration(seconds) == formatted
+
+
+def test_negative_duration_is_a_hard_error():
+    with pytest.raises(HANDLER.CommentCommandError, match="negative"):
+        HANDLER._format_duration(-1)
+
+
+@pytest.mark.parametrize(
+    ("mode", "overrides", "message"),
+    [
+        ("announce", {"CI_COMMAND_FILE_RUN_STATUS": "publish"}, "announce or report"),
+        ("announce", {"FILE_RUN_PULL_NUMBER": "0"}, "pull request number"),
+        ("announce", {"FILE_RUN_PULL_NUMBER": "12a"}, "pull request number"),
+        ("announce", {"FILE_RUN_PULL_NUMBER": ""}, "pull request number"),
+        ("announce", {"FILE_RUN_RUN_ID": "-1"}, "workflow run ID"),
+        ("announce", {"FILE_RUN_TEST_FILE": "tests/../etc/passwd"}, "test file is invalid"),
+        ("announce", {"FILE_RUN_TEST_FILE": ""}, "test file is invalid"),
+        ("report", {"FILE_RUN_SUITE": "stage a cpu; rm -rf /"}, "suite is invalid"),
+        ("report", {"FILE_RUN_RESOLVE_RESULT": "exploded"}, "resolve result is invalid"),
+        ("report", {"FILE_RUN_CPU_RESULT": "success"}, "two executing jobs"),
+        ("report", {"FILE_RUN_COMMENT_ID": ""}, "comment ID"),
+        ("report", {"FILE_RUN_COMMENT_ID": "0"}, "comment ID"),
+    ],
+)
+def test_file_run_status_inputs_fail_closed(mode, overrides, message):
+    with pytest.raises(HANDLER.CommentCommandError, match=message):
+        HANDLER._file_run_status_inputs(file_run_env(mode, **overrides))
+
+
+def test_status_mode_needs_no_event_and_loads_no_policy(monkeypatch, capsys):
     api = FakeAPI(pull())
-    monkeypatch.setattr(HANDLER, "load_json", lambda _path: event(body=RUN_FILE_BODY))
+    monkeypatch.setattr(HANDLER, "load_json", lambda _path: pytest.fail("no event payload may be read"))
     monkeypatch.setattr(HANDLER, "load_policy", lambda _path: pytest.fail("policy must not be loaded"))
     monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
-    monkeypatch.setenv("GITHUB_EVENT_PATH", "event.json")
-    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "reply-token")
-    monkeypatch.setenv("CI_COMMAND_REPLY", "true")
-    monkeypatch.setenv("CI_COMMAND_WORKFLOW_RUN_URL", WORKFLOW_RUN_URL)
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "status-token")
+    for name, value in file_run_env("report").items():
+        monkeypatch.setenv(name, value)
 
     assert HANDLER.main() == 0
-    assert api.calls == [("create_issue_comment", 123, WORKFLOW_REPLY)]
-    assert json.loads(capsys.readouterr().out)["workflow_run_url"] == WORKFLOW_RUN_URL
+    assert json.loads(capsys.readouterr().out)["decision"] == "FILE_RUN_PASSED"
+
+
+def test_announce_mode_writes_the_created_comment_id(monkeypatch, tmp_path, capsys):
+    api = FakeAPI(pull())
+    output_path = tmp_path / "github-output"
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: api)
+    monkeypatch.setattr(HANDLER, "_utc_now", lambda: REPORT_NOW)
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "status-token")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    for name, value in file_run_env("announce").items():
+        monkeypatch.setenv(name, value)
+
+    assert HANDLER.main() == 0
+    assert output_path.read_text() == f"comment_id={NEW_COMMENT_ID}\n"
+    assert json.loads(capsys.readouterr().out)["decision"] == "FILE_RUN_ANNOUNCED"
+
+
+def test_status_mode_reports_a_handler_error_as_a_failed_step(monkeypatch, capsys):
+    monkeypatch.setattr(HANDLER, "GitHubAPI", lambda _token: pytest.fail("token is validated first"))
+    monkeypatch.setenv("CI_COMMAND_API_TOKEN", "status-token")
+    for name, value in file_run_env("report", FILE_RUN_TEST_FILE="not-a-test").items():
+        monkeypatch.setenv(name, value)
+
+    assert HANDLER.main() == 1
+    assert "::error::file run test file is invalid" in capsys.readouterr().out
+
+
+def test_the_gateway_no_longer_owns_a_reply_path():
+    # The run itself reports progress and the result; a second static comment
+    # from the gateway would duplicate it.
+    assert not hasattr(HANDLER, "reply_event")
+    assert not hasattr(HANDLER, "_write_workflow_run_url")
 
 
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
@@ -2128,8 +2341,7 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "queue: max" in workflow
     handle_job = workflow.split("  handle-command:", 1)[1].split("  actions-command:", 1)[0]
     actions_job = workflow.split("  actions-command:", 1)[1].split("  acknowledge-command:", 1)[0]
-    acknowledge_job = workflow.split("  acknowledge-command:", 1)[1].split("  reply-command:", 1)[0]
-    reply_job = workflow.split("  reply-command:", 1)[1]
+    acknowledge_job = workflow.split("  acknowledge-command:", 1)[1]
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
@@ -2139,19 +2351,16 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
         "Mint the issues-scoped App token"
     )
     # Each GITHUB_TOKEN job scopes its own permissions; only the actions job
-    # may dispatch or rerun, and only the feedback jobs may write issues.
+    # may dispatch or rerun, and only the acknowledgement job may write issues.
     assert ("permissions:\n      contents: read\n      actions: write\n      pull-requests: read") in actions_job
     assert "issues: write" not in actions_job
     assert "create-github-app-token" not in actions_job
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in actions_job
-    # The feedback jobs target comments on pull requests, and issues-API calls
+    # The acknowledgement job targets a comment on a pull request, and issues-API calls
     # whose target issue is a PR are gated on pull-requests scope.
     assert "permissions:\n      contents: read\n      issues: write\n      pull-requests: write" in acknowledge_job
     assert "actions: write" not in acknowledge_job
     assert "create-github-app-token" not in acknowledge_job
-    assert "permissions:\n      contents: read\n      issues: write\n      pull-requests: write" in reply_job
-    assert "actions: write" not in reply_job
-    assert "create-github-app-token" not in reply_job
     assert workflow.index("Authorize and run the actions command") < workflow.index(
         "Acknowledge the successful command"
     )
@@ -2164,18 +2373,11 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     ) in acknowledge_job
     assert "always()" not in acknowledge_job
     assert 'CI_COMMAND_ACKNOWLEDGE: "true"' in acknowledge_job
-    assert "workflow_run_url: ${{ steps.run-command.outputs.workflow_run_url }}" in actions_job
-    assert "id: run-command" in actions_job
     assert "CI_COMMAND_REPLY" not in actions_job
-    assert "needs: actions-command" in reply_job
-    assert (
-        "if: >-\n"
-        "      needs.actions-command.result == 'success' &&\n"
-        "      needs.actions-command.outputs.workflow_run_url != ''"
-    ) in reply_job
-    assert "always()" not in reply_job
-    assert 'CI_COMMAND_REPLY: "true"' in reply_job
-    assert "CI_COMMAND_WORKFLOW_RUN_URL: ${{ needs.actions-command.outputs.workflow_run_url }}" in reply_job
+    assert "workflow_run_url:" not in actions_job
+    assert "reply-command:" not in workflow
+    assert "CI_COMMAND_REPLY" not in workflow
+    assert "CI_COMMAND_WORKFLOW_RUN_URL" not in workflow
     assert "pull_request_target" not in workflow
     assert "github.event.pull_request.head" not in workflow
     assert "pip install" not in workflow

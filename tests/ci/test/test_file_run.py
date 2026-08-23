@@ -184,7 +184,7 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "permissions:\n  contents: read" in workflow
     assert "name: Rerun Test" in workflow
     assert 'run-name: "/rerun-test ' in workflow
-    assert workflow.count("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") == 2
+    assert workflow.count("actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683") == 4
     assert workflow.count("ref: ${{ inputs.head_sha }}") == 3
     assert workflow.count("plan_already_resolved: true") == 2
     assert "path: pr-source" in workflow
@@ -209,6 +209,18 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
+    assert "comment_id: ${{ steps.announce.outputs.comment_id }}" in workflow
+    assert "id: announce" in workflow
+    assert "resolve-file-run:\n    needs: announce-file-run" in workflow
+    assert "FILE_RUN_COMMENT_ID: ${{ needs.announce-file-run.outputs.comment_id }}" in workflow
+    assert workflow.count("CI_COMMAND_FILE_RUN_STATUS: announce") == 1
+    assert workflow.count("CI_COMMAND_FILE_RUN_STATUS: report") == 1
+    assert workflow.count("issues: write") == 2
+    assert workflow.count("pull-requests: write") == 2
+    report_job = workflow.split("  report-file-run:", 1)[1]
+    assert "actions: read" in report_job
+    assert "needs: [announce-file-run, resolve-file-run, run-cuda-file, run-cpu-file]" in report_job
+    assert "if: always()" in report_job
     assert "tests.ci.run_suite" not in workflow
     assert "pytest '${{ inputs.test_file }}' -v -x" in workflow
     assert "python3 '${{ inputs.test_file }}'" in workflow
