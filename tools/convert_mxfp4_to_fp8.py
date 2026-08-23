@@ -44,7 +44,9 @@ def cast_e2m1fn_to_e4m3fn(x: torch.Tensor, scale: torch.Tensor) -> tuple[torch.T
     tile_scale = scale.amax(dim=-1, keepdim=True) / max_offset
     offset = (scale / tile_scale).unflatten(-1, (fp8_block_size, -1)).repeat_interleave(fp4_block_size, dim=-1)
     x = (x * offset).transpose(1, 2).reshape(out_dim, in_dim)
-    return x.to(torch.float8_e4m3fn), tile_scale.squeeze(-1).to(torch.float8_e8m0fnu)
+    # ue8m0 semantics (power-of-two values) stored as float32, matching the
+    # sgl-project FP8 repackages and the float32 scales on attention/dense.
+    return x.to(torch.float8_e4m3fn), tile_scale.squeeze(-1).float()
 
 
 def main(model_dir: str, save_dir: str, device: str):
