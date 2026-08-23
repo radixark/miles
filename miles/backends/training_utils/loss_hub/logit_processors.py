@@ -7,6 +7,7 @@ from miles.backends.training_utils.cp_utils import allgather_cp_redistribute, ge
 from miles.backends.training_utils.loss_hub.math_utils import calculate_log_probs_and_entropy
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.backends.training_utils.sampling_mask import build_local_sampling_mask
+from miles.utils.sampling_mask import RolloutSamplingMask
 
 
 def _iter_response_chunks(
@@ -191,7 +192,7 @@ def get_log_probs_and_entropy(
     entropy_requires_grad: bool = True,
     non_loss_data: bool = True,
     max_seq_lens: list[int] | None = None,
-    rollout_sampling_mask: list[list[list[int]]] | None = None,
+    rollout_sampling_mask: Sequence[RolloutSamplingMask] | None = None,
 ) -> dict[str, list[torch.Tensor]]:
     """Compute per-token log-probabilities (and optionally entropy) on responses.
 
@@ -210,8 +211,8 @@ def get_log_probs_and_entropy(
         entropy_requires_grad: If False, compute entropy as an observed metric
             without attaching it to the autograd graph.
         non_loss_data: Unused; kept for API compatibility.
-        rollout_sampling_mask: Sampling-support token IDs for each response
-            token of each sample.
+        rollout_sampling_mask: One ``RolloutSamplingMask`` per sample,
+            covering every response token.
 
     Returns:
         Dict with key "log_probs" mapping to a list of `[R]` tensors per
@@ -220,6 +221,8 @@ def get_log_probs_and_entropy(
     """
     assert non_loss_data
     if rollout_sampling_mask is not None:
+        if isinstance(rollout_sampling_mask, RolloutSamplingMask):
+            raise TypeError("rollout_sampling_mask must be a sequence of RolloutSamplingMask, one per sample")
         mask_batch_size = len(rollout_sampling_mask)
         response_batch_size = len(response_lengths)
         if mask_batch_size != response_batch_size:

@@ -1,66 +1,56 @@
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Sequence
 
 import torch
 
-
-def get_rollout_sampling_mask(batch: Mapping[str, object]) -> list[list[list[int]]]:
-    """Read the complete sampling mask required by an actor scoring pass."""
-    sampling_mask = batch.get("rollout_sampling_mask")
-    if sampling_mask is None:
-        raise ValueError("truncated-sampling actor scoring requires rollout_sampling_mask")
-    return cast(list[list[list[int]]], sampling_mask)
+from miles.utils.sampling_mask import RolloutSamplingMask
 
 
 def build_local_sampling_mask(
     logits: torch.Tensor,
-    sampling_mask: list[list[int]],
-    response_indices: Sequence[int],
+    sampling_mask: RolloutSamplingMask,
+    response_indices: Sequence[int] | torch.Tensor,
     *,
     tp_rank: int,
 ) -> torch.Tensor:
-    """Build the dense local-vocabulary mask consumed by the log-prob primitive."""
-    indices = _to_cpu_integer_tensor(response_indices)
+    """Build the dense local-vocabulary mask consumed by the log-prob primitive.
 
-    if indices.numel() != logits.size(0):
+    Args:
+        logits: ``[local_rows, local_vocab_size]`` response-row logits this
+            rank holds (TP vocab shard, CP row subset).
+        sampling_mask: the sample's complete sampling mask.
+        response_indices: ``[local_rows]`` global response position of each row.
+        tp_rank: this rank's index in the TP group.
+
+    Returns:
+        Bool mask shaped like ``logits``; True marks ids inside the support.
+    """
+    if isinstance(response_indices, torch.Tensor) and (
+        response_indices.ndim != 1
+        or response_indices.dtype == torch.bool
+        or torch.is_floating_point(response_indices)
+        or torch.is_complex(response_indices)
+    ):
+        raise ValueError("sampling-mask ids, offsets, and response indices must be one-dimensional integers")
+    if len(response_indices) != logits.size(0):
         raise ValueError(
-            f"sampling-mask rows must align with logits: indices={indices.numel()}, logits={logits.size(0)}"
+            f"sampling-mask rows must align with logits: indices={len(response_indices)}, logits={logits.size(0)}"
         )
-    if any(not support for support in sampling_mask):
-        raise ValueError("every response token must have a non-empty sampling support")
-    response_length = len(sampling_mask)
-    if torch.any(indices < 0) or torch.any(indices >= response_length):
-        raise ValueError(f"response indices must be in [0, {response_length})")
 
+    if logits.size(0) == 0:
+        return torch.zeros(logits.numel(), dtype=torch.bool, device=logits.device).view_as(logits)
+
+    # CP response rows form a small number of contiguous runs, so the CSR
+    # gather is a handful of CPU slices before the GPU expansion.
+    selected_ids, lengths = sampling_mask._select_masks(response_indices)
+    selected_ids = selected_ids.to(logits.device)
+    row_indices = torch.repeat_interleave(
+        torch.arange(len(response_indices), dtype=torch.long, device=logits.device),
+        lengths.to(device=logits.device, dtype=torch.long),
+    )
     local_vocab_size = logits.size(-1)
     vocab_start = tp_rank * local_vocab_size
-    vocab_end = vocab_start + local_vocab_size
-    mask = torch.zeros(logits.numel(), dtype=torch.bool, device=logits.device)
-    if indices.numel() == 0:
-        return mask.view_as(logits)
-
-    selected_supports = [sampling_mask[index] for index in indices.tolist()]
-    lengths = torch.tensor([len(support) for support in selected_supports], device=logits.device)
-    selected_ids = _to_cpu_integer_tensor([token_id for support in selected_supports for token_id in support]).to(
-        logits.device
-    )
-    row_indices = torch.repeat_interleave(
-        torch.arange(indices.numel(), dtype=torch.long, device=logits.device),
-        lengths,
-    )
-    is_local = (selected_ids >= vocab_start) & (selected_ids < vocab_end)
+    is_local = (selected_ids >= vocab_start) & (selected_ids < vocab_start + local_vocab_size)
     flat_local_indices = row_indices[is_local] * local_vocab_size + selected_ids[is_local].to(torch.long) - vocab_start
+    mask = torch.zeros(logits.numel(), dtype=torch.bool, device=logits.device)
     mask[flat_local_indices] = True
     return mask.view_as(logits)
-
-
-def _to_cpu_integer_tensor(values: Sequence[int]) -> torch.Tensor:
-    if len(values) == 0:
-        tensor = torch.empty(0, dtype=torch.long, device="cpu")
-    elif isinstance(values, range):
-        tensor = torch.arange(values.start, values.stop, values.step, device="cpu")
-    else:
-        tensor = torch.as_tensor(values, device="cpu")
-    if tensor.ndim != 1 or tensor.dtype == torch.bool or torch.is_floating_point(tensor) or torch.is_complex(tensor):
-        raise ValueError("sampling-mask token ids and response indices must be one-dimensional integers")
-    return tensor
