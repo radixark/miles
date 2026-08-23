@@ -418,6 +418,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-first-pipeline-num-layers 4 "
                 "--decoder-last-pipeline-num-layers 3 "
                 "--context-parallel-size 2 "
+                "--allgather-cp "
                 "--expert-model-parallel-size 4 "
                 "--expert-tensor-parallel-size 1 "
             )
