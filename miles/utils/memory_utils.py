@@ -11,6 +11,14 @@ logger = logging.getLogger(__name__)
 _libc = ctypes.CDLL(ctypes.util.find_library("c"))
 
 
+def _rss_gb() -> float:
+    with open("/proc/self/status") as f:
+        for line in f:
+            if line.startswith("VmRSS"):
+                return int(line.split()[1]) / 1024**2
+    return -1.0
+
+
 def clear_memory(clear_host_memory: bool = False):
     torch.cuda.synchronize()
     gc.collect()
@@ -21,7 +29,9 @@ def clear_memory(clear_host_memory: bool = False):
         # tensors that glibc serves from its arenas (below the 32MB dynamic
         # mmap threshold); freed arena pages are retained, so RSS stays at the
         # loading high-water mark unless explicitly trimmed.
+        rss_before = _rss_gb()
         _libc.malloc_trim(0)
+        logger.info(f"malloc_trim: rss {rss_before:.2f}GB -> {_rss_gb():.2f}GB")
 
 
 def available_memory():
