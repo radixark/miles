@@ -97,11 +97,14 @@ def main(fp8_path, bf16_path):
                 try:
                     # Get scale_inv from the correct file
                     scale_inv = get_tensor(scale_inv_name)
-                    fp8_weight_names.append(weight_name)
-                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
                 except KeyError:
                     print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
                     new_state_dict[weight_name] = weight
+                else:
+                    # Outside the except scope: a dequant failure (e.g. a scale dtype
+                    # triton cannot load) must raise, not masquerade as a missing scale.
+                    fp8_weight_names.append(weight_name)
+                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
             else:
                 new_state_dict[weight_name] = weight
 
