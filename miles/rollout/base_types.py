@@ -156,7 +156,11 @@ class TrainBatchLease(ABC):
 
     A successful commit records that every required remote trainer acknowledged
     the exact published train-data result. Settlement may be attempted only
-    once, including when its implementation raises.
+    once, including when its implementation raises, and either entry point
+    consumes that single attempt: the blocking ``commit``/``rollback`` pair for
+    callers that own no event loop, and the awaitable
+    ``commit_async``/``rollback_async`` pair for callers that must keep their
+    loop responsive while settlement runs elsewhere.
     """
 
     def __init__(self, rollout_id: int) -> None:
@@ -177,9 +181,22 @@ class TrainBatchLease(ABC):
         self._claim_settlement()
         self._commit()
 
+    async def commit_async(self) -> None:
+        """Record successful publication without blocking the calling event loop.
+
+        Raises:
+            RuntimeError: If any settlement was already attempted.
+        """
+        self._claim_settlement()
+        await self._commit_async()
+
     @abstractmethod
     def _commit(self) -> None:
         """Implement publication settlement after the lease is claimed."""
+
+    async def _commit_async(self) -> None:
+        """Await publication settlement; blocking implementations run inline."""
+        self._commit()
 
     def rollback(self, reason: TrainBatchRollbackReason) -> None:
         """Return ownership after train-data publication fails.
@@ -193,9 +210,25 @@ class TrainBatchLease(ABC):
         self._claim_settlement()
         self._rollback(reason)
 
+    async def rollback_async(self, reason: TrainBatchRollbackReason) -> None:
+        """Return ownership without blocking the calling event loop.
+
+        Args:
+            reason: Why the manager could not publish the result.
+
+        Raises:
+            RuntimeError: If any settlement was already attempted.
+        """
+        self._claim_settlement()
+        await self._rollback_async(reason)
+
     @abstractmethod
     def _rollback(self, reason: TrainBatchRollbackReason) -> None:
         """Implement publication recovery after settlement is claimed."""
+
+    async def _rollback_async(self, reason: TrainBatchRollbackReason) -> None:
+        """Await publication recovery; blocking implementations run inline."""
+        self._rollback(reason)
 
     def _claim_settlement(self) -> None:
         if self._settlement_attempted:

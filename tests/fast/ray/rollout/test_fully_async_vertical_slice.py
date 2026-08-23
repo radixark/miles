@@ -171,7 +171,7 @@ class _RayTrainerGroupAdapter:
             assert result == {"rank": 0, "resolved_refs": 1, "rollout_id": rollout_id}
             return
         publication = data_pack["trainer_admission"]
-        status = self._manager.get_trainer_admission_status(publication)
+        status = await self._manager.get_trainer_admission_status(publication)
         self.events.append(f"train:{rollout_id}:{status.value}")
         result = await self._rank.train.remote(publication, data_pack["data_ref"], status.value)
         assert result == {
@@ -376,7 +376,7 @@ async def test_fully_async_vertical_slice_preserves_ownership_across_train_check
             ("admit", 0, 1, None),
             ("train", 0, 1, TrainerAdmissionStatus.COMMITTED.value),
         )
-        assert manager.get_trainer_admission_status(first_publication) is TrainerAdmissionStatus.COMMITTED
+        assert await manager.get_trainer_admission_status(first_publication) is TrainerAdmissionStatus.COMMITTED
 
         second_pack = await manager.generate(rollout_id=8)
         second_publication = second_pack["trainer_admission"]
@@ -385,9 +385,9 @@ async def test_fully_async_vertical_slice_preserves_ownership_across_train_check
             await manager.save(8)
 
         assert not checkpoint_path.exists()
-        assert manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.PENDING
+        assert await manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.PENDING
         assert await coordinator.rollback_prefetched(second_pack)
-        assert manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.ROLLED_BACK
+        assert await manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.ROLLED_BACK
 
         await manager.save(8)
         assert checkpoint_path.exists()
@@ -434,7 +434,7 @@ async def test_fully_async_vertical_slice_preserves_ownership_across_train_check
             await asyncio.gather(update_task, return_exceptions=True)
         if second_pack is not None:
             second_publication = second_pack["trainer_admission"]
-            if manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.PENDING:
+            if await manager.get_trainer_admission_status(second_publication) is TrainerAdmissionStatus.PENDING:
                 await coordinator.rollback_prefetched(second_pack)
         try:
             await manager.dispose()

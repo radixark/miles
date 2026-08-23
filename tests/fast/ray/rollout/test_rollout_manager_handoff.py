@@ -51,6 +51,27 @@ class RecordingTrainBatchLease(TrainBatchLease):
             raise self._rollback_error
 
 
+class GatedTrainBatchLease(RecordingTrainBatchLease):
+    """Hold awaitable settlement open until the test releases the gate."""
+
+    def __init__(self, rollout_id: int, events: list[str]) -> None:
+        super().__init__(rollout_id=rollout_id, events=events)
+        self.settlement_started = asyncio.Event()
+        self.release_settlement = asyncio.Event()
+
+    async def _commit_async(self) -> None:
+        await self._wait_for_gate()
+        self._commit()
+
+    async def _rollback_async(self, reason: TrainBatchRollbackReason) -> None:
+        await self._wait_for_gate()
+        self._rollback(reason)
+
+    async def _wait_for_gate(self) -> None:
+        self.settlement_started.set()
+        await self.release_settlement.wait()
+
+
 class RecordingTrainAdmissionHold(WeightUpdateAdmissionHold):
     def __init__(
         self,
@@ -488,7 +509,7 @@ async def test_dispose_waits_for_active_generation(
     monkeypatch.setattr(
         rollout_manager_mod.object_store, "get_instance", lambda: SimpleNamespace(remove=lambda ref: None)
     )
-    assert manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLED_BACK
+    assert await manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLED_BACK
     await manager.dispose()
     assert events == ["rollback:TRAINER_ADMISSION_FAILED", "close"]
     assert resource_events == ["resource"]
@@ -859,6 +880,36 @@ async def test_publication_cleanup_failure_is_chained_under_handoff_failure(
     assert events == ["rollback:HANDOFF_FAILED", "remove:published"]
 
 
+async def test_cancellation_during_handoff_rollback_stays_a_cancellation(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    handoff_failure = RuntimeError("publication token failed")
+    lease = GatedTrainBatchLease(11, events)
+    manager.generate_rollout = lambda input: leased_output(lease)
+    monkeypatch.setattr(rollout_manager_mod, "split_train_data_by_dp", lambda *args, **kwargs: [Box("published")])
+    monkeypatch.setattr(rollout_manager_mod, "data_ref_ids", lambda data_ref: (_ for _ in ()).throw(handoff_failure))
+    monkeypatch.setattr(
+        rollout_manager_mod.object_store,
+        "get_instance",
+        lambda: SimpleNamespace(remove=lambda ref: events.append(f"remove:{ref.inner}")),
+    )
+
+    generate = asyncio.create_task(manager.generate(rollout_id=11))
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    generate.cancel()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not generate.done()
+
+    lease.release_settlement.set()
+    with pytest.raises(asyncio.CancelledError):
+        await generate
+    assert events == ["rollback:HANDOFF_FAILED", "remove:published"]
+
+
 def _actor_receipt(publication):
     return TrainerAdmissionReceipt(
         publication=publication,
@@ -904,18 +955,18 @@ async def test_commit_validates_exact_roles_and_ref_before_settlement(
     )
 
     with pytest.raises(ValueError, match="publication"):
-        manager.commit_trainer_admission(publication, (bad_ref,))
+        await manager.commit_trainer_admission(publication, (bad_ref,))
     assert events == ["publish"]
 
     with pytest.raises(ValueError, match="exactly"):
-        manager.commit_trainer_admission(publication, ())
+        await manager.commit_trainer_admission(publication, ())
     assert events == ["publish"]
 
     assert (
-        manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
+        await manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
         is TrainerAdmissionStatus.COMMITTED
     )
-    assert manager.commit_trainer_admission(publication, ()) is TrainerAdmissionStatus.COMMITTED
+    assert await manager.commit_trainer_admission(publication, ()) is TrainerAdmissionStatus.COMMITTED
     assert events == ["publish", "commit"]
 
 
@@ -939,7 +990,7 @@ async def test_restart_or_substituted_publication_cannot_settle_lease(
     )
 
     with pytest.raises(ValueError, match="does not match"):
-        manager.commit_trainer_admission(restarted, (_actor_receipt(publication),))
+        await manager.commit_trainer_admission(restarted, (_actor_receipt(publication),))
     assert events == []
 
 
@@ -985,11 +1036,11 @@ async def test_role_receipt_validation_happens_before_settlement(
     critic = TrainerAdmissionReceipt(publication, "critic", actor.cohort)
 
     with pytest.raises(ValueError, match="exactly"):
-        manager.commit_trainer_admission(publication, (actor,))
+        await manager.commit_trainer_admission(publication, (actor,))
     with pytest.raises(ValueError, match="repeats"):
-        manager.commit_trainer_admission(publication, (critic, critic))
+        await manager.commit_trainer_admission(publication, (critic, critic))
     with pytest.raises(ValueError, match="foreign role"):
-        manager.commit_trainer_admission(
+        await manager.commit_trainer_admission(
             publication, (actor, TrainerAdmissionReceipt(publication, "other", actor.cohort))
         )
     assert events == []
@@ -1037,7 +1088,7 @@ async def test_receipt_cohort_structure_is_validated_before_lease_commit(
     publication = (await manager.generate(rollout_id=46))["trainer_admission"]
 
     with pytest.raises(ValueError, match="cohort"):
-        manager.commit_trainer_admission(
+        await manager.commit_trainer_admission(
             publication,
             (TrainerAdmissionReceipt(publication=publication, role="actor", cohort=cohort),),
         )
@@ -1063,7 +1114,7 @@ async def test_receipt_cohort_requires_exact_tuple_shapes(
     )
 
     with pytest.raises(ValueError, match="cohort"):
-        manager.commit_trainer_admission(publication, malformed)
+        await manager.commit_trainer_admission(publication, malformed)
 
     assert events == []
 
@@ -1085,7 +1136,7 @@ async def test_receipt_cohort_allows_sorted_unique_cell_and_rank_gaps(
         ),
     )
 
-    status = manager.commit_trainer_admission(
+    status = await manager.commit_trainer_admission(
         publication,
         (TrainerAdmissionReceipt(publication=publication, role="actor", cohort=cohort),),
     )
@@ -1113,8 +1164,8 @@ async def test_rollback_settles_source_before_deleting_refs_and_is_idempotent(
     monkeypatch.setattr(rollout_manager_mod.object_store, "get_instance", lambda: SimpleNamespace(remove=remove))
     publication = (await manager.generate(rollout_id=44))["trainer_admission"]
 
-    assert manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLED_BACK
-    assert manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLED_BACK
+    assert await manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLED_BACK
+    assert await manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLED_BACK
     assert events == ["publish", "rollback:TRAINER_ADMISSION_FAILED", "remove"]
 
 
@@ -1137,10 +1188,195 @@ async def test_rollback_failure_retains_refs_and_fails_closed(
     publication = (await manager.generate(rollout_id=45))["trainer_admission"]
 
     with pytest.raises(RuntimeError, match="rollback failed"):
-        manager.rollback_trainer_admission(publication)
-    assert manager.get_trainer_admission_status(publication) is TrainerAdmissionStatus.ROLLBACK_FAILED
-    assert manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLBACK_FAILED
+        await manager.rollback_trainer_admission(publication)
+    assert await manager.get_trainer_admission_status(publication) is TrainerAdmissionStatus.ROLLBACK_FAILED
+    assert await manager.rollback_trainer_admission(publication) is TrainerAdmissionStatus.ROLLBACK_FAILED
     assert events == ["rollback:TRAINER_ADMISSION_FAILED"]
+
+
+async def _wait_for_admission_status(
+    manager: RolloutManager,
+    publication,
+    expected: TrainerAdmissionStatus,
+) -> None:
+    async def poll() -> None:
+        while await manager.get_trainer_admission_status(publication) is not expected:
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(poll(), timeout=1)
+
+
+async def _publish_gated_admission(
+    manager: RolloutManager,
+    monkeypatch: pytest.MonkeyPatch,
+    rollout_id: int,
+    events: list[str],
+) -> tuple[GatedTrainBatchLease, object]:
+    lease = GatedTrainBatchLease(rollout_id, events)
+    manager.generate_rollout = lambda input: leased_output(lease)
+    monkeypatch.setattr(rollout_manager_mod, "split_train_data_by_dp", lambda *args, **kwargs: [Box("published")])
+    monkeypatch.setattr(
+        rollout_manager_mod.object_store,
+        "get_instance",
+        lambda: SimpleNamespace(remove=lambda _: events.append("remove")),
+    )
+    result = await manager.generate(rollout_id=rollout_id)
+    return lease, result["trainer_admission"]
+
+
+async def _count_ticks_while_settling(lease: GatedTrainBatchLease) -> int:
+    """Return how many turns another coroutine got while settlement stayed gated."""
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    ticks = 0
+
+    async def tick() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0)
+            ticks += 1
+
+    ticker = asyncio.create_task(tick())
+    for _ in range(3):
+        await asyncio.sleep(0)
+    ticker.cancel()
+    return ticks
+
+
+async def test_commit_settles_without_blocking_the_manager_loop(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 51, events)
+
+    settle = asyncio.create_task(manager.commit_trainer_admission(publication, (_actor_receipt(publication),)))
+
+    assert await _count_ticks_while_settling(lease) > 0
+    assert not settle.done()
+    assert events == []
+
+    lease.release_settlement.set()
+    assert await settle is TrainerAdmissionStatus.COMMITTED
+    assert events == ["commit"]
+
+
+async def test_rollback_settles_without_blocking_the_manager_loop(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 52, events)
+
+    settle = asyncio.create_task(manager.rollback_trainer_admission(publication))
+
+    assert await _count_ticks_while_settling(lease) > 0
+    assert not settle.done()
+    assert events == []
+
+    lease.release_settlement.set()
+    assert await settle is TrainerAdmissionStatus.ROLLED_BACK
+    assert events == ["rollback:TRAINER_ADMISSION_FAILED", "remove"]
+
+
+async def test_status_query_during_commit_reports_only_the_settled_outcome(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 55, events)
+
+    settle = asyncio.create_task(manager.commit_trainer_admission(publication, (_actor_receipt(publication),)))
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    status = asyncio.create_task(manager.get_trainer_admission_status(publication))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not status.done()
+
+    lease.release_settlement.set()
+    assert await asyncio.wait_for(status, timeout=1) is TrainerAdmissionStatus.COMMITTED
+    assert await settle is TrainerAdmissionStatus.COMMITTED
+
+
+async def test_status_query_during_rollback_reports_only_the_settled_outcome(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 56, events)
+
+    settle = asyncio.create_task(manager.rollback_trainer_admission(publication))
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    status = asyncio.create_task(manager.get_trainer_admission_status(publication))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not status.done()
+
+    lease.release_settlement.set()
+    assert await asyncio.wait_for(status, timeout=1) is TrainerAdmissionStatus.ROLLED_BACK
+    assert await settle is TrainerAdmissionStatus.ROLLED_BACK
+
+
+async def test_rollback_during_commit_is_coalesced_into_the_commit_outcome(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 57, events)
+
+    commit = asyncio.create_task(manager.commit_trainer_admission(publication, (_actor_receipt(publication),)))
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    rollback = asyncio.create_task(manager.rollback_trainer_admission(publication))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not rollback.done()
+
+    lease.release_settlement.set()
+    assert await asyncio.wait_for(rollback, timeout=1) is TrainerAdmissionStatus.COMMITTED
+    assert await commit is TrainerAdmissionStatus.COMMITTED
+    assert events == ["commit"]
+
+
+async def test_cancelled_commit_caller_cannot_abandon_settlement(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 53, events)
+
+    settle = asyncio.create_task(manager.commit_trainer_admission(publication, (_actor_receipt(publication),)))
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    settle.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await settle
+
+    lease.release_settlement.set()
+    await _wait_for_admission_status(manager, publication, TrainerAdmissionStatus.COMMITTED)
+    assert events == ["commit"]
+
+
+async def test_cancelled_rollback_caller_cannot_abandon_settlement(
+    manager_env: tuple[RolloutManager, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, _ = manager_env
+    events: list[str] = []
+    lease, publication = await _publish_gated_admission(manager, monkeypatch, 54, events)
+
+    settle = asyncio.create_task(manager.rollback_trainer_admission(publication))
+    await asyncio.wait_for(lease.settlement_started.wait(), timeout=1)
+    settle.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await settle
+
+    lease.release_settlement.set()
+    await _wait_for_admission_status(manager, publication, TrainerAdmissionStatus.ROLLED_BACK)
+    assert events == ["rollback:TRAINER_ADMISSION_FAILED", "remove"]
 
 
 async def test_terminal_admission_reconciliation_history_is_bounded(
@@ -1155,13 +1391,13 @@ async def test_terminal_admission_reconciliation_history_is_bounded(
     publications = []
     for rollout_id in range(3):
         publication = (await manager.generate(rollout_id))["trainer_admission"]
-        manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
+        await manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
         publications.append(publication)
 
     assert list(manager._pending_admissions) == [1, 2]
     with pytest.raises(ValueError, match="Unknown trainer admission"):
-        manager.get_trainer_admission_status(publications[0])
-    assert manager.get_trainer_admission_status(publications[-1]) is TrainerAdmissionStatus.COMMITTED
+        await manager.get_trainer_admission_status(publications[0])
+    assert await manager.get_trainer_admission_status(publications[-1]) is TrainerAdmissionStatus.COMMITTED
 
 
 async def test_rolls_back_when_conversion_fails(
@@ -1349,11 +1585,11 @@ async def test_failed_commit_retains_refs_and_fails_closed(
     result = await manager.generate(rollout_id=19)
     publication = result["trainer_admission"]
     with pytest.raises(RuntimeError) as error:
-        manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
+        await manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
 
     assert error.value is commit_failure
     assert events == ["publish", "commit"]
-    assert manager.get_trainer_admission_status(publication) is TrainerAdmissionStatus.COMMIT_FAILED
+    assert await manager.get_trainer_admission_status(publication) is TrainerAdmissionStatus.COMMIT_FAILED
 
 
 async def test_preserves_commit_error_when_published_data_cleanup_fails(
@@ -1384,7 +1620,7 @@ async def test_preserves_commit_error_when_published_data_cleanup_fails(
     result = await manager.generate(rollout_id=23)
     publication = result["trainer_admission"]
     with pytest.raises(RuntimeError) as error:
-        manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
+        await manager.commit_trainer_admission(publication, (_actor_receipt(publication),))
 
     assert error.value is commit_failure
     assert error.value.__cause__ is None

@@ -4,6 +4,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 import asyncio
 import logging
+import threading
 from argparse import Namespace
 from collections import deque
 from collections.abc import Sequence
@@ -35,6 +36,7 @@ from miles.rollout.data_source import (
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
 from miles.rollout.fully_async.execution import FullyAsyncTerminalPendingError
 from miles.rollout.fully_async.ownership import ReservationTerminalReceipt
+from miles.utils.async_utils import AsyncLoopThread
 from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
@@ -254,6 +256,142 @@ async def test_train_call_leases_owned_output_until_settlement(monkeypatch):
     output.lease.commit()
     assert data_source.acknowledged == [([reservation], 17)]
     assert data_source.requeued == []
+
+
+async def test_commit_async_settles_across_loops_without_blocking_the_caller(monkeypatch):
+    reservation = make_reservation(90)
+    data_source = FakeReservationDataSource([reservation])
+    fn = make_owned_fn(monkeypatch, data_source)
+    owner = AsyncLoopThread()
+    stalled = threading.Event()
+    release_owner = threading.Event()
+    try:
+        output = await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(
+                fn(RolloutFnTrainInput(rollout_id=90, weight_version="90")),
+                owner.loop,
+            )
+        )
+        assert isinstance(output, LeasedRolloutFnTrainOutput)
+
+        def stall_owner_loop():
+            stalled.set()
+            release_owner.wait(timeout=5)
+
+        owner.loop.call_soon_threadsafe(stall_owner_loop)
+        assert await asyncio.to_thread(stalled.wait, 1)
+
+        settle = asyncio.create_task(output.lease.commit_async())
+        ticks = 0
+        for _ in range(3):
+            await asyncio.sleep(0)
+            ticks += 1
+        assert ticks > 0
+        assert not settle.done()
+        assert data_source.acknowledged == []
+
+        release_owner.set()
+        await asyncio.wait_for(settle, timeout=1)
+        assert data_source.acknowledged == [([reservation], 90)]
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(fn.close(), owner.loop))
+    finally:
+        release_owner.set()
+        owner.loop.call_soon_threadsafe(owner.loop.stop)
+
+
+async def test_cancelled_commit_awaiter_leaves_the_owner_loop_healthy(monkeypatch):
+    reservation = make_reservation(91)
+    data_source = FakeReservationDataSource([reservation])
+    fn = make_owned_fn(monkeypatch, data_source)
+    owner = AsyncLoopThread()
+    loop_errors: list[dict] = []
+    stalled = threading.Event()
+    release_owner = threading.Event()
+    try:
+        owner.loop.call_soon_threadsafe(
+            owner.loop.set_exception_handler, lambda loop, context: loop_errors.append(context)
+        )
+        output = await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(
+                fn(RolloutFnTrainInput(rollout_id=91, weight_version="91")),
+                owner.loop,
+            )
+        )
+        assert isinstance(output, LeasedRolloutFnTrainOutput)
+
+        def stall_owner_loop():
+            stalled.set()
+            release_owner.wait(timeout=5)
+
+        owner.loop.call_soon_threadsafe(stall_owner_loop)
+        assert await asyncio.to_thread(stalled.wait, 1)
+
+        settle = asyncio.create_task(output.lease.commit_async())
+        await asyncio.sleep(0)
+        settle.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await settle
+
+        release_owner.set()
+        # Queued behind the settlement the owner loop already accepted.
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(asyncio.sleep(0), owner.loop))
+        assert loop_errors == []
+        # The claimed attempt still settles; only the cancelled awaiter is not told.
+        assert data_source.acknowledged == [([reservation], 91)]
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(fn.close(), owner.loop))
+    finally:
+        release_owner.set()
+        owner.loop.call_soon_threadsafe(owner.loop.stop)
+
+
+async def test_commit_async_settles_inline_when_the_caller_owns_the_loop(monkeypatch):
+    reservation = make_reservation(92)
+    data_source = FakeReservationDataSource([reservation])
+    fn = make_owned_fn(monkeypatch, data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=92, weight_version="92"))
+    assert isinstance(output, LeasedRolloutFnTrainOutput)
+
+    turns = 0
+
+    async def count_turns() -> None:
+        nonlocal turns
+        while True:
+            await asyncio.sleep(0)
+            turns += 1
+
+    ticker = asyncio.create_task(count_turns())
+    await output.lease.commit_async()
+    ticker.cancel()
+
+    assert turns == 0
+    assert data_source.acknowledged == [([reservation], 92)]
+    await fn.close()
+
+
+async def test_rollback_async_settles_inline_when_the_caller_owns_the_loop(monkeypatch):
+    reservation = make_reservation(93)
+    data_source = FakeReservationDataSource([reservation])
+    fn = make_owned_fn(monkeypatch, data_source)
+
+    output = await fn(RolloutFnTrainInput(rollout_id=93, weight_version="93"))
+    assert isinstance(output, LeasedRolloutFnTrainOutput)
+
+    turns = 0
+
+    async def count_turns() -> None:
+        nonlocal turns
+        while True:
+            await asyncio.sleep(0)
+            turns += 1
+
+    ticker = asyncio.create_task(count_turns())
+    await output.lease.rollback_async(TrainBatchRollbackReason.HANDOFF_FAILED)
+    ticker.cancel()
+
+    assert turns == 0
+    assert data_source.requeued == [[reservation]]
+    await fn.close()
 
 
 async def test_train_admission_hold_blocks_new_owned_reservations_until_release(monkeypatch):

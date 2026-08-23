@@ -697,7 +697,7 @@ class TestGenerate:
             ),
         )
 
-        assert manager.commit_trainer_admission(publication, (receipt,)) is TrainerAdmissionStatus.COMMITTED
+        assert await manager.commit_trainer_admission(publication, (receipt,)) is TrainerAdmissionStatus.COMMITTED
         assert events == ["publish", "publish", "commit"]
 
 

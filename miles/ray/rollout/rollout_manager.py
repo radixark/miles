@@ -115,6 +115,21 @@ class _PendingTrainerAdmission:
     data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None
     publication: TrainBatchPublication
     status: TrainerAdmissionStatus = TrainerAdmissionStatus.PENDING
+    # The settlement currently running for this admission, if any. ``status``
+    # holds its fail-closed pre-state while it runs; status reports and later
+    # settle calls wait here first so they only ever see PENDING or a settled
+    # state. Checkpoint and shutdown read ``status`` directly, which is safe
+    # because the pre-state counts as unresolved exactly like PENDING.
+    settlement: asyncio.Task[TrainerAdmissionStatus] | None = None
+
+
+def _clear_settlement(
+    pending: _PendingTrainerAdmission,
+    settlement: asyncio.Future[TrainerAdmissionStatus],
+) -> None:
+    """Forget a finished settlement so later callers read the recorded status directly."""
+    if pending.settlement is settlement:
+        pending.settlement = None
 
 
 def _remove_train_data_refs(
@@ -718,56 +733,127 @@ class RolloutManager:
                 result["trainer_admission"] = publication
         except BaseException as handoff_error:
             if lease is not None:
-                try:
-                    lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
-                except BaseException as rollback_error:
-                    raise handoff_error from rollback_error
-                cleanup_error = None
-                if publication is not None:
-                    try:
-                        self._pending_admissions.pop(publication.admission_id, None)
-                    except BaseException as registration_cleanup_error:
-                        cleanup_error = registration_cleanup_error
-                if data_ref is not None:
-                    try:
-                        _remove_train_data_refs(data_ref)
-                    except BaseException as data_cleanup_error:
-                        if cleanup_error is None:
-                            cleanup_error = data_cleanup_error
-                if cleanup_error is not None:
-                    raise handoff_error from cleanup_error
+                await self._recover_failed_handoff(
+                    handoff_error,
+                    lease=lease,
+                    publication=publication,
+                    data_ref=data_ref,
+                )
             raise
         return result
 
-    def commit_trainer_admission(
+    async def _recover_failed_handoff(
+        self,
+        handoff_error: BaseException,
+        *,
+        lease: TrainBatchLease,
+        publication: TrainBatchPublication | None,
+        data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None,
+    ) -> None:
+        """Return leased ownership and drop the publication a failed handoff left behind.
+
+        The rollback is shielded because an abandoned settlement would strand source
+        ownership. A cancellation delivered while it runs therefore stays a
+        cancellation instead of becoming ``handoff_error``, which the caller re-raises
+        when this returns.
+        """
+        rollback = asyncio.ensure_future(lease.rollback_async(TrainBatchRollbackReason.HANDOFF_FAILED))
+        cancellation: asyncio.CancelledError | None = None
+        while not rollback.done():
+            try:
+                await asyncio.shield(rollback)
+            except asyncio.CancelledError as error:
+                if rollback.cancelled():
+                    raise
+                cancellation = cancellation or error
+            except BaseException:
+                break
+        try:
+            rollback.result()
+        except BaseException as rollback_error:
+            raise (cancellation or handoff_error) from rollback_error
+        cleanup_error = self._drop_failed_publication(publication=publication, data_ref=data_ref)
+        if cancellation is not None:
+            raise cancellation from (cleanup_error or handoff_error)
+        if cleanup_error is not None:
+            raise handoff_error from cleanup_error
+
+    def _drop_failed_publication(
+        self,
+        *,
+        publication: TrainBatchPublication | None,
+        data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef] | None,
+    ) -> BaseException | None:
+        """Discard the registration and published refs of a settled failed handoff."""
+        cleanup_error: BaseException | None = None
+        if publication is not None:
+            try:
+                self._pending_admissions.pop(publication.admission_id, None)
+            except BaseException as registration_cleanup_error:
+                cleanup_error = registration_cleanup_error
+        if data_ref is not None:
+            try:
+                _remove_train_data_refs(data_ref)
+            except BaseException as data_cleanup_error:
+                cleanup_error = cleanup_error or data_cleanup_error
+        return cleanup_error
+
+    async def commit_trainer_admission(
         self,
         publication: TrainBatchPublication,
         receipts: tuple[TrainerAdmissionReceipt, ...],
     ) -> TrainerAdmissionStatus:
-        """Commit the source lease after every required trainer role acknowledges it."""
+        """Commit the source lease after every required trainer role acknowledges it.
+
+        A call that arrives while this admission is already settling is coalesced:
+        it waits for that settlement and reports its outcome instead of starting a
+        competing one.
+        """
         pending = self._get_pending_admission(publication)
+        await self._await_settlement(pending)
         if pending.status is not TrainerAdmissionStatus.PENDING:
             return pending.status
         self._validate_receipts(pending.publication, receipts)
-        if pending.lease is None:
+        lease = pending.lease
+        if lease is None:
             raise RuntimeError(f"Trainer admission {publication.admission_id} has no source lease.")
+        return await self._run_settlement(pending, self._commit_pending_admission(pending, lease))
+
+    async def _commit_pending_admission(
+        self,
+        pending: _PendingTrainerAdmission,
+        lease: TrainBatchLease,
+    ) -> TrainerAdmissionStatus:
         pending.status = TrainerAdmissionStatus.COMMIT_FAILED
-        pending.lease.commit()
+        await lease.commit_async()
         pending.status = TrainerAdmissionStatus.COMMITTED
         pending.lease = None
         pending.data_ref = None
         self._trim_terminal_admissions()
         return pending.status
 
-    def rollback_trainer_admission(self, publication: TrainBatchPublication) -> TrainerAdmissionStatus:
-        """Settle the source lease before deleting a failed publication."""
+    async def rollback_trainer_admission(self, publication: TrainBatchPublication) -> TrainerAdmissionStatus:
+        """Settle the source lease before deleting a failed publication.
+
+        Coalesced with an in-flight settlement exactly like the commit path, so a
+        rollback racing a commit reports what that commit settled.
+        """
         pending = self._get_pending_admission(publication)
+        await self._await_settlement(pending)
         if pending.status is not TrainerAdmissionStatus.PENDING:
             return pending.status
-        if pending.lease is None or pending.data_ref is None:
+        lease = pending.lease
+        if lease is None or pending.data_ref is None:
             raise RuntimeError(f"Trainer admission {publication.admission_id} has no source publication.")
+        return await self._run_settlement(pending, self._rollback_pending_admission(pending, lease))
+
+    async def _rollback_pending_admission(
+        self,
+        pending: _PendingTrainerAdmission,
+        lease: TrainBatchLease,
+    ) -> TrainerAdmissionStatus:
         pending.status = TrainerAdmissionStatus.ROLLBACK_FAILED
-        pending.lease.rollback(TrainBatchRollbackReason.TRAINER_ADMISSION_FAILED)
+        await lease.rollback_async(TrainBatchRollbackReason.TRAINER_ADMISSION_FAILED)
         _remove_train_data_refs(pending.data_ref)
         pending.status = TrainerAdmissionStatus.ROLLED_BACK
         pending.lease = None
@@ -775,9 +861,47 @@ class RolloutManager:
         self._trim_terminal_admissions()
         return pending.status
 
-    def get_trainer_admission_status(self, publication: TrainBatchPublication) -> TrainerAdmissionStatus:
-        """Return the recorded definitive or fail-closed settlement state."""
-        return self._get_pending_admission(publication).status
+    async def get_trainer_admission_status(self, publication: TrainBatchPublication) -> TrainerAdmissionStatus:
+        """Return the recorded pending, definitive, or fail-closed settlement state.
+
+        A settlement in flight is awaited first. Its fail-closed pre-state is not
+        an answer a trainer reconciling a lost response may act on: it would read
+        a still-succeeding commit as failed and abandon a batch the source is
+        about to acknowledge.
+        """
+        pending = self._get_pending_admission(publication)
+        await self._await_settlement(pending)
+        return pending.status
+
+    async def _run_settlement(
+        self,
+        pending: _PendingTrainerAdmission,
+        settlement: Coroutine[object, object, TrainerAdmissionStatus],
+    ) -> TrainerAdmissionStatus:
+        """Run one settlement to completion even if this caller is cancelled.
+
+        Shielded because an abandoned settlement would strand the admission in the
+        fail-closed pre-state it writes before awaiting the lease.
+        """
+        task = asyncio.ensure_future(settlement)
+        pending.settlement = task
+        task.add_done_callback(lambda finished: _clear_settlement(pending, finished))
+        return await asyncio.shield(task)
+
+    @staticmethod
+    async def _await_settlement(pending: _PendingTrainerAdmission) -> None:
+        """Wait for an in-flight settlement so no caller observes its pre-state."""
+        settlement = pending.settlement
+        if settlement is None:
+            return
+        try:
+            await _await_task_before_cancellation(settlement)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            # The settlement records its own outcome in ``pending.status``; only
+            # the caller that started it is told why it failed.
+            return
 
     def _ensure_admission_state(self) -> None:
         if not hasattr(self, "_manager_incarnation"):
@@ -1017,7 +1141,7 @@ class RolloutManager:
                             raise
                 output = rollout_task.result()
                 if isinstance(output, LeasedRolloutFnTrainOutput):
-                    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+                    await asyncio.shield(output.lease.rollback_async(TrainBatchRollbackReason.HANDOFF_FAILED))
             except BaseException as cleanup_error:
                 raise cancellation_error from cleanup_error
             raise

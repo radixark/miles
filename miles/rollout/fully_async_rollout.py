@@ -139,6 +139,9 @@ class _OwnedTrainBatchLease(TrainBatchLease):
     def _commit(self) -> None:
         self._run_on_owner_loop(self._commit_on_owner_loop)
 
+    async def _commit_async(self) -> None:
+        await self._await_on_owner_loop(self._commit_on_owner_loop)
+
     def _commit_on_owner_loop(self) -> None:
         try:
             self._owner._commit_owned_terminals(self._terminal_receipts, rollout_id=self.rollout_id)
@@ -148,6 +151,9 @@ class _OwnedTrainBatchLease(TrainBatchLease):
     def _rollback(self, reason: TrainBatchRollbackReason) -> None:
         self._run_on_owner_loop(self._rollback_on_owner_loop)
 
+    async def _rollback_async(self, reason: TrainBatchRollbackReason) -> None:
+        await self._await_on_owner_loop(self._rollback_on_owner_loop)
+
     def _rollback_on_owner_loop(self) -> None:
         try:
             self._owner._rollback_owned_terminals(self._terminal_receipts)
@@ -155,6 +161,7 @@ class _OwnedTrainBatchLease(TrainBatchLease):
             self._owner._settle_train_batch_lease(self)
 
     def _run_on_owner_loop(self, operation: Callable[[], None]) -> None:
+        """Run ``operation`` on the owner loop, blocking unless already on it."""
         try:
             current_loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -162,19 +169,38 @@ class _OwnedTrainBatchLease(TrainBatchLease):
         if current_loop is self._owner_loop:
             operation()
             return
+        self._schedule_on_owner_loop(operation).result()
 
+    async def _await_on_owner_loop(self, operation: Callable[[], None]) -> None:
+        """Await ``operation`` on the owner loop, running it inline when already on it."""
+        if asyncio.get_running_loop() is self._owner_loop:
+            operation()
+            return
+        await asyncio.wrap_future(self._schedule_on_owner_loop(operation))
+
+    def _schedule_on_owner_loop(self, operation: Callable[[], None]) -> Future[None]:
+        """Hand ``operation`` to the owner loop and return its completion future."""
         completion: Future[None] = Future()
 
         def run_operation() -> None:
+            # The lease already claimed its single settlement attempt, so the
+            # operation runs even when its awaiter was cancelled first; only the
+            # completion signal is skipped, because settling a cancelled future
+            # raises on the owner loop.
+            awaiter_waiting = completion.set_running_or_notify_cancel()
             try:
                 operation()
             except BaseException as error:
-                completion.set_exception(error)
+                if awaiter_waiting:
+                    completion.set_exception(error)
+                else:
+                    logger.error("Owner-loop settlement failed after its awaiter was cancelled.", exc_info=error)
             else:
-                completion.set_result(None)
+                if awaiter_waiting:
+                    completion.set_result(None)
 
         self._owner_loop.call_soon_threadsafe(run_operation)
-        completion.result()
+        return completion
 
 
 def _retrieve_task_exception(task: asyncio.Task) -> None:
