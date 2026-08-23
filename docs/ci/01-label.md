@@ -44,17 +44,7 @@ After the command App is enabled, post `/<label>` as the entire comment on an op
 
 A label command permits leading and trailing whitespace only; it cannot include arguments, prose, or a second command. Only `/rerun-test` takes an argument, and that argument must be a single test-file path. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
-`.github/workflows/policies/comment-command-access.json` is an exact, default-deny ACL. Its `commands.add_label.allowed_labels` array controls which exact labels can be added through comments; adding a `KNOWN_LABELS` entry does not expose it automatically. Other command entries select an access group but cannot select a handler, token capability, workflow, API endpoint, or shell command.
-
-The `add_label_access` group controls every command that adds a label. A caller belongs to this group when either their live legacy permission on `radixark/miles` appears in `repository_permissions` or their stable numeric GitHub user ID appears in `user_ids`.
-
-The checked-in policy accepts `write` and `admin` and has no explicit user IDs. Workflow owners can grant a contributor label-command access by adding only that numeric ID to the JSON policy, without granting repository write access. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access.
-
-The `repo_write_access` group restricts `/clear-labels` to live `write` or `admin` permission. Only `add_label_access` can contain explicit `user_ids`; those IDs do not grant any non-label operation.
-
-`/rerun-test <test-file>` and `/rerun-failed-ci` use the `prior_contributor_access` group: the author association GitHub stamps on the comment admits `OWNER`, `MEMBER`, `COLLABORATOR`, and `CONTRIBUTOR` — anyone with a commit already merged into `radixark/miles` — without a live-permission lookup, and anyone else needs live `write` or `admin`. First-time contributors and users with no history in the repository are denied. Label mutations stay write-gated because a label is CI policy; the rerun commands are cheaper to grant: a failed-job rerun re-executes an already-authorized run with its original privileges and SHA, and a file run is bounded by one registered file, its registration's timeout, and per-PR serialization, so the residual exposure is runner time rather than code trust.
-
-Constraint: a fork head is the normal shape of a contribution from someone without write permission — pushing a same-repository branch already requires write. `/rerun-test` therefore adds no fork-specific approval: the policy tier above is the whole gate for both head shapes, and requiring anything extra of forks would exclude exactly the contributors the command exists for. What changes on a fork head is containment, not authorization: the head identity is re-verified against its unique open pull request before dispatch, and the run receives no repository secrets (`WANDB_API_KEY` and `HF_TOKEN` are withheld), matching the pr-test fork policy.
+Who may run each command — the identity bindings, the access groups in `.github/workflows/policies/comment-command-access.json`, the tier constraints, and the fork containment rule — is specified in [Command Identity](/ci/05-command-identity). One label-specific resource fact stays here: the policy's `commands.add_label.allowed_labels` array controls which exact labels can be added through comments, and adding a `KNOWN_LABELS` entry does not expose it automatically.
 
 Unrecognized comments exit after trusted parsing with capability `none`; they do not load the access policy, call the GitHub API, or mint an App token. A malformed comment containing one of the recognized command markers still fails instead of being treated as an unrelated comment.
 
@@ -100,7 +90,7 @@ Label commands are the exception: a label added with `GITHUB_TOKEN` would never 
 
 To validate the App-free commands, create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs. Then post `/rerun-test` with one registered CUDA test file and confirm the dispatched run uses that file as the command entrypoint from the recorded PR head SHA on its registered suite's runner, the original command receives a 👍 reaction only after dispatch succeeds, and a separate reply links that exact workflow run.
 
-The handler evaluates the caller against the checked-in access policy in the preflight job and again in the capability-specific job before the command mutates GitHub state. An explicit `add_label_access.user_ids` match uses the numeric comment-author identity bound to the event; a `/rerun-test` from a prior contributor is admitted by the author association bound to the comment; otherwise the handler checks the caller's live repository permission.
+Caller evaluation points and the token identities each command executes under are specified in [Command Identity](/ci/05-command-identity).
 Actions command comments for one PR are serialized in GitHub's queued concurrency mode. Up to GitHub's 100-pending limit, commands wait instead of replacing an older pending comment.
 Before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
 
