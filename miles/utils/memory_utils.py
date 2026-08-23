@@ -1,3 +1,5 @@
+import ctypes
+import ctypes.util
 import gc
 import logging
 
@@ -6,6 +8,8 @@ import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
+_libc = ctypes.CDLL(ctypes.util.find_library("c"))
+
 
 def clear_memory(clear_host_memory: bool = False):
     torch.cuda.synchronize()
@@ -13,6 +17,11 @@ def clear_memory(clear_host_memory: bool = False):
     torch.cuda.empty_cache()
     if clear_host_memory:
         torch._C._host_emptyCache()
+        # Checkpoint/weight loading churns through millions of MB-scale CPU
+        # tensors that glibc serves from its arenas (below the 32MB dynamic
+        # mmap threshold); freed arena pages are retained, so RSS stays at the
+        # loading high-water mark unless explicitly trimmed.
+        _libc.malloc_trim(0)
 
 
 def available_memory():
