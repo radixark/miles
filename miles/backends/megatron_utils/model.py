@@ -801,7 +801,7 @@ def train(
         if args.enable_mtp_training:
             from megatron.core.transformer.multi_token_prediction import MTPLossLoggingHelper
 
-            mtp_loss_scale = 1 / num_microbatches[step_id]
+            mtp_loss_scale = 1.0 if args.calculate_per_token_loss else 1 / num_microbatches[step_id]
             MTPLossLoggingHelper.reduce_loss_in_tracker()
             tracker = MTPLossLoggingHelper.tracker
             # here we assume only one mtp layer
