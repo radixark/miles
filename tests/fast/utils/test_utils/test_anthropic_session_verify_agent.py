@@ -219,6 +219,36 @@ def test_run_agent_runs_six_turns_and_checks_canonical_records(
     }
 
 
+def test_post_complete_retries_max_tokens():
+    responses = iter(
+        [
+            _Response({"stop_reason": "max_tokens"}),
+            _Response({"stop_reason": "end_turn"}),
+        ]
+    )
+    posted = []
+
+    class FakeAsyncClient:
+        async def post(self, url, *, json):
+            posted.append((url, json))
+            return next(responses)
+
+    body = asyncio.run(
+        anthropic_session_verify_agent._post_complete(
+            FakeAsyncClient(),
+            "http://session/v1/messages",
+            {"messages": []},
+            label="turn",
+        )
+    )
+
+    assert body["stop_reason"] == "end_turn"
+    assert posted == [
+        ("http://session/v1/messages", {"messages": []}),
+        ("http://session/v1/messages", {"messages": []}),
+    ]
+
+
 def _successful_sample() -> Sample:
     return Sample(
         metadata={

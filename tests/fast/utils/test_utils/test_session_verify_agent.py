@@ -98,6 +98,35 @@ def test_assistant_input_appends_two_text_messages_then_user(monkeypatch):
     assert result["user_count"] == 1
 
 
+def test_chat_complete_retries_length_with_distinct_seed(monkeypatch):
+    attempts = []
+    responses = iter(
+        [
+            {"choices": [{"finish_reason": "length"}]},
+            {"choices": [{"finish_reason": "stop"}]},
+        ]
+    )
+
+    async def fake_chat(client, base_url, messages, request_kwargs, *, label):
+        attempts.append(request_kwargs)
+        return next(responses)
+
+    monkeypatch.setattr(session_verify_agent, "_chat", fake_chat)
+
+    response = asyncio.run(
+        session_verify_agent._chat_complete(
+            None,
+            "http://session",
+            [],
+            {"seed": 7},
+            label="turn",
+        )
+    )
+
+    assert response["choices"][0]["finish_reason"] == "stop"
+    assert [kwargs["seed"] for kwargs in attempts] == [7, 1_000_007]
+
+
 def test_minimax_schedule_excludes_system_and_keeps_assistant_rollback():
     roles = fixed_template_append_roles("minimax_m27")
     schedule = select_schedule(roles, cycles=1)

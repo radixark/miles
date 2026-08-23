@@ -134,6 +134,8 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 # (pytest via ``run_session_verify``).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
+_MAX_INCOMPLETE_TURN_RETRIES = 2
+_RETRY_SEED_STRIDE = 1_000_000
 
 
 def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
@@ -246,6 +248,22 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
+async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
+    for retry in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
+        attempt_kwargs = request_kwargs
+        if retry and request_kwargs.get("seed") is not None:
+            attempt_kwargs = {
+                **request_kwargs,
+                "seed": request_kwargs["seed"] + retry * _RETRY_SEED_STRIDE,
+            }
+        response = await _chat(client, base_url, messages, attempt_kwargs, label=label)
+        if response["choices"][0].get("finish_reason") != "length":
+            return response
+    raise AssertionError(
+        f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after finish_reason='length'"
+    )
+
+
 @_journal_verifier_assertions("session_verify_agent.run_agent")
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     """Custom-agent entry point.  Returns ``{"driver_events": [...], **counters}``.
@@ -292,7 +310,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 
     async with httpx.AsyncClient(timeout=180) as client:
         # Initial completion — no driver action yet.
-        resp = await _chat(client, base_url, messages, rk, label="Initial")
+        resp = await _chat_complete(client, base_url, messages, rk, label="Initial")
         assistant = resp["choices"][0]["message"]
         messages.append(assistant)
         events.append("initial")
@@ -400,7 +418,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             else:
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
-            resp = await _chat(client, base_url, messages, rk, label=label)
+            resp = await _chat_complete(client, base_url, messages, rk, label=label)
             assistant = resp["choices"][0]["message"]
             messages.append(assistant)
             counters["tool_call_count"] += len(assistant.get("tool_calls") or [])

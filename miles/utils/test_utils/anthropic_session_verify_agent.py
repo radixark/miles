@@ -18,6 +18,7 @@ from miles.utils.test_utils.session_verify_agent import (
     SYSTEM_REMINDER_TEXT,
     TOOLS,
     USER_FOLLOWUP_TEXT,
+    _MAX_INCOMPLETE_TURN_RETRIES,
     _journal_verifier_assertions,
     _verify_tito_samples,
     fixed_template_append_roles,
@@ -109,6 +110,18 @@ def _build_tool_result(tool_use: dict, turn_index: int) -> dict:
     }
 
 
+async def _post_complete(client, url: str, payload: dict, *, label: str) -> dict:
+    for _ in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
+        response = await client.post(url, json=payload)
+        assert response.status_code == 200, f"{label} failed ({response.status_code}): {response.text}"
+        body = response.json()
+        if body.get("stop_reason") != "max_tokens":
+            return body
+    raise AssertionError(
+        f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after stop_reason='max_tokens'"
+    )
+
+
 def _expected_driver_events(*, include_system: bool) -> list[str]:
     events = []
     for turn_index, result_event in enumerate(_TOOL_RESULT_EVENTS):
@@ -151,11 +164,12 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 messages,
                 tool_choice={"type": "tool", "name": "get_weather"},
             )
-            response = await client.post(f"{base_url}/v1/messages", json=payload)
-            assert (
-                response.status_code == 200
-            ), f"Anthropic tool turn {turn_index + 1} failed ({response.status_code}): {response.text}"
-            tool_body = response.json()
+            tool_body = await _post_complete(
+                client,
+                f"{base_url}/v1/messages",
+                payload,
+                label=f"Anthropic tool turn {turn_index + 1}",
+            )
             tool_uses = _assert_anthropic_tool_response(tool_body)
             tool_uses_per_turn.append(tool_uses)
             [tool_use] = tool_uses
@@ -168,11 +182,12 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             events.append(_TOOL_RESULT_EVENTS[turn_index])
 
             payload = _build_payload(request_kwargs, metadata, messages, tool_choice={"type": "none"})
-            response = await client.post(f"{base_url}/v1/messages", json=payload)
-            assert (
-                response.status_code == 200
-            ), f"Anthropic text turn {turn_index + 1} failed ({response.status_code}): {response.text}"
-            text_body = response.json()
+            text_body = await _post_complete(
+                client,
+                f"{base_url}/v1/messages",
+                payload,
+                label=f"Anthropic text turn {turn_index + 1}",
+            )
             _assert_anthropic_text_response(text_body)
             messages.append({"role": "assistant", "content": text_body["content"]})
             events.append("anthropic_text")
