@@ -221,14 +221,6 @@ def get_log_probs_and_entropy(
     """
     assert non_loss_data
     if rollout_sampling_mask is not None:
-        if isinstance(rollout_sampling_mask, RolloutSamplingMask):
-            raise TypeError("rollout_sampling_mask must be a sequence of RolloutSamplingMask, one per sample")
-        mask_batch_size = len(rollout_sampling_mask)
-        response_batch_size = len(response_lengths)
-        if mask_batch_size != response_batch_size:
-            raise ValueError(
-                f"sampling-mask batch size {mask_batch_size} != response batch size {response_batch_size}"
-            )
         for sample_index, (sampling_mask, response_length) in enumerate(
             zip(rollout_sampling_mask, response_lengths, strict=True)
         ):

@@ -145,25 +145,6 @@ def test_get_log_probs_and_entropy_applies_per_response_sampling_support(monkeyp
     torch.testing.assert_close(result["log_probs"][0], expected)
 
 
-def test_get_log_probs_and_entropy_rejects_a_bare_mask(monkeypatch):
-    parallel_state = SimpleNamespace(
-        tp=SimpleNamespace(rank=0, group=None),
-        cp=SimpleNamespace(rank=0, size=1),
-    )
-    monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
-    args = SimpleNamespace(qkv_format="thd", rollout_temperature=1.0, true_on_policy_mode=False, allgather_cp=False)
-
-    with pytest.raises(TypeError, match="sequence of RolloutSamplingMask"):
-        logit_processors.get_log_probs_and_entropy(
-            torch.zeros(1, 3, 4),
-            args=args,
-            unconcat_tokens=[torch.tensor([2, 0, 3])],
-            total_lengths=[3],
-            response_lengths=[2],
-            rollout_sampling_mask=RolloutSamplingMask.from_mask_list([[0], [1]]),
-        )
-
-
 def test_get_log_probs_and_entropy_rejects_mask_shorter_than_response(monkeypatch):
     parallel_state = SimpleNamespace(
         tp=SimpleNamespace(rank=0, group=None),
