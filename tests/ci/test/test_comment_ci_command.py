@@ -2144,10 +2144,12 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "issues: write" not in actions_job
     assert "create-github-app-token" not in actions_job
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in actions_job
-    assert "permissions:\n      contents: read\n      issues: write" in acknowledge_job
+    # The feedback jobs target comments on pull requests, and issues-API calls
+    # whose target issue is a PR are gated on pull-requests scope.
+    assert "permissions:\n      contents: read\n      issues: write\n      pull-requests: write" in acknowledge_job
     assert "actions: write" not in acknowledge_job
     assert "create-github-app-token" not in acknowledge_job
-    assert "permissions:\n      contents: read\n      issues: write" in reply_job
+    assert "permissions:\n      contents: read\n      issues: write\n      pull-requests: write" in reply_job
     assert "actions: write" not in reply_job
     assert "create-github-app-token" not in reply_job
     assert workflow.index("Authorize and run the actions command") < workflow.index(

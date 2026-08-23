@@ -119,9 +119,13 @@ jobs:
     if: >-
       needs.actions-command.result == 'success' &&
       needs.handle-command.outputs.success_reaction == '+1'
+    # The reaction lands on a pull-request comment, and GitHub gates
+    # issues-API calls whose target issue is a PR on pull-requests scope,
+    # so issues: write alone returns 403.
     permissions:
       contents: read
       issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -144,9 +148,12 @@ jobs:
     if: >-
       needs.actions-command.result == 'success' &&
       needs.actions-command.outputs.workflow_run_url != ''
+    # The reply is a comment on a pull request; same PR-target gating as
+    # acknowledge-command above.
     permissions:
       contents: read
       issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
