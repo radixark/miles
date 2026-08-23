@@ -902,11 +902,11 @@ def _handle_run_test_file(context, request):
     if type(request) is not RunTestFile:
         raise CommentCommandError("rerun-test handler received the wrong request type")
     if context.head_repository_id != REPOSITORY_ID:
-        # Fork code reaches the self-hosted suite runners only under the same
-        # standing decision approve-trusted-ci encodes — a maintainer-applied
-        # run-ci* label — or the commenter's own live write authority. The
-        # dispatched workflow separately withholds repository secrets from
-        # fork heads.
+        # A fork head is the normal shape of a non-write contributor's PR —
+        # same-repository branches require write to push — so the policy tier
+        # is the whole gate and fork adds no extra approval. The head identity
+        # is pinned to its unique open PR, and the dispatched workflow
+        # withholds repository secrets from fork heads.
         _require_unique_head_pull(
             context.api,
             context.pull_number,
@@ -915,30 +915,15 @@ def _handle_run_test_file(context, request):
             context.head_owner_login,
             context.head_ref,
         )
-        approved = any(label.startswith("run-ci") for label in context.current_labels)
-        if not (approved and context.author_association in context.allowed_author_associations):
-            try:
-                require_permission(
-                    context.api,
-                    context.actor_id,
-                    context.actor_login,
-                    context.allowed_permissions,
-                )
-            except CommentCommandError as error:
-                raise CommentCommandError(
-                    "/rerun-test on a fork pull request needs a maintainer-applied "
-                    "run-ci* label or live write permission"
-                ) from error
-    else:
-        require_access(
-            context.api,
-            context.actor_id,
-            context.actor_login,
-            context.author_association,
-            context.allowed_permissions,
-            context.allowed_user_ids,
-            context.allowed_author_associations,
-        )
+    require_access(
+        context.api,
+        context.actor_id,
+        context.actor_login,
+        context.author_association,
+        context.allowed_permissions,
+        context.allowed_user_ids,
+        context.allowed_author_associations,
+    )
     inputs = {
         "pull_number": str(context.pull_number),
         "head_sha": context.head_sha,

@@ -1569,16 +1569,16 @@ def test_file_run_rejects_an_invalid_pr_body_pin(line):
 
 
 @pytest.mark.parametrize("permission", ["read", "triage", "none"])
-def test_fork_file_run_without_label_or_write_is_denied(permission):
+def test_fork_file_run_without_contributor_tier_or_write_is_denied(permission):
     api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission=permission)
 
-    with pytest.raises(HANDLER.CommentCommandError, match="maintainer-applied"):
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
         HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
     assert api.dispatch_calls == []
 
 
 @pytest.mark.parametrize("permission", ["write", "admin"])
-def test_repository_writer_dispatches_a_fork_file_run_without_a_label(permission):
+def test_repository_writer_dispatches_a_fork_file_run(permission):
     api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission=permission)
 
     result = HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
@@ -1594,38 +1594,23 @@ def test_repository_writer_dispatches_a_fork_file_run_without_a_label(permission
     assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
 
 
-def test_contributor_dispatches_a_fork_file_run_under_a_maintainer_label():
-    api = FakeAPI(
-        pull(head_repository_id=HANDLER.REPOSITORY_ID + 1, labels=("run-ci-short",)),
-        permission="none",
-    )
+@pytest.mark.parametrize("author_association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"])
+def test_prior_contributor_dispatches_a_fork_file_run_without_a_permission_lookup(author_association):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission="none")
 
-    result = HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="CONTRIBUTOR"), policy(), api)
+    result = HANDLER.process_event(event(body=RUN_FILE_BODY, author_association=author_association), policy(), api)
 
     assert api.permission_calls == []
     assert api.list_pull_calls == [("fork-owner", HEAD_REF)]
     assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
 
 
-def test_bypass_fastfail_label_is_not_a_fork_approval():
-    api = FakeAPI(
-        pull(head_repository_id=HANDLER.REPOSITORY_ID + 1, labels=("bypass-fastfail",)),
-        permission="read",
-    )
+@pytest.mark.parametrize("author_association", ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN"])
+def test_first_time_contributor_cannot_dispatch_a_fork_file_run(author_association):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission="read")
 
-    with pytest.raises(HANDLER.CommentCommandError, match="maintainer-applied"):
-        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="CONTRIBUTOR"), policy(), api)
-    assert api.dispatch_calls == []
-
-
-def test_first_time_contributor_cannot_dispatch_a_fork_file_run_even_under_a_label():
-    api = FakeAPI(
-        pull(head_repository_id=HANDLER.REPOSITORY_ID + 1, labels=("run-ci-short",)),
-        permission="read",
-    )
-
-    with pytest.raises(HANDLER.CommentCommandError, match="maintainer-applied"):
-        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="FIRST_TIME_CONTRIBUTOR"), policy(), api)
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association=author_association), policy(), api)
     assert api.dispatch_calls == []
 
 
