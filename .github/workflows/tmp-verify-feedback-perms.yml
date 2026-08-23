@@ -5,10 +5,11 @@
 # the issues-only control must fail with exactly HTTP 403. Deleted from the
 # branch after the evidence run; never merged.
 #
-# The synthesized issue_comment event is written over the runner's real
-# GITHUB_EVENT_PATH: Actions reserves the GITHUB_ prefix, so a step-level
-# env override of that name is ignored and the handler would read the
-# pull_request payload instead.
+# The synthesized issue_comment event is passed by assigning
+# GITHUB_EVENT_PATH inline on the interpreter command: Actions reserves the
+# GITHUB_ prefix, so a step-level env: override is ignored, and the runner
+# re-materializes its own event file each step, so overwriting that file
+# does not survive either.
 name: tmp-verify-feedback-perms
 
 on:
@@ -44,7 +45,7 @@ jobs:
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PROBE_COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
           gh api "repos/${GITHUB_REPOSITORY}/issues/2720" > "$RUNNER_TEMP/issue.json"
-          python3 - "$RUNNER_TEMP" "$GITHUB_EVENT_PATH" <<'EOF'
+          python3 - "$RUNNER_TEMP" "$RUNNER_TEMP/event.json" <<'EOF'
           import json
           import sys
 
@@ -70,14 +71,14 @@ jobs:
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
-        run: python3 .github/workflows/scripts/comment_ci_command.py
+        run: GITHUB_EVENT_PATH="$RUNNER_TEMP/event.json" python3 .github/workflows/scripts/comment_ci_command.py
 
       - name: Run the real reply step with the fixed scope
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_REPLY: "true"
           CI_COMMAND_WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python3 .github/workflows/scripts/comment_ci_command.py
+        run: GITHUB_EVENT_PATH="$RUNNER_TEMP/event.json" python3 .github/workflows/scripts/comment_ci_command.py
 
   issues-only-control:
     if: github.event.pull_request.number == 2720
@@ -100,7 +101,7 @@ jobs:
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PROBE_COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
           gh api "repos/${GITHUB_REPOSITORY}/issues/2720" > "$RUNNER_TEMP/issue.json"
-          python3 - "$RUNNER_TEMP" "$GITHUB_EVENT_PATH" <<'EOF'
+          python3 - "$RUNNER_TEMP" "$RUNNER_TEMP/event.json" <<'EOF'
           import json
           import sys
 
@@ -126,7 +127,7 @@ jobs:
           CI_COMMAND_ACKNOWLEDGE: "true"
         run: |
           set +e
-          out=$(python3 .github/workflows/scripts/comment_ci_command.py 2>&1)
+          out=$(GITHUB_EVENT_PATH="$RUNNER_TEMP/event.json" python3 .github/workflows/scripts/comment_ci_command.py 2>&1)
           code=$?
           set -e
           echo "$out"
