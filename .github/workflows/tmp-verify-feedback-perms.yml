@@ -4,6 +4,11 @@
 # acknowledge/reply steps successfully against a live command comment, and
 # the issues-only control must fail with exactly HTTP 403. Deleted from the
 # branch after the evidence run; never merged.
+#
+# The synthesized issue_comment event is written over the runner's real
+# GITHUB_EVENT_PATH: Actions reserves the GITHUB_ prefix, so a step-level
+# env override of that name is ignored and the handler would read the
+# pull_request payload instead.
 name: tmp-verify-feedback-perms
 
 on:
@@ -33,21 +38,21 @@ jobs:
           sparse-checkout: .github/workflows/scripts/comment_ci_command.py
           sparse-checkout-cone-mode: false
 
-      - name: Assemble the live comment into an issue_comment event
+      - name: Replace the event payload with the live command comment
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PROBE_COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
           gh api "repos/${GITHUB_REPOSITORY}/issues/2720" > "$RUNNER_TEMP/issue.json"
-          python3 - "$RUNNER_TEMP" <<'EOF'
+          python3 - "$RUNNER_TEMP" "$GITHUB_EVENT_PATH" <<'EOF'
           import json
           import sys
 
-          tmp = sys.argv[1]
-          with open(f"{tmp}/comment.json", encoding="utf-8") as f:
-              comment = json.load(f)
-          with open(f"{tmp}/issue.json", encoding="utf-8") as f:
-              issue = json.load(f)
+          tmp, event_path = sys.argv[1], sys.argv[2]
+          with open(f"{tmp}/comment.json", encoding="utf-8") as handle:
+              comment = json.load(handle)
+          with open(f"{tmp}/issue.json", encoding="utf-8") as handle:
+              issue = json.load(handle)
           event = {
               "action": "created",
               "repository": {"id": 1072725553, "full_name": "radixark/miles"},
@@ -55,15 +60,16 @@ jobs:
               "comment": comment,
               "sender": comment["user"],
           }
-          with open(f"{tmp}/event.json", "w", encoding="utf-8") as f:
-              json.dump(event, f)
+          with open(event_path, "w", encoding="utf-8") as handle:
+              json.dump(event, handle)
+          print(f"comment {comment['id']} by {comment['user']['login']} ({comment['author_association']})")
+          print(f"body: {comment['body']}")
           EOF
 
       - name: Run the real acknowledge step with the fixed scope
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
-          GITHUB_EVENT_PATH: ${{ runner.temp }}/event.json
         run: python3 .github/workflows/scripts/comment_ci_command.py
 
       - name: Run the real reply step with the fixed scope
@@ -71,7 +77,6 @@ jobs:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_REPLY: "true"
           CI_COMMAND_WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          GITHUB_EVENT_PATH: ${{ runner.temp }}/event.json
         run: python3 .github/workflows/scripts/comment_ci_command.py
 
   issues-only-control:
@@ -89,21 +94,21 @@ jobs:
           sparse-checkout: .github/workflows/scripts/comment_ci_command.py
           sparse-checkout-cone-mode: false
 
-      - name: Assemble the live comment into an issue_comment event
+      - name: Replace the event payload with the live command comment
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PROBE_COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
           gh api "repos/${GITHUB_REPOSITORY}/issues/2720" > "$RUNNER_TEMP/issue.json"
-          python3 - "$RUNNER_TEMP" <<'EOF'
+          python3 - "$RUNNER_TEMP" "$GITHUB_EVENT_PATH" <<'EOF'
           import json
           import sys
 
-          tmp = sys.argv[1]
-          with open(f"{tmp}/comment.json", encoding="utf-8") as f:
-              comment = json.load(f)
-          with open(f"{tmp}/issue.json", encoding="utf-8") as f:
-              issue = json.load(f)
+          tmp, event_path = sys.argv[1], sys.argv[2]
+          with open(f"{tmp}/comment.json", encoding="utf-8") as handle:
+              comment = json.load(handle)
+          with open(f"{tmp}/issue.json", encoding="utf-8") as handle:
+              issue = json.load(handle)
           event = {
               "action": "created",
               "repository": {"id": 1072725553, "full_name": "radixark/miles"},
@@ -111,15 +116,14 @@ jobs:
               "comment": comment,
               "sender": comment["user"],
           }
-          with open(f"{tmp}/event.json", "w", encoding="utf-8") as f:
-              json.dump(event, f)
+          with open(event_path, "w", encoding="utf-8") as handle:
+              json.dump(event, handle)
           EOF
 
       - name: Expect HTTP 403 from the acknowledge step without pull-requests write
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
-          GITHUB_EVENT_PATH: ${{ runner.temp }}/event.json
         run: |
           set +e
           out=$(python3 .github/workflows/scripts/comment_ci_command.py 2>&1)
