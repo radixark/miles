@@ -1,15 +1,17 @@
-# Temporary pre-merge verification for PR #2720 only. pull_request runs use
-# the PR's own definition, so this proves the feedback-permission fix before
-# it reaches the default branch: the fixed scope must run the real
-# acknowledge/reply steps successfully against a live command comment, and
-# the issues-only control must fail with exactly HTTP 403. Deleted from the
-# branch after the evidence run; never merged.
+# Temporary pre-merge verification for PR #2720 only; deleted from the branch
+# after its evidence run and never merged.
+#
+# Run 32637432938 already proved the fix on a same-repository PR comment:
+# with pull-requests: write the real acknowledge and reply steps succeeded
+# (👍 plus a bot reply on #2720), and the issues-only control failed with
+# exactly HTTP 403. This revision extends the reaction evidence to a fork
+# PR's comments — the two /rerun-test commands on #2038 whose runs were
+# dispatched successfully but whose feedback 403'd.
 #
 # The synthesized issue_comment event is passed by assigning
 # GITHUB_EVENT_PATH inline on the interpreter command: Actions reserves the
 # GITHUB_ prefix, so a step-level env: override is ignored, and the runner
-# re-materializes its own event file each step, so overwriting that file
-# does not survive either.
+# re-materializes its own event file each step.
 name: tmp-verify-feedback-perms
 
 on:
@@ -19,11 +21,8 @@ on:
 permissions:
   contents: read
 
-env:
-  PROBE_COMMENT_ID: "5385794650"
-
 jobs:
-  fixed-scope:
+  fork-comment-ack:
     if: github.event.pull_request.number == 2720
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -31,6 +30,10 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        comment_id: ["5385284861", "5385284956"]
     steps:
       - name: Check out the trusted handler
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -39,12 +42,13 @@ jobs:
           sparse-checkout: .github/workflows/scripts/comment_ci_command.py
           sparse-checkout-cone-mode: false
 
-      - name: Replace the event payload with the live command comment
+      - name: Assemble the fork PR's command comment into an issue_comment event
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMENT_ID: ${{ matrix.comment_id }}
         run: |
-          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PROBE_COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
-          gh api "repos/${GITHUB_REPOSITORY}/issues/2720" > "$RUNNER_TEMP/issue.json"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
+          gh api "repos/${GITHUB_REPOSITORY}/issues/2038" > "$RUNNER_TEMP/issue.json"
           python3 - "$RUNNER_TEMP" "$RUNNER_TEMP/event.json" <<'EOF'
           import json
           import sys
@@ -67,73 +71,8 @@ jobs:
           print(f"body: {comment['body']}")
           EOF
 
-      - name: Run the real acknowledge step with the fixed scope
+      - name: Acknowledge the fork PR's command comment with the fixed scope
         env:
           CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
         run: GITHUB_EVENT_PATH="$RUNNER_TEMP/event.json" python3 .github/workflows/scripts/comment_ci_command.py
-
-      - name: Run the real reply step with the fixed scope
-        env:
-          CI_COMMAND_API_TOKEN: ${{ github.token }}
-          CI_COMMAND_REPLY: "true"
-          CI_COMMAND_WORKFLOW_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: GITHUB_EVENT_PATH="$RUNNER_TEMP/event.json" python3 .github/workflows/scripts/comment_ci_command.py
-
-  issues-only-control:
-    if: github.event.pull_request.number == 2720
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Check out the trusted handler
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
-          sparse-checkout-cone-mode: false
-
-      - name: Replace the event payload with the live command comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PROBE_COMMENT_ID}" > "$RUNNER_TEMP/comment.json"
-          gh api "repos/${GITHUB_REPOSITORY}/issues/2720" > "$RUNNER_TEMP/issue.json"
-          python3 - "$RUNNER_TEMP" "$RUNNER_TEMP/event.json" <<'EOF'
-          import json
-          import sys
-
-          tmp, event_path = sys.argv[1], sys.argv[2]
-          with open(f"{tmp}/comment.json", encoding="utf-8") as handle:
-              comment = json.load(handle)
-          with open(f"{tmp}/issue.json", encoding="utf-8") as handle:
-              issue = json.load(handle)
-          event = {
-              "action": "created",
-              "repository": {"id": 1072725553, "full_name": "radixark/miles"},
-              "issue": issue,
-              "comment": comment,
-              "sender": comment["user"],
-          }
-          with open(event_path, "w", encoding="utf-8") as handle:
-              json.dump(event, handle)
-          EOF
-
-      - name: Expect HTTP 403 from the acknowledge step without pull-requests write
-        env:
-          CI_COMMAND_API_TOKEN: ${{ github.token }}
-          CI_COMMAND_ACKNOWLEDGE: "true"
-        run: |
-          set +e
-          out=$(GITHUB_EVENT_PATH="$RUNNER_TEMP/event.json" python3 .github/workflows/scripts/comment_ci_command.py 2>&1)
-          code=$?
-          set -e
-          echo "$out"
-          if [ "$code" -eq 0 ]; then
-            echo "unexpected success: issues-only scope acknowledged a PR comment"
-            exit 1
-          fi
-          echo "$out" | grep -q "HTTP 403" || { echo "failed, but not with HTTP 403"; exit 1; }
-          echo "confirmed: issues-only scope gets HTTP 403 on a PR comment reaction"
