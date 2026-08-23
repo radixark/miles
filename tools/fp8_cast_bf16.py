@@ -104,7 +104,9 @@ def main(fp8_path, bf16_path):
                     # Outside the except scope: a dequant failure (e.g. a scale dtype
                     # triton cannot load) must raise, not masquerade as a missing scale.
                     fp8_weight_names.append(weight_name)
-                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv)
+                    # ue8m0 checkpoints store scales as float8_e8m0fnu, which triton
+                    # cannot load; the cast to float32 is exact (powers of two).
+                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv.float())
             else:
                 new_state_dict[weight_name] = weight
 
