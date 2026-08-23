@@ -12,13 +12,13 @@ from miles.rollout.generate_hub.agentic_tool_call import generate as _base_gener
 from miles.utils.chat_template_utils.message_matcher_hub import loose_tool_call_message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.test_utils.session_verify_agent import (
+    _MAX_INCOMPLETE_TURN_RETRIES,
     INITIAL_SYSTEM_PROMPT,
     INITIAL_USER_PROMPT,
     MOCK_TOOL_RESULTS,
     SYSTEM_REMINDER_TEXT,
     TOOLS,
     USER_FOLLOWUP_TEXT,
-    _MAX_INCOMPLETE_TURN_RETRIES,
     _journal_verifier_assertions,
     _verify_tito_samples,
     fixed_template_append_roles,
@@ -117,9 +117,7 @@ async def _post_complete(client, url: str, payload: dict, *, label: str) -> dict
         body = response.json()
         if body.get("stop_reason") != "max_tokens":
             return body
-    raise AssertionError(
-        f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after stop_reason='max_tokens'"
-    )
+    raise AssertionError(f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after stop_reason='max_tokens'")
 
 
 def _expected_driver_events(*, include_system: bool) -> list[str]:

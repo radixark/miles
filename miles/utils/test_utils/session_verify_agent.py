@@ -259,9 +259,7 @@ async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
         response = await _chat(client, base_url, messages, attempt_kwargs, label=label)
         if response["choices"][0].get("finish_reason") != "length":
             return response
-    raise AssertionError(
-        f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after finish_reason='length'"
-    )
+    raise AssertionError(f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after finish_reason='length'")
 
 
 @_journal_verifier_assertions("session_verify_agent.run_agent")
