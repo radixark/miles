@@ -105,6 +105,7 @@ def _snapshot(canonical_messages, *, include_system: bool):
                 "path": "/v1/chat/completions",
                 "request": {"input_ids": input_ids, "messages": request_messages},
                 "response": {
+                    "id": f"response_{record_index}",
                     "choices": [
                         {
                             "message": response_message,
@@ -122,7 +123,14 @@ def _snapshot(canonical_messages, *, include_system: bool):
         "max_trim_tokens": 0,
         "accumulated_token_ids": final_ids,
         "tree": {
-            "nodes": [{"parent": None if index == 0 else index - 1} for index in range(6)],
+            "nodes": [
+                {
+                    "id": index,
+                    "parent": None if index == 0 else index - 1,
+                    "response_id": f"response_{index}",
+                }
+                for index in range(6)
+            ],
             "leaves": [{"node_id": 5, "path_node_ids": [0, 1, 2, 3, 4, 5]}],
         },
     }
@@ -219,11 +227,57 @@ def test_run_agent_runs_six_turns_and_checks_canonical_records(
     }
 
 
+def test_canonical_records_allow_superseded_retry_leaves():
+    tool_uses, _, canonical_messages = _response_fixtures()
+    snapshot = _snapshot(canonical_messages, include_system=True)
+    snapshot["records"][-1]["response"]["id"] = "response_7"
+    snapshot["metadata"]["tree"] = {
+        "nodes": [
+            {
+                "id": index,
+                "parent": None if index == 0 else index - 1,
+                "response_id": f"response_{index}",
+            }
+            for index in range(5)
+        ]
+        + [
+            {"id": 5, "parent": 4, "response_id": "retry_1"},
+            {"id": 6, "parent": 4, "response_id": "retry_2"},
+            {"id": 7, "parent": 4, "response_id": "response_7"},
+        ],
+        "leaves": [
+            {"node_id": 5, "path_node_ids": [0, 1, 2, 3, 4, 5]},
+            {"node_id": 6, "path_node_ids": [0, 1, 2, 3, 4, 6]},
+            {"node_id": 7, "path_node_ids": [0, 1, 2, 3, 4, 7]},
+        ],
+    }
+
+    anthropic_session_verify_agent._assert_canonical_records(
+        snapshot,
+        [[tool_use] for tool_use in tool_uses],
+        include_system=True,
+    )
+
+
 def test_post_complete_retries_max_tokens():
     responses = iter(
         [
-            _Response({"stop_reason": "max_tokens"}),
-            _Response({"stop_reason": "end_turn"}),
+            _Response(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "truncated"}],
+                    "stop_reason": "max_tokens",
+                }
+            ),
+            _Response(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "complete"}],
+                    "stop_reason": "end_turn",
+                }
+            ),
         ]
     )
     posted = []
@@ -239,6 +293,7 @@ def test_post_complete_retries_max_tokens():
             "http://session/v1/messages",
             {"messages": []},
             label="turn",
+            assert_response=anthropic_session_verify_agent._assert_anthropic_text_response,
         )
     )
 
@@ -247,6 +302,75 @@ def test_post_complete_retries_max_tokens():
         ("http://session/v1/messages", {"messages": []}),
         ("http://session/v1/messages", {"messages": []}),
     ]
+
+
+def test_post_complete_retries_empty_text_response():
+    responses = iter(
+        [
+            _Response(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": ""}],
+                    "stop_reason": "end_turn",
+                }
+            ),
+            _Response(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "complete"}],
+                    "stop_reason": "end_turn",
+                }
+            ),
+        ]
+    )
+
+    class FakeAsyncClient:
+        async def post(self, url, *, json):
+            return next(responses)
+
+    body = asyncio.run(
+        anthropic_session_verify_agent._post_complete(
+            FakeAsyncClient(),
+            "http://session/v1/messages",
+            {"messages": []},
+            label="turn",
+            assert_response=anthropic_session_verify_agent._assert_anthropic_text_response,
+        )
+    )
+
+    assert body["content"] == [{"type": "text", "text": "complete"}]
+
+
+def test_post_complete_raises_after_bounded_incomplete_responses():
+    class FakeAsyncClient:
+        attempts = 0
+
+        async def post(self, url, *, json):
+            self.attempts += 1
+            return _Response(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": ""}],
+                    "stop_reason": "end_turn",
+                }
+            )
+
+    client = FakeAsyncClient()
+    with pytest.raises(AssertionError):
+        asyncio.run(
+            anthropic_session_verify_agent._post_complete(
+                client,
+                "http://session/v1/messages",
+                {"messages": []},
+                label="turn",
+                assert_response=anthropic_session_verify_agent._assert_anthropic_text_response,
+            )
+        )
+
+    assert client.attempts == anthropic_session_verify_agent._MAX_ANTHROPIC_INCOMPLETE_TURN_RETRIES + 1
 
 
 def _successful_sample() -> Sample:
@@ -261,7 +385,7 @@ def _successful_sample() -> Sample:
             "tool_result_string_count": 2,
             "tool_result_list_count": 1,
             "intermediate_system_used": True,
-            "leaf": {"path_node_ids": [0, 1, 2, 3, 4, 5]},
+            "leaf": {"path_node_ids": [0, 1, 2, 3, 4, 7]},
             "tito_session_mismatch": [],
         }
     )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 
 import httpx
 
@@ -12,7 +13,6 @@ from miles.rollout.generate_hub.agentic_tool_call import generate as _base_gener
 from miles.utils.chat_template_utils.message_matcher_hub import loose_tool_call_message_matches
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizerType
 from miles.utils.test_utils.session_verify_agent import (
-    _MAX_INCOMPLETE_TURN_RETRIES,
     INITIAL_SYSTEM_PROMPT,
     INITIAL_USER_PROMPT,
     MOCK_TOOL_RESULTS,
@@ -42,6 +42,7 @@ _TOOL_PROMPTS = (
 )
 _REQUEST_COUNT = len(_TOOL_PROMPTS) * 2
 _MAX_TOKENS_PER_TURN = 1024
+_MAX_ANTHROPIC_INCOMPLETE_TURN_RETRIES = 8
 _MINIMAX_TITO_MODELS = frozenset(
     {
         TITOTokenizerType.MINIMAX_M25.value,
@@ -110,14 +111,26 @@ def _build_tool_result(tool_use: dict, turn_index: int) -> dict:
     }
 
 
-async def _post_complete(client, url: str, payload: dict, *, label: str) -> dict:
-    for _ in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
+async def _post_complete(
+    client,
+    url: str,
+    payload: dict,
+    *,
+    label: str,
+    assert_response: Callable[[dict], object],
+) -> dict:
+    for attempt in range(_MAX_ANTHROPIC_INCOMPLETE_TURN_RETRIES + 1):
         response = await client.post(url, json=payload)
         assert response.status_code == 200, f"{label} failed ({response.status_code}): {response.text}"
         body = response.json()
-        if body.get("stop_reason") != "max_tokens":
+        try:
+            assert_response(body)
+        except AssertionError:
+            if attempt == _MAX_ANTHROPIC_INCOMPLETE_TURN_RETRIES:
+                raise
+        else:
             return body
-    raise AssertionError(f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after stop_reason='max_tokens'")
+    raise AssertionError(f"{label} did not return a complete response")
 
 
 def _expected_driver_events(*, include_system: bool) -> list[str]:
@@ -167,6 +180,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 f"{base_url}/v1/messages",
                 payload,
                 label=f"Anthropic tool turn {turn_index + 1}",
+                assert_response=_assert_anthropic_tool_response,
             )
             tool_uses = _assert_anthropic_tool_response(tool_body)
             tool_uses_per_turn.append(tool_uses)
@@ -185,6 +199,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
                 f"{base_url}/v1/messages",
                 payload,
                 label=f"Anthropic text turn {turn_index + 1}",
+                assert_response=_assert_anthropic_text_response,
             )
             _assert_anthropic_text_response(text_body)
             messages.append({"role": "assistant", "content": text_body["content"]})
@@ -287,8 +302,19 @@ def _assert_canonical_records(snapshot: dict, tool_uses_per_turn: list[list[dict
         history_roles.append("assistant")
 
     tree = snapshot["metadata"]["tree"]
-    assert [node["parent"] for node in tree["nodes"]] == [None, 0, 1, 2, 3, 4]
-    assert tree["leaves"] == [{"node_id": 5, "path_node_ids": [0, 1, 2, 3, 4, 5]}]
+    nodes_by_id = {node["id"]: node for node in tree["nodes"]}
+    nodes_by_response_id = {node["response_id"]: node for node in tree["nodes"]}
+    assert len(nodes_by_id) == len(tree["nodes"])
+    assert len(nodes_by_response_id) == len(tree["nodes"])
+    active_path_node_ids = [nodes_by_response_id[record["response"]["id"]]["id"] for record in records]
+    assert [nodes_by_id[node_id]["parent"] for node_id in active_path_node_ids] == [
+        None,
+        *active_path_node_ids[:-1],
+    ]
+    assert {
+        "node_id": active_path_node_ids[-1],
+        "path_node_ids": active_path_node_ids,
+    } in tree["leaves"]
     last_choice = records[-1]["response"]["choices"][0]
     last_completion_ids = [item[1] for item in last_choice["meta_info"]["output_token_logprobs"]]
     assert snapshot["metadata"]["accumulated_token_ids"] == records[-1]["request"]["input_ids"] + last_completion_ids
@@ -339,7 +365,8 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
                 raise AssertionError(
                     f"Anthropic per-model e2e: sample {i} {key}={sample.metadata.get(key)!r}, expected {expected}"
                 )
-        if sample.metadata.get("leaf", {}).get("path_node_ids") != list(range(_REQUEST_COUNT)):
+        path_node_ids = sample.metadata.get("leaf", {}).get("path_node_ids")
+        if not isinstance(path_node_ids, list) or len(path_node_ids) != _REQUEST_COUNT:
             raise AssertionError(f"Anthropic per-model e2e: sample {i} did not retain the linear six-turn leaf")
 
     logger.info("Anthropic endpoint verified: samples=%d, requests_per_sample=%d", len(samples), _REQUEST_COUNT)
