@@ -36,7 +36,6 @@ def model_args(n_moe_layers: int = 75) -> str:
         "--swiglu "
         "--untie-embeddings-and-output-weights "
         "--position-embedding-type rope "
-        "--rope-type rope "
         "--no-position-embedding "
         "--normalization RMSNorm "
         "--qk-layernorm "
