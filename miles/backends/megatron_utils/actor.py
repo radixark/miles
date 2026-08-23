@@ -250,7 +250,11 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        if self.args.colocate:
+        if self.args.update_weight_transfer_mode == "rdt":
+            from .update_weight.update_weight_from_rdt import UpdateWeightFromRDT
+
+            update_weight_cls = UpdateWeightFromRDT
+        elif self.args.colocate:
             update_weight_cls = UpdateWeightFromTensor
         else:
             if self.args.update_weight_transfer_mode == "broadcast":

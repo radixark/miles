@@ -65,6 +65,7 @@ def make_args(**overrides: Any) -> Namespace:
         debug_train_only=False,
         debug_rollout_only=False,
         colocate=False,
+        update_weight_transfer_mode="broadcast",
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
         critic_num_nodes=0,
