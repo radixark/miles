@@ -44,7 +44,7 @@
       "group": "repo_write_access"
     },
     "rerun_failed_ci": {
-      "group": "repo_write_access"
+      "group": "prior_contributor_access"
     },
     "run_test_file": {
       "group": "prior_contributor_access"

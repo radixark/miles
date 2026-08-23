@@ -195,6 +195,17 @@ def test_target_workflow_keeps_orchestration_trusted_and_checks_out_exact_head()
     assert "secrets: inherit" not in workflow
     assert "CI_COMMAND_APP_PRIVATE_KEY" not in workflow
     assert "NEON_DATABASE_URL" not in workflow
+    # Fork-ness comes from the live PR, and fork heads run without repository
+    # secrets, matching the pr-test fork policy.
+    assert "head_is_fork: ${{ steps.head-repo.outputs.head_is_fork }}" in workflow
+    assert (
+        "WANDB_API_KEY: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.WANDB_API_KEY || '' }}"
+    ) in workflow
+    assert (
+        "HF_TOKEN: ${{ needs.resolve-file-run.outputs.head_is_fork != 'true' && secrets.HF_TOKEN || '' }}"
+    ) in workflow
+    assert "WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}" not in workflow
+    assert "HF_TOKEN: ${{ secrets.HF_TOKEN }}" not in workflow
     assert "group: run-ci-file-${{ inputs.pull_number }}-${{ inputs.test_file }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow

@@ -175,7 +175,7 @@ def policy(
                 "allowed_labels": frozenset(labels),
             },
             "clear_labels": {"group": "repo_write_access"},
-            "rerun_failed_ci": {"group": "repo_write_access"},
+            "rerun_failed_ci": {"group": "prior_contributor_access"},
             "run_test_file": {"group": "prior_contributor_access"},
         },
     }
@@ -327,7 +327,7 @@ def raw_policy():
                 "allowed_labels": ["run-ci-short", "bypass-fastfail"],
             },
             "clear_labels": {"group": "repo_write_access"},
-            "rerun_failed_ci": {"group": "repo_write_access"},
+            "rerun_failed_ci": {"group": "prior_contributor_access"},
             "run_test_file": {"group": "prior_contributor_access"},
         },
     }
@@ -505,7 +505,7 @@ def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
         "author_associations": frozenset({"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"}),
     }
     assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
-    assert loaded["commands"]["rerun_failed_ci"] == {"group": "repo_write_access"}
+    assert loaded["commands"]["rerun_failed_ci"] == {"group": "prior_contributor_access"}
     assert loaded["commands"]["run_test_file"] == {"group": "prior_contributor_access"}
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
@@ -1568,12 +1568,73 @@ def test_file_run_rejects_an_invalid_pr_body_pin(line):
     assert api.dispatch_calls == []
 
 
-def test_file_run_rejects_fork_prs_before_authorization():
-    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+@pytest.mark.parametrize("permission", ["read", "triage", "none"])
+def test_fork_file_run_without_label_or_write_is_denied(permission):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission=permission)
 
-    with pytest.raises(HANDLER.CommentCommandError, match="same-repository"):
+    with pytest.raises(HANDLER.CommentCommandError, match="maintainer-applied"):
         HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+    assert api.dispatch_calls == []
+
+
+@pytest.mark.parametrize("permission", ["write", "admin"])
+def test_repository_writer_dispatches_a_fork_file_run_without_a_label(permission):
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1), permission=permission)
+
+    result = HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
+
+    assert api.list_pull_calls == [("fork-owner", HEAD_REF)]
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+def test_contributor_dispatches_a_fork_file_run_under_a_maintainer_label():
+    api = FakeAPI(
+        pull(head_repository_id=HANDLER.REPOSITORY_ID + 1, labels=("run-ci-short",)),
+        permission="none",
+    )
+
+    result = HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="CONTRIBUTOR"), policy(), api)
+
     assert api.permission_calls == []
+    assert api.list_pull_calls == [("fork-owner", HEAD_REF)]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+def test_bypass_fastfail_label_is_not_a_fork_approval():
+    api = FakeAPI(
+        pull(head_repository_id=HANDLER.REPOSITORY_ID + 1, labels=("bypass-fastfail",)),
+        permission="read",
+    )
+
+    with pytest.raises(HANDLER.CommentCommandError, match="maintainer-applied"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="CONTRIBUTOR"), policy(), api)
+    assert api.dispatch_calls == []
+
+
+def test_first_time_contributor_cannot_dispatch_a_fork_file_run_even_under_a_label():
+    api = FakeAPI(
+        pull(head_repository_id=HANDLER.REPOSITORY_ID + 1, labels=("run-ci-short",)),
+        permission="read",
+    )
+
+    with pytest.raises(HANDLER.CommentCommandError, match="maintainer-applied"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="FIRST_TIME_CONTRIBUTOR"), policy(), api)
+    assert api.dispatch_calls == []
+
+
+def test_fork_file_run_requires_one_unique_head_pull():
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+    api.head_pulls = []
+
+    with pytest.raises(HANDLER.CommentCommandError, match="exactly one pull request"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY), policy(), api)
     assert api.dispatch_calls == []
 
 
@@ -1628,8 +1689,8 @@ def test_first_time_contributor_cannot_dispatch_a_file_run(author_association):
     assert api.dispatch_calls == []
 
 
-@pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels", "/rerun-failed-ci"])
-def test_contributor_association_grants_only_file_runs(body):
+@pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels"])
+def test_contributor_association_grants_no_label_command(body):
     api = FakeAPI(pull(labels=("run-ci-short",)), permission="read")
 
     with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
@@ -1641,12 +1702,16 @@ def test_contributor_association_grants_only_file_runs(body):
     assert api.dispatch_calls == []
 
 
-def test_contributor_association_cannot_dispatch_a_fork_file_run():
-    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+def test_contributor_reruns_failed_ci_without_a_permission_lookup():
+    api = FakeAPI(pull(), permission="none")
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
 
-    with pytest.raises(HANDLER.CommentCommandError, match="same-repository"):
-        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="CONTRIBUTOR"), policy(), api)
-    assert api.dispatch_calls == []
+    result = HANDLER.process_event(event(body="/rerun-failed-ci", author_association="CONTRIBUTOR"), policy(), api)
+
+    assert api.permission_calls == []
+    assert api.rerun_calls == [10]
+    assert result["decision"] == "ALLOW_RERUN_REQUESTED"
 
 
 @pytest.mark.parametrize("author_association", [None, True, "", "collaborator", "EVERYONE"])
