@@ -1,5 +1,6 @@
 """LoRA utilities for Megatron backend using Megatron-Bridge PEFT integration."""
 
+import hashlib
 import logging
 import os
 from argparse import Namespace
@@ -123,10 +124,102 @@ def sglang_lora_target_all_sentinel(args) -> bool:
 
 
 _marked_lora_grad_params_cache: dict[int, list] = {}
+_INTRA_PP_LORA_GRAD_GROUP = "intra_pp"
+
+
+def mark_shared_outer_lora_grads(
+    model: Sequence[torch.nn.Module],
+    *,
+    gradient_accumulation_fusion: bool,
+) -> int:
+    """Tag fused shared-outer expert factors for optimizer-gradient reduction.
+
+    Megatron Bridge registers an autograd hook for these replicated factors.
+    Fused WGrad bypasses that hook by accumulating the real gradient directly
+    into ``main_grad``, so Miles must reduce the optimizer-facing buffer during
+    final gradient processing instead.
+
+    Returns the number of tagged shared factors.
+    """
+    if not gradient_accumulation_fusion:
+        return 0
+
+    from megatron.bridge.peft.utils import SharedOuterGroupedExpertAdapter
+
+    marked = 0
+    for chunk_index, chunk in enumerate(model):
+        for module_name, module in chunk.named_modules():
+            if not isinstance(module, SharedOuterGroupedExpertAdapter):
+                continue
+
+            factors = (("fc1", module.linear_in.weight), ("fc2", module.linear_out.weight))
+            shared_factors = [(family, weight) for family, weight in factors if weight.ndim == 2]
+            if len(shared_factors) != 1:
+                raise RuntimeError(
+                    "shared-outer expert LoRA expected exactly one 2D replicated factor, "
+                    f"got shapes {[tuple(weight.shape) for _, weight in factors]} for {module_name}"
+                )
+            family, shared_weight = shared_factors[0]
+            shared_weight._lora_grad_sum_group = _INTRA_PP_LORA_GRAD_GROUP
+            shared_weight._lora_grad_sum_family = family
+            shared_weight._lora_grad_sum_key = f"{chunk_index}:{module_name}:{family}"
+            marked += 1
+
+    return marked
+
+
+def _digest_bytes(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def _tensor_digest(tensor: torch.Tensor) -> bytes:
+    value_bytes = tensor.detach().contiguous().view(torch.uint8).cpu().numpy().tobytes()
+    return _digest_bytes(value_bytes)
+
+
+def _require_matching_digest(digest: bytes, *, device: torch.device, group, description: str) -> None:
+    token = torch.tensor(list(digest), dtype=torch.uint8, device=device)
+    gathered = [torch.empty_like(token) for _ in range(dist.get_world_size(group=group))]
+    dist.all_gather(gathered, token, group=group)
+    if any(not torch.equal(token, other) for other in gathered):
+        raise RuntimeError(f"{description} differs across intra-pipeline-stage replicas")
+
+
+def _reduce_intra_pp_lora_grads(marked: list[tuple[torch.nn.Parameter, str, str]], group) -> None:
+    """Reduce and verify shared LoRA ``main_grad`` buffers within one PP stage."""
+    marked = sorted(marked, key=lambda item: item[1])
+    keys = [key for _, key, _ in marked]
+    if any(not key for key in keys) or len(keys) != len(set(keys)):
+        raise RuntimeError("shared-outer expert LoRA gradient keys must be non-empty and unique")
+
+    inventory = tuple((key, family, tuple(param.shape), str(param.dtype)) for param, key, family in marked)
+    inventory_digest = _digest_bytes(repr(inventory).encode())
+    _require_matching_digest(
+        inventory_digest,
+        device=marked[0][0].device,
+        group=group,
+        description="shared-outer expert LoRA gradient inventory",
+    )
+
+    representatives: dict[str, torch.Tensor] = {}
+    for param, key, family in marked:
+        grad = getattr(param, "main_grad", None)
+        if grad is None:
+            raise RuntimeError(f"shared-outer expert LoRA parameter {key} has no optimizer-facing main_grad")
+        dist.all_reduce(grad, op=dist.ReduceOp.SUM, group=group)
+        representatives.setdefault(family, grad)
+
+    for family, grad in sorted(representatives.items()):
+        _require_matching_digest(
+            _tensor_digest(grad),
+            device=grad.device,
+            group=group,
+            description=f"shared-outer expert LoRA {family} main_grad",
+        )
 
 
 def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
-    """Sum partial grads of replicated LoRA params over their tagged group ("tp"|"ep"), before the DP reduce-scatter."""
+    """Sum partial grads of tagged replicated LoRA params before optimizer preparation."""
     from megatron.core import parallel_state as ps
 
     key = id(model[0]) if model else 0
@@ -137,20 +230,39 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
             for param in chunk.parameters():
                 group_name = getattr(param, "_lora_grad_sum_group", None)
                 if group_name is not None and param.requires_grad:
-                    marked.append((param, group_name))
+                    marked.append(
+                        (
+                            param,
+                            group_name,
+                            getattr(param, "_lora_grad_sum_key", ""),
+                            getattr(param, "_lora_grad_sum_family", ""),
+                        )
+                    )
         _marked_lora_grad_params_cache[key] = marked
     if not marked:
         return
-    groups = {
-        "tp": (ps.get_tensor_model_parallel_group(), ps.get_tensor_model_parallel_world_size()),
-        "ep": (ps.get_expert_model_parallel_group(), ps.get_expert_model_parallel_world_size()),
-    }
-    for group_name in ("tp", "ep"):
-        group, size = groups[group_name]
+    for group_name in ("tp", "ep", _INTRA_PP_LORA_GRAD_GROUP):
+        group_marked = [(param, key, family) for param, name, key, family in marked if name == group_name]
+        if not group_marked:
+            continue
+        if group_name == "tp":
+            group = ps.get_tensor_model_parallel_group()
+            size = ps.get_tensor_model_parallel_world_size()
+        elif group_name == "ep":
+            group = ps.get_expert_model_parallel_group()
+            size = ps.get_expert_model_parallel_world_size()
+        else:
+            # This is exactly one pipeline stage. It contains every replica of
+            # Bridge's shared factor while deliberately excluding other stages.
+            group = ps.get_tensor_and_data_parallel_group(with_context_parallel=True)
+            size = dist.get_world_size(group=group)
         if size <= 1:
             continue
+        if group_name == _INTRA_PP_LORA_GRAD_GROUP:
+            _reduce_intra_pp_lora_grads(group_marked, group)
+            continue
         grads = []
-        for param, g_name in marked:
+        for param, g_name, _key, _family in marked:
             if g_name != group_name:
                 continue
             grad = getattr(param, "main_grad", None)
@@ -158,7 +270,7 @@ def reduce_marked_lora_grads(model: Sequence[torch.nn.Module]) -> None:
                 grad = param.grad
             if grad is not None:
                 grads.append(grad)
-        for dt in {g.dtype for g in grads}:
+        for dt in sorted({g.dtype for g in grads}, key=str):
             gs = [g for g in grads if g.dtype == dt]
             if len(gs) == 1:
                 dist.all_reduce(gs[0], op=dist.ReduceOp.SUM, group=group)

@@ -8,16 +8,21 @@ from argparse import Namespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from miles.backends.megatron_utils.lora_utils import (
+    _INTRA_PP_LORA_GRAD_GROUP,
     _get_lora_class_name,
     _is_adapter_param_name,
+    _marked_lora_grad_params_cache,
     build_lora_sync_config,
     convert_target_modules_to_hf,
     convert_target_modules_to_megatron,
     is_lora_enabled,
     is_lora_weight_name,
+    mark_shared_outer_lora_grads,
     parse_exclude_modules,
+    reduce_marked_lora_grads,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -355,3 +360,148 @@ class TestBuildLoraSyncConfig:
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
+
+
+# ---------------------------------------------------------------------------
+# shared-outer expert main-grad synchronization
+# ---------------------------------------------------------------------------
+
+
+class _FakeSharedOuterAdapter(torch.nn.Module):
+    def __init__(self, *, is_fc1: bool):
+        super().__init__()
+        self._is_fc1 = is_fc1
+        if is_fc1:
+            self.linear_in = torch.nn.Linear(4, 2, bias=False)
+            self.linear_out = torch.nn.Module()
+            self.linear_out.weight = torch.nn.Parameter(torch.zeros(3, 4, 2))
+        else:
+            self.linear_in = torch.nn.Module()
+            self.linear_in.weight = torch.nn.Parameter(torch.zeros(3, 2, 4))
+            self.linear_out = torch.nn.Linear(2, 4, bias=False)
+
+
+def test_marks_only_shared_factor_for_fused_bridge_adapter(monkeypatch):
+    from megatron.bridge.peft import utils as bridge_utils
+
+    monkeypatch.setattr(bridge_utils, "SharedOuterGroupedExpertAdapter", _FakeSharedOuterAdapter)
+    fc1 = _FakeSharedOuterAdapter(is_fc1=True)
+    fc2 = _FakeSharedOuterAdapter(is_fc1=False)
+
+    marked = mark_shared_outer_lora_grads(
+        [torch.nn.ModuleList([fc1, fc2])],
+        gradient_accumulation_fusion=True,
+    )
+
+    assert marked == 2
+    assert fc1.linear_in.weight._lora_grad_sum_group == _INTRA_PP_LORA_GRAD_GROUP
+    assert fc1.linear_in.weight._lora_grad_sum_family == "fc1"
+    assert fc2.linear_out.weight._lora_grad_sum_group == _INTRA_PP_LORA_GRAD_GROUP
+    assert fc2.linear_out.weight._lora_grad_sum_family == "fc2"
+    assert not hasattr(fc1.linear_out.weight, "_lora_grad_sum_group")
+    assert not hasattr(fc2.linear_in.weight, "_lora_grad_sum_group")
+
+
+def test_does_not_double_reduce_when_wgrad_fusion_is_disabled(monkeypatch):
+    from megatron.bridge.peft import utils as bridge_utils
+
+    monkeypatch.setattr(bridge_utils, "SharedOuterGroupedExpertAdapter", _FakeSharedOuterAdapter)
+    adapter = _FakeSharedOuterAdapter(is_fc1=True)
+
+    assert (
+        mark_shared_outer_lora_grads(
+            [adapter],
+            gradient_accumulation_fusion=False,
+        )
+        == 0
+    )
+    assert not hasattr(adapter.linear_in.weight, "_lora_grad_sum_group")
+
+
+def _tag_shared_fc1(param: torch.nn.Parameter) -> torch.nn.Module:
+    param._lora_grad_sum_group = _INTRA_PP_LORA_GRAD_GROUP
+    param._lora_grad_sum_family = "fc1"
+    param._lora_grad_sum_key = "0:decoder.layers.3.mlp.experts.linear_fc1.adapter:fc1"
+    module = torch.nn.Module()
+    module.register_parameter("shared_lora_a", param)
+    return module
+
+
+def test_second_update_lora_a_reduces_main_grad_at_tp4_pp2(monkeypatch):
+    from megatron.core import parallel_state
+
+    stage_group = object()
+    group_calls = []
+    reduced = []
+    monkeypatch.setattr(
+        parallel_state,
+        "get_tensor_and_data_parallel_group",
+        lambda *, with_context_parallel: group_calls.append(with_context_parallel) or stage_group,
+    )
+    monkeypatch.setattr(
+        parallel_state,
+        "get_pipeline_model_parallel_group",
+        lambda: pytest.fail("shared gradients must not cross pipeline stages"),
+    )
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda *, group: 4)
+
+    def fake_all_reduce(tensor, *, op, group):
+        assert group is stage_group
+        assert op == torch.distributed.ReduceOp.SUM
+        reduced.append(tensor)
+        tensor.copy_(torch.tensor([10.0, 20.0]))
+
+    def fake_all_gather(outputs, token, *, group):
+        assert group is stage_group
+        for output in outputs:
+            output.copy_(token)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+    monkeypatch.setattr(torch.distributed, "all_gather", fake_all_gather)
+
+    # LoRA-A first gets a real gradient after zero-initialized LoRA-B has
+    # changed. Fused WGrad writes it to main_grad while .grad stays a dummy.
+    param = torch.nn.Parameter(torch.zeros(2))
+    param.grad = torch.zeros(2)
+    param.main_grad = torch.tensor([1.0, 2.0])
+    model = [_tag_shared_fc1(param)]
+    _marked_lora_grad_params_cache.clear()
+
+    reduce_marked_lora_grads(model)
+
+    assert group_calls == [True]
+    assert len(reduced) == 1
+    assert reduced[0] is param.main_grad
+    assert torch.equal(param.main_grad, torch.tensor([10.0, 20.0]))
+    assert torch.equal(param.grad, torch.zeros(2))
+
+
+def test_shared_main_grad_hash_mismatch_fails_closed(monkeypatch):
+    from megatron.core import parallel_state
+
+    stage_group = object()
+    monkeypatch.setattr(
+        parallel_state,
+        "get_tensor_and_data_parallel_group",
+        lambda *, with_context_parallel: stage_group,
+    )
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda *, group: 2)
+    monkeypatch.setattr(torch.distributed, "all_reduce", lambda tensor, *, op, group: None)
+    gather_count = 0
+
+    def fake_all_gather(outputs, token, *, group):
+        nonlocal gather_count
+        gather_count += 1
+        for output in outputs:
+            output.copy_(token)
+        if gather_count == 2:
+            outputs[1][0] ^= 1
+
+    monkeypatch.setattr(torch.distributed, "all_gather", fake_all_gather)
+    param = torch.nn.Parameter(torch.zeros(2))
+    param.main_grad = torch.tensor([3.0, 4.0])
+    model = [_tag_shared_fc1(param)]
+    _marked_lora_grad_params_cache.clear()
+
+    with pytest.raises(RuntimeError, match="fc1 main_grad differs"):
+        reduce_marked_lora_grads(model)
