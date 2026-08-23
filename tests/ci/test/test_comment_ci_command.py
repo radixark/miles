@@ -106,7 +106,7 @@ class FakeAPI:
         self.comment_calls.append((pull_number, body))
 
 
-def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
+def event(*, body="/run-ci-short", actor_id=ACTOR_ID, author_association="NONE"):
     return {
         "action": "created",
         "repository": {"id": HANDLER.REPOSITORY_ID, "full_name": HANDLER.REPOSITORY},
@@ -114,6 +114,7 @@ def event(*, body="/run-ci-short", actor_id=ACTOR_ID):
         "comment": {
             "id": 5678,
             "body": body,
+            "author_association": author_association,
             "user": {"id": actor_id, "login": "actor", "type": "User"},
         },
         "sender": {"id": actor_id, "login": "actor", "type": "User"},
@@ -148,16 +149,24 @@ def policy(
     user_ids=(),
     labels=("run-ci-short", "bypass-fastfail"),
     repo_permissions=("write", "admin"),
+    author_associations=("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"),
 ):
     return {
         "groups": {
             "add_label_access": {
                 "repository_permissions": frozenset(permissions),
                 "user_ids": frozenset(user_ids),
+                "author_associations": frozenset(),
             },
             "repo_write_access": {
                 "repository_permissions": frozenset(repo_permissions),
                 "user_ids": frozenset(),
+                "author_associations": frozenset(),
+            },
+            "prior_contributor_access": {
+                "repository_permissions": frozenset(repo_permissions),
+                "user_ids": frozenset(),
+                "author_associations": frozenset(author_associations),
             },
         },
         "commands": {
@@ -167,7 +176,7 @@ def policy(
             },
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "repo_write_access"},
-            "run_test_file": {"group": "repo_write_access"},
+            "run_test_file": {"group": "prior_contributor_access"},
         },
     }
 
@@ -300,13 +309,17 @@ def test_unknown_request_type_fails_closed():
 
 def raw_policy():
     return {
-        "version": 2,
+        "version": 3,
         "groups": {
             "add_label_access": {
                 "repository_permissions": ["write", "admin"],
                 "user_ids": [],
             },
             "repo_write_access": {"repository_permissions": ["write", "admin"]},
+            "prior_contributor_access": {
+                "repository_permissions": ["write", "admin"],
+                "author_associations": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"],
+            },
         },
         "commands": {
             "add_label": {
@@ -315,7 +328,7 @@ def raw_policy():
             },
             "clear_labels": {"group": "repo_write_access"},
             "rerun_failed_ci": {"group": "repo_write_access"},
-            "run_test_file": {"group": "repo_write_access"},
+            "run_test_file": {"group": "prior_contributor_access"},
         },
     }
 
@@ -409,17 +422,31 @@ def test_policy_parser_rejects_legacy_or_nonstandard_schema(tmp_path, text, mess
 @pytest.mark.parametrize(
     ("path_parts", "value", "message"),
     [
-        (("version",), 1, "version must be 2"),
+        (("version",), 2, "version must be 3"),
         (("groups", "add_label_access", "repository_permissions"), [True], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["read"], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["write", "write"], "duplicate permissions"),
         (("groups", "add_label_access", "user_ids"), [True], "only positive integers"),
         (("groups", "add_label_access", "user_ids"), [123, 123], "duplicate user IDs"),
+        (("groups", "prior_contributor_access", "author_associations"), [], "non-empty array"),
+        (("groups", "prior_contributor_access", "author_associations"), [True], "only GitHub author associations"),
+        (
+            ("groups", "prior_contributor_access", "author_associations"),
+            ["read"],
+            "only GitHub author associations",
+        ),
+        (
+            ("groups", "prior_contributor_access", "author_associations"),
+            ["MEMBER", "MEMBER"],
+            "duplicate author associations",
+        ),
         (("commands", "add_label", "allowed_labels"), ["unsafe label"], "invalid exact CI label"),
         (("commands", "add_label", "allowed_labels"), ["run-ci-short", "run-ci-short"], "duplicate labels"),
         (("commands", "add_label", "group"), "missing", "unknown group"),
         (("commands", "clear_labels", "unexpected"), True, "invalid fields"),
         (("groups", "repo_write_access", "user_ids"), [123], "invalid fields"),
+        (("groups", "repo_write_access", "author_associations"), ["MEMBER"], "invalid fields"),
+        (("groups", "add_label_access", "author_associations"), ["MEMBER"], "invalid fields"),
     ],
 )
 def test_policy_parser_rejects_invalid_group_command_or_resource(tmp_path, path_parts, value, message):
@@ -465,14 +492,21 @@ def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
         "user_ids": frozenset(),
+        "author_associations": frozenset(),
     }
     assert loaded["groups"]["repo_write_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
         "user_ids": frozenset(),
+        "author_associations": frozenset(),
+    }
+    assert loaded["groups"]["prior_contributor_access"] == {
+        "repository_permissions": WRITE_PERMISSIONS,
+        "user_ids": frozenset(),
+        "author_associations": frozenset({"OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"}),
     }
     assert loaded["commands"]["clear_labels"] == {"group": "repo_write_access"}
     assert loaded["commands"]["rerun_failed_ci"] == {"group": "repo_write_access"}
-    assert loaded["commands"]["run_test_file"] == {"group": "repo_write_access"}
+    assert loaded["commands"]["run_test_file"] == {"group": "prior_contributor_access"}
     assert all(HANDLER.LABEL_PATTERN.fullmatch(label) for label in labels)
 
 
@@ -1560,6 +1594,73 @@ def test_add_label_access_user_id_cannot_dispatch_a_file_run():
     assert api.dispatch_calls == []
 
 
+@pytest.mark.parametrize("author_association", ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"])
+def test_prior_contributor_dispatches_a_file_run_without_a_permission_lookup(author_association):
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.process_event(
+        event(body=RUN_FILE_BODY, author_association=author_association),
+        policy(),
+        api,
+    )
+
+    assert api.permission_calls == []
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
+@pytest.mark.parametrize("author_association", ["FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "MANNEQUIN"])
+def test_first_time_contributor_cannot_dispatch_a_file_run(author_association):
+    api = FakeAPI(pull(), permission="read")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(
+            event(body=RUN_FILE_BODY, author_association=author_association),
+            policy(),
+            api,
+        )
+    assert api.dispatch_calls == []
+
+
+@pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels", "/rerun-failed-ci"])
+def test_contributor_association_grants_only_file_runs(body):
+    api = FakeAPI(pull(labels=("run-ci-short",)), permission="read")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(event(body=body, author_association="CONTRIBUTOR"), policy(), api)
+
+    assert api.add_calls == []
+    assert api.remove_calls == []
+    assert api.rerun_calls == []
+    assert api.dispatch_calls == []
+
+
+def test_contributor_association_cannot_dispatch_a_fork_file_run():
+    api = FakeAPI(pull(head_repository_id=HANDLER.REPOSITORY_ID + 1))
+
+    with pytest.raises(HANDLER.CommentCommandError, match="same-repository"):
+        HANDLER.process_event(event(body=RUN_FILE_BODY, author_association="CONTRIBUTOR"), policy(), api)
+    assert api.dispatch_calls == []
+
+
+@pytest.mark.parametrize("author_association", [None, True, "", "collaborator", "EVERYONE"])
+def test_event_parser_rejects_an_invalid_author_association(author_association):
+    invalid = event(body=RUN_FILE_BODY)
+    if author_association is None:
+        del invalid["comment"]["author_association"]
+    else:
+        invalid["comment"]["author_association"] = author_association
+
+    with pytest.raises(HANDLER.CommentCommandError, match="author association is invalid"):
+        HANDLER.parse_event(invalid)
+
+
 def test_create_workflow_dispatch_requests_and_returns_exact_run_details(monkeypatch):
     requests = []
 
@@ -1945,25 +2046,26 @@ def test_reply_mode_posts_without_loading_policy(monkeypatch, capsys):
 def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     workflow = WORKFLOW_PATH.read_text()
     assert "issue_comment:\n    types: [created]" in workflow
-    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" in workflow
     assert "github.event.comment.body" not in workflow
     assert "permissions:\n  contents: read" in workflow
     assert "ref: ${{ github.sha }}" in workflow
     assert "persist-credentials: false" in workflow
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in workflow
-    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 4
-    assert "client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}" in workflow
-    assert "private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}" in workflow
+    # The command App exists only for the issues capability: label mutations
+    # made with GITHUB_TOKEN would never trigger the labeled CI workflows.
+    assert workflow.count("actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1") == 1
+    assert workflow.count("client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}") == 1
+    assert workflow.count("private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}") == 1
     assert "permission-issues: write" in workflow
-    assert workflow.count("permission-actions: write") == 1
-    assert "permission-pull-requests: read" in workflow
+    assert "permission-actions" not in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in workflow
     assert "CI_COMMAND_API_TOKEN: ${{ steps.issues-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_API_TOKEN: ${{ steps.reaction-token.outputs.token }}" in workflow
-    assert "CI_COMMAND_API_TOKEN: ${{ steps.reply-token.outputs.token }}" in workflow
     assert "CI_COMMAND_APP_TOKEN" not in workflow
     assert workflow.index("CI_COMMAND_PREFLIGHT") < workflow.index("actions/create-github-app-token@")
+    # The actions capability never waits on the App gate; label commands fail
+    # loudly when the App is not enabled instead of skipping silently.
+    assert "vars.CI_COMMAND_APP_ENABLED != 'true'" in workflow
+    assert "vars.CI_COMMAND_APP_ENABLED == 'true'" not in workflow
     assert "steps.authorize.outputs.capability != 'none'" in workflow
     assert "steps.authorize.outputs.capability != 'issues'" in workflow
     assert "steps.authorize.outputs.capability != 'actions'" in workflow
@@ -1974,36 +2076,33 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     assert "group: comment-ci-actions-${{ github.event.issue.number }}" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "queue: max" in workflow
+    handle_job = workflow.split("  handle-command:", 1)[1].split("  actions-command:", 1)[0]
     actions_job = workflow.split("  actions-command:", 1)[1].split("  acknowledge-command:", 1)[0]
     acknowledge_job = workflow.split("  acknowledge-command:", 1)[1].split("  reply-command:", 1)[0]
     reply_job = workflow.split("  reply-command:", 1)[1]
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
-    actions_token = workflow.split("- name: Mint the actions-scoped App token", 1)[1].split(
-        "- name: Authorize and run the actions command", 1
-    )[0]
-    reaction_token = workflow.split("- name: Mint the reaction-scoped App token", 1)[1].split(
-        "- name: Acknowledge the successful command", 1
-    )[0]
-    reply_token = workflow.split("- name: Mint the reply-scoped App token", 1)[1].split(
-        "- name: Reply with the workflow run", 1
-    )[0]
     assert "permission-issues: write" in issues_token
-    assert "permission-actions: write" not in issues_token
-    assert "permission-actions: write" in actions_token
-    assert "permission-issues: write" not in actions_token
-    assert "permission-issues: write" in reaction_token
-    assert "permission-actions: write" not in reaction_token
-    assert "permission-pull-requests: read" not in reaction_token
-    assert "permission-issues: write" in reply_token
-    assert "permission-actions: write" not in reply_token
-    assert "permission-pull-requests: read" not in reply_token
+    assert "Require the command App for label commands" in handle_job
+    assert handle_job.index("Require the command App for label commands") < handle_job.index(
+        "Mint the issues-scoped App token"
+    )
+    # Each GITHUB_TOKEN job scopes its own permissions; only the actions job
+    # may dispatch or rerun, and only the feedback jobs may write issues.
+    assert ("permissions:\n      contents: read\n      actions: write\n      pull-requests: read") in actions_job
+    assert "issues: write" not in actions_job
+    assert "create-github-app-token" not in actions_job
+    assert "CI_COMMAND_API_TOKEN: ${{ github.token }}" in actions_job
+    assert "permissions:\n      contents: read\n      issues: write" in acknowledge_job
+    assert "actions: write" not in acknowledge_job
+    assert "create-github-app-token" not in acknowledge_job
+    assert "permissions:\n      contents: read\n      issues: write" in reply_job
+    assert "actions: write" not in reply_job
+    assert "create-github-app-token" not in reply_job
     assert workflow.index("Authorize and run the actions command") < workflow.index(
         "Acknowledge the successful command"
     )
-    assert "Mint the reaction-scoped App token" not in actions_job
-    assert "permission-issues: write" not in actions_job
     assert "CI_COMMAND_ACKNOWLEDGE" not in actions_job
     assert "needs: [handle-command, actions-command]" in acknowledge_job
     assert (
@@ -2012,7 +2111,6 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
         "      needs.handle-command.outputs.success_reaction == '+1'"
     ) in acknowledge_job
     assert "always()" not in acknowledge_job
-    assert "permission-issues: write" in acknowledge_job
     assert 'CI_COMMAND_ACKNOWLEDGE: "true"' in acknowledge_job
     assert "workflow_run_url: ${{ steps.run-command.outputs.workflow_run_url }}" in actions_job
     assert "id: run-command" in actions_job

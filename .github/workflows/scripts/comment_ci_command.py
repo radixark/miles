@@ -57,7 +57,21 @@ LABEL_PATTERN = re.compile(r"(?:run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfai
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 WORKFLOW_RUN_URL_PATTERN = re.compile(rf"https://github\.com/{re.escape(REPOSITORY)}/actions/runs/[1-9][0-9]*")
 POLICY_PERMISSIONS = frozenset({"write", "admin"})
-POLICY_GROUPS = frozenset({"add_label_access", "repo_write_access"})
+POLICY_GROUPS = frozenset({"add_label_access", "repo_write_access", "prior_contributor_access"})
+# The comment payload's author_association enum, as GitHub defines it. Groups
+# may allow a subset; associations outside the enum fail loudly.
+AUTHOR_ASSOCIATIONS = frozenset(
+    {
+        "COLLABORATOR",
+        "CONTRIBUTOR",
+        "FIRST_TIMER",
+        "FIRST_TIME_CONTRIBUTOR",
+        "MANNEQUIN",
+        "MEMBER",
+        "NONE",
+        "OWNER",
+    }
+)
 
 
 class CommentCommandError(Exception):
@@ -98,8 +112,10 @@ class CommandContext(NamedTuple):
     pull_number: int
     actor_id: int
     actor_login: str
+    author_association: str
     allowed_permissions: frozenset
     allowed_user_ids: frozenset
+    allowed_author_associations: frozenset
     current_labels: frozenset
     head_sha: str
     head_repository_id: int
@@ -153,6 +169,16 @@ def _validate_user_ids(name, values):
     return frozenset(values)
 
 
+def _validate_author_associations(name, values):
+    if not isinstance(values, list) or not values:
+        raise CommentCommandError(f"{name} must be a non-empty array")
+    if any(type(value) is not str or value not in AUTHOR_ASSOCIATIONS for value in values):
+        raise CommentCommandError(f"{name} must contain only GitHub author associations")
+    if len(set(values)) != len(values):
+        raise CommentCommandError(f"{name} contains duplicate author associations")
+    return frozenset(values)
+
+
 def _validate_labels(name, values):
     if not isinstance(values, list) or not values:
         raise CommentCommandError(f"{name} must be a non-empty array")
@@ -168,17 +194,21 @@ def load_policy(path):
     raw = load_json(path)
     if not isinstance(raw, dict) or set(raw) != {"version", "groups", "commands"}:
         raise CommentCommandError("policy must contain only version, groups, and commands")
-    if type(raw["version"]) is not int or raw["version"] != 2:
-        raise CommentCommandError("policy version must be 2")
+    if type(raw["version"]) is not int or raw["version"] != 3:
+        raise CommentCommandError("policy version must be 3")
 
     raw_groups = raw["groups"]
     if not isinstance(raw_groups, dict) or set(raw_groups) != POLICY_GROUPS:
-        raise CommentCommandError("policy groups must contain only add_label_access and repo_write_access")
+        raise CommentCommandError(
+            "policy groups must contain only add_label_access, repo_write_access, and prior_contributor_access"
+        )
     groups = {}
     for name, raw_group in raw_groups.items():
         expected_keys = {"repository_permissions"}
         if name == "add_label_access":
             expected_keys.add("user_ids")
+        if name == "prior_contributor_access":
+            expected_keys.add("author_associations")
         if not isinstance(raw_group, dict) or set(raw_group) != expected_keys:
             raise CommentCommandError(f"invalid fields for policy group {name}")
         groups[name] = {
@@ -189,6 +219,14 @@ def load_policy(path):
             "user_ids": _validate_user_ids(
                 f"groups.{name}.user_ids",
                 raw_group.get("user_ids", []),
+            ),
+            "author_associations": (
+                _validate_author_associations(
+                    f"groups.{name}.author_associations",
+                    raw_group["author_associations"],
+                )
+                if "author_associations" in raw_group
+                else frozenset()
             ),
         }
 
@@ -280,12 +318,17 @@ def parse_event(event):
     actor_login = comment["user"].get("login")
     if not isinstance(actor_login, str) or not actor_login:
         raise CommentCommandError("comment author login is missing")
+    # GitHub stamps the association at comment time; an unknown value fails
+    # loudly rather than defaulting into or out of any policy tier.
+    author_association = comment.get("author_association")
+    if not isinstance(author_association, str) or author_association not in AUTHOR_ASSOCIATIONS:
+        raise CommentCommandError("comment author association is invalid")
 
     sender = event.get("sender")
     if not isinstance(sender, dict) or sender.get("id") != actor_id:
         raise CommentCommandError("event sender does not match the comment author")
 
-    return pull_number, actor_id, actor_login, parse_command(comment.get("body"))
+    return pull_number, actor_id, actor_login, author_association, parse_command(comment.get("body"))
 
 
 class GitHubAPI:
@@ -514,13 +557,14 @@ def _command_spec(request):
 
 
 def resolve_policy(event, policy):
-    pull_number, actor_id, actor_login, request = parse_event(event)
+    pull_number, actor_id, actor_login, author_association, request = parse_event(event)
     spec = _command_spec(request)
     try:
         command_policy = policy["commands"][spec.policy_key]
         group = policy["groups"][command_policy["group"]]
         allowed_permissions = group["repository_permissions"]
         allowed_user_ids = group["user_ids"] if spec.allows_user_ids else frozenset()
+        allowed_author_associations = group["author_associations"]
     except (KeyError, TypeError) as error:
         raise CommentCommandError("resolved command policy is invalid") from error
     if spec.resource_key is not None:
@@ -531,10 +575,12 @@ def resolve_policy(event, policy):
         pull_number,
         actor_id,
         actor_login,
+        author_association,
         request,
         spec,
         allowed_permissions,
         allowed_user_ids,
+        allowed_author_associations,
     )
 
 
@@ -555,8 +601,20 @@ def require_permission(api, actor_id, actor_login, allowed_permissions):
         raise CommentCommandError("comment author is not authorized for the requested operation")
 
 
-def require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids):
+def require_access(
+    api,
+    actor_id,
+    actor_login,
+    author_association,
+    allowed_permissions,
+    allowed_user_ids,
+    allowed_author_associations,
+):
     if actor_id in allowed_user_ids:
+        return
+    # The association GitHub stamped on the comment admits prior contributors
+    # without a live-permission lookup; anyone else needs write or admin.
+    if author_association in allowed_author_associations:
         return
     require_permission(api, actor_id, actor_login, allowed_permissions)
 
@@ -653,8 +711,10 @@ def _handle_rerun_failed_ci(context, request):
         pull_number,
         actor_id,
         actor_login,
+        author_association,
         allowed_permissions,
         allowed_user_ids,
+        allowed_author_associations,
         _,
         head_sha,
         head_repository_id,
@@ -689,7 +749,15 @@ def _handle_rerun_failed_ci(context, request):
 
     candidates.sort()
     if not candidates:
-        require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids)
+        require_access(
+            api,
+            actor_id,
+            actor_login,
+            author_association,
+            allowed_permissions,
+            allowed_user_ids,
+            allowed_author_associations,
+        )
     for run_id, workflow_file, workflow_path in candidates:
         current_pull = api.get_pull(pull_number)
         (
@@ -726,7 +794,15 @@ def _handle_rerun_failed_ci(context, request):
         )
         if current_run_id != run_id:
             raise CommentCommandError("latest workflow-run state changed before rerun")
-        require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids)
+        require_access(
+            api,
+            actor_id,
+            actor_login,
+            author_association,
+            allowed_permissions,
+            allowed_user_ids,
+            allowed_author_associations,
+        )
         try:
             api.rerun_failed_jobs(run_id)
         except CommentCommandError as error:
@@ -748,8 +824,10 @@ def _handle_add_label(context, request):
         context.api,
         context.actor_id,
         context.actor_login,
+        context.author_association,
         context.allowed_permissions,
         context.allowed_user_ids,
+        context.allowed_author_associations,
     )
     label = request.label
     if label in context.current_labels:
@@ -776,8 +854,10 @@ def _handle_clear_labels(context, request):
         context.api,
         context.actor_id,
         context.actor_login,
+        context.author_association,
         context.allowed_permissions,
         context.allowed_user_ids,
+        context.allowed_author_associations,
     )
     labels_to_remove = sorted(label for label in context.current_labels if _is_ci_control_label(label))
     remaining_labels = context.current_labels
@@ -829,8 +909,10 @@ def _handle_run_test_file(context, request):
         context.api,
         context.actor_id,
         context.actor_login,
+        context.author_association,
         context.allowed_permissions,
         context.allowed_user_ids,
+        context.allowed_author_associations,
     )
     inputs = {
         "pull_number": str(context.pull_number),
@@ -934,10 +1016,12 @@ def process_event(event, policy, api):
         pull_number,
         actor_id,
         actor_login,
+        author_association,
         request,
         spec,
         allowed_permissions,
         allowed_user_ids,
+        allowed_author_associations,
     ) = resolve_policy(event, policy)
     pull = api.get_pull(pull_number)
     (
@@ -952,8 +1036,10 @@ def process_event(event, policy, api):
         pull_number,
         actor_id,
         actor_login,
+        author_association,
         allowed_permissions,
         allowed_user_ids,
+        allowed_author_associations,
         current_labels,
         head_sha,
         head_repository_id,
@@ -969,17 +1055,27 @@ def authorize_policy(event, policy, api):
         pull_number,
         actor_id,
         actor_login,
+        author_association,
         request,
         spec,
         allowed_permissions,
         allowed_user_ids,
+        allowed_author_associations,
     ) = resolve_policy(event, policy)
-    require_access(api, actor_id, actor_login, allowed_permissions, allowed_user_ids)
+    require_access(
+        api,
+        actor_id,
+        actor_login,
+        author_association,
+        allowed_permissions,
+        allowed_user_ids,
+        allowed_author_associations,
+    )
     return pull_number, actor_id, request, spec
 
 
 def acknowledge_event(event, api):
-    pull_number, actor_id, _, request = parse_event(event)
+    pull_number, actor_id, _, _, request = parse_event(event)
     spec = _command_spec(request)
     if spec.success_reaction == "none":
         raise CommentCommandError("command does not define a success reaction")
@@ -994,7 +1090,7 @@ def acknowledge_event(event, api):
 
 
 def reply_event(event, api, workflow_run_url):
-    pull_number, actor_id, _, request = parse_event(event)
+    pull_number, actor_id, _, _, request = parse_event(event)
     if type(request) is not RunTestFile:
         raise CommentCommandError("command does not define a workflow reply")
     workflow_run_url = _validate_workflow_run_url(workflow_run_url)
@@ -1049,7 +1145,7 @@ def main():
             api = GitHubAPI(os.environ["CI_COMMAND_API_TOKEN"])
             result = reply_event(event, api, os.environ.get("CI_COMMAND_WORKFLOW_RUN_URL"))
         elif os.environ.get("CI_COMMAND_PREFLIGHT") == "true":
-            pull_number, actor_id, _, request = parse_event(event)
+            pull_number, actor_id, _, _, request = parse_event(event)
             if request is None:
                 _write_routing("none", "none")
                 print(

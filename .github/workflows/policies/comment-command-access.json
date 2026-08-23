@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "groups": {
     "add_label_access": {
       "repository_permissions": ["write", "admin"],
@@ -7,6 +7,10 @@
     },
     "repo_write_access": {
       "repository_permissions": ["write", "admin"]
+    },
+    "prior_contributor_access": {
+      "repository_permissions": ["write", "admin"],
+      "author_associations": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
     }
   },
   "commands": {
@@ -43,7 +47,7 @@
       "group": "repo_write_access"
     },
     "run_test_file": {
-      "group": "repo_write_access"
+      "group": "prior_contributor_access"
     }
   }
 }
