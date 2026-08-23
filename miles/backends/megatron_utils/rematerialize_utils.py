@@ -20,7 +20,9 @@ def _named_restore_extras(model: Sequence[torch.nn.Module]) -> Iterator[tuple[st
             if "expert_bias" in name:
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", buffer
         for name, param in model_module.named_parameters():
-            if param.dtype == torch.float32:
+            # fp32 params and frozen params (e.g. --moe-router-freeze-gate) are
+            # excluded from the DDP param buffers, so they have no master weight.
+            if param.dtype == torch.float32 or not param.requires_grad:
                 yield f"vp_stages.{vp_stage}.{strip_param_name_prefix(name)}", param
 
 
