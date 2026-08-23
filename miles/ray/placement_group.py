@@ -98,26 +98,38 @@ def _create_placement_group(num_gpus, is_rdt: bool = False):
     return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
 
 
-def _get_placement_group_layout(args) -> tuple[int, int]:
+def _disaggregated_opd_teacher_num_gpus(args) -> int:
+    """GPUs to carve out for a disaggregated OPD teacher (0 = colocated weight-swap teacher, no extra GPUs)."""
+    if args.opd_teacher_num_nodes is None:
+        return 0
+    return args.opd_teacher_num_nodes * args.opd_teacher_num_gpus_per_node
+
+
+def _get_placement_group_layout(args) -> tuple[int, int, int]:
     actor_num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
 
     if args.debug_train_only:
-        return actor_num_gpus, 0
-    if args.rollout_external:
+        base_num_gpus, rollout_offset = actor_num_gpus, 0
+    elif args.rollout_external:
         if args.debug_rollout_only:
-            return 0, 0
-        return actor_num_gpus, actor_num_gpus
-    if args.debug_rollout_only:
-        return args.rollout_num_gpus, 0
-    if args.colocate:
-        return max(actor_num_gpus, args.rollout_num_gpus), 0
-    return actor_num_gpus + args.rollout_num_gpus + args.eval_num_gpus, actor_num_gpus
+            base_num_gpus, rollout_offset = 0, 0
+        else:
+            base_num_gpus, rollout_offset = actor_num_gpus, actor_num_gpus
+    elif args.debug_rollout_only:
+        base_num_gpus, rollout_offset = args.rollout_num_gpus, 0
+    elif args.colocate:
+        base_num_gpus, rollout_offset = max(actor_num_gpus, args.rollout_num_gpus), 0
+    else:
+        base_num_gpus, rollout_offset = actor_num_gpus + args.rollout_num_gpus + args.eval_num_gpus, actor_num_gpus
+
+    opd_teacher_offset = base_num_gpus
+    return base_num_gpus + _disaggregated_opd_teacher_num_gpus(args), rollout_offset, opd_teacher_offset
 
 
 def create_placement_groups(args):
-    """Create placement groups for actor and rollout engines."""
+    """Create placement groups for actor, rollout, and (optionally) a disaggregated OPD teacher."""
 
-    num_gpus, rollout_offset = _get_placement_group_layout(args)
+    num_gpus, rollout_offset, opd_teacher_offset = _get_placement_group_layout(args)
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
     pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(
@@ -126,16 +138,31 @@ def create_placement_groups(args):
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
+    opd_teacher_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[opd_teacher_offset:]
+    opd_teacher_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[opd_teacher_offset:]
     result = {
         "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
         "rollout": (pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
     }
     result["critic"] = result["actor"] if args.use_critic else None
+    result["opd_teacher"] = (
+        (pg, opd_teacher_pg_reordered_bundle_indices, opd_teacher_pg_reordered_gpu_ids)
+        if opd_teacher_offset < num_gpus
+        else None
+    )
     return result
 
 
 def allocate_train_group(
-    args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, rollout_manager, with_opd_teacher: bool = False
+    args,
+    num_nodes,
+    num_gpus_per_node,
+    pg,
+    role: str,
+    with_ref: bool,
+    rollout_manager,
+    with_opd_teacher: bool = False,
+    num_gpus_per_actor: float = 0.4,
 ):
     # RDT pins one NIXL/NCCL rank per physical GPU, so it cannot time-share a device
     # with a colocated rollout the way the fractional reservation allows.
@@ -154,7 +181,21 @@ def allocate_train_group(
     )
 
 
+def _build_disaggregated_opd_teacher_args(args):
+    """Args for the disaggregated OPD teacher role: an ordinary Megatron actor whose
+    only checkpoint is the teacher's, on its own device mesh."""
+    opd_teacher_args = copy.deepcopy(args)
+    opd_teacher_args.train_backend = "megatron"
+    opd_teacher_args.use_opd = False
+    opd_teacher_args.use_critic = False
+    opd_teacher_args.debug_disable_optimizer = True
+    return opd_teacher_args
+
+
 async def create_training_models(args, pgs, rollout_manager):
+    disaggregated_opd_teacher = (
+        args.use_opd and args.opd_type == "megatron" and args.opd_teacher_num_nodes is not None
+    )
     actor_model = allocate_train_group(
         args=args,
         num_nodes=args.actor_num_nodes,
@@ -163,7 +204,7 @@ async def create_training_models(args, pgs, rollout_manager):
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
         rollout_manager=rollout_manager,
-        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
+        with_opd_teacher=args.use_opd and args.opd_type == "megatron" and not disaggregated_opd_teacher,
     )
     actor_start_rollout_ids = await actor_model.init()
 
@@ -185,6 +226,22 @@ async def create_training_models(args, pgs, rollout_manager):
     else:
         critic_model = None
 
+    if disaggregated_opd_teacher:
+        opd_teacher_model = allocate_train_group(
+            args=_build_disaggregated_opd_teacher_args(args),
+            num_nodes=args.opd_teacher_num_nodes,
+            num_gpus_per_node=args.opd_teacher_num_gpus_per_node,
+            pg=pgs["opd_teacher"],
+            role="opd_teacher",
+            with_ref=False,
+            rollout_manager=None,
+            # Not sharing these GPUs with any other role, so no need for fractional packing.
+            num_gpus_per_actor=1.0,
+        )
+        await opd_teacher_model.init()
+    else:
+        opd_teacher_model = None
+
     start_rollout_ids = critic_start_rollout_ids if args.use_critic else actor_start_rollout_ids
 
     assert len(set(start_rollout_ids)) == 1
@@ -195,7 +252,7 @@ async def create_training_models(args, pgs, rollout_manager):
     if args.rollout_global_dataset:
         await rollout_manager.load.remote(args.start_rollout_id - 1)
 
-    return actor_model, critic_model
+    return actor_model, critic_model, opd_teacher_model
 
 
 def create_rollout_manager(args, pg):

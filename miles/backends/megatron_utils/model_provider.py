@@ -15,6 +15,7 @@ from megatron.core.models.gpt.gpt_layer_specs import (
 )
 from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
+from megatron.core.utils import unwrap_model
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.audit_utils.witness.module import install_witness
@@ -128,9 +129,34 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def install_teacher_hidden_states_passthrough(model_chunk: GPTModel) -> None:
+    """Skip the vocab projection on a loaded disaggregated-OPD-teacher chunk's
+    output_layer, so forward passes return hidden states instead of logits."""
+    unwrapped_model_chunk = unwrap_model(model_chunk)
+    output_layer = getattr(unwrapped_model_chunk, "output_layer", None)
+    if output_layer is None:
+        return
+
+    sequence_parallel = unwrapped_model_chunk.config.sequence_parallel
+
+    def _passthrough(
+        input_: torch.Tensor,
+        weight: torch.Tensor | None = None,
+        runtime_gather_output: bool | None = None,
+    ) -> tuple[torch.Tensor, None]:
+        hidden_states = input_
+        if sequence_parallel:
+            hidden_states = tensor_parallel.gather_from_sequence_parallel_region(
+                hidden_states, tensor_parallel_output_grad=False
+            )
+        return hidden_states, None
+
+    output_layer.forward = _passthrough
+
+
 def get_model_provider_func(
     args: argparse.Namespace,
-    role: Literal["actor", "critic"] = "actor",
+    role: Literal["actor", "critic", "opd_teacher"] = "actor",
 ):
     # Support custom model provider path (similar to --custom-rm-path for reward models)
     if getattr(args, "custom_model_provider_path", None):

@@ -21,7 +21,7 @@ class RolloutManagerProcessIdentity(_ProcessIdentityBase):
 
 
 class TrainProcessIdentity(_ProcessIdentityBase):
-    component: Literal["actor", "critic"]
+    component: Literal["actor", "critic", "opd_teacher"]
     cell_index: NonNegativeInt
     rank_within_cell: NonNegativeInt
 

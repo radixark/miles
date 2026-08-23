@@ -112,6 +112,12 @@ class RayTrainGroup:
         """Save actor model"""
         await self._broadcast("save_model", rollout_id, force_sync=force_sync)
 
+    async def send_teacher_hidden_states(self, rollout_id, rollout_data_pack):
+        """Disaggregated OPD teacher: forward the batch and return each rank's teacher
+        hidden states as a Ray object-store reference, to be merged into the matching
+        actor rank's external_data."""
+        return await self._broadcast("send_teacher_hidden_states", rollout_id, rollout_data_pack["data_ref"])
+
     async def export_hf(self, rollout_id: int, path: str):
         """Export current weights as an HF checkpoint (collective across all ranks)."""
         await self._broadcast("export_hf", rollout_id, path)

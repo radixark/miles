@@ -1,5 +1,5 @@
 from argparse import Namespace
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import torch
 
@@ -16,6 +16,7 @@ def get_responses(
     total_lengths: list[int],
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
+    scale_by_temperature: bool = True,
 ) -> Iterator[tuple[torch.Tensor, torch.Tensor]]:
     """Yield response-aligned `(logits_chunk, tokens_chunk)` pairs per sample.
 
@@ -52,7 +53,7 @@ def get_responses(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+    if scale_by_temperature and logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
         logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
         if getattr(args, "bf16", False):
@@ -268,3 +269,112 @@ def get_values(
         )
 
     return res
+
+
+def get_hidden_states(
+    hidden_states: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    with_entropy: bool = False,
+    non_loss_data: bool = True,
+    max_seq_lens: list[int] | None = None,
+) -> dict[str, list[torch.Tensor]]:
+    """Extract per-token final hidden states over response tokens (disaggregated OPD teacher).
+
+    For each sample, extracts response-aligned chunks from the teacher's final
+    hidden states (the disaggregated OPD teacher's output_layer is patched to
+    return hidden states unchanged, see `install_teacher_hidden_states_passthrough`).
+
+    Args:
+        hidden_states: Teacher final hidden states with shape `[1, T, H]`.
+        args: Configuration.
+        unconcat_tokens: List of token tensors per sample.
+        total_lengths: Total sequence lengths per sample.
+        response_lengths: Response segment lengths per sample.
+        with_entropy: Unused; kept for signature compatibility.
+        non_loss_data: Unused; kept for signature compatibility.
+
+    Returns:
+        Dict with key "teacher_hidden_states" mapping to a list of `[R, H]`
+        hidden-state tensors per sample.
+    """
+    hidden_states_list = []
+    for hidden_states_chunk, _ in get_responses(
+        hidden_states,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        scale_by_temperature=False,
+    ):
+        hidden_states_list.append(hidden_states_chunk)
+
+    res = {
+        "teacher_hidden_states": hidden_states_list,
+    }
+
+    if args.allgather_cp:
+        allgather_cp_redistribute(
+            res,
+            logits=hidden_states,
+            args=args,
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            max_seq_lens=max_seq_lens,
+        )
+
+    return res
+
+
+def get_opd_full_kl(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    teacher_unembedding: Callable[[torch.Tensor], torch.Tensor],
+    teacher_hidden_states_iter: Iterator[torch.Tensor],
+    with_entropy: bool = False,
+    non_loss_data: bool = True,
+    max_seq_lens: list[int] | None = None,
+) -> dict[str, list[torch.Tensor]]:
+    """Exact reverse KL(student || teacher) for a disaggregated OPD teacher.
+
+    Reuses the student's own full-vocab logits, already in scope at this point in the
+    normal log-prob forward pass, against the teacher's full-vocab log-probs
+    reconstructed locally from received hidden states (`teacher_unembedding`, one
+    entry per response-aligned sample, drawn in the same order `get_responses` yields
+    samples here). Requires `--tensor-model-parallel-size=1` /
+    `--context-parallel-size=1` on the student (validated in `miles.utils.arguments`):
+    student logits here are the full, unsharded vocab, matching the teacher replica.
+
+    Args:
+        logits: Student policy logits with shape `[1, T, V]`.
+        teacher_unembedding: Callable turning a `[R, H]` hidden-state chunk into
+            `[R, V]` teacher log-probs (see `opd_teacher_unembedding.TeacherUnembedding`).
+        teacher_hidden_states_iter: Iterator yielding one `[R, H]` chunk per sample,
+            in the same order as `unconcat_tokens`/`total_lengths`/`response_lengths`.
+
+    Returns:
+        Dict with key "opd_reverse_kl" mapping to a list of `[R]` tensors per sample,
+        consumed directly by `apply_opd_kl_to_advantages`'s precomputed-KL path.
+    """
+    reverse_kls = []
+    for logits_chunk, _ in get_responses(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+    ):
+        teacher_log_probs = teacher_unembedding(next(teacher_hidden_states_iter))
+        student_log_probs = torch.log_softmax(logits_chunk.float(), dim=-1)
+        reverse_kls.append((student_log_probs.exp() * (student_log_probs - teacher_log_probs)).sum(dim=-1))
+
+    return {"opd_reverse_kl": reverse_kls}

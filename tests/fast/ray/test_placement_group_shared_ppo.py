@@ -16,6 +16,8 @@ def _layout_args(**overrides):
         "debug_rollout_only": False,
         "rollout_external": False,
         "colocate": False,
+        "opd_teacher_num_nodes": None,
+        "opd_teacher_num_gpus_per_node": None,
     }
     values.update(overrides)
     return Namespace(**values)
@@ -24,8 +26,8 @@ def _layout_args(**overrides):
 @pytest.mark.parametrize(
     ("colocate", "expected"),
     [
-        (False, (6, 2)),
-        (True, (4, 0)),
+        (False, (6, 2, 6)),
+        (True, (4, 0, 4)),
     ],
 )
 def test_shared_ppo_counts_actor_bundles_once(colocate, expected):
@@ -33,11 +35,17 @@ def test_shared_ppo_counts_actor_bundles_once(colocate, expected):
 
 
 def test_debug_train_only_counts_actor_bundles_once():
-    assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 0)
+    assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 0, 2)
 
 
 def test_external_rollout_only_reserves_no_local_bundles():
-    assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0)
+    assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0, 0)
+
+
+def test_disaggregated_opd_teacher_appends_its_own_gpus():
+    assert _get_placement_group_layout(
+        _layout_args(opd_teacher_num_nodes=1, opd_teacher_num_gpus_per_node=3)
+    ) == (9, 2, 6)
 
 
 async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypatch):
@@ -71,6 +79,7 @@ async def test_critic_role_disables_reward_kl_and_preserves_actor_args(monkeypat
         use_kl_loss=False,
         use_opd=True,
         opd_type="megatron",
+        opd_teacher_num_nodes=None,
         disable_param_buffers_cpu_backup=True,
         start_rollout_id=None,
         rollout_global_dataset=False,
