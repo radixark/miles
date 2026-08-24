@@ -1860,6 +1860,70 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=8068,
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
             )
+            parser.add_argument(
+                "--tinker-frontend",
+                action="store_true",
+                default=False,
+                help="Serve the official tinker SDK REST protocol (/api/v1) on the tinker "
+                "controller's HTTP server: an unmodified `tinker` client pointed at it "
+                "(base_url + api_key) drives training and sampling",
+            )
+            parser.add_argument(
+                "--tinker-api-key",
+                type=str,
+                default=None,
+                help="API key the tinker frontend requires in X-API-Key (single-tenant; the SDK "
+                "needs a 'tml-' prefix). Falls back to $MILES_TINKER_API_KEY. Required for a "
+                "non-loopback bind (fail closed)",
+            )
+            parser.add_argument(
+                "--tinker-sampling-max-active-subgenerations",
+                type=int,
+                default=64,
+                help="Global cap on concurrently executing sampling sub-generations across ALL "
+                "SDK clients (one request counts num_samples). Submissions over the cap get a "
+                "retryable 429 before consuming their identity, and the router transport holds "
+                "the same hard bound; the SDK's per-client limit of 64 never bounded the "
+                "aggregate (default: 64, validated on H200)",
+            )
+            parser.add_argument(
+                "--tinker-sampling-max-context",
+                type=int,
+                default=None,
+                help="Engine context limit (tokens) the tinker frontend preflights sample "
+                "requests against: prompt + max_tokens over the limit is a typed 400 before "
+                "the seq identity is consumed (the engine would otherwise silently truncate "
+                "the decode budget and return garbage). Default: --sglang-context-length when "
+                "set, else discovered from the router's /get_server_info on the first sample",
+            )
+            parser.add_argument(
+                "--tinker-session-idle-ttl",
+                type=float,
+                default=3600.0,
+                help="Seconds without a session heartbeat before the tinker frontend reaps the "
+                "session and its sampling sessions (the SDK heartbeats continuously while the "
+                "client lives). Old sampler ids then fail closed, so nothing a vanished client "
+                "executed can re-execute. <= 0 disables (default: 3600)",
+            )
+            parser.add_argument(
+                "--tinker-future-unpolled-ttl",
+                type=float,
+                default=900.0,
+                help="Seconds without a retrieve_future poll before the tinker frontend treats "
+                "a pending future as orphaned: an orphaned sample's server-side generation is "
+                "cancelled (SDK future cancellation never reaches the engine on its own) and "
+                "the future resolves typed; orphaned training futures are polled on the "
+                "client's behalf so the ledger's unacked-results budget drains. <= 0 disables "
+                "(default: 900)",
+            )
+            parser.add_argument(
+                "--tinker-future-undelivered-ttl",
+                type=float,
+                default=3600.0,
+                help="Seconds a terminal-but-never-retrieved future result is retained before "
+                "the reaper evicts it to a fingerprint tombstone (a late retry then gets a "
+                "typed 410, never a silent re-execution). <= 0 disables (default: 3600)",
+            )
             return parser
 
         def add_router_arguments(parser):

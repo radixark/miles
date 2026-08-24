@@ -1,22 +1,24 @@
 ---
 title: "Multi-LoRA operation backend with Tinker compatibility"
-description: "Multi-adapter LoRA trained through explicit operations; stacked PR #2346 provides Tinker REST/SDK compatibility."
+description: "Multi-adapter LoRA trained through explicit operations with Tinker REST/SDK compatibility."
 # Generated from examples/multi_lora_operations/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---
 Serve many LoRA training runs on one shared base model through the
-`MultiLoraOperationBackend`. Clients drive training with explicit
-`forward_backward` / `optim_step` operations — no dataset, reward function,
-or batch schedule on the server. This PR exposes training operations through
-the controller's Ray API; stacked PR #2346 supplies the
-[tinker](https://tinker-docs.thinkingmachines.ai/)-compatible REST adapter.
+`MultiLoraOperationBackend`. The
+[tinker](https://tinker-docs.thinkingmachines.ai/)-compatible frontend maps the
+official SDK onto explicit `forward_backward` / `optim_step` operations and
+shared-engine sampling — no dataset, reward function, or batch schedule on the
+server.
 
 ```
-internal caller ──Ray operations──> MultiLoraOperationBackend (head node)
-                                      ├─ registration + operation ledger
-                                      ├─ adapter-slot execution
-                                      └─ serving plane ─────────> SGLang router
-
-Tinker client ──HTTP──> stacked protocol adapter (#2346) ────────┘
+official Tinker SDK ──HTTP──> Tinker protocol/frontend adapter
+                                  │
+internal caller ──Ray operations───────┘
+                                  ▼
+                    MultiLoraOperationBackend (head node)
+                         ├─ registration + operation ledger
+                         ├─ adapter-slot execution
+                         └─ serving plane ─────────> SGLang router
 trainer ranks <──Ray── driver loop (train_multi_lora_operations.py)
 ```
 
@@ -42,6 +44,14 @@ Key flags:
 | `--multi-lora-api-port` | control-plane API port for runtime adapter registration |
 | `--tinker-max-coalesce-wait-s` | how long one train call coalesces additional ready client batches |
 | `--tinker-max-empty-wait-s` | idle-queue yield back to the control phase (keep this small) |
+| `--tinker-frontend` | serve the official tinker SDK REST protocol (`/api/v1`) on the controller HTTP server (requires `--tinker-backend`) |
+| `--tinker-api-key` | X-API-Key the frontend requires (prefer `$MILES_TINKER_API_KEY` — a CLI flag shows in the process list); mandatory for a non-loopback bind |
+
+The operator plane (`/adapter_runs*`, `/info`) accepts loopback peers only,
+whatever the bind: the SDK key is a client credential and never grants the
+routes that read server-local YAML files, choose save paths, or deregister
+tenants. `/health` is liveness (the socket is up); `/api/v1/healthz` is
+readiness and answers 503 until the driver reports the trainer exists.
 
 ### Activation recompute (memory saving)
 
@@ -114,12 +124,105 @@ diluting the displayed loss. Guard the division: weights are arbitrary
 finite floats, so the sum can be zero or negative.
 
 Operation states: `QUEUED → CLAIMED → SUCCEEDED | FAILED(user|server) | CANCELLED`;
-poll `get_operation`, then `ack_operation` to release the record. In v1 these
-verbs are the controller actor's Ray API (registration/status are the only
-HTTP routes); backpressure raises a retryable `OperationBackpressure` — the
-future tinker HTTP frontend maps it to 429 + Retry-After, never to a 4xx the
-SDK treats as fatal. Deregistering fences every open operation of that
-registration as `FAILED(user)`.
+poll `get_operation`, then `ack_operation` to release the record. These verbs
+are the controller actor's Ray API; the tinker frontend drives them over
+HTTP. Backpressure raises a retryable `OperationBackpressure` — the frontend
+maps it to 429 + Retry-After, never to a 4xx the SDK treats as fatal.
+Deregistering fences every open operation of that registration as
+`FAILED(user)`.
+
+Gradient-window poison: `optim_step` delimits a window of `forward_backward`
+operations. If any of them reached a terminal state without succeeding (a
+rejected chunk, an execution failure, a cancel), the window holds PARTIAL
+gradients — the window's `optim_step` executes as a discard (all ranks clear
+the slot's gradient sum), terminal-fails `FAILED(user)`, and moves neither
+the step clock nor the serving version. The consumed poison resets the
+window; resubmit the batch and step again.
+
+## Tinker SDK frontend (tinker==0.24.1 JSON subset)
+
+With `--tinker-frontend` the controller's HTTP server also speaks the REST
+protocol of the official [`tinker`](https://pypi.org/project/tinker/) SDK —
+exactly the **`tinker==0.24.1` JSON core-loop subset** (wheel source and
+captured traffic; pure JSON, no protobuf: `/api/v1/client/config` pins the
+SDK to its own default JSON path). Other SDK versions are rejected at
+bootstrap (`/client/config` and `create_session` fail fast on the reported
+`sdk_version`): 0.25+ switches `forward_backward` to protobuf, and the
+current cookbook's canonical final checkpoint needs named sampler
+checkpoints — neither is served here, so this is NOT "current
+Tinker/cookbook compatible". An unmodified 0.24.1 client drives training
+and sampling:
+
+```python
+import tinker
+sc = tinker.ServiceClient(base_url="http://127.0.0.1:8068", api_key="tml-...")
+tc = sc.create_lora_training_client(base_model=..., rank=32)
+tc.forward_backward(data, "cross_entropy")
+tc.optim_step(tinker.types.AdamParams(learning_rate=1e-4)).result()
+sampler = tc.save_weights_and_get_sampling_client()
+future = sampler.sample(                   # sample()/sample_async() submit /api/v1/asample;
+    prompt=tinker.types.ModelInput.from_ints(prompt_tokens),
+    num_samples=4,
+    sampling_params=tinker.types.SamplingParams(max_tokens=128, temperature=0.7),
+)
+response = future.result()                 # .sequences[i].tokens / .logprobs / .stop_reason
+```
+
+Mapping: one training client = one registration (`create_model` registers,
+`unload_model` deregisters), and every operation is pinned to its
+`(name, registration_id)` — a stale handle fences instead of binding to a
+same-name successor; every training verb forwards its SDK `seq_id` as the
+registration ordinal (chunks posted out of order gap-buffer); futures poll
+`/api/v1/retrieve_future` and terminal bodies replay until delivered (an
+evicted delivered result leaves a fingerprint tombstone that answers a typed
+410 — the 0.24.1 SDK surfaces it as a retryable "promise expired", it does
+not re-run the original request); `save_state` mints `tinker://` paths
+(resolved from an in-memory catalog; failures echo the public URI, not the
+trainer filesystem); the ephemeral `save_weights_and_get_sampling_client`
+publish binds `(name, registration_id, serving_version)` and samples through
+the sglang router — a republish makes older sampling clients fail loud, and
+the version is re-checked after generation so a publish landing mid-flight
+fails the in-flight sample instead of returning cross-version output (the
+identity is versioned, not leased: a publish committing between that check
+and delivery is a documented residual race). Frontend rejections on a spent
+`seq_id` become terminal `FAILED(user)` futures so the ordinal is still
+consumed — bounded by the same unacked-results budget as every other record
+(429 past it).
+
+Frontend-level v1 rejections (beyond the backend matrix): non-0.24.x SDK
+versions, LoRA `seed` and per-module `train_*` flags (deployment-wide),
+weights-only restore (`load_state` / `create_training_client_from_state` —
+the backend restores the full training state; use the `_with_optimizer`
+variants), named persistent sampler checkpoints
+(`save_weights_for_sampler(name)` / `create_sampling_client(model_path=...)`),
+`ttl_seconds` (checkpoint/sampler TTL expiry is not implemented),
+`topk_prompt_logprobs`, sparse-CSR tensors, and negative
+token ids anywhere (targets, inputs, prompts, stop tokens). A sampling
+`seed` maps to sglang `sampling_seed`, offset per sample so
+`num_samples > 1` stays diverse. `prompt_logprobs` maps to sglang
+`logprob_start_len=0` on the same generate (the engine scores the prompt
+natively; position 0 has no context and returns null) — this serves both
+`sample(include_prompt_logprobs=True)` and the SDK's `compute_logprobs()`,
+which the 0.24.1 wheel sends as a 1-sample, 1-token generation.
+
+Sampling architecture: `/asample` returns its future immediately and a
+background task posts one router `/generate` per sample, carrying the
+server-derived serving identity (`rid`/`lora_path`/`extra_key` are never
+client-controllable — the wire models drop unknown fields and the sglang
+params are rebuilt from an allowlist). SGLang's continuous batching is the
+only sampling batcher: the frontend never coalesces prompts, and the
+training-operation scheduler (`MultiLoraOperationBatchFn`) never sees a sampling
+request. The legacy datasource rollout pipeline
+(`RolloutManager.generate()`: datasets, rewards, training-data conversion)
+is not on this path — the frontend shares only the router the rollout
+engines already serve.
+
+Trust boundary (v1): the frontend authenticates clients and bounds aggregate
+active sub-generations, rejects one request whose `num_samples` exceeds that
+capacity, and preflights `prompt + max_tokens` against the discovered engine
+limit. It still does not validate token ids against the vocabulary upper bound
+or enforce request-body/output-byte quotas. Run it loopback/VPN-facing for
+trusted clients; per-tenant quotas are future work.
 
 ## v1 compatibility matrix
 
@@ -127,7 +230,9 @@ Supported: text-only input; the synchronous training loop; 1-D shifted
 targets; `loss_fn ∈ {cross_entropy, importance_sampling, ppo}` (per-op clip
 config); per-call AdamParams; multi-chunk gradient accumulation with
 independent `optim_step`; latest-only sampler weights behind the publish
-barrier; named immutable `save_state` / `load_state` (create-from-checkpoint
+barrier; prompt logprobs (`compute_logprobs()` /
+`sample(include_prompt_logprobs=True)`, one sub-generation of admission
+weight); named immutable `save_state` / `load_state` (create-from-checkpoint
 included, shape-fenced); optional `num_step` auto-retirement.
 
 Explicitly rejected (boundary error, never a silent fallback): multimodal

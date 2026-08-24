@@ -1,3 +1,30 @@
+"""Per-registration ledger for the Multi-LoRA operation backend.
+
+Clients push protocol-neutral operations; data-bearing kinds ride the rollout
+selection path through the queue child rollout fn, data-less kinds execute in
+the driver's control phase. One registration is strictly serialized: an
+operation is claimable only when every earlier operation reached a terminal
+state, which carries the client's per-model ordering end to end.
+
+Arrival may be OUT OF ORDER (the tinker SDK deliberately posts the first
+chunk of a large forward_backward last): operations buffer by ordinal and a
+gap below the head blocks claims until it fills. Ordinals are consecutive
+integers starting at 1 per registration.
+NOTE(frontend): the tinker HTTP frontend forwards the SDK's per-model
+seq_id verbatim as the ordinal (the counters are the same contract), so
+this gap buffer IS the frontend's reorder point — out-of-order chunk
+arrival lands here by design. A submission the frontend rejects still
+consumes its ordinal via record_rejected (terminal on arrival), keeping
+the sequence gap-free.
+
+Retries are fingerprinted: re-enqueueing a known operation_id with an
+identical (kind, payload) returns the original operation; a different
+fingerprint is a conflict error, never silently swallowed.
+
+All mutations run inside the controller actor between awaits, so ledger
+methods are synchronous and atomic by construction.
+"""
+
 import hashlib
 import json
 import logging
@@ -226,6 +253,74 @@ class OperationLedger:
             kind=OperationKind(kind),
             payload=payload or {},
             fingerprint=fingerprint,
+        )
+        queue.insert(op)
+        self.by_id[operation_id] = op
+        return op.view()
+
+    def record_rejected(
+        self,
+        operation_id: str,
+        name: str,
+        registration_id: str,
+        ordinal: int,
+        kind: str,
+        payload: dict | None,
+        error: str,
+    ) -> dict:
+        """Consume an ordinal with an operation born terminal FAILED(user).
+
+        A submission rejected at the boundary (bad payload, unsupported
+        feature) must still fill its slot in the arrival sequence: the client
+        has already spent the ordinal and moved on, so refusing to record it
+        would leave a gap no retry ever fills — every later operation of the
+        registration would buffer forever. Identity rules match ``enqueue``
+        (idempotent on an identical retry, conflict on anything else). The
+        record bypasses the PENDING cap (terminal on arrival, it never occupies
+        execution capacity) but still answers to the unacked-results budget —
+        born-terminal records hold result memory, and an invalid-request flood
+        must backpressure like any other unretrieved pile-up. The one exception
+        is a true hole-filler, whose refusal could never clear (the buffered
+        tail above it stays unclaimable, so no capacity would ever free)."""
+        fingerprint = payload_fingerprint(kind, payload)
+        if (existing := self.by_id.get(operation_id)) is not None:
+            if (
+                existing.fingerprint != fingerprint
+                or existing.tenant != (name, registration_id)
+                or existing.ordinal != ordinal
+            ):
+                raise ValueError(
+                    f"operation '{operation_id}' already exists with different content; "
+                    "retries must resend the identical request"
+                )
+            return existing.view()
+
+        queue = self.queues.setdefault((name, registration_id), _RegistrationQueue())
+        if queue.fenced:
+            raise ValueError(f"registration '{name}' ({registration_id[:8]}) is retired; operations are fenced")
+        if ordinal < 1:
+            raise ValueError(f"operation '{operation_id}' ordinal must be >= 1, got {ordinal}")
+        if (holder := queue.by_ordinal.get(ordinal)) is not None:
+            raise ValueError(
+                f"ordinal {ordinal} already taken by operation '{holder.operation_id}'; "
+                "per-registration ordinals are unique and consecutive"
+            )
+        if queue.unacked_terminal_count() >= self.max_unacked_results and not queue.fills_blocking_gap(ordinal):
+            raise OperationBackpressure(
+                f"registration '{name}' holds {self.max_unacked_results} unacknowledged results; ack or deregister"
+            )
+        op = Operation(
+            operation_id=operation_id,
+            name=name,
+            registration_id=registration_id,
+            ordinal=ordinal,
+            kind=OperationKind(kind),
+            # The payload was rejected — only its fingerprint matters (retry identity).
+            payload={},
+            fingerprint=fingerprint,
+            state=OperationState.FAILED,
+            error=error,
+            error_category="user",
         )
         queue.insert(op)
         self.by_id[operation_id] = op

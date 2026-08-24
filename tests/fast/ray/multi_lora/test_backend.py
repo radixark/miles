@@ -404,6 +404,30 @@ def test_advertised_host_is_the_bind_host():
     assert AdapterRunControlServer(None, host="127.0.0.1").advertised_host == "127.0.0.1"
 
 
+class TestRejectOperation:
+    def test_rejects_into_the_ledger_only_for_live_registrations(self):
+        backend = ready_backend()
+        view = backend.reject_operation("X", "op1", 1, "optim_step", {"adam_params": {}}, "unsupported")
+        assert view["state"] == "FAILED" and view["error_category"] == "user"
+        backend.enqueue_operation("X", "op2", 2, "forward_backward", fb_payload())
+        assert backend.operations.claim_data_operation("X", view["registration_id"])["operation_id"] == "op2"
+        backend.registry.deregister("X")
+        with pytest.raises(ValueError, match="not accepting operations"):
+            backend.reject_operation("X", "op3", 3, "optim_step", {}, "late")
+
+    def test_reject_from_a_stale_handle_never_lands_on_a_successor(self):
+        backend = ready_backend()
+        rid1 = backend.registry.find("X").registration_id
+        backend.registry.deregister("X")
+        backend.registry.retire_adapters()
+        backend.registry.free_slot("X")
+        register(backend, "X")
+        rid2 = backend.registry.records["X"].registration_id
+        with pytest.raises(ValueError, match="fenced"):
+            backend.reject_operation("X", "op1", 1, "optim_step", {}, "bad", expected_registration_id=rid1)
+        assert backend.operations.queue_view("X", rid2) == []
+
+
 class TestGapTimeoutSurface:
     def stalled_backend(self, timeout=30.0):
         backend = ready_backend()

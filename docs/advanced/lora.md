@@ -308,7 +308,7 @@ broadcast, PP1, THD, Adam, and no train offload. Shared-outer expert adapters ar
 unsupported, and MoE expert adapters cannot use FP8/FP4 experts.
 
 Native multi-LoRA is not implied by the native single-adapter work: both current
-`main` and the Tinker-oriented branch below still build multi-LoRA through
+`main` and the operation-backend branch below still build multi-LoRA through
 Megatron-Bridge. Native multi-LoRA is tracked separately in
 [issue #2141](https://github.com/radixark/miles/issues/2141).
 
@@ -355,7 +355,8 @@ are strictly serialized per registration, while idempotent retries, gap-buffered
 arrival, acknowledgements, and backpressure make execution retry-safe and
 order-safe. A registration-scoped serving identity prevents an old request from
 using a slot after that slot has been reassigned. Authenticated remote access is
-the responsibility of the future frontend, not the Ray operation API in #2273.
+provided by the stacked Tinker frontend in #2346; it is not part of the Ray
+operation API in #2273.
 
 The v1 scope in the PR is deliberately narrow: text-only synchronous training,
 one shared base model, shifted 1-D targets, `cross_entropy`, importance-sampling,

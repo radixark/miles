@@ -133,7 +133,9 @@ def _mock_megatron_environment():
         _stub_module("miles.backends.megatron_utils.model_provider", {"get_model_provider_func": MagicMock()})
         yield
     finally:
-        sys.modules.clear()
+        for name in [n for n in sys.modules if n not in original_modules]:
+            if name.split(".")[0] in ("miles", "megatron", "sglang"):
+                del sys.modules[name]
         sys.modules.update(original_modules)
 
 
