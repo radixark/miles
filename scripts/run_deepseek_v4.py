@@ -566,9 +566,7 @@ def _train(args: ScriptArgs):
         sglang_dp_size = 32
         sglang_ep_size = 32
     elif args.num_gpus_per_node == 4:
-        # GB300: tp8 engines spanning 2 nodes (NVLink domain). Halves the per-rank
-        # memory-saver host shadow of the weights; tp4 engines OOM host RAM when
-        # the colocated training actors load.
+        # GB300, use tp=8. tp=4 causes CPU OOM when colocate
         sglang_world_size = 8
         sglang_tp_size = 8
         sglang_dp_size = 1
