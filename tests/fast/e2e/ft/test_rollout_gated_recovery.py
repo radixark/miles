@@ -335,8 +335,7 @@ async def test_the_observed_sequence_satisfies_the_soak_recovery_witness(harness
     await harness.open_weight_update_window()
     log.observe(list((await harness.observe()).values()))
 
-    assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 1
-    assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {}
+    assert views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0.0) == {}
 
 
 async def test_the_witness_rejects_a_replacement_that_never_reaches_the_router(harness: _Harness) -> None:
@@ -351,5 +350,5 @@ async def test_the_witness_rejects_a_replacement_that_never_reaches_the_router(h
     await harness.open_weight_update_window(mark_weights_ready=False)
     log.observe(list((await harness.observe()).values()))
 
-    assert views.compute_num_completed_recoveries(log.events, cell_type="rollout") == 0
-    assert views.compute_cells_with_unfinished_recovery(log.events, cell_type="rollout") == {_CELL_IDS[0]: 1}
+    offenders = views.compute_cells_not_serving_after_injection(log.events, cell_type="rollout", grace_seconds=0.0)
+    assert set(offenders) == {_CELL_IDS[0]}
