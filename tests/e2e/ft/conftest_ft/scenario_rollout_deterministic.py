@@ -25,7 +25,7 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import ROLLOUT_CELL_TYPE, create_cell_fault_forms
 from tests.e2e.ft.conftest_ft.fault_injection.views import compute_injection_times, compute_num_injections
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
-from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_every_rollout_injection_recovered
+from tests.e2e.ft.conftest_ft.scenario_random_crash import assert_rollout_cells_served_after_injection
 
 from miles.utils.external_utils import command_utils
 from miles.utils.misc import MutableBox
@@ -118,7 +118,7 @@ def _inject_rollout_faults(
         compute_num_injections(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
         context=f"{TEST_NAME} rollout cells",
     )
-    assert_every_rollout_injection_recovered(injector)
+    assert_rollout_cells_served_after_injection(injector)
     _assert_injections_spread_over_rollouts(injector, dump_dir=dump_dir)
 
 
