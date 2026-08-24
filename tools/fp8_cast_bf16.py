@@ -11,8 +11,6 @@ from param_name_remap import get_param_name_remap
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
-MXFP8_BLOCK_SIZE = 32
-
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -49,7 +47,7 @@ def _is_mxfp8_checkpoint(config: dict) -> bool:
 
     weight_block_size = quantization_config.get("weight_block_size")
     scale_fmt = quantization_config.get("scale_fmt")
-    if weight_block_size != [1, MXFP8_BLOCK_SIZE] or scale_fmt != "ue8m0":
+    if weight_block_size != [1, 32] or scale_fmt != "ue8m0":
         raise ValueError(
             "Unsupported MXFP8 format: expected weight_block_size=[1, 32] and "
             f"scale_fmt='ue8m0', got weight_block_size={weight_block_size} and scale_fmt={scale_fmt!r}"
@@ -128,8 +126,6 @@ def main(fp8_path, bf16_path):
                     # Get scale_inv from the correct file
                     scale_inv = get_tensor(scale_inv_name)
                 except KeyError:
-                    if mxfp8_checkpoint:
-                        raise ValueError(f"Missing scale_inv tensor for MXFP8 weight {weight_name}") from None
                     print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
                     new_state_dict[weight_name] = weight
                 else:
