@@ -57,61 +57,43 @@ class TestComputeVerifierReward:
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_agreeing_with_a_right_solver_is_the_only_full_credit_case(self, verifier_correct):
         """The solver was right and the verifier said so, so its own answer never enters the score."""
-        assert (
-            solver_verifier._compute_verifier_reward(
-                solver_correct=True, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
-            )
-            == 1.0
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=True, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
+        ) == (1.0, "right_solver_agreed")
 
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_calling_a_right_solver_wrong_scores_zero(self, verifier_correct):
         """A false accusation is worthless however good the verifier's replacement answer is."""
-        assert (
-            solver_verifier._compute_verifier_reward(
-                solver_correct=True, verdict=_Verdict.WRONG, verifier_correct=verifier_correct
-            )
-            == 0.0
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=True, verdict=_Verdict.WRONG, verifier_correct=verifier_correct
+        ) == (0.0, "right_solver_called_wrong")
 
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_agreeing_with_a_wrong_solver_scores_zero(self, verifier_correct):
         """Endorsing a wrong solution is the failure the verifier exists to avoid."""
-        assert (
-            solver_verifier._compute_verifier_reward(
-                solver_correct=False, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
-            )
-            == 0.0
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=False, verdict=_Verdict.AGREE, verifier_correct=verifier_correct
+        ) == (0.0, "wrong_solver_agreed")
 
     def test_catching_a_wrong_solver_without_fixing_it_scores_half(self):
         """Spotting the error is worth partial credit even when the replacement answer is wrong."""
-        assert (
-            solver_verifier._compute_verifier_reward(
-                solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=False
-            )
-            == 0.5
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=False
+        ) == (0.5, "wrong_solver_caught_not_fixed")
 
     def test_catching_a_wrong_solver_and_fixing_it_scores_full(self):
         """Both halves of the verifier's job were done."""
-        assert (
-            solver_verifier._compute_verifier_reward(
-                solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=True
-            )
-            == 1.0
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=False, verdict=_Verdict.WRONG, verifier_correct=True
+        ) == (1.0, "wrong_solver_caught_and_fixed")
 
     @pytest.mark.parametrize("solver_correct", [False, True])
     @pytest.mark.parametrize("verifier_correct", [False, True])
     def test_an_unparseable_verdict_scores_zero(self, solver_correct, verifier_correct):
         """A verdict nobody can read teaches the solver nothing, whatever the verifier meant."""
-        assert (
-            solver_verifier._compute_verifier_reward(
-                solver_correct=solver_correct, verdict=None, verifier_correct=verifier_correct
-            )
-            == 0.0
-        )
+        assert solver_verifier._compute_verifier_score(
+            solver_correct=solver_correct, verdict=None, verifier_correct=verifier_correct
+        ) == (0.0, "invalid_verdict")
 
 
 class TestParseVerdict:
@@ -297,22 +279,28 @@ class TestGenerate:
         result = await _run(monkeypatch, solver_response="#### 18", verifier_response="Checks out.\nVERDICT: AGREE")
 
         solver_sample, verifier_sample = result.samples
-        assert solver_sample.reward == 1.0
-        assert verifier_sample.reward == 1.0
+        assert solver_sample.reward == {"reward_value": 1.0, "outcome": "solver_correct"}
+        assert verifier_sample.reward == {"reward_value": 1.0, "outcome": "right_solver_agreed"}
 
     async def test_a_wrong_solver_corrected_by_the_verifier_rewards_only_the_verifier(self, monkeypatch):
         """The solver is scored against the label, the verifier against what it did about the solver."""
         result = await _run(monkeypatch, solver_response="#### 17", verifier_response="VERDICT: WRONG\n#### 18")
 
         solver_sample, verifier_sample = result.samples
-        assert solver_sample.reward == 0.0
-        assert verifier_sample.reward == 1.0
+        assert solver_sample.reward == {"reward_value": 0.0, "outcome": "solver_wrong"}
+        assert verifier_sample.reward == {
+            "reward_value": 1.0,
+            "outcome": "wrong_solver_caught_and_fixed",
+        }
 
     async def test_a_wrong_solver_caught_but_not_fixed_rewards_half(self, monkeypatch):
         """The verifier's own answer is graded against the same ground truth."""
         result = await _run(monkeypatch, solver_response="#### 17", verifier_response="VERDICT: WRONG\n#### 16")
 
-        assert result.samples[1].reward == 0.5
+        assert result.samples[1].reward == {
+            "reward_value": 0.5,
+            "outcome": "wrong_solver_caught_not_fixed",
+        }
 
     async def test_a_run_naming_one_policy_is_refused(self, monkeypatch):
         """This example needs a solver and a verifier, and it must not silently train one of them twice."""
