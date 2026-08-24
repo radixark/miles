@@ -31,6 +31,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_fp8: bool = False
     train_mxfp8: bool = False
     train_nvfp4: bool = False
+    train_nvfp4_qat: bool = False
     enable_megatron_bridge: bool = False
     enable_mis: bool = False
     # TODO improve, should be able to override more easily
@@ -50,9 +51,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
             sum((self.rollout_fp8, self.rollout_mxfp8, self.rollout_int4, self.rollout_nvfp4)) <= 1
         ), "only one rollout precision mode can be enabled"
         assert (
-            sum((self.train_fp8, self.train_mxfp8, self.train_nvfp4)) <= 1
+            sum((self.train_fp8, self.train_mxfp8, self.train_nvfp4, self.train_nvfp4_qat)) <= 1
         ), "only one train precision mode can be enabled"
-        if any((self.rollout_mxfp8, self.rollout_nvfp4, self.train_mxfp8, self.train_nvfp4)):
+        assert not self.train_nvfp4_qat or self.rollout_nvfp4, "NVFP4 QAT requires NVFP4 rollout"
+        if any(
+            (
+                self.rollout_mxfp8,
+                self.rollout_nvfp4,
+                self.train_mxfp8,
+                self.train_nvfp4,
+                self.train_nvfp4_qat,
+            )
+        ):
             assert self.hardware in ("B200", "B300", "GB200", "GB300"), "mxfp8 and nvfp4 only support Blackwell GPUs"
 
 
@@ -219,6 +229,8 @@ def execute(args: ScriptArgs):
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+    elif args.train_nvfp4_qat:
+        misc_env_vars["OPEN_TRAINING_NVFP4_FAKE_QAT_FLAG"] = "1"
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:
