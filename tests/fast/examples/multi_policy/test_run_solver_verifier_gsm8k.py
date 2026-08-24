@@ -56,6 +56,8 @@ class TestBuildTrainArgs:
             "--rollout-temperature": "1",
             "--global-batch-size": "256",
             "--dynamic-sampling-filter-path": "miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std",
+            "--reward-key": "reward_value",
+            "--log-reward-category": "outcome",
             "--pause-generation-mode": "in_place",
             "--optimizer": "adam",
             "--lr": "1e-6",
