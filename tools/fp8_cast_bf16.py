@@ -11,6 +11,8 @@ from param_name_remap import get_param_name_remap
 from safetensors.torch import load_file, save_file
 from tqdm import tqdm
 
+MXFP8_BLOCK_SIZE = 32
+
 
 @triton.jit
 def weight_dequant_kernel(x_ptr, s_ptr, y_ptr, M, N, BLOCK_SIZE: tl.constexpr):
@@ -40,19 +42,47 @@ def weight_dequant(x: torch.Tensor, s: torch.Tensor, block_size: int = 128) -> t
     return y
 
 
+def _is_mxfp8_checkpoint(config: dict) -> bool:
+    quantization_config = config.get("quantization_config") or {}
+    if quantization_config.get("quant_method") != "mxfp8":
+        return False
+
+    weight_block_size = quantization_config.get("weight_block_size")
+    scale_fmt = quantization_config.get("scale_fmt")
+    if weight_block_size != [1, MXFP8_BLOCK_SIZE] or scale_fmt != "ue8m0":
+        raise ValueError(
+            "Unsupported MXFP8 format: expected weight_block_size=[1, 32] and "
+            f"scale_fmt='ue8m0', got weight_block_size={weight_block_size} and scale_fmt={scale_fmt!r}"
+        )
+    return True
+
+
 def main(fp8_path, bf16_path):
     torch.set_default_dtype(torch.bfloat16)
     os.makedirs(bf16_path, exist_ok=True)
-    os.system("cp -rf " + fp8_path + "/config.json " + bf16_path)
     os.system("cp -rf " + fp8_path + "/*.py " + bf16_path)
     os.system("cp -rf " + fp8_path + "/tokenizer* " + bf16_path)
     os.system("cp -rf " + fp8_path + "/chat_template* " + bf16_path)
+    config_path = os.path.join(fp8_path, "config.json")
+    with open(config_path) as f:
+        config = json.load(f)
+    mxfp8_checkpoint = _is_mxfp8_checkpoint(config)
+    if mxfp8_checkpoint:
+        from triton_kernels.numerics_details.mxfp import upcast_from_mxfp
+
+    output_config = dict(config)
+    output_config.pop("quantization_config", None)
+    output_config["torch_dtype"] = "bfloat16"
+    with open(os.path.join(bf16_path, "config.json"), "w") as f:
+        json.dump(output_config, f, indent=2)
+        f.write("\n")
+
     model_index_file = os.path.join(fp8_path, "model.safetensors.index.json")
     with open(model_index_file) as f:
         model_index = json.load(f)
     weight_map_raw = model_index["weight_map"]
 
-    remap = get_param_name_remap(os.path.join(fp8_path, "config.json"), weight_map_raw)
+    remap = get_param_name_remap(config_path, weight_map_raw)
     weight_map_renamed = {}
     raw_name_by_renamed = {}
     for raw_name, file_name in weight_map_raw.items():
@@ -98,11 +128,18 @@ def main(fp8_path, bf16_path):
                     # Get scale_inv from the correct file
                     scale_inv = get_tensor(scale_inv_name)
                 except KeyError:
+                    if mxfp8_checkpoint:
+                        raise ValueError(f"Missing scale_inv tensor for MXFP8 weight {weight_name}") from None
                     print(f"Warning: Missing scale_inv tensor for {weight_name}, skipping conversion")
                     new_state_dict[weight_name] = weight
                 else:
                     fp8_weight_names.append(weight_name)
-                    new_state_dict[weight_name] = weight_dequant(weight, scale_inv.float())
+                    if mxfp8_checkpoint:
+                        new_state_dict[weight_name] = upcast_from_mxfp(
+                            weight, scale_inv, target_dtype=torch.bfloat16, axis=-1
+                        )
+                    else:
+                        new_state_dict[weight_name] = weight_dequant(weight, scale_inv.float())
             else:
                 new_state_dict[weight_name] = weight
 
