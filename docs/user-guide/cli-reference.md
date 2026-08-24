@@ -344,6 +344,11 @@ contract, session behavior, and model-family selection.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--partial-rollout` | flag | off | Resume aborted rollouts in the next iteration. |
+| `--fully-async` | flag | off | Run fully async rollout: a persistent worker keeps generating while the trainer drains completed groups. Evaluation keeps the standard rollout function. Requires `train_async.py`. |
+| `--async-unused-samples-handler` | enum | `drop` | What to do with a finished group that fully async mode does not train on (aborted, or beyond `--max-weight-staleness`): `drop` discards it, `retry` recycles its prompts into the data source. Groups rejected by `--dynamic-sampling-filter-path` are always dropped. |
+| `--custom-async-data-buffer-path` | str | – | Custom `DataBuffer` subclass replacing the fully async finished-group buffer (see `miles/rollout/fully_async_data_buffer.py`). It takes over dataflow and staleness control, so the `--async-data-buffer-*` flags apply only if the class reads them. |
+| `--update-weights-interval` | int | `1` | Rollout steps between weight updates to the inference engines. |
+| `--pause-generation-mode` | enum | `retract` | How SGLang pauses in-flight requests during a weight update: `abort` terminates them, `retract` returns them to the waiting queue and recomputes their KV cache afterwards, `in_place` freezes them and resumes on the existing cache. Fully async rejects `abort`. |
 
 ### Logging
 
