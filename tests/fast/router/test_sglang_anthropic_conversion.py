@@ -17,9 +17,7 @@ _SGLANG_TESTS = (
 def test_sglang_anthropic_conversion_contract():
     sglang_source_root = Path(os.environ["SGLANG_SOURCE_ROOT"])
     sglang_repo_root = sglang_source_root.parent
-    missing_tests = [
-        str(path) for path in _SGLANG_TESTS if not (sglang_repo_root / path).is_file()
-    ]
+    missing_tests = [str(path) for path in _SGLANG_TESTS if not (sglang_repo_root / path).is_file()]
     assert not missing_tests, f"Missing SGLang Anthropic tests: {missing_tests}"
 
     env = os.environ.copy()
