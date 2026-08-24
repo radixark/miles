@@ -362,12 +362,13 @@ Architecture (external fault injection, not inside the training loop):
      a. GET /api/v1/cells, keeping only the targeted cell types
      b. Append that whole snapshot to the injector's event log, its only state
      c. Collect the cell kinds whose own schedule is due; stop here if none
-     d. Compute the genuinely-alive cells - reported Healthy, minus injected cells that have
-        not completed a down -> up cycle, minus rollout cells not currently Serving - and
-        defer unless a due kind has a spare replica
-     e. Draw a due kind, a cell of that kind and one of its fault forms - preferring a form the
-        log shows has never worked - apply it, record the attempt, then draw that kind's next
-        injection time
+     d. A due kind is ready only at a quiescent point: every replica of that kind present,
+        Healthy and (for rollout) Serving for 60 consecutive polls (~120s) - long enough to
+        outlast the ~95s stale-status window - and at least one spare replica to survive
+        the kill
+     e. Draw a ready kind, a cell of that kind and one of its fault forms - preferring a form
+        the log shows has never worked - apply it, record the attempt, reset that kind's
+        quiescence streak, then draw its next injection time
   3. inject_fault() runs on the actor's own ray concurrency group thread and kills the process,
      or the test layer deletes the pod on kubernetes
   4. The health checker notices by heartbeat timeout
@@ -380,8 +381,9 @@ Witnesses, counted per kind:
   train   -> >= 2 accepted actor injections, >= 2 healed cells across the
              CellReconfigureEvents, and every injected cell index paired with a healing of
              that same index - no debt left when training ends
-  rollout -> >= 2 accepted rollout injections, each paired per cell and in order with one
-             completed Serving -> (Suspended|Pending) -> Serving cycle
+  rollout -> >= 2 accepted rollout injections, and every injected cell observed Serving
+             at least once on a reading taken >= 120s after its last injection - late
+             enough that the ~95s stale-status window cannot have produced it
 
 Faults are random, so beyond the witnesses neither an exact sequence nor the end-state
 membership is asserted.
@@ -390,11 +392,12 @@ membership is asserted.
 - **Why per-kind schedules and counting**: each kind's cadence stays what it would be in a single-kind soak, and the trainer assertion reads only `actor` injections while the rollout one reads only `rollout` — a mixed soak cannot let one kind's crashes pay for the other's missing heal.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
-- **Why still-recovering cells are excluded**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica.
-- **A form that leaves its cell running**: `BaseFaultForm.harms_cell` is false for it, so the draw is recorded without retiring that cell from the live set; a form which replaces a run's orchestration script rather than crashing a replica would otherwise fire once and never again.
-- **Why a rollout spare must be `Serving`**: `Healthy` and even `Running` include a replacement that got weights but cannot answer requests yet. `Suspended` is not required in between — it lasts only `--mini-ft-controller-resume-delay` (10s by default), which a 2s poll can miss.
-- **Why poll faster than injections**: a crash → detect → heal cycle completing between two sparse injections must be seen, or its cell stays excluded from the live set forever.
+- **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-serving streak (~120s, the same bound the recovery witness uses) outlasts that window, so by the time a kind is ready again its readings are fresh and every replica really serves; the injector itself keeps no per-cell recovery state to corrupt. A failed injection attempt forfeits the streak too - the kill, not the response, may be what survived the failure.
+- **A form that leaves its cell running**: `BaseFaultForm.harms_cell` is false for it, so the draw is recorded without charging that cell a recovery; the reset quiescence streak alone paces the next injection.
+- **Why quiescence requires `Serving`, not just `Healthy`**: `Healthy` and even `Running` include a replacement that got weights but cannot answer requests yet, so a kind counting such a replica as recovered would be injected into mid-relaunch.
+- **Why quiescence counts replicas against the most ever seen**: a deleted pod vanishes from the listing instead of reading unhealthy, and the survivors all serve; only the missing replica says the kind is still recovering.
 - **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
+- **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
 - **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
 
 ### `scenario_realistic_gsm8k`

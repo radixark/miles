@@ -1,40 +1,12 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import dataclasses
-import enum
 from datetime import datetime
 from typing import Literal
 
-from tests.e2e.ft.conftest_ft.fault_injection.state import (
-    Event,
-    InjectionEvent,
-    ObservationsEvent,
-    ObservedCellState,
-    cell_is_alive,
-)
+from tests.e2e.ft.conftest_ft.fault_injection.state import Event, InjectionEvent, ObservationsEvent, ObservedCellState
 
-_RELAUNCH_STATES: tuple[ObservedCellState, ...] = (ObservedCellState.SUSPENDED, ObservedCellState.PENDING)
-
-
-def compute_genuinely_alive(events: list[Event], cells: list[dict]) -> list[dict]:
-    awaiting = compute_cells_awaiting_recovery(events)
-    return [c for c in cells if cell_is_alive(c) and c["metadata"]["name"] not in awaiting]
-
-
-def compute_cells_awaiting_recovery(events: list[Event]) -> set[str]:
-    state_of_cell_name: dict[str, _CellState] = {}
-    for event in events:
-        if isinstance(event, InjectionEvent):
-            if event.succeeded and event.harmed:
-                state_of_cell_name[event.cell_name] = _CellState.INJECTED
-            continue
-        for name, state in list(state_of_cell_name.items()):
-            info = event.cell_infos.get(name)
-            if info is None or not info.alive:
-                state_of_cell_name[name] = _CellState.RECOVERING
-            elif state is _CellState.RECOVERING:
-                del state_of_cell_name[name]
-    return set(state_of_cell_name)
+STALE_STATUS_GRACE_SECONDS: float = 120.0
 
 
 def compute_num_injections(events: list[Event], *, cell_type: str | None = None, harmed_only: bool = True) -> int:
@@ -64,18 +36,40 @@ def compute_num_successful_injections_of_form(events: list[Event], *, form_name:
     )
 
 
-def compute_num_completed_recoveries(events: list[Event], *, cell_type: str | None = None) -> int:
-    return sum(
-        _compute_recovery_tally(cell_events).num_completed
-        for cell_events in _compute_matching_cell_events(events, cell_type=cell_type, harmed_only=True).values()
-    )
+def compute_cells_not_serving_after_injection(
+    events: list[Event], *, cell_type: str, grace_seconds: float | None = None
+) -> dict[str, list[str]]:
+    if grace_seconds is None:
+        grace_seconds = STALE_STATUS_GRACE_SECONDS
 
+    cell_type_of_name = _compute_cell_type_of_name(events)
+    last_injection_time_of_name: dict[str, datetime] = {
+        event.cell_name: event.timestamp
+        for event in events
+        if isinstance(event, InjectionEvent)
+        and event.succeeded
+        and event.harmed
+        and cell_type_of_name.get(event.cell_name) == cell_type
+    }
 
-def compute_cells_with_unfinished_recovery(events: list[Event], *, cell_type: str | None = None) -> dict[str, int]:
+    served: set[str] = set()
+    for event in events:
+        if not isinstance(event, ObservationsEvent):
+            continue
+        for name, injected_at in last_injection_time_of_name.items():
+            info = event.cell_infos.get(name)
+            if (
+                name not in served
+                and info is not None
+                and info.state is ObservedCellState.SERVING
+                and (event.timestamp - injected_at).total_seconds() >= grace_seconds
+            ):
+                served.add(name)
+
+    observed_states = compute_states_of_cell_name(events)
     return {
-        name: tally.num_unfinished
-        for name, cell_events in _compute_matching_cell_events(events, cell_type=cell_type, harmed_only=True).items()
-        if (tally := _compute_recovery_tally(cell_events)).num_unfinished
+        name: [one.value for one in observed_states.get(name, [])]
+        for name in sorted(set(last_injection_time_of_name) - served)
     }
 
 
@@ -123,11 +117,6 @@ def compute_states_of_cell_name(events: list[Event]) -> dict[str, list[ObservedC
     }
 
 
-class _CellState(enum.Enum):
-    INJECTED = enum.auto()  # we crashed it; the api server may still report it Healthy
-    RECOVERING = enum.auto()  # observed unhealthy; awaiting its return to Healthy
-
-
 @dataclasses.dataclass(frozen=True)
 class _CellEvent:
     kind: Literal["injected", "observed"]
@@ -166,37 +155,6 @@ def _compute_cell_type_of_name(events: list[Event]) -> dict[str, str]:
         if isinstance(event, ObservationsEvent):
             cell_type_of_name.update({name: info.cell_type for name, info in event.cell_infos.items()})
     return cell_type_of_name
-
-
-@dataclasses.dataclass(frozen=True)
-class _RecoveryTally:
-    num_completed: int
-    num_unfinished: int
-
-
-class _RecoveryStage(enum.Enum):
-    AWAITING_RELAUNCH = enum.auto()
-    AWAITING_SERVING = enum.auto()
-
-
-def _compute_recovery_tally(events: list[_CellEvent]) -> _RecoveryTally:
-    num_outstanding = 0
-    num_completed = 0
-    stage = _RecoveryStage.AWAITING_RELAUNCH
-    for event in events:
-        if event.kind == "injected":
-            num_outstanding += 1
-            stage = _RecoveryStage.AWAITING_RELAUNCH
-            continue
-        if num_outstanding == 0:
-            continue
-        if stage is _RecoveryStage.AWAITING_RELAUNCH and event.state in _RELAUNCH_STATES:
-            stage = _RecoveryStage.AWAITING_SERVING
-        elif stage is _RecoveryStage.AWAITING_SERVING and event.state is ObservedCellState.SERVING:
-            num_completed += num_outstanding
-            num_outstanding = 0
-            stage = _RecoveryStage.AWAITING_RELAUNCH
-    return _RecoveryTally(num_completed=num_completed, num_unfinished=num_outstanding)
 
 
 def _compute_distinct_states(events: list[_CellEvent]) -> list[ObservedCellState]:
