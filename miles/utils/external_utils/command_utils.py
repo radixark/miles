@@ -13,6 +13,7 @@ import socket
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from typing import get_args
 
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
@@ -407,3 +408,15 @@ def detect_hardware() -> str:
                 detected = None
     assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"
     return detected
+
+
+def resolve_hardware(config: ExecuteTrainConfig) -> str:
+    """`auto` asks the node the launcher runs on; anything explicit overrides it."""
+    if config.hardware == "auto":
+        hardware = detect_hardware()
+        print(f"detected --hardware {hardware}")
+    else:
+        hardware = config.hardware
+    supported = get_args(config.__dataclass_fields__["hardware"].type)
+    assert hardware in supported, f"{type(config).__name__} has no verified profile for {hardware}"
+    return hardware

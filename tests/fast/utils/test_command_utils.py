@@ -1,4 +1,3 @@
-import ast
 import json
 import os
 import platform
@@ -7,7 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.launch_scripts.py_harness import iter_py_launch_scripts
+from tests.fast.launch_scripts.py_harness import launcher_hardware_literals
 from tests.fast.utils.command_recorder import record_commands
 
 import miles.utils.external_utils.command_utils as command_utils
@@ -634,14 +633,8 @@ class TestEncodePseudoFile:
 
 
 def _hardware_launchers_accept() -> set[str]:
-    """Every value any launcher's `--hardware` takes, minus the sentinel run_deepseek_v4 resolves itself."""
-    values = set()
-    for script in iter_py_launch_scripts():
-        for node in ast.walk(ast.parse(script.path.read_text())):
-            if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "hardware":
-                literal = node.annotation.slice
-                values.update(e.value for e in (literal.elts if isinstance(literal, ast.Tuple) else [literal]))
-    return values - {"auto"}
+    """Every value any launcher's `--hardware` takes, minus the sentinel that stands for "ask the node"."""
+    return set().union(*launcher_hardware_literals().values()) - {"auto"}
 
 
 class TestHardwareTables:
