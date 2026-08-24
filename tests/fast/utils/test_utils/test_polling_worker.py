@@ -47,6 +47,36 @@ class TestPollingWorker:
 
         assert not worker.is_running
 
+    def test_a_failure_on_the_worker_thread_is_rethrown_by_join(self) -> None:
+        """A worker that died on an exception must fail the caller instead of silently ending the polling."""
+
+        def fail(stop_event: threading.Event) -> None:
+            raise KeyError("missing label")
+
+        worker = PollingWorker(name=_WORKER_NAME, run=fail)
+        worker.start()
+
+        with pytest.raises(KeyError, match="missing label"):
+            worker.stop_and_join(timeout_seconds=_JOIN_TIMEOUT_SECONDS)
+
+    def test_a_join_that_times_out_does_not_rethrow_a_failure_yet(self) -> None:
+        """A still-running worker owns its exception slot, so a timed-out join must not read it early."""
+        release = threading.Event()
+
+        def fail_after_release(stop_event: threading.Event) -> None:
+            release.wait(timeout=_JOIN_TIMEOUT_SECONDS)
+            raise KeyError("late failure")
+
+        worker = PollingWorker(name=_WORKER_NAME, run=fail_after_release)
+        worker.start()
+
+        worker.join(timeout_seconds=0.01)
+        assert worker.is_running
+
+        release.set()
+        with pytest.raises(KeyError, match="late failure"):
+            worker.stop_and_join(timeout_seconds=_JOIN_TIMEOUT_SECONDS)
+
     def test_assert_not_running_raises_the_given_message_while_the_thread_is_alive(self) -> None:
         """The caller's message names which worker outlived its join, so it must reach the failure."""
         release = threading.Event()
