@@ -6,6 +6,7 @@ from tests.ci.ci_register import register_cuda_ci
 register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-b200", labels=["megatron"], disabled="Blackwell CI not supported")
 
 ARGS = ScriptArgs(
+    hardware="B200",
     rollout_mxfp8=True,
     train_mxfp8=True,
     ci_test=True,
