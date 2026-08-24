@@ -34,7 +34,9 @@ class Sample:
     # prompt
     prompt: str | list[dict[str, str]] = ""
     tokens: list[int] = field(default_factory=list)
-    multimodal_inputs: dict[str, Any] = None  # raw multimodal data, e.g. images, videos, etc.
+    multimodal_inputs: dict[str, Any] = None
+    rollout_video_sources: list[str] | None = None
+    rollout_prompt_ids: list[int] | None = None  # Tokenizer-only IDs paired with raw video for rollout.
     multimodal_train_inputs: dict[str, Any] = None  # processed multimodal data, e.g. pixel_values, etc.
     # response
     response: str = ""
@@ -247,10 +249,12 @@ class Sample:
         """Reset generated outputs so the original prompt can be re-sampled.
 
         Keeps identity / prompt fields (group_index, index, prompt, label,
-        multimodal_inputs, metadata, generate_function_path, routing_key) and
-        restores everything else to dataclass defaults.
+        multimodal_inputs, rollout_video_sources, metadata,
+        generate_function_path, routing_key) and restores everything else to
+        dataclass defaults.
         """
         self.tokens = []
+        self.rollout_prompt_ids = None
         self.multimodal_train_inputs = None
         self.response = ""
         self.response_length = 0

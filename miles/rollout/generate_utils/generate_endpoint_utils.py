@@ -9,29 +9,72 @@ import numpy as np
 import pybase64
 
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
+from miles.utils.processing_utils import (
+    call_processor,
+    encode_image_for_rollout_engine,
+    extract_multimodal_train_inputs,
+)
 from miles.utils.types import Sample
+
+
+def build_rollout_media_payload(
+    multimodal_inputs: dict[str, Any] | None,
+    video_sources: list[str] | None,
+) -> dict[str, list[str]]:
+    payload = {}
+    if images := (multimodal_inputs or {}).get("images"):
+        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in images]
+    if video_sources:
+        payload["video_data"] = video_sources
+    return payload
 
 
 # Make this an isolated function because users may want to compute their own
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
+    has_processor_inputs = bool(
+        state.processor
+        and sample.multimodal_inputs
+        and any(value is not None for value in sample.multimodal_inputs.values())
+    )
 
-    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
-        prompt_ids = processor_output["input_ids"][0]
-
-        # TODO shall we move it to other places? then can make this function immutable
-        sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
-
-        return prompt_ids
-    else:
+    if not has_processor_inputs:
         if not isinstance(prompt, str):
             prompt = state.tokenizer.apply_chat_template(
-                prompt, tokenize=False, add_generation_prompt=True, tools=tools
+                prompt,
+                tokenize=False,
+                add_generation_prompt=True,
+                tools=tools,
             )
 
+        sample.rollout_prompt_ids = None
         return state.tokenizer.encode(prompt, add_special_tokens=False)
+
+    if sample.rollout_video_sources:
+        if not isinstance(prompt, str):
+            prompt = state.tokenizer.apply_chat_template(
+                prompt,
+                tokenize=False,
+                add_generation_prompt=True,
+                tools=tools,
+            )
+
+        sample.rollout_prompt_ids = state.tokenizer.encode(
+            prompt,
+            add_special_tokens=False,
+        )
+    else:
+        sample.rollout_prompt_ids = None
+
+    processor_output = call_processor(state.processor, prompt, sample.multimodal_inputs)
+    prompt_ids = processor_output["input_ids"][0]
+    if hasattr(prompt_ids, "tolist"):
+        prompt_ids = prompt_ids.tolist()
+
+    # TODO shall we move it to other places? then can make this function immutable
+    sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
+
+    return prompt_ids
 
 
 def policy_uses_routing_key(args) -> bool:
@@ -54,6 +97,8 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
+    rollout_video_sources: list[str] | None = None,
+    rollout_input_ids: list[int] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -63,7 +108,7 @@ def compute_request_payload(
         return None, Sample.Status.TRUNCATED
 
     payload = {
-        "input_ids": input_ids,
+        "input_ids": rollout_input_ids if rollout_input_ids is not None else input_ids,
         "sampling_params": {**sampling_params, "max_new_tokens": max_new_tokens},
         "return_logprob": True,
         "return_routed_experts": args.use_rollout_routing_replay,
@@ -71,10 +116,37 @@ def compute_request_payload(
     }
     if lora_rollout_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    if image_data := (multimodal_inputs or {}).get("images"):
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    payload.update(build_rollout_media_payload(multimodal_inputs, rollout_video_sources))
 
     return payload, None
+
+
+def compute_rollout_input_ids(sample: Sample, input_ids: list[int], processor_prompt_ids: list[int]) -> list[int]:
+    if sample.rollout_prompt_ids is None:
+        return input_ids
+
+    return sample.rollout_prompt_ids + input_ids[len(processor_prompt_ids) :]
+
+
+def validate_video_prompt_expansion(sample: Sample, meta_info: dict[str, Any]) -> None:
+    """Ensure SGLang and the trainer expanded a compact video prompt identically."""
+    if sample.rollout_prompt_ids is None:
+        return
+
+    engine_prompt_tokens = meta_info.get("prompt_tokens")
+    if isinstance(engine_prompt_tokens, bool):
+        engine_prompt_tokens = None
+    try:
+        engine_prompt_tokens = int(engine_prompt_tokens)
+    except (TypeError, ValueError):
+        engine_prompt_tokens = -1
+
+    if engine_prompt_tokens != len(sample.tokens):
+        raise RuntimeError(
+            "engine/trainer video expansion mismatch: engine prompt is "
+            f"{engine_prompt_tokens} tokens, trainer expansion is "
+            f"{len(sample.tokens)}; frame sampling or timestamp conventions differ"
+        )
 
 
 async def update_sample_from_response(
@@ -83,6 +155,8 @@ async def update_sample_from_response(
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]
+
+    validate_video_prompt_expansion(sample, output["meta_info"])
 
     if x := output["meta_info"].get("output_token_logprobs"):
         new_response_tokens = [item[1] for item in x]

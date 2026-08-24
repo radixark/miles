@@ -44,6 +44,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     # ----------------------- Initial prompts -------------------------
 
+    if input.sample.rollout_video_sources:
+        # Video requests are single-turn only: this path sends the expanded
+        # ids with no video_data, so the engine would read video_pad tokens
+        # as ordinary context and generate against garbage.
+        raise NotImplementedError("video samples are single-turn only; multi-turn video is unsupported")
+
     prompt_tokens_ids = compute_prompt_ids_from_sample(input.state, sample, tools=tool_specs)
 
     sample.tokens = prompt_tokens_ids.copy()

@@ -19,7 +19,7 @@ pybase64
 pylatexenc
 pytest-asyncio
 pyyaml
-qwen_vl_utils # for VLM
+qwen_vl_utils>=0.0.14 # for VLM; video metadata support keeps trainer/rollout token expansion aligned
 ray[default]>=2.56.0
 ring_flash_attn; platform_system == "Linux"
 safetensors>=0.8.0  # samples-reply wire codec; malformed-payload exception contract validated on 0.8.0

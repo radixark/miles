@@ -6,6 +6,7 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
+    compute_rollout_input_ids,
     compute_routing_headers,
     update_sample_from_response,
 )
@@ -34,12 +35,24 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     else:
         input_ids = prompt_ids
 
+    rollout_input_ids = compute_rollout_input_ids(sample, input_ids, prompt_ids)
     payload, halt_status = compute_request_payload(
-        args, input_ids=input_ids, sampling_params=sampling_params, multimodal_inputs=sample.multimodal_inputs
+        args,
+        input_ids=input_ids,
+        rollout_input_ids=rollout_input_ids,
+        sampling_params=sampling_params,
+        multimodal_inputs=sample.multimodal_inputs,
+        rollout_video_sources=sample.rollout_video_sources,
     )
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
+
+    # Initialize training tokens from the EXPANDED prompt ids before the
+    # response lands: update_sample_from_response falls back to the payload's
+    # input_ids, which for video samples are the compact rollout ids.
+    if not sample.tokens:
+        sample.tokens = list(prompt_ids)
 
     output = await post(url, payload, headers=compute_routing_headers(args, sample))
     await update_sample_from_response(args, sample, payload=payload, output=output)
