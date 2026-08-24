@@ -621,6 +621,8 @@ def _train(args: ScriptArgs):
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
+        # Colocated multi-engine init can deadlock in the multimem all-gather rendezvous (sgl-project/sglang#36110).
+        "SGLANG_DISABLE_MULTIMEM_AG": "1",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
