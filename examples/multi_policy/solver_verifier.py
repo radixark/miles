@@ -59,12 +59,19 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     ground_truth = _extract_answer(solver_sample.label or "")
     solver_correct = _is_correct(solver_sample.response, ground_truth=ground_truth)
-    solver_sample.reward = 1.0 if solver_correct else 0.0
-    verifier_sample.reward = _compute_verifier_reward(
+    solver_sample.reward = {
+        "reward_value": 1.0 if solver_correct else 0.0,
+        "outcome": "solver_correct" if solver_correct else "solver_wrong",
+    }
+    verifier_reward, verifier_outcome = _compute_verifier_score(
         solver_correct=solver_correct,
         verdict=_parse_verdict(verifier_sample.response),
         verifier_correct=_is_correct(verifier_sample.response, ground_truth=ground_truth),
     )
+    verifier_sample.reward = {
+        "reward_value": verifier_reward,
+        "outcome": verifier_outcome,
+    }
 
     solver_sample.trainer_model_id = solver_model_id
     verifier_sample.trainer_model_id = verifier_model_id
@@ -90,15 +97,16 @@ def split_eval_data_by_policy(
     return False
 
 
-def _compute_verifier_reward(*, solver_correct: bool, verdict: _Verdict | None, verifier_correct: bool) -> float:
+def _compute_verifier_score(
+    *, solver_correct: bool, verdict: _Verdict | None, verifier_correct: bool
+) -> tuple[float, str]:
     if verdict is None:
-        return 0.0
+        return 0.0, "invalid_verdict"
     if solver_correct:
-        return 1.0 if verdict is _Verdict.AGREE else 0.0
-    else:
-        if verdict is _Verdict.AGREE:
-            return 0.0
-        return 1.0 if verifier_correct else 0.5
+        return (1.0, "right_solver_agreed") if verdict is _Verdict.AGREE else (0.0, "right_solver_called_wrong")
+    if verdict is _Verdict.AGREE:
+        return 0.0, "wrong_solver_agreed"
+    return (1.0, "wrong_solver_caught_and_fixed") if verifier_correct else (0.5, "wrong_solver_caught_not_fixed")
 
 
 def _parse_verdict(response: str) -> _Verdict | None:
