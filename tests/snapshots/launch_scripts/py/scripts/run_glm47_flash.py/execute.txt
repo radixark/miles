@@ -42,6 +42,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --swiglu
   --untie-embeddings-and-output-weights
   --position-embedding-type rope
+  --rope-type rope
   --no-position-embedding
   --normalization RMSNorm
   --norm-epsilon 1e-5

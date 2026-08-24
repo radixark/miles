@@ -284,7 +284,9 @@ def compute_log_probs(
     *,
     true_on_policy_mode: bool = False,
     vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
 ):
+    logits = _apply_sampling_mask(logits, sampling_mask, inplace=not true_on_policy_mode)
     if true_on_policy_mode:
         full_logits = _gather_true_on_policy_full_logits(logits, process_group, vocab_size=vocab_size)
         log_probs = torch.log_softmax(full_logits, dim=-1)
@@ -297,6 +299,21 @@ def compute_log_probs(
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
+
+
+def _apply_sampling_mask(
+    logits: torch.Tensor,
+    sampling_mask: torch.Tensor | None,
+    *,
+    inplace: bool = False,
+) -> torch.Tensor:
+    if sampling_mask is None:
+        return logits
+    if sampling_mask.shape != logits.shape:
+        raise ValueError(f"sampling mask shape {sampling_mask.shape} != logits shape {logits.shape}")
+    if inplace:
+        return logits.masked_fill_(~sampling_mask, float("-inf"))
+    return logits.masked_fill(~sampling_mask, float("-inf"))
 
 
 def _prepare_true_on_policy_full_logits(
@@ -941,6 +958,7 @@ def calculate_log_probs_and_entropy(
     chunk_size: int = -1,
     true_on_policy: bool = False,
     vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
 ):
     if true_on_policy:
         return _calculate_log_probs_and_entropy_true_on_policy(
@@ -950,6 +968,7 @@ def calculate_log_probs_and_entropy(
             with_entropy=with_entropy,
             entropy_requires_grad=entropy_requires_grad,
             vocab_size=vocab_size,
+            sampling_mask=sampling_mask,
         )
 
     logits = logits.contiguous()
@@ -968,9 +987,19 @@ def calculate_log_probs_and_entropy(
             num_chunks = (logits.size(0) - 1) // chunk_size + 1
             tokens_chunks = tokens.chunk(num_chunks, dim=0)
             logits_chunks = logits.chunk(num_chunks, dim=0)
+            sampling_mask_chunks = (
+                sampling_mask.chunk(num_chunks, dim=0) if sampling_mask is not None else [None] * num_chunks
+            )
             log_probs = []
-            for tokens_chunk, logits_chunk in zip(tokens_chunks, logits_chunks, strict=True):
-                log_prob = compute_log_probs(logits_chunk.to(torch.float32, copy=True), tokens_chunk, tp_group)
+            for tokens_chunk, logits_chunk, sampling_mask_chunk in zip(
+                tokens_chunks, logits_chunks, sampling_mask_chunks, strict=True
+            ):
+                log_prob = compute_log_probs(
+                    logits_chunk.to(torch.float32, copy=True),
+                    tokens_chunk,
+                    tp_group,
+                    sampling_mask=sampling_mask_chunk,
+                )
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
             if with_entropy:
@@ -980,7 +1009,12 @@ def calculate_log_probs_and_entropy(
                     entropys.append(entropy)
                 entropy = torch.cat(entropys, dim=0)
         else:
-            log_prob = compute_log_probs(logits.to(torch.float32, copy=True), tokens, tp_group)
+            log_prob = compute_log_probs(
+                logits.to(torch.float32, copy=True),
+                tokens,
+                tp_group,
+                sampling_mask=sampling_mask,
+            )
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
@@ -998,6 +1032,7 @@ def _calculate_log_probs_and_entropy_true_on_policy(
     with_entropy: bool = False,
     entropy_requires_grad: bool = True,
     vocab_size: int | None = None,
+    sampling_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """True-on-policy log-prob and entropy computation matching SGLang's scoring contract.
 
@@ -1011,6 +1046,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
             without attaching it to the autograd graph.
         vocab_size: Real tokenizer vocab size. If provided, padded logits are
             truncated after the full-vocab gather and before ``log_softmax``.
+        sampling_mask: Optional local-vocabulary support used to normalize
+            log-probabilities. Entropy remains normalized over the full vocab.
 
     Returns:
         Tuple of ``(log_probs, entropy)`` where *log_probs* has shape ``[R]``
@@ -1021,7 +1058,8 @@ def _calculate_log_probs_and_entropy_true_on_policy(
         entropy = logits.new_zeros((0,)) if with_entropy else None
         return log_prob, entropy
 
-    full_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+    log_prob_logits = _apply_sampling_mask(logits, sampling_mask)
+    full_logits = _gather_true_on_policy_full_logits(log_prob_logits, tp_group, vocab_size=vocab_size)
     _maybe_dump_top_logprob_backward("full_logits", full_logits)
     log_probs_full = torch.log_softmax(full_logits, dim=-1)
     _maybe_dump_top_logprob_backward("log_probs_full", log_probs_full)
@@ -1030,7 +1068,13 @@ def _calculate_log_probs_and_entropy_true_on_policy(
 
     entropy = None
     if with_entropy:
-        entropy_log_probs = log_probs_full if entropy_requires_grad else log_probs_full.detach()
+        if sampling_mask is None:
+            entropy_log_probs = log_probs_full
+        else:
+            entropy_logits = _gather_true_on_policy_full_logits(logits, tp_group, vocab_size=vocab_size)
+            entropy_log_probs = torch.log_softmax(entropy_logits, dim=-1)
+        if not entropy_requires_grad:
+            entropy_log_probs = entropy_log_probs.detach()
         probs = entropy_log_probs.exp()
         entropy = -(probs * entropy_log_probs).sum(dim=-1)
 

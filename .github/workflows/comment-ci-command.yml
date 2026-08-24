@@ -1,6 +1,15 @@
 name: Comment command gateway
 run-name: Comment command by ${{ github.event.comment.user.login }}
 
+# Actions-capability commands (/rerun-test, /rerun-failed-ci) run on the
+# workflow's own GITHUB_TOKEN with per-job permissions: GitHub's recursion
+# guard suppresses GITHUB_TOKEN-triggered events with the documented exception
+# of workflow_dispatch and repository_dispatch, and reruns are new attempts of
+# an existing run rather than new event-triggered runs, so neither needs the
+# command App. Only the issues-capability label commands still require it —
+# a label added with GITHUB_TOKEN would never fire the pull_request(labeled)
+# CI workflows — and they stay behind CI_COMMAND_APP_ENABLED.
+
 on:
   issue_comment:
     types: [created]
@@ -11,7 +20,6 @@ permissions:
 jobs:
   handle-command:
     if: >-
-      vars.CI_COMMAND_APP_ENABLED == 'true' &&
       github.event.issue.pull_request != null &&
       github.event.comment.user.type == 'User'
     outputs:
@@ -47,6 +55,14 @@ jobs:
            steps.authorize.outputs.success_reaction != '+1')
         run: exit 1
 
+      - name: Require the command App for label commands
+        if: >-
+          steps.authorize.outputs.capability == 'issues' &&
+          vars.CI_COMMAND_APP_ENABLED != 'true'
+        run: |
+          echo "::error::label commands need the command App (CI_COMMAND_APP_ENABLED; see docs/ci/01-label.md); /rerun-test and /rerun-failed-ci work without it"
+          exit 1
+
       - name: Mint the issues-scoped App token
         if: steps.authorize.outputs.capability == 'issues'
         id: issues-token
@@ -67,13 +83,15 @@ jobs:
   # Actions-capability commands: /rerun-failed-ci and /rerun-test <test-file>.
   actions-command:
     needs: handle-command
-    outputs:
-      workflow_run_url: ${{ steps.run-command.outputs.workflow_run_url }}
     if: needs.handle-command.outputs.capability == 'actions'
     concurrency:
       group: comment-ci-actions-${{ github.event.issue.number }}
       cancel-in-progress: false
       queue: max
+    permissions:
+      contents: read
+      actions: write
+      pull-requests: read
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -87,19 +105,9 @@ jobs:
             .github/workflows/policies/comment-command-access.json
           sparse-checkout-cone-mode: false
 
-      - name: Mint the actions-scoped App token
-        id: actions-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
-          permission-actions: write
-          permission-pull-requests: read
-
       - name: Authorize and run the actions command
-        id: run-command
         env:
-          CI_COMMAND_API_TOKEN: ${{ steps.actions-token.outputs.token }}
+          CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_POLICY_PATH: .github/workflows/policies/comment-command-access.json
         run: python3 .github/workflows/scripts/comment_ci_command.py
 
@@ -108,6 +116,13 @@ jobs:
     if: >-
       needs.actions-command.result == 'success' &&
       needs.handle-command.outputs.success_reaction == '+1'
+    # The reaction lands on a pull-request comment, and GitHub gates
+    # issues-API calls whose target issue is a PR on pull-requests scope,
+    # so issues: write alone returns 403.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -118,48 +133,9 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/workflows/scripts/comment_ci_command.py
           sparse-checkout-cone-mode: false
-
-      - name: Mint the reaction-scoped App token
-        id: reaction-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
-          permission-issues: write
 
       - name: Acknowledge the successful command
         env:
-          CI_COMMAND_API_TOKEN: ${{ steps.reaction-token.outputs.token }}
+          CI_COMMAND_API_TOKEN: ${{ github.token }}
           CI_COMMAND_ACKNOWLEDGE: "true"
-        run: python3 .github/workflows/scripts/comment_ci_command.py
-
-  reply-command:
-    needs: actions-command
-    if: >-
-      needs.actions-command.result == 'success' &&
-      needs.actions-command.outputs.workflow_run_url != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check out the trusted handler
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-          sparse-checkout: .github/workflows/scripts/comment_ci_command.py
-          sparse-checkout-cone-mode: false
-
-      - name: Mint the reply-scoped App token
-        id: reply-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
-        with:
-          client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
-          private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
-          permission-issues: write
-
-      - name: Reply with the workflow run
-        env:
-          CI_COMMAND_API_TOKEN: ${{ steps.reply-token.outputs.token }}
-          CI_COMMAND_REPLY: "true"
-          CI_COMMAND_WORKFLOW_RUN_URL: ${{ needs.actions-command.outputs.workflow_run_url }}
         run: python3 .github/workflows/scripts/comment_ci_command.py
