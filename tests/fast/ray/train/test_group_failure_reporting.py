@@ -7,7 +7,10 @@ from tests.fast.ray.train.conftest import get_raw_actor_handles, make_alive_cell
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.ray.train.group import TrainerController
+from miles.utils import object_store
+from miles.utils.data import RolloutDataPack
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.object_store import _MooncakeStoreObjectRef
 from miles.utils.retry_utils import NonRetryableError
 
 
@@ -17,7 +20,15 @@ async def _noop_run_after_step(**kwargs) -> None:
 
 pytestmark = pytest.mark.asyncio
 
-_DUMMY_DATA_PACK = {"data_ref": "data", "sample_indices": [0]}
+_DUMMY_DATA_PACK = RolloutDataPack(sample_indices=[0], data_ref=_MooncakeStoreObjectRef(payload="data"))
+
+
+@pytest.fixture(autouse=True)
+def _object_store_of_inited_controller() -> None:
+    """init() mints the store these controllers are faked past, and the failure path frees refs through it."""
+    object_store.init_instance(
+        SimpleNamespace(object_store_backend="ray", worker_comm_backend="ray"), contribute_segment=False
+    )
 
 
 def _make_controller(cells: list) -> TrainerController:
