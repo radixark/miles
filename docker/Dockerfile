@@ -31,7 +31,7 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
 ARG WHEELS_TAG_X86=cu130-torch213-x86_64
-ARG WHEELS_TAG_ARM64=cu130-aarch64
+ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
 
 # ======================================== Setup =============================================
 
