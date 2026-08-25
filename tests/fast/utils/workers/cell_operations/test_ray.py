@@ -7,12 +7,14 @@ from typing import Any
 
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations.ray import RayCellOperations
 
 
 class _RecordingEngineProvider:
-    def __init__(self) -> None:
+    def __init__(self, *, worker_manager: _RecordingWorkerManagerHandle) -> None:
+        self._worker_manager_handle = worker_manager
         self.stopped: list[str] = []
 
     async def stop_cells(self, *, cell_ids: list[str]) -> None:
@@ -47,9 +49,15 @@ class _Fixture:
 
 
 def _make_fixture() -> _Fixture:
-    provider = _RecordingEngineProvider()
-    controller = InferenceController(SimpleNamespace(), engine_provider=provider, router_providers=[])
     worker_manager = _RecordingWorkerManagerHandle()
+    provider = _RecordingEngineProvider(worker_manager=worker_manager)
+    controller = InferenceController(SimpleNamespace(), engine_provider=provider, router_providers=[])
+    controller.servers = {
+        "actor": SimpleNamespace(
+            server_cells={"engine-0-2": SimpleNamespace()},
+            health_checker_activeness=ActivenessTracker(active=True),
+        )
+    }
     return _Fixture(
         provider=provider,
         controller=controller,
@@ -69,30 +77,6 @@ async def _hold_lock(*, lock: ContextLock, acquired: asyncio.Event, release: asy
 async def _settle() -> None:
     for _ in range(5):
         await asyncio.sleep(0)
-
-
-class TestRayCellOperationsProtocol:
-    async def test_cell_infos_forwards_pool_ids_and_returns_the_actor_result(self) -> None:
-        """Cell info reads forward every pool ID by keyword and preserve the actor result."""
-        worker_manager = _RecordingWorkerManagerHandle()
-        operations = RayCellOperations(worker_manager_handle=worker_manager)
-        pool_ids = ["engine-0", "rollout-1"]
-        actor_result = {"engine-0-2": object(), "rollout-1-3": object()}
-        worker_manager.get_cell_infos.result = actor_result
-
-        result = await operations.cell_infos(pool_ids=pool_ids)
-
-        assert worker_manager.calls == [("get_cell_infos", (), {"pool_ids": pool_ids})]
-        assert result is actor_result
-
-    async def test_resume_starts_exactly_the_requested_cell(self) -> None:
-        """Resuming a cell sends exactly that cell ID in a one-element list."""
-        worker_manager = _RecordingWorkerManagerHandle()
-        operations = RayCellOperations(worker_manager_handle=worker_manager)
-
-        await operations.resume(cell_id="engine-0-2")
-
-        assert worker_manager.calls == [("start_cells", (["engine-0-2"],), {})]
 
 
 async def test_a_suspend_waits_for_the_controller_lock_instead_of_reaching_the_worker_manager() -> None:
@@ -115,8 +99,30 @@ async def test_a_suspend_waits_for_the_controller_lock_instead_of_reaching_the_w
     assert fixture.worker_manager.calls == []
 
 
-async def test_every_other_operation_goes_straight_through() -> None:
-    """Only a suspend takes a rank out of a live collective, so nothing else pays for the lock."""
+async def test_inject_fault_waits_for_the_controller_lock() -> None:
+    """A fault arriving mid weight update must wait before killing an engine worker."""
+    fixture = _make_fixture()
+    acquired, release = asyncio.Event(), asyncio.Event()
+    holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
+    await acquired.wait()
+
+    injecting = asyncio.create_task(
+        fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0)
+    )
+    await _settle()
+    assert not injecting.done()
+    assert fixture.worker_manager.calls == []
+
+    release.set()
+    await holding
+    await injecting
+    assert fixture.worker_manager.calls == [
+        ("inject_fault", ("engine-0-2",), {"mode": "sigkill", "worker_in_cell_index": 0})
+    ]
+
+
+async def test_non_disruptive_operations_go_straight_through() -> None:
+    """Cell reads and resumes do not wait for the weight-update lock."""
     fixture = _make_fixture()
     acquired, release = asyncio.Event(), asyncio.Event()
     holding = asyncio.create_task(_hold_lock(lock=fixture.controller.context_lock, acquired=acquired, release=release))
@@ -124,16 +130,34 @@ async def test_every_other_operation_goes_straight_through() -> None:
 
     await asyncio.wait_for(fixture.operations.cell_infos(pool_ids=["engine-0"]), timeout=5.0)
     await asyncio.wait_for(fixture.operations.resume(cell_id="engine-0-2"), timeout=5.0)
-    await asyncio.wait_for(
-        fixture.operations.inject_fault(cell_id="engine-0-2", mode=FailureMode.SIGKILL, sub_index=0),
-        timeout=5.0,
-    )
 
-    assert [name for name, _, _ in fixture.worker_manager.calls] == ["get_cell_infos", "start_cells", "inject_fault"]
+    assert [name for name, _, _ in fixture.worker_manager.calls] == ["get_cell_infos", "start_cells"]
     assert fixture.provider.stopped == []
 
     release.set()
     await holding
+
+
+class TestRayCellOperationsProtocol:
+    async def test_cell_infos_forwards_pool_ids_and_returns_the_actor_result(self) -> None:
+        """Cell info reads forward every pool ID by keyword and preserve the actor result."""
+        fixture = _make_fixture()
+        pool_ids = ["engine-0", "rollout-1"]
+        actor_result = {"engine-0-2": SimpleNamespace(), "rollout-1-3": SimpleNamespace()}
+        fixture.worker_manager.get_cell_infos.result = actor_result
+
+        result = await fixture.operations.cell_infos(pool_ids=pool_ids)
+
+        assert fixture.worker_manager.calls == [("get_cell_infos", (), {"pool_ids": pool_ids})]
+        assert result is actor_result
+
+    async def test_resume_starts_exactly_the_requested_cell(self) -> None:
+        """Resuming a cell sends exactly that cell ID in a one-element list."""
+        fixture = _make_fixture()
+
+        await fixture.operations.resume(cell_id="engine-0-2")
+
+        assert fixture.worker_manager.calls == [("start_cells", (["engine-0-2"],), {})]
 
 
 class TestRayCellOperationsInferenceControllerResolution:

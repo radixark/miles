@@ -37,4 +37,11 @@ class RayCellOperations(BaseCellOperations):
         await self._worker_manager_handle.start_cells.remote([cell_id])
 
     async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
-        await self._worker_manager_handle.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
+        # TEMPORARY: taking the lock the weight update holds, reverted with that fault tolerance work
+        if self._inference_controller is None:
+            self._inference_controller = self._resolve_inference_controller()
+        await self._inference_controller.inject_fault_between_weight_updates(
+            cell_id=cell_id,
+            mode=mode,
+            sub_index=sub_index,
+        )
