@@ -18,7 +18,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-4B"
     megatron_model_type: str | None = None
     num_gpus_per_node: int | None = None
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "GB200", "GB300"] = "auto"
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
@@ -38,10 +38,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.train_backend == "megatron":
             self.megatron_model_type = get_megatron_model_type(self.model_name)
-
-        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
         # Derived parallelism defaults for Qwen3 dense models
         self.tensor_model_parallel_size = 1 if self.model_name == "Qwen3-0.6B" else 2

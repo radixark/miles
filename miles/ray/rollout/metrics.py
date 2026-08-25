@@ -96,6 +96,7 @@ def _compute_metrics_from_samples(args, samples):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
+    log_dict |= _compute_training_sample_metrics(args, samples)
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
@@ -133,6 +134,34 @@ def _compute_metrics_from_samples(args, samples):
             # from the pretokenized prefix and may differ from canonical tokenization.
 
     return log_dict
+
+
+def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:
+    """Count training rows and average raw reward with equal weight per rollout.
+
+    Session compaction can turn one rollout into several training samples. The
+    sample count includes every resulting row, while the reward first averages
+    sibling rows that share a rollout ID so long rollouts do not receive more
+    metric weight merely because they produced more samples.
+    """
+    rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
+    use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
+    for position, sample in enumerate(samples):
+        if sample.rollout_id is not None:
+            rollout_key = ("rollout", sample.group_index, sample.rollout_id)
+        elif sample.index is not None:
+            rollout_key = ("sample", sample.group_index, sample.index)
+        else:
+            rollout_key = ("position", sample.group_index, position)
+
+        raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
+        rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
+
+    rollout_rewards = [sum(rewards) / len(rewards) for rewards in rewards_by_rollout.values()]
+    return {
+        "num_training_samples": len(samples),
+        "episode_raw_reward": sum(rollout_rewards) / len(rollout_rewards) if rollout_rewards else 0.0,
+    }
 
 
 def _compute_perf_metrics_from_samples(args, samples, rollout_time):

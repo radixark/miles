@@ -63,7 +63,6 @@ _MEGATRON_MODEL_TYPE = {
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
 _MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash-0731",)
 _FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
-_BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
 _DSV4_TE_PRECISION_CONFIG = """
 configs:
@@ -103,7 +102,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     # performance configs
-    num_gpus_per_node: int = 8
+    num_gpus_per_node: int | None = None
     hardware: Literal["auto", "H100", "H200", "B200", "B300", "GB200", "GB300"] = "auto"
     # use colocate by default. will switch to disaggregated mode when 0 < rollout_num_nodes < num_nodes
     rollout_num_nodes: int = 0
@@ -138,6 +137,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     extra_args: str = ""
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if not self.model_org:
             self.model_org = _DEFAULT_MODEL_ORG[self.model_name]
         if self.model_local_dir is None:
@@ -189,18 +190,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.rollout_fp8:
             return self.fp8_name
         return self.bf16_name
-
-
-def _is_blackwell(args: ScriptArgs) -> bool:
-    if args.hardware != "auto":
-        return args.hardware in _BLACKWELL_HARDWARE
-
-    import torch
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("Cannot auto-detect hardware because CUDA is not available. Pass --hardware explicitly.")
-    major, _minor = torch.cuda.get_device_capability()
-    return major >= 10
 
 
 def _download_dataset(args: ScriptArgs):
@@ -297,7 +286,7 @@ def _prepare_mxfp8(args: ScriptArgs):
     """
     if not args.rollout_mxfp8:
         return
-    assert _is_blackwell(args), "rollout_mxfp8 requires Blackwell (B200/B300/GB200/GB300)"
+    assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "rollout_mxfp8 requires Blackwell"
     U.exec_command_gpu(
         f"python tools/convert_hf_to_mxfp8.py "
         f"--model-dir {args.model_dir}/{args.bf16_name} "
@@ -408,7 +397,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
             "--expert-tensor-parallel-size 1 "
         )
 
-    # GB300: 4 GPUs/node
     if actor_num_gpus_per_node == 4:
         if total_gpus == 32:  # 8 nodes x 4 GPUs
             return (
@@ -423,7 +411,6 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--expert-tensor-parallel-size 1 "
             )
 
-    # H200: 8 GPUs/node
     if actor_num_gpus_per_node == 8:
         if total_gpus == 64:  # 8 nodes x 8 GPUs
             return (
@@ -456,7 +443,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 
 def _train(args: ScriptArgs):
     if args.train_mxfp8 or args.rollout_mxfp8:
-        assert _is_blackwell(args), "MXFP8 requires Blackwell (B200/B300/GB200/GB300)"
+        assert U.GENERATION_HARDWARE[args.hardware] == "Blackwell", "MXFP8 requires Blackwell"
     if not args.rollout_fp8 or args.hf_checkpoint is None or args.model_name in _MXFP4_MODEL_NAMES:
         rollout_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
         if args.hf_checkpoint != rollout_checkpoint:
@@ -565,17 +552,18 @@ def _train(args: ScriptArgs):
         sglang_tp_size = 32
         sglang_dp_size = 32
         sglang_ep_size = 32
-    elif args.num_gpus_per_node == 4:
-        # GB300, use tp=8. tp=4 causes CPU OOM when colocate
-        sglang_world_size = 8
-        sglang_tp_size = 8
+    elif args.hardware in ("GB200", "GB300"):
+        # Grace, prefer tp=8. tp=4 causes CPU OOM when colocate
+        sglang_world_size = sglang_tp_size = sglang_ep_size = min(args.rollout_num_gpus, 8)
         sglang_dp_size = 1
-        sglang_ep_size = 8
     else:
         sglang_world_size = 4
         sglang_tp_size = 4
         sglang_dp_size = 1
         sglang_ep_size = 4
+    assert (
+        sglang_world_size <= args.rollout_num_gpus
+    ), f"a {sglang_world_size}-GPU engine cannot start on {args.rollout_num_gpus} rollout GPUs"
     # MXFP8 rollout dense GEMM uses the cutlass backend and routed MoE uses
     # FlashInfer's TRT-LLM kernel (mirrors the pre-rebase MXFP8 recipe).
     if args.rollout_mxfp8:

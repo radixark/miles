@@ -1,14 +1,74 @@
 from __future__ import annotations
 
 import pytest
-from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
+from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_training_sample_metrics,
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+
+
+class TestTrainingSampleMetrics:
+    def test_compacted_rollouts_are_counted_as_samples_but_rewarded_as_episodes(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=1, rollout_id=11, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["num_training_samples"] == 4
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
+    def test_different_sibling_rewards_are_averaged_within_rollout_first(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=0, rollout_id=10, reward=0.0),
+            make_sample(index=0, rollout_id=10, reward=1.0),
+            make_sample(index=1, rollout_id=11, reward=1.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.75)
+
+    def test_rollout_ids_are_scoped_by_prompt_group(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
+            make_sample(group_index=1, index=1, rollout_id=10, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
+    def test_metadata_raw_reward_and_fallback_identities(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=5, reward=0.0),
+            make_sample(index=None, reward=0.0),
+        ]
+        samples[0].metadata = {"raw_reward": 1.0}
+        samples[1].metadata = {"raw_reward": 0.0}
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out == {"num_training_samples": 2, "episode_raw_reward": pytest.approx(0.5)}
+
+    def test_empty_samples(self):
+        assert _compute_training_sample_metrics(make_args(), []) == {
+            "num_training_samples": 0,
+            "episode_raw_reward": 0.0,
+        }
 
 
 class TestComputeZeroStdMetrics:
@@ -152,6 +212,8 @@ class TestTitoMismatchMetrics:
 
         log_rollout_data(0, args, samples, None, 1.0)
 
+        assert logged["rollout/num_training_samples"] == 4
+        assert logged["rollout/episode_raw_reward"] == pytest.approx(1.5)
         assert logged["rollout/tito_session_mismatch_rate/v2/assistant_text"] == 0.25
         assert "rollout/tito_session_mismatch_rate/assistant_text" not in logged
 

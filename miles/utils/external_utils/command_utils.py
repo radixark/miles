@@ -6,12 +6,14 @@ import base64
 import datetime
 import json
 import os
+import platform
 import random
 import shlex
 import socket
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
+from typing import get_args
 
 from miles.utils.external_utils.exec_command import exec_command_cpu, exec_command_gpu, exec_command_multi_node
 from miles.utils.external_utils.model_args_utils import shell_safe_model_args
@@ -377,6 +379,44 @@ NUM_GPUS_OF_HARDWARE = {
 
 GENERATION_HARDWARE = {
     "H100": "Hopper",
+    "H200": "Hopper",
+    "B200": "Blackwell",
+    "B300": "Blackwell",
     "GB200": "Blackwell",
     "GB300": "Blackwell",
 }
+
+
+def detect_hardware() -> str:
+    """Which NUM_GPUS_OF_HARDWARE entry this node is. Call it where the answer is used: prepare steps run GPU-free."""
+    import torch
+
+    assert torch.cuda.is_available(), "no visible GPU to detect the hardware from, pass --hardware explicitly"
+    name = torch.cuda.get_device_name()
+    if torch.version.hip is not None:
+        detected = next((hardware for hardware in ("MI350X", "MI355X") if hardware in name), None)
+    else:
+        grace = platform.machine() == "aarch64"
+        match torch.cuda.get_device_capability():
+            case (9, 0):
+                detected = "H200" if torch.cuda.get_device_properties(0).total_memory > 100 * 1024**3 else "H100"
+            case (10, 0):
+                detected = "GB200" if grace else "B200"
+            case (10, 3):
+                detected = "GB300" if grace else "B300"
+            case _:
+                detected = None
+    assert detected is not None, f"cannot tell which hardware {name!r} is, pass --hardware explicitly"
+    return detected
+
+
+def resolve_hardware(config: ExecuteTrainConfig) -> str:
+    """`auto` asks the node the launcher runs on; anything explicit overrides it."""
+    if config.hardware == "auto":
+        hardware = detect_hardware()
+        print(f"detected --hardware {hardware}")
+    else:
+        hardware = config.hardware
+    supported = get_args(config.__dataclass_fields__["hardware"].type)
+    assert hardware in supported, f"{type(config).__name__} has no verified profile for {hardware}"
+    return hardware

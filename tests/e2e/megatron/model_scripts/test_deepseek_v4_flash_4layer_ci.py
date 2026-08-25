@@ -37,6 +37,7 @@ def _args() -> ScriptArgs:
         enable_eval=False,
         num_nodes=1,
         num_gpus_per_node=4,
+        hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
         extra_args=(

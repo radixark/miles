@@ -58,16 +58,18 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "moonshotai"
     model_name: str = "Kimi-K2.5"
     megatron_model_type: str = "kimi-k25"
-    num_gpus_per_node: int = 8
+    num_gpus_per_node: int | None = None
     enable_eval: bool = False
     num_rollout: int = 3000
     extra_args: str = ""
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
-    hardware: Literal["H200", "H100", "B200"] = "H200"
+    hardware: Literal["auto", "H200", "H100", "B200"] = "auto"
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.model_name == "Kimi-K2.5":
             self.model_org = "moonshotai"
             self.megatron_model_type = "kimi-k25"

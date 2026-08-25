@@ -13,6 +13,7 @@ def test_qwen3_script_true_on_policy_single_knob_expands_to_megatron_contract(mo
     monkeypatch.setattr(run_qwen3_4b.U, "get_default_wandb_args", lambda *args, **kwargs: "")
 
     args = run_qwen3_4b.ScriptArgs(
+        hardware="H100",
         run_id="unit-test",
         model_name="Qwen3-4B",
         true_on_policy=True,
@@ -55,6 +56,7 @@ def test_qwen3_script_true_on_policy_tp2_cp4_normal_topology_contract(monkeypatc
     monkeypatch.setattr(run_qwen3_4b.U, "get_default_wandb_args", lambda *args, **kwargs: "")
 
     args = run_qwen3_4b.ScriptArgs(
+        hardware="H100",
         run_id="unit-test-tp2-cp4",
         model_name="Qwen3-4B",
         mode="normal",
@@ -108,6 +110,7 @@ def test_qwen3_script_off_policy_does_not_emit_true_on_policy_contract(monkeypat
     monkeypatch.setattr(run_qwen3_4b.U, "get_default_wandb_args", lambda *args, **kwargs: "")
 
     args = run_qwen3_4b.ScriptArgs(
+        hardware="H100",
         run_id="unit-test",
         model_name="Qwen3-4B",
         true_on_policy=False,
