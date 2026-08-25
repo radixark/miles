@@ -1,5 +1,6 @@
 """Tests for event_analyzer/analyzer.py."""
 
+import logging
 from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,6 +168,14 @@ class TestRunAnalysisFromArgs:
     def test_skips_when_no_event_dir(self) -> None:
         args = Namespace(enable_event_analyzer=True)
         run_analysis_from_args(args)
+
+    def test_logs_analysis_duration(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Enabled analysis reports how long its event-log scan takes."""
+        caplog.set_level(logging.INFO)
+
+        run_analysis_from_args(Namespace(enable_event_analyzer=True, save_debug_event_data=str(tmp_path)))
+
+        assert f"Event analysis of {tmp_path} took " in caplog.text
 
     def test_raises_on_mismatch(self, tmp_path: Path) -> None:
         logger_a = EventLogger(log_dir=tmp_path, file_name="a.jsonl", source=_make_source(cell_index=0, rank=0))
