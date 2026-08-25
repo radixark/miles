@@ -29,8 +29,8 @@ on:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
     # Same UTC nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
-    - cron: '0 15 * * 0-5'
-    - cron: '0 15 * * 6'
+    - cron: '0 14 * * 0-5'
+    - cron: '0 14 * * 6'
   workflow_dispatch:
     inputs:
       ci_megatron_pr:

@@ -151,15 +151,23 @@ class RolloutManager:
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
         with timer("rollout"):
-            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
-        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
-        log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+            samples, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
+        rollout_time = time.time() - start_time
+        save_debug_rollout_data(self.args, samples, rollout_id=rollout_id, evaluation=False, metadata=metadata)
         data = convert_samples_to_train_data(
             self.args,
-            data,
+            samples,
             metadata=metadata,
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
+        )
+        log_rollout_data(
+            rollout_id,
+            self.args,
+            samples=samples,
+            rollout_extra_metrics=metrics,
+            rollout_time=rollout_time,
+            raw_rewards=data.get("raw_reward"),
         )
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:

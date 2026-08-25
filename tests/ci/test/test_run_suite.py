@@ -387,10 +387,10 @@ class TestWorkflowScopeSeam:
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
         assert configured == set(SCHEDULE_POLICIES)
 
-    def test_scheduled_runs_use_utc_1500(self):
+    def test_scheduled_runs_use_utc_1400(self):
         workflow = self._workflow()
-        assert "    - cron: '0 15 * * 0-5'" in workflow
-        assert "    - cron: '0 15 * * 6'" in workflow
+        assert "    - cron: '0 14 * * 0-5'" in workflow
+        assert "    - cron: '0 14 * * 6'" in workflow
         assert "timezone:" not in workflow
 
     def test_weekly_serializes_each_gpu_matrix(self):
@@ -473,8 +473,8 @@ class TestRocmWorkflowScopeSeam:
         assert "pull_request_target:" not in workflow
         configured = set(re.findall(r"^\s+- cron: ['\"]([^'\"]+)['\"]\s*$", workflow, flags=re.MULTILINE))
         assert configured == set(SCHEDULE_POLICIES)
-        assert "    - cron: '0 15 * * 0-5'" in workflow
-        assert "    - cron: '0 15 * * 6'" in workflow
+        assert "    - cron: '0 14 * * 0-5'" in workflow
+        assert "    - cron: '0 14 * * 6'" in workflow
         assert "timezone:" not in workflow
 
         policy_block = workflow.split("resolve-ci-policy:", 1)[1].split("resolve-ci-image:", 1)[0]

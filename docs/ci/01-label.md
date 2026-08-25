@@ -130,7 +130,7 @@ Release and weekly have the same selection and fast-fail policy. Release is sepa
 
 Rows are in precedence order: when scope signals overlap, the higher row wins (`run-ci-all` > weekly/release full scope > nightly > `run-ci-image`, the branch order of `resolve_policy`). `run-ci-all` widens only the domain scope; regular cadence still does not admit `nightly=True` registrations.
 
-The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 15 * * 0-5`, and weekly by `0 15 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels; the GPU workflow commands explicitly add `--match-all-labels` so that operation runs the full regular GPU suites without changing cadence. A called workflow instead supplies its cadence explicitly, which is how `release-branch-cut.yml` selects release.
+The generic triggers carry no policy. All scheduled runs use UTC: nightly is identified by the exact cron `0 14 * * 0-5`, and weekly by `0 14 * * 6`. Saturday weekly replaces that day's nightly rather than starting alongside it. A manual dispatch uses regular cadence and no PR labels; the GPU workflow commands explicitly add `--match-all-labels` so that operation runs the full regular GPU suites without changing cadence. A called workflow instead supplies its cadence explicitly, which is how `release-branch-cut.yml` selects release.
 
 A subtraction is not a per-test veto — it only stops that label from granting inclusion. A test carrying a subtracted label still runs when another of its labels is in the set, so a test that must stay outside the standard nightly scope must carry only labels that nightly subtracts.
 

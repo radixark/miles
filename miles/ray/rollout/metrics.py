@@ -69,7 +69,7 @@ def log_eval_skip(rollout_id, args, reason: str):
     tracking.log(args, log_dict, step_key="eval/step")
 
 
-def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
+def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_time, raw_rewards=None):
     if (x := args.custom_rollout_log_function_path) is not None:
         custom_log_func = load_function(x)
         if custom_log_func(rollout_id, args, samples, rollout_extra_metrics, rollout_time):
@@ -79,7 +79,7 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
         return
 
     log_dict = {**(rollout_extra_metrics or {})}
-    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples), "rollout/")
+    log_dict |= dict_add_prefix(_compute_metrics_from_samples(args, samples, raw_rewards=raw_rewards), "rollout/")
     log_dict |= dict_add_prefix(_compute_perf_metrics_from_samples(args, samples, rollout_time), "perf/")
     if args.log_passrate:
         log_dict |= dict_add_prefix(
@@ -92,11 +92,11 @@ def log_rollout_data(rollout_id, args, samples, rollout_extra_metrics, rollout_t
     tracking.log(args, log_dict, step_key="rollout/step")
 
 
-def _compute_metrics_from_samples(args, samples):
+def _compute_metrics_from_samples(args, samples, raw_rewards=None):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
-    log_dict |= _compute_training_sample_metrics(args, samples)
+    log_dict |= _compute_training_sample_metrics(args, samples, raw_rewards=raw_rewards)
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
@@ -136,7 +136,9 @@ def _compute_metrics_from_samples(args, samples):
     return log_dict
 
 
-def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:
+def _compute_training_sample_metrics(
+    args: Any, samples: list[Sample], raw_rewards: list[float] | None = None
+) -> dict[str, float | int]:
     """Count training rows and average raw reward with equal weight per rollout.
 
     Session compaction can turn one rollout into several training samples. The
@@ -145,8 +147,15 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
     metric weight merely because they produced more samples.
     """
     rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
-    use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
-    for position, sample in enumerate(samples):
+    if raw_rewards is not None:
+        assert len(raw_rewards) == len(samples)
+    else:
+        use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
+        raw_rewards = [
+            sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
+            for sample in samples
+        ]
+    for position, (sample, raw_reward) in enumerate(zip(samples, raw_rewards, strict=True)):
         if sample.rollout_id is not None:
             rollout_key = ("rollout", sample.group_index, sample.rollout_id)
         elif sample.index is not None:
@@ -154,7 +163,6 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
         else:
             rollout_key = ("position", sample.group_index, position)
 
-        raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
         rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
 
     rollout_rewards = [sum(rewards) / len(rewards) for rewards in rewards_by_rollout.values()]

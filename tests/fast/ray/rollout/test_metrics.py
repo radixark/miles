@@ -64,6 +64,17 @@ class TestTrainingSampleMetrics:
 
         assert out == {"num_training_samples": 2, "episode_raw_reward": pytest.approx(0.5)}
 
+    def test_post_processed_rewards_override_structured_sample_rewards(self):
+        args = make_args(reward_key=None)
+        samples = [
+            make_sample(index=0, reward={"teacher": {"meta_info": {}}}),
+            make_sample(index=1, reward={"teacher": {"meta_info": {}}}),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples, raw_rewards=[0.0, 0.0])
+
+        assert out == {"num_training_samples": 2, "episode_raw_reward": 0.0}
+
     def test_empty_samples(self):
         assert _compute_training_sample_metrics(make_args(), []) == {
             "num_training_samples": 0,
