@@ -46,6 +46,25 @@ class TestTheRecipeIsTheOneFtConverges:
 
         assert sorted(declared) == ["--ci-disable-weight-update-checker", "--load", "--save", "--save-interval"]
 
+    def test_the_shared_recipe_can_keep_its_api_without_enabling_training_ft(self):
+        """Hot restart uses the cell API for injection without combining with automatic FT recovery."""
+        argv = shlex.split(
+            scenario_realistic_gsm8k.get_gsm8k_train_args(
+                config=ExecuteTrainConfig(run_id="260101-000000-000", namespace="miles-e2e"),
+                seed=scenario.DEFAULT_SEED,
+                num_rollout=scenario.DEFAULT_NUM_ROLLOUT,
+                metric_threshold=scenario.DEFAULT_METRIC_THRESHOLD,
+                fully_async=False,
+                test_name=scenario.TEST_NAME,
+                enable_fault_tolerance=False,
+            )
+        )
+
+        assert ArgvManipulator.get(argv, "--api-server-port")
+        assert "--use-fault-tolerance" not in argv
+        assert "--ft-components" not in argv
+        assert "--mini-ft-controller-enable" not in argv
+
 
 class TestTheInjectionPlan:
     def test_the_only_fault_the_plan_may_draw_is_a_hot_restart(self):
