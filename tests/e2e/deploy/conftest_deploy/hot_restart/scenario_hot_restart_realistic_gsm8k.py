@@ -73,6 +73,7 @@ def run_ci(
             mean_interval_seconds_of_cell_type={ACTOR_CELL_TYPE: hot_restart_interval_seconds},
             create_forms=create_forms,
             extra_train_args=_build_train_args(resolve_dump_dir(TEST_NAME)),
+            enable_fault_tolerance=False,
         )
 
     form = hot_restart_form.value
