@@ -715,6 +715,43 @@ class TestResolveFtComponents:
         assert result is not components
 
 
+class TestIndepDpValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        # Megatron owns these; the miles-only parser above never defines them.
+        vars(args).update(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            context_parallel_size=1,
+            world_size=1,
+        )
+        return args
+
+    def test_rejects_indep_dp_without_delay_split(self):
+        args = self._parse(["--indep-dp"])
+
+        with pytest.raises(AssertionError, match="--indep-dp requires --delay-split-train-data-by-dp"):
+            miles_validate_args(args)
+
+    def test_accepts_indep_dp_with_delay_split(self):
+        args = self._parse(["--indep-dp", "--delay-split-train-data-by-dp"])
+
+        miles_validate_args(args)
+
+        assert args.indep_dp is True
+        assert args.delay_split_train_data_by_dp is True
+
+    def test_ft_components_train_auto_sets_both_flags(self):
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "train"])
+
+        miles_validate_args(args)
+
+        assert args.indep_dp is True
+        assert args.delay_split_train_data_by_dp is True
+
+
 @pytest.mark.parametrize(
     ("parallel_args", "expected"),
     [

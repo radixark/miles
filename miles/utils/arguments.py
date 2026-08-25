@@ -2877,6 +2877,10 @@ def miles_validate_args(args):
         assert (
             args.train_backend == "megatron"
         ), f"indep_dp requires train_backend='megatron', got '{args.train_backend}'"
+        assert args.delay_split_train_data_by_dp, (
+            "--indep-dp requires --delay-split-train-data-by-dp: each cell trains on its own data-parallel "
+            "size, so the actor publishes no shared dp_size for the rollout manager to split train data by."
+        )
         per_replica_size = compute_megatron_world_size_except_dp(args)
         logger.info(f"indep_dp: adjusting args.world_size from {args.world_size} to {per_replica_size} (per-cell)")
         args.world_size = per_replica_size
