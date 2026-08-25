@@ -1,6 +1,7 @@
 """Centralized event analyzer that reads events and runs all rules."""
 
 import logging
+import time
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,11 @@ def run_analysis_from_args(args: Namespace) -> None:
     if event_dir is None:
         return
 
-    issues = run_analysis(event_dir=Path(event_dir))
+    started_at = time.monotonic()
+    try:
+        issues = run_analysis(event_dir=Path(event_dir))
+    finally:
+        logger.info(f"Event analysis of {event_dir} took {time.monotonic() - started_at:.3f} seconds")
 
     # Fail fast, we want to stop the system if sanity check fails
     if issues:
