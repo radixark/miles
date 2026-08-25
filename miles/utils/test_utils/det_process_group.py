@@ -156,6 +156,26 @@ class DetProcessGroup(BaseProcessGroup):
             self._reduce_scatter_base(output, input, opts)
         return _CompletedWork()
 
+    # torch 2.13 routes dist.reduce_scatter_tensor / all_gather_into_tensor through
+    # these names. Without them the call reaches the C++ base, which dispatches to
+    # the NCCL backend registered above -- silently giving up the fixed-order fold
+    # rather than raising.
+    def reduce_scatter_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
+        return self._reduce_scatter_base(output, input, opts)
+
+    def reduce_scatter_single_coalesced(
+        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
+    ) -> Work:
+        return self.reduce_scatter_tensor_coalesced(output_tensors, input_tensors, opts)
+
+    def all_gather_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
+        return self._allgather_base(output, input, opts)
+
+    def all_gather_single_coalesced(
+        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
+    ) -> Work:
+        return self.allgather_into_tensor_coalesced(output_tensors, input_tensors, opts)
+
     def alltoall_base(
         self,
         output_tensor: torch.Tensor,
