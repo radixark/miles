@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -599,6 +601,43 @@ class TestConsecutiveStopStartCycles:
 
 
 class TestTrain:
+    async def test_event_analysis_does_not_block_cell_status_requests(self):
+        """A growing event log must not make the trainer controller stop answering status requests."""
+        group = _make_controller(num_cells=1)
+        group._witness_allocator = None
+        group._refresh_cells = AsyncMock()
+        group._gather_all_alive_and_catch = AsyncMock(return_value=([], []))
+        group._check_train_one_attempt = MagicMock()
+        group._log_step_end_event = MagicMock()
+        group._test_action_executor = AsyncMock()
+
+        started_at = time.monotonic()
+        with patch.object(
+            group_module.event_analyzer,
+            "run_analysis_from_args",
+            side_effect=lambda _args: time.sleep(0.2),
+        ):
+            train_task = asyncio.create_task(group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK))
+            await asyncio.sleep(0)
+
+            statuses = await group.get_cell_statuses()
+
+            assert time.monotonic() - started_at < 0.1
+            assert set(statuses) == {"trainer-engine-actor-00000"}
+            assert await train_task == []
+
+    async def test_event_analysis_failure_still_fails_training(self):
+        """Moving event analysis off the event loop must preserve its failure contract."""
+        group = _make_controller(num_cells=1)
+
+        with patch.object(
+            group_module.event_analyzer,
+            "run_analysis_from_args",
+            side_effect=ValueError("event analysis failed"),
+        ):
+            with pytest.raises(ValueError, match="event analysis failed"):
+                await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
+
     async def test_train_refreshes_and_dispatches(self):
         group = await _make_alive_controller(num_cells=2)
 
@@ -1053,7 +1092,7 @@ class TestTrainRetry:
 
         await group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK)
 
-        assert store.removed == [values_ref]
+        assert [ref.inner for ref in store.removed] == [values_ref.inner]
 
     async def test_cell_errored_does_not_retry_when_others_normal(self):
         """One cell errors during train but others return NORMAL → no retry.
@@ -1143,7 +1182,7 @@ class TestLogStepEndEvent:
 
 
 class TestCellStatusesUnderConcurrentReconcile:
-    def test_a_cell_removed_while_the_statuses_are_read_does_not_abort_the_read(self):
+    async def test_a_cell_removed_while_the_statuses_are_read_does_not_abort_the_read(self):
         """The api server reads this from its own thread while reconcile adds and drops cells,
         and iterating the live dict raises RuntimeError instead of answering the request."""
         controller = _make_controller(num_cells=3)
