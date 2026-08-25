@@ -40,17 +40,11 @@ To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<k
 
 The PR-comment entrypoint is a command gateway rather than a label handler. Each recognized comment becomes a typed request, and a code-defined static registry selects its fixed handler, policy key, and token capability. The JSON policy controls only access groups and per-command resource allowlists. The registry implements exact-label additions plus `/clear-labels`, `/rerun-failed-ci`, and `/rerun-test`.
 
-After the comment gateway is enabled, post `/<label>` as the entire comment on an open PR to append that exact label. The label must be a supported `run-ci-*` label or `bypass-fastfail` and must be listed in `.github/workflows/policies/comment-command-access.json`; for example, `/run-ci-short` appends only `run-ci-short`, while `/bypass-fastfail` appends only `bypass-fastfail`.
+After the command App is enabled, post `/<label>` as the entire comment on an open PR to append that exact label. The label must be a supported `run-ci-*` label or `bypass-fastfail` and must be listed in `.github/workflows/policies/comment-command-access.json`; for example, `/run-ci-short` appends only `run-ci-short`, while `/bypass-fastfail` appends only `bypass-fastfail`.
 
 A label command permits leading and trailing whitespace only; it cannot include arguments, prose, or a second command. Only `/rerun-test` takes an argument, and that argument must be a single test-file path. If the label is already present, the request succeeds as a no-op and does not emit another `labeled` event or rerun CI.
 
-`.github/workflows/policies/comment-command-access.json` is an exact, default-deny ACL. Its `commands.add_label.allowed_labels` array controls which exact labels can be added through comments; adding a `KNOWN_LABELS` entry does not expose it automatically. Other command entries select an access group but cannot select a handler, token capability, workflow, API endpoint, or shell command.
-
-The `add_label_access` group controls every command that adds a label. A caller belongs to this group when either their live legacy permission on `radixark/miles` appears in `repository_permissions` or their stable numeric GitHub user ID appears in `user_ids`.
-
-The checked-in policy accepts `write` and `admin` and has no explicit user IDs. Workflow owners can grant a contributor label-command access by adding only that numeric ID to the JSON policy, without granting repository write access. GitHub reports the `maintain` role as legacy `write`; custom roles follow their base repository access.
-
-The `repo_write_access` group restricts `/clear-labels`, `/rerun-failed-ci`, and `/rerun-test <test-file>` to live `write` or `admin` permission. Only `add_label_access` can contain explicit `user_ids`; those IDs do not grant any non-label operation.
+Who may run each command — the identity bindings, the access groups in `.github/workflows/policies/comment-command-access.json`, the tier constraints, and the fork containment rule — is specified in [Command Identity](/ci/05-command-identity). One label-specific resource fact stays here: the policy's `commands.add_label.allowed_labels` array controls which exact labels can be added through comments, and adding a `KNOWN_LABELS` entry does not expose it automatically.
 
 Unrecognized comments exit after trusted parsing with capability `none`; they do not load the access policy, call the GitHub API, or mint an App token. A malformed comment containing one of the recognized command markers still fails instead of being treated as an unrelated comment.
 
@@ -66,35 +60,41 @@ GitHub can omit `pull_requests` from fork workflow-run payloads. For a fork, the
 
 Post `/rerun-test <test-file>` as the entire comment to run one registered test file on the PR's current head, e.g. `/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py`. Despite the name, this dispatches a fresh workflow and does not require the test to have run previously. The handler accepts only a repo-relative path under the registry scan roots (`tests/e2e`, `tests/fast`, `tests/fast-gpu`, `tests/ci`), then dispatches the fixed default-branch `.github/workflows/run-ci-file.yml` with the PR number, exact head SHA, and file path as inputs.
 
-After GitHub confirms the workflow dispatch, the App reacts to the original command with 👍 and posts a separate PR comment containing the exact Actions run link:
+After GitHub confirms the workflow dispatch, the gateway reacts to the original command with 👍. When the dispatched `Rerun Test` workflow starts, that run posts a separate PR comment containing its running state, start time, and exact Actions run link:
 
 ```text
-Started `/rerun-test tests/e2e/precision/test_hf_attention_cp_relayout.py`.
+⏳ `tests/e2e/precision/test_hf_attention_cp_relayout.py` is **running** — [workflow run](https://github.com/radixark/miles/actions/runs/<run-id>)
 
-[View workflow run](https://github.com/radixark/miles/actions/runs/<run-id>)
+Started at <timestamp> UTC; elapsed time and the result will be recorded here when it finishes.
 ```
 
-The reaction acknowledges that the request was accepted, while the reply identifies the dispatched run. The reply is not updated as the run status changes; the final pass or failure remains in that `Rerun Test` Actions run.
+The reaction acknowledges that the request was accepted. When execution finishes, the workflow updates that same status comment—identified by the comment ID returned when it was created—to ✅ passed, ❌ failed, or ⚪ cancelled, and records the selected suite and total elapsed time. A run is reported as passed only when its CPU or CUDA execution job succeeds; resolver failures and runs where no execution job starts are reported as failed rather than as successful dispatches.
 
 An explicit file request is the selection: domain labels and the nightly cadence gate do not apply, while a symlinked or `disabled` test, an unregistered path, a ROCm-only registration, or a file with more than one CPU/CUDA registration fails the resolve job instead of silently running nothing.
 
 The dispatched workflow and its reusable workflows come from the reviewed default-branch commit. A trusted resolver reads the separately checked-out PR snapshot without importing it and maps the requested registration to a fixed CPU/CUDA suite, runner, image, and timeout. The execution job then checks out that same exact SHA and uses the requested path as its command entrypoint: bounded `pytest` for CPU or bounded `python3` for CUDA. It does not depend on workflow or runner code from the PR snapshot.
 
-The trust boundary ends after the resolver produces that fixed plan. The execution job intentionally installs and runs PR-controlled dependencies, configuration, imports, and test code; it is not a sandbox for hostile PR code. The command supports only same-repository PRs and requires the fixed `run-ci-file.yml` workflow on the default branch. A later push does not change the already dispatched snapshot.
+The trust boundary ends after the resolver produces that fixed plan. The execution job intentionally installs and runs PR-controlled dependencies, configuration, imports, and test code; it is not a sandbox for hostile PR code. Same-repository and fork heads are accepted from any commenter the policy admits; a fork head's run receives no repository secrets, and the resolver derives fork-ness from the live pull request rather than a dispatch input. The command requires the fixed `run-ci-file.yml` workflow on the default branch. A later push does not change the already dispatched snapshot.
 
 A file run honors the PR body's `ci-megatron-pr` and `ci-sglang-pr` pins; CUDA file runs also honor `ci-image-tag`, while CPU file runs use the hosted bare environment. The gateway validates and forwards these inputs, and a pin whose value fails validation rejects the command. Without a `ci-image-tag` pin a CUDA run uses the released `dev` image even when the PR built a `pr-<N>` image, so docker-changing PRs should pin the tag explicitly. The run writes no perf baseline (regular cadence), and its result is informational: it does not appear among the PR's required checks.
 
-The command gateway remains off until workflow owners complete the following steps and set the repository variable `CI_COMMAND_APP_ENABLED=true`:
+`/rerun-test` and `/rerun-failed-ci` work as soon as the gateway workflow is on the default branch, with no App and no repository variables. Their jobs use the workflow's own `GITHUB_TOKEN`: the command job has `actions: write` plus `pull-requests: read`; the reaction job has `issues: write` plus `pull-requests: write`; and the file run's status jobs have `issues: write` plus `pull-requests: write`, with `actions: read` added to the final status job so it can calculate elapsed time from the workflow run.
 
-1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read`, `Issues: write`, and `Actions: write`; do not grant `Contents: write`. Mutation tokens remain capability-specific: label commands request `Issues: write`, while rerun and file-run commands request `Actions: write`. After a successful `/rerun-test` dispatch, independent feedback jobs each request only `Issues: write` to add the 👍 reaction and workflow-link reply.
+GitHub's recursion guard suppresses `GITHUB_TOKEN`-triggered events with the documented exception of `workflow_dispatch` and `repository_dispatch`, which is exactly how a file run starts, and a failed-job rerun is a new attempt of an existing run rather than a new event-triggered run. The 👍 reaction and the running/final status comment are posted as `github-actions[bot]`.
+
+Label commands are the exception: a label added with `GITHUB_TOKEN` would never fire the `pull_request(labeled)` CI workflows, so they stay off until workflow owners complete the following steps and set the repository variable `CI_COMMAND_APP_ENABLED=true`. A label command posted before that fails loudly with a pointer to this document instead of skipping silently.
+
+1. Create a GitHub App, install it only on `radixark/miles`, and grant `Pull requests: read` and `Issues: write`; do not grant `Actions: write` or `Contents: write`. The App token is minted only for label commands; the actions-capability and feedback jobs never receive it.
 2. Store the App client ID in the repository variable `CI_COMMAND_APP_CLIENT_ID` and its private key in the repository secret `CI_COMMAND_APP_PRIVATE_KEY`.
 3. Protect the final bytes under `.github/workflows/` that implement the command gateway—its workflows, handler, and policy: require code-owner review, enable stale-review dismissal or last-push approval, and explicitly accept administrators who can still bypass the rule as external trust roots.
 4. In the target repository, compare manually adding a test label with adding the same label through the App. Confirm that both trigger the expected CUDA, ROCm, and held-run approval consumers.
    Then run `/clear-labels`; confirm that it removes only the CI control labels and does not start another CUDA, ROCm, or held-run approval workflow.
-   Then create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.
-   Finally, post `/rerun-test` with one registered CUDA test file and confirm the dispatched run uses that file as the command entrypoint from the recorded PR head SHA on its registered suite's runner, the original command receives a 👍 reaction only after dispatch succeeds, and a separate reply links that exact workflow run.
 
-The handler evaluates the caller against the checked-in access policy before minting the App token and again in the capability-specific job before the command mutates GitHub state. An explicit `add_label_access.user_ids` match uses the numeric comment-author identity bound to the event; otherwise the handler checks the caller's live repository permission.
+To validate the App-free commands, create a disposable failed run on the current PR head and confirm that `/rerun-failed-ci` reruns only its failed jobs and dependent jobs.
+
+Then post `/rerun-test` with one registered test file and confirm the dispatched run uses that file as the command entrypoint from the recorded PR head SHA on its registered suite's runner. The original command must receive a 👍 reaction only after dispatch succeeds, a separate comment must show the run in progress, the job logs must contain the test invocation and result, and that same comment ID must be updated with the correct final result and elapsed time.
+
+Caller evaluation points and the token identities each command executes under are specified in [Command Identity](/ci/05-command-identity).
 Actions command comments for one PR are serialized in GitHub's queued concurrency mode. Up to GitHub's 100-pending limit, commands wait instead of replacing an older pending comment.
 Before each rerun request, the handler rechecks the permission, PR head, and latest run of that workflow. Each lookup is a point-in-time result, so a small race remains between the final check and the mutation request.
 
@@ -102,9 +102,9 @@ The comment handler runs only fixed, reviewed code from the default branch and n
 
 Initial authorization, PR, policy, or run-state errors fail before any mutation. A recheck error before a later rerun request stops that request, while any earlier accepted reruns remain applied.
 
-If the additive label `POST`, a label `DELETE`, a failed-job rerun `POST`, a workflow-dispatch `POST`, the later reaction `POST`, or the workflow-reply `POST` was sent but its response timed out, was malformed, or could not be confirmed, GitHub may already have applied the change. A feedback failure after dispatch does not cancel the file run.
+If the additive label `POST`, a label `DELETE`, a failed-job rerun `POST`, a workflow-dispatch `POST`, the later reaction `POST`, or a status-comment `POST`/`PATCH` was sent but its response timed out, was malformed, or could not be confirmed, GitHub may already have applied the change. A feedback failure after dispatch does not cancel the file run.
 
-`/clear-labels` and `/rerun-failed-ci` can issue multiple requests and are not atomic: if a later request fails, earlier changes remain applied. The handler does not retry or roll back automatically; inspect the PR's current labels, comments, or Actions runs before deciding whether to retry. Manually rerunning a reply job after an ambiguous response can create a duplicate link comment.
+`/clear-labels` and `/rerun-failed-ci` can issue multiple requests and are not atomic: if a later request fails, earlier changes remain applied. The handler does not retry or roll back automatically; inspect the PR's current labels, comments, or Actions runs before deciding whether to retry. Manually rerunning `announce-file-run` after an ambiguous comment-creation response can create a duplicate status comment.
 
 GitHub reruns failed jobs and their dependent jobs with the original run's `GITHUB_SHA`, `GITHUB_REF`, event payload, and triggering actor privileges. A rerun therefore does not inherit the commenter's or App token's privileges; consumers of the original event payload do not see labels changed afterward. GitHub permits reruns for up to 30 days after the original run and limits a workflow run to 50 attempts.
 

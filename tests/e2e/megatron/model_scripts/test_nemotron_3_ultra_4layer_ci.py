@@ -17,10 +17,14 @@ import miles.utils.external_utils.command_utils as U
 # Megatron -> SGLang weight equality check, which is the main thing this test guards.
 
 
+# TODO: need to bump megatron-bridge
 register_cuda_ci(
     est_time=900,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
+    disabled="Megatron's Mamba mixer exposes conv1d as conv1d_weight/conv1d_bias parameters, "
+    "which the pinned Megatron-Bridge maps only under the conv1d.* module name, so the "
+    "weight sync silently skips them. Upstream Bridge accepts both — re-enable after bumping it.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")

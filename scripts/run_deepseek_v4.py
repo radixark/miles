@@ -10,6 +10,9 @@ Supports:
                                   smoke testing. **Cannot generate meaningful output -
                                   pipeline-only sanity check.**
   - DeepSeek-V4-Pro-FP8           Verified profile: 32 nodes x 8 GPUs on H200.
+  - DeepSeek-V4-Flash-0731        Official deepseek-ai release (MXFP4 routed experts).
+                                  prepare-fp8 casts the experts losslessly to blockwise
+                                  FP8; downstream is identical to DeepSeek-V4-Flash-FP8.
 
 Usage patterns:
 
@@ -18,8 +21,9 @@ Usage patterns:
            --model-name DeepSeek-V4-Flash-FP8-4layer \
            --num-nodes 1 --num-gpus-per-node 8
 
-  2. Individual steps (download -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
+  2. Individual steps (download [-> MXFP4->FP8] -> FP8->BF16 -> BF16->torch_dist -> rsync -> train):
        python scripts/run_deepseek_v4.py prepare-download --model-name DeepSeek-V4-Flash-FP8
+       python scripts/run_deepseek_v4.py prepare-fp8      --model-name DeepSeek-V4-Flash-0731
        python scripts/run_deepseek_v4.py prepare-single   --model-name DeepSeek-V4-Flash-FP8 \
            --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8
        python scripts/run_deepseek_v4.py prepare-spmd     --model-name DeepSeek-V4-Flash-FP8 \
@@ -45,15 +49,20 @@ _DEFAULT_MODEL_ORG = {
     # 4-layer prune of sgl-project/DeepSeek-V4-Flash-FP8.
     "DeepSeek-V4-Flash-FP8-4layer": "Pinaster",
     "DeepSeek-V4-Pro-FP8": "sgl-project",
+    # Official release with MXFP4 routed experts; cast to FP8 by prepare-fp8.
+    "DeepSeek-V4-Flash-0731": "deepseek-ai",
 }
 
 _MEGATRON_MODEL_TYPE = {
     "DeepSeek-V4-Flash-FP8": "deepseek-v4-flash",
     "DeepSeek-V4-Flash-FP8-4layer": "deepseek-v4-flash-4layer",
     "DeepSeek-V4-Pro-FP8": "deepseek-v4-pro",
+    "DeepSeek-V4-Flash-0731": "deepseek-v4-flash",
 }
 
 _PRO_MODEL_NAMES = ("DeepSeek-V4-Pro-FP8",)
+_MXFP4_MODEL_NAMES = ("DeepSeek-V4-Flash-0731",)
+_FLASH_FULL_MODEL_NAMES = ("DeepSeek-V4-Flash-FP8", "DeepSeek-V4-Flash-0731")
 _BLACKWELL_HARDWARE = ("B200", "B300", "GB200", "GB300")
 
 _DSV4_TE_PRECISION_CONFIG = """
@@ -79,6 +88,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         "DeepSeek-V4-Flash-FP8",
         "DeepSeek-V4-Flash-FP8-4layer",
         "DeepSeek-V4-Pro-FP8",
+        "DeepSeek-V4-Flash-0731",
     ] = "DeepSeek-V4-Flash-FP8"
 
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
@@ -153,6 +163,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return _MEGATRON_MODEL_TYPE[self.model_name]
 
     @property
+    def fp8_name(self):
+        if self.model_name in _MXFP4_MODEL_NAMES:
+            return f"{self.model_name}-FP8"
+        return self.model_name
+
+    @property
     def torch_dist_name(self):
         return f"{self.model_name}_torch_dist"
 
@@ -171,7 +187,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
         if self.rollout_mxfp8:
             return self.mxfp8_name
         if self.rollout_fp8:
-            return self.model_name
+            return self.fp8_name
         return self.bf16_name
 
 
@@ -234,10 +250,32 @@ def prepare_download(args: ScriptArgs):
     _prepare_download(args)
 
 
+def _prepare_fp8(args: ScriptArgs):
+    """MXFP4 experts -> blockwise FP8 (lossless cast). Only for official MXFP4 releases."""
+    if args.model_name not in _MXFP4_MODEL_NAMES:
+        print(f"[prepare_fp8] {args.model_name} has no MXFP4 source; nothing to do.")
+        return
+    U.exec_command_gpu(
+        f"python tools/convert_mxfp4_to_fp8.py "
+        f"--model-dir {_hf_checkpoint_path(args)} "
+        f"--save-dir {args.model_dir}/{args.fp8_name} "
+    )
+
+
+@app.command()
+@U.dataclass_cli
+def prepare_fp8(args: ScriptArgs):
+    """MXFP4 -> FP8 cast (needs prepare-download done first). One node."""
+    _prepare_fp8(args)
+
+
 def _prepare_single(args: ScriptArgs):
     _download_dataset(args)
 
-    src = _hf_checkpoint_path(args)
+    if args.model_name in _MXFP4_MODEL_NAMES:
+        src = f"{args.model_dir}/{args.fp8_name}"
+    else:
+        src = _hf_checkpoint_path(args)
     U.fp8_cast_bf16(
         path_src=src,
         path_dst=f"{args.model_dir}/{args.bf16_name}/",
@@ -283,7 +321,7 @@ def _prepare_spmd(args: ScriptArgs):
         extra_args += (
             "--tensor-model-parallel-size 1 " "--pipeline-model-parallel-size 1 " "--expert-model-parallel-size 1 "
         )
-    elif actor_num_nodes == 8 and args.model_name == "DeepSeek-V4-Flash-FP8":
+    elif actor_num_nodes == 8 and args.model_name in _FLASH_FULL_MODEL_NAMES:
         extra_args += (
             "--tensor-model-parallel-size 1 "
             "--pipeline-model-parallel-size 8 "
@@ -380,6 +418,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
                 "--decoder-first-pipeline-num-layers 4 "
                 "--decoder-last-pipeline-num-layers 3 "
                 "--context-parallel-size 2 "
+                "--allgather-cp "
                 "--expert-model-parallel-size 4 "
                 "--expert-tensor-parallel-size 1 "
             )
@@ -418,7 +457,7 @@ def _get_parallel_config(args: ScriptArgs) -> str:
 def _train(args: ScriptArgs):
     if args.train_mxfp8 or args.rollout_mxfp8:
         assert _is_blackwell(args), "MXFP8 requires Blackwell (B200/B300/GB200/GB300)"
-    if not args.rollout_fp8 or args.hf_checkpoint is None:
+    if not args.rollout_fp8 or args.hf_checkpoint is None or args.model_name in _MXFP4_MODEL_NAMES:
         rollout_checkpoint = f"{args.model_local_dir}/{args.rollout_name}"
         if args.hf_checkpoint != rollout_checkpoint:
             print(f"[precision] rollout checkpoint: {args.hf_checkpoint} -> {rollout_checkpoint}")
@@ -526,6 +565,12 @@ def _train(args: ScriptArgs):
         sglang_tp_size = 32
         sglang_dp_size = 32
         sglang_ep_size = 32
+    elif args.num_gpus_per_node == 4:
+        # GB300, use tp=8. tp=4 causes CPU OOM when colocate
+        sglang_world_size = 8
+        sglang_tp_size = 8
+        sglang_dp_size = 1
+        sglang_ep_size = 8
     else:
         sglang_world_size = 4
         sglang_tp_size = 4
@@ -574,6 +619,8 @@ def _train(args: ScriptArgs):
         "SGLANG_HEALTH_CHECK_TIMEOUT": "120",
         "SGLANG_DG_CACHE_DIR_PER_PROCESS": "1",
         "SGLANG_OPT_FP8_WO_A_GEMM": "0",
+        # Colocated multi-engine init can deadlock in the multimem all-gather rendezvous (sgl-project/sglang#36110).
+        "SGLANG_DISABLE_MULTIMEM_AG": "1",
     }
     if args.model_name == "DeepSeek-V4-Pro-FP8":
         extra_env_vars["SGLANG_DEEPEP_NUM_MAX_DISPATCH_TOKENS_PER_RANK"] = "256"
@@ -677,6 +724,13 @@ def train(args: ScriptArgs):
 @U.dataclass_cli
 def full_train(args: ScriptArgs):
     _prepare_download(args)
+
+    if args.model_name in _MXFP4_MODEL_NAMES:
+        fp8_sentinel = Path(f"{args.model_dir}/{args.fp8_name}") / "model.safetensors.index.json"
+        if not fp8_sentinel.exists():
+            _prepare_fp8(args)
+        else:
+            print(f"[full_train] Skipping MXFP4->FP8 cast: {fp8_sentinel} already exists.")
 
     bf16_dir = Path(f"{args.model_dir}/{args.bf16_name}")
     bf16_sentinel = bf16_dir / "model.safetensors.index.json"

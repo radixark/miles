@@ -95,6 +95,10 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     ref_load = f"/root/models/{MODEL_NAME}" if case.use_bridge else f"/root/{MODEL_NAME}_torch_dist"
     if case.use_int4_rollout:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-INT4/ " f"--ref-load {ref_load} "
+        # Fake QAT swaps in straight-through weight tensors, while TE's fused wgrad
+        # accumulation writes main_grad onto the original ones, so the two together
+        # would drop the quantized weights' gradients.
+        ckpt_args += "--no-gradient-accumulation-fusion "
     elif case.use_fp8_rollout:
         ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}-FP8 " f"--ref-load {ref_load} "
     else:

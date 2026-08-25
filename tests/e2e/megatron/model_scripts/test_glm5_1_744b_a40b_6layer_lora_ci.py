@@ -13,7 +13,15 @@ import miles.utils.external_utils.command_utils as U
 # Functionality, not accuracy; 8 GPUs (TP=EP=8).
 
 
-register_cuda_ci(est_time=1300, suite="stage-c-8-gpu-h200", labels=["megatron", "model-scripts", "lora"])
+# TODO: need to bump megatron-bridge
+register_cuda_ci(
+    est_time=1300,
+    suite="stage-c-8-gpu-h200",
+    labels=["megatron", "model-scripts", "lora"],
+    disabled="Megatron's dsa variant now builds AbsorbedMLASelfAttention, which reads "
+    "linear_kv_up_proj.weight directly; the pinned Megatron-Bridge's LoRALinear has no such "
+    "property. Upstream Bridge added an effective-weight property — re-enable after bumping it.",
+)
 
 # skip the engine-side stacked params a frozen-base LoRA run cannot re-ship
 # (they keep their correct checkpoint values; everything else is verified)

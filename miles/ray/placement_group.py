@@ -48,7 +48,7 @@ def sort_key(x):
     return (node_ip_parts, gpu_id)
 
 
-def _create_placement_group(num_gpus):
+def _create_placement_group(num_gpus, is_rdt: bool = False):
     """Create a placement group with the specified number of GPUs."""
     if num_gpus == 0:
         return None, [], []
@@ -74,7 +74,16 @@ def _create_placement_group(num_gpus):
         ray.kill(actor)
 
     bundle_infos = [(i, gpu_ids[i][0], gpu_ids[i][1]) for i in range(num_bundles)]
-    sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
+    if is_rdt:
+        # Give the trainer the node PACK filled, so rollout bundles land where GPUs
+        # are still free: RayEngine STRICT_PACKs its SchedulerActors onto the engine
+        # actor's node and deadlocks if nothing there is unreserved.
+        node_bundle_counts: dict = {}
+        for _, node_identifier, _ in bundle_infos:
+            node_bundle_counts[node_identifier] = node_bundle_counts.get(node_identifier, 0) + 1
+        sorted_bundle_infos = sorted(bundle_infos, key=lambda info: (-node_bundle_counts[info[1]], *sort_key(info)))
+    else:
+        sorted_bundle_infos = sorted(bundle_infos, key=sort_key)
     pg_reordered_bundle_indices = [info[0] for info in sorted_bundle_infos]
     # Map from logical index -> physical GPU ID
     pg_reordered_gpu_ids = [gpu_ids[info[0]][1] for info in sorted_bundle_infos]
@@ -111,7 +120,9 @@ def create_placement_groups(args):
     num_gpus, rollout_offset = _get_placement_group_layout(args)
 
     logger.info(f"Creating placement group with {num_gpus} GPUs...")
-    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(num_gpus)
+    pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids = _create_placement_group(
+        num_gpus, is_rdt=args.update_weight_transfer_mode == "rdt"
+    )
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
@@ -126,13 +137,16 @@ def create_placement_groups(args):
 def allocate_train_group(
     args, num_nodes, num_gpus_per_node, pg, role: str, with_ref: bool, rollout_manager, with_opd_teacher: bool = False
 ):
+    # RDT pins one NIXL/NCCL rank per physical GPU, so it cannot time-share a device
+    # with a colocated rollout the way the fractional reservation allows.
+    num_gpus_per_actor = 1 if args.update_weight_transfer_mode == "rdt" else 0.4
     train_group_cls = _select_train_group_class()
     return train_group_cls(
         args=args,
         num_nodes=num_nodes,
         num_gpus_per_node=num_gpus_per_node,
         pg=pg,
-        num_gpus_per_actor=0.4,
+        num_gpus_per_actor=num_gpus_per_actor,
         role=role,
         with_ref=with_ref,
         rollout_manager=rollout_manager,

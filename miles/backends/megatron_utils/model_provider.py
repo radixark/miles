@@ -51,6 +51,7 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
 
     # numerics (training infra, not model-defining)
     provider.attention_softmax_in_fp32 = args.attention_softmax_in_fp32
+    provider.gradient_accumulation_fusion = args.gradient_accumulation_fusion
     provider.fp32_residual_connection = args.fp32_residual_connection
     provider.deterministic_mode = args.deterministic_mode
 
@@ -220,6 +221,13 @@ def get_model_provider_func(
         assert config is None, "miles builds the config from args, so it expects config to be None"
         config = core_transformer_config_from_args(args)
 
+        # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
+        # (e.g. the run_megatron debug worker) won't have it, so default to False.
+        if getattr(args, "enable_mtp_training", False):
+            # Detach the MTP heads so RL MTP gradients do not flow into the shared
+            # output layer / embedding.
+            config.mtp_detach_heads = True
+
         if args.spec is not None:
             transformer_layer_spec = import_module(args.spec)
             # Allow the spec to be a function so that user can use customized Megatron easier.
@@ -242,7 +250,6 @@ def get_model_provider_func(
                         moe_grouped_gemm=args.moe_grouped_gemm,
                         qk_layernorm=args.qk_layernorm,
                         multi_latent_attention=args.multi_latent_attention,
-                        moe_use_legacy_grouped_gemm=args.moe_use_legacy_grouped_gemm,
                     )
                 else:
                     transformer_layer_spec = get_gpt_layer_local_spec(
@@ -250,10 +257,8 @@ def get_model_provider_func(
                         moe_grouped_gemm=args.moe_grouped_gemm,
                         qk_layernorm=args.qk_layernorm,
                         multi_latent_attention=args.multi_latent_attention,
-                        moe_use_legacy_grouped_gemm=args.moe_use_legacy_grouped_gemm,
                         normalization=args.normalization,
                         use_kitchen=config.use_kitchen,
-                        use_true_on_policy_backend=config.true_on_policy_contract is not None,
                         use_kitchen_attention=config.use_kitchen_attention,
                         kitchen_attention_backend=config.kitchen_attention_backend,
                     )

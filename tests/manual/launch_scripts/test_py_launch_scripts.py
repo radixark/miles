@@ -63,7 +63,10 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
     },
 }
 
-_ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {("scripts/run_deepseek_v4.py", "prepare_mxfp8")}
+_ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {
+    ("scripts/run_deepseek_v4.py", "prepare_mxfp8"),
+    ("scripts/run_deepseek_v4.py", "prepare_fp8"),
+}
 
 _SCRIPTS = [
     script for script in iter_py_launch_scripts() if script.rel not in _SCRIPTS_IMPORTABLE_ONLY_UNDER_THE_NPU_PATCH

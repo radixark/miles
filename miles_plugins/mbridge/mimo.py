@@ -76,13 +76,12 @@ class MimoBridge(Qwen2Bridge):
         if name in direct_name_mapping:
             return [direct_name_mapping[name]]
 
-        # Handle transformer components within MTP
-        # Check if this is a transformer_layer component
-        if "transformer_layer" in name:
+        _mtp_inner = next((p for p in ("transformer_layer", "mtp_model_layer") if p in name), None)
+        if _mtp_inner is not None:
             # Create a proxy name to use with parent class methods
-            # Convert mtp.layers.{idx}.transformer_layer.* to decoder.layers.{idx}.*
+            # Convert mtp.layers.{idx}.<inner>.* to decoder.layers.{idx}.*
             proxy_name = name.replace(
-                f"mtp.layers.{mtp_layer_idx}.transformer_layer",
+                f"mtp.layers.{mtp_layer_idx}.{_mtp_inner}",
                 f"decoder.layers.{mtp_layer_idx}",
             )
 
