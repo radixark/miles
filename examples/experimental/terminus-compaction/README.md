@@ -1,6 +1,6 @@
 # Terminus 2 training with compaction
 
-This example trains GLM-4.7-Flash on a 23-task Terminal-Bench 2 subset with the
+This example trains GLM-4.7-Flash on all 89 Terminal-Bench 2 tasks with the
 Terminus 2 harness. Terminus summarization and linear history are enabled, so a
 long agent episode can become multiple training samples without counting as
 multiple GRPO rollouts.
@@ -71,11 +71,10 @@ uv run python miles_agent_server.py \
     --trials-dir "$TRIALS_DIR"
 ```
 
-`HARBOR_TASKS_DIR` must contain a Harbor task directory for every
-`metadata.instance_id` in `tb2_23_tasks.jsonl`. The server runs Terminus 2 as a
-host process and creates one Docker sandbox per trial, so the server host needs
-Docker, enough memory for 32 concurrent trials, and network access to the Miles
-session server.
+`HARBOR_TASKS_DIR` must contain all 89 Terminal-Bench 2 task directories. The
+server runs Terminus 2 as a host process and creates one Docker sandbox per
+trial, so the server host needs Docker, enough memory for 32 concurrent trials,
+and network access to the Miles session server.
 
 Verify the server before launching training:
 
@@ -83,7 +82,7 @@ Verify the server before launching training:
 curl --fail http://<agent-server>:11000/health
 ```
 
-## 2. Prepare GLM-4.7-Flash
+## 2. Prepare GLM-4.7-Flash and the full task set
 
 By default, `run.py` expects these directories:
 
@@ -96,9 +95,21 @@ Use `--model-dir` to change the common parent. If only the Hugging Face
 checkpoint exists, omit `--skip-prepare` and the launcher converts the reference
 checkpoint before training.
 
-The bundled `tb2_23_tasks.jsonl` is the same small task shape used by the
-recipe. To train on a different set, pass a JSONL file with this schema through
-`--prompt-data`:
+Convert a JSONL export of all 89 Terminal-Bench 2 tasks to Miles format. Each
+source row must contain `instance_id` and `instruction`:
+
+```bash
+python examples/swe-agent-harbor-docker/download_and_process_data.py \
+    --input /path/to/terminal-bench-2.jsonl \
+    --output /path/to/tb2_train_89.jsonl \
+    --agent-name terminus-2 \
+    --prompt-key instruction
+
+test "$(wc -l < /path/to/tb2_train_89.jsonl)" -eq 89
+```
+
+The resulting `metadata.instance_id` values must match the 89 task directory
+names under `HARBOR_TASKS_DIR`. Each row uses this schema:
 
 ```json
 {"prompt":"task-name","metadata":{"instance_id":"task-name","agent_name":"terminus-2"}}
@@ -118,6 +129,7 @@ python examples/experimental/terminus-compaction/run.py \
     --skip-prepare \
     --model-dir /path/to/models \
     --output-dir /path/to/output \
+    --prompt-data /path/to/tb2_train_89.jsonl \
     --agent-server-url http://<agent-server>:11000 \
     --session-server-ip 0.0.0.0 \
     --router-external-host <trainer-address-reachable-from-agent-server>

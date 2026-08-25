@@ -1,4 +1,3 @@
-import json
 import shlex
 
 import pytest
@@ -38,6 +37,7 @@ def test_recipe_enables_compaction_aware_session_training(args, monkeypatch):
     assert _value(argv, "--global-batch-size") == "32"
     assert _value(argv, "--num-rollout") == "100"
     assert _value(argv, "--rollout-max-response-len") == "8192"
+    assert _value(argv, "--prompt-data") == "/root/tb2_train_89.jsonl"
 
 
 def test_recipe_records_dashboard_traces_and_honors_gpu_count(args, monkeypatch):
@@ -80,13 +80,3 @@ def test_agent_runtime_environment_omits_optional_hosts(args):
 
     assert "MILES_ROUTER_EXTERNAL_HOST" not in env
     assert "MILES_HOST_IP" not in env
-
-
-def test_bundled_subset_contains_23_terminus_tasks():
-    rows = [json.loads(line) for line in (_EXAMPLE_DIR / "tb2_23_tasks.jsonl").read_text().splitlines()]
-    instance_ids = [row["metadata"]["instance_id"] for row in rows]
-
-    assert len(rows) == 23
-    assert len(set(instance_ids)) == 23
-    assert all(row["prompt"] == row["metadata"]["instance_id"] for row in rows)
-    assert all(row["metadata"]["agent_name"] == "terminus-2" for row in rows)

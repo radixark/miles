@@ -5,7 +5,7 @@ session server v2 to retain the trajectory segments created by Terminus 2
 summarization. Start the Harbor agent server as described in the adjacent
 README before launching this script.
 
-The default recipe runs 100 GRPO steps over the bundled 23-task subset, with
+The default recipe runs 100 GRPO steps over all 89 Terminal-Bench 2 tasks, with
 four prompts and eight independent rollouts per prompt in each step.
 
 Example:
@@ -27,7 +27,6 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
 _HARBOR_PIPELINE_DIR = U.repo_base_dir / "examples" / "swe-agent-harbor-docker"
 
 
@@ -46,7 +45,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ref_load: str = ""
     save_dir: str = ""
     save_traces_dir: str = ""
-    prompt_data: str = field(default_factory=lambda: str(_SCRIPT_DIR / "tb2_23_tasks.jsonl"))
+    prompt_data: str = "/root/tb2_train_89.jsonl"
 
     max_seq_len: int = 32768
     rollout_max_response_len: int = 8192
