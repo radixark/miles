@@ -5,8 +5,7 @@ replayable chess harness in radix_raft. Each prompt owns one TITO v2 session and
 one chess game. The default smoke configuration performs ten GRPO steps with
 eight prompts and eight independent trajectories per prompt.
 
-Qwen 3.5 TITO is selected intentionally as a temporary compatibility surface
-for Qwen 3.6. The fixed template retains thinking and supports the user and
+The native Qwen 3.6 TITO family retains thinking and supports the user and
 assistant turns emitted by the chess harness.
 
 Args:
@@ -323,7 +322,7 @@ def _sglang_args(args: ScriptArgs) -> str:
 
 
 def _agent_args(args: ScriptArgs) -> str:
-    return f"--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate --custom-agent-function-path chess_agent.run --dynamic-sampling-filter-path chess_filter.check_chess_group --tito-model qwen35 --use-session-server v2 --session-server-port {args.session_server_port} "
+    return f"--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate --custom-agent-function-path chess_agent.run --dynamic-sampling-filter-path chess_filter.check_chess_group --tito-model qwen36 --use-session-server v2 --session-server-port {args.session_server_port} "
 
 
 def _observability_args(args: ScriptArgs) -> str:
