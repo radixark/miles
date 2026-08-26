@@ -41,7 +41,7 @@ import miles.utils.external_utils.command_utils as U
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _RADIX_RAFT_REPOSITORY = "https://github.com/radixark/radix_raft.git"
-_RADIX_RAFT_REVISION = "28a92796516e5192f8899466025f1de19c774c5f"
+_RADIX_RAFT_REVISION = "79cf2592e9daa2f738121b573c2d20f718890045"
 
 
 @dataclass
