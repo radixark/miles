@@ -131,12 +131,7 @@ class DetProcessGroup(BaseProcessGroup):
         # The coalescing manager's flush passes no opts; inner lacks the coalesced form.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
-            # Inside an active _coalescing_manager the inner collectives are batched
-            # and hand back None, and the manager waits on the aggregate at exit;
-            # outside one they return a real Work that nobody else will wait on.
-            work = self._inner._allgather_base(output, input, effective_opts)
-            if work is not None:
-                work.wait()
+            self._inner._allgather_base(output, input, effective_opts).wait()
         return _CompletedWork()
 
     def _allgather_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
@@ -161,10 +156,14 @@ class DetProcessGroup(BaseProcessGroup):
             self._reduce_scatter_base(output, input, opts)
         return _CompletedWork()
 
-    # torch 2.13 routes dist.reduce_scatter_tensor / all_gather_into_tensor through
-    # these names. Without them the call reaches the C++ base, which dispatches to
-    # the NCCL backend registered above -- silently giving up the fixed-order fold
-    # rather than raising.
+    # torch 2.13 routes dist.reduce_scatter_tensor through these names. Without
+    # them the call reaches the C++ base, which dispatches to the NCCL backend
+    # registered above -- silently giving up the fixed-order fold rather than
+    # raising. Only the reducing collectives need this: all_gather / alltoall /
+    # barrier move data without summing, so the base dispatch returns the same
+    # bits, and intercepting all_gather's coalesced form additionally reissues
+    # per-tensor collectives inside an active _coalescing_manager, which faults
+    # in NCCL.
     def reduce_scatter_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
         return self._reduce_scatter_base(output, input, opts)
 
@@ -172,14 +171,6 @@ class DetProcessGroup(BaseProcessGroup):
         self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
     ) -> Work:
         return self.reduce_scatter_tensor_coalesced(output_tensors, input_tensors, opts)
-
-    def all_gather_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
-        return self._allgather_base(output, input, opts)
-
-    def all_gather_single_coalesced(
-        self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object
-    ) -> Work:
-        return self.allgather_into_tensor_coalesced(output_tensors, input_tensors, opts)
 
     def alltoall_base(
         self,
