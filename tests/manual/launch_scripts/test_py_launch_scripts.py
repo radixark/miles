@@ -7,6 +7,7 @@ import pytest
 
 from tests.fast.launch_scripts.py_harness import (
     CLEARED_ENV,
+    FROZEN_HARDWARE,
     call_entrypoint,
     format_recording,
     freeze_environment,
@@ -14,6 +15,7 @@ from tests.fast.launch_scripts.py_harness import (
     import_launch_script,
     install_command_recorder,
     iter_py_launch_scripts,
+    launcher_hardware_literals,
 )
 from tests.fast.launch_scripts.sh_harness import REPO_ROOT, assert_matches_snapshot
 
@@ -63,6 +65,19 @@ _SCRIPTS_WHOSE_DEFAULTS_ARE_UNSUPPORTED: dict[str, Callable[[Path], dict[str, ob
     },
 }
 
+# The machine each recording represents. Launchers default --hardware to whatever node they run on, so the
+# suite pins one; FROZEN_HARDWARE covers the rest.
+_HARDWARE_A_RECORDING_REPRESENTS = {
+    "scripts/amd/run_qwen3_30b_a3b.py": "MI355X",
+    "scripts/amd/run_qwen3_4b.py": "MI355X",
+    "scripts/run_deepseek_v32.py": "B200",
+    "scripts/run_glm45_355b_a32b.py": "GB200",
+    "scripts/run_joy_ai_llm_flash.py": "B200",
+    "scripts/run_mcore_fsdp.py": "H100",
+    "scripts/run_qwen3_30b_a3b.py": "H100",
+    "scripts/run_qwen3_4b.py": "H100",
+}
+
 _ENTRYPOINTS_DISABLED_BY_THEIR_OWN_DEFAULTS = {
     ("scripts/run_deepseek_v4.py", "prepare_mxfp8"),
     ("scripts/run_deepseek_v4.py", "prepare_fp8"),
@@ -77,7 +92,7 @@ _CASES = [(script.rel, entrypoint) for script in _SCRIPTS for entrypoint in scri
 @pytest.fixture(params=_CASES, ids=[f"{rel}::{entrypoint}" for rel, entrypoint in _CASES])
 def recorded(request, monkeypatch, tmp_path):
     rel, entrypoint = request.param
-    freeze_environment(monkeypatch)
+    freeze_environment(monkeypatch, hardware=_HARDWARE_A_RECORDING_REPRESENTS.get(rel, FROZEN_HARDWARE))
     recording = install_command_recorder(monkeypatch)
     module = import_launch_script(REPO_ROOT / rel)
     call_entrypoint(
@@ -150,6 +165,20 @@ class TestDiscovery:
         """Once the NPU patch is upstreamed this fails, forcing the exclusion out instead of letting it rot."""
         with pytest.raises(ImportError, match="execute_train_npu"):
             import_launch_script(REPO_ROOT / rel)
+
+    def test_every_pinned_recording_names_a_launcher_that_accepts_that_hardware(self):
+        """A pin the launcher does not accept records a profile nobody can run, and a stale key pins nothing."""
+        literals = launcher_hardware_literals()
+
+        assert _HARDWARE_A_RECORDING_REPRESENTS.keys() <= literals.keys()
+        for rel, hardware in _HARDWARE_A_RECORDING_REPRESENTS.items():
+            assert hardware in literals[rel], rel
+
+    def test_a_launcher_the_frozen_default_covers_is_not_pinned_as_well(self):
+        """Two ways to say the same thing drift apart; only the launchers FROZEN_HARDWARE cannot serve get a pin."""
+        redundant = {rel for rel, hardware in _HARDWARE_A_RECORDING_REPRESENTS.items() if hardware == FROZEN_HARDWARE}
+
+        assert not redundant
 
     def test_every_environment_knob_a_model_script_reads_is_frozen(self):
         """The snapshots now pin expanded model args, so a developer's exported override would fail them."""

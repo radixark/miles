@@ -38,7 +38,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_name: str = "Qwen3-4B"
     megatron_model_type: str = "qwen3-4B"
     num_gpus_per_node: int | None = None
-    hardware: Literal["MI350X", "MI355X"] = "MI355X"
+    hardware: Literal["auto", "MI350X", "MI355X"] = "auto"
     enable_eval: bool = True
     num_rollout: int = 3000
     extra_args: str = ""
@@ -47,6 +47,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 

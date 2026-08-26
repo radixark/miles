@@ -1,8 +1,8 @@
 import logging
 import os
 
+from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
-from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
 
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 
 
 def set_default_megatron_args(args):
+    if getattr(args, "true_on_policy_mode", False):
+        raise NotImplementedError(
+            "--true-on-policy-mode is not supported on the megatron backend with this Megatron "
+            "version; support lands in a follow-up PR. Use --train-backend fsdp for true-on-policy."
+        )
     # Muon currently owns its sharding path, and Megatron's distributed optimizer
     # only supports Adam-family optimizers.
     args.use_distributed_optimizer = (args.optimizer is None or args.optimizer.lower() == "adam") and not getattr(
@@ -27,6 +32,10 @@ def set_default_megatron_args(args):
     # Notice(Jiajun): new megatron has removed this argument and use dp_reshardable instead of fully_shard
     if os.getenv("DEPRECATED_MEGATRON_COMPATIBLE", "0") == "1":
         args.dist_ckpt_save_pre_mcore_014 = True
+    # Before 20260819, radixark/Megatron-LM pick torch gemm for router, which is fp32 x fp32 ->
+    # fp32, and 20260819 convert the default to TE gemm which is bf16 x bf16 -> fp32. Result show
+    # the TE one increase log prob diff so manually set back
+    args.moe_router_use_torch_mm = True
     # compatible for megatron
     if hasattr(args, "rope_type") and args.rope_type is None:
         args.rope_type = "yarn" if args.multi_latent_attention else "rope"
@@ -38,6 +47,8 @@ def set_default_megatron_args(args):
         logger.info("--tokenizer-model not set, use --hf-checkpoint as tokenizer model.")
         args.tokenizer_model = args.hf_checkpoint
         args.tokenizer_type = "HuggingFaceTokenizer"
+
+    args.trust_remote_code = True
 
     if not hasattr(args, "miles_dsa_topk_backend"):
         args.miles_dsa_topk_backend = "torch"

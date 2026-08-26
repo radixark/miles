@@ -78,8 +78,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "nvidia"
     model_name: str = FULL_MODEL_NAME
     megatron_model_type: str = "nemotron-3-ultra-550b-a55b"
-    num_gpus_per_node: int = 8
-    hardware: Literal["H200", "B200", "GB300"] = "H200"
+    num_gpus_per_node: int | None = None
+    hardware: Literal["auto", "H200", "B200", "GB300"] = "auto"
     enable_eval: bool = False
     enable_optimizer_offload: bool = True
     check_weight_update_equal: bool = False
@@ -96,6 +96,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if (m := re.search(r"(\d+)layer", self.model_name)) is not None:
             self.megatron_model_type = f"nemotron-3-ultra-550b-a55b-{m.group(1)}layer"
         elif self.model_name != FULL_MODEL_NAME:

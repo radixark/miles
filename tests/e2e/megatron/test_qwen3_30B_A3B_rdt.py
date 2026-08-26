@@ -125,6 +125,10 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         train_script="train_async.py",
+        # This single-node test only needs CUDA IPC. The Novita H100 runner
+        # exposes an unusable mlx5 bond that makes UCX backend creation fail
+        # before NIXL can select its same-node data path.
+        extra_env_vars={"UCX_TLS": "sm,self,tcp,cuda_copy,cuda_ipc"},
     )
 
 

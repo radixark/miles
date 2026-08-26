@@ -353,15 +353,18 @@ def _named_params_and_buffers_global(
 
                 # MTP layer indices start from 0
                 layer_idx, rest = match.groups()
-                expert_pattern = r"transformer_layer.mlp.experts\.(.+)\.weight(\d+)"
+                expert_pattern = r"(transformer_layer|mtp_model_layer)\.mlp\.experts\.(.+)\.weight(\d+)"
                 match = re.match(expert_pattern, rest)
                 if not match:
                     yield name, param
                     continue
 
-                rest, expert_idx = match.groups()
+                inner, rest, expert_idx = match.groups()
                 expert_idx = int(expert_idx) + expert_offset
-                yield f"module.module.mtp.layers.{layer_idx}.transformer_layer.mlp.experts.{rest}.weight{expert_idx}", param
+                yield (
+                    f"module.module.mtp.layers.{layer_idx}.{inner}.mlp.experts.{rest}.weight{expert_idx}",
+                    param,
+                )
                 continue
 
             layer_idx, rest = match.groups()
