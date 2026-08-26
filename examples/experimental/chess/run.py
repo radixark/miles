@@ -222,7 +222,7 @@ def _prepare_chess_environment(args: ScriptArgs) -> None:
     U.exec_command_cpu("apt-get update")
     U.exec_command_cpu("DEBIAN_FRONTEND=noninteractive apt-get install -y stockfish")
     U.exec_command_cpu(f"test -d {args.radix_raft_dir}/.git || git clone {_RADIX_RAFT_REPOSITORY} {args.radix_raft_dir}")
-    U.exec_command_cpu(f"git -C {args.radix_raft_dir} fetch origin {args.radix_raft_revision}")
+    U.exec_command_cpu(f"git -C {args.radix_raft_dir} cat-file -e {args.radix_raft_revision}^{{commit}} || git -C {args.radix_raft_dir} fetch origin {args.radix_raft_revision}")
     U.exec_command_cpu(f"git -C {args.radix_raft_dir} checkout --detach {args.radix_raft_revision}")
     chess_package = Path(args.radix_raft_dir) / "experiments" / "shi" / "chess_eval"
     U.exec_command_cpu(f"uv pip install --system -e {chess_package}")
