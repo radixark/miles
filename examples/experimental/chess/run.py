@@ -26,7 +26,12 @@ Example:
 """
 
 import json
-from dataclasses import dataclass, field
+import os
+import platform
+import subprocess
+import sys
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -92,6 +97,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     prometheus_port: int = 9090
     wandb_team: str = "ch271828n-team"
     wandb_project: str = "miles-chess_run"
+    container_image_digest: str = ""
     extra_args: str = ""
 
     def __post_init__(self) -> None:
@@ -123,6 +129,52 @@ def _hf_checkpoint(args: ScriptArgs) -> Path:
     if args.hf_checkpoint_path is not None:
         return Path(args.hf_checkpoint_path)
     return Path(args.model_dir) / args.model_name
+
+
+def _git_revision(path: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _write_run_manifest(args: ScriptArgs) -> None:
+    path = _run_dir(args) / "run_manifest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "run_id": args.run_id,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "host": platform.node(),
+        "configuration": asdict(args),
+        "launch_argv": sys.argv,
+        "train_args": _build_train_args(args),
+        "environment": {
+            **_extra_env_vars(args),
+            "WANDB_API_KEY": "present" if os.environ.get("WANDB_API_KEY") else "missing",
+        },
+        "versions": {
+            "miles": _git_revision(Path(U.repo_base_dir)),
+            "sglang": _git_revision(Path("/sgl-workspace/sglang")),
+            "megatron_lm": _git_revision(Path(args.megatron_path)),
+            "radix_raft": _git_revision(Path(args.radix_raft_dir)) or args.radix_raft_revision,
+            "container_image_digest": args.container_image_digest or None,
+        },
+        "snapshot_refs": {
+            "miles": f"refs/training-runs/{args.run_id}/miles",
+            "sglang": f"refs/training-runs/{args.run_id}/sglang",
+            "megatron_lm": f"refs/training-runs/{args.run_id}/megatron-lm",
+            "radix_raft": f"refs/training-runs/{args.run_id}/radix-raft",
+        },
+    }
+    temporary_path = path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(path)
 
 
 def _prompt_rows(args: ScriptArgs) -> list[dict[str, object]]:
@@ -325,6 +377,7 @@ def _prepare(args: ScriptArgs) -> None:
     _write_prompt_data(args)
     _prepare_chess_environment(args)
     _prepare_model(args)
+    _write_run_manifest(args)
 
 
 def _execute(args: ScriptArgs) -> None:
@@ -342,6 +395,7 @@ def _execute(args: ScriptArgs) -> None:
 def main(args: ScriptArgs) -> None:
     if args.skip_prepare:
         _write_prompt_data(args)
+        _write_run_manifest(args)
     else:
         _prepare(args)
     _execute(args)
