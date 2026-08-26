@@ -128,13 +128,14 @@ class DetProcessGroup(BaseProcessGroup):
     def allgather_into_tensor_coalesced(
         self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object = None
     ) -> Work:
-        # The coalescing manager's flush passes no opts; inner lacks the coalesced form.
+        # _coalescing_manager(device=...) opens a coalescing region on THIS group
+        # before the body runs, then routes its flush here. _start_coalescing /
+        # _end_coalescing below put that region on the inner group, so the calls
+        # issued here join the batch: they return None and the aggregate Work
+        # that _end_coalescing returns is what the manager waits on. All-gather
+        # moves data without summing, so no fixed-order fold applies.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
-            # torch 2.13's _coalescing_manager exit calls this directly, and the
-            # inner collectives it batches hand back None -- the manager waits on
-            # the aggregate. Outside a manager they return a real Work that
-            # nobody else will wait on.
             work = self._inner._allgather_base(output, input, effective_opts)
             if work is not None:
                 work.wait()
@@ -187,6 +188,20 @@ class DetProcessGroup(BaseProcessGroup):
         opts: object,
     ) -> Work:
         return self._inner.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
+
+    def all_to_all_single(
+        self,
+        output_tensor: torch.Tensor,
+        input_tensor: torch.Tensor,
+        output_split_sizes: list[int],
+        input_split_sizes: list[int],
+        opts: object,
+    ) -> Work:
+        # torch 2.13 renamed the entry point dist.all_to_all_single dispatches
+        # to. Without it the call reaches the C++ base, whose alltoall dispatch
+        # on a wrapper group faults in NCCL. No reduction is involved; this just
+        # forwards to the inner group the way alltoall_base does.
+        return self.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
 
     def send(self, tensors: list[torch.Tensor], dst_rank: int, tag: int) -> Work:
         return self._inner.send(tensors, dst_rank, tag)
