@@ -379,6 +379,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 num_microbatches,
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
+                fp32_output=False,
             )
 
     @with_logs
