@@ -313,6 +313,7 @@
       "pages": [
        "diffusion/models/cosmos/cosmos3",
        "diffusion/models/h3/h3",
+       "diffusion/models/h3/lora_sft_guide",
        "diffusion/models/ltx/ltx2",
        "diffusion/models/qwen-image/qwen-image",
        "diffusion/models/sd3/sd3",
