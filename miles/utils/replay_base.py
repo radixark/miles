@@ -57,6 +57,10 @@ class BaseReplayManager:
     # True when replayed indices are token/KV positions (indexer): rebase the
     # per-sample 0-based rollout indices onto the packed training sequence.
     replay_indices_are_token_positions = False
+    # MoE routing validates every replayed expert index before masking padded
+    # slots. Indexer replay has different partial-padding semantics, so only
+    # routing replay should opt into replacing every invalid slot.
+    sanitize_partial_invalid_indices = False
 
     def __init__(self):
         self.replays: list[Replay] = []
@@ -99,6 +103,17 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
+            if self.sanitize_partial_invalid_indices:
+                invalid = top_indices == -1
+                partial_invalid_rows = invalid.any(dim=-1) & ~invalid.all(dim=-1)
+                padding_mask = invalid & partial_invalid_rows.unsqueeze(-1)
+                if padding_mask.any():
+                    top_indices = top_indices.clone()
+                    top_indices[padding_mask] = (
+                        torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
+                        % scores.shape[1]
+                    )
+
             # fill padding tokens with arange to avoid invalid reading
             all_invalid = (top_indices == -1).all(dim=-1)
             if all_invalid.any():
@@ -107,6 +122,14 @@ class BaseReplayManager:
                     % scores.shape[1]
                 )
                 top_indices = torch.where(all_invalid.unsqueeze(-1), ar, top_indices)
+
+            # Rollout payloads are serialized as int32, while routing callers
+            # feed the result to PyTorch gather/scatter operators that require
+            # int64. A native torch.topk call also returns int64. Keep the
+            # indexer-only, return-indices path unchanged because its kernels
+            # consume the serialized int32 representation directly.
+            if return_probs or self.sanitize_partial_invalid_indices:
+                top_indices = top_indices.long()
 
             if return_probs:
                 return scores.gather(1, top_indices), top_indices
@@ -219,6 +242,7 @@ class RoutingReplayManager(BaseReplayManager):
     if_sp_region = True
     enable_check_replay_result = False
     replay_check_max_mismatch_fraction = 1e-2
+    sanitize_partial_invalid_indices = True
 
 
 class IndexerReplayManager(BaseReplayManager):
