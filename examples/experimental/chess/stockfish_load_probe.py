@@ -20,7 +20,7 @@ class Arguments(Tap):
     stockfish_timeout_seconds: float = 20.0
     num_games: int = 64
     max_concurrent_games: int = 16
-    move_time_seconds: float = 0.02
+    move_time_seconds: float = 0.2
 
 
 @dataclass(frozen=True)
