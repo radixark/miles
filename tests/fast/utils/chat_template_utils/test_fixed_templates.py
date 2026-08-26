@@ -78,7 +78,13 @@ def test_fixed_template_rejects_unknown_role():
 
 @pytest.mark.parametrize(
     "tokenizer_cls",
-    [DeepSeekV4TITOTokenizer, Qwen35TITOTokenizer, Qwen36TITOTokenizer, MinimaxM25TITOTokenizer, MinimaxM27TITOTokenizer],
+    [
+        DeepSeekV4TITOTokenizer,
+        Qwen35TITOTokenizer,
+        Qwen36TITOTokenizer,
+        MinimaxM25TITOTokenizer,
+        MinimaxM27TITOTokenizer,
+    ],
 )
 def test_restricted_fixed_template_excludes_mid_session_system(tokenizer_cls):
     assert tokenizer_cls.FIXED_TEMPLATE.allowed_append_roles == frozenset({"tool", "user", "assistant"})
