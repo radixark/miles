@@ -54,6 +54,10 @@ Preparation downloads and converts `Qwen/Qwen3.6-35B-A3B`, installs Stockfish,
 checks out the pinned radix_raft chess harness, and installs its Python package.
 Use `--skip-prepare` only after those artifacts are present.
 
+If the node cannot authenticate to the radix_raft remote, transfer a complete
+Git checkout to `--radix-raft-dir` before launching. Preparation reuses the
+pinned revision when it already exists locally and only fetches it when absent.
+
 When a verified Hugging Face checkpoint already exists on shared storage, pass
 it with `--hf-checkpoint-path` and put `--model-dir` on a filesystem large
 enough for the converted Megatron checkpoint. The source checkpoint is reused
