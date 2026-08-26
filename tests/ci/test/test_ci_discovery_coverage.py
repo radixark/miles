@@ -56,8 +56,7 @@ def _test_files_outside_the_tests_tree() -> list[str]:
         if path
         # .claude/ holds agent-skill tooling whose test suites are run by the
         # skill's own workflow, not by the CI runners this rule guards.
-        and not path.startswith(("tests/", ".claude/"))
-        and PurePosixPath(path).name.startswith("test_")
+        and not path.startswith(("tests/", ".claude/")) and PurePosixPath(path).name.startswith("test_")
     )
 
 
