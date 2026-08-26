@@ -42,6 +42,10 @@ def _test_files_outside_the_tests_tree() -> list[str]:
     Megatron-LM *into* the workspace, so the walk would inherit thousands of test
     files belonging to other repositories (and, locally, whatever a venv or a
     worktree happens to hold).
+
+    ``.claude/skills/`` is excluded for the same reason the walk is: a skill ships
+    its own harness and runs it itself, so those files are no more this runner's to
+    collect than sglang's are.
     """
     listing = subprocess.run(
         ["git", "ls-files", "-z", "--", "*test_*.py"],
@@ -53,7 +57,7 @@ def _test_files_outside_the_tests_tree() -> list[str]:
     return sorted(
         path
         for path in listing.split("\0")
-        if path and not path.startswith("tests/") and PurePosixPath(path).name.startswith("test_")
+        if path and not path.startswith(("tests/", ".claude/")) and PurePosixPath(path).name.startswith("test_")
     )
 
 
