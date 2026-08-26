@@ -36,6 +36,7 @@ class HotRestartFaultForm(BaseFaultForm):
         config: ExecuteTrainConfig,
         checkpoint_dir: Path,
         events_dir: Path,
+        max_allowed_rollout_id: int,
         poll_interval_seconds: float = TAKE_OVER_POLL_INTERVAL_SECONDS,
         timeout_seconds: float = TAKE_OVER_TIMEOUT_SECONDS,
         baseline_read_attempts: int = BASELINE_STAMP_READ_ATTEMPTS,
@@ -46,6 +47,7 @@ class HotRestartFaultForm(BaseFaultForm):
         self._namespace = config.namespace
         self._checkpoint_dir = checkpoint_dir
         self._events_dir = events_dir
+        self._max_allowed_rollout_id = max_allowed_rollout_id
         self._poll_interval_seconds = poll_interval_seconds
         self._timeout_seconds = timeout_seconds
         self._baseline_read_attempts = baseline_read_attempts
@@ -80,6 +82,13 @@ class HotRestartFaultForm(BaseFaultForm):
     @property
     def harms_cell(self) -> bool:
         return False
+
+    def is_within_injection_window(self) -> bool:
+        progress = read_run_progress(checkpoint_dir=self._checkpoint_dir, events_dir=self._events_dir)
+        return (
+            progress.last_finished_rollout_id is None
+            or progress.last_finished_rollout_id < self._max_allowed_rollout_id
+        )
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         progress = read_run_progress(checkpoint_dir=self._checkpoint_dir, events_dir=self._events_dir)
