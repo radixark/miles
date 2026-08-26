@@ -1,6 +1,7 @@
 # NOTE: You MUST read tests/e2e/ft/README.md as source-of-truth and documentations
 
 import threading
+from collections.abc import Callable
 
 from tests.e2e.ft.conftest_ft.fault_injection.core import list_cells, run_fault_injection_loop
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
@@ -21,10 +22,12 @@ class FaultInjectorHandle:
         seed: int,
         mean_interval_seconds_of_cell_type: dict[str, float],
         cell_fault_forms: CellFaultForms,
+        get_virtual_cells: Callable[[], list[dict]] | None = None,
     ) -> None:
         self.event_log = EventLog()
         self._base_url = base_url
         self._cell_types: set[str] = set(mean_interval_seconds_of_cell_type)
+        self._get_virtual_cells: Callable[[], list[dict]] | None = get_virtual_cells
 
         def inject_until_stopped(stop_event: threading.Event) -> None:
             run_fault_injection_loop(
@@ -34,6 +37,7 @@ class FaultInjectorHandle:
                 stop_event=stop_event,
                 event_log=self.event_log,
                 cell_fault_forms=cell_fault_forms,
+                get_virtual_cells=get_virtual_cells,
             )
 
         self._worker = PollingWorker(name="ft-random-fault-injector", run=inject_until_stopped)
@@ -55,6 +59,8 @@ class FaultInjectorHandle:
         cells = list_cells(base_url=self._base_url, cell_types=self._cell_types)
         if cells is None:
             return
+        if self._get_virtual_cells is not None:
+            cells.extend(self._get_virtual_cells())
         self.event_log.observe(cells)
 
 
@@ -64,12 +70,14 @@ def spawn_fault_injector(
     seed: int,
     mean_interval_seconds_of_cell_type: dict[str, float],
     cell_fault_forms: CellFaultForms,
+    get_virtual_cells: Callable[[], list[dict]] | None = None,
 ) -> FaultInjectorHandle:
     handle = FaultInjectorHandle(
         base_url=base_url,
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=cell_fault_forms,
+        get_virtual_cells=get_virtual_cells,
     )
     handle.start()
     return handle
