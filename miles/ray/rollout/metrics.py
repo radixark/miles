@@ -1,4 +1,5 @@
 import logging
+from numbers import Number
 from typing import Any
 
 import numpy as np
@@ -155,7 +156,8 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
             rollout_key = ("position", sample.group_index, position)
 
         raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
-        rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
+        if isinstance(raw_reward, Number):
+            rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
 
     rollout_rewards = [sum(rewards) / len(rewards) for rewards in rewards_by_rollout.values()]
     return {
