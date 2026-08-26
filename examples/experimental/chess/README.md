@@ -65,6 +65,19 @@ chess agent itself. This bounds the complete engine lifetime, not just the
 startup burst. Increase `--stockfish-max-concurrent-games` only after a real
 load probe succeeds on the target host.
 
+Run the same 64-game, two-engine-per-game load envelope without model inference:
+
+```bash
+PYTHONPATH=examples/experimental/chess python \
+    examples/experimental/chess/stockfish_load_probe.py \
+    --num_games 64 \
+    --max_concurrent_games 16 \
+    --stockfish_timeout_seconds 20
+```
+
+The probe starts, configures, and exercises both engines in every game, reports
+the peak number of live engines, and fails if any Stockfish process remains.
+
 If the node cannot authenticate to the radix_raft remote, transfer a complete
 Git checkout to `--radix-raft-dir` before launching. Preparation reuses the
 pinned revision when it already exists locally and only fetches it when absent.
