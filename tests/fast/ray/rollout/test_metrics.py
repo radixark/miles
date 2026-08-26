@@ -4,12 +4,39 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
+    _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+
+
+class TestEpisodeResponseLengthMetrics:
+    def test_compacted_siblings_are_summed_before_computing_statistics(self):
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(group_index=0, index=0, rollout_id=10, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(group_index=0, index=1, rollout_id=11, response_length=4, loss_mask=[1, 1, 1, 1]),
+            make_sample(group_index=1, index=2, rollout_id=10, response_length=8, loss_mask=[1, 1, 1, 1, 1, 1, 0, 0]),
+        ]
+
+        out = _compute_episode_response_length_metrics(samples)
+
+        assert out == {
+            "episode_response_length/mean": pytest.approx(8.0),
+            "episode_response_length/median": pytest.approx(8.0),
+            "episode_response_length/max": pytest.approx(12.0),
+            "episode_response_length/min": pytest.approx(4.0),
+            "episode_effective_response_length/mean": pytest.approx(5.0),
+            "episode_effective_response_length/median": pytest.approx(5.0),
+            "episode_effective_response_length/max": pytest.approx(6.0),
+            "episode_effective_response_length/min": pytest.approx(4.0),
+        }
+
+    def test_empty_samples_emit_no_episode_length_metrics(self):
+        assert _compute_episode_response_length_metrics([]) == {}
 
 
 class TestTrainingSampleMetrics:
@@ -214,6 +241,8 @@ class TestTitoMismatchMetrics:
 
         assert logged["rollout/num_training_samples"] == 4
         assert logged["rollout/episode_raw_reward"] == pytest.approx(1.5)
+        assert logged["rollout/episode_response_length/mean"] == pytest.approx(4.0)
+        assert logged["rollout/episode_effective_response_length/mean"] == pytest.approx(4.0)
         assert logged["rollout/tito_session_mismatch_rate/v2/assistant_text"] == 0.25
         assert "rollout/tito_session_mismatch_rate/assistant_text" not in logged
 
