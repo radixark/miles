@@ -41,7 +41,7 @@ import miles.utils.external_utils.command_utils as U
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _RADIX_RAFT_REPOSITORY = "https://github.com/radixark/radix_raft.git"
-_RADIX_RAFT_REVISION = "6f1eb6d873d96ca5bf1f63bf9b1b102d833d9c71"
+_RADIX_RAFT_REVISION = "28a92796516e5192f8899466025f1de19c774c5f"
 
 
 @dataclass
@@ -73,6 +73,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     stockfish_elo: int = 1320
     max_model_turns: int = 8
     max_plies: int = 200
+    stockfish_startup_timeout_seconds: float = 20.0
+    stockfish_max_concurrent_games: int = 16
     stockfish_move_time_seconds: float = 0.2
     stockfish_review_time_seconds: float = 0.2
     compaction_trigger_tokens: int = 131072
@@ -103,6 +105,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self) -> None:
         self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
+        if self.stockfish_startup_timeout_seconds <= 0:
+            raise ValueError("stockfish_startup_timeout_seconds must be positive")
+        if self.stockfish_max_concurrent_games < 1:
+            raise ValueError("stockfish_max_concurrent_games must be at least 1")
 
 
 def _run_dir(args: ScriptArgs) -> Path:
@@ -197,6 +203,8 @@ def _prompt_rows(args: ScriptArgs) -> list[dict[str, object]]:
                         "max_plies": args.max_plies,
                         "stockfish_elo": args.stockfish_elo,
                         "stockfish_path": args.stockfish_path,
+                        "stockfish_startup_timeout_seconds": args.stockfish_startup_timeout_seconds,
+                        "stockfish_max_concurrent_games": args.stockfish_max_concurrent_games,
                         "stockfish_move_time_seconds": args.stockfish_move_time_seconds,
                         "stockfish_review_time_seconds": args.stockfish_review_time_seconds,
                         "stockfish_threads": 1,
@@ -301,6 +309,7 @@ def _sglang_args(args: ScriptArgs) -> str:
         f"--sglang-mem-fraction-static {args.sglang_mem_fraction_static} "
         f"--sglang-ep-size {args.sglang_ep_size} "
         f"--sglang-max-running-requests {args.sglang_max_running_requests} "
+        f"--sglang-server-concurrency {args.stockfish_max_concurrent_games} "
         f"--sglang-router-port {args.sglang_router_port} "
         "--sglang-reasoning-parser qwen3 "
         "--sglang-tool-call-parser qwen3_coder "
