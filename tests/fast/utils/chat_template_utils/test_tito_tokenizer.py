@@ -66,6 +66,7 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     InklingTITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
+    Qwen36TITOTokenizer,
     QwenNextTITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
@@ -674,7 +675,7 @@ class TestFactory:
         [
             ("qwen3", "Qwen/Qwen3-4B", Qwen3TITOTokenizer),
             ("qwen35", "Qwen/Qwen3-4B", Qwen35TITOTokenizer),
-            ("qwen36", "Qwen/Qwen3-4B", Qwen35TITOTokenizer),
+            ("qwen36", "Qwen/Qwen3-4B", Qwen36TITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
@@ -694,7 +695,7 @@ class TestFactory:
         "type_str, cls",
         [
             ("qwen35", Qwen35TITOTokenizer),
-            ("qwen36", Qwen35TITOTokenizer),
+            ("qwen36", Qwen36TITOTokenizer),
             ("qwennext", QwenNextTITOTokenizer),
         ],
     )

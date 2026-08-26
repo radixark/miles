@@ -464,11 +464,14 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
-    @pytest.mark.parametrize("family", ["qwen35", "qwen36"])
-    def test_qwen35_and_qwen36_resolve_shared_template(self, family):
+    @pytest.mark.parametrize(
+        ("family", "template"),
+        [("qwen35", "qwen3.5_fixed.jinja"), ("qwen36", "qwen3.6_fixed.jinja")],
+    )
+    def test_qwen35_and_qwen36_resolve_family_template(self, family, template):
         args = self._parse(["--use-session-server", "--tito-model", family])
         miles_validate_args(args)
-        assert args.chat_template_path.endswith("/qwen3.5_and_3.6_fixed.jinja")
+        assert args.chat_template_path.endswith(f"/{template}")
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
     def test_named_family_rejects_custom_template(self):

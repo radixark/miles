@@ -293,12 +293,24 @@ class Qwen3TITOTokenizer(TITOTokenizer):
 
 
 class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
-    """Qwen3.5/3.6 — shared Qwen3.6 template and Qwen3 token boundary."""
+    """Qwen3.5 template and Qwen3 token boundary."""
 
     tool_call_parser = "qwen3_coder"
 
     FIXED_TEMPLATE = FixedTemplate(
-        template="qwen3.5_and_3.6_fixed.jinja",
+        template="qwen3.5_fixed.jinja",
+        extra_kwargs={"preserve_thinking": True},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    )
+
+
+class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3.6 template and Qwen3 token boundary."""
+
+    tool_call_parser = "qwen3_coder"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template="qwen3.6_fixed.jinja",
         extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
@@ -784,8 +796,10 @@ class TITOTokenizerType(StrEnum):
                 return TITOTokenizer
             case cls.QWEN3:
                 return Qwen3TITOTokenizer
-            case cls.QWEN35 | cls.QWEN36:
+            case cls.QWEN35:
                 return Qwen35TITOTokenizer
+            case cls.QWEN36:
+                return Qwen36TITOTokenizer
             case cls.QWENNEXT:
                 return QwenNextTITOTokenizer
             case cls.GLM47:
