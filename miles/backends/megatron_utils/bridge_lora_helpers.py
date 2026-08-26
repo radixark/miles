@@ -6,6 +6,7 @@ forward / backward / optimizer logic.
 
 from __future__ import annotations
 
+import copy
 import logging
 from argparse import Namespace
 from dataclasses import dataclass
@@ -18,6 +19,21 @@ from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 from .lora_utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
 
 logger = logging.getLogger(__name__)
+
+_DEEPSEEK_V4_MAIN_ATTENTION_TARGETS = frozenset({"wq_a", "wq_b", "wkv", "wo_a", "wo_b"})
+
+
+def _qualify_deepseek_v4_lora_targets(target_modules):
+    """Disambiguate V4's main attention leaves from nested DSA modules."""
+
+    if not target_modules:
+        return target_modules
+    is_string = isinstance(target_modules, str)
+    modules = [target_modules] if is_string else list(target_modules)
+    qualified = [
+        f"*.self_attention.{module}" if module in _DEEPSEEK_V4_MAIN_ATTENTION_TARGETS else module for module in modules
+    ]
+    return qualified[0] if is_string else qualified
 
 
 @dataclass
@@ -128,6 +144,11 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     from megatron.bridge.training.config import DistributedDataParallelConfig
 
     hf_config = load_hf_config(args.hf_checkpoint)
+    from miles_plugins.megatron_bridge.deepseek_v4 import is_deepseek_v4_config
+
+    if is_deepseek_v4_config(hf_config):
+        return _setup_deepseek_v4_lora_model(args)
+
     bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
     provider = bridge.to_megatron_provider(load_weights=False)
 
@@ -207,3 +228,70 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
 
     model = provider.provide_distributed_model(wrap_with_ddp=True, ddp_config=ddp_config)
     return model
+
+
+def _setup_deepseek_v4_lora_model(args: Namespace) -> list:
+    """Build native DeepSeek-V4, applying PEFT before DDP wrapping."""
+
+    if is_multi_lora_enabled(args):
+        raise NotImplementedError("DeepSeek-V4 native construction does not yet support Multi-LoRA")
+
+    from megatron.bridge.models.model_provider import ModelProviderMixin, get_model as get_bridge_model
+    from megatron.bridge.training.config import DistributedDataParallelConfig
+    from megatron.core.enums import ModelType
+    from megatron.core.process_groups_config import ProcessGroupCollection
+
+    from .lora_utils import create_lora_instance
+    from .model_provider import get_model_provider_func
+
+    native_provider_func = get_model_provider_func(
+        args,
+        role="actor",
+        use_bridge_provider=False,
+    )
+
+    class _MilesDeepSeekV4Provider(ModelProviderMixin):
+        virtual_pipeline_model_parallel_size = args.virtual_pipeline_model_parallel_size
+        fp16 = args.fp16
+        bf16 = args.bf16
+
+        def provide(self, pre_process=None, post_process=None, vp_stage=None):
+            return native_provider_func(
+                pre_process=pre_process,
+                post_process=post_process,
+                vp_stage=vp_stage,
+            )
+
+    # The generic MLA aliases map bare ``wq_b`` to the DSA indexer's
+    # ``linear_wq_b``. V4 owns both that nested module and a main-attention
+    # ``wq_b``, so qualify the five main projections before PEFT's suffix
+    # matcher sees them. Explicit indexer targets remain unchanged.
+    lora_args = copy.copy(args)
+    lora_args.target_modules = _qualify_deepseek_v4_lora_targets(args.target_modules)
+    lora_args.exclude_modules = _qualify_deepseek_v4_lora_targets(getattr(args, "exclude_modules", None))
+    lora = create_lora_instance(lora_args)
+
+    def apply_lora_hook(model_chunks):
+        transformed = lora(model_chunks, training=True)
+        lora.set_params_to_save(transformed)
+        return transformed
+
+    use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
+    ddp_config = DistributedDataParallelConfig(
+        use_distributed_optimizer=use_distributed_optimizer,
+        grad_reduce_in_fp32=args.accumulate_allreduce_grads_in_fp32,
+    )
+    ddp_config.finalize()
+
+    if args.offload_train:
+        patch_param_grad_buffer_for_colocate_mode_lora()
+
+    return get_bridge_model(
+        _MilesDeepSeekV4Provider(),
+        ddp_config=ddp_config,
+        model_type=ModelType.encoder_or_decoder,
+        bf16=args.bf16,
+        fp16=args.fp16,
+        pre_wrap_hook=apply_lora_hook,
+        pg_collection=ProcessGroupCollection.use_mpu_process_groups(),
+    )

@@ -414,6 +414,7 @@ def save_lora_checkpoint(
     optimizer: Any | None = None,
     opt_param_scheduler: Any | None = None,
     iteration: int | None = None,
+    require_hf_export: bool = False,
 ) -> str:
     """Save LoRA adapter checkpoint to disk.
 
@@ -474,6 +475,9 @@ def save_lora_checkpoint(
             ):
                 lora_state_dict[hf_name] = weight
 
+        if not lora_state_dict:
+            raise RuntimeError("Megatron-Bridge exported no HF PEFT adapter tensors")
+
         if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
             torch.save(lora_state_dict, save_path / "adapter_model.bin")
 
@@ -497,6 +501,8 @@ def save_lora_checkpoint(
             os.sync()
             logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
     except Exception as hf_export_err:
+        if require_hf_export:
+            raise RuntimeError("Required HF PEFT adapter export failed") from hf_export_err
         logger.warning(
             f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
             f"shards + training state are sufficient for training resume."

@@ -102,6 +102,15 @@ def _get_hf_bridge(hf_checkpoint: str):
     return AutoBridge.from_hf_pretrained(hf_checkpoint, trust_remote_code=True)
 
 
+def _uses_adapter_only_export(args, model: Sequence[DDP]) -> bool:
+    if not is_lora_model(model):
+        return False
+
+    from miles_plugins.megatron_bridge.deepseek_v4 import is_deepseek_v4_config
+
+    return is_deepseek_v4_config(load_hf_config(args.hf_checkpoint))
+
+
 def save_hf_model(
     args,
     rollout_id: int,
@@ -112,11 +121,16 @@ def save_hf_model(
 ) -> None:
     """Save Megatron model in HuggingFace format.
 
-    For LoRA models this saves both:
+    For most LoRA models this saves both:
     - A **merged** HF model (adapter weights folded into base) at ``{path}/``
       so it can be loaded directly with ``AutoModelForCausalLM.from_pretrained``.
     - An **adapter-only** HF PEFT checkpoint at ``{path}/adapter/``
       so it can be loaded with ``PeftModel.from_pretrained``.
+
+    DeepSeek-V4 uses an adapter-only portable layout. Its model is constructed
+    natively and the Bridge integration is conversion-only, so the complete
+    reload contract is the pinned base checkpoint plus ``{path}/adapter/``
+    rather than a partially merged base.
 
     This function is collective — all ranks must call it. On success, global rank 0
     writes a ``.complete`` marker file.
@@ -130,12 +144,22 @@ def save_hf_model(
     """
     should_log = get_parallel_state().effective_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
     path = Path(path if path is not None else args.save_hf.format(rollout_id=rollout_id))
+    adapter_only = _uses_adapter_only_export(args, model)
 
     try:
         if should_log:
             logger.info(f"Saving model in HuggingFace format to {path}")
 
-        if args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
+        if adapter_only:
+            path.mkdir(parents=True, exist_ok=True)
+            if torch.distributed.get_rank() == 0:
+                (path / HF_EXPORT_COMPLETE_MARKER).unlink(missing_ok=True)
+            if should_log:
+                logger.info(
+                    "DeepSeek-V4 portable export is adapter-only; "
+                    "the frozen base remains the pinned native checkpoint"
+                )
+        elif args.megatron_to_hf_mode == "raw" and not is_lora_model(model):
             # LoRA keeps the bridge (adapter merging).
             hf_config = load_hf_config(args.hf_checkpoint)
             export_hf_model_direct(
@@ -164,7 +188,7 @@ def save_hf_model(
                         f"bridge likely has no mapping for this model architecture."
                     )
 
-        if should_log:
+        if should_log and not adapter_only:
             logger.info(f"Successfully saved merged HuggingFace model to {path}")
     except Exception as e:
         if raise_on_error:
@@ -179,7 +203,12 @@ def save_hf_model(
             adapter_path = path / "adapter"
             if should_log:
                 logger.info(f"Saving LoRA adapter (HF PEFT format) to {adapter_path}")
-            save_lora_checkpoint(model, args, str(adapter_path))
+            save_lora_checkpoint(
+                model,
+                args,
+                str(adapter_path),
+                require_hf_export=adapter_only,
+            )
             if should_log:
                 logger.info(f"Successfully saved LoRA adapter to {adapter_path}")
         except Exception as e:
