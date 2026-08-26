@@ -16,6 +16,10 @@ a dedicated, verified TITO family when one is available.
 - One node with eight H200 GPUs.
 - Ten GRPO steps.
 - Eight prompts per step and eight trajectories per prompt: 64 games per step.
+- At most 16 games run simultaneously. The remaining trajectories queue, which
+  limits the node to 32 resident Stockfish processes because each active game
+  owns one opponent engine and one independent review engine.
+- Stockfish gets 20 seconds to start and complete its UCI handshake.
 - Four prompts assign the policy White and four assign it Black.
 - Stockfish Elo 1320.
 - Eight policy moves per game.
@@ -47,12 +51,19 @@ python examples/experimental/chess/run.py \
     --num-rollout 10 \
     --rollout-batch-size 8 \
     --n-samples-per-prompt 8 \
-    --max-model-turns 8
+    --max-model-turns 8 \
+    --stockfish-max-concurrent-games 16 \
+    --stockfish-startup-timeout-seconds 20
 ```
 
 Preparation downloads and converts `Qwen/Qwen3.6-35B-A3B`, installs Stockfish,
 checks out the pinned radix_raft chess harness, and installs its Python package.
 Use `--skip-prepare` only after those artifacts are present.
+
+The launcher applies the game limit both in Miles' rollout scheduler and in the
+chess agent itself. This bounds the complete engine lifetime, not just the
+startup burst. Increase `--stockfish-max-concurrent-games` only after a real
+load probe succeeds on the target host.
 
 If the node cannot authenticate to the radix_raft remote, transfer a complete
 Git checkout to `--radix-raft-dir` before launching. Preparation reuses the
