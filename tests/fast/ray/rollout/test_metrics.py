@@ -25,15 +25,23 @@ class TestEpisodeResponseLengthMetrics:
         out = _compute_episode_response_length_metrics(samples)
 
         assert out == {
-            "episode_response_length/mean": pytest.approx(8.0),
-            "episode_response_length/median": pytest.approx(8.0),
-            "episode_response_length/max": pytest.approx(12.0),
+            "episode_response_length/mean": pytest.approx(5.0),
+            "episode_response_length/median": pytest.approx(5.0),
+            "episode_response_length/max": pytest.approx(6.0),
             "episode_response_length/min": pytest.approx(4.0),
-            "episode_effective_response_length/mean": pytest.approx(5.0),
-            "episode_effective_response_length/median": pytest.approx(5.0),
-            "episode_effective_response_length/max": pytest.approx(6.0),
-            "episode_effective_response_length/min": pytest.approx(4.0),
         }
+
+    def test_single_sample_rollouts_match_sample_level_statistics(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(index=1, rollout_id=11, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(index=2, rollout_id=12, response_length=4, loss_mask=[1, 1, 1, 1]),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), samples)
+
+        for statistic in ("mean", "median", "max", "min"):
+            assert out[f"episode_response_length/{statistic}"] == out[f"response_len/{statistic}"]
 
     def test_empty_samples_emit_no_episode_length_metrics(self):
         assert _compute_episode_response_length_metrics([]) == {}
@@ -242,7 +250,6 @@ class TestTitoMismatchMetrics:
         assert logged["rollout/num_training_samples"] == 4
         assert logged["rollout/episode_raw_reward"] == pytest.approx(1.5)
         assert logged["rollout/episode_response_length/mean"] == pytest.approx(4.0)
-        assert logged["rollout/episode_effective_response_length/mean"] == pytest.approx(4.0)
         assert logged["rollout/tito_session_mismatch_rate/v2/assistant_text"] == 0.25
         assert "rollout/tito_session_mismatch_rate/assistant_text" not in logged
 

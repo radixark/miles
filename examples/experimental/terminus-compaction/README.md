@@ -162,12 +162,9 @@ Useful per-step metrics are:
   32 without compaction and rises when episodes produce extra retained leaves.
 - `rollout/episode_raw_reward`: terminal reward averaged once per original
   rollout, so compacted episodes are not over-weighted.
-- `rollout/episode_response_length/{mean,median,max,min}`: summed raw
-  `Sample.response_length` per original rollout. This includes observation
-  tokens and shared-prefix copies present in compacted sibling samples.
-- `rollout/episode_effective_response_length/{mean,median,max,min}`: total
-  trainable model-output tokens per original rollout after applying loss masks;
-  this avoids double-counting shared prefixes across compacted siblings.
+- `rollout/episode_response_length/{mean,median,max,min}`: total trainable
+  model-output tokens per original rollout after applying loss masks. Compacted
+  sibling samples are summed without double-counting their shared prefixes.
 - `rollout/raw_reward`: reward averaged over flattened samples; this can differ
   from the episode-level metric when rollouts produce different sample counts.
 - `rollout/truncated_ratio`: should stay low. A high value usually means a

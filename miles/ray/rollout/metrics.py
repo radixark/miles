@@ -144,21 +144,17 @@ def _get_rollout_key(sample: Sample, position: int) -> tuple[str, int | None, in
 
 
 def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str, float]:
-    """Aggregate raw and trainable response tokens once per original rollout.
+    """Aggregate trainable response tokens once per original rollout.
 
     Session compaction can split one rollout into several training samples.
     Sibling samples share a rollout ID, so their lengths must be summed before
     computing batch-level statistics.
     """
     response_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
-    effective_response_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
     for position, sample in enumerate(samples):
         rollout_key = _get_rollout_key(sample, position)
         response_lengths_by_rollout[rollout_key] = (
-            response_lengths_by_rollout.get(rollout_key, 0) + sample.response_length
-        )
-        effective_response_lengths_by_rollout[rollout_key] = (
-            effective_response_lengths_by_rollout.get(rollout_key, 0) + sample.effective_response_length
+            response_lengths_by_rollout.get(rollout_key, 0) + sample.effective_response_length
         )
 
     if not response_lengths_by_rollout:
@@ -167,10 +163,6 @@ def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str,
     log_dict = dict_add_prefix(
         compute_statistics(list(response_lengths_by_rollout.values())),
         "episode_response_length/",
-    )
-    log_dict |= dict_add_prefix(
-        compute_statistics(list(effective_response_lengths_by_rollout.values())),
-        "episode_effective_response_length/",
     )
     return log_dict
 
