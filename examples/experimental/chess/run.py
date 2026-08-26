@@ -225,7 +225,7 @@ def _prepare_chess_environment(args: ScriptArgs) -> None:
     U.exec_command_cpu(f"git -C {args.radix_raft_dir} cat-file -e {args.radix_raft_revision}^{{commit}} || git -C {args.radix_raft_dir} fetch origin {args.radix_raft_revision}")
     U.exec_command_cpu(f"git -C {args.radix_raft_dir} checkout --detach {args.radix_raft_revision}")
     chess_package = Path(args.radix_raft_dir) / "experiments" / "shi" / "chess_eval"
-    U.exec_command_cpu(f"uv pip install --system -e {chess_package}")
+    U.exec_command_cpu(f"uv pip install --system --break-system-packages -e {chess_package}")
 
 
 def _prepare_model(args: ScriptArgs) -> None:
