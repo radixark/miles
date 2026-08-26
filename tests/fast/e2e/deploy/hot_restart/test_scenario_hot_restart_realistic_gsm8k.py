@@ -34,11 +34,27 @@ class TestTheRecipeIsTheOneFtConverges:
         assert scenario.DEFAULT_METRIC_THRESHOLD is scenario_realistic_gsm8k.DEFAULT_METRIC_THRESHOLD
         assert scenario.DEFAULT_NUM_ROLLOUT is scenario_realistic_gsm8k.DEFAULT_NUM_ROLLOUT
 
-    def test_this_scenario_spells_no_training_arguments_of_its_own_beyond_its_checkpoints(self):
-        """Hot restart keeps the FT recipe except for checkpointing and its incompatible tensor checker."""
-        declared = [one for one in shlex.split(scenario._build_train_args("/dumps")) if one.startswith("--")]
+    def test_this_scenario_only_adds_arguments_its_take_over_requires(self):
+        """Hot restart keeps the FT recipe except for checkpointing, tracking identity, and its tensor checker."""
+        declared = [
+            one
+            for one in shlex.split(scenario._build_train_args("/dumps", wandb_run_id="run-one"))
+            if one.startswith("--")
+        ]
 
-        assert sorted(declared) == ["--ci-disable-weight-update-checker", "--load", "--save", "--save-interval"]
+        assert sorted(declared) == [
+            "--ci-disable-weight-update-checker",
+            "--load",
+            "--save",
+            "--save-interval",
+            "--wandb-run-id",
+        ]
+
+    def test_the_run_id_is_the_identity_of_the_deployment_this_test_restarts(self):
+        """Every process receives the outer config ID instead of an identity derived from another subsystem."""
+        argv = shlex.split(scenario._build_train_args("/dumps/another-id", wandb_run_id="run-one"))
+
+        assert ArgvManipulator.get(argv, "--wandb-run-id") == ["run-one"]
 
     def test_the_shared_recipe_can_keep_its_api_without_enabling_training_ft(self):
         """Hot restart uses the cell API for injection without combining with automatic FT recovery."""
