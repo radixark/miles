@@ -85,7 +85,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     cp: int = 2
     pp: int = 1
     etp: int = 1
-    max_tokens_per_gpu: int = 32768
+    max_tokens_per_gpu: int = 8192
 
     sglang_mem_fraction_static: float = 0.7
     sglang_ep_size: int = 8
