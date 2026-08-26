@@ -62,6 +62,9 @@ without downloading or modifying it.
 Run artifacts are grouped under `/scratch/<run-id>/`:
 
 - `chess_prompts.jsonl`: eight balanced prompt records.
+- `run_manifest.json`: exact launcher arguments, configuration, source
+  revisions, container digest, and immutable snapshot references. Secret values
+  are never written.
 - `chess_games/`: complete chess replay journals and summaries.
 - `traces/`: Miles rollout and model traces.
 - `checkpoints/`: present only with `--save-checkpoint`.
