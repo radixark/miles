@@ -131,7 +131,13 @@ class DetProcessGroup(BaseProcessGroup):
         # The coalescing manager's flush passes no opts; inner lacks the coalesced form.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
-            self._inner._allgather_base(output, input, effective_opts).wait()
+            # torch 2.13's _coalescing_manager exit calls this directly, and the
+            # inner collectives it batches hand back None -- the manager waits on
+            # the aggregate. Outside a manager they return a real Work that
+            # nobody else will wait on.
+            work = self._inner._allgather_base(output, input, effective_opts)
+            if work is not None:
+                work.wait()
         return _CompletedWork()
 
     def _allgather_base(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
