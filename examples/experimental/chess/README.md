@@ -6,10 +6,8 @@ owns the board, move validation, Stockfish opponent, compaction, replay journal,
 and reward; Miles owns policy serving, exact training samples, optimization,
 telemetry, and session cleanup.
 
-The recipe temporarily uses Miles' `qwen35` TITO family for Qwen 3.6. This is
-useful for testing because Qwen 3.5 and Qwen 3.6 share the relevant message
-boundaries and thinking format, but production Qwen 3.6 training should move to
-a dedicated, verified TITO family when one is available.
+The recipe uses Miles' native `qwen36` TITO family so the fixed Qwen 3.6
+template retains reasoning and applies the correct message-boundary semantics.
 
 ## Default smoke configuration
 
