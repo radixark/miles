@@ -11,12 +11,13 @@ app = typer.Typer()
 _MODEL_REGISTRY = {
     "GLM-5.3-Flash": "glm5.3-flash",
     "GLM-5.3-Flash-8layer": "glm5.3-flash-8layer",
+    "GLM-5.3-Flash-4layer": "glm5.3-flash-4layer",
 }
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
-    model_name: Literal["GLM-5.3-Flash", "GLM-5.3-Flash-8layer"] = "GLM-5.3-Flash-8layer"
+    model_name: Literal["GLM-5.3-Flash", "GLM-5.3-Flash-8layer", "GLM-5.3-Flash-4layer"] = "GLM-5.3-Flash-4layer"
     num_nodes: int = 2
     num_gpus_per_node: int = 4
     run_id: str = "glm53flash-dapo"

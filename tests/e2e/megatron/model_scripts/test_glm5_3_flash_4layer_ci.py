@@ -12,8 +12,8 @@ register_cuda_ci(
     est_time=1800,
     suite="stage-c-8-gpu-h200",
     labels=["megatron", "model-scripts"],
-    disabled="needs CharyZeng/GLM-5.3-Flash-8layer on HF and a CI image with GLM-5.3-Flash "
-    "sglang support (branch sglang-miles-glm53); re-enable once both land.",
+    disabled="needs a CI image with GLM-5.3-Flash sglang support (branch sglang-miles-glm53); "
+    "re-enable once it lands.",
 )
 
 register_ci_gate(metric_key="train/grad_norm")
@@ -27,7 +27,7 @@ _MODEL_ORG = "CharyZeng"
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
-        model_name="GLM-5.3-Flash-8layer",
+        model_name="GLM-5.3-Flash-4layer",
         num_nodes=1,
         num_gpus_per_node=8,
         num_rollout=5,
