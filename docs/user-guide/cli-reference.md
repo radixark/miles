@@ -362,6 +362,7 @@ contract, session behavior, and model-family selection.
 |---|---|---|---|
 | `--profile-target` | enum+ | `[train_overall]` | Which sub-loop to profile: `train_overall`, `train_actor`, `train_log_probs`. |
 | `--use-pytorch-profiler` | flag | off | FSDP only: enable PyTorch profiler. |
+| `--profile-low-precision` | flag | off | Write categorized CUDA-kernel summaries beside PyTorch traces. |
 | `--profile-step-start` | int | `10` | FSDP only: first step to profile. |
 | `--profile-step-end` | int | `12` | FSDP only: last step to profile. |
 | `--memory-snapshot-path` | str | `snapshot.pickle` | FSDP only: memory snapshot output. |
