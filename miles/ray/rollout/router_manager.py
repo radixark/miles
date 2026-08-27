@@ -82,22 +82,13 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
     return router_ip, router_port
 
 
-def _resolve_session_server_ports(raw: list[int] | None) -> list[int]:
-    """Resolve the ``--session-server-port`` value into the ports to serve on.
-
-    None: one auto-allocated port. One value: a single server on that port.
-    Two values: the half-open range [start, end), one server per port.
-    """
-    if raw is None:
-        return [find_available_port(random.randint(5000, 6000))]
-    if len(raw) == 1:
-        return raw
-    if len(raw) == 2:
-        start, end = raw
-        if start >= end:
-            raise ValueError(f"--session-server-port range [{start}, {end}) is empty.")
-        return list(range(start, end))
-    raise ValueError(f"--session-server-port takes one port or a start/end range, got {len(raw)} values: {raw}")
+def _resolve_session_server_ports(start: int | None, workers: int) -> list[int]:
+    """Return the requested number of consecutive ports from the configured or auto-selected start."""
+    if workers < 1:
+        raise ValueError("--session-server-workers must be at least 1.")
+    if start is None:
+        start = find_available_port(random.randint(5000, 6000))
+    return list(range(start, start + workers))
 
 
 def start_session_server(args):
@@ -119,7 +110,7 @@ def start_session_server(args):
         args.session_server_ip = args.sglang_router_ip
 
     ip = args.session_server_ip
-    ports = _resolve_session_server_ports(getattr(args, "session_server_port", None))
+    ports = _resolve_session_server_ports(args.session_server_port, args.session_server_workers)
     for port in ports:
         if not is_port_available(port):
             raise RuntimeError(

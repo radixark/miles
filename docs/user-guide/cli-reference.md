@@ -316,7 +316,8 @@ contract, session behavior, and model-family selection.
 | `--tito-model` | enum | `default` | TITO model family. Named families load their registered fixed template; `default` is best-effort with a checkpoint-native or custom template. |
 | `--max-seq-len` | int | – | Total tokens per session, including prompts, completions, and environment responses. Registered with the agentic wrapper. |
 | `--session-server-ip` | str | router IP | Session-server bind address. |
-| `--session-server-port` | int or start/end | auto | One port, or a half-open port range `[start, end)` for multiple instances. |
+| `--session-server-port` | int | auto | Starting port for standalone session-server instances. |
+| `--session-server-workers` | int | `1` | Number of instances; Miles uses consecutive ports starting at `--session-server-port`. |
 | `--session-sample-picker-path` | `<module>.<fn>` | `drop_retries` | v2 only: selects leaf samples before post-processing. |
 | `--session-sample-postprocessor-path` | `<module>.<fn>` | `default_postprocess` | v2 only: finalizes loss masks and rewards. |
 
