@@ -112,7 +112,7 @@ def load_hf_config(
 
 
 def is_dsa(hf_config) -> bool:
-    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa")
+    return getattr(hf_config, "model_type", None) in ("deepseek_v32", "glm_moe_dsa", "glm5_next")
 
 
 # Written by HF exports after all ranks finish, so consumers can tell finished from partial.
