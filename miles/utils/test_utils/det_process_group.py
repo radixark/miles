@@ -128,12 +128,9 @@ class DetProcessGroup(BaseProcessGroup):
     def allgather_into_tensor_coalesced(
         self, output_tensors: list[torch.Tensor], input_tensors: list[torch.Tensor], opts: object = None
     ) -> Work:
-        # _coalescing_manager(device=...) opens a coalescing region on THIS group
-        # before the body runs, then routes its flush here. _start_coalescing /
-        # _end_coalescing below put that region on the inner group, so the calls
-        # issued here join the batch: they return None and the aggregate Work
-        # that _end_coalescing returns is what the manager waits on. All-gather
-        # moves data without summing, so no fixed-order fold applies.
+        # The coalescing manager's flush lands here with its region still open,
+        # so the inner calls are batched and hand back None; it waits on the
+        # aggregate itself.
         effective_opts = opts if opts is not None else AllgatherOptions()
         for output, input in zip(output_tensors, input_tensors, strict=True):
             work = self._inner._allgather_base(output, input, effective_opts)
@@ -163,14 +160,9 @@ class DetProcessGroup(BaseProcessGroup):
             self._reduce_scatter_base(output, input, opts)
         return _CompletedWork()
 
-    # torch 2.13 routes dist.reduce_scatter_tensor through these names. Without
-    # them the call reaches the C++ base, which dispatches to the NCCL backend
-    # registered above -- silently giving up the fixed-order fold rather than
-    # raising. Only the reducing collectives need this: all_gather / alltoall /
-    # barrier move data without summing, so the base dispatch returns the same
-    # bits, and intercepting all_gather's coalesced form additionally reissues
-    # per-tensor collectives inside an active _coalescing_manager, which faults
-    # in NCCL.
+    # torch 2.13 routes dist.reduce_scatter_tensor through these names; without
+    # them it reaches the C++ base, which dispatches to the NCCL backend
+    # registered above and silently drops the fixed-order fold.
     def reduce_scatter_single(self, output: torch.Tensor, input: torch.Tensor, opts: object) -> Work:
         return self._reduce_scatter_base(output, input, opts)
 
@@ -197,10 +189,9 @@ class DetProcessGroup(BaseProcessGroup):
         input_split_sizes: list[int],
         opts: object,
     ) -> Work:
-        # torch 2.13 renamed the entry point dist.all_to_all_single dispatches
-        # to. Without it the call reaches the C++ base, whose alltoall dispatch
-        # on a wrapper group faults in NCCL. No reduction is involved; this just
-        # forwards to the inner group the way alltoall_base does.
+        # torch 2.13's entry point for dist.all_to_all_single. No reduction is
+        # involved, but the C++ base's alltoall faults in NCCL on a wrapper
+        # group, so forward it the way alltoall_base does.
         return self.alltoall_base(output_tensor, input_tensor, output_split_sizes, input_split_sizes, opts)
 
     def send(self, tensors: list[torch.Tensor], dst_rank: int, tag: int) -> Work:
