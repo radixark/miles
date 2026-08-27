@@ -56,7 +56,8 @@ def _train(args: ScriptArgs):
         (8, 4),
         (6, 4),
         (2, 4),
-    ), "the parallel configs below are shaped for 16x4 / 8x4 / 6x4 (full) or 2x4 (8layer)"
+        (1, 8),
+    ), "the parallel configs below are shaped for 16x4 / 8x4 / 6x4 (full) or 2x4 / 1x8 (8layer)"
 
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
