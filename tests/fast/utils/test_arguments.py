@@ -382,11 +382,11 @@ class TestSessionServerScalingArguments:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
-    def test_defaults_to_one_worker_and_an_auto_port(self):
+    def test_defaults_to_32_workers_and_an_auto_port(self):
         args = self._parse([])
 
         assert args.session_server_port is None
-        assert args.session_server_workers == 1
+        assert args.session_server_workers == 32
 
     def test_parses_starting_port_and_worker_count(self):
         args = self._parse(["--session-server-port", "30000", "--session-server-workers", "4"])

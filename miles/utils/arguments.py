@@ -2546,7 +2546,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--session-server-workers",
                 type=int,
-                default=1,
+                default=32,
                 help="Number of standalone session servers to launch on consecutive ports.",
             )
             parser.add_argument(
