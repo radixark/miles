@@ -142,11 +142,18 @@ class Glm5NextBridge(GlmMoeDsaBridge):
         )
         return super()._build_base_config(**kwargs)
 
+    @staticmethod
+    def _nest_language_model(name: str) -> str:
+        if name.startswith("model.") and not name.startswith(("model.language_model.", "model.visual.")):
+            return "model.language_model." + name[len("model.") :]
+        return name
+
     def _weight_name_mapping_mcore_to_hf(self, mcore_weights_name: str) -> list[str]:
         try:
-            return super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
+            names = super()._weight_name_mapping_mcore_to_hf(mcore_weights_name)
         except NotImplementedError:
-            return self._weight_name_mapping_other(mcore_weights_name)
+            names = self._weight_name_mapping_other(mcore_weights_name)
+        return [self._nest_language_model(n) for n in names]
 
     def _weight_to_mcore_format(self, mcore_weights_name: str, hf_weights: list[torch.Tensor]) -> torch.Tensor:
         if mcore_weights_name.endswith("self_attention.kda.conv1d.weight"):
