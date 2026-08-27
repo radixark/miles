@@ -177,7 +177,6 @@ def execute(mode: str = "", ckpt_step: int | None = None):
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "MILES_TEST_R3_THRESHOLD": "1.0",
         },
     )

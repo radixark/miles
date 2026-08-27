@@ -1,5 +1,6 @@
 ---
 title: Gemma
+sidebarTitle: Overview
 description: Miles recipes for Google's Gemma-4 line, trained on the base VLM checkpoint through the HF to Megatron bridge.
 ---
 Miles supports Google's Gemma-4 in both released instruction-tuned sizes. Both train as

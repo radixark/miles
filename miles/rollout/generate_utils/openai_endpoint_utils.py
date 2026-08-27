@@ -76,7 +76,7 @@ class OpenAIEndpointTracer:
         if agent_metadata is not None:
             body["metadata"] = agent_metadata
         try:
-            # `asyncio.TimeoutError` propagates after cleanup is attempted for `agentic_tool_call.generate` to handle.
+            # Timeouts and transport errors propagate after cleanup, for `generate` to handle.
             payload = await post_bytes_no_retry(
                 f"{self.base_url}/samples",
                 body,

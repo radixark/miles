@@ -97,7 +97,7 @@ def build_multi_lora_optimizer(
                 chained = get_megatron_optimizer(
                     config,
                     list(model_chunks),
-                    use_gloo_process_groups=args.enable_gloo_process_groups,
+                    use_gloo_process_groups=args.use_gloo_process_groups,
                 )
             children = [
                 child

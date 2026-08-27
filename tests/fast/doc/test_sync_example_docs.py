@@ -129,13 +129,27 @@ class TestIndex:
 
     def test_navigation_follows_bullet_order(self, sync):
         pages = {"": None, "zeta": None, "alpha": None, "unlisted_b": None, "unlisted_a": None}
-        group = sync.build_navigation(pages, ["zeta", "alpha"])
-        assert group["pages"][0]["pages"] == [
-            "examples/zeta",
-            "examples/alpha",
-            "examples/unlisted-a",
-            "examples/unlisted-b",
+        entries = sync.build_navigation(pages, ["zeta", "alpha"])
+        assert entries == [
+            "examples/index",
+            {
+                "group": "Recipes",
+                "pages": [
+                    "examples/zeta",
+                    "examples/alpha",
+                    "examples/unlisted-a",
+                    "examples/unlisted-b",
+                ],
+            },
         ]
+
+    def test_section_directory_becomes_rootless_group_with_landing_first(self, sync):
+        pages = {"": None, "alpha": None, "infra_features": None, "infra_features/beta": None}
+        entries = sync.build_navigation(pages, ["alpha"])
+        assert entries[-1] == {
+            "group": "Infra Features",
+            "pages": ["examples/infra-features", "examples/infra-features/beta"],
+        }
 
 
 class TestBuildPages:

@@ -7,38 +7,67 @@ name: PR Test (ROCm)
 #
 # Test selection is explicit rather than inherited from the CUDA suites. The
 # shared CI policy selects matching register_rocm_ci() labels for PR/nightly
-# runs; manual dispatch keeps the full regular MI300X suite.
+# runs and the full scope for weekly or explicitly called release runs; manual
+# dispatch keeps the full regular MI350 suite.
 #
-# The MI300X host is split into two 4-GPU runners, so this stage is 4-GPU.
+# The MI350 host is split into two 4-GPU runners, so this stage is 4-GPU.
 # CUDA tests that need 8 GPUs get a standalone test_amd_<name>.py with its
 # own 4-GPU CaseConfig rather than an IS_HIP branch in the original.
 #
 # PR jobs use the same low-trust `pull_request` model as pr-test.yml: checkout
 # tests the merge commit, and GitHub withholds repository secrets from forks.
 #
-# SGLang / Megatron-LM versions are baked into the ROCm image
-# (_run-ci-rocm.yml defaults skip_dependency_install to true), so unlike
-# pr-test.yml there are no ci_megatron_pr / ci_sglang_pr inputs here.
+# SGLang / Megatron-LM versions are baked into the ROCm image, so a run that
+# names neither keeps them and skips the install step. Naming either one --
+# `ci-megatron-pr:` / `ci-sglang-pr:` in the PR body, or the dispatch inputs --
+# fetches and installs it over the baked copy, the same directives pr-test.yml
+# honours. The refs are fetched from the `origin` of the image's own checkouts,
+# so a ref that lives only on a different remote will not resolve here.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   schedule:
-    # Same nightly cadence as pr-test.yml; ci_policy.py maps this exact cron.
-    - cron: '0 15 * * *'
+    # Same UTC nightly/weekly split as pr-test.yml; ci_policy.py maps each exact cron.
+    - cron: '0 15 * * 0-5'
+    - cron: '0 15 * * 6'
   workflow_dispatch:
     inputs:
-      ci_image_tag:
-        description: 'ROCm Docker image tag (default: miles-rocm700-mi30x-20260708)'
+      ci_megatron_pr:
+        description: 'Megatron-LM branch/commit to install over the one baked into the image (default: keep the image)'
         required: false
         type: string
-        default: 'miles-rocm700-mi30x-20260708'
+        default: ''
+      ci_sglang_pr:
+        description: 'SGLang branch/commit to install over the one baked into the image (default: keep the image)'
+        required: false
+        type: string
+        default: ''
+      ci_image_tag:
+        description: 'ROCm Docker image tag (default: miles-rocm720-mi35x, the undated tag each nightly image build overwrites)'
+        required: false
+        type: string
+        default: 'miles-rocm720-mi35x'
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or SHA) to test, e.g. release/v0.3.0.'
+        required: true
+        type: string
+      cadence:
+        description: 'Explicit CI cadence (regular/nightly/weekly/release). Release cuts use release: weekly scope, no baseline writes.'
+        required: false
+        type: string
+        default: 'release'
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.schedule || github.run_id }}
+  # Literal prefix, not github.workflow — see pr-test.yml's concurrency
+  # comment: the caller-resolved name would collide this group with the CUDA
+  # one under a single release-branch-cut run.
+  group: pr-test-rocm-${{ github.event.pull_request.number || github.event.schedule || inputs.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -48,17 +77,35 @@ jobs:
       cadence: ${{ steps.resolve.outputs.cadence }}
       raw_labels: ${{ steps.resolve.outputs.raw_labels }}
       bypass_fastfail: ${{ steps.resolve.outputs.bypass_fastfail }}
+      skipped_stages: ${{ steps.resolve.outputs.skipped_stages }}
     steps:
       - name: Checkout repository
+        # Deliberately not inputs.ref: this job executes ci_policy.py, so it
+        # always runs the triggering commit's copy (CodeQL cache-poisoning
+        # surface). The cadence arrives via CADENCE_OVERRIDE; only the suite
+        # jobs check out the release ref.
         uses: actions/checkout@v4
         with:
+          fetch-depth: 2
           persist-credentials: false
+      - name: Collect PR changed files
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          if ! git diff --name-status -z -M HEAD^1 HEAD > "$RUNNER_TEMP/changed-files.z"; then
+            rm -f "$RUNNER_TEMP/changed-files.z"
+            echo "::warning::Unable to compute PR diff; all GPU stages remain eligible."
+          fi
       - name: Resolve CI policy inputs
         id: resolve
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule || '' }}
           PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          # workflow_call inherits the caller's event_name, so the cadence must
+          # be passed explicitly rather than inferred from the trigger.
+          CADENCE_OVERRIDE: ${{ inputs.cadence || '' }}
+          CHANGED_FILES_PATH: ${{ runner.temp }}/changed-files.z
         run: python -m tests.ci.ci_policy
 
   resolve-ci-image:
@@ -73,7 +120,7 @@ jobs:
           INPUT_CI_IMAGE_TAG: ${{ github.event.inputs.ci_image_tag || '' }}
         run: |
           CI_IMAGE_TAG="${INPUT_CI_IMAGE_TAG}"
-          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm700-mi30x-20260708"
+          [ -z "$CI_IMAGE_TAG" ] && CI_IMAGE_TAG="miles-rocm720-mi35x"
           if [[ ! "$CI_IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "::error::ci-image-tag must be a Docker tag, not a full image name: $CI_IMAGE_TAG"
             exit 1
@@ -81,21 +128,57 @@ jobs:
           echo "container_image=rocm/sgl-dev:${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "Resolved CI image: rocm/sgl-dev:${CI_IMAGE_TAG}"
 
-  stage-c-4-gpu-mi300x:
-    needs: [resolve-ci-policy, resolve-ci-image]
+  resolve-ci-deps:
+    runs-on: ubuntu-latest
+    outputs:
+      skip_dependency_install: ${{ steps.resolve.outputs.skip_dependency_install }}
+    steps:
+      - name: Resolve whether the image's baked dependencies are overridden
+        id: resolve
+        shell: bash
+        env:
+          PR_BODY: ${{ github.event.pull_request.body || '' }}
+          INPUT_MEGATRON_PR: ${{ github.event.inputs.ci_megatron_pr || '' }}
+          INPUT_SGLANG_PR: ${{ github.event.inputs.ci_sglang_pr || '' }}
+        run: |
+          NAMED_BY=""
+          if [ -n "$INPUT_MEGATRON_PR" ] || [ -n "$INPUT_SGLANG_PR" ]; then
+            NAMED_BY="the dispatch inputs"
+          elif [ -n "$PR_BODY" ] && echo "$PR_BODY" | grep -qP '^ci-(megatron|sglang)-pr:\s+\S+'; then
+            NAMED_BY="the pull request body"
+          fi
+          if [ -n "$NAMED_BY" ]; then
+            echo "skip_dependency_install=false" >> "$GITHUB_OUTPUT"
+            echo "Dependency refs named by $NAMED_BY: installing them over the image's baked copies"
+          else
+            echo "skip_dependency_install=true" >> "$GITHUB_OUTPUT"
+            echo "No dependency ref named: keeping the copies baked into the image"
+          fi
+
+  stage-c-4-gpu-mi350:
+    needs: [resolve-ci-policy, resolve-ci-image, resolve-ci-deps]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      needs.resolve-ci-deps.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-4-gpu-mi350')
     # One shard per 4-GPU runner, so the pair works the suite in parallel.
     # run_suite.py balances the shards by est_time. fail-fast: false so one
     # shard's failure does not cancel the other mid-run.
     strategy:
       fail-fast: false
+      max-parallel: ${{ needs.resolve-ci-policy.outputs.cadence == 'weekly' && 1 || 2 }}
       matrix:
         partition_id: [0, 1]
     uses: ./.github/workflows/_run-ci-rocm.yml
     with:
-      runs_on: '["self-hosted", "amd", "mi300x", "4gpu"]'
+      runs_on: '["self-hosted", "amd", "mi350", "4gpu"]'
       container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      skip_dependency_install: ${{ needs.resolve-ci-deps.outputs.skip_dependency_install == 'true' }}
+      ref: ${{ inputs.ref || '' }}
       execute_command: >-
-        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi300x
+        python tests/ci/run_suite.py --hw rocm --suite stage-c-4-gpu-mi350
         --auto-partition-id ${{ matrix.partition_id }} --auto-partition-size 2
         --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}

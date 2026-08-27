@@ -28,8 +28,6 @@ registers `--custom-agent-function-path` and `--max-seq-len`, creates a TITO
 session for each rollout, invokes your agent, and collects the resulting samples.
 
 ```bash
-export MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1
-
 AGENTIC_ARGS=(
    --custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate
    --custom-agent-function-path    my_agent.run
@@ -170,6 +168,7 @@ but treat it as best-effort until it passes the checks below.
 |---|---|
 | Qwen3 | `qwen3` |
 | Qwen3.5 | `qwen35` |
+| Qwen3.6 | `qwen36` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
 | GLM-4.7 / 5 / 5.1 / 5.2 | `glm47` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |

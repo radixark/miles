@@ -14,7 +14,7 @@ WANDB_GROUP = "sft-multi-turn-batch-32"
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     run_id: str = field(default_factory=U.create_run_id)
-    hardware: Literal["H100", "GB200", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "GB200", "GB300"] = "auto"
     num_gpus_per_node: int | None = None
     use_sft_model: bool = True
     save_path: str = "/root/Qwen3-4B_miles/retool_v2_multi_turn"
@@ -28,6 +28,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     ref_load: str = field(init=False)
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         if self.use_sft_model:
             self.hf_checkpoint = "/root/font-info/qwen3-4b-sft"
@@ -192,7 +193,6 @@ def execute(args: ScriptArgs):
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=megatron_model_type,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "PYTHONPATH": "/root/Megatron-LM/:/root/miles",
         },
     )

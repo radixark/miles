@@ -46,15 +46,24 @@ export function drawChart(canvas, points, opts = {}) {
     bucketed = true;
     const size = Math.ceil(pts.length / MAX_RAW_POINTS);
     const buckets = [];
-    for (let i = 0; i < pts.length; i += size) {
-      const bucket = pts.slice(i, i + size);
-      const y = bucket.reduce((sum, p) => sum + p.y, 0) / bucket.length;
+    // a bucket spanning a gap would draw the line straight across the hole
+    let cur = [];
+    const flush = () => {
+      if (!cur.length) return;
+      const y = cur.reduce((sum, p) => sum + p.y, 0) / cur.length;
       buckets.push({
-        x: bucket[0].x,
+        x: cur[0].x,
         y,
-        label: `${fmt(bucket[0].x)}–${fmt(bucket.at(-1).x)}\nmean = ${fmt(y)} (${bucket.length} pts)`,
+        gap: cur[0].gap,
+        label: `${fmt(cur[0].x)}–${fmt(cur.at(-1).x)}\nmean = ${fmt(y)} (${cur.length} pts)`,
       });
+      cur = [];
+    };
+    for (const p of pts) {
+      if (cur.length && (p.gap || cur.length >= size)) flush();
+      cur.push(p);
     }
+    flush();
     pts = buckets;
   }
   const { ctx, width, height } = setupCanvas(canvas);
@@ -74,12 +83,18 @@ export function drawChart(canvas, points, opts = {}) {
     return;
   }
 
+  const bands = opts.bands ?? [];
   let xMin, xMax;
   if (zoom?.x) {
     [xMin, xMax] = zoom.x;
   } else {
     const xs = pts.map((p) => p.x);
     [xMin, xMax] = [Math.min(...xs), Math.max(...xs)];
+    // bands cover point-free regions: widen the domain so they stay visible
+    for (const b of bands) {
+      xMin = Math.min(xMin, b.x0);
+      xMax = Math.max(xMax, b.x1);
+    }
   }
   if (xMin === xMax) [xMin, xMax] = [xMin - 0.5, xMax + 0.5];
   let yMin, yMax;
@@ -116,12 +131,23 @@ export function drawChart(canvas, points, opts = {}) {
   ctx.beginPath();
   ctx.rect(MARGIN.left, MARGIN.top, plotW, plotH);
   ctx.clip();
+  for (const b of bands) {
+    ctx.globalAlpha = b.strong ? 0.3 : 0.14;
+    ctx.fillStyle = colBorder;
+    ctx.fillRect(X(b.x0), MARGIN.top, Math.max(X(b.x1) - X(b.x0), 1), plotH);
+    ctx.globalAlpha = 1;
+    if (b.label && X(b.x1) - X(b.x0) > 44) {
+      ctx.fillStyle = colText;
+      ctx.fillText(b.label, X(b.x0) + 4, MARGIN.top + 12);
+    }
+  }
   if (opts.line !== false) {
     const linePts = bucketed ? pts : points;
     ctx.strokeStyle = colMain;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    linePts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
+    // gap = first point after a null run: lift the pen
+    linePts.forEach((p, i) => (i && !p.gap ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
     ctx.stroke();
   }
   if (!bucketed) {

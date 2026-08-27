@@ -47,6 +47,7 @@ class CaseConfig:
     # mismatches become non-fatal). Cases pass ("visual",): miles has no VLM/vision
     # implementation on the training side, so those weights are never synced.
     check_weight_update_skip_list: tuple[str, ...] = ()
+    extra_args: str = ""
 
 
 def prepare(case: CaseConfig) -> None:
@@ -181,6 +182,7 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
         f"{mtp_args} "
         f"{ci_args} "
         f"{misc_args} "
+        f"{case.extra_args} "
     )
     return train_args
 

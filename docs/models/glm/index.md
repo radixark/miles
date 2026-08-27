@@ -1,5 +1,6 @@
 ---
 title: GLM
+sidebarTitle: Overview
 description: Miles recipes for the GLM4.5, GLM4.7 Flash, GLM5, and GLM5.2 families.
 ---
 Miles ships RL recipes for every GLM generation currently in production: the GLM4.5 MoE at 106 B-A12B and 355 B-A32B, the compact GLM4.7 Flash with 64 routed experts, and the 744 B-A40B GLM5 and GLM5.2 flagships.

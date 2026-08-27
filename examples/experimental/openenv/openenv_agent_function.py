@@ -259,13 +259,15 @@ async def multi_turn(
     ends when the policy stops emitting a command, says TASK_COMPLETE, or hits
     OPENENV_MAX_TURNS. Scoring is the standard ``evaluate`` action: the server
     runs the task's tests/test.sh and reports the verdict (see the module
-    docstring for the required server contract).
+    docstring for the required server contract). The returned agent metrics
+    label the stop as ``task_complete``, ``no_command``, ``max_turns``, or
+    ``length``.
     """
     action_cls = classes["action"]
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float | None, int, list[float], list[float], float, float]:
+    async def body(env: Any) -> tuple[float | None, int, str, list[float], list[float], float, float]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
@@ -281,6 +283,7 @@ async def multi_turn(
             convo.append({"role": "user", "content": instruction})
 
         turns = 0
+        end_reason = "max_turns"
         while turns < max_turns:
             turns += 1
             t0 = time.monotonic()
@@ -288,7 +291,8 @@ async def multi_turn(
                 model=model_name, messages=convo, extra_body=request_kwargs
             )
             gen_times.append(time.monotonic() - t0)
-            message = completion.choices[0].message
+            choice = completion.choices[0]
+            message = choice.message
             reply = message.content or ""
             # Echo the assistant turn back verbatim. The session server stores the
             # message exactly as SGLang emitted it -- content plus reasoning_content
@@ -300,8 +304,16 @@ async def multi_turn(
             # (extras like reasoning_content included).
             convo.append(message.model_dump(exclude_none=True))
 
+            if choice.finish_reason == "length":
+                end_reason = "length"
+                break
+
             command = _strip_fence(reply) if "```" in reply else reply.strip()
-            if not command or command.upper().startswith("TASK_COMPLETE"):
+            if not command:
+                end_reason = "no_command"
+                break
+            if command.upper().startswith("TASK_COMPLETE"):
+                end_reason = "task_complete"
                 break
 
             t0 = time.monotonic()
@@ -349,10 +361,10 @@ async def multi_turn(
         if post_episode is not None:
             await post_episode(env, action_cls)
 
-        return reward, turns, gen_times, tool_times, reset_time, eval_time
+        return reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time
 
     result = await run_body(classes["env"], metadata, body)
-    reward, turns, gen_times, tool_times, reset_time, eval_time = result
+    reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
@@ -360,6 +372,7 @@ async def multi_turn(
     total_tool_time = sum(tool_times) + reset_time + eval_time
     return reward, {
         "turns": turns,
+        "end_reason": end_reason,
         "tool_calls": len(tool_times),
         "gen_times": gen_times,
         "tool_times": tool_times,

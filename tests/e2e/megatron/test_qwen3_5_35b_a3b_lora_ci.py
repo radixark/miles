@@ -12,7 +12,7 @@ import miles.utils.external_utils.command_utils as U
 # combination must pass. Functionality, not accuracy; 8 GPUs (TP2, EP=8).
 
 
-register_cuda_ci(est_time=3600, suite="stage-c-8-gpu-h100", labels=["model-scripts"])
+register_cuda_ci(est_time=1300, suite="stage-c-8-gpu-h100", labels=["megatron", "model-scripts", "lora"])
 
 # (name, experts_shared_outer_loras, virtual_experts_serving)
 _CONFIGS = [

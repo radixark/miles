@@ -88,8 +88,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     if args.follow:
-        # Append-only streams + GIL-atomic list appends make concurrent reads
-        # from request handlers safe; a reader may just miss the newest records.
+        # races the threadpool handlers: list appends are GIL-atomic, partition caches lock
         def _tail() -> None:
             while True:
                 time.sleep(FOLLOW_INTERVAL_SECONDS)

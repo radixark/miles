@@ -246,6 +246,19 @@ def _rollout_advisories(reader: DumpReader, args: dict) -> list[Advisory]:
                 "the per-turn cap is usually the binding limit, not the context length"
             )
         out.append(Advisory(level="warning", message=message))
+
+    if "alignment_failed" in summary.columns and bool(summary["alignment_failed"].any()):
+        unreadable = int(summary["alignment_failed"].sum())
+        out.append(
+            Advisory(
+                level="info",
+                message=(
+                    f"per-token columns are blank for {unreadable} samples in rollout {rollout_id}: their "
+                    "context-parallel slices could not be placed, because this dump predates the cp_rank/cp_size "
+                    "fields. Blank here means unreadable, not undumped"
+                ),
+            )
+        )
     return out
 
 

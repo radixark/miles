@@ -168,7 +168,6 @@ def execute(args: ScriptArgs):
         train_script="train_async.py",
         megatron_path=args.megatron_path,
         extra_env_vars={
-            "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
             "PYTHONPATH": args.megatron_path,
             **eval_env,
         },

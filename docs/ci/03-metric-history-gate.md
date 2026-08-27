@@ -39,7 +39,7 @@ A declaration sits at top level of the test file, next to its CI registration �
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100")
+register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100", labels=["megatron"])
 
 register_ci_gate(
     metric_key="train/ppo_kl",                     # must be a captured key (whitelist)
@@ -59,7 +59,7 @@ register_ci_gate(metric_key="rollout/raw_reward")  # standard metric: steps + co
 Three roles, connected only by JSONL files and one DB — there is no long-lived "metrics manager"; the pipeline is per-test, driven by the harness:
 
 - **Collector (training process)** — `miles.utils.tracking_utils.TrackingManager` fans every `log()` out to all enabled backends; `WandbBackend` and `CiHistoryBackend` are parallel siblings in that registry, so wandb receives the same data independently and nothing downstream ever reads it back. `CiHistoryBackend` snapshots the fixed metric whitelist into per-process JSONL files under the harness-assigned record dir (`MILES_CI_GATE_RECORD_DIR`, injected by the CI harness; no CLI flag).
-- **Harness / finalizer (CI runner)** — `run_suite.py` builds the store from env (`NEON_DATABASE_URL`, a CI secret), resolves the nightly signal + provenance, and allocates the record dir (CUDA suites only); `ci_utils.run_unittest_files` hands each attempt its own record subdir and merges the PASSING attempt's per-process records into the merged per-run JSONL record (a metric key appearing in several processes gets its series concatenated and sorted by step); `ci_utils.run_gate_hook` then assigns identity, runs the gate, and acts on the verdict.
+- **Harness / finalizer (CI runner)** — `run_suite.py` builds the store from env (`NEON_DATABASE_URL`, a CI secret), resolves the baseline-write signal + provenance, and allocates the record dir (CUDA suites only); `ci_utils.run_unittest_files` hands each attempt its own record subdir and merges the PASSING attempt's per-process records into the merged per-run JSONL record (a metric key appearing in several processes gets its series concatenated and sorted by step); `ci_utils.run_gate_hook` then assigns identity, runs the gate, and acts on the verdict.
 - **Gate library (pure functions, read-only against storage)** — `register.py` parses `register_ci_gate` declarations out of the test file's AST at evaluation time (the call itself is a runtime no-op; nothing registers at runtime), `selection.py` picks comparison coordinates, `constraints.py` judges pass/fail, `gate.py:evaluate_gate` composes them over the store's baseline read.
 
 One CUDA test run, end to end:
@@ -73,7 +73,7 @@ flowchart TD
     end
     ci_history_backend -- "per-process JSONL snapshots<br>(whitelist only; non-finite → string markers)" --> run_unittest_files
     subgraph ci_harness["CI harness (tests/ci)"]
-        run_suite["run_suite.py<br>store from env · nightly signal · provenance · record dir"] --> run_unittest_files["run_unittest_files<br>per-attempt record subdir; merge the PASSING attempt"]
+        run_suite["run_suite.py<br>store from env · baseline-write signal · provenance · record dir"] --> run_unittest_files["run_unittest_files<br>per-attempt record subdir; merge the PASSING attempt"]
         run_unittest_files --> run_gate_hook["run_gate_hook<br>assign identity → run the gate → act on the verdict"]
     end
     gate_specs["register_ci_gate specs in the test file<br>(runtime no-op)"] -. "AST parse" .-> evaluate_gate
@@ -82,7 +82,7 @@ flowchart TD
         evaluate_gate["register → selection → constraints → evaluate_gate"]
     end
     evaluate_gate -- "recent_trusted_values (baseline read)" --> metric_store
-    run_gate_hook -- "nightly: write_run(values + trusted)<br>ordinary PR: shadow verdict → log + GITHUB_STEP_SUMMARY, no write" --> metric_store
+    run_gate_hook -- "nightly or weekly: write_run(values + trusted)<br>non-writing run: shadow verdict → log + GITHUB_STEP_SUMMARY" --> metric_store
     subgraph storage
         metric_store[("MetricHistoryStore<br>SQLite offline · Neon CI/prod")]
     end
@@ -160,7 +160,7 @@ flowchart TD
 
     result --> trust
     store -- "baseline read" --> histq
-    trust -- "a trusted run's values are persisted (write_run) and become<br>future baselines — writer: the harness, on nightly-marked runs only" --> store
+    trust -- "a trusted run's values are persisted (write_run) and become<br>future baselines — writer: the harness, on baseline-writing runs only" --> store
 ```
 
 
@@ -200,12 +200,12 @@ Use $neon-access to show the 10 most recent metric-history runs for tests/e2e/me
 
 ## Trust, cleanup, who writes
 
-**Goal:** keep the baseline self-protecting — only nightly-marked runs (with recorded provenance) write at all, a nightly run whose metrics fail the gate is still persisted but flagged `trusted = false` so it never enters the baseline, and a point later found bad is revoked by one flag flip instead of deletion.
+**Goal:** keep the baseline self-protecting — only baseline-writing runs (with recorded provenance) write at all, a run whose metrics fail the gate is still persisted but flagged `trusted = false` so it never enters the baseline, and a point later found bad is revoked by one flag flip instead of deletion.
 
 - A run is `trusted` iff it passed **all** active gates. A drifting run is still recorded, with `trusted = false`, so it can't drag the baseline. A test that fails then passes on **retry** is gated on its passing attempt's metrics and trusted normally — needing a retry is not itself a trust penalty.
 - **Clean a bad point**: `mark_untrusted` = `UPDATE runs SET trusted = false` on the run. The next gate read excludes it immediately — no rebaseline, no row deletion.
-- **Nightly-marked runs write baselines** — either the `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records which, so a label-PR baseline is distinguishable from a post-merge one and can be `mark_untrusted`'d if it turns out bad. Ordinary (unlabeled) PR runs are read-only and only shadow.
-- **What one nightly run writes** — one `runs` row plus one `metric_values` row per value coordinate: two specs sharing a coordinate (identical `steps` + `constraint` literals, differing only in policy metadata) collapse to a single row, so a duplicated declaration cannot double-weight the baseline mean; and a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
+- **Nightly and weekly runs write baselines** — either an explicitly mapped `schedule` cron (on `main`, post-merge) **or** a PR carrying the `nightly` label (the PR's own pre-merge code). Provenance (`event_name`, `pr_number`) records whether a writer was scheduled or PR-triggered, so a label-PR baseline can be `mark_untrusted`'d if it turns out bad. Ordinary PR runs and explicitly called release runs are read-only and only shadow; frozen release dependency SHAs must not enter the rolling baseline.
+- **What one baseline-writing run writes** — one `runs` row plus one `metric_values` row per value coordinate: two specs sharing a coordinate (identical `steps` + `constraint` literals, differing only in policy metadata) collapse to a single row, so a duplicated declaration cannot double-weight the baseline mean; and a file that declares no gate writes nothing at all — `run_gate_hook` skips the write instead of leaving an empty `runs` row.
 
 
 
@@ -220,7 +220,7 @@ Shadow-first: collect, store, and evaluate, but **never block a PR** initially �
 **Goal:** record accepted caveats and open questions beside the behavior they qualify; planned-but-unimplemented work lives in TODO below.
 
 - A test-file edit does not reset the series: `test_file_hash` was dropped from the run-series identity because a tiny edit to a test kept wiping its whole history. A test change that genuinely shifts a metric's expected level surfaces as gate failures instead; the reset levers are manual — `mark_untrusted` the stale runs, or edit the declaration literals (new `steps_key` / `constraint_key` ⇒ fresh coordinate).
-- The nightly trigger (`schedule` cron + `nightly` label) already shipped (#1491); detection here is harness-side via `GITHUB_EVENT_NAME`, so this feature needs **no** `pr-test.yml` **edit**.
+- Baseline writing is selected by the resolved CI policy rather than inferred from `GITHUB_EVENT_NAME`; nightly and weekly write, while regular and release runs stay shadow-only.
 - Open: should a brand-new test's first baselines need human confirmation before counting as trusted? (v1: no.)
 
 

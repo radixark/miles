@@ -1,5 +1,6 @@
 ---
 title: Developer Guide
+sidebarTitle: Overview
 description: Contribution conventions, internal architecture, dependency versions, and debugging.
 ---
 You're here because you want to change Miles, not just use it. This section is the

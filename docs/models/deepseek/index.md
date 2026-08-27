@@ -1,5 +1,6 @@
 ---
 title: DeepSeek
+sidebarTitle: Overview
 description: Miles recipes for the DeepSeek family — V4 Flash, V4 Pro, and V3.2.
 ---
 Miles ships recipes for the DeepSeek family across two generations. **DeepSeek-V4** pairs sparse multi-head latent attention with a learned indexer, KV compressors, and hyper-connection routing. **DeepSeek-V3.2** keeps the V3 MoE and MLA shapes and adds DeepSeek Sparse Attention (DSA), the same attention implementation the GLM-5 recipes use. **DeepSeek-V3** itself remains available through `scripts/run_deepseek.py`.

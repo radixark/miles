@@ -58,6 +58,12 @@ repos:
         files: '^(examples/.*README\.md|docs/examples/.*|docs/docs\.json|scripts/tools/sync_example_docs\.py)$'
         pass_filenames: false
 
+      - id: ban-docs-nav-group-root
+        name: Ban group `root` in docs navigation (put the landing page first in `pages` with `sidebarTitle Overview` instead; see docs/README.md)
+        language: pygrep
+        entry: '"root":'
+        files: ^docs/docs\.json$
+
       - id: ban-mpu-get
         name: Ban direct mpu.get_* calls (use ParallelState)
         language: pygrep

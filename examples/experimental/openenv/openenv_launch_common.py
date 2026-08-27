@@ -180,7 +180,6 @@ def prometheus_args(args: LaunchArgs) -> str:
 def base_env_vars(args: LaunchArgs, script_dir: str, megatron_path: str, miles_root: str) -> dict[str, str]:
     return {
         "PYTHONPATH": f"{megatron_path}:{script_dir}:{miles_root}",
-        "MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1",
         "OPENENV_ENV_URL": args.openenv_env_url,
         "OPENENV_MAX_TURNS": str(args.openenv_max_turns),
         "OPENENV_MAX_ROLLOUT_TIME_SECONDS": str(args.openenv_max_rollout_time_seconds),

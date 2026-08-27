@@ -87,7 +87,7 @@ class GenerateFnOutput:
 
 
 def call_rollout_fn(fn, *args, evaluation: bool, **kwargs):
-    """Legacy rollout function call interface. Used when MILES_EXPERIMENTAL_ROLLOUT_REFACTOR is disabled."""
+    """Legacy rollout function call interface. Used when MILES_USE_LEGACY_ROLLOUT_V1 is enabled."""
     output = fn(*args, **kwargs, evaluation=evaluation)
 
     # compatibility for legacy version

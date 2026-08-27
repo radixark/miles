@@ -62,7 +62,7 @@ python -m examples.experimental.hud.make_hud_data \
 
 mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key   # sandboxes
 export MILES_SCRIPT_OUTPUT_DIR=/persistent/hud2048    # checkpoints and rollout dumps
-python -m pytest examples/experimental/hud/tests/ -q  # offline: no GPU, no network
+python -m pytest tests/fast/examples/experimental/hud -q  # offline: no GPU, no network
 MILES_SCRIPT_MODE=smoke python examples/experimental/hud/run_hud2048.py   # 2 episodes
 python examples/experimental/hud/run_hud2048.py       # 8 GPUs, single node
 ```

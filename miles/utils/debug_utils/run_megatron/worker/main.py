@@ -133,7 +133,9 @@ def _initialize_megatron(args: argparse.Namespace) -> None:
 
 def _build_and_load_model(args: argparse.Namespace, script: WorkerScriptArgs) -> list[Any]:
     model_provider: Callable[..., Any] = get_model_provider_func(args, role=script.role)
-    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder)
+    # Forward-only runs skip DDP wrapping so the distributed-optimizer grad buffer
+    # (tens-to-hundreds of GB for large MoE models) is never allocated -> avoids OOM.
+    model: list[Any] = get_model(model_provider, ModelType.encoder_or_decoder, wrap_with_ddp=script.run_backward)
 
     if args.load is not None:
         load_checkpoint(

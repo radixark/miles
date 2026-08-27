@@ -2,7 +2,7 @@
 reward computation, Miles owns everything around it.
 
 Wire it up with ``--rollout-function-path verifiers_rollout.VerifiersRolloutFn``
-(or ``.generate_rollout`` without ``MILES_EXPERIMENTAL_ROLLOUT_REFACTOR``) plus
+(or ``.generate_rollout`` under ``MILES_USE_LEGACY_ROLLOUT_V1=1``) plus
 ``--disable-rollout-global-dataset``, and point ``VERIFIERS_CONFIG`` at a
 Verifiers ``EnvConfig`` TOML file. ``run.py`` in this directory does all of
 that; see README.md.
@@ -361,7 +361,12 @@ class MilesSGLangTransport:
             "choices": [
                 {
                     "token_ids": completion_ids,
-                    "logprobs": {"content": [{"logprob": value} for value in completion_logprobs]},
+                    "logprobs": {
+                        "content": [
+                            {"token": f"token_id:{token_id}", "logprob": logprob}
+                            for token_id, logprob in zip(completion_ids, completion_logprobs, strict=True)
+                        ]
+                    },
                     "finish_reason": _finish_reason(output),
                 }
             ],

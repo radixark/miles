@@ -1,5 +1,6 @@
 ---
 title: "Infra Features"
+sidebarTitle: "Overview"
 description: "These examples exercise runtime and infrastructure behaviour rather than a training recipe."
 # Generated from examples/infra_features/README.md by scripts/tools/sync_example_docs.py. Edit that README, not this file.
 ---

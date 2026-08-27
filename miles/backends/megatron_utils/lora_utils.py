@@ -216,8 +216,10 @@ def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
     _original_init = _ParamAndGradBuffer.__init__
 
     def _patched_init(self, *args, **kwargs):
-        kwargs["disable_param_buffers_cpu_backup"] = True
-        kwargs["disable_grad_buffers_cpu_backup"] = True
+        # Megatron reads these flags from ddp_config (its first ctor argument).
+        ddp_config = kwargs.get("ddp_config", args[0] if args else None)
+        ddp_config.disable_param_buffers_cpu_backup = True
+        ddp_config.disable_grad_buffers_cpu_backup = True
         _original_init(self, *args, **kwargs)
 
     _ParamAndGradBuffer.__init__ = _patched_init

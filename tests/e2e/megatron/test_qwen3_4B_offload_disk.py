@@ -10,7 +10,7 @@ that every rank armed disk offload under its own directory.
 import glob
 import os
 
-from tests.ci.ci_register import register_cuda_ci
+from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
@@ -23,6 +23,11 @@ OFFLOAD_DIR = "/root/train_offload_disk"
 register_cuda_ci(
     est_time=600,
     suite="stage-c-4-gpu-h200",
+    labels=["megatron"],
+)
+register_rocm_ci(
+    est_time=300,
+    suite="nightly-stage-c-4-gpu-mi350",
     labels=["megatron"],
 )
 
@@ -102,6 +107,7 @@ def execute():
         "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
+        "--skip-actor-forward-only "
     )
 
     optimizer_args = (

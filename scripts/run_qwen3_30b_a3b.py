@@ -17,7 +17,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     actor_num_gpus_per_node: int | None = None
     rollout_num_gpus: int | None = None
     no_colocate: bool = False
-    hardware: Literal["H100", "B200", "B300", "GB200", "GB300"] = "H100"
+    hardware: Literal["auto", "H100", "B200", "B300", "GB200", "GB300"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -37,6 +37,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     tis_use_rs: bool = True
 
     def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
         self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
         self.no_colocate = self.no_colocate or self.rollout_nvfp4
         if self.no_colocate:
@@ -219,6 +220,10 @@ def execute(args: ScriptArgs):
             "OPEN_TRAINING_INT4_FAKE_QAT_FLAG": "1",
             "OPEN_TRAINING_INT4_GROUP_SIZE": "128",
         }
+        # Fake QAT swaps in straight-through weight tensors, while TE's fused wgrad
+        # accumulation writes main_grad onto the original ones, so the two together
+        # would drop the quantized weights' gradients.
+        misc_args += "--no-gradient-accumulation-fusion "
 
     if args.train_fp8 or args.train_mxfp8:
         match args.hardware:

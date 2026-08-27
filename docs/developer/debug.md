@@ -185,8 +185,7 @@ The per-step metrics are the real signal, and they are the same numbers the chec
 assert on: `train/ppo_kl`, `train/pg_clipfrac`, `train/kl_loss`, `rollout/log_probs`,
 `rollout/ref_log_probs`, `rollout/rollout_log_probs`, `rollout/entropy`. Trainer steps log
 as `step <n>: {...}`, and the rollout side logs one reduced dict per rollout. See
-[Monitoring and Logging](/user-guide/monitoring) for the full metric surface and the
-dashboard.
+[Monitoring and Logging](/user-guide/monitoring) for the full metric surface.
 
 ## When all else fails
 

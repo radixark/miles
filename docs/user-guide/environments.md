@@ -1,5 +1,6 @@
 ---
-title: Environments
+title: Agentic Environments
+sidebarTitle: Overview
 description: How Miles trains on RL environments — datasets with rewards, self-wired environments, and optional external ecosystems.
 ---
 
@@ -13,8 +14,9 @@ where the environment itself comes from:
   layers described in [Integration shapes](#integration-shapes); most
   environments sit in the agent function, with the session server recording
   tokens (see [Agentic Rollout (TITO)](/user-guide/agentic-rollout)).
-- **An external ecosystem** — adopt a prebuilt connector from the table below;
-  connectors occupy the same three layers.
+- **An external ecosystem** — adopt a prebuilt connector from the table below,
+  spanning coding, computer-use and tool-calling agents; connectors occupy the
+  same three layers.
 
 | Integration | Plugs in at | Guide |
 |---|---|---|

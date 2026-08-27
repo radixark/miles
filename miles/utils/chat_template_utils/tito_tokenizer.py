@@ -287,21 +287,31 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         return prefix + incremental
 
 
-# Qwen3.5 and Qwen3-Next-Thinking share the ``<|im_end|>`` boundary handling
-# with Qwen3, so they reuse Qwen3TITOTokenizer's token-level logic via plain
-# inheritance.  They are still split into named subclasses because each owns
-# its own ``FIXED_TEMPLATE`` pointing to a distinct fixed jinja, even
-# though their boundary behavior is identical.
+# Qwen3.5/3.6 and Qwen3-Next-Thinking share the ``<|im_end|>`` boundary
+# handling with Qwen3. Their subclasses only own the distinct fixed-template
+# contracts layered on that token boundary.
 
 
 class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
-    """Qwen3.5 — same boundary behavior as Qwen3, distinct fixed template."""
+    """Qwen3.5 template and Qwen3 token boundary."""
 
     tool_call_parser = "qwen3_coder"
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.5_fixed.jinja",
-        extra_kwargs={"clear_thinking": False},
+        extra_kwargs={"preserve_thinking": True},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    )
+
+
+class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3.6 template and Qwen3 token boundary."""
+
+    tool_call_parser = "qwen3_coder"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template="qwen3.6_fixed.jinja",
+        extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
 
@@ -766,6 +776,7 @@ class TITOTokenizerType(StrEnum):
     DEFAULT = "default"
     QWEN3 = "qwen3"
     QWEN35 = "qwen35"
+    QWEN36 = "qwen36"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
     NEMOTRON3 = "nemotron3"
@@ -787,6 +798,8 @@ class TITOTokenizerType(StrEnum):
                 return Qwen3TITOTokenizer
             case cls.QWEN35:
                 return Qwen35TITOTokenizer
+            case cls.QWEN36:
+                return Qwen36TITOTokenizer
             case cls.QWENNEXT:
                 return QwenNextTITOTokenizer
             case cls.GLM47:

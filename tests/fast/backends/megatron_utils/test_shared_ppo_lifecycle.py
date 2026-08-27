@@ -6,6 +6,9 @@ from types import ModuleType
 from unittest.mock import Mock
 
 import pytest
+import torch
+
+from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 
 
 @pytest.fixture(scope="module")
@@ -235,3 +238,205 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
 
     assert saver.resume.call_count == 1
     assert worker._asleep is False
+
+
+def _actor_train_args(**overrides):
+    defaults = dict(
+        compute_advantages_and_returns=True,
+        use_rollout_logprobs=False,
+        keep_old_actor=False,
+        get_mismatch_metrics=False,
+        skip_actor_forward_only=False,
+    )
+    return Namespace(**(defaults | overrides))
+
+
+def _actor_reuse_worker(actor_module, **args_overrides):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = _actor_train_args(use_critic=False, **args_overrides)
+    worker.model = [object()]
+    worker.optimizer = object()
+    worker.opt_param_scheduler = object()
+    worker.weights_backuper = Mock(backup_tags=set())
+    worker._active_model_tag = "actor"
+    worker._switch_model = Mock()
+    worker._set_replay_stage = Mock()
+    worker.compute_log_prob = Mock(return_value={"log_probs": [object()]})
+    worker.rollout_data_postprocess = None
+    worker.prof = Mock()
+    worker._ft_test_action_executor = None
+    worker.weight_updater = Mock()
+    worker.weight_updater.pop_metrics.return_value = {}
+    worker._heartbeat = Mock()
+    return worker
+
+
+def _patch_actor_reuse_dependencies(actor_module, monkeypatch, *, num_microbatches):
+    @contextmanager
+    def passthrough_timer(_name):
+        yield
+
+    monkeypatch.setattr(actor_module, "all_replay_managers", [])
+    monkeypatch.setattr(
+        actor_module,
+        "get_data_iterator",
+        lambda *_args: ([Namespace(micro_batch_indices=None, micro_batch_size=1)], num_microbatches),
+    )
+    monkeypatch.setattr(actor_module, "compute_advantages_and_returns", Mock())
+    monkeypatch.setattr(actor_module, "log_train_advantage_computation_event", Mock())
+    monkeypatch.setattr(actor_module, "log_rollout_data", Mock())
+    monkeypatch.setattr(actor_module, "log_perf_data", Mock())
+    monkeypatch.setattr(actor_module.train_dump_utils, "save_debug_train_data", Mock())
+    monkeypatch.setattr(actor_module, "inverse_timer", passthrough_timer)
+    monkeypatch.setattr(actor_module, "timer", passthrough_timer)
+    monkeypatch.setattr(
+        actor_module,
+        "train",
+        Mock(return_value=actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY),
+    )
+
+
+@pytest.mark.parametrize(
+    ("skip_actor_forward_only", "use_rollout_logprobs", "num_microbatches"),
+    [
+        (False, False, [1]),
+        (True, False, [1]),
+        (True, True, [1]),
+        (True, False, [2]),
+    ],
+)
+def test_actor_logprob_forward_is_explicit_single_step_opt_in(
+    actor_module, monkeypatch, skip_actor_forward_only, use_rollout_logprobs, num_microbatches
+):
+    worker = _actor_reuse_worker(
+        actor_module,
+        skip_actor_forward_only=skip_actor_forward_only,
+        use_rollout_logprobs=use_rollout_logprobs,
+    )
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=num_microbatches)
+    rollout_data = {
+        "num_rollouts": [1] * len(num_microbatches),
+        "total_lengths": [1] * sum(num_microbatches),
+    }
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    assert worker.compute_log_prob.call_count == int(not skip_actor_forward_only and not use_rollout_logprobs)
+    actor_module.compute_advantages_and_returns.assert_called_once_with(worker.args, rollout_data)
+    train_call = actor_module.train.call_args
+    assert train_call.args[6] is rollout_data["num_rollouts"]
+    assert train_call.kwargs == {
+        "witness_info": None,
+        "attempt": 0,
+        "ft_test_action_executor": None,
+    }
+
+
+def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwards(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
+    worker.weights_backuper.backup_tags = {"ref", "teacher"}
+    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: {
+        f"{store_prefix}log_probs": [object()]
+    }
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
+    actor_module.train.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("manager_cls", "rollout_flag", "data_key"),
+    [
+        (RoutingReplayManager, "use_rollout_routing_replay", "rollout_routed_experts"),
+        (IndexerReplayManager, "use_rollout_indexer_replay", "rollout_indexer_topk"),
+    ],
+)
+def test_skip_actor_forward_only_consumes_preloaded_rollout_replay_during_training(
+    actor_module,
+    monkeypatch,
+    manager_cls,
+    rollout_flag,
+    data_key,
+):
+    manager = manager_cls()
+    manager.enabled = True
+    manager.enable_check_replay_result = False
+    queued_top_indices = []
+    replay = Mock()
+    replay.record.side_effect = queued_top_indices.append
+    replay.pop_backward.side_effect = lambda: queued_top_indices.pop(0)
+    manager.replays = [replay]
+    manager.set_current(replay)
+
+    worker = _actor_reuse_worker(
+        actor_module,
+        skip_actor_forward_only=True,
+        **{rollout_flag: True},
+    )
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    monkeypatch.setattr(actor_module, "all_replay_managers", [manager])
+    worker._set_replay_stage.side_effect = lambda stage: setattr(manager, "stage", stage)
+
+    expected_top_indices = torch.tensor([[1]], dtype=torch.int64)
+
+    def preload_replay_data(**kwargs):
+        assert kwargs["data_key"] == data_key
+        assert kwargs["replay_list"] is manager.replays
+        kwargs["replay_list"][0].record(kwargs["rollout_data"].pop(data_key)[0])
+
+    fill_replay_data = Mock(side_effect=preload_replay_data)
+    monkeypatch.setattr(actor_module, "fill_replay_data", fill_replay_data)
+
+    def train_with_replay(*_args, **_kwargs):
+        topk_fn = manager.get_topk_fn(
+            lambda scores, topk: torch.topk(scores, topk, dim=1).indices,
+            return_probs=False,
+        )
+        scores = torch.tensor([[0.0, 1.0]])
+        torch.testing.assert_close(topk_fn(scores, 1), expected_top_indices)
+        return actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+
+    train = Mock(side_effect=train_with_replay)
+    monkeypatch.setattr(actor_module, "train", train)
+    rollout_data = {
+        "num_rollouts": [1],
+        "total_lengths": [1],
+        data_key: [expected_top_indices],
+    }
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    fill_replay_data.assert_called_once()
+    replay.pop_backward.assert_called_once()
+    assert queued_top_indices == []
+
+
+def test_skip_actor_forward_only_rejects_multiple_optimizer_steps(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1, 1])
+    rollout_data = {"num_rollouts": [1, 1], "total_lengths": [1, 1]}
+
+    with pytest.raises(AssertionError, match="requires 1 optimizer step"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.compute_advantages_and_returns.assert_not_called()
+    actor_module.train.assert_not_called()
+
+
+def test_skip_actor_forward_only_rejects_existing_actor_log_probs(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, skip_actor_forward_only=True)
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
+    rollout_data["log_probs"] = [object()]
+
+    with pytest.raises(AssertionError, match="without actor log probs"):
+        worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    worker.compute_log_prob.assert_not_called()
+    actor_module.compute_advantages_and_returns.assert_not_called()
+    actor_module.train.assert_not_called()

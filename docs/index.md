@@ -1,5 +1,6 @@
 ---
-title: Miles Documentation
+title: Welcome
+sidebarTitle: Overview
 description: Miles is an open-source RL framework for large-scale LLM post-training, pairing SGLang rollout with Megatron-LM training at trillion-parameter scale.
 ---
 Miles is a high-performance, enterprise-ready reinforcement learning framework for
@@ -44,9 +45,6 @@ the largest models all live on Megatron-LM. See
 - **Fault tolerance.** When an SGLang engine dies, Miles
   [recovers it and resumes the run in place](/advanced/fault-tolerance): no restart, no
   pause.
-- **Miles dashboard.** A self-hosted web UI for a run's
-  [training dynamics and compute efficiency](/user-guide/dashboard): what every GPU was
-  doing during a step, and what each trajectory contained at the token level.
 
 ### What Miles runs
 
@@ -57,10 +55,13 @@ the largest models all live on Megatron-LM. See
   MI355X via ROCm. See [Supported hardware](#supported-hardware).
 - **Wide recipe support.** GRPO, GSPO, PPO and REINFORCE++ for RL, plus SFT and
   [on-policy distillation](/advanced/on-policy-distillation).
-- **Coding-agent environments.** Connectors for
-  [Harbor, NeMo Gym, OpenEnv, Verifiers, Strands Agents and tau-bench](/user-guide/environments),
-  each plugging into the rollout layer that fits it, with task sandboxes on AgentENV,
-  Daytona, E2B or Modal.
+- **Agentic environments.** Train coding and computer-use agents through connectors for
+  Harbor, HUD, NeMo Gym, OpenEnv, Verifiers and more, each plugging into the rollout
+  layer that fits it, with task sandboxes on AgentENV, Daytona, E2B or Modal. See
+  [Agentic Environments](/user-guide/environments).
+- **Diffusion models.** Flow-GRPO, DiffusionNFT and SFT on an sglang-diffusion rollout
+  engine and an FSDP2 trainer, in
+  [Miles-diffusion](https://github.com/radixark/miles_diffusion).
 - **Comprehensive CI.** Unit suites run on every pull request, and tag-triggered end-to-end
   GPU training tests cover the supported model families on both NVIDIA and AMD runners.
 
@@ -74,15 +75,21 @@ of the box, including older generations of the families below.
 |---|---|
 | **DeepSeek** | [DeepSeek-V4 Pro](/models/deepseek/deepseek-v4-pro)<br/>[DeepSeek-V4 Flash](/models/deepseek/deepseek-v4-flash)<br/>[DeepSeek-V3.2](/models/deepseek/deepseek-v3-2)<br/>[DeepSeek-V3](/models/deepseek/deepseek) |
 | **Thinking Machines** | [Inkling](/models/thinkingmachines/inkling)<br/>[Inkling-Small](/models/thinkingmachines/inkling-small) |
-| **Qwen** | [Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5) |
+| **Qwen** | [Qwen3.8-27B](/models/qwen/qwen3-8)<br/>[Qwen3.6 MoE](/models/qwen/qwen3-6-moe)<br/>[Qwen3.6](/models/qwen/qwen3-6)<br/>[Qwen3.5-35B-A3B](/models/qwen/qwen3-5-moe)<br/>[Qwen3.5-4B / 9B / 27B](/models/qwen/qwen3-5) |
 | **GLM** | [GLM-5.2](/models/glm/glm5-2)<br/>[GLM-5.1](/models/glm/glm5)<br/>[GLM-5](/models/glm/glm5)<br/>[GLM-4.7-Flash](/models/glm/glm4-7-flash) |
 | **Kimi** | [Kimi-K3](/models/kimi/kimi-k3)<br/>[Kimi-K2.6](/models/kimi/kimi-k2.5)<br/>[Kimi-K2.5](/models/kimi/kimi-k2.5) |
 | **Nemotron** | [Nemotron-3-Ultra-550B-A55B](/models/nemotron/nemotron-3-ultra)<br/>[Nemotron-3-Super-120B-A12B-FP8](/models/nemotron/nemotron-3-super)<br/>[Nemotron-3-Nano MoE](/models/nemotron/nemotron-3-nano-moe)<br/>[Nemotron-3-Nano](/models/nemotron/nemotron-3-nano) |
 | **Gemma** | [Gemma-4 26B-A4B](/models/gemma/gemma-4)<br/>[Gemma-4 31B](/models/gemma/gemma-4) |
 | **JoyAI** | [JoyAI-LLM-Flash](https://github.com/radixark/miles/blob/main/scripts/run_joy_ai_llm_flash.py) |
+| **Stable Diffusion** | [SD3.5](/diffusion/models/sd3/sd3) |
+| **Qwen-Image** | [Qwen-Image](/diffusion/models/qwen-image/qwen-image) |
+| **Wan** | [Wan2.2-T2V-A14B](/diffusion/models/wan/wan2-2) |
+| **LTX** | [LTX-2.3](/diffusion/models/ltx/ltx2) |
+| **Cosmos** | [Cosmos3-Nano](/diffusion/models/cosmos/cosmos3) |
+| **MiniMax** | [MiniMax H3](/diffusion/models/h3/h3) |
 
-See [Models](/models/index) for exact conversion commands, launch scripts, and
-parallelism settings.
+See [Models](/models/index) for LLM family guides and [Diffusion](/diffusion) for
+diffusion recipes and validation details.
 
 ## Supported hardware
 
@@ -94,6 +101,7 @@ and the container images for each.
 
 ## News
 
+- [2026/08] 🔥 Miles v0.1 is released! Read the blog post here: [Miles v0.1: Production-level Post-training](https://www.lmsys.org/blog/2026-08-18-miles-v0-1).
 - [2026/07] Towards Blackwell-Native 8-bit and 4-bit RL: End-to-End MXFP8 and NVFP4 RL in Miles ([blog](https://www.lmsys.org/blog/2026-07-29-mxfp8-nvfp4-rl)).
 - [2026/07] 🔥 SGLang and Miles add day-0 support for Kimi K3 ([blog](https://www.lmsys.org/blog/2026-07-27-kimi-k3-day0-support)).
 - [2026/07] On-policy distillation lands in Miles ([blog](https://www.lmsys.org/blog/2026-07-18-opd-support-in-miles)).
@@ -107,15 +115,27 @@ and the container images for each.
 ## Start here
 
 1. **[Installation](/getting-started/installation)** — Docker, bare metal, AMD.
-2. **[Quick Start](/getting-started/quick-start)** — a working training run in under an hour.
+2. **[Quick Start](/getting-started/quick-start)** — a training job up and running in under an hour.
 3. **[Core concepts](/user-guide/concepts)** — the four objects in every Miles job.
 4. **[Launch script](/user-guide/launch-script)** — what `python scripts/run_*.py` does
    and how to override a recipe.
 5. **[Training backends](/user-guide/training-backend)** — Megatron-LM and FSDP: parallelism,
    checkpoints, and hooks.
 
+## Acknowledgment
+
+Miles was forked from [slime](https://github.com/THUDM/slime), and integrates
+[SGLang](https://github.com/sgl-project/sglang),
+[Megatron-LM](https://github.com/NVIDIA/Megatron-LM) and
+[torch_memory_saver](https://github.com/fzyzcjy/torch_memory_saver).
+
+Miles is shaped by the teams that build on it and support its development,
+from hardware and cloud to model labs, agent infrastructure, and academia:
+
+![Organizations building on, contributing to, and collaborating with Miles](/assets/images/acknowledgment.png)
+
 ## Contribute
 
 - GitHub: [github.com/radixark/miles](https://github.com/radixark/miles)
-- Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles`
+- Slack: [slack.sglang.ai](https://slack.sglang.ai), channel `#miles-rl`
 - Contributing: [developer guide](/developer/contributor-guide)

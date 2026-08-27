@@ -1,0 +1,199 @@
+name: PR CI Image Build
+
+on:
+  workflow_call:
+    outputs:
+      built:
+        description: Whether this call built and pushed a PR-scoped image
+        value: ${{ jobs.docker-build.outputs.built }}
+      tag_available:
+        description: Whether a current PR-scoped image exists, built by this call or an earlier one
+        value: ${{ jobs.docker-build.outputs.tag_available }}
+
+jobs:
+  # A PR keeps one image tag (pr-<number>) for its whole life. Rebuilds are driven by
+  # the content of the build inputs, not by whether the PR happens to touch them: the
+  # published tag records its inputs hash in a label, so reruns and unrelated pushes
+  # reuse the image instead of paying for an identical build.
+  docker-decide:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    outputs:
+      needs_image: ${{ steps.decide.outputs.needs_image }}
+      rebuild: ${{ steps.decide.outputs.rebuild }}
+      force_rebuild: ${{ steps.prepare.outputs.force_rebuild }}
+    env:
+      SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: compare
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+        run: |
+          set -euo pipefail
+          emit() {
+            echo "eligible=$1" >> "$GITHUB_OUTPUT"
+            echo "current=$2" >> "$GITHUB_OUTPUT"
+          }
+
+          # Cron and manual runs have no PR diff and never own a PR image.
+          if [ -z "$BASE_SHA" ]; then
+            emit false ""
+            exit 0
+          fi
+
+          # Compare the PR merge commit with its current base (HEAD^1) rather than the
+          # recorded base.sha, which can lag main and pull in unrelated changes.
+          CURRENT=$(python3 docker/image_inputs.py --rev HEAD)
+          BASE=$(python3 docker/image_inputs.py --rev HEAD^1)
+          if [ "$CURRENT" = "$BASE" ]; then
+            echo "Build inputs match the base branch; suites use the released image."
+            emit false ""
+            exit 0
+          fi
+
+          if [ "$SAME_REPO" != "true" ]; then
+            echo "::notice::Fork PRs cannot publish an image; suites use the released image."
+            emit false ""
+            exit 0
+          fi
+
+          emit true "$CURRENT"
+
+      - id: prepare
+        shell: bash
+        env:
+          ELIGIBLE: ${{ steps.compare.outputs.eligible }}
+          CURRENT: ${{ steps.compare.outputs.current }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          emit() {
+            echo "inspect_tag=$1" >> "$GITHUB_OUTPUT"
+            echo "force_rebuild=$2" >> "$GITHUB_OUTPUT"
+            echo "current=$3" >> "$GITHUB_OUTPUT"
+          }
+
+          if [ "$ELIGIBLE" != "true" ]; then
+            emit false false ""
+            exit 0
+          fi
+
+          LABELS=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --jq '.[].name')
+          if grep -Fxq "rebuild-ci-image" <<< "$LABELS"; then
+            emit false true "$CURRENT"
+          else
+            emit true false "$CURRENT"
+          fi
+
+      # Registry auth is needed only when reading the inputs label from an existing tag.
+      - name: Login to Docker Hub
+        if: steps.prepare.outputs.inspect_tag == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - id: decide
+        shell: bash
+        env:
+          CURRENT: ${{ steps.prepare.outputs.current }}
+          FORCE_REBUILD: ${{ steps.prepare.outputs.force_rebuild }}
+          INSPECT_TAG: ${{ steps.prepare.outputs.inspect_tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: |
+          set -euo pipefail
+          emit() { echo "needs_image=$1" >> "$GITHUB_OUTPUT"; echo "rebuild=$2" >> "$GITHUB_OUTPUT"; }
+
+          if [ "$FORCE_REBUILD" = "true" ]; then
+            echo "::notice::rebuild-ci-image label present; forcing a rebuild."
+            emit true true
+            exit 0
+          fi
+
+          if [ "$INSPECT_TAG" != "true" ]; then
+            emit false false
+            exit 0
+          fi
+
+          PUBLISHED=$(docker buildx imagetools inspect "radixark/miles:pr-${PR_NUMBER}" \
+            --format '{{ json .Image }}' 2>/dev/null \
+            | python3 docker/image_inputs.py --read-label || true)
+
+          if [ -z "$PUBLISHED" ]; then
+            echo "No usable pr-${PR_NUMBER} image; building one."
+            emit true true
+          elif [ "$PUBLISHED" = "$CURRENT" ]; then
+            echo "pr-${PR_NUMBER} already matches the current build inputs; reusing it."
+            emit true false
+          else
+            echo "Build inputs changed since pr-${PR_NUMBER} was published; rebuilding."
+            emit true true
+          fi
+
+  # Docker PRs build the multi-arch image after the caller's CPU gate passes.
+  # Without a rebuild to do this stays on a free hosted runner as a no-op;
+  # actual builds use docker-build nodes, never the GPU-suite pool.
+  docker-build:
+    needs: [docker-decide]
+    if: always() && !cancelled() && github.event.action != 'closed'
+    runs-on: ${{ fromJSON(needs.docker-decide.outputs.rebuild == 'true' && '["docker-build"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 180
+    outputs:
+      built: ${{ steps.build.outputs.built || 'false' }}
+      # Reusing an image the previous run published is as good as building one now.
+      tag_available: ${{ needs.docker-decide.outputs.needs_image == 'true' && (steps.build.outputs.built == 'true' || needs.docker-decide.outputs.rebuild != 'true') }}
+    env:
+      BUILD: ${{ needs.docker-decide.outputs.rebuild == 'true' }}
+    steps:
+      - name: Checkout repository
+        if: env.BUILD == 'true'
+        uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        if: env.BUILD == 'true'
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            image=moby/buildkit:latest
+            network=host
+      - name: Install Python + dependencies
+        if: env.BUILD == 'true'
+        run: |
+          if ! command -v python3 >/dev/null || ! command -v pip3 >/dev/null; then
+            apt-get -o DPkg::Lock::Timeout=600 update
+            apt-get -o DPkg::Lock::Timeout=600 install -y python3 python3-pip
+          fi
+          # Older pip (<23) lacks --break-system-packages; newer PEP 668
+          # systems require it. Probe instead of assuming either.
+          PIP_BSP=""
+          pip3 install --help 2>/dev/null | grep -q -- --break-system-packages && PIP_BSP="--break-system-packages"
+          pip3 install $PIP_BSP --ignore-installed typer
+      - name: Login to Docker Hub
+        if: env.BUILD == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push PR tag
+        id: build
+        if: env.BUILD == 'true'
+        run: |
+          python3 docker/build.py --variant cu13 --image-tag custom \
+            --custom-tag pr-${{ github.event.pull_request.number }} --push
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      # The label is a one-shot request: leaving it on would rebuild on every later run.
+      - name: Consume rebuild-ci-image label
+        if: steps.build.outputs.built == 'true' && needs.docker-decide.outputs.force_rebuild == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X DELETE \
+            "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/rebuild-ci-image" \
+            || echo "::warning::Could not remove the rebuild-ci-image label; remove it by hand or every run will rebuild."
+      - name: Nothing to build
+        if: env.BUILD != 'true'
+        run: echo "No rebuild needed; suites use the PR image if it exists, else the released one."

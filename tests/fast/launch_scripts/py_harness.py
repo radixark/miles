@@ -17,6 +17,7 @@ import miles.utils.external_utils.command_utils as command_utils
 from miles.utils.external_utils.model_args_utils import import_module_from_path
 
 FROZEN_RUN_ID = "260101-000000-000"
+FROZEN_HARDWARE = "H200"
 
 _GPU_COUNT_ANY_WAIT_LOOP_ACCEPTS = "1000000"
 _FROZEN_PID = 1000
@@ -35,6 +36,7 @@ CLEARED_ENV = (
     "GLOO_SOCKET_IFNAME",
     "KEEP_MOE_LORA",
     "MILES_SCRIPT_EXTERNAL_RAY",
+    "MILES_USE_LEGACY_ROLLOUT_V1",
     "MLP_SOCKET_IFNAME",
     "MLP_WORKER_0_HOST",
     "MODEL_ARGS_FIRST_K_DENSE_REPLACE",
@@ -73,6 +75,19 @@ def iter_py_launch_scripts() -> list[PyLaunchScript]:
     return [PyLaunchScript(path=path, entrypoints=tuple(_entrypoint_names(path))) for path in paths]
 
 
+def launcher_hardware_literals() -> dict[str, tuple[str, ...]]:
+    """Every value each launcher's `--hardware` accepts, for the launchers that have the flag at all."""
+    literals = {}
+    for script in iter_py_launch_scripts():
+        for node in ast.walk(ast.parse(script.path.read_text())):
+            if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "hardware":
+                values = node.annotation.slice
+                literals[script.rel] = tuple(
+                    e.value for e in (values.elts if isinstance(values, ast.Tuple) else [values])
+                )
+    return literals
+
+
 def iter_self_executing_launchers() -> list[Path]:
     """Launchers that reach the shell themselves rather than through command_utils."""
     roots = [REPO_ROOT / root for root in ("scripts", "examples", "tools")]
@@ -105,11 +120,12 @@ def install_shell_recorder(monkeypatch, sandbox: Path) -> Recording:
     return recording
 
 
-def freeze_environment(monkeypatch) -> None:
+def freeze_environment(monkeypatch, hardware: str = FROZEN_HARDWARE) -> None:
     for key, value in _FROZEN_ENV.items():
         monkeypatch.setenv(key, value)
     for key in CLEARED_ENV:
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(command_utils, "detect_hardware", lambda: hardware)
 
 
 def install_command_recorder(monkeypatch) -> Recording:

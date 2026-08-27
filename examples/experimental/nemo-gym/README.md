@@ -153,10 +153,7 @@ python examples/experimental/nemo-gym/run.py
 ```
 
 To wire the connector into a different launch script, the essential pieces
-are this example's directory on `PYTHONPATH`,
-`MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` in the environment (it gates the
-dynamic registration of the agentic flags below — without it train.py fails
-with "unrecognized arguments"), and:
+are this example's directory on `PYTHONPATH`, and:
 
 ```bash
 --prompt-data /root/swe_verified.jsonl
@@ -198,7 +195,7 @@ on CPU-only machines, in three independent layers (all three pass as of
    failure semantics, and the data conversion. No network, no docker:
 
    ```bash
-   pytest examples/experimental/nemo-gym/tests/ -q
+   pytest tests/fast/examples/experimental/nemo_gym -q
    ```
 
 2. **Golden scan** — the sandbox + per-task image + SWE-bench harness chain,
@@ -228,9 +225,8 @@ on CPU-only machines, in three independent layers (all three pass as of
 ## Troubleshooting
 
 1. `train.py: error: unrecognized arguments: --max-seq-len
-   --custom-agent-function-path`: `MILES_EXPERIMENTAL_ROLLOUT_REFACTOR=1` is
-   missing from the training environment (it must reach the ray job — run.py
-   sets it via the ray runtime env).
+   --custom-agent-function-path`: `MILES_USE_LEGACY_ROLLOUT_V1=1` is set in the
+   training environment — the legacy path never registers the agentic flags.
 2. `mini_swe_agent_2` dies at spin-up with an unresolvable-dependency error
    (`openai==X` vs `nemo-gym depends on openai<=Y`): the main venv has extra
    packages installed. Recreate it with `uv sync --extra dev` only — see the

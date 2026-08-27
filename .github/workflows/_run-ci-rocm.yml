@@ -9,7 +9,7 @@ on:
       runs_on:
         type: string
         required: true
-        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi300x", "4gpu"]'' picks runners that carry ALL the listed labels.'
+        description: 'JSON-encoded list of runner labels (all required). e.g. ''["amd", "mi350", "4gpu"]'' picks runners that carry ALL the listed labels.'
       container_image:
         # No default: pr-test-rocm.yml's resolve-ci-image is the single
         # source of the image name, so a dated tag can't rot here.
@@ -17,11 +17,16 @@ on:
         required: true
       skip_dependency_install:
         # Default true: the ROCm image ships SGLang / Megatron-LM baked in.
-        # Pass false to fetch and install refs (PR body ci-megatron-pr: /
-        # ci-sglang-pr:, else miles-main / sglang-miles).
+        # Pass false to fetch and install the refs named by ci-megatron-pr: /
+        # ci-sglang-pr:; whichever is unnamed keeps the image's own copy.
         type: boolean
         required: false
         default: true
+      ref:
+        description: 'Git ref to check out (empty = the triggering commit). Set by release CI to test a release branch.'
+        type: string
+        required: false
+        default: ''
     secrets:
       WANDB_API_KEY:
         required: false
@@ -30,7 +35,7 @@ jobs:
   run:
     # fromJSON parses the input list so `runs-on` receives an actual array.
     # Without this, GitHub treats the string verbatim as one label literal
-    # (e.g. the label name '["amd", "mi300x", "4gpu"]' with brackets), which no
+    # (e.g. the label name '["amd", "mi350", "4gpu"]' with brackets), which no
     # runner carries, and the job queues forever.
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     container:
@@ -60,6 +65,7 @@ jobs:
         working-directory: ${{ github.workspace }}
     env:
       PYTHONPATH: ${{ github.workspace }}
+      MILES_HARDWARE_PLATFORM: rocm
       GITHUB_COMMIT_NAME: ${{ github.event.pull_request.head.sha || github.sha }}_${{ github.event.pull_request.number || 'non-pr' }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
 
@@ -67,6 +73,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Cleanup Ray processes
@@ -117,8 +124,6 @@ jobs:
             [ -z "$MEGATRON_PR" ] && [ -n "$PR_MEGATRON_PR" ] && MEGATRON_PR="$PR_MEGATRON_PR"
             [ -z "$SGLANG_PR" ] && [ -n "$PR_SGLANG_PR" ] && SGLANG_PR="$PR_SGLANG_PR"
           fi
-          [ -z "$MEGATRON_PR" ] && MEGATRON_PR="miles-main"
-          [ -z "$SGLANG_PR" ] && SGLANG_PR="sglang-miles"
           resolve_fetch_ref() {
             local ref="$1"
             if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
@@ -149,17 +154,35 @@ jobs:
           fi
           rustc --version
           protoc --version
-          cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
-          cd /root/Megatron-LM && git reset --hard HEAD && git clean -fd && git fetch origin "$MEGATRON_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e . --no-deps --break-system-packages
+          if [ -n "$SGLANG_PR" ]; then
+            cd /sgl-workspace/sglang && git reset --hard HEAD && git clean -fd && git fetch origin "$SGLANG_PR" && git checkout -f FETCH_HEAD && git log --oneline -1 && pip install -e python --no-deps --break-system-packages
+          fi
+          if [ -n "$MEGATRON_PR" ]; then
+            cd /root/Megatron-LM
+            git reset --hard HEAD
+            git clean -fd
+            git fetch origin "$MEGATRON_PR"
+            git checkout -f FETCH_HEAD
+            git log --oneline -1
+            if git apply --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then
+              git apply "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"
+            elif git apply --reverse --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then
+              echo "Megatron ROCm patch already present"
+            else
+              echo "::error::Selected Megatron ref is incompatible with the ROCm patch"
+              exit 1
+            fi
+            pip install -e . --no-deps --break-system-packages
+          fi
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install polars zstandard xxhash blake3 --break-system-packages
+          pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
       - name: Install (miles only)
         if: ${{ inputs.skip_dependency_install }}
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE && pip install -e . --no-deps --break-system-packages
-          pip install polars zstandard xxhash blake3 --break-system-packages
+          pip install polars zstandard xxhash blake3 "numba==0.65.1" --break-system-packages
 
       - name: Resolve suite plan
         shell: bash

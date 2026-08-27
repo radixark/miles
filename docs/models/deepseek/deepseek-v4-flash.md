@@ -21,6 +21,11 @@ DeepSeek V4 training tracking issue: [`radixark/miles#1046`](https://github.com/
 | Model | Active / Total | HF ID |
 |---|---|---|
 | DeepSeek-V4-Flash | 13 B / 284 B | [sgl-project/DeepSeek-V4-Flash-FP8](https://huggingface.co/sgl-project/DeepSeek-V4-Flash-FP8) |
+| DeepSeek-V4-Flash-0731 | 13 B / 284 B | [deepseek-ai/DeepSeek-V4-Flash-0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731) |
+
+`DeepSeek-V4-Flash-0731` is the official release with MXFP4 routed experts. Its architecture is identical
+to DeepSeek-V4-Flash; the launcher's `prepare-fp8` stage (`tools/convert_mxfp4_to_fp8.py`) casts the
+experts losslessly to blockwise FP8, after which the pipeline is identical to `DeepSeek-V4-Flash-FP8`.
 
 ## 3. Quick start
 
@@ -44,7 +49,15 @@ python scripts/run_deepseek_v4.py full-train \
    --num-nodes 16 --num-gpus-per-node 8 --rollout-num-nodes 8
 ```
 
-The `full-train` subcommand chains `prepare-download → prepare-single → prepare-spmd → prepare-cp → train`. Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
+```bash
+# Official MXFP4 release (0731) — adds an MXFP4->FP8 cast before the same pipeline.
+# 8-node GB300 run (32 GPUs):
+python scripts/run_deepseek_v4.py full-train \
+   --model-name DeepSeek-V4-Flash-0731 \
+   --num-nodes 8 --num-gpus-per-node 4
+```
+
+The `full-train` subcommand chains `prepare-download → [prepare-fp8 →] prepare-single → prepare-spmd → prepare-cp → train` (`prepare-fp8` only for the MXFP4 `0731` variant). Each stage has a sentinel-based skip so you can re-run safely after the first invocation.
 
 ### 3.2 Launcher path defaults
 
@@ -121,7 +134,7 @@ Alternatively, you can set `MILES_SCRIPT_EXTERNAL_RAY=1` and `RAY_ADDRESS=…` t
 
 ### 4.4 Notable quirks
 
-- **Custom `transformers` patch.** miles ships `with_transformers_patch()` (`miles/utils/transformers_patch.py`) so HF's `AutoConfig.from_pretrained` recognizes `model_type=deepseek_v4` / `deepseek_ref` until support lands upstream.
+- **`model_type` rewrite for pruned checkpoints.** The older layer-pruning flow wrote `"model_type": "deepseek_ref"` into the local `config.json`. The launcher rewrites it back to `deepseek_v4` in place (`scripts/run_deepseek_v4.py`), so HF's `AutoConfig.from_pretrained` resolves the checkpoint without a patched `transformers`.
 
 ## 5. Example Recipe Configuration
 
@@ -170,7 +183,7 @@ SGLANG_ARGS=(
 )
 ```
 
-The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `MILES_HACK_TRAIN_TORCH_DETERMINISTIC=1`, and `NCCL_ALGO=Ring`.
+The launcher sets the required env vars for you: `SGLANG_SKIP_CHECKPOINT_LOAD_CHECK=1`, `SGLANG_DSV4_FP4_EXPERTS=0`, `SGLANG_HEALTH_CHECK_TIMEOUT=120`, `SGLANG_DG_CACHE_DIR_PER_PROCESS=1`, and `SGLANG_OPT_FP8_WO_A_GEMM=0`. Because `--train-deterministic` defaults to on, a stock run also gets `--deterministic-mode` plus `NCCL_ALGO=Ring`, `NVTE_ALLOW_NONDETERMINISTIC_ALGO=0` and `CUBLAS_WORKSPACE_CONFIG=:4096:8`; pass `--no-train-deterministic` to drop those four.
 
 On the Megatron side, V4 needs `--qkv-format bshd` with CP-aware data slicing. The DSA indexer additionally supports replay via `--use-rollout-indexer-replay` (off by default).
 

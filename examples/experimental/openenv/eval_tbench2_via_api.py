@@ -123,7 +123,7 @@ async def main() -> None:
         env_desc = os.getenv("OPENENV_ENV_URL", oaf._DEFAULT_ENV_URL)
     print(f"policy={model} @ {base_url} | env={env_desc} | " f"{len(rows)} tasks | concurrency={args.concurrency}")
 
-    policy = AsyncOpenAI(base_url=base_url, api_key=api_key)
+    policy = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=3600.0, max_retries=0)
     request_kwargs = {"temperature": args.temperature}
     sem = asyncio.Semaphore(args.concurrency)
 
