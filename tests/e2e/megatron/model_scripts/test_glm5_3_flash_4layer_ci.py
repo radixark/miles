@@ -42,6 +42,7 @@ def _args() -> ScriptArgs:
 
 def prepare(args: ScriptArgs):
     os.environ["CONVERT_KEEP_PP1"] = "1"
+    os.environ["CUDA_DEVICE_MAX_CONNECTIONS"] = "1"
     U.exec_command_cpu(f"mkdir -p {args.model_dir} {args.ckpt_dir} {args.data_dir}")
     U.exec_command_cpu(f"hf download {_MODEL_ORG}/{args.model_name} --local-dir {args.hf_checkpoint}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
