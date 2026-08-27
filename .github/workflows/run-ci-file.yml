@@ -128,11 +128,44 @@ jobs:
           path: pr-source
           persist-credentials: false
 
+      # An anonymous inspect can fail on Docker Hub's pull rate limit, which the
+      # step below would read as "no pr-<number> image" and quietly fall back to
+      # dev -- the very confusion it exists to remove.
+      - name: Login to Docker Hub
+        if: inputs.ci_image_tag == ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # A PR that built an image keeps it as pr-<number> for its whole life, so
+      # that is the image its own file runs should use; dev is for a PR whose
+      # build never ran.
+      - name: Pick the image tag when the PR body did not pin one
+        id: image
+        env:
+          CI_IMAGE_TAG: ${{ inputs.ci_image_tag }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+        run: |
+          set -euo pipefail
+          if [ -n "${CI_IMAGE_TAG}" ]; then
+            echo "tag=${CI_IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+            echo "Using the pinned tag ${CI_IMAGE_TAG}."
+            exit 0
+          fi
+          if docker buildx imagetools inspect "radixark/miles:pr-${PULL_NUMBER}" >/dev/null 2>&1; then
+            echo "tag=pr-${PULL_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "Using this PR's image pr-${PULL_NUMBER}."
+          else
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+            echo "No pr-${PULL_NUMBER} image is published; using dev."
+          fi
+
       - name: Resolve the file's execution plan
         id: resolve
         env:
           TEST_FILE: ${{ inputs.test_file }}
-          CI_IMAGE_TAG: ${{ inputs.ci_image_tag }}
+          CI_IMAGE_TAG: ${{ steps.image.outputs.tag }}
           CI_SOURCE_ROOT: ${{ github.workspace }}/pr-source
         run: python3 -S -m tests.ci.file_run
 
