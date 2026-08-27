@@ -193,9 +193,6 @@ class BaseReplayManager:
         mismatch_count = is_mismatch.sum().item()
         threshold = float(os.environ.get("MILES_TEST_R3_THRESHOLD", self.replay_check_max_mismatch_fraction))
         mismatch_threshold = threshold * orig_flat.shape[0]
-        # Unconditional: a run that only reports on failure gives a passing run no
-        # number at all, so two passing runs cannot be compared and a failure has no
-        # noise floor to be judged against.
         logger.info(
             f"Replay check (rank {_get_rank()}, stage {self.stage}): "
             f"mismatch {mismatch_count}/{orig_flat.shape[0]} tokens, threshold {mismatch_threshold:.0f}"
