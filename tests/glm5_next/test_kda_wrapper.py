@@ -1,18 +1,10 @@
-"""GPU test for the GLM-5.3 KDA wrapper: ``kda_gate`` against fla's
-``fused_kda_gate`` safe-gate branch (values and gradients), forward/backward
-smoke on packed varlen input (gradients reach every parameter), and
-bit-identical determinism across two runs on an idle GPU.
-
-Usage: python tests/glm5_next/test_kda_wrapper.py
-"""
-
 import sys
 
 import torch
 
 sys.path.insert(0, ".")
 
-from miles_plugins.models.glm5_next.kda import Glm5NextKDA, kda_gate
+from miles_plugins.models.glm5_next.kda import Glm5NextKDA
 
 HIDDEN_SIZE = 512
 NUM_HEADS = 8
@@ -32,10 +24,14 @@ def test_gate_matches_fla_reference():
     A_log = torch.randn(NUM_HEADS, device="cuda", dtype=torch.float32)
     dt_bias = torch.randn(NUM_HEADS * HEAD_DIM, device="cuda", dtype=torch.float32)
 
+    def torch_gate(x, A_log, dt_bias, lower_bound):
+        a = A_log.float().exp().view(A_log.numel(), 1)
+        return lower_bound * torch.sigmoid(a * (x.float() + dt_bias.float().view(A_log.numel(), -1)))
+
     f_ref = f.clone().requires_grad_(True)
     f_ours = f.clone().requires_grad_(True)
-    ref = fused_kda_gate(f_ref, A_log, dt_bias, lower_bound=GATE_LOWER_BOUND)
-    ours = kda_gate(f_ours, A_log, dt_bias, GATE_LOWER_BOUND)
+    ref = torch_gate(f_ref, A_log, dt_bias, GATE_LOWER_BOUND)
+    ours = fused_kda_gate(f_ours, A_log, dt_bias, lower_bound=GATE_LOWER_BOUND)
 
     assert ref.dtype == ours.dtype == torch.float32, (ref.dtype, ours.dtype)
     torch.testing.assert_close(ours, ref, rtol=1e-5, atol=1e-5)

@@ -1,13 +1,3 @@
-"""GLM-5.3 DSA attention: GLM-5's absorbed sparse MLA minus rope, plus the
-pooled-key (kpool) indexer selection from ``ops/kpool_indexer.py``.
-
-``qk_rope_head_dim == 0``: no rope anywhere, softmax scale is plain
-``1/sqrt(qk_head_dim)``. The tilelang SparseMLA kernels expect dim 512 + tail
-64, so q/kv get a zero 64-wide tail pad (numerically exact). Indexer-replay
-streams are the DSA layers only, so the stream index is this layer's ordinal
-among ``full_attn_layers``, not ``layer_number - 1``.
-"""
-
 import torch
 import torch.nn.functional as F
 from megatron.core import parallel_state
@@ -25,7 +15,6 @@ _SPARSE_MLA_TAIL_DIM = 64
 
 
 class Glm5NextDSAAttention(DSAMLASelfAttention):
-    """No-rope absorbed sparse MLA with pooled-key indexer selection."""
 
     def __init__(
         self,

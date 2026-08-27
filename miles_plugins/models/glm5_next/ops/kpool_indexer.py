@@ -1,22 +1,3 @@
-"""GLM-5.3 pooled-key (kpool) indexer selection, triton hot path.
-
-Reproduces sglang ``dsa_indexer_kpool.py``'s selection semantics on the packed
-training stream, without the serving-only fp8/Hadamard machinery, so it cannot
-byte-match serving; exact parity comes from R3 indexer replay, where the
-recorded tensor is the ``index_topk``-wide token expansion of the pool budget
-and the ``always_select_tail`` positions are reconstructed deterministically
-here. Selection carries no gradient.
-
-Pooling (per-dim softmax gate + ape over each complete ``kpool`` group) runs
-as one triton kernel over a ``total_tokens // kpool`` pool grid, oversized past
-the per-sequence complete-pool count so no host sync is needed; surplus rows
-are zeroed and their logits are ``-inf``-cleaned before top-k. Scoring stays on
-the fp32 tilelang lighting-indexer kernel and the pool top-k on ``torch.topk``;
-the token expansion, tail append, and padding run as triton kernels, fused into
-a single launch when indexer replay is off. The torch reference these kernels
-are validated against lives in ``tests/glm5_next/test_kpool_indexer.py``.
-"""
-
 import torch
 import triton
 import triton.language as tl
@@ -30,7 +11,6 @@ _SELECT_BLOCK = 256
 
 
 def pool_boundaries(cu_seqlens: torch.Tensor, kpool: int) -> torch.Tensor:
-    """Cumulative complete-pool counts per sequence, aligned with ``cu_seqlens``."""
     seq_lens = cu_seqlens[1:] - cu_seqlens[:-1]
     pool_counts = torch.div(seq_lens, kpool, rounding_mode="floor")
     pool_cu_seqlens = torch.zeros_like(cu_seqlens)
@@ -98,14 +78,6 @@ def build_pooled_keys(
     cu_seqlens: torch.Tensor,
     kpool: int,
 ) -> torch.Tensor:
-    """Compress complete ``kpool``-token groups of ``index_k`` into pooled keys.
-
-    ``index_k``/``gate_score`` are ``[total_tokens, index_head_dim]`` on the packed
-    stream; ``ape`` is the fp32 ``[kpool, index_head_dim]`` additive positional
-    bias. Returns ``[total_tokens // kpool, index_head_dim]`` in ``index_k``'s
-    dtype; rows past the true complete-pool count are zeros and are excluded
-    from scoring by the per-token pool ranges.
-    """
     total_tokens, head_dim = index_k.shape
     max_pools = total_tokens // kpool
     if max_pools == 0:
@@ -237,12 +209,6 @@ def append_tail_and_pad(
     kpool: int,
     pad_multiple: int = SPARSE_MLA_BLOCK,
 ) -> torch.Tensor:
-    """Append the deterministic ``always_select_tail`` positions and ``-1``-pad.
-
-    The tail of token ``t`` is ``[((t + 1) // kpool) * kpool, t]`` in its sequence,
-    a pure function of ``t``, so it is reconstructed here rather than replayed.
-    Shortcut rows already contain their tail and get ``-1`` padding instead.
-    """
     num_tokens, width = tokens.shape
     out_width = (width + kpool - 1 + pad_multiple - 1) // pad_multiple * pad_multiple
     out = torch.empty((num_tokens, out_width), dtype=torch.int32, device=tokens.device)
@@ -293,7 +259,6 @@ def kpool_select_topk(
     index_topk: int,
     kpool: int,
 ) -> torch.Tensor:
-    """Token-level top-k selection, ``[total_tokens, 1, padded_topk]`` int32."""
     num_tokens = index_q.shape[0]
     device = index_q.device
     token_ids = torch.arange(num_tokens, device=device)

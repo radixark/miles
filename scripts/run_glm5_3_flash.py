@@ -1,13 +1,3 @@
-"""GLM-5.3-Flash DAPO training.
-
-Assumes an already-running ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1) and a
-converted torch_dist reference checkpoint at
-{ckpt_dir}/{megatron_model_type}_torch_dist.
-
-Usage (inside the head-node container):
-    python scripts/run_glm5_3_flash.py train --model-name GLM-5.3-Flash-8layer --num-rollout 5
-"""
-
 import os
 from dataclasses import dataclass
 from typing import Literal

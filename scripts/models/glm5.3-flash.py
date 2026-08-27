@@ -1,11 +1,3 @@
-"""GLM-5.3-Flash: 45 layers (34 KDA linear attention + 11 DSA), 288-expert MoE
-with 3 dense lead layers, mHC on every layer. The hyper-connection / kpool
-indexer / KDA gate fields have no Megatron CLI flags and are derived from the
-checkpoint by the spec (miles_plugins/models/glm5_next/glm5_next.py).
---mtp-num-layers is omitted: MTP is rollout-side EAGLE only, never trained.
---rope-type rope keeps Megatron off the yarn path; both attention paths skip
-rope entirely (qk-pos-emb-head-dim 0)."""
-
 from model_args_utils import moe_layer_freq
 
 FIRST_K_DENSE_REPLACE = 3

@@ -1,15 +1,3 @@
-"""GLM-5.3-Flash block spec: Megatron-native mHC + per-layer KDA/DSA dispatch.
-
-Config fields without Megatron CLI flags (hyper-connection, indexer, kpool,
-gate bound) are patched onto the argparse-built config here, mirroring
-``Glm5NextBridge._build_base_config``, so ``convert_hf_to_torch_dist`` gets
-them too. GLM-5.3 contracts the residual streams with a plain mean and ships
-no usable ``hc_head_*`` tensors, so ``_patch_mean_output_contract`` swaps
-Megatron's ``learned_output_contract`` for the mean and demotes the orphan
-``hc_head_*`` parameters to plain tensors. MTP is dropped for training
-(rollout-side EAGLE only).
-"""
-
 import copy
 
 import torch
@@ -36,9 +24,6 @@ _HC_HEAD_PARAM_NAMES = ("hc_head_fn", "hc_head_base", "hc_head_scale")
 
 
 def full_attn_layers(text_config) -> list[int]:
-    """0-based DSA layer indices; the legacy ``linear_attn_config`` dict wins
-    verbatim over ``layer_types`` (sglang precedence), with the ``i % 4 == 3``
-    fallback when neither is present."""
     linear_attn_config = getattr(text_config, "linear_attn_config", None)
     if isinstance(linear_attn_config, dict) and linear_attn_config.get("full_attn_layers") is not None:
         return sorted(int(i) for i in linear_attn_config["full_attn_layers"])
@@ -49,8 +34,6 @@ def full_attn_layers(text_config) -> list[int]:
 
 
 def _apply_glm5_next_config(config, text_config) -> None:
-    """Put GLM-5.3 fields lacking CLI flags on a TransformerConfig built from
-    argparse. Mirrors ``Glm5NextBridge._build_base_config`` so both paths agree."""
     hc_eps = getattr(text_config, "hc_eps", _MHC_EPS)
     assert hc_eps == _MHC_EPS, (
         f"GLM-5.3 hc_eps={hc_eps} but Megatron's mHC sinkhorn/compute-h eps are the "
@@ -97,20 +80,12 @@ def _patch_mean_output_contract() -> None:
 
 
 def _reference_proj_rms(x, weight, eps):
-    """GLM-5.3's mHC mapping normalization: ``rsqrt(mean(x^2) + eps)`` with the
-    checkpoint's ``rms_norm_eps`` *inside* the sqrt, matching the HF/sglang
-    reference (``sglang.kernels.ops.layernorm.mhc._mhc_pre_torch``)."""
     proj = torch.matmul(x, weight.t())
     r = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
     return proj, r
 
 
 def _patch_reference_proj_rms() -> None:
-    """Align Megatron's mHC mapping RMS with the GLM-5.3 reference.
-
-    Megatron's ``native_proj_rms`` puts its eps outside the sqrt; the reference
-    puts ``rms_norm_eps`` inside, where it dominates for small tokens at
-    GLM-5.3's residual scale. Swap the per-instance op and eps to match."""
     if getattr(hyper_connection, "_glm5_next_reference_proj_rms_patched", False):
         return
 
@@ -127,7 +102,6 @@ def _patch_reference_proj_rms() -> None:
 
 
 def get_glm5_next_spec(args, config, vp_stage=None):
-    """Transformer block spec for GLM-5.3-Flash."""
     register_glm5_next_config()
     hf_config = load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)

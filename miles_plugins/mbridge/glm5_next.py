@@ -1,15 +1,3 @@
-"""Bridge for GLM-5.3-Flash (HF ``model_type: glm5_next``).
-
-Extends the GLM MoE DSA bridge with KDA layers, the kpool indexer compression
-tensors, and mHC on every layer. Everything nests under ``text_config`` (the
-vision tower beside it is untrained and never built), so ``__init__`` unwraps
-it. The DeepseekV32 indexer rope-interleave half-swap must not run here
-(``qk_rope_head_dim == 0``), so the weight format hooks route straight to
-``DeepseekV3Bridge``. fp32 source tensors (A_log, dt_bias, ape, hc_*) skip the
-bf16 pre-cast. The checkpoint's ``hc_head_*`` and MTP tensors are unmapped on
-purpose: the spec demotes/drops their Megatron counterparts.
-"""
-
 import torch
 
 from mbridge.core import register_model
@@ -31,7 +19,6 @@ _HC_ALPHA_SLICES = {
 
 @register_model("glm5_next")
 class Glm5NextBridge(GlmMoeDsaBridge):
-    """Weight mapping + Megatron config for GLM-5.3-Flash."""
 
     _KDA_MAPPING = {
         f"self_attention.kda.{weight_name}": ["model.layers.{layer_number}.self_attn." + weight_name]
@@ -103,8 +90,6 @@ class Glm5NextBridge(GlmMoeDsaBridge):
         return self._normalize_rope_scaling(rope_scaling)
 
     def _build_base_config(self, **kwargs):
-        """Drop MTP (rollout-side EAGLE only, never trained) and add the mHC
-        fields; mirrors ``_apply_glm5_next_config`` in the spec module."""
         assert self.hf_config.vocab_size == _GLM5_NEXT_VOCAB_SIZE
         hc_eps = getattr(self.hf_config, "hc_eps", 1e-6)
         assert hc_eps == 1e-6, f"Megatron mHC eps constants are 1e-6, config says {hc_eps}"

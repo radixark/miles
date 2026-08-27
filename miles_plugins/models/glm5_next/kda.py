@@ -1,12 +1,3 @@
-"""GLM-5.3-Flash KDA (Kimi Delta Attention) linear-attention layer.
-
-Wraps ``fla.ops.kda.chunk_kda`` behind the ``HuggingfaceAttention`` adapter.
-Module field names follow the HF checkpoint 1:1; the only fused tensor is
-``conv1d``, one packed depthwise conv over cat(q, k, v) whose weight
-concatenates the checkpoint's ``q_conv1d``/``k_conv1d``/``v_conv1d``. The
-block's own ``input_layernorm`` stays, so this wrapper adds none.
-"""
-
 import torch
 import torch.nn as nn
 from megatron.core.transformer.module import mark_keep_in_fp32
@@ -14,29 +5,15 @@ from megatron.core.transformer.module import mark_keep_in_fp32
 try:
     from fla.modules import FusedRMSNormGated, ShortConvolution
     from fla.ops.kda import chunk_kda
+    from fla.ops.kda.gate import fused_kda_gate
 except ImportError:
     FusedRMSNormGated = None
     ShortConvolution = None
     chunk_kda = None
+    fused_kda_gate = None
 
 from miles.backends.training_utils.cp_utils import build_gdn_cp_context
 from miles_plugins.models.hf_attention import HuggingfaceAttention
-
-
-def kda_gate(
-    f: torch.Tensor,
-    A_log: torch.Tensor,
-    dt_bias: torch.Tensor,
-    gate_lower_bound: float,
-) -> torch.Tensor:
-    """Per-token log-decay matching ``fla.ops.kda.fused_kda_gate``'s safe-gate
-    branch: ``gate_lower_bound * sigmoid(exp(A_log) * (f + dt_bias))``, fully in
-    fp32. ``f`` is ``[..., H, K]``, ``A_log`` is ``[H]``, ``dt_bias`` is ``[H * K]``.
-    """
-    num_heads = A_log.numel()
-    a = A_log.float().exp().view(num_heads, 1)
-    x = f.float() + dt_bias.float().view(num_heads, -1)
-    return gate_lower_bound * torch.sigmoid(a * x)
 
 
 def _get_text_config(hf_config):
@@ -68,7 +45,6 @@ def _linear_attn_fields(text_config) -> dict:
 
 
 class Glm5NextKDA(nn.Module):
-    """GLM-5.3 KDA core with varlen support, calling fla's chunked autograd kernels."""
 
     def __init__(
         self,
@@ -128,11 +104,11 @@ class Glm5NextKDA(nn.Module):
 
         beta = torch.sigmoid(self.b_proj(hidden_states).float())
         forget = self.f_b_proj(self.f_a_proj(hidden_states))
-        g = kda_gate(
+        g = fused_kda_gate(
             forget.unflatten(-1, (self.num_heads, self.head_dim)),
             self.A_log,
             self.dt_bias,
-            self.gate_lower_bound,
+            lower_bound=self.gate_lower_bound,
         )
 
         if cp_context is not None:
@@ -170,11 +146,6 @@ class Glm5NextKDA(nn.Module):
 
 
 class Glm5NextKDAAttention(HuggingfaceAttention):
-    """HF-adapter wrapper placing the KDA core at ``self_attention.kda``.
-
-    ``hybrid_cp=True``: fla's state-passing CP handles context parallelism
-    natively via ``build_gdn_cp_context``, the same path as GDN.
-    """
 
     hybrid_cp = True
 
