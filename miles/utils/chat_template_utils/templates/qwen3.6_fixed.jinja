@@ -116,7 +116,7 @@
                 {%- if tool_call.arguments is defined %}
                     {%- for args_name, args_value in tool_call.arguments|items %}
                         {{- '<parameter=' + args_name + '>\n' }}
-                        {%- set args_value = args_value | tojson | safe if args_value is mapping or (args_value is sequence and args_value is not string) else args_value | string %}
+                        {%- set args_value = args_value | string if args_value is string else args_value | tojson | safe %}
                         {{- args_value }}
                         {{- '\n</parameter>\n' }}
                     {%- endfor %}

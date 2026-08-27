@@ -56,13 +56,13 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    ("qwen3.5_fixed", _load_fixed(TITOTokenizerType.QWEN35), True, frozenset({"tool"}), {}),
+    ("qwen3.5_3.6_fixed", _load_fixed(TITOTokenizerType.QWEN35), True, frozenset({"tool"}), {}),
     (
-        "qwen3.5_fixed_clear_thinking_off",
+        "qwen3.5_3.6_fixed_preserve_thinking",
         _load_fixed(TITOTokenizerType.QWEN35),
         True,
         frozenset({"tool", "user"}),
-        {"clear_thinking": False},
+        {"preserve_thinking": True},
     ),
     ("qwen3_thinking_2507_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
     ("qwen3_next_thinking_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
@@ -294,6 +294,7 @@ def test_cross_user_turn_thinking_prefix_mismatch(chat_template, enable_thinking
 _APPEND_ROLE_FAMILIES = [
     (TITOTokenizerType.QWEN3, None),
     (TITOTokenizerType.QWEN35, None),
+    (TITOTokenizerType.QWEN36, None),
     (TITOTokenizerType.QWENNEXT, None),
     (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
     (TITOTokenizerType.KIMI25, None),
@@ -333,7 +334,7 @@ def test_appends_are_append_only_on_family_template(family, hf_model_id, shape):
     ]
 
     base = apply_chat_template_from_str(template, history, add_generation_prompt=False, **kwargs)
-    if family is TITOTokenizerType.QWEN35 and shape == "system":
+    if family in (TITOTokenizerType.QWEN35, TITOTokenizerType.QWEN36) and shape == "system":
         with pytest.raises(ValueError, match="System message must be at the beginning"):
             apply_chat_template_from_str(
                 template,
