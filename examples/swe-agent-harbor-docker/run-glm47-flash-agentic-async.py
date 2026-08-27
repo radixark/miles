@@ -280,6 +280,7 @@ def execute(args: ScriptArgs):
         "--tito-model glm47 "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
     )
 
     misc_args = (

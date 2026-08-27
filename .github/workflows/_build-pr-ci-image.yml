@@ -153,6 +153,17 @@ jobs:
       - name: Checkout repository
         if: env.BUILD == 'true'
         uses: actions/checkout@v4
+      # Shared builders accumulate buildkit cache and orphaned builder volumes
+      # until the disk fills and installs die with ENOSPC mid-layer. Reclaim
+      # anything idle for 48h before building; recent cache survives.
+      - name: Free builder disk
+        if: env.BUILD == 'true'
+        run: |
+          df -h / || true
+          docker builder prune -af --filter "until=48h" || true
+          docker system prune -af --filter "until=48h" || true
+          docker volume prune -f || true
+          df -h / || true
       - name: Set up Docker Buildx
         if: env.BUILD == 'true'
         uses: docker/setup-buildx-action@v3

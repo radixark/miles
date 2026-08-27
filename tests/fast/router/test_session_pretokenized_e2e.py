@@ -53,6 +53,12 @@ FIXED_TEMPLATE_SMOKE_CONFIGS: tuple[FixedTemplateSmokeConfig, ...] = (
         tito_model=TITOTokenizerType.QWEN35.value,
     ),
     FixedTemplateSmokeConfig(
+        name="qwen3.6-fixed",
+        hf_checkpoint="Qwen/Qwen3.6-35B-A3B",
+        chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWEN36)[0],
+        tito_model=TITOTokenizerType.QWEN36.value,
+    ),
+    FixedTemplateSmokeConfig(
         name="qwen3-thinking2507-fixed",
         hf_checkpoint="Qwen/Qwen3-4B-Thinking-2507",
         chat_template_path=resolve_fixed_chat_template(TITOTokenizerType.QWENNEXT)[0],
