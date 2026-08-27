@@ -86,6 +86,7 @@ def _resolve_session_server_ports(start: int | None, workers: int) -> list[int]:
     """Return the requested number of consecutive ports from the configured or auto-selected start."""
     if workers < 1:
         raise ValueError("--session-server-workers must be at least 1.")
+    # TODO(#1837): Refactor IP/port allocation; keep this naive for now.
     if start is None:
         start = find_available_port(random.randint(5000, 6000))
     return list(range(start, start + workers))
