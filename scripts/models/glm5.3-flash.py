@@ -42,6 +42,7 @@ def model_args(nlayers: int = 45) -> str:
         "--vocab-size 154880 "
         "--rotary-base 800000 "
         "--rope-type rope "
+        "--no-rope-fusion "
         "--position-embedding-type rope "
         "--normalization RMSNorm "
         "--norm-epsilon 1e-5 "
