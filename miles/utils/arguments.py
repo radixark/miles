@@ -2718,11 +2718,13 @@ def parse_args(add_custom_arguments=None):
             hf_validate_args(args, hf_config)
 
             if is_dsa(hf_config):
-                args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
+                getter = getattr(hf_config, "get_text_config", None)
+                text_config = (getter() if callable(getter) else getattr(hf_config, "text_config", None)) or hf_config
+                args.indexer_rope_interleave = bool(getattr(text_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
-                linear_attn_config = getattr(hf_config, "linear_attn_config", None)
+                linear_attn_config = getattr(text_config, "linear_attn_config", None)
                 kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
-                args.rollout_indexer_topk_num_streams = hf_config.num_hidden_layers - len(kda_layers)
+                args.rollout_indexer_topk_num_streams = text_config.num_hidden_layers - len(kda_layers)
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0
