@@ -138,9 +138,7 @@ def convert_samples_to_train_data(
     elif getattr(args, "use_rollout_routing_replay", False):
         raise ValueError(
             "--use-rollout-routing-replay is set but the rollout samples carry no "
-            "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'. "
-            "Check that the engine runs with --enable-return-routed-experts and that every "
-            "proxy between miles and the engine forwards the 'return_routed_experts' field."
+            "rollout_routed_experts: the engine response meta_info lacked 'routed_experts'."
         )
 
     if samples[0].rollout_indexer_topk is not None:
@@ -148,11 +146,7 @@ def convert_samples_to_train_data(
     elif getattr(args, "use_rollout_indexer_replay", False):
         raise ValueError(
             "--use-rollout-indexer-replay is set but the rollout samples carry no "
-            "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'. "
-            "Known cause: a typed /generate proxy dropping the 'return_indexer_topk' body "
-            "field (sgl-router-for-miles' GenerateRequest spec does not know it). The "
-            "sglang-miles engine works around this by implying per-request return from "
-            "--enable-return-indexer-topk; make sure the engine runs that sglang build."
+            "rollout_indexer_topk: the engine response meta_info lacked 'indexer_topk'."
         )
 
     if samples[0].train_metadata is not None:

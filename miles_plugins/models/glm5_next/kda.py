@@ -1,21 +1,10 @@
 """GLM-5.3-Flash KDA (Kimi Delta Attention) linear-attention layer.
 
-Wraps ``fla.ops.kda.chunk_kda`` behind the ``HuggingfaceAttention`` adapter, the
-same pattern as ``miles_plugins/models/qwen3_next.py`` uses for GDN. The gate is
-GLM-5.3's *safe gate* -- ``g = gate_lower_bound * sigmoid(exp(A_log) * (f + dt_bias))``
-with ``gate_lower_bound = -5.0`` from the checkpoint config -- computed in fp32
-outside the kernel by :func:`kda_gate`, a pure function kept small so a test can
-validate it against ``fla.ops.kda.fused_kda_gate``'s safe-gate branch
-(``tests/glm5_next/test_kda_wrapper.py``).
-
-Module field names follow the HF checkpoint 1:1 (``q_proj``/``k_proj``/``v_proj``,
-``b_proj``, ``f_a_proj``/``f_b_proj``, ``g_a_proj``/``g_b_proj``, ``A_log``,
-``dt_bias``, ``o_norm``, ``o_proj``); the only fused tensor is ``conv1d``, one
-packed depthwise conv over cat(q, k, v) whose weight is the concatenation of the
-checkpoint's ``q_conv1d``/``k_conv1d``/``v_conv1d`` (the bridge concatenates on
-load and the weight-sync converter splits on export). The block's own
-``input_layernorm`` stays -- GLM-5.3 keeps per-layer block layernorms, unlike
-Qwen3.8-Next -- so this wrapper adds none.
+Wraps ``fla.ops.kda.chunk_kda`` behind the ``HuggingfaceAttention`` adapter.
+Module field names follow the HF checkpoint 1:1; the only fused tensor is
+``conv1d``, one packed depthwise conv over cat(q, k, v) whose weight
+concatenates the checkpoint's ``q_conv1d``/``k_conv1d``/``v_conv1d``. The
+block's own ``input_layernorm`` stays, so this wrapper adds none.
 """
 
 import torch
@@ -40,12 +29,9 @@ def kda_gate(
     dt_bias: torch.Tensor,
     gate_lower_bound: float,
 ) -> torch.Tensor:
-    """Per-token log-decay for ``chunk_kda``, GLM-5.3's safe-gate convention.
-
-    Matches ``fla.ops.kda.fused_kda_gate(f, A_log, dt_bias, lower_bound=...)``:
-    ``gate_lower_bound * sigmoid(exp(A_log) * (f + dt_bias))``, computed fully in
-    fp32. ``f`` is ``[..., H, K]``, ``A_log`` is ``[H]``, ``dt_bias`` is flat
-    ``[H * K]``.
+    """Per-token log-decay matching ``fla.ops.kda.fused_kda_gate``'s safe-gate
+    branch: ``gate_lower_bound * sigmoid(exp(A_log) * (f + dt_bias))``, fully in
+    fp32. ``f`` is ``[..., H, K]``, ``A_log`` is ``[H]``, ``dt_bias`` is ``[H * K]``.
     """
     num_heads = A_log.numel()
     a = A_log.float().exp().view(num_heads, 1)

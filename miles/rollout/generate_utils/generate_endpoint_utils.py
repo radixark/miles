@@ -126,14 +126,9 @@ def get_routed_experts_from_response(args, output, num_tokens: int):
     if info is None:
         return None
     routed_experts = _decode_topk_buffer(info, num_tokens, args.num_layers, -1)
-    # Fail fast on a payload the engine never captured into: the capture host
-    # buffer is zero-initialized, so a topk-bypassing MoE runner backend (e.g.
-    # flashinfer_trtllm) returns all zeros; replaying that routes every token
-    # to expert 0 x topk and crashes the Megatron dispatcher alltoall.
     assert routed_experts.size == 0 or routed_experts.any(), (
         "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
-        "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?). "
-        "R3 replay of this payload would crash the training MoE dispatcher."
+        "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
     )
     return routed_experts
 
@@ -150,9 +145,6 @@ def get_indexer_topk_from_response(args, output, sample):
     expected_num_streams = getattr(args, "rollout_indexer_topk_num_streams", None)
     assert expected_num_streams is None or num_layers == expected_num_streams, (
         f"Server returned indexer_topk with {num_layers} streams but the model has "
-        f"{expected_num_streams} indexer layers. A mismatch means the sglang engine's "
-        "get_num_indexer_layers disagrees with the training-side DSA layer layout "
-        "(e.g. counting KDA layers on a hybrid model); replaying it would map "
-        "streams to the wrong layers."
+        f"{expected_num_streams} indexer layers; replaying it would map streams to the wrong layers."
     )
     return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)

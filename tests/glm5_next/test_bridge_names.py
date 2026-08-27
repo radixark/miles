@@ -1,20 +1,10 @@
-"""Scratch structural test: Glm5NextBridge name-mapping completeness (no GPU).
+"""Structural test: Glm5NextBridge name-mapping completeness (no GPU).
 
-Generates the expected HF tensor-name list for the 8-layer GLM-5.3-Flash cut
-(layers 0-7: KDA on 0,1,2,4,5,6; DSA on 3,7; dense MLP on 0-2; 288-expert MoE
-with one shared expert on 3-7; mHC on every layer) purely from the architecture
-knowledge in the design doc, writes it as a safetensors-index-style JSON, then
-audits the bridge both ways:
-
-* every expected mcore parameter name resolves through
-  ``_weight_name_mapping_mcore_to_hf`` without raising (the qwen3.8 audit
-  lesson: an unmapped-but-built param aborts the load, a mapped-but-unbuilt one
-  is silently dropped);
-* every HF name the bridge produces is in the expected list;
-* the expected list is covered exactly, so no checkpoint tensor is silently
-  ignored (``visual.*``, MTP ``model.layers.8.*`` and ``hc_head_*`` are the
-  deliberate exclusions -- untrained tower, untrained MTP, and the orphan head
-  contraction the spec replaces with a plain mean).
+Builds the expected HF and mcore tensor-name lists for the 8-layer
+GLM-5.3-Flash cut and audits the bridge both ways: every mcore name maps
+without raising, every produced HF name is expected, and the expected HF list
+is covered exactly (``visual.*``, MTP, and ``hc_head_*`` are deliberate
+exclusions).
 
 Usage: python tests/glm5_next/test_bridge_names.py
 """

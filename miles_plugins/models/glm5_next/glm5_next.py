@@ -1,26 +1,13 @@
 """GLM-5.3-Flash block spec: Megatron-native mHC + per-layer KDA/DSA dispatch.
 
-``get_gpt_decoder_block_spec`` with ``enable_hyper_connections=True`` emits
-``HyperConnectionTransformerLayer`` with both HC ModuleSpec slots filled by
-Megatron's ``HyperConnectionModule`` (same math and per-layer weight layout as
-the checkpoint's ``hc_{attn,ffn}_{fn,base,scale}``). Per ``layer_types`` the
-attention slot is then swapped to the KDA wrapper or the no-rope kpool DSA.
-
 Config fields without Megatron CLI flags (hyper-connection, indexer, kpool,
 gate bound) are patched onto the argparse-built config here, mirroring
-``Glm5NextBridge._build_config`` -- ``convert_hf_to_torch_dist`` builds its
-config from ``parse_args``, so without this the converted model would silently
-have no hyper-connections (the qwen3.8-next lesson).
-
-GLM-5.3 contracts the residual streams with a plain mean and ships no usable
-``hc_head_*`` tensors (sglang skips them on load), while Megatron's
-``TransformerBlock`` unconditionally applies ``learned_output_contract`` with
-its own ``hc_head_*`` parameters. ``_patch_mean_output_contract`` swaps the
-contraction for ``HyperConnectionModule.output_contract`` (mean) and demotes
-the orphan ``hc_head_*`` parameters to plain tensors so they never reach DDP,
-the distributed optimizer, checkpoints, weight sync, or the bridge's
-name-mapping audit. MTP is dropped for training (rollout-side EAGLE only,
-same decision as glm5.x).
+``Glm5NextBridge._build_base_config``, so ``convert_hf_to_torch_dist`` gets
+them too. GLM-5.3 contracts the residual streams with a plain mean and ships
+no usable ``hc_head_*`` tensors, so ``_patch_mean_output_contract`` swaps
+Megatron's ``learned_output_contract`` for the mean and demotes the orphan
+``hc_head_*`` parameters to plain tensors. MTP is dropped for training
+(rollout-side EAGLE only).
 """
 
 import copy
@@ -121,15 +108,9 @@ def _reference_proj_rms(x, weight, eps):
 def _patch_reference_proj_rms() -> None:
     """Align Megatron's mHC mapping RMS with the GLM-5.3 reference.
 
-    Megatron's ``native_proj_rms`` computes ``r = 1 / (rms(x) + 1e-6)`` -- the
-    eps sits *outside* the sqrt, so at GLM-5.3's hidden scale (mean-square as
-    low as ~5e-6 on the early-layer residual streams) it is numerically a
-    no-eps norm. The reference computes ``r = rsqrt(mean(x^2) + rms_norm_eps)``
-    with ``rms_norm_eps = 1e-5`` *inside*, where it dominates the denominator
-    for small tokens: ``h_pre``/``h_post``/``h_res`` then differ by tens of
-    percent per token, which offline layerwise parity showed to be the dominant
-    train-vs-serve divergence (created at layer 0 and carried through every
-    layer). Swap the per-instance op and eps to the reference convention."""
+    Megatron's ``native_proj_rms`` puts its eps outside the sqrt; the reference
+    puts ``rms_norm_eps`` inside, where it dominates for small tokens at
+    GLM-5.3's residual scale. Swap the per-instance op and eps to match."""
     if getattr(hyper_connection, "_glm5_next_reference_proj_rms_patched", False):
         return
 
@@ -161,7 +142,7 @@ def get_glm5_next_spec(args, config, vp_stage=None):
         kwargs["vp_stage"] = vp_stage
     transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
 
-    assert config.pipeline_model_parallel_layout is None, "not support this at the moment"
+    assert config.pipeline_model_parallel_layout is None, "pipeline_model_parallel_layout is not supported"
 
     num_layers_to_build = get_num_layers_to_build(config, vp_stage=vp_stage)
     offset = get_transformer_layer_offset(config, vp_stage=vp_stage)

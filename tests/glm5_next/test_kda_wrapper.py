@@ -1,15 +1,7 @@
-"""Scratch GPU test for the GLM-5.3 KDA wrapper (run on the cluster).
-
-Checks, in order:
-1. ``kda_gate`` (the safe gate ``lower_bound * sigmoid(exp(A_log) * (f + dt_bias))``)
-   against ``fla``'s ``fused_kda_gate`` safe-gate branch, values and gradients.
-2. ``chunk_kda`` forward/backward smoke through ``Glm5NextKDA`` on packed varlen
-   input: finite outputs, gradients reach every parameter including the fp32
-   ``A_log``/``dt_bias`` and the packed ``conv1d``.
-3. Determinism: two identical runs on an idle GPU must be bit-identical in the
-   forward output and in every gradient (fla autotune jitter is the qwen3.8
-   risk-register item; a failure here means the kernel config must be pinned
-   before any cross-framework comparison).
+"""GPU test for the GLM-5.3 KDA wrapper: ``kda_gate`` against fla's
+``fused_kda_gate`` safe-gate branch (values and gradients), forward/backward
+smoke on packed varlen input (gradients reach every parameter), and
+bit-identical determinism across two runs on an idle GPU.
 
 Usage: python tests/glm5_next/test_kda_wrapper.py
 """

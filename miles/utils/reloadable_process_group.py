@@ -109,6 +109,15 @@ def monkey_patch_torch_dist():
 
 
 class ReloadableProcessGroup(torch.distributed.ProcessGroup):
+    """Wrapper PG whose inner group can be destroyed and rebuilt.
+
+    Do not define python overrides for collectives here: pybind installs them
+    as trampoline overrides that wrap every returned Work in
+    c10d::PyProcessGroup::PyWorkHolder, which segfaults on torch 2.13.
+    Collectives dispatch through the C++ backend map that
+    ``_adopt_inner_backends`` registers; ``_fwd`` is for plumbing methods only.
+    """
+
     GROUPS = {}
 
     def __init__(self, group, inner_args, inner_kwargs):
@@ -128,15 +137,10 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
     def _adopt_inner_backends(self) -> None:
         """Register the inner group's backends on this wrapper.
 
-        The wrapper is constructed as a bare C++ ProcessGroup(rank, size) with an
-        empty device->backend map; __getattr__ forwarding covers Python-level
-        attribute access only. Newer torch (observed on 2.13) dispatches
-        collectives like reduce_scatter_tensor through the C++ backend map of the
-        group object itself, so without this every such collective fails with
-        "No backend type associated with device type cuda". Older torch resolved
-        the collective via attribute lookup, which is why the bare wrapper used
-        to be enough. Re-run after every reload: the fresh inner group carries
-        fresh backends.
+        Newer torch (observed on 2.13) dispatches collectives through the C++
+        backend map of the group object itself, which __getattr__ forwarding
+        cannot cover. Must re-run after every reload: the fresh inner group
+        carries fresh backends.
         """
         if self.group is None:
             return
@@ -214,20 +218,6 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
             raise RuntimeError("ReloadableProcessGroup: inner PG is None, call reload() first.")
         with _wrap_low_level_call():
             return getattr(inner, method)(*args, **kwargs)
-
-    # NO python overrides for collectives (allreduce/reduce_scatter/send/...):
-    # this class is a python subclass of ProcessGroup, so any method defined
-    # here is installed as a pybind trampoline override — every C++ virtual
-    # call then round-trips through python and wraps the returned Work in
-    # c10d::PyProcessGroup::PyWorkHolder. On torch 2.13 that holder is the
-    # crash site of the e2e train step (SIGSEGV at PyWorkHolder::wait()+0x4,
-    # wild `this`, stack destroyed — apport core from the first grad-sync wait
-    # of the run, all ranks of a PP stage at once). With the inner NCCL/Gloo
-    # backends registered on this wrapper (_adopt_inner_backends, re-run after
-    # every reload), the base-class C++ dispatch routes every collective
-    # straight to ProcessGroupNCCL and returns plain C++ Works — that path has
-    # carried all rollout/logprob traffic since the backend-map fix, including
-    # across reloads. _fwd stays for the plumbing methods below only.
 
     def _start_coalescing(self, *a, **kw):
         return self._fwd("_start_coalescing", *a, **kw)

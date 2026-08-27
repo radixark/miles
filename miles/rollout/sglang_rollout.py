@@ -268,16 +268,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
             f"unexpanded_tokens={len(sample.tokens)}"
         )
-        # Fail fast on a payload the engine never captured into. The host
-        # buffer is zero-initialized, so an engine whose MoE runner bypasses
-        # the topk capture hook (e.g. flashinfer_trtllm) returns all zeros;
-        # replaying that routes every token to expert 0 x topk and crashes the
-        # Megatron dispatcher alltoall with "Split sizes doesn't match total
-        # dim 0 size". A real payload always has nonzero ids in the MoE layers.
         assert _re.size == 0 or _re.any(), (
             "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
-            "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?). "
-            "R3 replay of this payload would crash the training MoE dispatcher."
+            "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
         )
         sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
     if "indexer_topk" in output["meta_info"]:

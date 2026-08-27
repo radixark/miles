@@ -1,32 +1,11 @@
 """GLM-5.3 pooled-key (kpool) indexer selection, torch reference.
 
 Reproduces sglang ``dsa_indexer_kpool.py``'s selection semantics on the packed
-training stream, without the serving-only fp8/Hadamard machinery:
-
-1. Keys are pooled ``kpool`` -> 1 at sequence-local positions (``pool = pos // kpool``,
-   complete pools only). Compression is a learned per-feature softmax over the
-   ``kpool`` slots: ``score[s, d] = gate[t0 + s, d] + ape[s, d]``, computed in fp32
-   on the post-``wk``+``k_norm`` key, then cast back to bf16.
-2. Pool logits use the standard DSA MQA formula (per-head ReLU, head-weighted
-   fp32 sum) via the existing tilelang indexer forward, scoring pooled keys with
-   per-token eligible-pool ranges ``floor((t + 1) / kpool)``.
-3. The top ``index_topk // kpool`` pools are selected per token and expanded to
-   ``index_topk`` token indices. Tokens whose causal prefix fits in ``index_topk``
-   skip the top-k entirely and select every token (sglang's short-sequence
-   shortcut).
-4. ``always_select_tail``: the deterministic tail -- the ``(t + 1) % kpool``
-   tokens after the last complete pool -- is appended on top of the budget, but
-   only for non-shortcut tokens (shortcut rows already contain it). The result
-   is ``-1``-padded to a multiple of the SparseMLA block size (64).
-
-The serving side scores Hadamard-rotated fp8 pooled keys with a racy radix
-top-k, so this bf16 rescorer cannot byte-match it; exact parity comes from R3
-indexer replay (the replay-manager hook below), where the recorded/replayed
-tensor is the ``index_topk``-wide token expansion of the pool budget and the
-tail is reconstructed deterministically on this side.
-
-Selection carries no gradient: pool logits are computed under ``torch.no_grad``
-on detached inputs, matching the glm5 plugin where indexer scores are discarded.
+training stream, without the serving-only fp8/Hadamard machinery, so it cannot
+byte-match serving; exact parity comes from R3 indexer replay, where the
+recorded tensor is the ``index_topk``-wide token expansion of the pool budget
+and the ``always_select_tail`` positions are reconstructed deterministically
+here. Selection carries no gradient.
 """
 
 import torch

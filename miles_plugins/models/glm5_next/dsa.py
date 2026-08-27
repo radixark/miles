@@ -1,21 +1,11 @@
-"""GLM-5.3 DSA attention: GLM-5's absorbed sparse MLA minus rope, plus kpool.
+"""GLM-5.3 DSA attention: GLM-5's absorbed sparse MLA minus rope, plus the
+pooled-key (kpool) indexer selection from ``ops/kpool_indexer.py``.
 
-Differences from ``DSAMLASelfAttention``:
-
-* ``qk_rope_head_dim == 0`` -- no rope anywhere in the MLA path or the indexer;
-  the softmax scale stays plain ``1/sqrt(qk_head_dim)`` (no yarn mscale).
-* The lighting indexer's per-token top-k is replaced by the pooled-key (kpool)
-  selection from ``ops/kpool_indexer.py``; the two compression parameters
-  (``index_kpool_compress_gate`` bf16, ``index_kpool_compress_ape`` fp32) live on
-  this module so the checkpoint round-trips, and stay frozen like the rest of
-  the indexer.
-* The tilelang SparseMLA kernels are compiled for dim 512 + tail 64, so q/kv are
-  padded with a zero 64-wide tail -- numerically exact because a zero q-tail
-  times a zero k-tail adds nothing to the logits and the softmax scale is passed
-  explicitly.
-* Indexer-replay streams are the DSA layers only (11 of 45), so the replay
-  stream index is this layer's ordinal among ``full_attn_layers``, not
-  ``layer_number - 1`` as on GLM-5 where every layer has an indexer.
+``qk_rope_head_dim == 0``: no rope anywhere, softmax scale is plain
+``1/sqrt(qk_head_dim)``. The tilelang SparseMLA kernels expect dim 512 + tail
+64, so q/kv get a zero 64-wide tail pad (numerically exact). Indexer-replay
+streams are the DSA layers only, so the stream index is this layer's ordinal
+among ``full_attn_layers``, not ``layer_number - 1``.
 """
 
 import torch
@@ -24,7 +14,7 @@ from megatron.core import parallel_state
 from megatron.core.tensor_parallel.mappings import gather_from_sequence_parallel_region
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.module import mark_keep_in_fp32
-from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction as WeightLinearFunction
+from megatron.core.transformer.moe.moe_utils import RouterGatingLinearFunction
 
 from miles.utils.replay_base import indexer_replay_manager
 from miles_plugins.models.glm5.glm5 import DSAMLASelfAttention
@@ -144,7 +134,7 @@ class Glm5NextDSAAttention(DSAMLASelfAttention):
             gate_score, group=parallel_state.get_context_parallel_group()
         )
 
-        head_weights = WeightLinearFunction.apply(hidden_states, self.weights_proj.weight, None, torch.float32)
+        head_weights = RouterGatingLinearFunction.apply(hidden_states, self.weights_proj.weight, None, torch.float32)
         head_weights = head_weights.squeeze(1) * (
             (self.config.index_num_attention_heads**-0.5) * (self.config.index_head_dim**-0.5)
         )

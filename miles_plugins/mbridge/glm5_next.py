@@ -1,36 +1,13 @@
 """Bridge for GLM-5.3-Flash (HF ``model_type: glm5_next``).
 
-Extends the GLM MoE DSA bridge (DeepseekV3-shaped MLA + MoE + indexer names).
-Everything nests under ``text_config`` (a vision tower lives beside it), so the
-bridge unwraps it in ``__init__``; the tower is untrained and never built on
-the Megatron side, so its tensors are simply never read.
-
-What GLM-5.3 adds, all verified against sglang ``srt/models/glm5_next.py``'s
-``load_weights``:
-
-* **KDA linear-attention layers** (34 of 45): per-layer ``self_attn.{q,k,v}_proj``,
-  ``{q,k,v}_conv1d`` (concatenated into the one packed ``kda.conv1d`` here),
-  ``b_proj``, ``f_a/f_b/g_a/g_b_proj``, ``A_log``/``dt_bias`` (fp32),
-  ``o_norm``, ``o_proj`` -- mapped 1:1 onto ``self_attention.kda.*``.
-* **kpool indexer** on the DSA layers: ``index_kpool_compress_gate`` (bf16) and
-  ``index_kpool_compress_ape`` (fp32) beside the inherited wq_b/wk/weights_proj/
-  k_norm names.
-* **mHC on every layer**: ``hc_{attn,ffn}_fn [24, 16384]`` -> the Megatron
-  ``HyperConnectionModule.mapping_proj.weight``; ``hc_*_base [24]`` -> ``.bias``;
-  ``hc_*_scale [3]`` -> the ``alpha_pre/alpha_post/alpha_res`` slices (both sides
-  slice ``[0:n]/[n:2n]/[2n:]``, so the row order matches). All fp32.
-  The checkpoint's ``hc_head_*`` tensors are unused (sglang skips them; the spec
-  patches the output contract to a plain mean and demotes Megatron's own
-  ``hc_head_*`` parameters, so no mcore param asks for them).
-
-The DeepseekV32 indexer rope-interleave half-swap must NOT run here: GLM-5.3
-has ``qk_rope_head_dim == 0`` (no rope in the indexer at all), so the weight
-format hooks route straight to ``DeepseekV3Bridge`` even when the config
-carries ``indexer_rope_interleave``. fp32 source tensors (A_log, dt_bias, ape,
-hc_*) skip the bf16 pre-cast, the DeepseekV4 ``_keep_fp32`` pattern.
-
-MTP (``model.layers.45.*``) is not trained and not mapped; the bridge only maps
-parameters the model builds, so it is skipped rather than raised on.
+Extends the GLM MoE DSA bridge with KDA layers, the kpool indexer compression
+tensors, and mHC on every layer. Everything nests under ``text_config`` (the
+vision tower beside it is untrained and never built), so ``__init__`` unwraps
+it. The DeepseekV32 indexer rope-interleave half-swap must not run here
+(``qk_rope_head_dim == 0``), so the weight format hooks route straight to
+``DeepseekV3Bridge``. fp32 source tensors (A_log, dt_bias, ape, hc_*) skip the
+bf16 pre-cast. The checkpoint's ``hc_head_*`` and MTP tensors are unmapped on
+purpose: the spec demotes/drops their Megatron counterparts.
 """
 
 import torch
@@ -39,7 +16,6 @@ from mbridge.core import register_model
 from mbridge.models import DeepseekV3Bridge
 
 from miles_plugins.mbridge.deepseek_v32 import GlmMoeDsaBridge
-
 from miles_plugins.models.glm5_next.hf_compat import register_glm5_next_config
 
 register_glm5_next_config()

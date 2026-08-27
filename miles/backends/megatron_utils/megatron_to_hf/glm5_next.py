@@ -1,27 +1,12 @@
-"""Megatron -> HF weight conversion for GLM-5.3-Flash (glm5_next).
+"""Megatron -> HF weight conversion for GLM-5.3-Flash (glm5_next), the inverse
+of ``miles_plugins/mbridge/glm5_next.py`` for the weight-update direction.
 
-The architecture is GLM-MoE-DSA (absorbed MLA + MoE + indexer) plus KDA linear
-attention on most layers, the kpool indexer compression tensors, and mHC on
-every layer, so everything DeepseekV3-shaped delegates to
-``convert_deepseekv3_to_hf`` and only the additions are handled here.
-
-Name authority: ``miles_plugins/mbridge/glm5_next.py`` (the HF->mcore bridge);
-this file is its inverse for the weight-update direction. Notes:
-
-* The DSA indexer names are handled here rather than delegated, because the
-  deepseekv3 converter half-swaps wq_b/wk/k_norm when
-  ``args.indexer_rope_interleave`` is set -- GLM-5.3 carries that config field
-  but has ``qk_rope_head_dim == 0``, so no swap may ever run.
-* ``kda.conv1d.weight`` is one packed depthwise conv on the mcore side and
-  splits into the checkpoint's ``{q,k,v}_conv1d.weight``.
-* ``hc_*_scale`` is one fp32 ``[3]`` tensor in the checkpoint but three ``[1]``
-  parameters (``alpha_pre/alpha_post/alpha_res``) on the Megatron
-  ``HyperConnectionModule``, so the three are buffered per (layer, site) and
-  emitted as one tensor once all have arrived; all three always live on the
-  same rank (same layer), so the buffer drains within one weight-sync pass.
-* ``hc_head_*`` never reaches this function: the spec demotes those Megatron
-  parameters to plain tensors (GLM-5.3 contracts with a plain mean).
-* MTP is not built on the training side, so no MTP name can arrive.
+Everything DeepseekV3-shaped delegates to ``convert_deepseekv3_to_hf``; the DSA
+indexer names are handled here instead so the converter's rope-interleave
+half-swap can never run (GLM-5.3 has ``qk_rope_head_dim == 0``). The packed
+``kda.conv1d.weight`` splits into the checkpoint's ``{q,k,v}_conv1d.weight``;
+the three ``alpha_*`` parameters (always on the same rank) are buffered per
+(layer, site) and emitted as one ``hc_*_scale`` tensor once all have arrived.
 """
 
 import re
