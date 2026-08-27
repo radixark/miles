@@ -14,11 +14,13 @@ generations from the same spot become sibling nodes instead of a conflict.
 import asyncio
 import logging
 import uuid
+from collections.abc import Hashable
 from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
 from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.request_contract import validate_session_render_fingerprint
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -41,6 +43,7 @@ class SessionStateV2:
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     active_leaf: TrajectoryNode | None = None
+    render_fingerprint: Hashable | None = None
 
     def active_path(self) -> list[TrajectoryNode]:
         return self.active_leaf.path_nodes() if self.active_leaf is not None else []
@@ -90,6 +93,7 @@ def prepare_pretokenized(
     *,
     tools: list[dict[str, Any]] | None,
     tito_tokenizer: TITOTokenizer,
+    render_fingerprint: Hashable | None = None,
 ) -> list[int]:
     """Pretokenized input_ids for the positioned view.
 
@@ -97,24 +101,29 @@ def prepare_pretokenized(
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
       the new suffix on top — the shared prefix is never re-rendered.
     """
+    validate_session_render_fingerprint(state.render_fingerprint, render_fingerprint)
     parent = state.active_leaf
     if parent is None:
-        return tito_tokenizer.apply_chat_template(
+        prompt_token_ids = tito_tokenizer.apply_chat_template(
             request_messages,
             tools=tools,
             add_generation_prompt=True,
             tokenize=True,
         )
+    else:
+        stored = state.active_messages()
+        _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
+        effective_messages = stored + request_messages[len(stored) :]
+        prompt_token_ids = tito_tokenizer.merge_tokens(
+            old_messages=stored,
+            new_messages=effective_messages,
+            pretokenized_token_ids=parent.token_ids,
+            tools=tools,
+        )
 
-    stored = state.active_messages()
-    _validate_suffix_roles(request_messages[len(stored) :], tito_tokenizer)
-    effective_messages = stored + request_messages[len(stored) :]
-    return tito_tokenizer.merge_tokens(
-        old_messages=stored,
-        new_messages=effective_messages,
-        pretokenized_token_ids=parent.token_ids,
-        tools=tools,
-    )
+    if state.render_fingerprint is None:
+        state.render_fingerprint = render_fingerprint
+    return prompt_token_ids
 
 
 def _validate_suffix_roles(

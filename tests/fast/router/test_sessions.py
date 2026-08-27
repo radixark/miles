@@ -208,6 +208,20 @@ class TestSessionProxy:
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
 
+    def test_chat_client_input_ids_returns_400_without_backend_dispatch(self, router_env):
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        previous_requests = len(router_env.backend.request_log)
+
+        resp = _post_chat(
+            router_env.url,
+            session_id,
+            {"messages": [{"role": "user", "content": "hi"}], "input_ids": [1, 2, 3]},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"] == "input_ids is owned by Miles and cannot be provided by the client"
+        assert len(router_env.backend.request_log) == previous_requests
+
     def test_chat_template_kwargs_override_reaches_render_and_backend(self, router_env):
         """A request response-mode kwarg wins over the launch default in both
         the locally rendered input_ids and the outbound backend request."""

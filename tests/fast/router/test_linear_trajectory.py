@@ -179,6 +179,37 @@ class TestSingleUserTurnPretokenized:
         result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
         assert result == _MOCK_FIRST_TURN_TOKENS
 
+    def test_render_fingerprint_is_pinned_after_first_successful_render(self, registry: SessionRegistry):
+        session = registry.get_session(registry.create_session())
+
+        result = session.prepare_pretokenized(
+            [USER_MSG],
+            tito_tokenizer=registry.tito_tokenizer,
+            render_fingerprint=("mode", "low"),
+        )
+
+        assert result == _MOCK_FIRST_TURN_TOKENS
+        assert session.render_fingerprint == ("mode", "low")
+        with pytest.raises(MessageValidationError, match="render configuration cannot change within a session"):
+            session.prepare_pretokenized(
+                [USER_MSG],
+                tito_tokenizer=registry.tito_tokenizer,
+                render_fingerprint=("mode", "medium"),
+            )
+
+    def test_failed_first_render_does_not_pin_render_fingerprint(self, registry: SessionRegistry):
+        session = registry.get_session(registry.create_session())
+        registry.tito_tokenizer.apply_chat_template = MagicMock(side_effect=RuntimeError("render failed"))
+
+        with pytest.raises(RuntimeError, match="render failed"):
+            session.prepare_pretokenized(
+                [USER_MSG],
+                tito_tokenizer=registry.tito_tokenizer,
+                render_fingerprint=("mode", "low"),
+            )
+
+        assert session.render_fingerprint is None
+
     def test_two_turn_trajectory(self, registry: SessionRegistry):
         """Full 2-turn: user -> assistant(tool_call) -> tool -> final answer."""
         sid = registry.create_session()

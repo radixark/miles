@@ -19,6 +19,7 @@ from typing import Any
 
 from miles.utils.chat_template_utils import deepseek, template
 from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils.request_profile import DEFAULT_REQUEST_PROFILE, ModelRequestProfile
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class TITOTokenizer:
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
+    request_profile: ModelRequestProfile = DEFAULT_REQUEST_PROFILE
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.

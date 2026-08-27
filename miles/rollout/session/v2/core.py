@@ -12,10 +12,10 @@ from miles.rollout.session.core import (
     _render_json,
     _samples_response,
     extract_completion,
-    prepare_chat_request,
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.request_contract import validate_session_render_fingerprint
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.session_state import (
@@ -146,17 +146,20 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
-            )
+            resolved_request = self.request_contract.resolve(body)
+            request_body = resolved_request.outbound_body
+            client_stream = resolved_request.client_stream
+            tito_tokenizer = resolved_request.tito_tokenizer
 
             request_messages = request_body.get("messages", [])
+            validate_session_render_fingerprint(session.render_fingerprint, resolved_request.render_fingerprint)
             position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
             prompt_token_ids = prepare_pretokenized(
                 session,
                 request_messages,
                 tools=request_body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
+                render_fingerprint=resolved_request.render_fingerprint,
             )
             request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
