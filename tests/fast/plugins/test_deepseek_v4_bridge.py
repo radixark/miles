@@ -2,18 +2,22 @@ from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
 
+import os
 from argparse import Namespace
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 import torch
+import torch.distributed as dist
 from megatron.bridge.models.conversion.param_mapping import (
     AutoMapping,
     ColumnParallelMapping,
     ReplicatedMapping,
 )
+from tests.fast.dist_utils import init_gloo, run_multiprocess
 
 from miles.backends.megatron_utils import hf_export
 from miles.backends.megatron_utils.bridge_lora_helpers import (
@@ -25,6 +29,62 @@ from miles_plugins.megatron_bridge.deepseek_v4 import (
     _get_dsv4_explicit_mappings,
     is_deepseek_v4_config,
 )
+
+
+def _run_required_export_writer_failure(rank: int, world_size: int, port: int) -> None:
+    init_gloo(rank, world_size, port=port)
+    save_dir = Path(os.environ["MILES_TEST_DSV4_EXPORT_DIR"])
+    model = SimpleNamespace(
+        named_parameters=lambda: [("layer.adapter.linear_in.weight", torch.nn.Parameter(torch.ones(1)))]
+    )
+    parallel_state = SimpleNamespace(
+        effective_dp=SimpleNamespace(rank=0),
+        cp=SimpleNamespace(rank=0),
+        tp=SimpleNamespace(rank=rank),
+        pp=SimpleNamespace(rank=0),
+    )
+    bridge = SimpleNamespace(
+        export_adapter_weights=lambda *_args, **_kwargs: iter(
+            [("model.layer.lora_A.weight", torch.ones(1), "decoder.layer.adapter.linear_in.weight")]
+        )
+    )
+    args = Namespace(
+        hf_checkpoint="checkpoint",
+        target_modules=[],
+        lora_rank=1,
+        lora_alpha=1,
+        lora_dropout=0.0,
+    )
+    original_torch_save = torch.save
+
+    def fail_writer_only(state, path, *args, **kwargs):
+        if rank == 0 and Path(path).name == "adapter_model.bin":
+            raise OSError("writer failed")
+        return original_torch_save(state, path, *args, **kwargs)
+
+    try:
+        with (
+            patch(
+                "miles.backends.megatron_utils.lora_utils.get_parallel_state",
+                return_value=parallel_state,
+            ),
+            patch("megatron.bridge.AutoBridge.from_hf_pretrained", return_value=bridge),
+            patch(
+                "miles.utils.megatron_bridge_utils.patch_megatron_model",
+                side_effect=lambda _model: nullcontext(),
+            ),
+            patch("miles.backends.megatron_utils.lora_utils.torch.save", side_effect=fail_writer_only),
+        ):
+            with pytest.raises(RuntimeError, match="rank 0: OSError: writer failed") as error:
+                save_lora_checkpoint(
+                    [model],
+                    args,
+                    str(save_dir),
+                    require_hf_export=True,
+                )
+        (save_dir / f"error-rank-{rank}.txt").write_text(str(error.value))
+    finally:
+        dist.destroy_process_group()
 
 
 def test_dsv4_explicit_mapping_semantics():
@@ -161,3 +221,15 @@ def test_required_adapter_export_rejects_empty_bridge_result(tmp_path):
             )
 
     assert not (tmp_path / "adapter_model.bin").exists()
+
+
+def test_required_adapter_export_propagates_writer_failure_to_every_rank(tmp_path):
+    os.environ["MILES_TEST_DSV4_EXPORT_DIR"] = str(tmp_path)
+    try:
+        run_multiprocess(_run_required_export_writer_failure, world_size=2)
+    finally:
+        os.environ.pop("MILES_TEST_DSV4_EXPORT_DIR", None)
+
+    errors = [(tmp_path / f"error-rank-{rank}.txt").read_text() for rank in range(2)]
+    assert errors[0] == errors[1]
+    assert "rank 0: OSError: writer failed" in errors[0]

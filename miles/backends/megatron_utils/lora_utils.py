@@ -190,6 +190,16 @@ def _is_adapter_param_name(name: str) -> bool:
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
 
 
+def _collective_export_errors(local_error: str | None) -> list[str]:
+    """Return HF export failures from every rank in a consistent order."""
+    if not dist.is_initialized():
+        return [local_error] if local_error is not None else []
+
+    gathered_errors: list[str | None] = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered_errors, local_error)
+    return [error for error in gathered_errors if error is not None]
+
+
 _param_grad_buffer_patched = False
 
 
@@ -463,6 +473,8 @@ def save_lora_checkpoint(
     # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
     # Bridge export is collective: all TP ranks participate in the all-gather,
     # so every rank must call export_adapter_weights.
+    hf_export_exception: Exception | None = None
+    local_hf_export_error: str | None = None
     try:
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
@@ -501,10 +513,16 @@ def save_lora_checkpoint(
             os.sync()
             logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
     except Exception as hf_export_err:
+        hf_export_exception = hf_export_err
+        local_hf_export_error = f"rank {global_rank}: {type(hf_export_err).__name__}: {hf_export_err}"
+
+    hf_export_errors = _collective_export_errors(local_hf_export_error)
+    if hf_export_errors:
+        error_summary = "; ".join(hf_export_errors)
         if require_hf_export:
-            raise RuntimeError("Required HF PEFT adapter export failed") from hf_export_err
+            raise RuntimeError(f"Required HF PEFT adapter export failed: {error_summary}") from hf_export_exception
         logger.warning(
-            f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
+            f"HF PEFT adapter export skipped ({error_summary}); the per-rank native "
             f"shards + training state are sufficient for training resume."
         )
 
