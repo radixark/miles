@@ -154,6 +154,7 @@
         "group": "GLM",
         "pages": [
          "models/glm/index",
+         "models/glm/glm5-3-flash",
          "models/glm/glm5-2",
          "models/glm/glm5",
          "models/glm/glm4-7-flash",
