@@ -25,9 +25,11 @@ same decision as glm5.x).
 
 import copy
 
+import torch
+
 from megatron.core.extensions.transformer_engine_spec_provider import TESpecProvider
 from megatron.core.models.gpt.gpt_layer_specs import get_gpt_decoder_block_spec
-from megatron.core.transformer import transformer_block
+from megatron.core.transformer import hyper_connection, transformer_block
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.core.transformer.hyper_connection import HyperConnectionModule
 from megatron.core.transformer.identity_op import IdentityOp
@@ -107,6 +109,42 @@ def _patch_mean_output_contract() -> None:
     transformer_block._glm5_next_mean_contract_patched = True
 
 
+def _reference_proj_rms(x, weight, eps):
+    """GLM-5.3's mHC mapping normalization: ``rsqrt(mean(x^2) + eps)`` with the
+    checkpoint's ``rms_norm_eps`` *inside* the sqrt, matching the HF/sglang
+    reference (``sglang.kernels.ops.layernorm.mhc._mhc_pre_torch``)."""
+    proj = torch.matmul(x, weight.t())
+    r = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + eps)
+    return proj, r
+
+
+def _patch_reference_proj_rms() -> None:
+    """Align Megatron's mHC mapping RMS with the GLM-5.3 reference.
+
+    Megatron's ``native_proj_rms`` computes ``r = 1 / (rms(x) + 1e-6)`` -- the
+    eps sits *outside* the sqrt, so at GLM-5.3's hidden scale (mean-square as
+    low as ~5e-6 on the early-layer residual streams) it is numerically a
+    no-eps norm. The reference computes ``r = rsqrt(mean(x^2) + rms_norm_eps)``
+    with ``rms_norm_eps = 1e-5`` *inside*, where it dominates the denominator
+    for small tokens: ``h_pre``/``h_post``/``h_res`` then differ by tens of
+    percent per token, which offline layerwise parity showed to be the dominant
+    train-vs-serve divergence (created at layer 0 and carried through every
+    layer). Swap the per-instance op and eps to the reference convention."""
+    if getattr(hyper_connection, "_glm5_next_reference_proj_rms_patched", False):
+        return
+
+    original_init = HyperConnectionModule.__init__
+
+    def _init_with_reference_proj_rms(self, config, layer_number):
+        original_init(self, config, layer_number)
+        assert not config.use_fused_mhc, "GLM-5.3 mHC requires the native (unfused) proj_rms path"
+        self.norm_eps = config.layernorm_epsilon
+        self._proj_rms_op = torch.compile(_reference_proj_rms)
+
+    HyperConnectionModule.__init__ = _init_with_reference_proj_rms
+    hyper_connection._glm5_next_reference_proj_rms_patched = True
+
+
 def get_glm5_next_spec(args, config, vp_stage=None):
     """Transformer block spec for GLM-5.3-Flash."""
     register_glm5_next_config()
@@ -116,6 +154,7 @@ def get_glm5_next_spec(args, config, vp_stage=None):
     _apply_glm5_next_config(config, text_config)
     config.freeze_indexer = getattr(args, "freeze_indexer", False)
     _patch_mean_output_contract()
+    _patch_reference_proj_rms()
 
     kwargs = {"use_transformer_engine": True}
     if vp_stage is not None:
