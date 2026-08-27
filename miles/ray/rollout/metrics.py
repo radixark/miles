@@ -14,7 +14,7 @@ from miles.utils.metric_utils import (
 )
 from miles.utils.misc import load_function
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import Sample
+from miles.utils.types import AdapterRef, Sample
 
 logger = logging.getLogger(__name__)
 
@@ -143,17 +143,18 @@ def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[s
     Session compaction can turn one rollout into several training samples. The
     sample count includes every resulting row, while the reward first averages
     sibling rows that share a rollout ID so long rollouts do not receive more
-    metric weight merely because they produced more samples.
+    metric weight merely because they produced more samples. Adapter identity
+    scopes these IDs because each Multi-LoRA data source numbers them independently.
     """
-    rewards_by_rollout: dict[tuple[str, int | None, int], list[float]] = {}
+    rewards_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], list[float]] = {}
     use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
     for position, sample in enumerate(samples):
         if sample.rollout_id is not None:
-            rollout_key = ("rollout", sample.group_index, sample.rollout_id)
+            rollout_key = (sample.adapter, "rollout", sample.group_index, sample.rollout_id)
         elif sample.index is not None:
-            rollout_key = ("sample", sample.group_index, sample.index)
+            rollout_key = (sample.adapter, "sample", sample.group_index, sample.index)
         else:
-            rollout_key = ("position", sample.group_index, position)
+            rollout_key = (sample.adapter, "position", sample.group_index, position)
 
         raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
         if isinstance(raw_reward, Number):

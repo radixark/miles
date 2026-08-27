@@ -10,6 +10,7 @@ from miles.ray.rollout.metrics import (
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+from miles.utils.types import AdapterRef
 
 
 class TestTrainingSampleMetrics:
@@ -45,6 +46,21 @@ class TestTrainingSampleMetrics:
             make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
             make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
             make_sample(group_index=1, index=1, rollout_id=10, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
+    def test_rollout_ids_are_scoped_by_adapter(self):
+        args = make_args(reward_key=None)
+        adapter_a = AdapterRef(name="adapter-a", slot=0)
+        adapter_b = AdapterRef(name="adapter-b", slot=1)
+        samples = [
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_b, reward=0.0),
         ]
 
         out = _compute_training_sample_metrics(args, samples)
