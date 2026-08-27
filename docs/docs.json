@@ -137,6 +137,7 @@
           ],
           "expanded": false
          },
+         "models/qwen/qwen3-8-flash-next",
          "models/qwen/qwen3-next",
          {
           "group": "Qwen3",
