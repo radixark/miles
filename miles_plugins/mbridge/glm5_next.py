@@ -40,6 +40,10 @@ from mbridge.models import DeepseekV3Bridge
 
 from miles_plugins.mbridge.deepseek_v32 import GlmMoeDsaBridge
 
+from miles_plugins.models.glm5_next.hf_compat import register_glm5_next_config
+
+register_glm5_next_config()
+
 _GLM5_NEXT_VOCAB_SIZE = 154880
 
 _HC_ALPHA_SLICES = {
