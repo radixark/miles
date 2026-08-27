@@ -11,7 +11,7 @@
 # release for the current arch picked from TARGETARCH — WHEELS_TAG_X86 on amd64,
 # WHEELS_TAG_ARM64 on arm64 (cu12-x86 overrides WHEELS_TAG_X86).
 
-ARG SGLANG_IMAGE_TAG=v0.5.16
+ARG SGLANG_IMAGE_TAG=v0.5.18
 FROM lmsysorg/sglang:${SGLANG_IMAGE_TAG} AS sglang
 
 # ======================================== Arguments =============================================
@@ -30,8 +30,8 @@ ARG WHEELS_REPO=yueming-yuan/miles-wheels
 # Two complete wheels release tags (the wheels repo's own names). The build picks
 # one by TARGETARCH and installs it verbatim — no on-the-fly tag assembly here.
 ARG TARGETARCH
-ARG WHEELS_TAG_X86=cu130-x86_64
-ARG WHEELS_TAG_ARM64=cu130-aarch64
+ARG WHEELS_TAG_X86=cu130-torch213-x86_64
+ARG WHEELS_TAG_ARM64=cu130-torch213-aarch64
 
 # ======================================== Setup =============================================
 
@@ -290,47 +290,6 @@ RUN pip install --force-reinstall --no-deps "apache-tvm-ffi==0.1.11" && \
 p = inspect.signature(k.make_kwargs_wrapper).parameters; \
 assert 'map_dataclass_to_tuple' in p, \
   'apache-tvm-ffi resolves to a build too old for nvidia-cutlass-dsl 4.6.0: %s' % list(p)"
-
-# ==================== Pin nvidia-cutlass-dsl to 4.6.2 ====================
-# The sglang v0.5.16 base ships nvidia-cutlass-dsl 4.6.0, whose 4.6.0/4.6.1 runtime
-# hangs FA4 CuTe backward forever on sm_103 (B300/GB300): the first training backward
-# spins at 100% GPU in _bwd_postprocess_convert and never returns
-# (https://github.com/Dao-AILab/flash-attention/issues/2797). 4.6.2 is fixed and passes
-# FA4's own SM100 forward/backward checks. The meta-package alone does NOT move what a
-# process loads — the -libs-cu12/-libs-cu13 wheels carry the actual runtime — so pin
-# every component and fail the build loudly if any of them slips.
-RUN pip install --force-reinstall --no-deps \
-      "nvidia-cutlass-dsl==4.6.2" \
-      "nvidia-cutlass-dsl-libs-base==4.6.2" \
-      "nvidia-cutlass-dsl-libs-core==4.6.2" \
-      "nvidia-cutlass-dsl-libs-cu12==4.6.2" \
-      "nvidia-cutlass-dsl-libs-cu13==4.6.2" && \
-    python3 -c "from importlib.metadata import version as v; \
-libs = ['nvidia-cutlass-dsl', 'nvidia-cutlass-dsl-libs-base', 'nvidia-cutlass-dsl-libs-core', \
-        'nvidia-cutlass-dsl-libs-cu12', 'nvidia-cutlass-dsl-libs-cu13']; \
-bad = {p: v(p) for p in libs if v(p) != '4.6.2'}; \
-assert not bad, 'nvidia-cutlass-dsl components not at 4.6.2: %s' % bad"
-
-# ==================== Pin flashinfer to 0.6.15.post1 ====================
-# The sglang v0.5.16 base ships flashinfer 0.6.14, whose trtllm MoE cubins can hang
-# 2CTA kernels on Blackwell (regression since 0.6.8, fixed cubins in 0.6.15;
-# https://github.com/flashinfer-ai/flashinfer/pull/3973). 0.6.15.post1 additionally
-# fixes the host-side MLA/MoE dispatch overhead that got the plain 0.6.15 bump
-# reverted upstream (sgl-project/sglang#31625 -> #31927). The python + cubin + jit-cache
-# trio must move together; jit-cache wheels live on flashinfer's own index, per CUDA line.
-RUN FI_CUDA_INDEX=$([ "${ENABLE_CUDA_13}" = "1" ] && echo cu130 || echo cu129) && \
-    pip install --force-reinstall --no-deps \
-      --extra-index-url "https://flashinfer.ai/whl" \
-      --extra-index-url "https://flashinfer.ai/whl/${FI_CUDA_INDEX}" \
-      "flashinfer-python==0.6.15.post1" \
-      "flashinfer-cubin==0.6.15.post1" \
-      "flashinfer-jit-cache==0.6.15.post1" && \
-    python3 -c "from importlib.metadata import version as v; \
-vers = {p: v(p) for p in ['flashinfer-python', 'flashinfer-cubin', 'flashinfer-jit-cache']}; \
-bad = {p: x for p, x in vers.items() if not x.startswith('0.6.15.post1')}; \
-assert not bad, 'flashinfer components not at 0.6.15.post1: %s' % bad"
-# The sglang base exports FLASHINFER_VERSION=0.6.14; keep the marker in step.
-ENV FLASHINFER_VERSION=0.6.15.post1
 
 RUN rm -rf /tmp/wheels
 

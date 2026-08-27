@@ -126,6 +126,21 @@ class TestTrainingSampleMetrics:
 
         assert out["episode_raw_reward"] == pytest.approx(0.5)
 
+    def test_rollout_ids_are_scoped_by_adapter(self):
+        args = make_args(reward_key=None)
+        adapter_a = AdapterRef(name="adapter-a", slot=0)
+        adapter_b = AdapterRef(name="adapter-b", slot=1)
+        samples = [
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_b, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
     def test_metadata_raw_reward_and_fallback_identities(self):
         args = make_args(reward_key=None)
         samples = [
