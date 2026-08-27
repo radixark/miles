@@ -115,6 +115,8 @@ class Glm5NextBridge(GlmMoeDsaBridge):
             if isinstance(rope_parameters, dict):
                 rope_theta = rope_parameters.get("rope_theta")
         if rope_theta is None:
+            if int(getattr(self.hf_config, "qk_rope_head_dim", 0) or 0) == 0:
+                return 10000.0
             raise ValueError("GLM-5.3 config must provide rope_theta (directly or via rope_parameters)")
         return float(rope_theta)
 
