@@ -17,10 +17,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+import torch.distributed as dist
 import torch.nn as nn
 
 from miles.backends.training_utils.replay_data import fill_replay_data, register_replay_list_sequential
-from miles.utils.replay_base import routing_replay_manager
+from miles.utils.replay_base import reduce_check_stats, routing_replay_manager
 
 logger = logging.getLogger(__name__)
 
@@ -183,6 +184,13 @@ def stage(name: str):
 def rewind() -> None:
     """Return the forward cursors to the head of their queues."""
     routing_replay_manager.clear_all_forward()
+
+
+def pop_and_reduce_check_stats(group: dist.ProcessGroup) -> tuple[int, int] | None:
+    """Reset local checker counters and sum them across the participating ranks."""
+    if not routing_replay_manager.enable_check_replay_result:
+        return None
+    return reduce_check_stats(routing_replay_manager.pop_check_stats(), group)
 
 
 def reset() -> None:

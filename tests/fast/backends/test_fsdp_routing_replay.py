@@ -4,6 +4,7 @@ register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
 from argparse import Namespace
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch.nn as nn
@@ -183,6 +184,19 @@ def test_enable_turns_on_the_replay_check_only_under_ci_test():
 
     routing_replay.enable(Namespace(use_routing_replay=True, ci_test=False))
     assert routing_replay_manager.enable_check_replay_result is False
+
+
+def test_pop_and_reduce_check_stats_resets_local_attempt(monkeypatch):
+    group = object()
+    reduce_stats = Mock(return_value=(5, 12))
+    monkeypatch.setattr(routing_replay_manager, "enable_check_replay_result", True)
+    monkeypatch.setattr(routing_replay, "reduce_check_stats", reduce_stats)
+    routing_replay_manager.mismatched_tokens = 2
+    routing_replay_manager.checked_tokens = 5
+
+    assert routing_replay.pop_and_reduce_check_stats(group) == (5, 12)
+    assert routing_replay_manager.pop_check_stats() == (0, 0)
+    reduce_stats.assert_called_once_with((2, 5), group)
 
 
 def test_log_prob_stage_is_fallthrough_when_disabled():

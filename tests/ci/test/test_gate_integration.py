@@ -350,6 +350,35 @@ class TestBaselineWrite:
             ('"all"', 3, 0.80),
         ]
 
+    def test_nightly_r3_one_liner_writes_metric_values(self, tmp_path, store):
+        test_file = _write_test_file(
+            tmp_path,
+            'register_ci_gate(metric_key="ci/r3_mismatch_fraction")',
+        )
+        registry = _registry(test_file)
+        record = _write_record(
+            tmp_path,
+            {"ci/r3_mismatch_fraction": [[0, 0.0], [1, 0.005]]},
+            name="m.jsonl",
+        )
+
+        run_gate_hook(
+            test_file,
+            record,
+            store=store,
+            registry=registry,
+            write_baseline=True,
+            provenance=PROVENANCE,
+        )
+
+        rows = store._conn.execute(
+            "SELECT metric_key, steps_key, step, value FROM metric_values ORDER BY step"
+        ).fetchall()
+        assert rows == [
+            ("ci/r3_mismatch_fraction", '"all"', 0, 0.0),
+            ("ci/r3_mismatch_fraction", '"all"', 1, 0.005),
+        ]
+
     def test_nightly_no_spec_file_writes_nothing(self, tmp_path, store, monkeypatch):
         # A file with no register_ci_gate call has nothing a baseline can use:
         # the hook must skip the write entirely, not leave an empty runs row.

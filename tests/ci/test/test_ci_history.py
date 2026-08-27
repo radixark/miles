@@ -42,7 +42,15 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
     backend = CiHistoryBackend()
     backend.init(object(), primary=False)
 
-    backend.log({"train/grad_norm": 1.5, "train/ppo_kl": 0.0, "train/step": 0}, step=0)
+    backend.log(
+        {
+            "train/grad_norm": 1.5,
+            "train/ppo_kl": 0.0,
+            "ci/r3_mismatch_fraction": 0.005,
+            "train/step": 0,
+        },
+        step=0,
+    )
     backend.log({"train/grad_norm": 2.5, "train/ppo_kl": 0.1, "train/step": 1}, step=1)
     backend.log(
         {
@@ -63,12 +71,14 @@ def test_record_has_target_keys_and_is_parseable(tmp_path, monkeypatch):
     assert set(by_metric) == {
         "train/grad_norm",
         "train/ppo_kl",
+        "ci/r3_mismatch_fraction",
         "rollout/raw_reward",
         "rollout/tito_session_mismatch_rate/v2/assistant_text",
     }
     # Raw series are preserved unreduced: both grad_norm points are present.
     assert by_metric["train/grad_norm"] == [[0, 1.5], [1, 2.5]]
     assert by_metric["train/ppo_kl"] == [[0, 0.0], [1, 0.1]]
+    assert by_metric["ci/r3_mismatch_fraction"] == [[0, 0.005]]
     assert by_metric["rollout/raw_reward"] == [[0, 0.3]]
     assert by_metric["rollout/tito_session_mismatch_rate/v2/assistant_text"] == [[0, 0.125]]
 

@@ -500,6 +500,7 @@ def log_train_step(
     role: str = "actor",
     extra_metrics: dict[str, float] | None = None,
     should_log: bool | None = None,
+    r3_mismatch_fraction: float | None = None,
 ) -> dict[str, float]:
     """Log training metrics for one step.
 
@@ -515,6 +516,7 @@ def log_train_step(
         role: Role name (e.g., "actor", "critic").
         extra_metrics: Optional extra metrics to log (e.g., learning rates, MTP loss).
         should_log: Optional override for logging condition. If None, uses rank == 0.
+        r3_mismatch_fraction: Optional pre-aggregated routing-replay mismatch fraction.
 
     Returns:
         The formatted log_dict (for CI tests or other uses).
@@ -531,6 +533,9 @@ def log_train_step(
     if extra_metrics:
         for key, val in extra_metrics.items():
             log_dict_out[f"train/{role_tag}{key}"] = val
+
+    if r3_mismatch_fraction is not None:
+        log_dict_out[f"ci/{role_tag}r3_mismatch_fraction"] = r3_mismatch_fraction
 
     log_dict_out["train/step"] = accumulated_step_id
 

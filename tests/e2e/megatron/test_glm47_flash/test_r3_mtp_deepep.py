@@ -1,6 +1,7 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 from tests.e2e.megatron.test_glm47_flash._common import CaseConfig, execute, prepare
 
 # FIXME: sglang deepep code path bug.
@@ -9,6 +10,11 @@ register_cuda_ci(
     suite="stage-c-8-gpu-h100",
     labels=["megatron"],
     disabled="Disabled due to sglang deepep code path bug.",
+)
+
+register_ci_gate(
+    metric_key="ci/r3_mismatch_fraction",
+    constraint={"rel_up": 1.0, "abs_floor_up": 0.05, "rel_down": 1.0},
 )
 
 CASE = CaseConfig(

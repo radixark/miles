@@ -108,6 +108,10 @@ GATE_DEFAULTS: dict[str, dict] = {
         "steps": "all",
         "constraint": {"rel_up": 0.5, "abs_floor_up": 0.05, "rel_down": 0.2, "abs_floor_down": 0.05},
     },
+    "ci/r3_mismatch_fraction": {
+        "steps": "all",
+        "constraint": {"rel_up": 1.0, "abs_floor_up": 0.01, "rel_down": 1.0},
+    },
     "rollout/tito_session_mismatch_rate/v1/assistant_text": {
         "steps": "last",
         "constraint": {"rel_up": 1.0, "abs_floor_up": 0.1, "rel_down": 1.0},

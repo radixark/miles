@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from tests.ci.ci_register import register_cuda_ci
+from tests.ci.metric_history import register_ci_gate
 
 import miles.utils.external_utils.command_utils as U
 
@@ -12,6 +13,8 @@ register_cuda_ci(
     labels=["model-scripts"],
     disabled="Requires Blackwell/B200 CI runner for NVFP4.",
 )
+
+register_ci_gate(metric_key="ci/r3_mismatch_fraction")
 
 MODEL_ORG = "Pinaster"
 MODEL_NAME = "GLM-5.2_5layer"

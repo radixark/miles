@@ -33,6 +33,10 @@ register_ci_gate(metric_key="train/ppo_kl")
 register_ci_gate(metric_key="train/train_rollout_logprob_abs_diff")
 register_ci_gate(metric_key="train/train_rollout_kl")
 register_ci_gate(metric_key="rollout/raw_reward")
+register_ci_gate(
+    metric_key="ci/r3_mismatch_fraction",
+    constraint={"rel_up": 1.0, "abs_floor_up": 0.05, "rel_down": 1.0},
+)
 
 CASE = CaseConfig(
     use_deepep=False,

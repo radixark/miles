@@ -187,3 +187,83 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
     assert result == (model, optimizer, opt_param_scheduler, 100)
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+def _train_args():
+    return Namespace(
+        debug_disable_optimizer=True,
+        enable_mtp_training=False,
+        manual_gc=False,
+        overlap_param_gather=False,
+        reset_optimizer_states=False,
+        use_distributed_optimizer=False,
+    )
+
+
+def _run_one_train_step(model_module, outcome, *, indep_dp_size=1):
+    model_chunk = MagicMock()
+    data_iterator = MagicMock()
+    parallel_state = types.SimpleNamespace(indep_dp=types.SimpleNamespace(size=indep_dp_size))
+    config = types.SimpleNamespace()
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(model_module, "get_args", return_value=_train_args()))
+        stack.enter_context(patch.object(model_module, "get_parallel_state", return_value=parallel_state))
+        stack.enter_context(patch.object(model_module, "get_model_config", return_value=config))
+        stack.enter_context(patch.object(model_module, "train_one_step", return_value=({}, 0.0, outcome)))
+        result = model_module.train(
+            rollout_id=1,
+            model=[model_chunk],
+            optimizer=None,
+            opt_param_scheduler=None,
+            data_iterator=[data_iterator],
+            num_microbatches=[1],
+            num_rollouts=[1],
+            witness_info=None,
+            attempt=0,
+        )
+
+    return result
+
+
+def test_discarded_step_pops_r3_stats_without_reduce_or_log():
+    from miles.backends.megatron_utils import model as model_module
+
+    manager = model_module.routing_replay_manager
+    outcome = model_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+    with (
+        patch.object(manager, "enable_check_replay_result", True),
+        patch.object(manager, "pop_check_stats", return_value=(3, 10)) as pop_stats,
+        patch.object(model_module, "get_gloo_group") as get_group,
+        patch.object(model_module, "reduce_check_stats") as reduce_stats,
+        patch.object(model_module, "log_train_step") as log_step,
+    ):
+        result = _run_one_train_step(model_module, outcome, indep_dp_size=2)
+
+    assert result == outcome
+    pop_stats.assert_called_once_with()
+    get_group.assert_not_called()
+    reduce_stats.assert_not_called()
+    log_step.assert_not_called()
+
+
+def test_normal_non_main_rank_reduces_r3_stats_without_logging():
+    from miles.backends.megatron_utils import model as model_module
+
+    manager = model_module.routing_replay_manager
+    outcome = model_module.TrainStepOutcome.NORMAL
+    group = object()
+    with (
+        patch.object(manager, "enable_check_replay_result", True),
+        patch.object(manager, "pop_check_stats", return_value=(3, 10)) as pop_stats,
+        patch.object(model_module, "get_gloo_group", return_value=group),
+        patch.object(model_module, "reduce_check_stats", return_value=(2, 8)) as reduce_stats,
+        patch.object(model_module, "is_first_replica_megatron_main_rank", return_value=False),
+        patch.object(model_module, "log_train_step") as log_step,
+    ):
+        result = _run_one_train_step(model_module, outcome)
+
+    assert result == outcome
+    pop_stats.assert_called_once_with()
+    reduce_stats.assert_called_once_with((3, 10), group)
+    log_step.assert_not_called()
