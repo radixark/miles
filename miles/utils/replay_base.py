@@ -57,10 +57,13 @@ class BaseReplayManager:
     # True when replayed indices are token/KV positions (indexer): rebase the
     # per-sample 0-based rollout indices onto the packed training sequence.
     replay_indices_are_token_positions = False
-    # MoE routing validates every replayed expert index before masking padded
-    # slots. Indexer replay has different partial-padding semantics, so only
-    # routing replay should opt into replacing every invalid slot.
-    sanitize_partial_invalid_indices = False
+    # Unlike all-invalid rows (whole padding tokens), partially invalid routing
+    # rows have no lossless representation in Megatron's top-k API: the API does
+    # not propagate a per-slot validity mask into probability normalization or
+    # routing-map construction. Routing replay therefore rejects them rather
+    # than inventing expert assignments. Indexer replay retains its existing
+    # partial-padding semantics.
+    reject_partial_invalid_indices = False
 
     def __init__(self):
         self.replays: list[Replay] = []
@@ -103,15 +106,16 @@ class BaseReplayManager:
             if self.enable_check_replay_result:
                 self.check_replay_result(old_topk_fn, scores, topk, top_indices, *args, **kwargs)
 
-            if self.sanitize_partial_invalid_indices:
+            if self.reject_partial_invalid_indices:
                 invalid = top_indices == -1
                 partial_invalid_rows = invalid.any(dim=-1) & ~invalid.all(dim=-1)
-                padding_mask = invalid & partial_invalid_rows.unsqueeze(-1)
-                if padding_mask.any():
-                    top_indices = top_indices.clone()
-                    top_indices[padding_mask] = (
-                        torch.arange(padding_mask.sum(), device=top_indices.device, dtype=top_indices.dtype)
-                        % scores.shape[1]
+                if partial_invalid_rows.any():
+                    invalid_slots = (invalid & partial_invalid_rows.unsqueeze(-1)).sum().item()
+                    raise RuntimeError(
+                        "Routing replay contains partially padded top-k rows "
+                        f"({partial_invalid_rows.sum().item()} rows, {invalid_slots} invalid slots). "
+                        "Megatron's routing API cannot preserve a per-slot padding mask; "
+                        "continuing would create extra expert routes."
                     )
 
             # fill padding tokens with arange to avoid invalid reading
@@ -128,7 +132,7 @@ class BaseReplayManager:
             # int64. A native torch.topk call also returns int64. Keep the
             # indexer-only, return-indices path unchanged because its kernels
             # consume the serialized int32 representation directly.
-            if return_probs or self.sanitize_partial_invalid_indices:
+            if return_probs:
                 top_indices = top_indices.long()
 
             if return_probs:
@@ -242,7 +246,7 @@ class RoutingReplayManager(BaseReplayManager):
     if_sp_region = True
     enable_check_replay_result = False
     replay_check_max_mismatch_fraction = 1e-2
-    sanitize_partial_invalid_indices = True
+    reject_partial_invalid_indices = True
 
 
 class IndexerReplayManager(BaseReplayManager):
