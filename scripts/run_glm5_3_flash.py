@@ -64,8 +64,9 @@ def _train(args: ScriptArgs):
     shape = (args.num_nodes, args.num_gpus_per_node)
     assert shape in (
         (8, 4),
+        (6, 4),
         (2, 4),
-    ), "the parallel configs below are shaped for 8x4 (full) or 2x4 (8layer)"
+    ), "the parallel configs below are shaped for 8x4 / 6x4 (full) or 2x4 (8layer)"
 
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
@@ -95,7 +96,17 @@ def _train(args: ScriptArgs):
         f"--rollout-max-response-len {args.rollout_max_response_len} "
     )
 
-    if shape == (8, 4):
+    if shape == (6, 4):
+        parallel_args = (
+            "--tensor-model-parallel-size 8 "
+            "--sequence-parallel "
+            "--pipeline-model-parallel-size 3 "
+            "--context-parallel-size 1 "
+            "--expert-model-parallel-size 8 "
+            "--expert-tensor-parallel-size 1 "
+        )
+        engine_args = "--rollout-num-gpus-per-engine 8 " "--sglang-tp-size 8 " "--sglang-ep-size 8 "
+    elif shape == (8, 4):
         parallel_args = (
             "--tensor-model-parallel-size 8 "
             "--sequence-parallel "
