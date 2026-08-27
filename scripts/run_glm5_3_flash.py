@@ -8,8 +8,12 @@ Args:
     model-name: "GLM-5.3-Flash" (45-layer, 8 nodes x 4 GPUs, TP8 PP4 EP16
         placeholder mirroring glm5.2's GB300 parallelism at 32 GPUs) or
         "GLM-5.3-Flash-8layer" (smoke slice, 2 nodes x 4 GPUs, TP2 PP2 EP2).
-    enable-r3: add --use-rollout-routing-replay (indexer replay lands once the
-        sglang-side kpool top-k capture is ported).
+    enable-r3: add --use-rollout-routing-replay (router streams).
+    enable-indexer-replay: add --use-rollout-indexer-replay (DSA kpool top-k
+        streams, one per full-attention layer: 11 full / 2 on the 8-layer cut).
+        Kept separate from enable-r3 to mirror glm5.2, where the indexer-replay
+        host buffer is the sizing concern; on glm5.3-flash the buffer is
+        ~90 KB/token (full) or ~16 KB/token (8-layer).
 
 Usage (inside the head-node container):
     python scripts/run_glm5_3_flash.py train --model-name GLM-5.3-Flash-8layer --num-rollout 5
@@ -47,6 +51,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_max_response_len: int = 4096
     check_weight_update: bool = True
     enable_r3: bool = False
+    enable_indexer_replay: bool = False
     skip_saving: bool = True
     extra_args: str = ""
 
@@ -177,6 +182,8 @@ def _train(args: ScriptArgs):
         misc_args += "--check-weight-update-equal " "--check-weight-update-skip-list visual. "
     if args.enable_r3:
         misc_args += "--use-rollout-routing-replay "
+    if args.enable_indexer_replay:
+        misc_args += "--use-rollout-indexer-replay "
 
     train_args = (
         f"{ckpt_args} {rollout_args} {optimizer_args} {grpo_args} "

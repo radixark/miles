@@ -2711,6 +2711,7 @@ def parse_args(add_custom_arguments=None):
 
         args = megatron_parse_args(extra_args_provider=add_miles_arguments)
         args.compress_ratios = None
+        args.rollout_indexer_topk_num_streams = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
@@ -2719,6 +2720,13 @@ def parse_args(add_custom_arguments=None):
             if is_dsa(hf_config):
                 args.indexer_rope_interleave = bool(getattr(hf_config, "indexer_rope_interleave", False))
                 logger.info(f"Setting indexer_rope_interleave: {args.indexer_rope_interleave} into args")
+                # Expected rollout indexer-replay stream count: one per layer
+                # that carries a DSA indexer. Hybrid linear-attention models
+                # (glm5_next) only have indexers on non-KDA layers; plain DSA
+                # models have one on every layer.
+                linear_attn_config = getattr(hf_config, "linear_attn_config", None)
+                kda_layers = set((linear_attn_config or {}).get("kda_layers") or [])
+                args.rollout_indexer_topk_num_streams = hf_config.num_hidden_layers - len(kda_layers)
 
         # TODO: unify this .rank and .world_size w/ indep_dp logics
         args.rank = 0

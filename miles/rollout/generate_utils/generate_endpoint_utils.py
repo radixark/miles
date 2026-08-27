@@ -147,4 +147,12 @@ def get_indexer_topk_from_response(args, output, sample):
         "Server returned indexer_topk without indexer_topk_num_layers; "
         "sglang-miles must include the layer count in meta_info."
     )
+    expected_num_streams = getattr(args, "rollout_indexer_topk_num_streams", None)
+    assert expected_num_streams is None or num_layers == expected_num_streams, (
+        f"Server returned indexer_topk with {num_layers} streams but the model has "
+        f"{expected_num_streams} indexer layers. A mismatch means the sglang engine's "
+        "get_num_indexer_layers disagrees with the training-side DSA layer layout "
+        "(e.g. counting KDA layers on a hybrid model); replaying it would map "
+        "streams to the wrong layers."
+    )
     return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)
