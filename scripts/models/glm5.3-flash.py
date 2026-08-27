@@ -32,7 +32,7 @@ def model_args(nlayers: int = 45, first_k_dense_replace: int = FIRST_K_DENSE_REP
         "--moe-grouped-gemm "
         "--moe-permute-fusion "
         "--vocab-size 154880 "
-        "--rotary-base 800000 "
+        "--rotary-base 10000 "
         "--rope-type rope "
         "--no-rope-fusion "
         "--position-embedding-type rope "
