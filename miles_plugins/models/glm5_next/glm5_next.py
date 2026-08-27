@@ -15,7 +15,6 @@ from megatron.core.transformer.transformer_layer import get_transformer_layer_of
 from miles.utils.hf_config import load_hf_config
 from miles_plugins.models.glm5.glm5 import DSASelfAttentionSubmodules
 from miles_plugins.models.glm5_next.dsa import Glm5NextDSAAttention
-from miles_plugins.models.glm5_next.hf_compat import register_glm5_next_config
 from miles_plugins.models.glm5_next.kda import Glm5NextKDAAttention, _get_text_config
 
 _MHC_EPS = 1e-6
@@ -102,7 +101,6 @@ def _patch_reference_proj_rms() -> None:
 
 
 def get_glm5_next_spec(args, config, vp_stage=None):
-    register_glm5_next_config()
     hf_config = load_hf_config(args.hf_checkpoint)
     text_config = _get_text_config(hf_config)
 
