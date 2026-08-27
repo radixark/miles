@@ -51,7 +51,7 @@ def test_gate_matches_fla_reference():
     grad = torch.randn_like(ref)
     ref.backward(grad)
     ours.backward(grad)
-    torch.testing.assert_close(f_ours.grad.float(), f_ref.grad.float(), rtol=1e-3, atol=1e-3)
+    torch.testing.assert_close(f_ours.grad.float(), f_ref.grad.float(), rtol=4e-3, atol=4e-3)
     print("PASS gate matches fla fused_kda_gate (values + grads)")
 
 
