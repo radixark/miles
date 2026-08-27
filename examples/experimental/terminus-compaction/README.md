@@ -173,6 +173,10 @@ Useful per-step metrics are:
 - `rollout/truncated_ratio`: should stay low. A high value usually means a
   per-turn or total-context cap is too small.
 
+The per-rollout response-length metrics are not emitted for Multi-LoRA
+workloads because rollout identifiers are local to each adapter's data source.
+Multi-LoRA training itself is unaffected.
+
 Inspect `rollout_data/<step>.pt` or the dashboard's sample view to confirm that:
 
 - compacted siblings share a rollout ID and terminal reward;

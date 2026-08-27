@@ -151,12 +151,16 @@ def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str,
     computing batch-level statistics. Effective lengths count only trainable
     tokens; total lengths count both masked and unmasked tokens in every sample.
     """
+    if any(sample.adapter is not None for sample in samples):
+        return {}
+
     effective_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
     total_lengths_by_rollout: dict[tuple[str, int | None, int], int] = {}
     for position, sample in enumerate(samples):
         rollout_key = _get_rollout_key(sample, position)
+        effective_response_length = 0 if sample.remove_sample else sample.effective_response_length
         effective_lengths_by_rollout[rollout_key] = (
-            effective_lengths_by_rollout.get(rollout_key, 0) + sample.effective_response_length
+            effective_lengths_by_rollout.get(rollout_key, 0) + effective_response_length
         )
         total_lengths_by_rollout[rollout_key] = total_lengths_by_rollout.get(rollout_key, 0) + sample.response_length
 

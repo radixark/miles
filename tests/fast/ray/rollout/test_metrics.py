@@ -11,6 +11,7 @@ from miles.ray.rollout.metrics import (
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+from miles.utils.types import AdapterRef
 
 
 class TestEpisodeResponseLengthMetrics:
@@ -58,6 +59,32 @@ class TestEpisodeResponseLengthMetrics:
 
         assert out["episode_response_length/mean"] == pytest.approx(4.5)
         assert out["episode_total_response_length/mean"] == pytest.approx(8.0)
+
+    def test_multi_lora_samples_emit_no_episode_length_metrics(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, adapter=AdapterRef(name="adapter-a", slot=0)),
+            make_sample(index=0, rollout_id=10, adapter=AdapterRef(name="adapter-b", slot=1)),
+        ]
+
+        assert _compute_episode_response_length_metrics(samples) == {}
+        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), samples)
+        assert not any(key.startswith("episode_response_length/") for key in out)
+        assert "episode_total_response_length/mean" not in out
+        assert out["response_len/mean"] == pytest.approx(4.0)
+
+    def test_removed_sample_has_zero_effective_length_but_keeps_total_length(self):
+        sample = make_sample(
+            index=0,
+            rollout_id=10,
+            response_length=5,
+            loss_mask=[1, 1, 1, 1, 1],
+            remove_sample=True,
+        )
+
+        out = _compute_episode_response_length_metrics([sample])
+
+        assert out["episode_response_length/mean"] == pytest.approx(0.0)
+        assert out["episode_total_response_length/mean"] == pytest.approx(5.0)
 
 
 class TestTrainingSampleMetrics:
