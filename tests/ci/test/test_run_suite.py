@@ -15,6 +15,7 @@ parsing fixture files -- the AST-side validation lives in
 `test_ci_register.py`; this module exercises the runtime filter.
 """
 
+import itertools
 import os
 import re
 import subprocess
@@ -86,6 +87,22 @@ class TestBuildCpuPytestCmd:
         assert "-x" not in cmd
         assert cmd[0] == "pytest"
         assert "tests/fast/a.py" in cmd and "tests/fast/b.py" in cmd
+
+    def test_a_directory_is_never_returned_to_after_its_parent(self):
+        """pytest loads a directory's conftest when it first reaches it. Naming that directory again
+        after its parent leaves the second visit's tests without their own conftest's fixtures, which
+        reads as `fixture ... not found` on tests that have always had one."""
+        cmd = build_cpu_pytest_cmd(
+            [
+                "tests/fast/backends/megatron_utils/test_broadcast_engine_gpu_counts.py",
+                "tests/fast/backends/test_fsdp_routing_replay.py",
+                "tests/fast/backends/megatron_utils/test_model.py",
+            ],
+            continue_on_error=True,
+        )
+
+        directories = [name.rsplit("/", 1)[0] for name in cmd if name.endswith(".py")]
+        assert len(set(directories)) == len(list(itertools.groupby(directories)))
 
 
 # --- CI_SUITES locked to the stage taxonomy ---------------------------------
