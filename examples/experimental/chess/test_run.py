@@ -1,6 +1,6 @@
 import pytest
 
-from run import ScriptArgs, _checkpoint_args, _grpo_args
+from run import ScriptArgs, _checkpoint_args, _grpo_args, _optimizer_args
 
 
 def test_grpo_args_uses_configured_kl_loss_coefficient() -> None:
@@ -19,6 +19,25 @@ def test_script_args_rejects_negative_kl_loss_coefficient() -> None:
             hardware="H200",
             num_gpus_per_node=8,
             kl_loss_coef=-0.01,
+        )
+
+
+def test_optimizer_args_uses_configured_learning_rate() -> None:
+    args = ScriptArgs(
+        hardware="H200",
+        num_gpus_per_node=8,
+        learning_rate=3e-7,
+    )
+
+    assert "--lr 3e-07 " in _optimizer_args(args)
+
+
+def test_script_args_rejects_nonpositive_learning_rate() -> None:
+    with pytest.raises(ValueError, match="learning_rate must be positive"):
+        ScriptArgs(
+            hardware="H200",
+            num_gpus_per_node=8,
+            learning_rate=0.0,
         )
 
 
