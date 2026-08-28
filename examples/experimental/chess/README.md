@@ -104,3 +104,18 @@ TITO v2 returns the trainable trajectory segments created around compaction.
 Set `--kl-loss-coef` to a positive value to regularize the policy toward the
 reference model. The default is `0.0`, preserving the original unregularized
 recipe.
+
+To extend a run beyond the rollout horizon stored in its checkpoint, resume
+with both options below:
+
+```bash
+python examples/experimental/chess/run.py \
+    --load-checkpoint-path /path/to/checkpoints \
+    --override-opt-param-scheduler \
+    --num-rollout 320
+```
+
+The scheduler override deliberately uses the new launch settings instead of
+requiring the new horizon to equal the checkpoint's original horizon. Specify
+the same learning-rate and decay settings as the source run when they must stay
+unchanged.
