@@ -124,10 +124,10 @@ def validate_multi_policy_args(args, *, megatron_config: MegatronConfig) -> None
         args.ckpt_step is None
     ), "multi policy training does not support --ckpt-step: every policy stands at an iteration of its own"
     _assert_no_debug_rollout_data_flags(args)
-    assert args.eval_interval is None, (
-        "train_multi_policy.py does not evaluate: it has no eval dispatcher, so "
-        "--eval-interval and the --eval-* arguments beside it would be accepted and never used. Drop them "
-        "and read the per policy training curves instead."
+    assert args.eval_interval is None or not args.eval_uses_snapshots, (
+        "multi policy training evaluates on the shared rollout engines only: a snapshot eval backend "
+        "(--eval-num-gpus or a CheckpointEvalFn --eval-function-path) exports the checkpoint of one trainer, "
+        "which cannot represent a run of several policies"
     )
     assert args.sglang_config is not None, (
         "multi policy training needs --sglang-config to deploy one inference model per policy, so that a "
