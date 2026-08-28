@@ -29,6 +29,8 @@ import openenv_agent_function as oaf
 import openenv_sandbox_common as common
 import pytest
 
+from miles.rollout.agent_function import InfraAbort
+
 from . import EXAMPLE_DIR
 from .test_openenv_agent_function import _CLASSES, _FakeEnv, _FakePolicy, _FakeResult
 
@@ -166,8 +168,8 @@ def test_backend_dispatch(monkeypatch):
 
 def test_backend_eval_error_yields_no_verdict(monkeypatch):
     """A server-side scoring failure (`evaluate` comes back with error set and
-    no reward) surfaces as reward=None -- dropped by the training wrapper --
-    not coerced into a false-negative 0.0."""
+    no reward) surfaces as reward=None with the reason in the metrics; the
+    training wrapper decides what that means for the sample."""
 
     class _EvalErrorEnv(_FakeEnv):
         async def step(self, action):
@@ -186,6 +188,7 @@ def test_backend_eval_error_yields_no_verdict(monkeypatch):
         backend.run_episode(_FakePolicy(), "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"})
     )
     assert reward is None
+    assert metrics["no_verdict_reason"] == "eval_error"
     assert metrics["turns"] == 2  # the episode itself completed; only scoring failed
 
 
@@ -222,7 +225,7 @@ def test_create_retries_through_throttling(monkeypatch):
 
 
 def test_create_gives_up_after_retry_budget(monkeypatch):
-    """A create that is throttled past max_retries raises the error."""
+    """A create throttled past max_retries discards the sample: the policy never acted."""
     calls = {"n": 0}
 
     def always_throttled(task_id, tasks_dir):
@@ -231,13 +234,15 @@ def test_create_gives_up_after_retry_budget(monkeypatch):
 
     monkeypatch.setenv("OPENENV_TB2_TASKS_DIR", "/nonexistent")
     backend = _backend(start_sandbox=always_throttled, max_retries=2)
-    with pytest.raises(_Throttled):
+    with pytest.raises(InfraAbort) as excinfo:
         asyncio.run(backend.start_task_sandbox("t1"))
+    assert excinfo.value.exit_status == "SandboxUnavailable"
+    assert isinstance(excinfo.value.__cause__, _Throttled)
     assert calls["n"] == 3  # initial attempt + 2 retries
 
 
 def test_create_non_throttle_error_propagates_immediately(monkeypatch):
-    """Anything that is not a throttle error must not be retried."""
+    """Anything that is not a throttle error is not retried, and discards the sample too."""
     calls = {"n": 0}
 
     def broken_start(task_id, tasks_dir):
@@ -245,8 +250,10 @@ def test_create_non_throttle_error_propagates_immediately(monkeypatch):
         raise RuntimeError("image build failed")
 
     monkeypatch.setenv("OPENENV_TB2_TASKS_DIR", "/nonexistent")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(InfraAbort) as excinfo:
         asyncio.run(_backend(start_sandbox=broken_start).start_task_sandbox("t1"))
+    assert excinfo.value.exit_status == "SandboxUnavailable"
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
     assert calls["n"] == 1
 
 

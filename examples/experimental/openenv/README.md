@@ -160,8 +160,10 @@ containers; keep it at or below the rollout batch concurrency. Those containers
 are heavy on disk, so if you'd rather not colocate them with the GPU workload,
 run the server on a separate Docker host and point the launcher at it with
 `--openenv-env-url http://<env-host>:8003`. The same `>=` #1012 `tbench2_env`
-contract applies: the adapter drops every episode (with a warning) from a
-server that doesn't carry it.
+contract applies: the adapter discards every episode from a server that
+doesn't carry it (`exit_status` `NonCanonicalVerifier`; see the
+[agentic rollout guide](../../../docs/user-guide/agentic-rollout.md) for which
+outcomes are discarded and which score 0).
 
 ## 3. Sanity-check the environment (optional, no GPU)
 

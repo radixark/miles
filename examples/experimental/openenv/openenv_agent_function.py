@@ -56,6 +56,8 @@ from urllib.parse import urlparse, urlunparse
 
 from openai import AsyncOpenAI
 
+from miles.rollout.agent_function import InfraAbort
+
 logger = logging.getLogger(__name__)
 
 # Env slots are finite: hosted spaces admit one session at a time
@@ -267,7 +269,7 @@ async def multi_turn(
     task_id = metadata.get("task_id") or metadata.get("task_name")
     max_turns = int(os.getenv("OPENENV_MAX_TURNS", "30"))
 
-    async def body(env: Any) -> tuple[float | None, int, str, list[float], list[float], float, float]:
+    async def body(env: Any) -> tuple[float | None, str | None, int, str, list[float], list[float], float, float]:
         # Per-turn wall-clock timings. gen_times[i] is turn i's policy generation
         # latency; tool_times[i] is turn i's env.step(exec) latency. reset_time and
         # eval_time bracket the one-off reset() and the final evaluate() env steps.
@@ -349,10 +351,18 @@ async def multi_turn(
         raw_reward = getattr(eval_result, "reward", None)
         eval_error = _obs_field(eval_result, "error")
         harness = str(_obs_info(eval_result).get("harness", ""))
-        if raw_reward is None or eval_error or harness != "tests/test.sh":
+        # Order matters: a scoring step that errored cannot have stamped the
+        # harness marker, so check the error first or every eval error would
+        # read as a non-canonical server.
+        no_verdict_reason = None
+        if raw_reward is None or eval_error:
+            no_verdict_reason = "eval_error"
+        elif harness != "tests/test.sh":
+            no_verdict_reason = "non_canonical_verifier"
+        if no_verdict_reason is not None:
             logger.warning(
                 "OpenEnv tbench2 evaluate produced no canonical verdict "
-                f"(error={eval_error!r}, harness={harness!r}); dropping episode"
+                f"(error={eval_error!r}, harness={harness!r}, reason={no_verdict_reason})"
             )
             reward = None
         else:
@@ -361,16 +371,16 @@ async def multi_turn(
         if post_episode is not None:
             await post_episode(env, action_cls)
 
-        return reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time
+        return reward, no_verdict_reason, turns, end_reason, gen_times, tool_times, reset_time, eval_time
 
     result = await run_body(classes["env"], metadata, body)
-    reward, turns, end_reason, gen_times, tool_times, reset_time, eval_time = result
+    reward, no_verdict_reason, turns, end_reason, gen_times, tool_times, reset_time, eval_time = result
     total_gen_time = sum(gen_times)
     # non_generation_time = everything the rollout spent outside policy generation:
     # per-turn exec latency plus the one-off reset() and evaluate() env steps. Feeds
     # Sample.non_generation_time so miles' throughput accounting subtracts env time.
     total_tool_time = sum(tool_times) + reset_time + eval_time
-    return reward, {
+    agent_metrics = {
         "turns": turns,
         "end_reason": end_reason,
         "tool_calls": len(tool_times),
@@ -381,6 +391,12 @@ async def multi_turn(
         "total_gen_time": total_gen_time,
         "total_tool_time": total_tool_time,
     }
+    # Why there is no verdict, for the training wrapper to classify; absent on a
+    # scored episode. Direct-drive callers (scan_golden, eval_tbench2_via_api)
+    # only look at reward.
+    if no_verdict_reason is not None:
+        agent_metrics["no_verdict_reason"] = no_verdict_reason
+    return reward, agent_metrics
 
 
 async def run_episode(
@@ -416,9 +432,16 @@ async def run_for_training(
     run_episode_fn: Callable[..., Any],
 ) -> dict[str, Any] | None:
     """miles-side wrapper around one episode: session-server policy wiring plus
-    training failure semantics (timeout -> reward 0, no verdict -> drop sample).
+    the training failure semantics.
 
     Shared by every agent-function module: each passes its own run_episode.
+
+    Only failures the policy cannot have caused discard the sample (InfraAbort,
+    see miles.rollout.agent_function): a sandbox that could not be created, a
+    server that does not carry the canonical scoring contract. Everything else
+    -- the wall-clock cap, an env that broke mid-episode, a scoring step that
+    errored -- is the policy's and scores 0; a discarded outcome the policy can
+    trigger would teach it to trigger it.
     """
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
@@ -442,25 +465,28 @@ async def run_for_training(
         logger.warning(f"OpenEnv tbench2 episode exceeded {_MAX_ROLLOUT_TIME_S:.0f}s; " "terminating with reward 0")
         # eval_report empty: the episode was cancelled before evaluate ever
         # ran, so there is no pytest report to surface.
-        return {
-            "reward": 0.0,
-            "exit_status": "timeout",
-            "eval_report": {},
-            "agent_metrics": {"timed_out": 1},
-        }
+        return _failed("TimeLimitExceeded", {"timed_out": 1})
+    except InfraAbort:
+        raise
     except Exception as e:
         logger.error(f"OpenEnv tbench2 episode failed: {e}", exc_info=True)
-        return None
+        return _failed("AgentError", {})
     finally:
         await policy.close()
 
-    # No canonical verdict (infra/harness failure or a non-canonical server,
-    # not a legitimate task failure -- see the guard in multi_turn). Drop the
-    # sample: returning it as reward 0.0 would inject a false negative into
-    # training.
     if reward is None:
-        logger.warning("OpenEnv tbench2 episode produced no canonical reward; dropping sample")
-        return None
+        reason = agent_metrics.get("no_verdict_reason")
+        if reason == "non_canonical_verifier":
+            # The server scored, but not through tests/test.sh: an install that
+            # predates the contract, or a task dir without test.sh. Nothing the
+            # policy did; the reward only LOOKS valid.
+            raise InfraAbort(
+                "NonCanonicalVerifier", "tbench2_env server does not carry the canonical test.sh contract"
+            )
+        # The scoring step itself errored (toolkit timeout, staging I/O). The
+        # agent may have left the environment in that state, so it scores 0.
+        logger.warning("OpenEnv tbench2 evaluate errored; scoring the episode 0")
+        return _failed("VerifierError", agent_metrics)
 
     # eval_report is intentionally empty: the server's evaluate reports only
     # the scalar reward (plus the harness marker). The detailed pytest CTRF
@@ -469,10 +495,15 @@ async def run_for_training(
     # `reward`.
     return {
         "reward": reward,
-        "exit_status": "completed",
+        "exit_status": "Submitted",
         "eval_report": {},
         "agent_metrics": agent_metrics,
     }
+
+
+def _failed(exit_status: str, agent_metrics: dict[str, Any]) -> dict[str, Any]:
+    """A reward-0 result: the episode ended without a verdict for a reason the policy may have caused."""
+    return {"reward": 0.0, "exit_status": exit_status, "eval_report": {}, "agent_metrics": agent_metrics}
 
 
 async def run(

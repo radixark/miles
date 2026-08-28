@@ -40,6 +40,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from miles.rollout.agent_function import InfraAbort
+
 # A provider's "start one sandbox" hook: (task_id, tasks_dir) -> (close_fn, base_url).
 StartFn = Callable[[str, str], tuple[Callable[[], None], str]]
 
@@ -236,8 +238,11 @@ class SandboxBackend:
 
         Returns (close_fn, base_url); close_fn releases the sandbox. Creation
         is throttled process-wide (the create semaphore) and retried with
-        jittered exponential backoff on throttle errors; anything else
-        propagates immediately.
+        jittered exponential backoff on throttle errors.
+
+        A create that still fails -- throttled past the retry budget, or any
+        other error -- raises InfraAbort: the policy has not acted yet, so the
+        sample is discarded rather than trained on as a 0.
         """
         tasks_dir = os.getenv("OPENENV_TB2_TASKS_DIR", "").strip()
         attempt = 0
@@ -247,7 +252,9 @@ class SandboxBackend:
                     return await create_once(self.start_sandbox, task_id, tasks_dir, logger=self.logger)
             except Exception as e:
                 if not self.is_throttle(e) or attempt >= self.max_retries:
-                    raise
+                    raise InfraAbort(
+                        "SandboxUnavailable", f"{self.provider} sandbox create failed for {task_id}: {e}"
+                    ) from e
                 attempt += 1
                 delay = min(self.backoff_cap_s, self.backoff_base_s * (2 ** (attempt - 1))) * (0.5 + random.random())
                 self.logger.warning(

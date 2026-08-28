@@ -109,6 +109,20 @@ policy's: a few false negatives cost less than an outcome the policy can
 learn to trigger. Record the cause in the returned metadata (`exit_status`)
 so its rate stays visible.
 
+The bundled agent functions (Harbor, OpenEnv, NeMo Gym) share one
+`exit_status` vocabulary so the same dashboard reads all of them:
+
+| `exit_status` | Meaning | Sample |
+|---|---|---|
+| `Submitted` | the verifier scored the episode | kept, `reward` = the score |
+| `TimeLimitExceeded` | the wall-clock cap ended the episode | kept, `reward: 0` |
+| `SequenceLengthLimitExceeded` | `max_seq_len` / a turn limit ended it | kept, `reward: 0` |
+| `VerifierError` | the scoring step itself errored | kept, `reward: 0` |
+| `AgentError` | the episode failed for any other reason the policy may have caused | kept, `reward: 0` |
+| `SandboxUnavailable` | the platform could not provide a sandbox | discarded |
+| `ServerUnreachable` | the agent or environment server could not be reached | discarded |
+| `NonCanonicalVerifier` | the server does not carry the canonical scoring contract | discarded |
+
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
 

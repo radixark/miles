@@ -7,14 +7,18 @@ Runs on every PR (stage-a-cpu, by the tests/fast/ convention); locally:
 Covers the /run request contract the mini_swe_agent_2 server expects (instance
 fields at the top level, policy_base_url override, sampling mapped onto
 responses_create_params), the response mapping, and the failure semantics
-(transport failure -> None so the sample keeps its recorded session).
+(timeout and server errors score 0; an unreachable server discards the sample).
 """
 
 import asyncio
 import json
 
 import download_and_process_data
+import httpx
 import nemogym_agent_function as naf
+import pytest
+
+from miles.rollout.agent_function import InfraAbort
 
 
 def run_async(coro):
@@ -105,26 +109,45 @@ def test_reward_and_eval_report_mapping(monkeypatch):
 
     result = run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={}))
 
-    assert result == {"reward": 1.0, "eval_report": eval_report}
+    assert result == {"reward": 1.0, "exit_status": "Submitted", "eval_report": eval_report}
 
 
-def test_transport_failure_returns_none(monkeypatch):
+def test_unreachable_server_discards_the_sample(monkeypatch):
+    """No episode ran at all, so there is nothing to score: InfraAbort, not a false-negative 0."""
+
     async def failing_post(url, payload, **kwargs):
-        raise RuntimeError("connection refused")
+        raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr(naf, "post_json", failing_post)
 
-    assert run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={})) is None
+    with pytest.raises(InfraAbort) as excinfo:
+        run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={}))
+    assert excinfo.value.exit_status == "ServerUnreachable"
 
 
-def test_timeout_returns_none(monkeypatch):
+def test_server_error_scores_zero(monkeypatch):
+    """The agent ran server-side against a sandbox the policy controls; a server error may be its doing."""
+
+    async def erroring_post(url, payload, **kwargs):
+        raise httpx.HTTPStatusError("500", request=httpx.Request("POST", url), response=httpx.Response(500))
+
+    monkeypatch.setattr(naf, "post_json", erroring_post)
+
+    result = run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={}))
+    assert result["reward"] == 0.0
+    assert result["exit_status"] == "AgentError"
+
+
+def test_timeout_scores_zero(monkeypatch):
     async def slow_post(url, payload, **kwargs):
         await asyncio.sleep(10)
 
     monkeypatch.setattr(naf, "post_json", slow_post)
     monkeypatch.setenv("NEMO_GYM_RUN_TIMEOUT", "0.01")
 
-    assert run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={})) is None
+    result = run_async(naf.run(base_url="http://t:1/sessions/s", prompt="", metadata={}))
+    assert result["reward"] == 0.0
+    assert result["exit_status"] == "TimeLimitExceeded"
 
 
 # --- data conversion ------------------------------------------------------

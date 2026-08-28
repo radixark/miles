@@ -39,11 +39,13 @@ from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+from miles.rollout.agent_function import InfraAbort
+
 logger = logging.getLogger(__name__)
 
-# Deliberately no miles imports: importing miles pulls in torch, and this
-# adapter (plus its offline tests and the eval_nemogym_via_api scan) must load
-# on CPU-only machines too.
+# No other miles imports: most of miles pulls in torch, and this adapter (plus
+# its offline tests and the eval_nemogym_via_api scan) must load on CPU-only
+# machines too. miles.rollout.agent_function is kept torch-free for this use.
 
 _POST_ATTEMPTS = 3
 _POST_BACKOFF_S = (1.0, 5.0)
@@ -103,12 +105,13 @@ async def run(
 ) -> dict[str, Any] | None:
     """Run one task instance via the NeMo Gym mini_swe_agent_2 server.
 
-    Returns the reward dict to merge into sample metadata, or None on a
-    transport failure (timeout, unreachable server). On None the recorded
-    session still becomes a sample; the reward hook then scores it 0.0 via its
-    default. Episodes that never reach the model produce no session records
-    and are ABORTED by the generate layer, so
-    ``--dynamic-sampling-filter-path .. check_no_aborted`` drops their group.
+    Returns the reward dict to merge into sample metadata. The wall-clock cap
+    and an HTTP error from the server score 0 (``exit_status`` says which): the
+    agent runs server-side against a sandbox the policy controls, so either may
+    be the policy's doing. An unreachable server (transport failure after
+    post_json's retries) is not, and discards the sample via InfraAbort.
+    Episodes that never reach the model produce no session records and are
+    discarded by the generate layer.
     """
     metadata = metadata or {}
     request_kwargs = request_kwargs or {}
@@ -132,17 +135,20 @@ async def run(
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.error(f"NeMo Gym /run timed out after {timeout_s:.0f}s")
-        return None
+        logger.error(f"NeMo Gym /run timed out after {timeout_s:.0f}s; scoring the episode 0")
+        return {"reward": 0.0, "exit_status": "TimeLimitExceeded", "eval_report": {}}
     except asyncio.CancelledError:
         logger.warning("NeMo Gym /run cancelled (sibling task failure?)")
         return None
+    except httpx.TransportError as e:
+        raise InfraAbort("ServerUnreachable", f"NeMo Gym server at {nemo_gym_url} unreachable: {e}") from e
     except Exception as e:
         logger.error(f"NeMo Gym /run failed: {e}")
-        return None
+        return {"reward": 0.0, "exit_status": "AgentError", "eval_report": {}}
 
     return {
         "reward": response.get("reward", 0.0),
+        "exit_status": "Submitted",
         # The SWE-bench eval report (tests_status, patch_successfully_applied,
         # or {"error": ...} when the episode failed server-side) rides in the
         # response's `metadata`.

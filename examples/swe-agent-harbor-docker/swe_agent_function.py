@@ -19,6 +19,7 @@ from urllib.parse import urlparse, urlsplit, urlunparse
 
 import httpx
 
+from miles.rollout.agent_function import InfraAbort
 from miles.utils.http_utils import post
 
 logger = logging.getLogger(__name__)
@@ -117,14 +118,19 @@ async def run(
             timeout=trial_timeout_s,
         )
     except asyncio.TimeoutError:
-        logger.error(f"Agent server call timed out after {trial_timeout_s}s")
-        return None
+        # The agent is still running on the server (see the README on ordering the
+        # two timeouts). The policy may be what is stalling it, so this scores 0.
+        logger.error(f"Agent server call timed out after {trial_timeout_s}s; scoring the trial 0")
+        return {"reward": 0.0, "exit_status": "TimeLimitExceeded", "eval_report": {}, "agent_metrics": {}}
     except asyncio.CancelledError:
         logger.warning("Agent server call cancelled (sibling task failure?)")
         return None
+    except httpx.TransportError as e:
+        # No trial ran: the agent server itself could not be reached.
+        raise InfraAbort("ServerUnreachable", f"agent server at {agent_server_url} unreachable: {e}") from e
     except Exception as e:
         logger.error(f"Agent server call failed: {e}")
-        return None
+        return {"reward": 0.0, "exit_status": "AgentError", "eval_report": {}, "agent_metrics": {}}
 
     return {
         "reward": response.get("reward", 0.0),

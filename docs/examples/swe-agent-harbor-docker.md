@@ -56,10 +56,10 @@ The two per-trial timeouts must be ordered. `--agent-timeout` is the authoritati
 one: when it fires, the agent server ends the trial and frees its sandbox. The
 rollout client applies a second ceiling, `AGENT_TRIAL_TIMEOUT` (default 7200
 seconds), which has to stay above `--agent-timeout`. If the client gives up first,
-the trial is recorded as aborted while the agent server keeps running it, so the
-sandbox and its `--max-concurrent` slot stay busy for the remaining difference, and
-the aborted sample takes its whole GRPO group down with it. Raise it through the
-launcher's generic env-var hook:
+the sample is scored 0 with `exit_status` `TimeLimitExceeded` while the agent
+server keeps running the trial, so the sandbox and its `--max-concurrent` slot
+stay busy for the remaining difference. Raise it through the launcher's generic
+env-var hook:
 
 ```bash
 python examples/swe-agent-harbor-docker/run.py ... --extra-env-vars 'AGENT_TRIAL_TIMEOUT=10800'

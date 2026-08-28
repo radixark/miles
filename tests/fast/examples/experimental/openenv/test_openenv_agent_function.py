@@ -14,6 +14,9 @@ import asyncio
 import types
 
 import openenv_agent_function as oaf
+import pytest
+
+from miles.rollout.agent_function import InfraAbort
 
 
 def run_async(coro):
@@ -218,6 +221,7 @@ def test_old_server_reward_is_not_trusted(monkeypatch):
         oaf.run_episode(_FakePolicy(), "m", [{"role": "system", "content": "s"}], {}, {"task_id": "t1"})
     )
     assert reward is None
+    assert metrics["no_verdict_reason"] == "non_canonical_verifier"
     assert metrics["turns"] == 2  # the episode itself completed; only scoring was rejected
 
 
@@ -259,3 +263,79 @@ def test_truncated_turn_ends_the_episode(monkeypatch):
     assert any(a.action_type == "evaluate" for a in actions), "scoring still runs"
     assert reward == 1.0 and metrics["turns"] == 1
     assert metrics["end_reason"] == "length"
+
+
+# --- training wrapper: failure semantics ------------------------------------
+
+
+class _FakeAsyncOpenAI:
+    def __init__(self, base_url, api_key):
+        self.base_url = base_url
+
+    async def close(self):
+        pass
+
+
+def _episode(reward, metrics=None):
+    async def run_episode_fn(policy, model_name, messages, request_kwargs, metadata):
+        return reward, metrics or {"turns": 1}
+
+    return run_episode_fn
+
+
+def _train(monkeypatch, run_episode_fn):
+    monkeypatch.setattr(oaf, "AsyncOpenAI", _FakeAsyncOpenAI)
+    return run_async(
+        oaf.run_for_training("http://t:1/sessions/s", [{"role": "user", "content": "q"}], {}, {}, run_episode_fn)
+    )
+
+
+def test_training_wrapper_returns_the_verdict(monkeypatch):
+    result = _train(monkeypatch, _episode(1.0, {"turns": 3}))
+    assert result == {"reward": 1.0, "exit_status": "Submitted", "eval_report": {}, "agent_metrics": {"turns": 3}}
+
+
+def test_training_wrapper_scores_a_timeout_zero(monkeypatch):
+    """The policy may be what is stalling, so a wall-clock overrun is a negative sample, not a discarded one."""
+
+    async def slow(policy, model_name, messages, request_kwargs, metadata):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(oaf, "_MAX_ROLLOUT_TIME_S", 0.01)
+    result = _train(monkeypatch, slow)
+    assert result["reward"] == 0.0
+    assert result["exit_status"] == "TimeLimitExceeded"
+
+
+def test_training_wrapper_scores_an_env_failure_zero(monkeypatch):
+    """An env that broke mid-episode may have been broken by the agent (it is root in there)."""
+
+    async def broken(policy, model_name, messages, request_kwargs, metadata):
+        raise RuntimeError("websocket closed")
+
+    result = _train(monkeypatch, broken)
+    assert result["reward"] == 0.0
+    assert result["exit_status"] == "AgentError"
+
+
+def test_training_wrapper_scores_a_verifier_error_zero(monkeypatch):
+    result = _train(monkeypatch, _episode(None, {"turns": 2, "no_verdict_reason": "eval_error"}))
+    assert result["reward"] == 0.0
+    assert result["exit_status"] == "VerifierError"
+
+
+def test_training_wrapper_discards_a_non_canonical_verifier(monkeypatch):
+    """A server without the test.sh contract is a deployment problem, not the policy's: discard, do not score 0."""
+    with pytest.raises(InfraAbort) as excinfo:
+        _train(monkeypatch, _episode(None, {"turns": 2, "no_verdict_reason": "non_canonical_verifier"}))
+    assert excinfo.value.exit_status == "NonCanonicalVerifier"
+
+
+def test_training_wrapper_lets_infra_abort_through(monkeypatch):
+    """A sandbox that could not be created (raised by the backend) is not caught as an agent error."""
+
+    async def no_sandbox(policy, model_name, messages, request_kwargs, metadata):
+        raise InfraAbort("SandboxUnavailable")
+
+    with pytest.raises(InfraAbort):
+        _train(monkeypatch, no_sandbox)
