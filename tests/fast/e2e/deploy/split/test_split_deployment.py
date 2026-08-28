@@ -90,23 +90,16 @@ class TestRunSplitTraining:
             ("primary", None),
         ]
 
-    def test_it_uninstalls_the_deployments_that_outlive_the_run(self, config, deployment_launches, fake_helm):
-        """A workers-only release has no training to finish, so it stays up until the launcher takes it down."""
+    def test_it_removes_every_release_it_installed_when_the_run_ends(self, config, deployment_launches, fake_helm):
+        """A workers-only release finishes no training, and the driving one only tears itself down minutes later."""
         _install(config=config, launches=deployment_launches)
 
-        assert set(fake_helm.uninstalled) == {
-            _release(DeployComponent.TRAINER),
-            _release(DeployComponent.INFERENCE, "a"),
+        assert fake_helm.uninstalled == [
+            _release(DeployComponent.PRIMARY),
             _release(DeployComponent.INFERENCE, "b"),
-        }
-
-    def test_it_leaves_the_driving_release_to_the_launcher_that_installed_it(
-        self, config, deployment_launches, fake_helm
-    ):
-        """The driving release follows the run to its end and tears itself down; a second uninstall races it."""
-        _install(config=config, launches=deployment_launches)
-
-        assert _release(DeployComponent.PRIMARY) not in fake_helm.uninstalled
+            _release(DeployComponent.INFERENCE, "a"),
+            _release(DeployComponent.TRAINER),
+        ]
 
     def test_it_uninstalls_them_even_when_the_run_fails(self, config, deployment_launches, fake_helm):
         """A failed run that leaked its engine releases would hold the cluster's gpus until someone noticed."""
@@ -115,7 +108,7 @@ class TestRunSplitTraining:
         with pytest.raises(RuntimeError):
             _install(config=config, launches=deployment_launches)
 
-        assert len(fake_helm.uninstalled) == 3
+        assert len(fake_helm.uninstalled) == 4
 
     def test_it_uninstalls_a_deployment_whose_own_launch_failed(self, config, deployment_launches, fake_helm):
         """helm may have installed the release before the launch raised, so it is torn down too."""
@@ -135,8 +128,9 @@ class TestRunSplitTraining:
         _install(config=config, launches=deployment_launches)
 
         assert set(fake_helm.uninstalled) == {
-            _release(DeployComponent.TRAINER),
+            _release(DeployComponent.PRIMARY),
             _release(DeployComponent.INFERENCE, "a"),
+            _release(DeployComponent.TRAINER),
         }
 
     def test_a_failed_uninstall_does_not_replace_the_failure_that_ended_the_run(
@@ -347,7 +341,7 @@ class _FakeHelm:
     def get_manifest(self, release: str, namespace: str) -> object | None:
         return object() if self.known else None
 
-    def uninstall(self, *, release: str, namespace: str) -> None:
+    def remove(self, *, release: str, namespace: str) -> None:
         if release == self.fail_to_uninstall:
             raise RuntimeError(f"helm refused to uninstall {release}")
         self.uninstalled.append(release)
@@ -357,4 +351,5 @@ class _FakeHelm:
 def fake_helm(monkeypatch) -> _FakeHelm:
     helm = _FakeHelm()
     monkeypatch.setattr(split_deployment, "Helm", helm)
+    monkeypatch.setattr(split_deployment, "remove_release_and_wait", helm.remove)
     return helm
