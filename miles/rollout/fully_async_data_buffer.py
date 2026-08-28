@@ -126,6 +126,7 @@ class DefaultDataBuffer(DataBuffer):
         # filters at receiving sample: abort filter, dynamic filter
         if any(s.status == Sample.Status.ABORTED for s in iter_samples(input.group)):
             self._metric_aborted_groups += 1
+            self._metric_gatherer.on_aborted_group_drop(input.group)
             self._unused_handler_fn(input.prompt_group)
             return
         filter_output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)

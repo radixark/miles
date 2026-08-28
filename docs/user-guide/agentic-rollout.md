@@ -81,7 +81,33 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 - `metadata` contains the sample metadata, session identifiers, and configured
   `max_seq_len`. Forward only the fields your environment needs.
 - Return a dictionary to merge rewards, reports, or metrics into each output
-  sample's metadata, or return `None` when there is nothing to add.
+  sample's metadata, or return `None` when there is nothing to add. Both keep
+  the sample: the recorded session becomes a training sample and the reward
+  model scores it (a missing `reward` scores 0).
+- Raise `miles.rollout.agent_function.InfraAbort(exit_status)` to discard the
+  sample.
+  Its group is dropped before any dynamic-sampling filter runs, and the drop is
+  counted in `rollout/aborted/drop_<exit_status>`.
+
+### Which outcomes to discard
+
+A discarded sample contributes no gradient, so the policy is never penalized
+for whatever led to it. That makes discarding safe only for failures the
+policy cannot bring about, and unsafe for everything it can:
+
+| Outcome | Can the policy cause it? | Do |
+|---|---|---|
+| Sandbox platform refuses to create a sandbox (quota, 429 after retries) | No | raise `InfraAbort` |
+| Environment or agent-server host process died; trainer lost its network path to the environment | No | raise `InfraAbort` |
+| Wall-clock timeout | Yes (stalling) | return `reward: 0` |
+| Sandbox lost mid-episode, verifier crashed or produced no result | Yes (the agent runs as root inside it) | return `reward: 0` |
+| Hit `max_seq_len` or a turn limit | Yes | return `reward: 0` |
+
+When a case is ambiguous — a WebSocket drop looks the same whether the
+platform was saturated or the agent killed the server — treat it as the
+policy's: a few false negatives cost less than an outcome the policy can
+learn to trigger. Record the cause in the returned metadata (`exit_status`)
+so its rate stays visible.
 
 For structured parsing, the payload may use SGLang's
 `ChatCompletionRequest`-compatible fields, which extend the OpenAI format.
