@@ -292,6 +292,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Top-k backend for Miles DSA indexer.",
             )
             parser.add_argument(
+                "--miles-dsa-indexer-query-chunk-size",
+                type=int,
+                default=None,
+                help=(
+                    "Optional number of query rows per TileLang DeepSeek-V4 indexer call. "
+                    "Each chunk still scores every compressed key; unset preserves the full-query path."
+                ),
+            )
+            parser.add_argument(
                 "--true-on-policy-mode",
                 action="store_true",
                 default=False,
@@ -3495,6 +3504,14 @@ def miles_validate_args(args):
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
+
+    indexer_query_chunk_size = args.miles_dsa_indexer_query_chunk_size
+    if indexer_query_chunk_size is not None:
+        assert indexer_query_chunk_size > 0, "--miles-dsa-indexer-query-chunk-size must be positive"
+        assert not args.use_indexer_replay, (
+            "--miles-dsa-indexer-query-chunk-size does not support indexer replay because one layer forward "
+            "would produce multiple replay calls"
+        )
 
     if args.eval_max_context_len is None:
         logger.info(

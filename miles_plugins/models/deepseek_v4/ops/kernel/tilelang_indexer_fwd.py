@@ -192,3 +192,58 @@ def batched_indexer_fwd(q, k, weights, cu_seqlen_ks, cu_seqlen_ke):
             cu_seqlen_ke,
         )
     return all_logits
+
+
+def batched_indexer_topk(
+    q,
+    k,
+    weights,
+    cu_seqlen_ks,
+    cu_seqlen_ke,
+    topk,
+    topk_fn,
+    query_chunk_size,
+):
+    """Select top-k indices while bounding the live query-by-key score matrix."""
+    if query_chunk_size <= 0:
+        raise ValueError(f"query_chunk_size must be positive, got {query_chunk_size}")
+
+    seqlen, batch, heads, _ = q.shape
+    seq_len_kv = k.shape[0]
+    block_q = 128 // heads
+    if block_q <= 0:
+        raise ValueError(f"indexer head count must not exceed 128, got {heads}")
+    topk_count = min(topk, seq_len_kv)
+    topk_indices = torch.empty((batch, seqlen, topk_count), device=q.device, dtype=torch.int32)
+
+    for batch_index in range(batch):
+        k_batch = k[:, batch_index, :].contiguous()
+        for start in range(0, seqlen, query_chunk_size):
+            end = min(start + query_chunk_size, seqlen)
+            valid_queries = end - start
+            q_chunk = q[start:end, batch_index, :, :].contiguous()
+            weights_chunk = weights[start:end, batch_index, :].contiguous()
+            cu_ks_chunk = cu_seqlen_ks[start:end]
+            cu_ke_chunk = cu_seqlen_ke[start:end]
+            padding = (-valid_queries) % block_q
+            if padding:
+                q_chunk = torch.cat(
+                    (q_chunk, q_chunk.new_zeros((padding, *q_chunk.shape[1:]))),
+                )
+                weights_chunk = torch.cat(
+                    (weights_chunk, weights_chunk.new_zeros((padding, *weights_chunk.shape[1:]))),
+                )
+                cu_ks_chunk = torch.cat((cu_ks_chunk, cu_ks_chunk.new_zeros(padding)))
+                cu_ke_chunk = torch.cat((cu_ke_chunk, cu_ke_chunk.new_zeros(padding)))
+            chunk_logits = indexer_fwd_interface(
+                q_chunk,
+                k_batch,
+                weights_chunk,
+                cu_ks_chunk,
+                cu_ke_chunk,
+            )
+            chunk_indices = topk_fn(chunk_logits, topk_count)
+            topk_indices[batch_index, start:end].copy_(chunk_indices[:valid_queries])
+            del chunk_logits, chunk_indices
+
+    return topk_indices

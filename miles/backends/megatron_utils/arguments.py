@@ -52,5 +52,7 @@ def set_default_megatron_args(args):
 
     if not hasattr(args, "miles_dsa_topk_backend"):
         args.miles_dsa_topk_backend = "torch"
+    if not hasattr(args, "miles_dsa_indexer_query_chunk_size"):
+        args.miles_dsa_indexer_query_chunk_size = None
 
     return args

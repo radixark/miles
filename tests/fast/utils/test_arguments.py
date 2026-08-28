@@ -263,6 +263,47 @@ def test_custom_megatron_post_save_hook_path_is_parsed():
     assert args.custom_megatron_post_save_hook_path == "pkg.module.hook"
 
 
+def test_dsa_indexer_query_chunk_size_is_optional_and_typed():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    default_args = parser.parse_args(REQUIRED_ARGS)
+    chunked_args = parser.parse_args(["--miles-dsa-indexer-query-chunk-size", "4096"] + REQUIRED_ARGS)
+
+    assert default_args.miles_dsa_indexer_query_chunk_size is None
+    assert chunked_args.miles_dsa_indexer_query_chunk_size == 4096
+
+
+@pytest.mark.parametrize("chunk_size", ["0", "-1"])
+def test_dsa_indexer_query_chunk_size_must_be_positive(chunk_size):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--miles-dsa-indexer-query-chunk-size", chunk_size, "--num-rollout", "1"] + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="query-chunk-size must be positive"):
+        miles_validate_args(args)
+
+
+def test_dsa_indexer_query_chunking_rejects_indexer_replay():
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--miles-dsa-indexer-query-chunk-size",
+            "4096",
+            "--use-indexer-replay",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="does not support indexer replay"):
+        miles_validate_args(args)
+
+
 def test_custom_megatron_post_save_hook_path_requires_save():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)

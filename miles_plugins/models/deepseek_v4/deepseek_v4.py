@@ -43,6 +43,21 @@ def _enable_deepseek_v4_tf32():
     torch.backends.cuda.matmul.allow_tf32 = True
 
 
+def _validate_v4_indexer_options(indexer_impl, topk_backend, query_chunk_size):
+    if indexer_impl == "tilelang":
+        return
+    if topk_backend != "torch":
+        raise ValueError(
+            "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
+            f"got {topk_backend=} with {indexer_impl=}."
+        )
+    if query_chunk_size is not None:
+        raise ValueError(
+            "DeepSeek V4 indexer query chunking is only supported with V4_INDEXER_IMPL=tilelang; "
+            f"got {query_chunk_size=} with {indexer_impl=}."
+        )
+
+
 class DeepSeekV4Attention(MegatronModule):
     def __init__(
         self,
@@ -171,14 +186,14 @@ class DeepSeekV4Attention(MegatronModule):
             if self.compress_ratio == 4:
                 indexer_impl = os.environ.get("V4_INDEXER_IMPL", "tilelang")
                 topk_backend = config.miles_dsa_topk_backend
+                _validate_v4_indexer_options(
+                    indexer_impl,
+                    topk_backend,
+                    getattr(config, "miles_dsa_indexer_query_chunk_size", None),
+                )
                 if indexer_impl == "tilelang":
                     self.indexer = V4Indexer(config=config, pg_collection=pg_collection)
                 else:
-                    if topk_backend != "torch":
-                        raise ValueError(
-                            "DeepSeek V4 miles DSA topk backend is only supported with V4_INDEXER_IMPL=tilelang; "
-                            f"got {topk_backend=} with {indexer_impl=}."
-                        )
                     indexer_submodules = DSAIndexerSubmodules(
                         linear_wq_b=TELinear,
                         linear_wk=TELinear,
@@ -344,6 +359,7 @@ def get_dsv4_spec(args, config, vp_stage):
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
+    config.miles_dsa_indexer_query_chunk_size = args.miles_dsa_indexer_query_chunk_size
     _orig_get_spec = _eav_specs.get_experimental_attention_variant_module_spec
 
     def _patched_get_spec(config, backend=None):
