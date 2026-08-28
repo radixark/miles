@@ -10,7 +10,7 @@ import run as chess_run
 
 
 def test_training_recipe_uses_native_qwen36_tito() -> None:
-    agent_args = chess_run._agent_args(chess_run.ScriptArgs())
+    agent_args = chess_run._agent_args(chess_run.ScriptArgs(hardware="H200"))
 
     assert "--tito-model qwen36" in agent_args
     assert "--tito-model qwen35" not in agent_args
