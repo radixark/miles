@@ -22,6 +22,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc 
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.pool_entry import build_entry
 from miles.utils.external_utils.command_utils.helm_backend.naming import RunNames
 from miles.utils.workers.naming import compute_cell_id
+from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import static_cell_addrs
 from miles.utils.workers.worker_spec import RPC_PORT_NAME, BaseWorkerSpec, NamedHostAndPorts, ServeWorkerSpec
 
@@ -93,6 +94,8 @@ def _pairing_config(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> PairingCon
 def _object_names(release: str) -> ObjectNames:
     return ObjectNames(
         orchestrator=naming.component_name(release, naming.ORCHESTRATOR_COMPONENT),
+        platform_read=naming.platform_account_name(release=release, access=PlatformAccess.READ),
+        platform_read_delete=naming.platform_account_name(release=release, access=PlatformAccess.READ_DELETE),
         mooncake_master=MooncakeInfo.master_object_name(release),
         colocate_pairing=naming.component_name(release, _COLOCATE_PAIRING_COMPONENT),
         uninstall=RunNames.uninstall_job(release=release),
