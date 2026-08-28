@@ -50,6 +50,7 @@ python examples/experimental/chess/run.py \
     --rollout-batch-size 8 \
     --n-samples-per-prompt 8 \
     --max-model-turns 8 \
+    --learning-rate 3e-7 \
     --kl-loss-coef 0.01 \
     --stockfish-max-concurrent-games 16 \
     --stockfish-startup-timeout-seconds 20
@@ -104,6 +105,9 @@ TITO v2 returns the trainable trajectory segments created around compaction.
 Set `--kl-loss-coef` to a positive value to regularize the policy toward the
 reference model. The default is `0.0`, preserving the original unregularized
 recipe.
+
+Set `--learning-rate` to control the constant Adam learning rate. Its default is
+`1e-6`, preserving the original recipe.
 
 To extend a run beyond the rollout horizon stored in its checkpoint, resume
 with both options below:
