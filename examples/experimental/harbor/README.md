@@ -25,7 +25,8 @@ reward hook (`generate.py` from the agent-server example).
 | --- | --- |
 | `harbor_agent_function.py` | Builds and runs one Harbor trial per sample; maps the result to sample metadata. Header lists which `harbor-miles-*` fork patches this path depends on. |
 | `run.py` | GLM-4.7-Flash launcher. |
-| `launch_common.py` | The launcher's Harbor-side wiring: passes `HARBOR_ENV_TYPE` through and forwards the provider credential (by key-file path) to rollout workers. |
+| `run_glm52_lora_tb2_daytona.py` | Multi-node GLM-5.2 744B-A40B LoRA launcher (bf16 trainer, fp8 rollout) on Daytona with terminus-2. |
+| `launch_common.py` | The launchers' Harbor-side wiring: passes `HARBOR_ENV_TYPE` through and forwards the provider credential (by key-file path) to rollout workers. |
 
 ## 1. Install Harbor in the rollout environment
 
@@ -100,7 +101,25 @@ HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run.py \
 
 `HARBOR_ENV_TYPE` has no default: the backend decides whose quota a run spends.
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
-`EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
+`EnvironmentConfig.kwargs`); `HARBOR_OVERRIDE_STORAGE_MB` / `HARBOR_OVERRIDE_MEMORY_MB`
+replace the task's declared limits for any backend.
+
+### Daytona
+
+Daytona accounts have a total-disk quota, so keep concurrent sandboxes times
+`HARBOR_OVERRIDE_STORAGE_MB` under it. `'{"auto_snapshot": true}'` in
+`HARBOR_ENV_KWARGS` snapshots each task image on first use so later trials skip
+the build; `HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER` gives the first build of each
+task headroom. With terminus-2 (a host-process agent) the sandboxes need no
+route back to the trainer.
+
+```bash
+HARBOR_ENV_TYPE=daytona HARBOR_ENV_KWARGS='{"auto_snapshot": true}' HARBOR_OVERRIDE_STORAGE_MB=10240 \
+    python examples/experimental/harbor/run.py ... --prompt-data /path/to/tb2_train.jsonl   # data prepared with --agent-name terminus-2
+```
+
+For the multi-node GLM-5.2 744B-A40B LoRA shape, `run_glm52_lora_tb2_daytona.py`
+defaults to this backend.
 
 ## Timeouts and failure semantics
 

@@ -38,8 +38,9 @@ def harbor_env_vars(args) -> dict[str, str]:
         "HARBOR_TRIALS_DIR": args.harbor_trials_dir,
         "AGENT_MODEL_NAME": args.agent_model_name,
         "AGENT_TIMEOUT": str(args.agent_timeout),
-        "MILES_ROUTER_EXTERNAL_HOST": args.router_external_host,
     }
+    if args.router_external_host:
+        env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.harbor_env_kwargs:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs
     if spec := PROVIDER_CREDENTIALS.get(args.harbor_env_type):
@@ -64,6 +65,7 @@ def harbor_env_vars(args) -> dict[str, str]:
         "HARBOR_TERMINUS_2_ENABLE_SUMMARIZE",
         "HARBOR_TERMINUS_2_LINEAR_HISTORY",
         "HARBOR_OVERRIDE_MEMORY_MB",
+        "HARBOR_OVERRIDE_STORAGE_MB",
         "HARBOR_TIMEOUT_MULTIPLIER",
         "HARBOR_VERIFIER_TIMEOUT_SEC",
         "HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER",

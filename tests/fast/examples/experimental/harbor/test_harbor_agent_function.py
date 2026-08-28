@@ -126,6 +126,14 @@ def test_environment_type_is_passed_straight_through(tasks_dir, monkeypatch):
     assert cfg.environment.delete is True
 
 
+def test_resource_overrides_reach_the_environment_config(tasks_dir, monkeypatch):
+    monkeypatch.setenv("HARBOR_OVERRIDE_STORAGE_MB", "10240")
+    monkeypatch.setenv("HARBOR_OVERRIDE_MEMORY_MB", "8192")
+    cfg = haf.build_trial_config({"instance_id": "task-1"}, "http://s/v1", {})
+    assert cfg.environment.override_storage_mb == 10240
+    assert cfg.environment.override_memory_mb == 8192
+
+
 def test_unknown_environment_type_is_an_error_not_docker(tasks_dir, monkeypatch):
     """The agent server silently fell back to docker on an unknown HARBOR_ENV_TYPE; this path refuses."""
     monkeypatch.setenv("HARBOR_ENV_TYPE", "e2bb")

@@ -1,8 +1,12 @@
 """GLM-5.2 744B-A40B **LoRA** agentic launcher: Terminal-Bench-2 style tasks on Daytona sandboxes.
 
 Combines two paths that previously did not meet:
-  * the agentic Harbor path from ``run.py`` (session server + TITO + terminus-2), and
+  * the agentic Harbor path from ``run.py`` (session server + TITO + terminus-2, Harbor
+    run in-process on Daytona sandboxes), and
   * the GLM-5.2 MoE/MLA/DSA LoRA path from ``scripts/run_glm5_2_744b_a40b_lora.py``.
+
+terminus-2 is a host-process agent: it calls the model from the rollout worker, so the
+Daytona sandboxes never need a route back to the trainer.
 
 The 744B base does not fit on one node (bf16 ~1403 GiB vs 1123 GiB of HBM on 8x H200),
 so the trainer is sharded over ``--num-nodes`` (EP spans the whole world, TP stays
@@ -40,10 +44,13 @@ from pathlib import Path
 from typing import Literal
 
 import typer
+from launch_common import harbor_env_vars
 
 import miles.utils.external_utils.command_utils as U
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+# reward_func / RolloutFn (agent-metric aggregation) are shared with the agent-server example
+HARBOR_DOCKER_EXAMPLE_DIR = SCRIPT_DIR.parents[1] / "swe-agent-harbor-docker"
 
 # Attention + MLA only, EXCLUDING the DSA indexer (wq_b/wk/weights_proj) — on
 # tilelang the indexer adapter gets no gradient at all — and EXCLUDING the MLP/MoE
@@ -119,10 +126,17 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # sglang's own default (csgmv) crashes the DSA MoE-LoRA rollout under dp-attention
     sglang_lora_backend: str = "triton"
 
-    # Agent settings
-    agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
-    agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
+    # Harbor settings (see harbor_agent_function.py); Daytona keeps a build-cache
+    # snapshot per task image so later trials skip the build
+    harbor_env_type: str = os.environ.get("HARBOR_ENV_TYPE", "daytona")
+    harbor_env_kwargs: str = os.environ.get("HARBOR_ENV_KWARGS", '{"auto_snapshot": true}')
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
+    harbor_trials_dir: str = os.environ.get("HARBOR_TRIALS_DIR", "/tmp/harbor_trials")
+    agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
+    agent_timeout: int = int(os.environ.get("AGENT_TIMEOUT", "5400"))
+    daytona_api_key_file: str = os.environ.get("DAYTONA_API_KEY_FILE", "")
+    e2b_api_key_file: str = os.environ.get("E2B_API_KEY_FILE", "")
+    modal_config_file: str = os.environ.get("MODAL_CONFIG_PATH", "")
     # sgl-router binds with a Rust SocketAddr parse, so this MUST be a numeric IP.
     router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
@@ -312,7 +326,7 @@ def execute(args: ScriptArgs):
 
     agent_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path swe_agent_function.run "
+        "--custom-agent-function-path harbor_agent_function.run "
         "--custom-rm-path generate.reward_func "
         "--rollout-function-path generate.RolloutFn "
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
@@ -397,10 +411,8 @@ def execute(args: ScriptArgs):
     miles_root = U.repo_base_dir
 
     extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{miles_root}",
-        "AGENT_SERVER_URL": args.agent_server_url,
-        "AGENT_MODEL_NAME": args.agent_model_name,
-        "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
+        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{HARBOR_DOCKER_EXAMPLE_DIR}:{miles_root}",
+        **harbor_env_vars(args),
         # GLM-5 DSA indexer uses interleaved RoPE; a mismatch garbles long sequences
         "INDEXER_ROPE_NEOX_STYLE": "0",
         "SGLANG_NSA_FORCE_MLA": "1",
@@ -413,8 +425,6 @@ def execute(args: ScriptArgs):
         # engines would inherit the cap and OOM below --sglang-mem-fraction-static.
         "PYTORCH_CUDA_ALLOC_CONF": "garbage_collection_threshold:0.8,max_split_size_mb:512",
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
