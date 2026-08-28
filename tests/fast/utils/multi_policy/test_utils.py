@@ -98,6 +98,12 @@ class TestValidateMultiPolicyArgs:
         with pytest.raises(AssertionError, match=message):
             self._validate(_make_args("a", "b", **overrides))
 
+    def test_a_run_saving_rollout_data_is_accepted(self, monkeypatch):
+        """Rollout dumps are keyed per policy since the executor stamps the trainer model id into the stem."""
+        _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
+
+        self._validate(_make_args("a", "b", save_debug_rollout_data="/tmp/{rollout_id}.pt"))
+
     def test_a_shared_engine_evaluating_run_is_accepted(self, monkeypatch):
         """train_multi_policy.py dispatches shared-engine eval, so --eval-interval alone is a valid run."""
         _stub_sglang_models(monkeypatch, ("a", True), ("b", True))
