@@ -70,6 +70,7 @@ async def train_multi_policy(args) -> None:
             )
 
     parker = Parker(num_followers=len(trainers) - 1)
+    run_ended = asyncio.Event()
     rollout_ids: dict[str, int] = {}
     tasks = [
         asyncio.create_task(
@@ -81,13 +82,14 @@ async def train_multi_policy(args) -> None:
                 inference_controller=inference_controller,
                 rollout_executor=rollout_executor,
                 parker=parker,
+                run_ended=run_ended,
                 rollout_ids=rollout_ids,
                 num_rollout_per_epoch=num_rollout_per_epoch,
             )
         )
         for trainer in trainers.values()
     ]
-    await wait_cancelling_pending_on_first_completion(tasks)
+    await wait_cancelling_pending_on_first_completion(tasks, on_first_completion=run_ended.set)
 
     await rollout_executor.dispose()
     await inference_controller.dispose()
@@ -107,6 +109,7 @@ async def _run_policy(
     *,
     trainer: TrainerInfo,
     is_leader: bool,
+    run_ended: asyncio.Event,
     trainers: dict[str, TrainerInfo],
     inference_controller: BaseWorkerHandle,
     rollout_executor: BaseWorkerHandle,
@@ -120,6 +123,8 @@ async def _run_policy(
         range(trainer.start_rollout_id, args.num_rollout) if is_leader else itertools.count(trainer.start_rollout_id)
     )
     for rollout_id in rollout_ids_iter:
+        if run_ended.is_set():
+            return
         rollout_ids[model_id] = rollout_id
         await inference_controller.prepare_rollout(rollout_id, model_id=model_id)
         rollout_data_pack = await rollout_executor.get(rollout_id, trainer_model_id=model_id)
