@@ -9,7 +9,11 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.cluster_observer import (
     compute_hot_restart_workloads,
     read_restart_stamp_of_workload,
 )
-from tests.e2e.deploy.conftest_deploy.hot_restart.driver import compute_hot_restart_config, compute_release_of_config
+from tests.e2e.deploy.conftest_deploy.hot_restart.driver import (
+    compute_hot_restart_config,
+    compute_release_of_config,
+    is_replaced_launch_exit,
+)
 from tests.e2e.deploy.conftest_deploy.hot_restart.evidence import HotRestartRecord, read_run_progress
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import BaseFaultForm
 
@@ -63,8 +67,9 @@ class HotRestartFaultForm(BaseFaultForm):
             thread.join(timeout=timeout_seconds)
 
     def assert_take_overs_installed_cleanly(self) -> None:
-        assert not self._failures, "a hot restart of this run did not install cleanly:\n" + "\n".join(
-            f"  - take-over {at}: {failure!r}" for at, failure in self._failures
+        failures = self._unexplained_failures()
+        assert not failures, "a hot restart of this run did not install cleanly:\n" + "\n".join(
+            f"  - take-over {at}: {failure!r}" for at, failure in failures
         )
         alive = [thread.name for thread in self._threads if thread.is_alive()]
         assert not alive, (
@@ -147,7 +152,21 @@ class HotRestartFaultForm(BaseFaultForm):
         )
 
     def _failures_of(self, index: int) -> list[BaseException]:
-        return [failure for at, failure in self._failures if at == index]
+        return [failure for at, failure in self._unexplained_failures() if at == index]
+
+    def _unexplained_failures(self) -> list[tuple[int, BaseException]]:
+        return [
+            (index, failure)
+            for index, failure in self._failures
+            if not self._is_replacement_exit_explained(index=index, failure=failure)
+        ]
+
+    def _is_replacement_exit_explained(self, *, index: int, failure: BaseException) -> bool:
+        return (
+            is_replaced_launch_exit(failure)
+            and index + 1 < len(self._threads)
+            and any(record.index == index + 1 for record in self._records)
+        )
 
     def _read_restart_stamps_or_none(self) -> dict[str, str | None] | None:
         try:
