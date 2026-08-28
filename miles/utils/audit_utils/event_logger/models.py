@@ -112,8 +112,8 @@ class CellReconfigureEvent(EventBase):
 
 class InferenceEngineWeightChecksumEvent(EventBase):
     type: Literal["inference_engine_weight_checksum"] = "inference_engine_weight_checksum"
-    # None for the initial out-of-loop weight sync (not tied to a rollout).
-    rollout_id: int | None
+    # The out-of-loop startup sync stamps start_rollout_id - 1, so -1 is a fresh run's initial sync.
+    rollout_id: int
     # One {tensor -> hash} dict per rollout engine; a TP>1 engine's ranks merge with a rank{r}/ prefix.
     engine_checksums: list[dict[str, str]]
 

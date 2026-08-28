@@ -314,7 +314,10 @@ async def _maybe_log_inference_engine_weight_checksums(
     engine_checksums = flatten_inference_engine_checksums(check_weights_result)
     get_event_logger().log(
         InferenceEngineWeightChecksumEvent,
-        dict(rollout_id=rollout_id, engine_checksums=engine_checksums),
+        dict(
+            rollout_id=args.start_rollout_id - 1 if rollout_id is None else rollout_id,
+            engine_checksums=engine_checksums,
+        ),
     )
 
 

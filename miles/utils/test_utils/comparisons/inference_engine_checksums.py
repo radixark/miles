@@ -82,8 +82,6 @@ def _checksums_by_model_and_rollout_id(
 ) -> dict[tuple[str | None, int], dict[str, str]]:
     by_model_and_rollout: dict[tuple[str | None, int], dict[str, str]] = {}
     for event in events:
-        if event.rollout_id is None:
-            continue
         key = (_compute_model_id(event), event.rollout_id)
         assert key not in by_model_and_rollout, f"Duplicate InferenceEngineWeightChecksumEvent for {key}"
         assert event.engine_checksums, f"No engine checksums for {key}"

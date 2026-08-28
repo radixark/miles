@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -353,6 +354,79 @@ class TestUpdateWeights:
         )
 
         rollout_executor.set_weight_version.assert_awaited_once_with(7, trainer_model_id="alpha")
+
+    @staticmethod
+    def _checksum_args(*, start_rollout_id: int = 0):
+        return Namespace(
+            debug_train_only=False,
+            debug_rollout_only=False,
+            save_inference_engine_weight_checksum=True,
+            start_rollout_id=start_rollout_id,
+        )
+
+    def _record_checksum_events(self, monkeypatch) -> list[dict]:
+        logged: list[dict] = []
+        monkeypatch.setattr(placement_group_module, "is_event_logger_initialized", lambda: True)
+        monkeypatch.setattr(
+            placement_group_module,
+            "get_event_logger",
+            lambda: SimpleNamespace(log=lambda _event_class, payload: logged.append(payload)),
+        )
+        monkeypatch.setattr(placement_group_module, "flatten_inference_engine_checksums", lambda _result: [])
+        monkeypatch.setattr(
+            placement_group_module,
+            "FTTestActionOrchestrationExecutor",
+            MagicMock(from_args=MagicMock(return_value=MagicMock(run_after_step=AsyncMock()))),
+        )
+        return logged
+
+    async def test_a_fresh_run_stamps_the_startup_sync_before_the_first_rollout(self, monkeypatch):
+        """A fresh run's startup push precedes rollout 0, so it is stamped -1 instead of being left unattributed."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
+        )
+        logged = self._record_checksum_events(monkeypatch)
+
+        await update_weights(
+            self._checksum_args(start_rollout_id=0), actor_model, rollout_executor, inference_controller
+        )
+
+        assert [payload["rollout_id"] for payload in logged] == [-1]
+
+    async def test_a_startup_sync_after_a_restore_stamps_the_restored_rollout_id(self, monkeypatch):
+        """The restored rollout never runs again, so only this push can record the checksum of its weights."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
+        )
+        logged = self._record_checksum_events(monkeypatch)
+
+        await update_weights(
+            self._checksum_args(start_rollout_id=5), actor_model, rollout_executor, inference_controller
+        )
+
+        assert [payload["rollout_id"] for payload in logged] == [4]
+
+    async def test_an_in_loop_sync_still_stamps_its_own_rollout_id(self, monkeypatch):
+        """The in-loop push must keep naming the rollout it publishes, not the id the run started at."""
+        from miles.ray.placement_group import update_weights
+
+        actor_model, rollout_executor = self._fakes(weight_version=7)
+        inference_controller = MagicMock(
+            start_update_weights=AsyncMock(), end_update_weights=AsyncMock(), check_weights=AsyncMock()
+        )
+        logged = self._record_checksum_events(monkeypatch)
+
+        await update_weights(
+            self._checksum_args(start_rollout_id=5), actor_model, rollout_executor, inference_controller, rollout_id=6
+        )
+
+        assert [payload["rollout_id"] for payload in logged] == [6]
 
     async def test_a_trainer_that_skipped_the_broadcast_publishes_nothing(self):
         """--debug-skip-weight-update leaves the engines on their old weights, so the version must not move."""
