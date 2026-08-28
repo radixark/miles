@@ -77,6 +77,7 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
+    weight_version_extra_key: str | None = None
 
     @property
     def token_ids(self) -> list[int]:

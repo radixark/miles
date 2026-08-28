@@ -10,6 +10,7 @@ from PIL import Image
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 from transformers import AutoProcessor
 
+from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
 from miles.utils.types import Sample
@@ -48,6 +49,7 @@ def expected_request(
         "input_ids": input_ids or PROMPT_TOKENS,
         "sampling_params": sampling_params or SAMPLING_PARAMS,
         "return_logprob": True,
+        "extra_key": "weight-version:0",
     }
     if variant in ("single_turn", "multi_turn") or return_routed_experts:
         result["return_routed_experts"] = return_routed_experts
@@ -104,7 +106,7 @@ def expected_sample(
         rollout_routed_experts=rollout_routed_experts,
         remove_sample=False,
         status=status,
-        metadata={},
+        metadata={WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY: "weight-version:0"},
         train_metadata=None,
         non_generation_time=0.0,
         spec_info=spec_info or Sample.SpecInfo(),

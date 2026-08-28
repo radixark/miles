@@ -93,6 +93,15 @@ the driver's step schedule:
    while `in_place` freezes them and resumes on the existing cache. Passing `abort`
    would kill them outright, which is why fully async rejects it.
 
+   `retract` and `abort` also flush the engines' radix cache during the pause;
+   `in_place` cannot (frozen requests still hold their KV), so prefix KV computed
+   under the old weights stays cached. To keep that reuse bounded, every generation
+   request carries an `extra_key` locked to the weight version its sample first
+   posted under: the radix cache only matches entries with the same key, so new
+   samples never reuse KV from older weight versions, while a frozen multi-turn
+   sample keeps matching its own earlier KV — the same staleness `in_place` already
+   accepts for in-flight requests.
+
 Because generation spans those weight updates, the samples in one group can carry
 different weight versions. The gap between a group's oldest weight version and the
 engines' current one is its **staleness**, and it is the reason a group that finished

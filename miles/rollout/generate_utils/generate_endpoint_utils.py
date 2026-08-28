@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pybase64
 
+from miles.rollout.generate_utils.weight_version_partition import observe_weight_version
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.processing_utils import encode_image_for_rollout_engine, extract_multimodal_train_inputs
 from miles.utils.types import Sample
@@ -80,6 +81,7 @@ def compute_request_payload(
 async def update_sample_from_response(
     args, sample: Sample, payload: dict, output: dict, update_loss_mask: bool = False
 ):
+    observe_weight_version(output["meta_info"])
     # Initialize sample.tokens for the first turn
     if (len(sample.response) == 0) and not sample.tokens:
         sample.tokens = payload["input_ids"]

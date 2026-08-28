@@ -9,6 +9,7 @@ from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_routing_headers,
     update_sample_from_response,
 )
+from miles.rollout.generate_utils.weight_version_partition import lock_weight_version_extra_key
 from miles.utils.http_utils import post
 from miles.utils.types import Sample
 
@@ -18,6 +19,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample = input.sample
     sampling_params = input.sampling_params
     assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
+    lock_weight_version_extra_key(sample)
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     prompt_ids = compute_prompt_ids_from_sample(input.state, sample)
@@ -40,6 +42,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
+    payload["extra_key"] = lock_weight_version_extra_key(sample)
 
     output = await post(url, payload, headers=compute_routing_headers(args, sample))
     await update_sample_from_response(args, sample, payload=payload, output=output)

@@ -8,6 +8,7 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
 )
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.types import Sample
 
@@ -30,7 +31,7 @@ def expected_sample(*, group_index: int | None) -> Sample:
         rollout_routed_experts=None,
         remove_sample=False,
         status=Sample.Status.COMPLETED,
-        metadata={},
+        metadata={WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY: "weight-version:0"},
         train_metadata=None,
         non_generation_time=0.0,
         spec_info=Sample.SpecInfo(

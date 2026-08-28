@@ -12,6 +12,7 @@ import pytest
 from tests.ci.ci_register import register_cpu_ci
 from tests.fast.fixtures.generation_fixtures import GenerateEnv, generation_env, listify, make_sample, run_generate
 
+from miles.rollout.generate_utils.weight_version_partition import WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY
 from miles.utils.chat_template_utils import TITOTokenizerType, get_tito_tokenizer
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.mock_sglang_server import ProcessResult, ProcessResultMetaInfo
@@ -126,7 +127,14 @@ def verify_samples(actual: Sample | list[Sample], expected: list[ExpectedSampleI
         # Session server populates diagnostic metadata (token IDs,
         # trim config, mismatch analysis, dashboard lifecycle timing) that
         # varies with mock setup. Strip these before comparing structure.
-        for key in ("tito_session_mismatch", "accumulated_token_ids", "max_trim_tokens", "lifecycle", "leaf"):
+        for key in (
+            "tito_session_mismatch",
+            "accumulated_token_ids",
+            "max_trim_tokens",
+            "lifecycle",
+            "leaf",
+            WEIGHT_VERSION_EXTRA_KEY_METADATA_KEY,
+        ):
             actual_partial.metadata.pop(key, None)
         assert actual_partial == expected_item.partial_sample
 
@@ -148,6 +156,7 @@ def expected_request(
         "input_ids": input_ids,
         "sampling_params": sampling_params or DEFAULT_SAMPLING_PARAMS,
         "return_logprob": True,
+        "extra_key": "weight-version:0",
         "return_routed_experts": return_routed_experts,
         "return_indexer_topk": return_indexer_topk,
     }
@@ -162,6 +171,7 @@ def expected_openai_request(messages: list[dict], **extra) -> dict:
         "logprobs": True,
         "return_meta_info": True,
         "no_stop_trim": False,
+        "extra_key": "weight-version:0",
         "chat_template_kwargs": {"clear_thinking": False},
         **extra,
     }
@@ -724,6 +734,7 @@ class TestAgentNoRecords:
             make_args,
             with_session_server,
         )
+
         from miles.utils.http_utils import find_available_port
         from miles.utils.misc import SingletonMeta
         from miles.utils.test_utils.mock_sglang_server import with_mock_server

@@ -16,6 +16,11 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
+from miles.rollout.generate_utils.weight_version_partition import (
+    format_weight_version_extra_key,
+    latest_weight_version,
+    observe_weight_version,
+)
 from miles.rollout.session.errors import (
     MessageValidationError,
     SessionNotFoundError,
@@ -217,6 +222,7 @@ def log_weight_versions(session_id: str, record: SessionRecord, num_assistant: i
                 "session_id": session_id,
                 "num_assistant": num_assistant,
                 "rid": meta_info.get("id"),
+                "extra_key": record.request.get("extra_key"),
                 "weight_version": meta_info.get("weight_version"),
                 "weight_versions": meta_info.get("weight_versions"),
                 "prefill_weight_versions": meta_info.get("prefill_weight_versions"),
@@ -412,6 +418,10 @@ class SessionCore:
             # prepare_pretokenized applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
             self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            if "extra_key" not in request_body:
+                if session.weight_version_extra_key is None:
+                    session.weight_version_extra_key = format_weight_version_extra_key(latest_weight_version())
+                request_body["extra_key"] = session.weight_version_extra_key
 
             proxy_body = json.dumps(request_body).encode()
             expected_num_assistant = session.num_assistant
@@ -428,7 +438,8 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, _, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        observe_weight_version(choice.get("meta_info") or {})
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
