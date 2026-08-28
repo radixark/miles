@@ -111,6 +111,8 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 - **Selection**: `command_utils.default_config()`, off `MILES_SCRIPT_CLUSTER_BACKEND` / `MILES_SCRIPT_NAMESPACE` / `MILES_SCRIPT_RUN_ID`, already set in the miles-workbench pod.
 - **Scenarios stay backend-agnostic**: no mode declares one; the backend changes only the set of fault forms.
 - **One config throughout**: the same `ExecuteTrainConfig` threads through `prepare()`, `run_training()` and `api_server_host()`; on kubernetes the api server lives on a pod named after its `run_id`, so a second config would aim the injector at a release that does not exist.
+- **Side-specific releases**: a comparison may provide `config_for_side`; the pipeline applies it once before the target context and launch, which both receive that same transformed config.
+- **Bounded side handoff**: after each kubernetes comparison side, including a failed one, the pipeline uninstalls its Helm release and waits at most five minutes for both the release and every release-labelled pod to disappear. The next side and the CPU comparison start only after that completes, so asynchronous chart cleanup cannot overlap their GPU reservations. Ray comparisons never call Helm.
 - **Unreachable is a failure, not a skip**: `create_backend_for_run()` asserts before handing back a backend, since exiting 0 would report green for a test that never ran.
 - **Namespaced probes only**: never a cluster-scoped CRD read, which the workbench's Role cannot do.
 

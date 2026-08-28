@@ -82,6 +82,48 @@ class TestUpgradeCommand:
         assert command.index("--labels") > command.index("--namespace")
 
 
+class TestUninstallIfPresent:
+    def test_uninstalls_the_named_release_in_its_namespace(self, monkeypatch):
+        """A comparison handoff must tear down the release that still owns the previous side's GPUs."""
+        calls: list[tuple[str, ...]] = []
+
+        def run_raw(*arguments: str) -> subprocess.CompletedProcess[str]:
+            calls.append(arguments)
+            return subprocess.CompletedProcess(arguments, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(Helm, "run_raw", run_raw)
+
+        Helm.uninstall_if_present(release="miles-run-a", namespace="ci")
+
+        assert calls == [("uninstall", "miles-run-a", "--namespace", "ci")]
+
+    def test_an_auto_uninstall_winning_the_race_is_already_the_wanted_result(self, monkeypatch):
+        """The chart can remove the release between the verdict and the explicit handoff cleanup."""
+        monkeypatch.setattr(
+            Helm,
+            "run_raw",
+            lambda *_arguments: subprocess.CompletedProcess(
+                [],
+                returncode=1,
+                stdout="",
+                stderr="Error: uninstall: Release not loaded: miles-run-a: release: not found",
+            ),
+        )
+
+        Helm.uninstall_if_present(release="miles-run-a", namespace="ci")
+
+    def test_an_uninstall_failure_other_than_absence_stops_the_handoff(self, monkeypatch):
+        """Starting the target after a forbidden cleanup would recreate the GPU overlap this guard prevents."""
+        monkeypatch.setattr(
+            Helm,
+            "run_raw",
+            lambda *_arguments: subprocess.CompletedProcess([], returncode=1, stdout="", stderr="forbidden"),
+        )
+
+        with pytest.raises(RuntimeError, match="forbidden"):
+            Helm.uninstall_if_present(release="miles-run-a", namespace="ci")
+
+
 def _kubectl_answering(monkeypatch, *, returncode: int, stdout: str = "", stderr: str = "") -> list[list[str]]:
     commands: list[list[str]] = []
 

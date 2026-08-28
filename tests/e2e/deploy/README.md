@@ -57,6 +57,8 @@ Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PR
 ```
 Type: comparison (baseline=untouched, target=same command, orchestration script replaced mid-run)
 Steps: 6 rollouts
+Releases: baseline and target derive separate releases from the parent run id; every target
+          take-over upgrades the target release in place
 Timing: exact - the run parks at the scheduled step boundary (sleep-forever action) and the
         driver relaunches it there, so a take-over's landing is pinned, not raced
 Plan: a file under the base dump dir, not under either side's, which each run deletes (argv
@@ -111,4 +113,3 @@ Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's c
 
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
-
