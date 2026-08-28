@@ -17,7 +17,9 @@ from tests.e2e.deploy.conftest_deploy.hot_restart.scenario_hot_restart_determini
 )
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE
 
+from miles.utils.external_utils.command_utils.base_backend import ExecuteTrainConfig
 from miles.utils.external_utils.command_utils.common import ArgvManipulator
+from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.test_utils.ft_test_actions import CI_FT_TEST_ACTIONS_PATH_FLAG
 
@@ -49,6 +51,25 @@ class TestModes:
 
         assert "import CHECKPOINTED, run_ci" in source
         assert "run_ci(CHECKPOINTED)" in source
+
+
+class TestComparisonReleaseIsolation:
+    def test_the_two_sides_get_distinct_releases_from_the_parent_run_id(self):
+        """A target command must never upgrade the baseline release whose workload command differs."""
+        config = ExecuteTrainConfig(run_id="demo")
+
+        baseline = scenario._config_for_comparison_side(BASELINE_SIDE, config)
+        target = scenario._config_for_comparison_side(TARGET_SIDE, config)
+
+        assert baseline.run_id == f"demo-{BASELINE_SIDE}"
+        assert target.run_id == f"demo-{TARGET_SIDE}"
+
+    def test_a_parent_run_id_without_room_for_the_suffix_is_refused(self):
+        """Truncating the parent id would let two long parents share a side release."""
+        config = ExecuteTrainConfig(run_id="a" * RUN_ID_MAX_LENGTH)
+
+        with pytest.raises(AssertionError):
+            scenario._config_for_comparison_side(TARGET_SIDE, config)
 
 
 class TestTiming:
