@@ -551,6 +551,20 @@ class TestGetDefaultWandbArgs:
         assert "--wandb-group RUNID " in args
         assert "--wandb-key 'secret' " in args
 
+    def test_accepts_an_explicit_project_name(self, monkeypatch):
+        """Dataset-specific launchers can group runs in a stable project."""
+        monkeypatch.setenv("WANDB_API_KEY", "secret")
+        monkeypatch.delenv("GITHUB_COMMIT_NAME", raising=False)
+
+        args = command_utils.get_default_wandb_args(
+            "scripts/run_qwen3_sft.py",
+            run_id="260827-12345678",
+            project_name="traffic-sft-smoke",
+        )
+
+        assert "--wandb-project traffic-sft-smoke " in args
+        assert "--wandb-group 260827-12345678 " in args
+
     def test_qualifies_a_short_test_name_with_its_directory(self, monkeypatch):
         """Short stems like 'run.py' are ambiguous on their own."""
         monkeypatch.setenv("WANDB_API_KEY", "secret")

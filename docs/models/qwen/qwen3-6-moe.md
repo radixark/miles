@@ -70,12 +70,31 @@ assistant turn. The launcher renders those messages with the model tokenizer
 and trains only the assistant-token positions.
 
 Validate every row with the same tokenizer and loss-mask code used by training:
+JSONL is streamed row by row so tool definitions may use heterogeneous nested
+schemas. Set `--tools-key` when the conversations include tool definitions.
 
 ```bash
 python scripts/tools/validate_sft_dataset.py \
    --dataset /root/datasets/train.parquet \
    --model /root/models/Qwen3.6-35B-A3B \
+   --tools-key tools \
    --max-seq-len 65536
+```
+
+To create a training artifact while preserving every field of accepted rows,
+use the companion filter. It writes a content-free rejection audit with the
+source row index and exact reason. Any rejection other than an overlong row or
+a conversation without an assistant target makes the command fail.
+
+```bash
+python scripts/tools/filter_sft_dataset.py \
+   --dataset /root/datasets/train.jsonl \
+   --output-dataset /root/datasets/train.filtered.jsonl \
+   --reject-report /root/datasets/train.rejected.jsonl \
+   --summary-path /root/datasets/train.filtered.summary.json \
+   --model /root/models/Qwen3.6-35B-A3B \
+   --tools-key tools \
+   --max-seq-len 262144
 ```
 
 ```bash
@@ -83,9 +102,15 @@ cd /root/miles
 python scripts/run_qwen3_sft.py \
    --model-name Qwen3.6-35B-A3B \
    --prompt-data /root/datasets/train.parquet \
-   --checkpoint-dir /root/shared_data/qwen36-sft/checkpoints \
-   --trace-dir /scratch/qwen36-sft/traces
+   --tools-key tools \
+   --metadata-key metadata \
+   --run-id YYMMDD-8hex \
+   --checkpoint-dir /path/to/persistent-storage/qwen36-sft/YYMMDD-8hex/checkpoints \
+   --trace-dir /path/to/local-scratch/YYMMDD-8hex/traces
 ```
+
+Keep checkpoints on storage that survives machine or pod replacement. Details
+dumps and traces can use high-throughput node-local scratch storage.
 
 The Qwen3.6 recipe uses `TP=1, EP=8, CP=1, PP=1, expert-TP=1`, Qwen3 loss
 masking, CPU-offloaded precision-aware Adam, full activation recomputation,
@@ -94,6 +119,12 @@ Miles dashboard, Prometheus forwarding, rollout entropy, training entropy, and
 the details dump. Dataset-dependent choices such as sequence-length policy,
 batch sizes, epoch count, learning rate, and save interval should be selected
 after tokenizing the actual data.
+
+For very long sequences, override tensor parallelism and the dynamic token
+budget explicitly. Qwen3.6's gated-delta layers do not support context
+parallelism in the current Megatron backend, so the launcher rejects `CP>1`.
+On one 8-GPU node, `--tensor-model-parallel-size 8 --context-parallel-size 1`
+keeps all eight GPUs in one model replica while retaining `EP=8`.
 
 This is pure SFT: no SGLang rollout engine is started.
 
