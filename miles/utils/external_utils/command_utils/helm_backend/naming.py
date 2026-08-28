@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import model_validator
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
-from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.types import DeployComponent, PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm.naming import CHART_NAME, component_name
 
 ORCHESTRATOR_COMPONENT = "orchestrator"
@@ -29,6 +29,11 @@ _RECORDS_DIR_NAME = "launches"
 _RECORD_FILE_GLOB = "launch-*.json"
 _RECORDED_STATE_FILE_KEY = "state_file"
 _SUPERSEDED_MARKER_SUFFIX = ".superseded"
+
+
+def platform_account_name(*, release: str, access: PlatformAccess) -> str:
+    assert access is not PlatformAccess.NONE, "a worker that never reaches the platform runs on no account of its own"
+    return component_name(release, f"platform-{access.value}")
 
 
 class ReleaseName(FrozenStrictBaseModel):
