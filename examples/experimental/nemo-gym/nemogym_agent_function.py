@@ -67,7 +67,7 @@ async def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any]:
                 await asyncio.sleep(random.uniform(*_POST_BACKOFF_S))
 
 
-def _resolve_session_url(base_url: str) -> str:
+def resolve_session_url(base_url: str) -> str:
     """Build the OpenAI-compatible policy URL, rewriting host for off-cluster agents."""
     session_url = f"{base_url}/v1"
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
@@ -123,7 +123,7 @@ async def run(
     request: dict[str, Any] = {
         **metadata,
         "responses_create_params": build_responses_create_params(request_kwargs),
-        "policy_base_url": _resolve_session_url(base_url),
+        "policy_base_url": resolve_session_url(base_url),
     }
 
     try:

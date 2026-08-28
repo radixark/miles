@@ -196,8 +196,8 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
     backend = resolve_sandbox_backend(args)
     if backend:
-        spec = _PROVIDER_CREDENTIALS[backend]
-        _sandbox_key_supply(
+        spec = PROVIDER_CREDENTIALS[backend]
+        sandbox_key_supply(
             env,
             provider=spec["provider"],
             key_env_vars=spec["key_env_vars"],
@@ -206,13 +206,13 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             default_path=spec["default_path"],
             provision_hint=spec["provision_hint"],
         )
-        _preflight_sdk(spec["sdk"], spec["sdk_hint"])
+        preflight_sdk(spec["sdk"], spec["sdk_hint"])
         # Addresses, not secrets: the SDK reads these from the environment on
         # every worker, so forward whatever is set here BY VALUE.
         for var in spec["forward"]:
             value = os.environ.get(var, "").strip()
             if value:
-                _forward_address(env, var, value)
+                forward_address(env, var, value)
         if spec["target"]:
             var, label, default_desc = spec["target"]
             print(f"openenv: {spec['provider']} {label}: {env.get(var, default_desc)}", flush=True)
@@ -242,16 +242,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
 
 
-# Per-provider credential shape and the address-like env vars to forward.
-# One entry per backend in openenv_sandbox_common.AGENT_MODULES; a provider is
-# added here, not by growing a branch.
-#   key_env_vars   what a worker must ALL have for the env-supply path to work
-#                  (Modal's credential is a token PAIR, not one key)
-#   file_env_var   the path-valued var the launcher forwards instead of secrets
-#   forward        addresses/selectors, safe to forward by value
-#   target         (var, label, default description) echoed so a launch says
-#                  which endpoint/environment it will actually use
-_PROVIDER_CREDENTIALS = {
+PROVIDER_CREDENTIALS = {
     "daytona": {
         "provider": "Daytona",
         "key_env_vars": ("DAYTONA_API_KEY",),
@@ -296,12 +287,12 @@ _PROVIDER_CREDENTIALS = {
 }
 
 
-def _forward_address(env: dict[str, str], var: str, value: str) -> None:
+def forward_address(env: dict[str, str], var: str, value: str) -> None:
     """Forward one address-like var by value, refusing one that carries a secret.
 
     What ``forward`` names are endpoints and selectors, which is why they may
     ride ray's runtime_env at all while a credential may not (only its PATH is
-    forwarded — see _sandbox_key_supply). A URL defeats that distinction by
+    forwarded — see sandbox_key_supply). A URL defeats that distinction by
     smuggling a credential through userinfo (``https://user:token@host``), and
     runtime_env is echoed into driver logs and persisted in job metadata in
     plaintext, so refuse it rather than forward it. Nothing legitimately
@@ -318,7 +309,7 @@ def _forward_address(env: dict[str, str], var: str, value: str) -> None:
     env[var] = value
 
 
-def _sandbox_key_supply(
+def sandbox_key_supply(
     env: dict[str, str],
     *,
     provider: str,
@@ -373,7 +364,7 @@ def _sandbox_key_supply(
         )
 
 
-def _preflight_sdk(module: str, install_hint: str) -> None:
+def preflight_sdk(module: str, install_hint: str) -> None:
     """Preflight the lazily-imported provider SDK. Without this, a missing
     install only surfaces inside each episode's sandbox start, where the
     failed sample is aborted, the group dropped, and the rollout loop refills

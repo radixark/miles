@@ -123,7 +123,7 @@ def _is_retryable_env_error(e: BaseException) -> bool:
     return type(e).__name__ in {"ConnectionClosedOK", "ConnectionClosedError", "ConnectionClosed"}
 
 
-def _resolve_session_url(base_url: str) -> str:
+def resolve_session_url(base_url: str) -> str:
     """Build the OpenAI-compatible policy URL, rewriting host for off-cluster agents."""
     session_url = f"{base_url}/v1"
     external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
@@ -423,7 +423,7 @@ async def run_for_training(
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    session_url = _resolve_session_url(base_url)
+    session_url = resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")

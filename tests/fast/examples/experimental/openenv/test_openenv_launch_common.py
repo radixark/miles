@@ -35,12 +35,12 @@ _SPEC_KEYS = {
 def test_every_backend_has_a_credential_spec():
     """A backend registered without credential wiring would fail at launch with
     a KeyError instead of telling the operator what to provision."""
-    assert set(launch._PROVIDER_CREDENTIALS) == set(common.AGENT_MODULES)
+    assert set(launch.PROVIDER_CREDENTIALS) == set(common.AGENT_MODULES)
 
 
-@pytest.mark.parametrize("backend", sorted(launch._PROVIDER_CREDENTIALS))
+@pytest.mark.parametrize("backend", sorted(launch.PROVIDER_CREDENTIALS))
 def test_credential_spec_is_complete(backend):
-    spec = launch._PROVIDER_CREDENTIALS[backend]
+    spec = launch.PROVIDER_CREDENTIALS[backend]
     assert set(spec) == _SPEC_KEYS, backend
     assert spec["key_env_vars"], backend
     # The arg the launcher reads must be declared on the shared config Protocol,
@@ -51,7 +51,7 @@ def test_credential_spec_is_complete(backend):
 def test_forwarded_vars_are_addresses_not_secrets():
     """Whatever `forward` names is forwarded BY VALUE through ray's runtime_env,
     which is logged in plaintext — so no credential-shaped var may appear."""
-    for backend, spec in launch._PROVIDER_CREDENTIALS.items():
+    for backend, spec in launch.PROVIDER_CREDENTIALS.items():
         for var in spec["forward"]:
             assert not any(word in var for word in ("KEY", "TOKEN", "SECRET")), (backend, var)
 
@@ -61,18 +61,18 @@ def test_a_forwarded_url_may_not_smuggle_a_credential():
     hidden in an endpoint's userinfo — and that value would be forwarded and
     logged in plaintext just the same."""
     env: dict[str, str] = {}
-    launch._forward_address(env, "E2B_API_URL", "https://agentenv.internal")
+    launch.forward_address(env, "E2B_API_URL", "https://agentenv.internal")
     assert env == {"E2B_API_URL": "https://agentenv.internal"}
 
     with pytest.raises(ValueError, match="embeds credentials"):
-        launch._forward_address({}, "E2B_API_URL", "https://user:tok@agentenv.internal")
+        launch.forward_address({}, "E2B_API_URL", "https://user:tok@agentenv.internal")
 
 
 # --- key supply -------------------------------------------------------------
 
 
 def _supply(env, spec_name, *, arg_path="", **overrides):
-    spec = launch._PROVIDER_CREDENTIALS[spec_name]
+    spec = launch.PROVIDER_CREDENTIALS[spec_name]
     kwargs = {
         "provider": spec["provider"],
         "key_env_vars": spec["key_env_vars"],
@@ -81,7 +81,7 @@ def _supply(env, spec_name, *, arg_path="", **overrides):
         "default_path": spec["default_path"],
         "provision_hint": spec["provision_hint"],
     }
-    launch._sandbox_key_supply(env, **{**kwargs, **overrides})
+    launch.sandbox_key_supply(env, **{**kwargs, **overrides})
 
 
 def test_readable_file_forwards_the_path_never_the_value(tmp_path):
