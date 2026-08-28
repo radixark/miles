@@ -50,6 +50,7 @@ python examples/experimental/chess/run.py \
     --rollout-batch-size 8 \
     --n-samples-per-prompt 8 \
     --max-model-turns 8 \
+    --kl-loss-coef 0.01 \
     --stockfish-max-concurrent-games 16 \
     --stockfish-startup-timeout-seconds 20
 ```
@@ -99,3 +100,7 @@ The default 65,536-token Miles limit, 8,192-token response allowance, and
 10,000-token reserve make the chess harness compact its active conversation at
 47,344 input tokens. Original generations remain in the replay journal, while
 TITO v2 returns the trainable trajectory segments created around compaction.
+
+Set `--kl-loss-coef` to a positive value to regularize the policy toward the
+reference model. The default is `0.0`, preserving the original unregularized
+recipe.
