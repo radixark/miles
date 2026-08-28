@@ -24,6 +24,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values.place
 )
 from miles.utils.workers.argv_utils import python_argv_prefix
 from miles.utils.workers.naming import compute_port_name
+from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_provider.kubernetes.helm import env
 from miles.utils.workers.worker_spec import (
     BaseWorkerSpec,
@@ -70,16 +71,18 @@ def build_entry(
         ports=[PortEntry(name=compute_port_name(port.name), port=port.static_port) for port in spec.port_infos],
         env=_command_env_of_spec(spec, context, addresses=addresses, is_sub_node=is_sub_node) or None,
         meta=_meta_of_spec(spec) or None,
-        service_account_name=(
-            naming.component_name(plan.release, naming.ORCHESTRATOR_COMPONENT)
-            if spec.needs_platform_read_permission
-            else None
-        ),
+        service_account_name=_service_account_name(spec, plan=plan),
         replicas=spec.scheduling.num_cells,
         size=pods_per_cell if pods_per_cell > 1 else None,
         resources={"limits": {"nvidia.com/gpu": gpus_per_pod}} if gpus_per_pod else None,
         restart_at=plan.rendered_restart_at(spec.name),
     )
+
+
+def _service_account_name(spec: BaseWorkerSpec, *, plan: LaunchPlan) -> str | None:
+    if (access := spec.platform_access) is PlatformAccess.NONE:
+        return None
+    return naming.platform_account_name(release=plan.release, access=access)
 
 
 def _command_env_of_spec(

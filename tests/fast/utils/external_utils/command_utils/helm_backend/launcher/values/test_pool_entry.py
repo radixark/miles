@@ -13,6 +13,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.values impor
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.helm_values_types import PortEntry
 from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import LaunchPlan
+from miles.utils.workers.types import PlatformAccess
 from miles.utils.workers.worker_spec import BaseWorkerSpec, SchedulingSpec
 
 STAMP = "2026-08-12T09:00:00+00:00"
@@ -180,13 +181,21 @@ class TestTheRestartStamp:
 
 
 class TestTheAccountAPoolRunsUnder:
-    def test_a_pool_that_observes_the_platform_gets_the_account_that_may_read_it(self):
+    def test_a_pool_that_only_reads_the_platform_gets_the_account_that_may_read_it(self):
         """Only these workers reconcile against pods, and the namespace default cannot list one."""
-        spec = session_server(num_cells=1).model_copy(update={"needs_platform_read_permission": True})
+        spec = session_server(num_cells=1).model_copy(update={"platform_access": PlatformAccess.READ})
 
         entry = build_values([spec], LAYOUT).as_values()["run"]["staticWorkers"][0]
 
-        assert entry["serviceAccountName"] == "r-miles-run-orchestrator"
+        assert entry["serviceAccountName"] == "r-miles-run-platform-read"
+
+    def test_a_pool_that_also_deletes_platform_pods_gets_the_account_that_may_delete_them(self):
+        """A trainer controller suspends cells by deleting pods and must retain that existing capability."""
+        spec = session_server(num_cells=1).model_copy(update={"platform_access": PlatformAccess.READ_DELETE})
+
+        entry = build_values([spec], LAYOUT).as_values()["run"]["staticWorkers"][0]
+
+        assert entry["serviceAccountName"] == "r-miles-run-platform-read-delete"
 
     def test_every_other_pool_stays_on_the_namespace_default(self):
         """An engine talks to no api server, and an account it never needs is one it could misuse."""
@@ -196,7 +205,7 @@ class TestTheAccountAPoolRunsUnder:
 
     def test_refuses_a_pool_whose_template_renders_no_account_at_all(self):
         """The engine template ignores the key, so the pod would run on the default and 403 far from here."""
-        spec = engine(num_cells=1, gpus_per_engine=8).model_copy(update={"needs_platform_read_permission": True})
+        spec = engine(num_cells=1, gpus_per_engine=8).model_copy(update={"platform_access": PlatformAccess.READ})
 
         with pytest.raises(AssertionError, match="renders a service account"):
             build_values([spec], LAYOUT).as_values()
