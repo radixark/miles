@@ -10,7 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from miles.utils.misc import exec_command
+from miles.utils.external_utils.command_utils.common import run_process
 
 logger = logging.getLogger(__name__)
 
@@ -33,25 +33,40 @@ class KindCluster:
 
 
 def create_cluster(*, run_id: str, kubeconfig: Path) -> KindCluster:
-    kind = _resolve_kind_binary()
-    exec_command(f"{kind} create cluster --name {run_id} --kubeconfig {kubeconfig} --wait {_READY_TIMEOUT}")
+    _run_kind("create", "cluster", "--name", run_id, "--kubeconfig", str(kubeconfig), "--wait", _READY_TIMEOUT)
     return KindCluster(name=run_id, kubeconfig=kubeconfig)
 
 
 def delete_cluster(cluster: KindCluster) -> None:
-    kind = _resolve_kind_binary()
-    exec_command(f"{kind} delete cluster --name {cluster.name} --kubeconfig {cluster.kubeconfig}")
+    _run_kind("delete", "cluster", "--name", cluster.name, "--kubeconfig", str(cluster.kubeconfig))
+
+
+def _run_kind(*args: str) -> None:
+    run_process([_resolve_kind_binary(), *args], capture_output=False, check=True)
 
 
 def _resolve_kind_binary() -> str:
     installed = shutil.which("kind")
     if installed is not None:
-        return installed
+        if (installed_version := _installed_kind_version(installed)) == _KIND_VERSION:
+            return installed
+        logger.warning(
+            f"ignoring the kind on PATH because it is not the pinned version "
+            f"{installed=} {installed_version=} {_KIND_VERSION=}"
+        )
 
     cached = _KIND_CACHE_DIR / f"kind-{_KIND_VERSION}"
     if not cached.exists():
         _download_kind(cached)
     return str(cached)
+
+
+def _installed_kind_version(binary: str) -> str | None:
+    result = run_process([binary, "version"], capture_output=True, check=False)
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.split()
+    return fields[1] if len(fields) >= 2 else None
 
 
 def _download_kind(destination: Path) -> None:
