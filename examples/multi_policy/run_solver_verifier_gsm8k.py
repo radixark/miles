@@ -15,7 +15,7 @@ MODEL_IDS: list[str] = [SOLVER_MODEL_ID, VERIFIER_MODEL_ID]
 LEADER_MODEL_ID: str = MODEL_IDS[0]
 EVAL_DATASET_NAME: str = "gsm8k"
 TRAIN_SCRIPT: str = "train_multi_policy.py"
-TRAIN_EXTRA_ENV_VARS: dict[str, str] = {"MILES_EXPERIMENTAL_ROLLOUT_REFACTOR": "1"}
+TRAIN_EXTRA_ENV_VARS: dict[str, str] = {}
 
 # Hyperparameters roughly follow test_qwen2.5_0.5B_gsm8k_async.py.
 SHARED_TRAINER_OVERRIDES = dict(
@@ -121,8 +121,7 @@ def build_train_args(
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std "
         "--reward-key reward_value "
         "--log-reward-category outcome "
-        # retract (default) can deadlock flush_cache in fully_async under load
-        "--pause-generation-mode in_place "
+        "--pause-generation-mode retract "
     )
 
     eval_args = (
