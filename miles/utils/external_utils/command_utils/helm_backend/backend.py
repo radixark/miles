@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 
 from miles.utils.external_utils.command_utils.base_backend import (
     BaseCommandBackend,
@@ -9,7 +10,10 @@ from miles.utils.external_utils.command_utils.base_backend import (
 from miles.utils.external_utils.command_utils.common import chart_dir, repo_base_dir
 from miles.utils.external_utils.command_utils.helm_backend import command_job
 from miles.utils.external_utils.command_utils.helm_backend.launcher import entrypoint
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import InfraInfo
 from miles.utils.external_utils.command_utils.helm_backend.naming import ReleaseName, RunNames
+
+_HOSTNAME_LABEL = "kubernetes.io/hostname"
 
 
 class KubernetesCommandBackend(BaseCommandBackend):
@@ -31,10 +35,12 @@ class KubernetesCommandBackend(BaseCommandBackend):
         num_gpus_per_node: int | None = None,
     ) -> list[str | None]:
         assert self.config.namespace, "Set CommandUtilConfig.namespace to run a command somewhere"
+        chart = chart_dir(repo_base_dir=repo_base_dir)
+        self._assert_requested_nodes_schedulable(num_nodes=num_nodes or 1, chart=chart)
         return command_job.run_on_nodes(
             command_job.CommandJobContext(
                 namespace=self.config.namespace,
-                chart_dir=chart_dir(repo_base_dir=repo_base_dir),
+                chart_dir=chart,
                 helm_values_files=tuple(self.config.helm_values),
                 gpus_per_node=num_gpus_per_node if num_gpus_per_node is not None else 1,
             ),
@@ -42,6 +48,22 @@ class KubernetesCommandBackend(BaseCommandBackend):
             capture_output=capture_output,
             completions=num_nodes or 1,
             step="command",
+        )
+
+    def _assert_requested_nodes_schedulable(self, *, num_nodes: int, chart: Path) -> None:
+        if num_nodes <= 1:
+            return
+
+        infra = InfraInfo.load(chart, list(self.config.helm_values))
+        scheduling = infra.scheduling
+        node_selector = (scheduling.node_selector if scheduling is not None else None) or {}
+        if (hostname := node_selector.get(_HOSTNAME_LABEL)) is None:
+            return
+
+        raise AssertionError(
+            f"this command asks for {num_nodes} nodes, and infra.scheduling.nodeSelector pins every pod of this "
+            f"deployment to {hostname!r}, so every completion after the first would stay Pending for good while "
+            f"the first one holds its gpus until the job times out; ask for one node, or unpin the deployment"
         )
 
     def api_server_host(self, config: ExecuteTrainConfig) -> str:
