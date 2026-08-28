@@ -6,6 +6,7 @@ from pathlib import Path
 
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
+from miles.ray.wiring import shutdown_worker_manager
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
 from miles.utils.data import remove_rollout_data_refs
@@ -21,7 +22,7 @@ async def main(args):
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    _worker_manager = init_orchestration_script(args)
+    worker_manager = init_orchestration_script(args)
     inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
@@ -82,6 +83,7 @@ async def main(args):
     await inference_controller.dispose()
     await actor_model.dispose()
     await controller.stop()
+    await shutdown_worker_manager(worker_manager)
 
 
 if __name__ == "__main__":
