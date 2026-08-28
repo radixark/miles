@@ -72,6 +72,12 @@ _WANDB_RUN_ID_FLAG = "--wandb-run-id"
 _RUN_ID_PATTERN = re.compile(DNS_LABEL_PATTERN)
 
 
+class RunExitedError(SystemExit):
+    def __init__(self, exit_code: int) -> None:
+        super().__init__(exit_code)
+        self.exit_code = exit_code
+
+
 def execute_train(*, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
     run_id = config.run_id
     assert _RUN_ID_PATTERN.fullmatch(
@@ -253,19 +259,19 @@ def _follow_until_finished(*, release: str, namespace: str, state_file: Path) ->
     logger.info(f"Following every pod of {release}; ctrl+c stops watching, not the run")
     orchestrator_workload = naming.component_name(release, naming.ORCHESTRATOR_COMPONENT)
 
-    with with_observability(namespace=namespace, selector=Kubectl.release_selector(release)):
-        outcome = wait_for_run(
-            state_file=state_file,
-            read_pod=lambda: observed_pod(namespace, orchestrator_workload),
-            read_active_state_file=lambda: _active_state_file(release=release, namespace=namespace),
-        )
+    try:
+        with with_observability(namespace=namespace, selector=Kubectl.release_selector(release)):
+            outcome = wait_for_run(
+                state_file=state_file,
+                read_pod=lambda: observed_pod(namespace, orchestrator_workload),
+                read_active_state_file=lambda: _active_state_file(release=release, namespace=namespace),
+            )
 
-    if outcome.exit_code != 0:
-        _collect_diagnosis(release=release, namespace=namespace, state_file=state_file)
-
-    logger.info(farewell(namespace=namespace, release=release, workload=orchestrator_workload))
-    if outcome.exit_code != 0:
-        raise SystemExit(outcome.exit_code)
+        if outcome.exit_code != 0:
+            _collect_diagnosis(release=release, namespace=namespace, state_file=state_file)
+            raise RunExitedError(outcome.exit_code)
+    finally:
+        logger.info(farewell(namespace=namespace, release=release, workload=orchestrator_workload))
 
 
 def _resolve_run_uuid(config: ExecuteTrainConfig, *, installed_manifest: Manifest | None, release: str) -> str:
