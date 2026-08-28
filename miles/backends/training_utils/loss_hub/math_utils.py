@@ -285,6 +285,7 @@ def compute_log_probs(
     true_on_policy_mode: bool = False,
     vocab_size: int | None = None,
     sampling_mask: torch.Tensor | None = None,
+    debug_unified_grad_fused_logprob: bool = False,
 ):
     logits = _apply_sampling_mask(logits, sampling_mask, inplace=not true_on_policy_mode)
     if true_on_policy_mode:
@@ -298,6 +299,14 @@ def compute_log_probs(
     # convert to [seq_len, batch_size, vocab_size] as expected by fused_vocab_parallel_cross_entropy
     logits = logits.unsqueeze(1)
     tokens = tokens.unsqueeze(1)
+
+    if debug_unified_grad_fused_logprob and not torch.is_grad_enabled():
+        with torch.enable_grad():
+            log_probs = -fused_vocab_parallel_cross_entropy(
+                logits.detach().requires_grad_(True), tokens, process_group
+            )
+        return log_probs.detach()
+
     return -fused_vocab_parallel_cross_entropy(logits, tokens, process_group)
 
 
@@ -969,6 +978,7 @@ def calculate_log_probs_and_entropy(
     vocab_size: int | None = None,
     sampling_mask: torch.Tensor | None = None,
     temperature: float = 1.0,
+    debug_unified_grad_fused_logprob: bool = False,
 ):
     if true_on_policy:
         assert temperature == 1.0, "true-on-policy scales logits in _iter_response_chunks"
@@ -1008,6 +1018,7 @@ def calculate_log_probs_and_entropy(
                     tokens_chunk,
                     tp_group,
                     sampling_mask=sampling_mask_chunk,
+                    debug_unified_grad_fused_logprob=debug_unified_grad_fused_logprob,
                 )
                 log_probs.append(log_prob)
             log_prob = torch.cat(log_probs, dim=0)
@@ -1023,6 +1034,7 @@ def calculate_log_probs_and_entropy(
                 tokens,
                 tp_group,
                 sampling_mask=sampling_mask,
+                debug_unified_grad_fused_logprob=debug_unified_grad_fused_logprob,
             )
             if with_entropy:
                 entropy = compute_entropy(logits)
