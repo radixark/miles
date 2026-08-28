@@ -392,7 +392,13 @@ def _assert_upgrade_is_allowed(
 
 
 def _belongs_to_run(release: str, *, run_id: str) -> bool:
-    return (parsed := ReleaseName.parse(release)) is not None and parsed.run_id == run_id
+    try:
+        return (parsed := ReleaseName.parse(release)) is not None and parsed.run_id == run_id
+    except Exception:
+        logger.info(
+            f"Release {release} does not follow the Miles naming rules, so it belongs to no run", exc_info=True
+        )
+        return False
 
 
 def _uninstall_leftover_ci_releases(namespace: str, *, keep_run_id: str) -> list[str]:
@@ -422,11 +428,18 @@ def _defuse_previous_generation(
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:
+    releases = _releases_of_run(release=release, namespace=namespace)
+    if len(releases) > 1:
+        logger.info(
+            f"This run is deployed as {len(releases)} releases, and a deployment other than {release} can be what "
+            f"failed, so the diagnosis covers all of them: {', '.join(releases)}"
+        )
+
     try:
         diagnosis = collect_diagnosis(
             namespace=namespace,
             output_dir=state_file.parent,
-            selector=Kubectl.release_selector(release),
+            selector=Kubectl.releases_selector(releases),
             state_file=state_file,
         )
     except Exception:
@@ -436,6 +449,23 @@ def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> Non
     logger.info(f"The pods of this failed run are described under {diagnosis.directory}")
     if not diagnosis.is_complete:
         logger.warning(f"The diagnosis is incomplete, these could not be collected: {', '.join(diagnosis.missing)}")
+
+
+def _releases_of_run(*, release: str, namespace: str) -> list[str]:
+    parsed = ReleaseName.parse(release)
+    if parsed is None:
+        return [release]
+
+    try:
+        listed = Helm.list_releases(
+            namespace=namespace, name_filter=f"^{re.escape(ReleaseName.run_prefix(run_id=parsed.run_id))}"
+        )
+    except Exception:
+        logger.warning(f"Could not list what else run {parsed.run_id} installed; diagnosing {release} alone")
+        logger.debug("Listing the releases of the run failed", exc_info=True)
+        return [release]
+
+    return sorted({one for one in listed if _belongs_to_run(one, run_id=parsed.run_id)} | {release})
 
 
 def _write_helm_values(path: Path, values: dict[str, Any]) -> None:
