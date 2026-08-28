@@ -61,7 +61,43 @@ PYTHONPATH=/root/Megatron-LM torchrun --nproc-per-node 8 \
 
 ## 4. Launch
 
-### 4.1 Quick start
+### 4.1 Supervised fine-tuning
+
+The shared Qwen SFT launcher supports Qwen3.6-35B-A3B on one 8 × H200 node.
+The dataset can be JSONL or Parquet. Each row's `messages` field must be a
+non-empty list of `{role, content}` objects and must include at least one
+assistant turn. The launcher renders those messages with the model tokenizer
+and trains only the assistant-token positions.
+
+Validate every row with the same tokenizer and loss-mask code used by training:
+
+```bash
+python scripts/tools/validate_sft_dataset.py \
+   --dataset /root/datasets/train.parquet \
+   --model /root/models/Qwen3.6-35B-A3B \
+   --max-seq-len 65536
+```
+
+```bash
+cd /root/miles
+python scripts/run_qwen3_sft.py \
+   --model-name Qwen3.6-35B-A3B \
+   --prompt-data /root/datasets/train.parquet \
+   --checkpoint-dir /root/shared_data/qwen36-sft/checkpoints \
+   --trace-dir /scratch/qwen36-sft/traces
+```
+
+The Qwen3.6 recipe uses `TP=1, EP=8, CP=1, PP=1, expert-TP=1`, Qwen3 loss
+masking, CPU-offloaded precision-aware Adam, full activation recomputation,
+MTP training, and an 8192-token dynamic budget per GPU. It also enables the
+Miles dashboard, Prometheus forwarding, rollout entropy, training entropy, and
+the details dump. Dataset-dependent choices such as sequence-length policy,
+batch sizes, epoch count, learning rate, and save interval should be selected
+after tokenizing the actual data.
+
+This is pure SFT: no SGLang rollout engine is started.
+
+### 4.2 RL + MTP quick start
 
 The launcher is a parametrized Typer script (8 × H200) that exercises arbitrary
 (TP, EP, CP, PP, ETP) cells:
