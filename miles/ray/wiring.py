@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import ray
+from ray.actor import ActorHandle
+
 from miles.ray.specs.entrypoint import compute_specs
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.base import BackendCapability
@@ -13,6 +16,15 @@ def launch_worker_manager(args):
             return None
         case ClusterBackend.RAY:
             return _launch_ray_worker_manager(args)
+
+
+async def shutdown_worker_manager(worker_manager_handle: ActorHandle | None) -> None:
+    if worker_manager_handle is None:
+        return
+    try:
+        await worker_manager_handle.shutdown.remote()
+    finally:
+        ray.kill(worker_manager_handle)
 
 
 def get_backend_capability(args) -> BackendCapability:

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.source_scan import REPO_ROOT
 
 from miles.ray import wiring
 from miles.utils.workers.backend_capability import factory
 from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.types import ClusterBackend, WorkerCommBackend
+
+
+async def _resolved(events: list[object], event: object) -> None:
+    events.append(event)
 
 
 class TestLaunchWorkerManager:
@@ -29,6 +36,40 @@ class TestLaunchWorkerManager:
         monkeypatch.setattr(wiring, "_launch_ray_worker_manager", _refuse_ray)
 
         assert wiring.launch_worker_manager(SimpleNamespace(cluster_backend=ClusterBackend.KUBERNETES.value)) is None
+
+
+class TestShutdownWorkerManager:
+    async def test_a_ray_run_shuts_down_and_kills_its_own_manager(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The driver must release the exact manager it launched instead of sweeping processes by name."""
+        events: list[object] = []
+        manager = SimpleNamespace(shutdown=SimpleNamespace(remote=lambda: _resolved(events, "shutdown")))
+        monkeypatch.setattr(wiring.ray, "kill", lambda handle: events.append(("kill", handle)))
+
+        await wiring.shutdown_worker_manager(manager)
+
+        assert events == ["shutdown", ("kill", manager)]
+
+    async def test_a_kubernetes_run_has_no_ray_manager_to_shut_down(self) -> None:
+        """The shared driver cleanup remains a no-op when Kubernetes owns worker lifecycles."""
+        await wiring.shutdown_worker_manager(None)
+
+    @pytest.mark.parametrize(
+        "script",
+        sorted(path for path in REPO_ROOT.glob("train*.py") if "launch_worker_manager" in path.read_text()),
+        ids=lambda path: path.name,
+    )
+    def test_every_finite_driver_shuts_down_the_manager_it_launched(self, script: Path) -> None:
+        """Every driver that owns a worker manager must release that same manager on its normal return path."""
+        calls = [
+            node
+            for node in ast.walk(ast.parse(script.read_text(), filename=str(script)))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "shutdown_worker_manager"
+        ]
+
+        assert len(calls) == 1
+        assert ast.unparse(calls[0]) == "shutdown_worker_manager(_worker_manager)"
 
 
 class TestGetBackendCapability:
