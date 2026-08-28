@@ -23,6 +23,8 @@ Args:
   --checkpoint-dir: Training checkpoint directory. Defaults to <output-dir>/checkpoints.
   --trace-dir: Miles details and dashboard directory. Qwen3.6 enables observability
     and defaults this to <output-dir>/<run-id>/dump_details.
+  --log-probs-chunk-size: Response-token chunk size for memory-efficient log-probability
+    and entropy computation. Defaults to 4096 for Qwen3.6 and disabled for other recipes.
   --num-gpus-per-node: GPUs per node (default: 8).
   --join-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
     into the ray cluster (default: on). Turn off when the cluster is already joined.
@@ -64,6 +66,7 @@ class _Recipe:
     train_mtp: bool = False
     moe_token_dispatcher_type: str | None = None
     enable_observability: bool = False
+    log_probs_chunk_size: int = -1
 
 
 _RECIPES: dict[str, _Recipe] = {
@@ -83,6 +86,7 @@ _RECIPES: dict[str, _Recipe] = {
         train_mtp=True,
         moe_token_dispatcher_type="flex",
         enable_observability=True,
+        log_probs_chunk_size=4096,
     ),
 }
 
@@ -108,6 +112,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 128
     global_batch_size: int = 128
     max_tokens_per_gpu: int | None = None
+    log_probs_chunk_size: int | None = None
     tensor_model_parallel_size: int | None = None
     pipeline_model_parallel_size: int = 1
     context_parallel_size: int = 1
@@ -136,6 +141,12 @@ class ScriptArgs(U.ExecuteTrainConfig):
     @property
     def tokens_per_gpu(self) -> int:
         return self.max_tokens_per_gpu or self.recipe.max_tokens_per_gpu
+
+    @property
+    def effective_log_probs_chunk_size(self) -> int:
+        if self.log_probs_chunk_size is not None:
+            return self.log_probs_chunk_size
+        return self.recipe.log_probs_chunk_size
 
     @property
     def tensor_parallel_size(self) -> int:
@@ -169,6 +180,11 @@ def _validate_parallelism(args: ScriptArgs) -> None:
         raise ValueError(f"world_size={world_size} must be divisible by ETP*EP*PP={expert_parallel_size}")
     if args.model_name == "Qwen3.6-35B-A3B" and args.context_parallel_size != 1:
         raise ValueError("Qwen3.6 gated-delta layers currently require context_parallel_size=1")
+    if args.effective_log_probs_chunk_size == 0 or args.effective_log_probs_chunk_size < -1:
+        raise ValueError(
+            "log_probs_chunk_size must be -1 (disabled) or a positive integer, "
+            f"got {args.effective_log_probs_chunk_size}"
+        )
 
 
 def execute(args: ScriptArgs) -> None:
@@ -214,6 +230,8 @@ def execute(args: ScriptArgs) -> None:
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {args.tokens_per_gpu} "
     )
+    if args.effective_log_probs_chunk_size > 0:
+        perf_args += f"--log-probs-chunk-size {args.effective_log_probs_chunk_size} "
 
     optimizer_args = (
         "--optimizer adam "
