@@ -733,8 +733,7 @@ class MegatronTrainRayActor(TrainRayActor):
         )
 
     def _get_actor_weights(self):
-        # The backup costs a full H2D copy per sync — use it only when the live params
-        # are unreadable: colocate releases them, model switching may leave non-actor live.
+        # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._active_model_tag != "actor":
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
