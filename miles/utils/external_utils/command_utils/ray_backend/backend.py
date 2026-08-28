@@ -46,7 +46,7 @@ class RayCommandBackend(BaseCommandBackend):
             )
 
         if mooncake_master_port is not None:
-            start_mooncake_master(rpc_port=mooncake_master_port)
+            start_mooncake_master(rpc_port=mooncake_master_port, run_command=self.exec_command_cpu)
 
         for cmd in request.prepare_cmd.values():
             self.exec_command_multi_node(cmd)
@@ -78,12 +78,12 @@ class RayCommandBackend(BaseCommandBackend):
 
         return get_mooncake_master_port(train_argv)
 
-    def exec_command_gpu(
+    def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
-    def exec_command_multi_node(
+    def _exec_command_multi_node_inner(
         self,
         cmd: str,
         capture_output: bool = False,
