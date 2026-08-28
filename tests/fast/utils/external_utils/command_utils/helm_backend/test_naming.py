@@ -1,8 +1,15 @@
-from miles.utils.external_utils.command_utils.helm_backend.naming import RunFiles, _orchestrator_state_path
+import pytest
+
+from miles.utils.external_utils.command_utils.helm_backend.naming import (
+    RunFiles,
+    _orchestrator_state_path,
+    platform_account_name,
+)
 from miles.utils.external_utils.command_utils.helm_backend.orchestrator.state import (
     OrchestratorState,
     OrchestratorStatus,
 )
+from miles.utils.workers.types import PlatformAccess
 
 
 def _write(path, status: OrchestratorStatus, *, exit_code: int | None = None) -> None:
@@ -11,6 +18,13 @@ def _write(path, status: OrchestratorStatus, *, exit_code: int | None = None) ->
 
 def _state_file(tmp_path):
     return _orchestrator_state_path(tmp_path, "260101-000000-000001")
+
+
+class TestPlatformAccountName:
+    def test_platform_account_name_refuses_no_platform_access(self) -> None:
+        """A worker without platform access must not receive a platform service account."""
+        with pytest.raises(AssertionError, match="never reaches the platform"):
+            platform_account_name(release="miles-run-example-train", access=PlatformAccess.NONE)
 
 
 class TestRunDir:

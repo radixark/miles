@@ -7,6 +7,7 @@ from tests.fast.charts.utils import (
     NAMESPACE,
     RUN_CHART_DIR,
     RUN_ORCHESTRATOR_NAME,
+    RUN_PLATFORM_READ_DELETE_NAME,
     RUN_RELEASE_NAME,
     RUN_UNINSTALL_JOB_NAME,
     RUN_UNINSTALL_MANIFEST_NAME,
@@ -114,13 +115,13 @@ class TestOrchestratorTrigger:
 
     def test_lets_the_orchestrator_create_that_one_job(self):
         """The wrapper creates it as the run's own account, which is otherwise allowed pods and nothing else."""
-        role = named_object(_enabled_objects(), "Role", RUN_ORCHESTRATOR_NAME)
+        role = named_object(_enabled_objects(), "Role", RUN_PLATFORM_READ_DELETE_NAME)
 
         assert {"apiGroups": ["batch"], "resources": ["jobs"], "verbs": ["create"]} in role["rules"]
 
     def test_grants_no_job_rights_to_a_run_that_never_creates_one(self):
         """A run that cannot uninstall itself has no business creating workloads of any kind."""
-        role = named_object(render_run(*DISABLE_AUTO_UNINSTALL), "Role", RUN_ORCHESTRATOR_NAME)
+        role = named_object(render_run(*DISABLE_AUTO_UNINSTALL), "Role", RUN_PLATFORM_READ_DELETE_NAME)
 
         assert [rule["apiGroups"] for rule in role["rules"]] == [[""]]
 

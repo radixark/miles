@@ -87,6 +87,8 @@ class PoolEntry(ValuesModel):
 
 class ObjectNames(ValuesModel):
     orchestrator: _ObjectName
+    platform_read: _ObjectName
+    platform_read_delete: _ObjectName
     mooncake_master: _ObjectName
     colocate_pairing: _ObjectName
     uninstall: _ObjectName

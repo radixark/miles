@@ -6,7 +6,7 @@ from pydantic import ConfigDict, model_validator
 from miles.utils.math_utils import exact_div
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.backend_capability.base import BackendCapability
-from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.types import DeployComponent, PlatformAccess
 
 RPC_PORT_NAME = "rpc"
 MASTER_PORT_NAME = "master"
@@ -97,7 +97,7 @@ class BaseWorkerSpec(FrozenStrictBaseModel):
     scheduling: SchedulingSpec
     meta: SpecMetaFn | None = None
     deploy_component: DeployComponent = DeployComponent.PRIMARY
-    needs_platform_read_permission: bool = False
+    platform_access: PlatformAccess = PlatformAccess.NONE
 
     @model_validator(mode="after")
     def _reject_selector_component(self) -> "BaseWorkerSpec":

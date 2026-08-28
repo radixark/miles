@@ -22,6 +22,8 @@ RELEASE_NAME = "miles-workbench-myuser"
 UNINSTALLER_SERVICE_ACCOUNT = "miles-uninstaller"
 RUN_RELEASE_NAME = "myrun"
 RUN_ORCHESTRATOR_NAME = f"{RUN_RELEASE_NAME}-miles-run-orchestrator"
+RUN_PLATFORM_READ_NAME = f"{RUN_RELEASE_NAME}-miles-run-platform-read"
+RUN_PLATFORM_READ_DELETE_NAME = f"{RUN_RELEASE_NAME}-miles-run-platform-read-delete"
 RUN_UNINSTALL_JOB_NAME = f"{RUN_RELEASE_NAME}-miles-run-uninstall"
 RUN_UNINSTALL_MANIFEST_NAME = f"{RUN_RELEASE_NAME}-miles-run-uninstall-manifest"
 RUN_ID = "260101-000000-000"
@@ -96,6 +98,10 @@ def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
             f"run.stateFile={RUN_STATE_FILE}",
             "--set",
             f"run.objectNames.orchestrator={RUN_ORCHESTRATOR_NAME}",
+            "--set",
+            f"run.objectNames.platformRead={RUN_PLATFORM_READ_NAME}",
+            "--set",
+            f"run.objectNames.platformReadDelete={RUN_PLATFORM_READ_DELETE_NAME}",
             "--set",
             f"run.objectNames.mooncakeMaster={RUN_RELEASE_NAME}-miles-run-mooncake-master",
             "--set",

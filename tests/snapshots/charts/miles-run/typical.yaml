@@ -13,17 +13,31 @@ metadata:
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 ---
-# Source: miles-run/templates/orchestrator-rbac.yaml
+# Source: miles-run/templates/platform-rbac.yaml
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: "myrun-miles-run-orchestrator"
+  name: "myrun-miles-run-platform-read"
   namespace: "myns"
   labels:
     helm.sh/chart: "miles-run-0.1.0"
     app.kubernetes.io/name: "miles-run"
     app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/component: "platform-read"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+---
+# Source: miles-run/templates/platform-rbac.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: "myrun-miles-run-platform-read-delete"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-read-delete"
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 ---
@@ -97,17 +111,35 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch", "patch", "update"]
 ---
-# Source: miles-run/templates/orchestrator-rbac.yaml
+# Source: miles-run/templates/platform-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: "myrun-miles-run-orchestrator"
+  name: "myrun-miles-run-platform-read"
   namespace: "myns"
   labels:
     helm.sh/chart: "miles-run-0.1.0"
     app.kubernetes.io/name: "miles-run"
     app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/component: "platform-read"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# Source: miles-run/templates/platform-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: "myrun-miles-run-platform-read-delete"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-read-delete"
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 rules:
@@ -140,26 +172,48 @@ subjects:
     name: "myrun-miles-run-colocate-pairing"
     namespace: "myns"
 ---
-# Source: miles-run/templates/orchestrator-rbac.yaml
+# Source: miles-run/templates/platform-rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: "myrun-miles-run-orchestrator"
+  name: "myrun-miles-run-platform-read"
   namespace: "myns"
   labels:
     helm.sh/chart: "miles-run-0.1.0"
     app.kubernetes.io/name: "miles-run"
     app.kubernetes.io/instance: "myrun"
-    app.kubernetes.io/component: "orchestrator"
+    app.kubernetes.io/component: "platform-read"
     app.kubernetes.io/version: "0.1.0"
     app.kubernetes.io/managed-by: "Helm"
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: "myrun-miles-run-orchestrator"
+  name: "myrun-miles-run-platform-read"
 subjects:
   - kind: ServiceAccount
-    name: "myrun-miles-run-orchestrator"
+    name: "myrun-miles-run-platform-read"
+    namespace: "myns"
+---
+# Source: miles-run/templates/platform-rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: "myrun-miles-run-platform-read-delete"
+  namespace: "myns"
+  labels:
+    helm.sh/chart: "miles-run-0.1.0"
+    app.kubernetes.io/name: "miles-run"
+    app.kubernetes.io/instance: "myrun"
+    app.kubernetes.io/component: "platform-read-delete"
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: "Helm"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: "myrun-miles-run-platform-read-delete"
+subjects:
+  - kind: ServiceAccount
+    name: "myrun-miles-run-platform-read-delete"
     namespace: "myns"
 
 ---
@@ -348,7 +402,7 @@ spec:
         - name: pairing
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
@@ -444,13 +498,13 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
-      serviceAccountName: "myrun-miles-run-orchestrator"
+      serviceAccountName: "myrun-miles-run-platform-read-delete"
       restartPolicy: Always
       containers:
         - name: orchestrator
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
@@ -567,12 +621,12 @@ spec:
         - name: worker
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
             - name: "cluster-storage"
-              mountPath: "<REPO_ROOT>"
+              mountPath: "/root/miles"
               subPath: "myuser/miles"
             - name: "cluster-storage"
               mountPath: "/root/Megatron-LM"
@@ -675,13 +729,13 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
-      serviceAccountName: "myrun-miles-run-orchestrator"
+      serviceAccountName: "myrun-miles-run-platform-read"
       restartPolicy: Always
       containers:
         - name: worker
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
@@ -794,7 +848,7 @@ spec:
         - name: worker
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
@@ -913,7 +967,7 @@ spec:
         - name: worker
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
@@ -933,7 +987,7 @@ spec:
             - "-m"
             - "miles.rollout.session.server"
             - "--config-json"
-            - "{\"host\":\"0.0.0.0\",\"port\":8000,\"instance_id\":\"0123456789abcdef-0\",\"backend_url\":\"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000\",\"timeout\":null,\"hf_checkpoint\":\"<REPO_ROOT>/tests/fast/charts/miles_run/typical-model\",\"chat_template_path\":null,\"tito_model\":\"default\",\"apply_chat_template_kwargs\":{},\"use_rollout_routing_replay\":false,\"use_rollout_indexer_replay\":false,\"sglang_speculative_algorithm\":null,\"num_layers\":36,\"moe_router_topk\":2,\"save_debug_trajectory_data\":null,\"lora_rank\":0,\"lora_adapter_path\":null,\"use_session_server\":true,\"session_message_matcher\":\"strict\",\"pause_generation_mode\":\"retract\",\"session_sample_picker_path\":\"miles.rollout.session.v2.picker_hub.drop_retries\",\"session_sample_postprocessor_path\":\"miles.rollout.session.v2.postprocessor_hub.default_postprocess\"}"
+            - "{\"host\":\"0.0.0.0\",\"port\":8000,\"instance_id\":\"0123456789abcdef-0\",\"backend_url\":\"http://myrun-miles-run-inference-router-0-0.myrun-miles-run-inference-router-0:8000\",\"timeout\":null,\"hf_checkpoint\":\"<FIXTURE_DIR>/typical-model\",\"chat_template_path\":null,\"tito_model\":\"default\",\"apply_chat_template_kwargs\":{},\"use_rollout_routing_replay\":false,\"use_rollout_indexer_replay\":false,\"sglang_speculative_algorithm\":null,\"num_layers\":36,\"moe_router_topk\":2,\"save_debug_trajectory_data\":null,\"lora_rank\":0,\"lora_adapter_path\":null,\"use_session_server\":true,\"session_message_matcher\":\"strict\",\"pause_generation_mode\":\"retract\",\"session_sample_picker_path\":\"miles.rollout.session.v2.picker_hub.drop_retries\",\"session_sample_postprocessor_path\":\"miles.rollout.session.v2.postprocessor_hub.default_postprocess\"}"
           env:
             - name: MILES_CELL_INDEX
               valueFrom:
@@ -1014,13 +1068,13 @@ spec:
         - effect: NoSchedule
           key: nvidia.com/gpu
           operator: Exists
-      serviceAccountName: "myrun-miles-run-orchestrator"
+      serviceAccountName: "myrun-miles-run-platform-read-delete"
       restartPolicy: Always
       containers:
         - name: worker
           image: "myregistry.example/myteam/miles:v0.9.3-cu128"
           imagePullPolicy: "IfNotPresent"
-          workingDir: "<REPO_ROOT>"
+          workingDir: "/root/miles"
           volumeMounts:
             - name: "cluster-storage"
               mountPath: "/cluster-storage"
@@ -1136,7 +1190,7 @@ spec:
           - name: "engine"
             image: "myregistry.example/myteam/miles:v0.9.3-cu128"
             imagePullPolicy: "IfNotPresent"
-            workingDir: "<REPO_ROOT>"
+            workingDir: "/root/miles"
             volumeMounts:
               - name: "cluster-storage"
                 mountPath: "/cluster-storage"
@@ -1345,7 +1399,7 @@ spec:
           - name: "engine"
             image: "myregistry.example/myteam/miles:v0.9.3-cu128"
             imagePullPolicy: "IfNotPresent"
-            workingDir: "<REPO_ROOT>"
+            workingDir: "/root/miles"
             volumeMounts:
               - name: "cluster-storage"
                 mountPath: "/cluster-storage"
@@ -1545,7 +1599,7 @@ spec:
           - name: "trainer"
             image: "myregistry.example/myteam/miles:v0.9.3-cu128"
             imagePullPolicy: "IfNotPresent"
-            workingDir: "<REPO_ROOT>"
+            workingDir: "/root/miles"
             volumeMounts:
               - name: "cluster-storage"
                 mountPath: "/cluster-storage"

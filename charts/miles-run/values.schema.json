@@ -335,6 +335,18 @@
           "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
           "type": "string"
         },
+        "platformRead": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
+        "platformReadDelete": {
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "type": "string"
+        },
         "mooncakeMaster": {
           "maxLength": 63,
           "minLength": 1,
@@ -362,6 +374,8 @@
       },
       "required": [
         "orchestrator",
+        "platformRead",
+        "platformReadDelete",
         "mooncakeMaster",
         "colocatePairing",
         "uninstall",
