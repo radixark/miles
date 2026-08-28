@@ -10,6 +10,7 @@ assistant turns emitted by the chess harness.
 
 Args:
     run_id: Reproducible identifier for outputs and telemetry.
+    learning_rate: Constant Adam learning rate used for policy updates.
     kl_loss_coef: Coefficient for the low-variance KL regularization loss.
     load_checkpoint_path: Optional full training checkpoint to resume.
     override_opt_param_scheduler: Use current scheduler settings when resuming.
@@ -71,6 +72,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_top_p: float = 0.95
     rollout_max_response_len: int = 8192
     max_seq_len: int = 65536
+    learning_rate: float = 1e-6
     kl_loss_coef: float = 0.0
 
     stockfish_elo: int = 1320
@@ -116,6 +118,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("stockfish_max_concurrent_games must be at least 1")
         if self.kl_loss_coef < 0:
             raise ValueError("kl_loss_coef must be nonnegative")
+        if self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
         if self.override_opt_param_scheduler and self.load_checkpoint_path is None:
             raise ValueError("override_opt_param_scheduler requires load_checkpoint_path")
 
@@ -312,8 +316,8 @@ def _grpo_args(args: ScriptArgs) -> str:
     return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
 
-def _optimizer_args() -> str:
-    return "--optimizer adam --lr 1e-6 --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 --optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
+def _optimizer_args(args: ScriptArgs) -> str:
+    return f"--optimizer adam --lr {args.learning_rate} --lr-decay-style constant --weight-decay 0.1 --adam-beta1 0.9 --adam-beta2 0.98 --optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --use-precision-aware-optimizer "
 
 
 def _sglang_args(args: ScriptArgs) -> str:
@@ -373,7 +377,7 @@ def _build_train_args(args: ScriptArgs) -> str:
         (
             _checkpoint_args(args),
             _rollout_args(args),
-            _optimizer_args(),
+            _optimizer_args(args),
             _grpo_args(args),
             _observability_args(args),
             _performance_args(args),
