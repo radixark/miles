@@ -53,6 +53,7 @@ from tb2_sandbox_recipe import (
     task_env_resources,
     wait_server_ready,
 )
+from miles.rollout.agentic.credentials import resolve_provider_api_key
 
 
 # The user every build command and the env server run as. The TB2 task images
@@ -279,7 +280,7 @@ def resolve_api_key() -> str:
     recipe.resolve_provider_api_key for the file-indirection rationale). AgentENV does
     not enforce keys today, but recent SDKs validate the format client-side —
     provision a well-formed one (e2b_ + 40 hex chars)."""
-    return recipe.resolve_provider_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
+    return resolve_provider_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 def bake(tasks_dir: Path, task_id: str, force: bool) -> None:
