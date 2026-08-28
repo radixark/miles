@@ -2,6 +2,7 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
+import traceback
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from typing import Any, TypeVar
 
@@ -85,19 +86,31 @@ def wait_futures(futures: Sequence[concurrent.futures.Future]) -> list[Any]:
     return results
 
 
-async def wait_cancelling_pending_on_first_completion(tasks: Sequence[asyncio.Task]) -> None:
-    _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+async def wait_cancelling_pending_on_first_completion(
+    tasks: Sequence[asyncio.Task], *, on_first_completion: Callable[[], None] | None = None
+) -> None:
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    if on_first_completion is not None:
+        on_first_completion()
 
     for task in pending:
         task.cancel()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
 
-    errors = [error for task in tasks if (error := _compute_task_error(task)) is not None]
-    for error in errors:
+    task_errors = [(task, error) for task in tasks if (error := _compute_task_error(task)) is not None]
+    for _, error in task_errors:
         logger.error("task failed", exc_info=error)
-    if errors:
-        raise errors[0]
+    if task_errors:
+        primary_index = next((index for index, (task, _) in enumerate(task_errors) if task in done), 0)
+        primary_error = task_errors[primary_index][1]
+        for index, (_, error) in enumerate(task_errors):
+            if index != primary_index:
+                primary_error.add_note(
+                    "Additional task failure while cancelling peers:\n" + "".join(traceback.format_exception(error))
+                )
+        raise primary_error
 
 
 def _compute_task_error(task: asyncio.Task) -> BaseException | None:
