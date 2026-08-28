@@ -11,6 +11,8 @@ assistant turns emitted by the chess harness.
 Args:
     run_id: Reproducible identifier for outputs and telemetry.
     kl_loss_coef: Coefficient for the low-variance KL regularization loss.
+    load_checkpoint_path: Optional full training checkpoint to resume.
+    override_opt_param_scheduler: Use current scheduler settings when resuming.
     max_model_turns: Maximum policy moves in each game.
     save_checkpoint: Save the large full-parameter checkpoint at the final step.
     skip_prepare: Reuse an already prepared model and chess environment.
@@ -96,6 +98,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     save_checkpoint: bool = False
     save_interval: int = 10
+    load_checkpoint_path: str | None = None
+    override_opt_param_scheduler: bool = False
     use_prometheus: bool = True
     prometheus_port: int = 9090
     wandb_team: str = "ch271828n-team"
@@ -112,6 +116,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("stockfish_max_concurrent_games must be at least 1")
         if self.kl_loss_coef < 0:
             raise ValueError("kl_loss_coef must be nonnegative")
+        if self.override_opt_param_scheduler and self.load_checkpoint_path is None:
+            raise ValueError("override_opt_param_scheduler requires load_checkpoint_path")
 
 
 def _run_dir(args: ScriptArgs) -> Path:
@@ -258,6 +264,10 @@ def _prepare_model(args: ScriptArgs) -> None:
 
 def _checkpoint_args(args: ScriptArgs) -> str:
     result = f"--hf-checkpoint {_hf_checkpoint(args)} --ref-load {args.model_dir}/{args.model_name}_torch_dist "
+    if args.load_checkpoint_path is not None:
+        result += f"--load {args.load_checkpoint_path} "
+    if args.override_opt_param_scheduler:
+        result += "--override-opt_param-scheduler "
     if args.save_checkpoint:
         result += f"--save {_checkpoint_dir(args)} --save-interval {args.save_interval} "
     return result
