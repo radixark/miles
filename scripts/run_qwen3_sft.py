@@ -1,12 +1,11 @@
-"""Qwen3 SFT training script.
+"""Qwen3 and Qwen3.6 SFT training script.
 
 =====================
 
-One recipe covers both scales: Qwen3-4B-Base on a single node and the Qwen3-235B-A22B MoE
-on four. They differ only in parallelism, the second Adam moment, whether the optimizer
-state is offloaded to host RAM, and whether the launcher has to ssh the remaining nodes
-into the ray cluster. Dataset, SFT rollout, learning-rate schedule and recompute settings
-are shared.
+One recipe family covers Qwen3-4B-Base on a single node, the Qwen3-235B-A22B MoE
+on four, and Qwen3.6-35B-A3B on a single 8-GPU H200 node. They share the SFT
+rollout and optimizer schedule while keeping model-specific parallelism, loss
+masking, MTP, and observability settings in the recipe table.
 
 This is pure SFT: `train_async.py` runs with `--debug-train-only`, so no SGLang engine is
 started and there is neither generation nor eval. The checkpoint must already be converted
@@ -15,7 +14,14 @@ to Megatron `torch_dist`; this script only submits the training job.
 =====================
 
 Args:
-  --model-name: Model variant, one of Qwen3-4B-Base / Qwen3-235B-A22B.
+  --model-name: Model variant, one of Qwen3-4B-Base / Qwen3-235B-A22B /
+    Qwen3.6-35B-A3B.
+  --prompt-data: JSONL or Parquet dataset path. Defaults to
+    <data-dir>/openhermes2_5.parquet.
+  --input-key: Column containing a list of role/content messages (default: messages).
+  --checkpoint-dir: Training checkpoint directory. Defaults to <output-dir>/checkpoints.
+  --trace-dir: Miles details and dashboard directory. Qwen3.6 enables observability
+    and defaults this to <output-dir>/<run-id>/dump_details.
   --num-gpus-per-node: GPUs per node (default: 8).
   --join-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
     into the ray cluster (default: on). Turn off when the cluster is already joined.
@@ -25,6 +31,10 @@ Args:
 
   python scripts/run_qwen3_sft.py --model-name Qwen3-4B-Base
   MASTER_ADDR=<head-ip> python scripts/run_qwen3_sft.py --model-name Qwen3-235B-A22B
+  python scripts/run_qwen3_sft.py --model-name Qwen3.6-35B-A3B \
+    --prompt-data /root/datasets/train.parquet \
+    --checkpoint-dir /root/shared_data/qwen36-sft/checkpoints \
+    --trace-dir /scratch/qwen36-sft/traces
 """
 
 import os
@@ -36,7 +46,7 @@ import typer
 
 import miles.utils.external_utils.command_utils as U
 
-_MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B"]
+_MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B", "Qwen3.6-35B-A3B"]
 
 
 @dataclass(frozen=True)
@@ -48,12 +58,31 @@ class _Recipe:
     adam_beta2: float
     optimizer_cpu_offload: bool
     ssh_ray_workers: bool
+    max_tokens_per_gpu: int = 9216
+    loss_mask_type: str = "qwen"
+    train_mtp: bool = False
+    moe_token_dispatcher_type: str | None = None
+    enable_observability: bool = False
 
 
 _RECIPES: dict[str, _Recipe] = {
     # Qwen3-4B-Base is architecturally identical to Qwen3-4B, so it reuses that definition.
     "Qwen3-4B-Base": _Recipe("qwen3-4B", 1, 1, 1, 0.95, False, False),
     "Qwen3-235B-A22B": _Recipe("qwen3-235B-A22B", 4, 4, 32, 0.98, True, True),
+    "Qwen3.6-35B-A3B": _Recipe(
+        "qwen3.6-35B-A3B",
+        1,
+        1,
+        8,
+        0.98,
+        True,
+        False,
+        max_tokens_per_gpu=8192,
+        loss_mask_type="qwen3",
+        train_mtp=True,
+        moe_token_dispatcher_type="flex",
+        enable_observability=True,
+    ),
 }
 
 
@@ -67,31 +96,59 @@ class ScriptArgs(U.ExecuteTrainConfig):
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
+    prompt_data: str | None = None
+    input_key: str = "messages"
+    checkpoint_dir: str | None = None
+    trace_dir: str | None = None
+    save_interval: int = 1000
+    num_epoch: int = 3
+    rollout_batch_size: int = 128
+    global_batch_size: int = 128
+    max_tokens_per_gpu: int | None = None
+    learning_rate: float = 1e-5
+    min_learning_rate: float = 1e-6
 
     @property
     def recipe(self) -> _Recipe:
         return _RECIPES[self.model_name]
+
+    @property
+    def prompt_data_path(self) -> str:
+        return self.prompt_data or f"{self.data_dir}/openhermes2_5.parquet"
+
+    @property
+    def checkpoint_path(self) -> str:
+        return self.checkpoint_dir or f"{self.output_dir}/checkpoints"
+
+    @property
+    def details_path(self) -> str:
+        return self.trace_dir or f"{self.output_dir}/{self.run_id}/dump_details"
+
+    @property
+    def tokens_per_gpu(self) -> int:
+        return self.max_tokens_per_gpu or self.recipe.max_tokens_per_gpu
 
 
 def execute(args: ScriptArgs):
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
-        f"--load {args.output_dir}/checkpoints "
-        f"--save {args.output_dir}/checkpoints "
-        "--save-interval 1000 "
+        f"--load {args.checkpoint_path} "
+        f"--save {args.checkpoint_path} "
+        f"--save-interval {args.save_interval} "
     )
 
     sft_args = (
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
-        f"--prompt-data {args.data_dir}/openhermes2_5.parquet "
-        "--input-key messages "
+        f"--prompt-data {args.prompt_data_path} "
+        f"--input-key {args.input_key} "
         # no --apply-chat-template: sft_rollout renders the raw messages itself, together
         # with the per-token loss mask
         "--rollout-shuffle "
-        "--num-epoch 3 "
-        "--rollout-batch-size 128 "
-        "--global-batch-size 128 "
+        f"--num-epoch {args.num_epoch} "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--global-batch-size {args.global_batch_size} "
+        f"--loss-mask-type {args.recipe.loss_mask_type} "
         "--loss-type sft_loss "
         "--calculate-per-token-loss "
         "--disable-compute-advantages-and-returns "
@@ -110,23 +167,29 @@ def execute(args: ScriptArgs):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 9216 "
+        f"--max-tokens-per-gpu {args.tokens_per_gpu} "
     )
 
     optimizer_args = (
         "--optimizer adam "
-        "--lr 1e-5 "
+        f"--lr {args.learning_rate} "
         "--lr-decay-style cosine "
-        "--min-lr 1e-6 "
+        f"--min-lr {args.min_learning_rate} "
         "--lr-warmup-fraction 0.1 "
         "--weight-decay 0.1 "
         "--adam-beta1 0.9 "
-        f"--adam-beta2 {args.recipe.adam_beta2} "
+        f"--adam-beta2 {args.recipe.adam_beta2}"
     )
     if args.recipe.optimizer_cpu_offload:
         optimizer_args += (
-            "--optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer "
+            " --optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer"
         )
+
+    model_feature_args = ""
+    if args.recipe.train_mtp:
+        model_feature_args += "--enable-mtp-training --mtp-num-layers 1 --mtp-loss-scaling-factor 0.2 "
+    if args.recipe.moe_token_dispatcher_type is not None:
+        model_feature_args += f"--moe-token-dispatcher-type {args.recipe.moe_token_dispatcher_type} "
 
     misc_args = (
         # default dropout in megatron is 0.1
@@ -140,11 +203,22 @@ def execute(args: ScriptArgs):
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
     )
+    if args.recipe.enable_observability:
+        misc_args += (
+            "--observe-training-entropy "
+            "--use-rollout-entropy "
+            "--use-prometheus "
+            f"--prometheus-run-name {args.run_id} "
+            "--use-miles-dashboard "
+            "--dashboard-forward-prometheus "
+            f"--dump-details {args.details_path} "
+        )
 
     train_args = (
         f"{ckpt_args} "
         f"{sft_args} "
         f"{optimizer_args} "
+        f"{model_feature_args} "
         f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
         f"{perf_args} "
         f"{misc_args} "
