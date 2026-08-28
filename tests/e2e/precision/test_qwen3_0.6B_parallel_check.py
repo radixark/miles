@@ -96,10 +96,11 @@ def execute():
     )
 
     for i in range(2):
+        debug_data_path = f"data-{i}-{{rollout_id}}.pt"
         U.execute_train(
             train_args=train_args
             + (
-                f"--save-debug-rollout-data data-{i}.pt "
+                f"--save-debug-rollout-data {debug_data_path} "
                 f"--ci-save-grad-norm grad_norms-{i}.pt "
                 f"--actor-num-gpus-per-node {NUM_GPUS} "
             ),
@@ -119,7 +120,7 @@ def execute():
                         if remaining_gpus < cp_size:
                             continue
                         args = train_args + (
-                            f"--load-debug-rollout-data data-{i}.pt "
+                            f"--load-debug-rollout-data {debug_data_path} "
                             f"--ci-load-grad-norm grad_norms-{i}.pt "
                             f"--context-parallel-size {cp_size} "
                             f"--tensor-model-parallel-size {tp_size} "
