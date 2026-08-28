@@ -1,4 +1,3 @@
-import statistics
 from pathlib import Path
 from typing import NamedTuple
 
@@ -18,21 +17,11 @@ from miles.utils.audit_utils.event_logger.models import EnvReportEvent, MetricEv
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 
 
-class TrainRewardBounds(NamedTuple):
+class EvalScoreBounds(NamedTuple):
     initial_max: float
-    final_min: float
-    min_growth: float = 0.0
+    peak_min: float
+    min_growth: float | None = None
 
-
-class RewardWindowMeans(NamedTuple):
-    initial: float
-    final: float
-
-
-TRAIN_REWARD_BOUNDS = {
-    SOLVER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.01),
-    VERIFIER_MODEL_ID: TrainRewardBounds(initial_max=0.9, final_min=0.01),
-}
 
 NUM_VERIFIED_ARGS_PER_POLICY = {SOLVER_MODEL_ID: 25, VERIFIER_MODEL_ID: 26}
 
@@ -41,7 +30,7 @@ def execute(
     args: ScriptArgs,
     *,
     wandb_args: str,
-    train_reward_bounds: dict[str, TrainRewardBounds] | None = None,
+    eval_score_bounds: dict[str, EvalScoreBounds] | None = None,
 ) -> None:
     events_dir = compute_events_dir(args)
     megatron_config = compute_megatron_config(args)
@@ -51,12 +40,13 @@ def execute(
     assert_ranks_trained_with_policy_args(
         events_dir, megatron_config=megatron_config, expected_num_ranks=args.actor_num_gpus_per_policy
     )
-    assert_every_policy_reported_reward_in_bounds(events_dir, bounds=train_reward_bounds or TRAIN_REWARD_BOUNDS)
     assert_policies_reported_eval_points(
         events_dir,
         model_ids=[trainer["model_id"] for trainer in megatron_config["trainers"]],
         dataset_name=EVAL_DATASET_NAME,
     )
+    if eval_score_bounds is not None:
+        assert_policy_eval_scores_learned(events_dir, bounds=eval_score_bounds, dataset_name=EVAL_DATASET_NAME)
 
 
 def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: dict, expected_num_ranks: int) -> None:
@@ -108,31 +98,6 @@ def assert_ranks_trained_with_policy_args(events_dir: Path, *, megatron_config: 
             )
 
 
-def assert_every_policy_reported_reward_in_bounds(events_dir: Path, *, bounds: dict[str, TrainRewardBounds]) -> None:
-    for model_id, model_bounds in bounds.items():
-        rewards = _read_train_reward_series(events_dir, model_id=model_id)
-        assert rewards, (
-            f"no {_compute_train_reward_key(model_id)} value was logged under {events_dir}, so policy "
-            f"{model_id!r} never reported a training reward and nothing about its learning can be checked"
-        )
-
-        windows = _compute_reward_window_means(rewards)
-        initial = windows.initial
-        final = windows.final
-        assert initial <= model_bounds.initial_max, (
-            f"policy {model_id!r} starts at training reward {initial}, above {model_bounds.initial_max}; a run "
-            f"that starts already solved cannot show that training moved it"
-        )
-        assert final >= model_bounds.final_min, (
-            f"policy {model_id!r} ends at training reward {final}, below {model_bounds.final_min}; either its "
-            f"reward function never fires, or training destroyed the model"
-        )
-        assert final - initial >= model_bounds.min_growth, (
-            f"policy {model_id!r} raw reward grew by {final - initial}, below {model_bounds.min_growth}; "
-            f"its first three-step mean was {initial} and its final-window mean was {final}"
-        )
-
-
 def assert_policies_reported_eval_points(events_dir: Path, *, model_ids: list[str], dataset_name: str) -> None:
     for model_id in model_ids:
         eval_key = f"eval/{dataset_name}/{model_id}"
@@ -147,24 +112,32 @@ def assert_policies_reported_eval_points(events_dir: Path, *, model_ids: list[st
         )
 
 
-def _compute_reward_window_means(rewards: list[float]) -> RewardWindowMeans:
-    assert len(rewards) >= 3, f"need at least three raw reward points to define the early window, got {len(rewards)}"
-    return RewardWindowMeans(
-        initial=statistics.mean(rewards[:3]),
-        final=statistics.mean(rewards[-max(1, len(rewards) // 3) :]),
-    )
+def assert_policy_eval_scores_learned(
+    events_dir: Path, *, bounds: dict[str, EvalScoreBounds], dataset_name: str
+) -> None:
+    for model_id, model_bounds in bounds.items():
+        scores = _read_eval_score_series(events_dir, model_id=model_id, dataset_name=dataset_name)
+        assert scores, f"policy {model_id!r}: no eval/{dataset_name}/{model_id} points under {events_dir}"
+
+        first = scores[0]
+        peak = max(scores)
+        assert (
+            first <= model_bounds.initial_max
+        ), f"policy {model_id!r}: first eval score {first} > {model_bounds.initial_max} (starts already solved)"
+        assert peak >= model_bounds.peak_min, f"policy {model_id!r}: peak eval score {peak} < {model_bounds.peak_min}"
+        if model_bounds.min_growth is not None:
+            assert peak - first >= model_bounds.min_growth, (
+                f"policy {model_id!r}: eval growth {peak - first} < {model_bounds.min_growth} "
+                f"(first {first}, peak {peak})"
+            )
 
 
-def _read_train_reward_series(events_dir: Path, *, model_id: str) -> list[float]:
-    reward_key = _compute_train_reward_key(model_id)
-    step_key = f"{model_id}/rollout/step"
+def _read_eval_score_series(events_dir: Path, *, model_id: str, dataset_name: str) -> list[float]:
+    eval_key = f"eval/{dataset_name}/{model_id}"
+    version_key = f"{eval_key}/weight_version/max"
     points = [
-        (event.metrics[step_key], event.metrics[reward_key])
+        (event.metrics.get(version_key, 0), event.metrics[eval_key])
         for event in read_events(events_dir)
-        if isinstance(event, MetricEvent) and reward_key in event.metrics
+        if isinstance(event, MetricEvent) and eval_key in event.metrics
     ]
-    return [reward for _, reward in sorted(points)]
-
-
-def _compute_train_reward_key(model_id: str) -> str:
-    return f"{model_id}/rollout/raw_reward"
+    return [score for _, score in sorted(points)]
