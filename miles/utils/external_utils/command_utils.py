@@ -252,7 +252,12 @@ def check_has_nvlink():
     return int(output) > 0
 
 
-def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, run_id: str | None = None):
+def get_default_wandb_args(
+    test_file: str,
+    run_name_prefix: str | None = None,
+    run_id: str | None = None,
+    project_name: str | None = None,
+) -> str:
     if not os.environ.get("WANDB_API_KEY"):
         print("Skip wandb configuration since WANDB_API_KEY is not found")
         return ""
@@ -270,9 +275,10 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
 
     # Use the actual key value from environment to avoid shell expansion issues
     wandb_key = os.environ.get("WANDB_API_KEY")
+    wandb_project = project_name or f"miles-{test_name}"
     return (
         "--use-wandb "
-        f"--wandb-project miles-{test_name} "
+        f"--wandb-project {wandb_project} "
         f"--wandb-group {wandb_run_name} "
         f"--wandb-key '{wandb_key}' "
         "--disable-wandb-random-suffix "

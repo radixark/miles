@@ -19,6 +19,7 @@ Args:
   --prompt-data: JSONL or Parquet dataset path. Defaults to
     <data-dir>/openhermes2_5.parquet.
   --input-key: Column containing a list of role/content messages (default: messages).
+  --tools-key / --metadata-key: Columns containing tool definitions and row metadata.
   --checkpoint-dir: Training checkpoint directory. Defaults to <output-dir>/checkpoints.
   --trace-dir: Miles details and dashboard directory. Qwen3.6 enables observability
     and defaults this to <output-dir>/<run-id>/dump_details.
@@ -98,6 +99,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     prompt_data: str | None = None
     input_key: str = "messages"
+    tools_key: str = "tools"
+    metadata_key: str = "metadata"
     checkpoint_dir: str | None = None
     trace_dir: str | None = None
     save_interval: int = 1000
@@ -105,8 +108,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_batch_size: int = 128
     global_batch_size: int = 128
     max_tokens_per_gpu: int | None = None
+    tensor_model_parallel_size: int | None = None
+    pipeline_model_parallel_size: int = 1
+    context_parallel_size: int = 1
+    expert_model_parallel_size: int | None = None
+    expert_tensor_parallel_size: int = 1
     learning_rate: float = 1e-5
     min_learning_rate: float = 1e-6
+    wandb_project: str | None = None
 
     @property
     def recipe(self) -> _Recipe:
@@ -128,8 +137,42 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def tokens_per_gpu(self) -> int:
         return self.max_tokens_per_gpu or self.recipe.max_tokens_per_gpu
 
+    @property
+    def tensor_parallel_size(self) -> int:
+        return self.tensor_model_parallel_size or self.recipe.tensor_model_parallel_size
 
-def execute(args: ScriptArgs):
+    @property
+    def expert_parallel_size(self) -> int:
+        return self.expert_model_parallel_size or self.recipe.expert_model_parallel_size
+
+
+def _validate_parallelism(args: ScriptArgs) -> None:
+    sizes = {
+        "tensor_model_parallel_size": args.tensor_parallel_size,
+        "pipeline_model_parallel_size": args.pipeline_model_parallel_size,
+        "context_parallel_size": args.context_parallel_size,
+        "expert_model_parallel_size": args.expert_parallel_size,
+        "expert_tensor_parallel_size": args.expert_tensor_parallel_size,
+    }
+    for name, size in sizes.items():
+        if size <= 0:
+            raise ValueError(f"{name} must be positive, got {size}")
+
+    world_size = args.recipe.actor_num_nodes * args.num_gpus_per_node
+    decoder_parallel_size = args.tensor_parallel_size * args.pipeline_model_parallel_size * args.context_parallel_size
+    expert_parallel_size = (
+        args.expert_tensor_parallel_size * args.expert_parallel_size * args.pipeline_model_parallel_size
+    )
+    if world_size % decoder_parallel_size:
+        raise ValueError(f"world_size={world_size} must be divisible by TP*PP*CP={decoder_parallel_size}")
+    if world_size % expert_parallel_size:
+        raise ValueError(f"world_size={world_size} must be divisible by ETP*EP*PP={expert_parallel_size}")
+    if args.model_name == "Qwen3.6-35B-A3B" and args.context_parallel_size != 1:
+        raise ValueError("Qwen3.6 gated-delta layers currently require context_parallel_size=1")
+
+
+def execute(args: ScriptArgs) -> None:
+    _validate_parallelism(args)
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
         f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
@@ -142,6 +185,8 @@ def execute(args: ScriptArgs):
         "--rollout-function-path miles.rollout.sft_rollout.generate_rollout "
         f"--prompt-data {args.prompt_data_path} "
         f"--input-key {args.input_key} "
+        f"--tool-key {args.tools_key} "
+        f"--metadata-key {args.metadata_key} "
         # no --apply-chat-template: sft_rollout renders the raw messages itself, together
         # with the per-token loss mask
         "--rollout-shuffle "
@@ -157,12 +202,12 @@ def execute(args: ScriptArgs):
     )
 
     perf_args = (
-        f"--tensor-model-parallel-size {args.recipe.tensor_model_parallel_size} "
+        f"--tensor-model-parallel-size {args.tensor_parallel_size} "
         "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
-        "--context-parallel-size 1 "
-        f"--expert-model-parallel-size {args.recipe.expert_model_parallel_size} "
-        "--expert-tensor-parallel-size 1 "
+        f"--pipeline-model-parallel-size {args.pipeline_model_parallel_size} "
+        f"--context-parallel-size {args.context_parallel_size} "
+        f"--expert-model-parallel-size {args.expert_parallel_size} "
+        f"--expert-tensor-parallel-size {args.expert_tensor_parallel_size} "
         "--recompute-granularity full "
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
@@ -219,7 +264,7 @@ def execute(args: ScriptArgs):
         f"{sft_args} "
         f"{optimizer_args} "
         f"{model_feature_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id)} "
+        f"{U.get_default_wandb_args(__file__, run_id=args.run_id, project_name=args.wandb_project)} "
         f"{perf_args} "
         f"{misc_args} "
         f"{args.extra_args} "
@@ -248,7 +293,7 @@ def execute(args: ScriptArgs):
 
 
 @U.dataclass_cli
-def main(args: ScriptArgs):
+def main(args: ScriptArgs) -> None:
     execute(args)
 
 
