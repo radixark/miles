@@ -52,6 +52,7 @@ def make_group(
     group_index: int,
     status: Sample.Status = Sample.Status.COMPLETED,
     weight_versions: list[str] | None = None,
+    reward: float = 1,
 ) -> list[Sample]:
     versions = [
         WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
@@ -65,7 +66,7 @@ def make_group(
             response="ok",
             response_length=1,
             label="ok",
-            reward=1,
+            reward=reward,
             status=status,
             weight_versions=list(versions),
         )
@@ -79,6 +80,7 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
+        reward_key=None,
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
@@ -90,6 +92,7 @@ def make_args(**overrides) -> Namespace:
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
+        sglang_router_request_timeout_secs=14400,
         eval_num_gpus=0,
     )
     defaults.update(overrides)
@@ -264,25 +267,6 @@ async def test_worker_error_propagates(monkeypatch):
         await fn(RolloutFnTrainInput(rollout_id=0))
 
 
-async def test_worker_bounds_in_flight_groups(monkeypatch):
-    release = asyncio.Event()
-
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
-        await release.wait()
-        return group
-
-    data_source = FakeDataSource()
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), data_source, generate=blocking_generate)
-
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-    await asyncio.sleep(0.05)
-    assert data_source.num_get_calls == 2  # in-flight bound, not more
-
-    release.set()
-    output = await drain
-    assert len(output.samples) == 2
-
-
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
     release = asyncio.Event()
 
@@ -420,6 +404,22 @@ def make_buffer(max_groups=None, max_staleness=None):
 async def put_group(buffer, group):
     """These tests reuse one group as both the prompt group and the finished group."""
     await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
+
+
+async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
+    """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
+    args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+    )
+
+    await put_group(buffer, make_group(1, reward=0))
+    await put_group(buffer, make_group(2, reward=1))
+
+    metrics = buffer.get_metrics()
+    assert metrics["rollout/raw_reward_unfiltered"] == 0.5
+    assert metrics["rollout/dynamic_filter/drop_rejected"] == 1
+    assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics()
 
 
 async def test_buffer_blocks_producer_when_full():
@@ -993,3 +993,22 @@ class TestRolloutFnContract:
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
 
         assert fn.constructor_input.data_source is data_source
+
+
+async def test_worker_bounds_in_flight_groups(monkeypatch):
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.05)
+    assert data_source.num_get_calls == 2  # in-flight bound, not more
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 2

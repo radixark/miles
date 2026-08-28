@@ -807,6 +807,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
                             continue
                         await self._apply_miles_rewards(group)
                         all_groups.append(group)
+                        metrics.on_group_before_dynamic_filter(self.args, _flatten_samples(group))
                         result = call_dynamic_filter(
                             self.dynamic_filter,
                             self.args,
