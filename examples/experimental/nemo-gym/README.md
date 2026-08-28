@@ -183,7 +183,7 @@ SWE-bench eval report in `metadata` → `sample.metadata["eval_report"]`) and
 enters training through `sample.metadata["reward"]`.
 
 Episodes that fail before the first model call produce no session records; the
-sample is marked aborted and `check_no_aborted` drops its group from training.
+sample is marked aborted and its group is dropped from training.
 
 ## Validating without a GPU
 
