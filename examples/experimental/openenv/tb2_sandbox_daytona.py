@@ -154,8 +154,8 @@ _DEFAULT_API_KEY_FILE = "~/.config/daytona/api_key"
 
 def resolve_api_key() -> str:
     """The Daytona API key: DAYTONA_API_KEY, else the key file (see
-    recipe.resolve_api_key for the file-indirection rationale)."""
-    return recipe.resolve_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
+    recipe.resolve_provider_api_key for the file-indirection rationale)."""
+    return recipe.resolve_provider_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 _client_lock = threading.Lock()

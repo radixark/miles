@@ -158,7 +158,7 @@ def sandbox_labels(task_dir: Path) -> dict[str, str]:
     return labels
 
 
-def resolve_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
+def resolve_provider_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
     """A provider API key: *env_var*, else the key file.
 
     The file indirection (*file_env_var*, default *default_path*) exists so

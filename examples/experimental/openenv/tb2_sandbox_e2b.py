@@ -276,10 +276,10 @@ _DEFAULT_API_KEY_FILE = "~/.config/e2b/api_key"
 
 def resolve_api_key() -> str:
     """The E2B API key: E2B_API_KEY, else the key file (see
-    recipe.resolve_api_key for the file-indirection rationale). AgentENV does
+    recipe.resolve_provider_api_key for the file-indirection rationale). AgentENV does
     not enforce keys today, but recent SDKs validate the format client-side —
     provision a well-formed one (e2b_ + 40 hex chars)."""
-    return recipe.resolve_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
+    return recipe.resolve_provider_api_key("E2B_API_KEY", "E2B_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 def bake(tasks_dir: Path, task_id: str, force: bool) -> None:
