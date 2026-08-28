@@ -50,7 +50,7 @@ POOLS = (
 )
 
 PAIRING = "myrun-miles-run-colocate-pairing"
-ORCHESTRATOR_ROLE = "myrun-miles-run-orchestrator"
+ORCHESTRATOR_ROLE = "myrun-miles-run-platform-read-delete"
 
 
 def layout(
