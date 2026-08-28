@@ -8,10 +8,11 @@ from tests.fast.fixtures.driver_fakes import (
     FakeObjectStore,
     FakeRolloutExecutor,
     FakeTrainingModel,
+    FakeWorkerManager,
 )
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
-from miles.ray import placement_group
+from miles.ray import placement_group, wiring
 from miles.utils import object_store
 
 
@@ -191,3 +192,23 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+    async def test_train_releases_its_worker_manager_after_component_disposal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The driver releases its own manager only after every component has been disposed."""
+        events: list[str] = []
+        args = _make_args(use_critic=True)
+        manager = FakeWorkerManager(events)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _args: manager)
+        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+
+        await train_driver.train(args)
+
+        assert manager.killed == [manager]
+        assert all(
+            events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
+        )
+        assert events.index("manager_shutdown") < events.index("manager_kill")

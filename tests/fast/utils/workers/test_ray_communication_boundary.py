@@ -17,6 +17,7 @@ EXCLUDED_DIRS = (REPO_ROOT / "tests",)
 
 RAY_USING_MODULES = {
     "miles/ray/placement_group.py": "launcher closure: placement groups are how ray is asked to schedule",
+    "miles/ray/wiring.py": "launcher closure: driver shutdown kills the manager it launched by ActorHandle",
     "miles/utils/ray_utils.py": "launcher closure: node lookup and pinning options for the launcher's own calls",
     "miles/utils/orchestration_utils.py": (
         "launcher closure: the shared driver composition root returns its ray worker manager"

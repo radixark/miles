@@ -9,8 +9,10 @@ from tests.fast.fixtures.driver_fakes import (
     FakeRemoteMethod,
     FakeRolloutExecutor,
     FakeTrainingModel,
+    FakeWorkerManager,
 )
 
+from miles.ray import wiring
 from miles.utils.multi_lora import EmptyBatchTimeoutError
 
 _ACTIVE_SNAPSHOT = {"pending": [], "active": ["alpha"], "retiring": [], "cleanup": []}
@@ -157,6 +159,29 @@ class TestAdapterLifecycle:
             "inference_dispose",
             "actor_dispose",
             "controller_stop",
+        ]
+
+    async def test_multi_lora_run_releases_its_worker_manager_after_controller_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Multi-LoRA driver releases its own manager after all controllers stop."""
+        events: list[str] = []
+        manager = FakeWorkerManager(events)
+        _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
+
+        monkeypatch.setattr(multi_lora_driver, "init_orchestration_script", lambda _args: manager)
+        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+
+        await multi_lora_driver.main(_make_args())
+
+        assert manager.killed == [manager]
+        assert events[-6:] == [
+            "executor_dispose",
+            "inference_dispose",
+            "actor_dispose",
+            "controller_stop",
+            "manager_shutdown",
+            "manager_kill",
         ]
 
 
