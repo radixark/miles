@@ -8,7 +8,7 @@ from miles.backends.training_utils.loss_hub import math_utils, tinker_losses
 VOCAB = 32
 
 
-def _naive_compute_log_probs(logits, tokens, _tp_group, *, sampling_mask=None):
+def _naive_compute_log_probs(logits, tokens, _tp_group, *, sampling_mask=None, debug_unified_grad_fused_logprob=False):
     return torch.log_softmax(logits, dim=-1).gather(-1, tokens.unsqueeze(-1))
 
 
