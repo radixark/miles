@@ -16,14 +16,14 @@ class KubernetesCommandBackend(BaseCommandBackend):
     def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None:
         entrypoint.execute_train(request=request, config=config)
 
-    def exec_command_gpu(
+    def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None:
         return self.exec_command_multi_node(
             cmd, capture_output=capture_output, num_nodes=1, num_gpus_per_node=num_gpus_per_node
         )[0]
 
-    def exec_command_multi_node(
+    def _exec_command_multi_node_inner(
         self,
         cmd: str,
         capture_output: bool = False,
