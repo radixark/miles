@@ -1,7 +1,9 @@
 import asyncio
+import copy
 import itertools
 import logging
 import os
+from argparse import Namespace
 from pathlib import Path
 
 from miles.backends.megatron_utils.megatron_config import resolve_megatron_config
@@ -51,7 +53,13 @@ async def train_multi_policy(args) -> None:
     maybe_start_mini_ft_controller(args)
 
     for model_id, trainer in trainers.items():
-        await update_weights(args, trainer.handle, rollout_executor, inference_controller, trainer_model_id=model_id)
+        await update_weights(
+            _startup_args(args, trainer=trainer),
+            trainer.handle,
+            rollout_executor,
+            inference_controller,
+            trainer_model_id=model_id,
+        )
         if args.check_weight_update_equal:
             await inference_controller.check_weights(
                 action="compare",
@@ -86,6 +94,12 @@ async def train_multi_policy(args) -> None:
     for trainer in trainers.values():
         await trainer.handle.dispose()
     await shutdown_worker_manager(worker_manager)
+
+
+def _startup_args(args, *, trainer: TrainerInfo) -> Namespace:
+    ans = copy.copy(args)
+    ans.start_rollout_id = trainer.start_rollout_id
+    return ans
 
 
 async def _run_policy(
