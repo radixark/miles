@@ -9,7 +9,6 @@ those launchers cannot silently drift apart. Each launcher keeps only its own
 perf/sglang/misc profile and its ``ScriptArgs`` defaults.
 """
 
-import importlib
 import os
 import subprocess
 import time
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 import openenv_sandbox_common as sandbox_common
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, forward_address, preflight_sdk, sandbox_key_supply
 
 
 class LaunchArgs(Protocol):
@@ -240,138 +240,3 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
                 "(04d259ea6) — see this directory's README"
             )
         env["OPENENV_TB2_TASKS_DIR"] = args.openenv_tb2_tasks_dir
-
-
-PROVIDER_CREDENTIALS = {
-    "daytona": {
-        "provider": "Daytona",
-        "key_env_vars": ("DAYTONA_API_KEY",),
-        "file_env_var": "DAYTONA_API_KEY_FILE",
-        "arg_attr": "daytona_api_key_file",
-        "default_path": "~/.config/daytona/api_key",
-        "provision_hint": "mkdir -p ~/.config/daytona && echo dtn_... > ~/.config/daytona/api_key",
-        "sdk": "daytona",
-        "sdk_hint": "pip install daytona (or pip install -e '<OpenEnv>/envs/tbench2_env[daytona]')",
-        "forward": (),
-        "target": None,
-    },
-    "e2b": {
-        "provider": "E2B",
-        "key_env_vars": ("E2B_API_KEY",),
-        "file_env_var": "E2B_API_KEY_FILE",
-        "arg_attr": "e2b_api_key_file",
-        "default_path": "~/.config/e2b/api_key",
-        "provision_hint": "mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key"
-        "  # AgentENV accepts any non-empty key today",
-        "sdk": "e2b",
-        "sdk_hint": "pip install e2b",
-        # E2B_API_URL unset means E2B Cloud; set, it usually points at a
-        # self-hosted AgentENV deployment.
-        "forward": ("E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "OPENENV_E2B_URL_SCHEME"),
-        "target": ("E2B_API_URL", "endpoint", "E2B Cloud (default)"),
-    },
-    "modal": {
-        "provider": "Modal",
-        # Modal has no single API key: the SDK wants both token halves, or the
-        # config file whose path MODAL_CONFIG_PATH names.
-        "key_env_vars": ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"),
-        "file_env_var": "MODAL_CONFIG_PATH",
-        "arg_attr": "modal_config_file",
-        "default_path": "~/.modal.toml",
-        "provision_hint": "uv tool install modal && modal token new  # writes ~/.modal.toml",
-        "sdk": "modal",
-        "sdk_hint": "pip install modal",
-        "forward": ("MODAL_PROFILE", "MODAL_ENVIRONMENT", "OPENENV_MODAL_APP"),
-        "target": ("MODAL_ENVIRONMENT", "workspace environment", "the profile's default"),
-    },
-}
-
-
-def forward_address(env: dict[str, str], var: str, value: str) -> None:
-    """Forward one address-like var by value, refusing one that carries a secret.
-
-    What ``forward`` names are endpoints and selectors, which is why they may
-    ride ray's runtime_env at all while a credential may not (only its PATH is
-    forwarded — see sandbox_key_supply). A URL defeats that distinction by
-    smuggling a credential through userinfo (``https://user:token@host``), and
-    runtime_env is echoed into driver logs and persisted in job metadata in
-    plaintext, so refuse it rather than forward it. Nothing legitimately
-    forwarded here — a hostname, a scheme, a profile or app name — contains an
-    '@', so the check needs no URL parsing to be precise.
-    """
-    if "@" in value:
-        raise ValueError(
-            f"{var} looks like it embeds credentials ('@'), and anything forwarded "
-            "to rollout workers is logged in plaintext by ray. Put the credential "
-            "in the provider's key file (or the worker environment) and leave a "
-            "bare address here."
-        )
-    env[var] = value
-
-
-def sandbox_key_supply(
-    env: dict[str, str],
-    *,
-    provider: str,
-    key_env_vars: tuple[str, ...],
-    file_env_var: str,
-    arg_path: str,
-    default_path: str,
-    provision_hint: str,
-) -> None:
-    """Key-supply contract, shared by the sandbox backends: rollout workers
-    get the provider credential from their OWN environment (e.g.
-    platform-injected) or from a file they can read (a dotfile, K8s Secret
-    mount, or shared-FS path). The launcher forwards only the file PATH, never
-    the value: worker env rides ray's runtime_env, which exec_command_cpu
-    echoes into driver logs and ray persists in job metadata, all in
-    plaintext."""
-    key_file = Path(arg_path or default_path).expanduser()
-    try:
-        key_present = bool(key_file.read_text(encoding="utf-8").strip())
-    except OSError:
-        key_present = False
-    # Either supply is fine; neither is fully verifiable from here (the
-    # launcher cannot probe worker nodes), so echo which one is in effect.
-    # A provider whose credential is several variables (Modal's token pair) is
-    # only satisfied by having ALL of them; a partial set is a misconfiguration
-    # that would fail every episode.
-    names = " + ".join(key_env_vars)
-    if key_present:
-        env[file_env_var] = str(key_file)
-        print(
-            f"openenv: {provider} credential supply: file {key_file} "
-            "(readable here; forwarding the path, workers read it themselves)",
-            flush=True,
-        )
-    elif arg_path:
-        # An explicitly configured path that doesn't resolve on the launcher
-        # is a config error; failing every episode later is far worse.
-        raise ValueError(f"{file_env_var}={arg_path} is missing or empty")
-    elif all(os.environ.get(var, "").strip() for var in key_env_vars):
-        print(
-            f"openenv: {provider} credential supply: worker environment ({names} "
-            "set here; workers are assumed to have them in their own env — "
-            "single-host inheritance or platform-injected pod env)",
-            flush=True,
-        )
-    else:
-        raise ValueError(
-            f"the {provider} sandbox mode needs credentials: put them in a file "
-            f"({key_file}; {file_env_var} overrides) or in the "
-            f"environment as {names}. Provision the file with:\n"
-            f"  {provision_hint}"
-        )
-
-
-def preflight_sdk(module: str, install_hint: str) -> None:
-    """Preflight the lazily-imported provider SDK. Without this, a missing
-    install only surfaces inside each episode's sandbox start, where the
-    failed sample is aborted, the group dropped, and the rollout loop refills
-    forever — a silent GPU-burning churn instead of a launch-time error."""
-    try:
-        importlib.import_module(module)
-    except ImportError as e:
-        raise RuntimeError(
-            f"this sandbox mode needs the {module} SDK in the rollout process's environment: {install_hint}"
-        ) from e
