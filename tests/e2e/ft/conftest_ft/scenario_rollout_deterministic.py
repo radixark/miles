@@ -33,13 +33,15 @@ from miles.utils.test_utils.reconfigure_assertions import assert_min_soak_inject
 TEST_NAME: str = "rollout_deterministic"
 NUM_ROLLOUTS: int = 8
 SEED: int = 42
-CRASH_INTERVAL_SECONDS: float = 120.0
-HEALTH_CHECK_INTERVAL_SECONDS: float = 5.0
-DETERMINISTIC_INFERENCE_ENV_VARS: dict[str, str] = {"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"}
+CRASH_INTERVAL_SECONDS: float = 30.0
+QUIESCENT_POLLS_REQUIRED: int = 1
+POLL_INTERVAL_SECONDS: float = 0.2
+HEALTH_CHECK_INTERVAL_SECONDS: float = 1.0
 MIN_TRAINED_ROLLOUTS: int = 2
 FIRST_ROLLOUT_TIMEOUT_SECONDS: float = 3600.0
 FIRST_ROLLOUT_POLL_SECONDS: float = 5.0
 MIN_CRASHED_ROLLOUTS: int = 2
+TERMINAL_FAULT_FREE_ROLLOUTS: int = 2
 
 
 COLOCATED_MEM_FRACTION_STATIC: float = 0.4
@@ -88,6 +90,9 @@ def _inject_rollout_faults(
             seed=SEED,
             mean_interval_seconds_of_cell_type={ROLLOUT_CELL_TYPE: CRASH_INTERVAL_SECONDS},
             cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
+            injection_enabled=lambda: _rollout_fault_injection_enabled(dump_dir),
+            poll_interval_seconds=POLL_INTERVAL_SECONDS,
+            quiescent_polls_required=QUIESCENT_POLLS_REQUIRED,
         )
 
     arming = threading.Thread(target=arm_on_generation_start, daemon=True, name="ft-rollout-injector-arm")
@@ -121,6 +126,12 @@ def _wait_for_first_rollout(dump_dir: str) -> bool:
     return False
 
 
+def _rollout_fault_injection_enabled(dump_dir: str) -> bool:
+    completed_rollout_ids: set[int] = {rollout_id for rollout_id, _ in read_rollout_completion_times(dump_dir)}
+    next_rollout_id = max(completed_rollout_ids, default=-1) + 1
+    return next_rollout_id < NUM_ROLLOUTS - TERMINAL_FAULT_FREE_ROLLOUTS
+
+
 def _assert_injections_spread_over_rollouts(injector: FaultInjectorHandle, *, dump_dir: str) -> None:
     crashed_rollouts = _compute_crashed_rollouts(
         injected_at=compute_injection_times(injector.event_log.events, cell_type=ROLLOUT_CELL_TYPE),
@@ -138,7 +149,10 @@ def _assert_injections_spread_over_rollouts(injector: FaultInjectorHandle, *, du
 def _compute_crashed_rollouts(
     *, injected_at: list[datetime], rollout_completions: list[tuple[int, datetime]]
 ) -> set[int]:
-    return {sum(1 for _, finished_at in rollout_completions if finished_at <= at) for at in injected_at}
+    return {
+        max((rollout_id for rollout_id, finished_at in rollout_completions if finished_at <= at), default=-1) + 1
+        for at in injected_at
+    }
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:

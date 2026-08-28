@@ -37,6 +37,7 @@ def run_fault_injection_loop(
     event_log: EventLog,
     cell_fault_forms: CellFaultForms,
     get_virtual_cells: Callable[[], list[dict]] | None = None,
+    injection_enabled: Callable[[], bool] | None = None,
     poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
     quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
 ) -> None:
@@ -101,6 +102,8 @@ def run_fault_injection_loop(
         target = rng.choice(cells_of_type[cell_type])
         cell_name = target["metadata"]["name"]
         form = _draw_form(cell_fault_forms[cell_type], events=event_log.events, cell_type=cell_type, rng=rng)
+        if injection_enabled is not None and not injection_enabled():
+            continue
         try:
             form.inject(target, rng)
         except Exception:

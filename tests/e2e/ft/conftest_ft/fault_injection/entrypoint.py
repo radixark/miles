@@ -3,7 +3,12 @@
 import threading
 from collections.abc import Callable
 
-from tests.e2e.ft.conftest_ft.fault_injection.core import list_cells, run_fault_injection_loop
+from tests.e2e.ft.conftest_ft.fault_injection.core import (
+    POLL_INTERVAL_SECONDS,
+    QUIESCENT_POLLS_REQUIRED,
+    list_cells,
+    run_fault_injection_loop,
+)
 from tests.e2e.ft.conftest_ft.fault_injection.fault_forms import CellFaultForms
 from tests.e2e.ft.conftest_ft.fault_injection.state import EventLog
 
@@ -23,6 +28,9 @@ class FaultInjectorHandle:
         mean_interval_seconds_of_cell_type: dict[str, float],
         cell_fault_forms: CellFaultForms,
         get_virtual_cells: Callable[[], list[dict]] | None = None,
+        injection_enabled: Callable[[], bool] | None = None,
+        poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
+        quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
     ) -> None:
         self.event_log = EventLog()
         self._base_url = base_url
@@ -38,6 +46,9 @@ class FaultInjectorHandle:
                 event_log=self.event_log,
                 cell_fault_forms=cell_fault_forms,
                 get_virtual_cells=get_virtual_cells,
+                injection_enabled=injection_enabled,
+                poll_interval_seconds=poll_interval_seconds,
+                quiescent_polls_required=quiescent_polls_required,
             )
 
         self._worker = PollingWorker(name="ft-random-fault-injector", run=inject_until_stopped)
@@ -71,6 +82,9 @@ def spawn_fault_injector(
     mean_interval_seconds_of_cell_type: dict[str, float],
     cell_fault_forms: CellFaultForms,
     get_virtual_cells: Callable[[], list[dict]] | None = None,
+    injection_enabled: Callable[[], bool] | None = None,
+    poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
+    quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
 ) -> FaultInjectorHandle:
     handle = FaultInjectorHandle(
         base_url=base_url,
@@ -78,6 +92,9 @@ def spawn_fault_injector(
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=cell_fault_forms,
         get_virtual_cells=get_virtual_cells,
+        injection_enabled=injection_enabled,
+        poll_interval_seconds=poll_interval_seconds,
+        quiescent_polls_required=quiescent_polls_required,
     )
     handle.start()
     return handle

@@ -305,7 +305,7 @@ Healing witness: one heal per target phase, at P+2 (healed = last cell, ckpt src
 ```
 Type: comparison; both sides run the identical command, only the target is wrapped in the
       fault injector, through the pipeline's target_side_context hook
-Entry: test_rollout_deterministic__kill_rollout__dp2_cp2__colocate.py, ft-long
+Entry: test_rollout_deterministic__kill_rollout__dp4__colocate.py, ft-long
 Steps: 8 rollouts (NUM_ROLLOUTS)
 Requires: mode.has_real_rollout, and ft_components == ("rollout",) exactly
 Compare: dumps rel <= 0 (bitwise); metrics rtol=0 / atol=0 over train/* and rollout/*,
@@ -316,12 +316,13 @@ Regime (both sides):
     --sglang-attention-backend flashinfer and --deterministic-mode
   - --debug-deterministic-collective and scenario_trainer_deterministic's deterministic env vars
   - --sglang-disable-radix-cache
-  - --rollout-health-check-interval 5
+  - --rollout-health-check-interval 1
 
 Injection (target side only):
-  1. Rollout cells, seed 42, exponential mean CRASH_INTERVAL_SECONDS (120s)
+  1. Rollout cells, seed 42, exponential mean CRASH_INTERVAL_SECONDS (30s)
   2. Forms drawn per (cluster backend, cell type), as in the soaks
-  3. Stop the injector with a 5s timeout, then re-use the soak's rollout witnesses: >= 2
+  3. Stop accepting faults after six completed rollouts, leaving the final two rollouts for recovery
+  4. Stop the injector with a 5s timeout, then re-use the soak's rollout witnesses: >= 2
      accepted rollout injections, each paired with one completed recovery cycle
 
 Assertions:
@@ -335,8 +336,12 @@ Assertions:
 - **Why it exists**: an engine dying and being replaced mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak only ever asserted survival.
 - **Why the shared deterministic recipe**: the assertion is deterministic replay across fresh inference engines, not true-on-policy training. Reusing the same FlashInfer recipe as the main deterministic trainer-FT test avoids a second, incompatible attention-backend contract.
 - **Why `--sglang-disable-radix-cache`**: a replacement engine serves with a cold prefix cache where the baseline's was warm, and deterministic inference is nowhere documented as prefix-cache-length invariant.
-- **Why `--rollout-health-check-interval 5`**: the generation retry loop gives up after ~60s while the default health check needs 90-120s to evict a dead worker, so a request could exhaust its retries against a corpse.
-- **Why Ray uses one quiescent poll**: colocate pauses health checks around every train/update cycle, so the generic 120-second stable-serving window can never complete. Ray's injection endpoint takes the inference controller's weight-update lock and rejects a cell after rollout health monitoring has paused, so one serving observation is enough to select a candidate while the endpoint atomically prevents a kill after the shared GPUs return to trainer ranks. Kubernetes keeps the generic 120-second gate.
+- **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
+- **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation before its lock-protected injection attempt.
+- **Why this scenario polls the fault window every 0.2 seconds**: colocated generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
+- **Why this scenario uses one quiescent poll**: colocate exposes Serving only between train phases; the injection endpoint takes the inference-controller lock and atomically rejects inactive servers, so the generic 120-second stable-serving gate is redundant for this scenario.
+- **Why the final two rollouts accept no new fault**: the scheduler keeps observing recovery but closes admission after rollout 5, so teardown cannot race a newly accepted replacement.
+- **Why Ray checks Serving again inside the injection lock**: the lock excludes weight-update and offload transitions, while the Serving check also rejects the subsequent colocated trainer phase after `offload()` has released the lock.
 - **Why every namespace, not just `train/`**: an engine crash shows up first in `rollout/raw_reward` or `rollout/log_probs`. `perf/` is left out by name, being wall-clock and throughput that a relaunch moves by definition, and a metric in neither namespace fails the run rather than being dropped quietly.
 - **Why the weights-moved gate**: bitwise equality is also satisfied by two runs that trained on nothing.
 - **Why not a loss or reward curve**: neither is a progress signal here — the reward is `deterministic_random`, a hash of the response, and GRPO's surrogate loss is not monotone even while a run learns. Over eight rollouts neither moves for a reason worth asserting, and the weights either changed or they did not.

@@ -25,6 +25,7 @@ def _run_injection_loop(
     event_log: state.EventLog | None = None,
     cell_fault_forms: fault_forms.CellFaultForms | None = None,
     get_virtual_cells: Callable[[], list[dict]] | None = None,
+    injection_enabled: Callable[[], bool] | None = None,
     stop_event: threading.Event,
 ) -> None:
     with patched_requests() as mock_requests:
@@ -39,6 +40,7 @@ def _run_injection_loop(
             event_log=event_log or state.EventLog(),
             cell_fault_forms=cell_fault_forms or api_server_fault_forms(),
             get_virtual_cells=get_virtual_cells,
+            injection_enabled=injection_enabled,
             poll_interval_seconds=1e-6,
             quiescent_polls_required=quiescent_polls_required,
         )
@@ -121,6 +123,36 @@ def test_virtual_cells_use_the_regular_targeted_injection_path() -> None:
 
     assert len(injected) == 1
     assert injected[0] in {"virtual-0", "virtual-1"}
+
+
+def test_disabled_injection_still_observes_cells_without_injecting() -> None:
+    """A closing scenario keeps recovery evidence while admitting no new fault."""
+    injected: list[str] = []
+    event_log = state.EventLog()
+    stop_event = threading.Event()
+    polls = {"n": 0}
+
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 3:
+            stop_event.set()
+        return mock_response({"items": [cell("actor-0", healthy=True), cell("actor-1", healthy=True)]})
+
+    def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+        injected.append(url)
+        return mock_response({})
+
+    _run_injection_loop(
+        fake_get=fake_get,
+        fake_post=fake_post,
+        cell_types=("actor",),
+        event_log=event_log,
+        injection_enabled=lambda: False,
+        stop_event=stop_event,
+    )
+
+    assert injected == []
+    assert event_log.events
 
 
 def test_a_kind_with_a_dead_replica_is_not_quiescent() -> None:
