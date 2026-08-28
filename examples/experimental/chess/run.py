@@ -10,6 +10,7 @@ assistant turns emitted by the chess harness.
 
 Args:
     run_id: Reproducible identifier for outputs and telemetry.
+    kl_loss_coef: Coefficient for the low-variance KL regularization loss.
     max_model_turns: Maximum policy moves in each game.
     save_checkpoint: Save the large full-parameter checkpoint at the final step.
     skip_prepare: Reuse an already prepared model and chess environment.
@@ -68,6 +69,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     rollout_top_p: float = 0.95
     rollout_max_response_len: int = 8192
     max_seq_len: int = 65536
+    kl_loss_coef: float = 0.0
 
     stockfish_elo: int = 1320
     max_model_turns: int = 8
@@ -108,6 +110,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("stockfish_startup_timeout_seconds must be positive")
         if self.stockfish_max_concurrent_games < 1:
             raise ValueError("stockfish_max_concurrent_games must be at least 1")
+        if self.kl_loss_coef < 0:
+            raise ValueError("kl_loss_coef must be nonnegative")
 
 
 def _run_dir(args: ScriptArgs) -> Path:
@@ -294,8 +298,8 @@ def _performance_args(args: ScriptArgs) -> str:
     )
 
 
-def _grpo_args() -> str:
-    return "--advantage-estimator grpo --use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
+def _grpo_args(args: ScriptArgs) -> str:
+    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
 
 
 def _optimizer_args() -> str:
@@ -360,7 +364,7 @@ def _build_train_args(args: ScriptArgs) -> str:
             _checkpoint_args(args),
             _rollout_args(args),
             _optimizer_args(),
-            _grpo_args(),
+            _grpo_args(args),
             _observability_args(args),
             _performance_args(args),
             _sglang_args(args),
