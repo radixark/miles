@@ -93,7 +93,25 @@ HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run.py \
 
 `HARBOR_ENV_TYPE` has no default: the backend decides whose quota a run spends.
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
-`EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
+`EnvironmentConfig.kwargs`); `HARBOR_OVERRIDE_STORAGE_MB` / `HARBOR_OVERRIDE_MEMORY_MB`
+replace the task's declared limits for any backend.
+
+### Daytona
+
+Daytona accounts have a total-disk quota, so keep concurrent sandboxes times
+`HARBOR_OVERRIDE_STORAGE_MB` under it. `'{"auto_snapshot": true}'` in
+`HARBOR_ENV_KWARGS` snapshots each task image on first use so later trials skip
+the build; `HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER` gives the first build of each
+task headroom. With terminus-2 (a host-process agent) the sandboxes need no
+route back to the trainer.
+
+```bash
+HARBOR_ENV_TYPE=daytona HARBOR_ENV_KWARGS='{"auto_snapshot": true}' HARBOR_OVERRIDE_STORAGE_MB=10240 \
+    python examples/experimental/harbor/run.py ... --prompt-data /path/to/tb2_train.jsonl   # data prepared with --agent-name terminus-2
+```
+
+For the multi-node GLM-5.2 744B-A40B LoRA shape, `run_glm52_lora_tb2_daytona.py`
+defaults to this backend.
 
 Every remaining knob — timeouts and their layering, failure semantics, the
 full env-var reference — is documented in `harbor_agent_function.py`'s header,
