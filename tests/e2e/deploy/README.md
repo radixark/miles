@@ -34,6 +34,8 @@ Steps: 3 rollouts
    - installing PRIMARY blocks until the run ends
    - addresses from the example's address_book; ordering, shared run uuid and uninstall from
      conftest_deploy/split/split_deployment.py
+   - whatever installed the releases removes them all when the run ends, PRIMARY included, and
+     waits for their pods, rather than leaving PRIMARY to the teardown it schedules for itself
 3. Compare: dumps and metrics bitwise; engine checksums identical per (rollout, engine); engine
    count; weights moved; nonzero gradients >= 2 rollouts
 ```
@@ -58,6 +60,8 @@ Releases: TRAINER solver-actor / verifier-actor, INFERENCE solver / verifier, PR
 ```
 Type: comparison (baseline=untouched, target=same command, orchestration script replaced mid-run)
 Steps: 6 rollouts
+Releases: baseline and target derive separate releases from the parent run id; every target
+          take-over upgrades the target release in place
 Timing: exact - the run parks at the scheduled step boundary (sleep-forever action) and the
         driver relaunches it there, so a take-over's landing is pinned, not raced
 Plan: a file under the base dump dir, not under either side's, which each run deletes (argv
@@ -127,4 +131,3 @@ Load-bearing: adds --save/--load and --save-interval 3 (bounds one take-over's c
 
 Hot restart rides the ft injection machinery so a future soak can mix it with pod kills.
 ```
-
