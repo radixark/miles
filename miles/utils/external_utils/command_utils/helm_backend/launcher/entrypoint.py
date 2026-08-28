@@ -404,11 +404,18 @@ def _remove_pending_uninstall(release: str, *, namespace: str) -> None:
 
 
 def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> None:
+    releases = _releases_of_run(release=release, namespace=namespace)
+    if len(releases) > 1:
+        logger.info(
+            f"This run is deployed as {len(releases)} releases, and a deployment other than {release} can be what "
+            f"failed, so the diagnosis covers all of them: {', '.join(releases)}"
+        )
+
     try:
         diagnosis = collect_diagnosis(
             namespace=namespace,
             output_dir=state_file.parent,
-            selector=Kubectl.release_selector(release),
+            selector=Kubectl.releases_selector(releases),
             state_file=state_file,
         )
     except Exception:
@@ -418,6 +425,21 @@ def _collect_diagnosis(*, release: str, namespace: str, state_file: Path) -> Non
     logger.info(f"The pods of this failed run are described under {diagnosis.directory}")
     if not diagnosis.is_complete:
         logger.warning(f"The diagnosis is incomplete, these could not be collected: {', '.join(diagnosis.missing)}")
+
+
+def _releases_of_run(*, release: str, namespace: str) -> list[str]:
+    parsed = ReleaseName.parse(release)
+    if parsed is None:
+        return [release]
+
+    try:
+        listed = Helm.list_releases(namespace=namespace)
+    except Exception:
+        logger.warning(f"Could not list what else run {parsed.run_id} installed; diagnosing {release} alone")
+        logger.debug("Listing the releases of the run failed", exc_info=True)
+        return [release]
+
+    return sorted({one for one in listed if _belongs_to_run(one, run_id=parsed.run_id)} | {release})
 
 
 def _write_helm_values(path: Path, values: dict[str, Any]) -> None:
