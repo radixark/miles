@@ -9,6 +9,8 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     build_train_args,
     compute_events_dir,
     compute_megatron_config,
+    compute_rollout_data_path_template,
+    compute_save_dir,
     compute_sglang_config,
     compute_trainer_id,
 )
@@ -43,6 +45,8 @@ class TestBuildTrainArgs:
         assert {flag: value for flag, value in flags.items() if flag not in CONFIG_FLAGS} == {
             "--hf-checkpoint": f"{solver_path}/",
             "--ref-load": f"{solver_path}/",
+            "--save": str(compute_save_dir(args)),
+            "--save-interval": str(args.save_interval),
             "--custom-generate-function-path": "examples.multi_policy.solver_verifier.generate",
             "--fully-async": None,
             "--prompt-data": f"{args.data_dir}/gsm8k/train.parquet",
@@ -82,6 +86,7 @@ class TestBuildTrainArgs:
             "--sglang-enable-metrics": None,
             "--ci-test": None,
             "--save-debug-event-data": str(compute_events_dir(args)),
+            "--save-debug-rollout-data": compute_rollout_data_path_template(args),
             "--attention-dropout": "0.0",
             "--hidden-dropout": "0.0",
             "--accumulate-allreduce-grads-in-fp32": None,

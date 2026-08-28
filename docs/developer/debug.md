@@ -12,7 +12,7 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 |---|---|
 | `--debug-rollout-only` | Run generation only. The training backend (Megatron or FSDP) is never initialized. |
 | `--debug-train-only` | Run training only. No SGLang engines are started. |
-| `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. |
+| `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. The template must contain `{rollout_id}`, which also carries the eval and policy prefixes. |
 | `--load-debug-rollout-data <path>` | Train from those recordings instead of generating. Implies `--debug-train-only`, since it does not start engines. |
 
 The two `--debug-*-only` flags are mutually exclusive and argument validation rejects

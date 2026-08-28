@@ -376,7 +376,7 @@ contract, session behavior, and model-family selection.
 |---|---|---|---|
 | `--debug-rollout-only` | flag | off | Skip Megatron, only spin up SGLang. |
 | `--debug-train-only` | flag | off | Skip SGLang, only spin up Megatron. |
-| `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. |
+| `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. The template must contain `{rollout_id}`. |
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
 | `--deterministic-mode` | flag | off | Megatron deterministic mode. |
 
