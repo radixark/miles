@@ -91,6 +91,9 @@ TRAINER_ROLE = "trainer"
 _PREPARE_CMD_ROLES = frozenset({TRAINER_ROLE})
 
 
+_DELEGATING_METHODS = ("execute_train", "exec_command_cpu", "exec_command_gpu", "exec_command_multi_node")
+
+
 class BaseCommandBackend(ABC):
     def __init__(self, config: CommandUtilConfig) -> None:
         from miles.utils.logging_utils import configure_logger_raw
@@ -98,6 +101,15 @@ class BaseCommandBackend(ABC):
         assert isinstance(config, CommandUtilConfig), "config must be a CommandUtilConfig"
         configure_logger_raw("launcher")
         self.config = config
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        for name in _DELEGATING_METHODS:
+            assert name not in vars(cls), (
+                f"{cls.__name__} defines its own {name}, but every command any backend runs has to pass through "
+                f"the one BaseCommandBackend defines, so that stubbing that single method out cannot be bypassed "
+                f"by a backend nobody remembered to name; implement _{name}_inner instead"
+            )
 
     def execute_train(
         self,
@@ -258,15 +270,34 @@ class BaseCommandBackend(ABC):
     def _execute_train_inner(self, *, request: ExecuteTrainRequest, config: ExecuteTrainConfig) -> None: ...
 
     def exec_command_cpu(self, cmd: str, capture_output: bool = False) -> str | None:
+        return self._exec_command_cpu_inner(cmd, capture_output=capture_output)
+
+    def exec_command_gpu(
+        self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
+    ) -> str | None:
+        return self._exec_command_gpu_inner(cmd, capture_output=capture_output, num_gpus_per_node=num_gpus_per_node)
+
+    def exec_command_multi_node(
+        self,
+        cmd: str,
+        capture_output: bool = False,
+        num_nodes: int | None = None,
+        num_gpus_per_node: int | None = None,
+    ) -> list[str | None]:
+        return self._exec_command_multi_node_inner(
+            cmd, capture_output=capture_output, num_nodes=num_nodes, num_gpus_per_node=num_gpus_per_node
+        )
+
+    def _exec_command_cpu_inner(self, cmd: str, capture_output: bool = False) -> str | None:
         return run_shell_command(cmd, capture_output=capture_output)
 
     @abstractmethod
-    def exec_command_gpu(
+    def _exec_command_gpu_inner(
         self, cmd: str, capture_output: bool = False, num_gpus_per_node: int | None = None
     ) -> str | None: ...
 
     @abstractmethod
-    def exec_command_multi_node(
+    def _exec_command_multi_node_inner(
         self,
         cmd: str,
         capture_output: bool = False,

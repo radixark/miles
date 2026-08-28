@@ -1,5 +1,6 @@
 import logging
 import shlex
+from collections.abc import Callable
 from pathlib import Path
 
 import ray
@@ -70,6 +71,7 @@ def start_mooncake_master(
     metrics_port: int = MOONCAKE_MASTER_METRICS_PORT,
     timeout: float = 30,
     log_path: str | Path = MOONCAKE_MASTER_LOG_PATH,
+    run_command: Callable[[str], str | None] | None = None,
 ) -> None:
     host = "127.0.0.1"
     if _is_tcp_server_ready(host, rpc_port):
@@ -78,7 +80,8 @@ def start_mooncake_master(
 
     log_path = Path(log_path)
     quoted_log_path = shlex.quote(str(log_path))
-    run_shell_command(
+    command_runner = run_command if run_command is not None else run_shell_command
+    command_runner(
         "pkill -x mooncake_master >/dev/null 2>&1 || true; "
         f"(setsid mooncake_master --rpc_port {rpc_port} --metrics_port {metrics_port} "
         f"> {quoted_log_path} 2>&1 &)"
@@ -86,7 +89,7 @@ def start_mooncake_master(
     try:
         wait_for_server_ready(host, rpc_port, timeout=timeout)
     except RuntimeError as exc:
-        run_shell_command("pkill -x mooncake_master >/dev/null 2>&1 || true")
+        command_runner("pkill -x mooncake_master >/dev/null 2>&1 || true")
         try:
             log_lines = log_path.read_text(errors="replace").splitlines()
             log_tail = "\n".join(log_lines[-100:]) or "<empty>"
