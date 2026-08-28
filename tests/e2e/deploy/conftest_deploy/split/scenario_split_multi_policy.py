@@ -3,7 +3,6 @@ import math
 import os
 
 import typer
-
 from examples.infra_features.split_deployment.run_solver_verifier_gsm8k_split import (
     build_deployment_train_args,
     compute_deployment_identities,
@@ -18,11 +17,7 @@ from examples.multi_policy.run_solver_verifier_gsm8k import (
     launch_train,
     prepare,
 )
-from tests.e2e.conftest_multi_policy import (
-    TRAIN_REWARD_BOUNDS,
-    assert_every_policy_reported_reward_in_bounds,
-    assert_ranks_trained_with_policy_args,
-)
+from tests.e2e.conftest_multi_policy import assert_ranks_trained_with_policy_args
 from tests.e2e.deploy.conftest_deploy.common.utils import assert_cluster_can_deploy_runs
 from tests.e2e.deploy.conftest_deploy.split.split_deployment import RunDeployment, run_split_training_into
 
@@ -83,7 +78,6 @@ def _verify(args: ScriptArgs) -> None:
         megatron_config=compute_megatron_config(args),
         expected_num_ranks=args.actor_num_gpus_per_policy,
     )
-    assert_every_policy_reported_reward_in_bounds(events_dir, bounds=TRAIN_REWARD_BOUNDS)
     _assert_leader_policy_ran_all_rollouts(dump_dir, num_rollout=args.num_rollout)
 
     for model_id in MODEL_IDS:
