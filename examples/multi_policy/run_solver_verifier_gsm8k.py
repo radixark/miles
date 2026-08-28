@@ -34,6 +34,7 @@ SHARED_TRAINER_OVERRIDES = dict(
 @dataclass
 class ScriptArgs(command_utils.ExecuteTrainConfig):
     num_rollout: int = 3
+    save_interval: int = 20
     num_gpus_per_node: int = 4
     solver_model_name: str = "Qwen2.5-0.5B-Instruct"
     verifier_model_name: str = "Qwen3-0.6B"
@@ -92,7 +93,12 @@ def build_train_args(
     events_dir = compute_events_dir(args)
     solver_path = args.model_path_of_model_id[SOLVER_MODEL_ID]
 
-    ckpt_args = f"--hf-checkpoint {solver_path}/ " f"--ref-load {solver_path}/ "
+    ckpt_args = (
+        f"--hf-checkpoint {solver_path}/ "
+        f"--ref-load {solver_path}/ "
+        f"--save {compute_save_dir(args)} "
+        f"--save-interval {args.save_interval} "
+    )
 
     policy_args = (
         f"--megatron-config {encode_pseudo_file(yaml.dump(megatron_config or compute_megatron_config(args)))} "
@@ -145,7 +151,11 @@ def build_train_args(
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test " f"--save-debug-event-data {events_dir} "
+    ci_args = (
+        "--ci-test "
+        f"--save-debug-event-data {events_dir} "
+        f"--save-debug-rollout-data {compute_rollout_data_path_template(args)} "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -197,8 +207,20 @@ def compute_trainer_id(model_id: str) -> str:
     return f"{model_id}-{ACTOR_ROLE}"
 
 
+def compute_output_base_dir(config: ExecuteTrainConfig) -> Path:
+    return Path(config.output_dir) / "multi_policy_solver_verifier" / config.run_id
+
+
 def compute_events_dir(config: ExecuteTrainConfig) -> Path:
-    return Path(config.output_dir) / "multi_policy_solver_verifier" / config.run_id / "events"
+    return compute_output_base_dir(config) / "events"
+
+
+def compute_rollout_data_path_template(config: ExecuteTrainConfig) -> str:
+    return str(compute_output_base_dir(config) / "rollout_data" / "{rollout_id}.pt")
+
+
+def compute_save_dir(config: ExecuteTrainConfig) -> Path:
+    return compute_output_base_dir(config) / "ckpt"
 
 
 def _compute_trainer_config(args: ScriptArgs, model_id: str) -> dict:
