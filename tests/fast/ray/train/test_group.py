@@ -1162,10 +1162,24 @@ class TestInitForwardsModelFlags:
 
 
 class TestTrainRunsFTTestActions:
+    @staticmethod
+    def _observe_stops(group: TrainerController) -> None:
+        manager = train_conftest.fake_worker_manager
+        stop_cells = manager.stop_cells
+
+        class _StopAndObserve:
+            def remote(self, cell_ids: list[str]):
+                for cell_id in cell_ids:
+                    group._cells_by_id.pop(cell_id, None)
+                return stop_cells.remote(cell_ids)
+
+        manager.stop_cells = _StopAndObserve()
+
     async def test_train_applies_the_action_armed_for_that_rollout_before_returning(self):
         """The FT scenario's stop must have landed by the time the driver starts the next rollout."""
         actions = json.dumps([{"at_rollout": 4, "action": "stop_cell_at_end", "cell_id": "trainer-actor-2"}])
         group = await _make_alive_controller(num_cells=3, ci_ft_test_actions=actions)
+        self._observe_stops(group)
 
         await group.train(rollout_id=4, rollout_data_pack=_DUMMY_DATA_PACK)
 
