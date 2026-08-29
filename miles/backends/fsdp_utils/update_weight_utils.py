@@ -17,6 +17,10 @@ except ImportError:
 
 from sglang.srt.utils import MultiprocessingSerializer
 
+from miles.backends.training_utils.serialized_buckets import (
+    align_serialized_bucket_columns,
+    empty_flattened_tensor_data,
+)
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 try:
@@ -187,12 +191,19 @@ class UpdateWeightFromTensor(UpdateWeight):
         )
 
         if dist.get_rank() == self._ipc_gather_src:
-            # TODO: assumes all ranks have the same number of dtype buckets
-            num_dtypes = len(gathered_serialized_batches[0])
-            assert num_dtypes > 0
-            for i in range(num_dtypes):
+            empty_serialized_tensor = None
+            _long_live_empty = []
+            for column in align_serialized_bucket_columns(gathered_serialized_batches):
+                if any(item is None for item in column):
+                    if empty_serialized_tensor is None:
+                        empty_tensor_data = empty_flattened_tensor_data(device=torch.cuda.current_device())
+                        _long_live_empty.append(empty_tensor_data)
+                        empty_serialized_tensor = MultiprocessingSerializer.serialize(
+                            empty_tensor_data, output_str=True
+                        )
+                    column = [item if item is not None else empty_serialized_tensor for item in column]
                 kwargs = {
-                    "serialized_named_tensors": [tensors[i] for tensors in gathered_serialized_batches],
+                    "serialized_named_tensors": column,
                     "load_format": "flattened_bucket",
                     "flush_cache": False,
                     "weight_version": str(weight_version),
