@@ -170,7 +170,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "Drop TransformerEngine's cached quantized weights before offloading the "
                     "training actor. They are rebuilt on the next forward, so backing them up "
-                    "to pinned host memory is pure overhead. Ignored under CUDA graphs."
+                    "to pinned host memory is pure overhead. Ignored when TransformerEngine "
+                    "is not in use or CUDA graphs are enabled."
                 ),
             )
             parser.add_argument(
