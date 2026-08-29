@@ -22,6 +22,28 @@ def test_script_args_rejects_negative_kl_loss_coefficient() -> None:
         )
 
 
+def test_grpo_args_uses_configured_repetition_reward_penalty() -> None:
+    args = ScriptArgs(
+        hardware="H200",
+        num_gpus_per_node=8,
+        repetition_reward_penalty=0.1,
+    )
+
+    assert "--repetition-reward-penalty 0.1 " in _grpo_args(args)
+
+
+def test_script_args_rejects_negative_repetition_reward_penalty() -> None:
+    with pytest.raises(
+        ValueError,
+        match="repetition_reward_penalty must be nonnegative",
+    ):
+        ScriptArgs(
+            hardware="H200",
+            num_gpus_per_node=8,
+            repetition_reward_penalty=-0.1,
+        )
+
+
 def test_optimizer_args_uses_configured_learning_rate() -> None:
     args = ScriptArgs(
         hardware="H200",
