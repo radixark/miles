@@ -69,13 +69,30 @@ class TrueOnPolicyKernelPolicy:
     tp_invariant_row_linear: bool
     deterministic_tp_allreduce: bool
 
+    @property
+    def resolved_attention_backend(self) -> str:
+        """The one attention-backend flag, driving BOTH engines (no GPU arch-gate).
+
+        Default comes from the contract (dense = ``fa3``, the tested Hopper path);
+        ``TOP_ATTN_BACKEND`` overrides it so flashinfer can be exercised on Hopper for
+        e2e parity tests, or forced on Blackwell (where fa3 does not build)."""
+        return os.environ.get("TOP_ATTN_BACKEND", self.sglang_attention_backend)
+
     def build_sglang_args(self) -> TrueOnPolicyArgList:
+        backend = self.resolved_attention_backend
         values = [
             "--sglang-true-on-policy-contract",
             self.contract.name,
             "--sglang-attention-backend",
-            self.sglang_attention_backend,
+            backend,
         ]
+        if backend == "flashinfer":
+            # radix cache is NOT enabled with flashinfer: sglang excludes it from
+            # RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND and force-disables radix for it
+            # under deterministic inference anyway; set explicitly to document intent. Costs
+            # rollout-generation prefix reuse on Blackwell (throughput, not parity -- TOP's
+            # recompute prefill is radix-free regardless). fa3 keeps radix.
+            values.append("--sglang-disable-radix-cache")
         if self.deterministic_inference:
             values.insert(0, "--sglang-enable-deterministic-inference")
         return TrueOnPolicyArgList(tuple(values))
@@ -105,6 +122,9 @@ class TrueOnPolicyKernelPolicy:
             "NCCL_ALGO": os.environ.get("NCCL_ALGO", "Ring"),
             "NVTE_ALLOW_NONDETERMINISTIC_ALGO": "0",
             "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+            # Pin the Megatron plugin's attention backend to the SAME flag sglang uses,
+            # so both engines agree without any per-process GPU arch detection.
+            "TOP_ATTN_BACKEND": self.resolved_attention_backend,
         }
 
 
