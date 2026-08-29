@@ -60,9 +60,8 @@ def compute_advantages(
         terminal_rewards = rewards
         token_rewards = []
         kl_coef = -args.kl_coef
-        for k in kl:
-            k *= kl_coef
-            token_rewards.append(k)
+        for per_token_kl in kl:
+            token_rewards.append(per_token_kl * kl_coef)
         advantages, returns = get_advantages_and_returns_batch(
             total_lengths=total_lengths,
             response_lengths=response_lengths,
