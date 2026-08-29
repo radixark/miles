@@ -113,6 +113,7 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
             "MILES_USE_LEGACY_ROLLOUT_V1": "1",
+            "VF_LOG_LEVEL": "INFO",
             "PYTHONPATH": (
                 f"{VERIFIERS_SITE_PACKAGES}:{CODE_GOLF_DIR}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}"
             ),
