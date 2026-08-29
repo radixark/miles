@@ -1,4 +1,4 @@
 openai-agents<0.5
-renderers>=0.1.8
+renderers==0.1.10
 # 0.2.1 requires OpenAI>=2.9, while SGLang pins OpenAI==2.6.1.
 verifiers>=0.2.0,<0.2.1
