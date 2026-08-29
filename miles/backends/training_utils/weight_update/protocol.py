@@ -76,7 +76,7 @@ class WeightTransferProtocol(ABC):
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
-    if args.colocate and args.update_weight_transfer_mode != "rdt":
+    if args.colocate:
         from miles.backends.training_utils.weight_update.protocols.cuda_ipc import UpdateWeightFromTensor
 
         return UpdateWeightFromTensor(args)
@@ -88,10 +88,6 @@ def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:
         from miles.backends.training_utils.weight_update.protocols.delta import UpdateWeightFromDiskDelta
 
         return UpdateWeightFromDiskDelta(args)
-    if args.update_weight_transfer_mode == "rdt":
-        from miles.backends.training_utils.weight_update.protocols.rdt import UpdateWeightFromRDT
-
-        return UpdateWeightFromRDT(args)
     if args.update_weight_transfer_mode == "p2p":
         from miles.backends.training_utils.weight_update.protocols.p2p import UpdateWeightP2P
 

@@ -6,18 +6,15 @@ import os
 import time
 from urllib.parse import quote
 
-import ray
 import requests
 import sglang_router
 from packaging.version import parse
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import kill_process_tree
 from urllib3.exceptions import NewConnectionError
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
 from miles.ray.ray_actor import RayActor
-from miles.ray.rollout.sglang_server_actor import SGLangServerActor
 from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.http_utils import get_host_info
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
@@ -85,32 +82,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     return p
 
 
-def _launch_sglang_server(server_args: ServerArgs, bundle_indices: list[int]):
-    """Host the Ray HTTP server in a same-job child actor. Returns (actor, scheduler_actors)."""
-    placement_group = ray.util.get_current_placement_group()
-    assert placement_group is not None
-    http_actor = (
-        ray.remote(SGLangServerActor)
-        .options(
-            num_cpus=0.2,
-            num_gpus=0,
-            scheduling_strategy=PlacementGroupSchedulingStrategy(
-                placement_group=placement_group,
-                placement_group_capture_child_tasks=True,
-                placement_group_bundle_index=bundle_indices[0],
-            ),
-        )
-        .remote()
-    )
-    scheduler_actors = ray.get(http_actor.start.remote(server_args, bundle_indices=bundle_indices))
-    _wait_server_healthy(
-        base_url=server_args.url(),
-        api_key=server_args.api_key,
-        is_process_alive=lambda: ray.get(http_actor.is_alive.remote()),
-    )
-    return http_actor, scheduler_actors
-
-
 def _wait_server_healthy(base_url, api_key, is_process_alive):
     headers = {
         "Content-Type": "application/json; charset=utf-8",
@@ -156,7 +127,6 @@ class SGLangEngine(RayActor):
         base_gpu_id: int | None = None,
         sglang_overrides: dict | None = None,
         num_gpus_per_engine: int | None = None,
-        pg_bundles: list[int] | None = None,
     ):
         self.args = args
         self.rank = rank
@@ -164,10 +134,6 @@ class SGLangEngine(RayActor):
         self.base_gpu_id = base_gpu_id
         self.sglang_overrides = sglang_overrides or {}
         self.num_gpus_per_engine = num_gpus_per_engine
-        self.pg_bundles = pg_bundles
-        self._scheduler_actors = []
-        self._sglang_server_actor = None
-        self.process = None
 
     def get_topology_info(self) -> dict:
         """Placement facts for the dashboard timeline. ``base_gpu_id`` is
@@ -273,30 +239,12 @@ class SGLangEngine(RayActor):
         _sanity_check_server_args(actual_server_args, expect_server_args)
 
     def _init_normal(self, server_args_dict):
-        use_rdt = self.args.update_weight_transfer_mode == "rdt"
-        if use_rdt:
-            if self.node_rank != 0:
-                # For a multi-node engine, the node-0 server's RayEngine spawns
-                # the SchedulerActors of ALL ranks (placed cross-node via the
-                # placement group), so non-zero node ranks launch nothing.
-                return
-            server_args_dict["use_ray"] = True
-            server_args_dict["enable_rdt_weight_sync"] = True
-            assert self.pg_bundles
-        logger.info(
-            f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
-            f"{' (use_ray=True for RDT)' if use_rdt else ''}"
-        )
+        logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
         # ServerArgs refuses writes once its declarations materialise, so the ipv6
         # host loses its brackets here rather than at the launch sites. The dict
         # keeps the bracketed form, which self.server_host uses to build urls.
         server_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
-        if use_rdt:
-            self._sglang_server_actor, self._scheduler_actors = _launch_sglang_server(
-                server_args, bundle_indices=self.pg_bundles
-            )
-        else:
-            self.process = launch_server_process(server_args)
+        self.process = launch_server_process(server_args)
 
         if self.node_rank == 0 and self.router_ip and self.router_port:
             if parse(sglang_router.__version__) <= parse("0.2.1") or self.args.use_miles_router:
@@ -516,9 +464,6 @@ class SGLangEngine(RayActor):
     def shutdown(self):
         if self.args.rollout_external:
             return
-        if self._sglang_server_actor is None and self.process is None:
-            # Non-zero node ranks of an RDT multi-node engine launch no server.
-            return
 
         logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
         if self.node_rank == 0:
@@ -548,11 +493,6 @@ class SGLangEngine(RayActor):
 
             if response is not None:
                 response.raise_for_status()
-        if self._sglang_server_actor is not None:
-            ray.kill(self._sglang_server_actor)
-            self._sglang_server_actor = None
-            self._scheduler_actors = []
-            return
         kill_process_tree(self.process.pid)
 
     def get_weight_version(self):
@@ -572,10 +512,6 @@ class SGLangEngine(RayActor):
             "register_lora_adapter",
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
-
-    def get_scheduler_actors(self) -> list:
-        """Return this engine's SchedulerActor handles (RDT mode, use_ray=True)."""
-        return self._scheduler_actors
 
     def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""

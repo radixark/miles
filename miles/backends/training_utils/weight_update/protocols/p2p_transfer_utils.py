@@ -7,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import ray
 import torch
+from mooncake.engine import TransferEngine
 from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -200,9 +201,6 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
 
 
 def create_transfer_engine():
-    # Lazy: the RDT path imports this module but does not need mooncake.
-    from mooncake.engine import TransferEngine
-
     transfer_engine = TransferEngine()
     local_ip = ray._private.services.get_node_ip_address()
     transfer_engine.initialize(local_ip, "P2PHANDSHAKE", "rdma", "")

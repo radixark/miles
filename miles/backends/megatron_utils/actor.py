@@ -249,7 +249,7 @@ class MegatronTrainRayActor(TrainRayActor):
         from .update_weight.hf_weight_iterator import get_hf_weight_iterator
 
         is_lora = lora_rollout_enabled(args)
-        uses_colocate_protocol = self.args.colocate and self.args.update_weight_transfer_mode != "rdt"
+        uses_colocate_protocol = self.args.colocate
         if is_lora and not uses_colocate_protocol:
             assert args.megatron_to_hf_mode == "bridge", (
                 "LoRA weight sync over distributed engines requires "
