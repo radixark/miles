@@ -32,9 +32,11 @@ template retains reasoning and applies the correct message-boundary semantics.
 - No checkpoint is saved by default. A full Qwen 3.6 checkpoint is roughly
   464 GB; pass `--save-checkpoint` only when that artifact is wanted.
 
-The turn-cap reward is `1.0` when the final Stockfish score from the policy's
-perspective is positive and `0.0` otherwise. Games ending normally keep the
-harness rewards: win `1.0`, draw `0.0`, loss `-1.0`, infrastructure error `0.0`.
+The base reward is `1.0` for a win or a positive final Stockfish score at the
+turn cap, and `0.0` otherwise. By default, Miles subtracts `0.1` once from any
+rollout whose training samples contain a repetitive 10,000-character window.
+Windows overlap with a 5,000-character stride, and the final suffix is checked.
+TITO compaction siblings share this penalty so the rollout keeps one reward.
 Groups containing aborted or infrastructure-error games are rejected and
 resampled rather than trained as chess failures.
 
