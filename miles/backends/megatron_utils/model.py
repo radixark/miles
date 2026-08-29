@@ -498,6 +498,8 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "loss_weights",
+                "loss_kinds",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",

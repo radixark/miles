@@ -82,6 +82,15 @@ class MultiLoRAController:
     async def retire_adapters(self) -> list[str]:
         return await self.backend.retire_adapters()
 
+    def collect_operation_round(self) -> dict:
+        return self.backend.collect_operation_round()
+
+    def complete_operations(self, results: dict) -> None:
+        self.backend.complete_operations(results)
+
+    def operation_queue_depths(self) -> dict[str, int]:
+        return self.backend.operation_queue_depths()
+
     async def free_slot(self, name: str) -> int:
         return await self.backend.free_slot(name)
 

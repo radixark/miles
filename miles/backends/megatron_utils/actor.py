@@ -638,6 +638,20 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         return train_step_outcome
 
+    def optim_step_adapter(self, slot: int, adam_params: dict, ordinal: int) -> dict:
+        """Data-less per-adapter optimizer step; a replayed ordinal answers the previous metrics (RPC retries)."""
+        if not hasattr(self, "_adapter_step_replies"):
+            self._adapter_step_replies: dict[int, tuple[int, dict]] = {}
+        last = self._adapter_step_replies.get(slot)
+        if last is not None and ordinal <= last[0]:
+            return last[1]
+        metrics = self._apply_adapter_optim_step(slot, adam_params)
+        self._adapter_step_replies[slot] = (ordinal, metrics)
+        return metrics
+
+    def _apply_adapter_optim_step(self, slot: int, adam_params: dict) -> dict:
+        raise NotImplementedError("AdamParams write and the selective step land with the next slice")
+
     @with_logs
     @timer
     def reconcile_adapters(self) -> None:

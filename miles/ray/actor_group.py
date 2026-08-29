@@ -134,6 +134,11 @@ class RayTrainGroup:
         (load new, cleanup gone). Called by the trainer before generate."""
         await self._broadcast("reconcile_adapters")
 
+    async def optim_step_adapter(self, slot: int, adam_params: dict, ordinal: int) -> dict:
+        """Data-less per-adapter optimizer step (collective across ranks); rank 0 speaks for the group."""
+        results = await self._broadcast("optim_step_adapter", slot, adam_params, ordinal)
+        return results[0] if results else {}
+
     async def onload(self):
         await self._broadcast("wake_up")
 

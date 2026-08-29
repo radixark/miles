@@ -1849,6 +1849,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
             )
             parser.add_argument(
+                "--tinker-mode",
+                action="store_true",
+                default=False,
+                help="Serve the tinker wire protocol: data/rewards arrive as client operations, so registrations skip the data-path and reward checks",
+            )
+            parser.add_argument(
                 "--multi-lora-disable-service-mode",
                 action="store_false",
                 dest="multi_lora_service_mode",

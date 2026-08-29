@@ -84,12 +84,14 @@ class MultiLoRABackend:
         # API otherwise: the data path kills the shared rollout producer thread
         # and an empty reward config burns every generated sample, either way
         # stalling ALL adapters behind a misleading empty-batch timeout.
-        if not Path(config.data).expanduser().exists():
+        # Tinker registrations skip both gates: data arrives as client operations and rewards are client-side.
+        tinker_mode = bool(getattr(self.args, "tinker_mode", False))
+        if not tinker_mode and not Path(config.data).expanduser().exists():
             raise ValueError(
                 f"Adapter '{name}' data path '{config.data}' does not exist "
                 "(checked from the controller process, which runs on the head node with the rollout data source)"
             )
-        if (
+        if not tinker_mode and (
             config.custom_rm_path is None
             and not (config.rm_type or "").strip()
             and getattr(self.args, "custom_rm_path", None) is None

@@ -7,6 +7,7 @@ from pathlib import Path
 import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
+from miles.ray.multi_lora.operation_executor import apply_tinker_defaults, run_operation_round
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
@@ -32,6 +33,8 @@ async def main(args):
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."
     configure_logger(args, source=MainProcessIdentity())
+    if args.tinker_mode:
+        apply_tinker_defaults(args)
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
@@ -80,6 +83,11 @@ async def main(args):
         # With nothing active, generate would wait forever.
         post_update = await get_multi_lora_controller().snapshot.remote()
         if not (post_update["active"] or post_update["retiring"]):
+            continue
+
+        if args.tinker_mode:
+            # Training data arrives as client operations; no dataset generation runs.
+            rollout_id = await run_operation_round(args, actor_model, rollout_id)
             continue
 
         try:
