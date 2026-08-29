@@ -88,7 +88,13 @@ def _resolve_session_server_ports(start: int | None, workers: int) -> list[int]:
         raise ValueError("--session-server-workers must be at least 1.")
     # TODO(#1837): Refactor IP/port allocation; keep this naive for now.
     if start is None:
-        start = find_available_port(random.randint(5000, 6000))
+        search_start = random.randint(5000, 6000)
+        while True:
+            start = find_available_port(search_start)
+            ports = list(range(start, start + workers))
+            if all(is_port_available(port) for port in ports):
+                return ports
+            search_start = ports[-1] + 1
     return list(range(start, start + workers))
 
 
