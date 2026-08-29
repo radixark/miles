@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.naming import parse_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
@@ -23,6 +24,8 @@ class FTTestAction(FrozenStrictBaseModel):
 
 
 _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestAction])
+
+_CELL_OBSERVED_TIMEOUT_SECONDS = 300.0
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
@@ -64,8 +67,24 @@ class FTTestActionControllerExecutor:
                 worker_manager = RayWorkerManager.get_handle()
                 if action.action == "stop_cell_at_end":
                     await worker_manager.stop_cells.remote([action.cell_id])
+                    await self._wait_cell_observed(action.cell_id, observed=False)
                 elif action.action == "start_cell_at_end":
                     await worker_manager.start_cells.remote([action.cell_id])
+                    await self._wait_cell_observed(action.cell_id, observed=True)
+
+    async def _wait_cell_observed(self, cell_id: str, *, observed: bool) -> None:
+        async def _check(_remaining: float) -> None:
+            if (cell_id in self._controller.cell_ids) != observed:
+                raise TimeoutError(f"{cell_id} is not observed as {'present' if observed else 'gone'} yet")
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=_CELL_OBSERVED_TIMEOUT_SECONDS,
+            retry_on=TimeoutError,
+            initial_delay=1.0,
+            max_delay=5.0,
+            log_fields=dict(tag="ft", op="wait_cell_observed", cell=cell_id, observed=observed),
+        )
 
     def _check_action_target(self, action: FTTestAction) -> None:
         parsed = parse_cell_id(action.cell_id)
