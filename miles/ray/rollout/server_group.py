@@ -73,9 +73,6 @@ class ServerGroup:
 
         pg, reordered_bundle_indices, reordered_gpu_ids = self.pg
 
-        # RDT: reuse miles' PG so RayEngine does not auto-create a second one.
-        rdt_reuse_pg = self.args.update_weight_transfer_mode == "rdt"
-
         RolloutRayActor = ray.remote(SGLangEngine)
 
         new_engines = []
@@ -87,11 +84,8 @@ class ServerGroup:
                 continue
 
             global_rank = self.rank_offset + i
-            # With PG reuse the SchedulerActors take the bundles' full GPUs
-            # (num_gpus=1 each), so the engine coordinator actor must not
-            # consume any GPU of its bundle.
-            num_gpus = 0 if rdt_reuse_pg else 0.2
-            num_cpus = 0.2
+            num_gpus = 0.2
+            num_cpus = num_gpus
 
             gpu_index = self.gpu_offset + i * num_gpu_per_engine
             base_gpu_id = int(reordered_gpu_ids[gpu_index])
@@ -123,15 +117,6 @@ class ServerGroup:
             }
             env_vars.update(dumper_utils.get_sglang_env(self.args))
 
-            # The node-0 facade launches SGLangServerActor (same job), which
-            # spawns SchedulerActors for ALL of the engine's ranks — so it
-            # gets the full engine's bundle list, spanning every node.
-            rdt_pg_kwargs = {}
-            if rdt_reuse_pg and i % self.nodes_per_engine == 0:
-                rdt_pg_kwargs = dict(
-                    pg_bundles=[reordered_bundle_indices[gpu_index + k] for k in range(self.num_gpus_per_engine)],
-                )
-
             rollout_engine = RolloutRayActor.options(
                 num_cpus=num_cpus,
                 num_gpus=num_gpus,
@@ -146,7 +131,6 @@ class ServerGroup:
                 base_gpu_id=base_gpu_id,
                 sglang_overrides=self.sglang_overrides,
                 num_gpus_per_engine=self.num_gpus_per_engine,
-                **rdt_pg_kwargs,
             )
 
             new_engines.append((global_rank, rollout_engine))

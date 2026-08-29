@@ -20,7 +20,7 @@ pylatexenc
 pytest-asyncio
 pyyaml
 qwen_vl_utils # for VLM
-ray[default]>=2.56.0
+ray[default]
 ring_flash_attn; platform_system == "Linux"
 safetensors>=0.8.0  # samples-reply wire codec; malformed-payload exception contract validated on 0.8.0
 sglang-router>=0.2.3
