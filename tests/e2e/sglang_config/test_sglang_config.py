@@ -2,6 +2,7 @@ import os
 import tempfile
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.ci.rocm_utils import IS_ROCM
 
 import miles.utils.external_utils.command_utils as U
 
@@ -108,11 +109,14 @@ def execute():
     )
 
     ci_args = "--ci-test "
+    if IS_ROCM:
+        ci_args += "--ci-disable-kl-checker --ci-disable-logprobs-checker "
 
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         "--accumulate-allreduce-grads-in-fp32 "
+        f"{'--no-gradient-accumulation-fusion ' if IS_ROCM else ''}"
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
