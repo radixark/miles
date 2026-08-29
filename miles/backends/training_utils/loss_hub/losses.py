@@ -246,9 +246,12 @@ def policy_loss_function(
             tis_func = vanilla_tis_function
 
         ois = (-ppo_kl).exp()
+        # Pass cur_log_probs (current pi_theta, grad-carrying) so corrections can form
+        # pi_theta/pi_rollout, not just the frozen pi_theta_old/pi_rollout of vanilla TIS.
         tis_kwargs = {
             "args": args,
             "pg_loss": pg_loss,
+            "cur_log_probs": train_log_probs_list,
             "train_log_probs": trainer_scored_log_probs,
             "rollout_log_probs": rollout_old_log_probs,
             "loss_masks": batch["loss_masks"],
