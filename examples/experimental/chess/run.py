@@ -12,6 +12,7 @@ Args:
     run_id: Reproducible identifier for outputs and telemetry.
     learning_rate: Constant Adam learning rate used for policy updates.
     kl_loss_coef: Coefficient for the low-variance KL regularization loss.
+    repetition_reward_penalty: Reward subtracted once from repetitive rollouts.
     load_checkpoint_path: Optional full training checkpoint to resume.
     override_opt_param_scheduler: Use current scheduler settings when resuming.
     max_model_turns: Maximum policy moves in each game.
@@ -74,6 +75,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     max_seq_len: int = 65536
     learning_rate: float = 1e-6
     kl_loss_coef: float = 0.0
+    repetition_reward_penalty: float = 0.1
 
     stockfish_elo: int = 1320
     max_model_turns: int = 8
@@ -118,6 +120,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("stockfish_max_concurrent_games must be at least 1")
         if self.kl_loss_coef < 0:
             raise ValueError("kl_loss_coef must be nonnegative")
+        if self.repetition_reward_penalty < 0:
+            raise ValueError("repetition_reward_penalty must be nonnegative")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be positive")
         if self.override_opt_param_scheduler and self.load_checkpoint_path is None:
@@ -313,7 +317,7 @@ def _performance_args(args: ScriptArgs) -> str:
 
 
 def _grpo_args(args: ScriptArgs) -> str:
-    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 "
+    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty {args.repetition_reward_penalty} "
 
 
 def _optimizer_args(args: ScriptArgs) -> str:
