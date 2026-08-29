@@ -29,7 +29,17 @@ from unittest.mock import patch
 
 import pytest
 
-from miles.utils.http_utils import wait_for_server_ready
+from miles.utils.http_utils import bearer_auth_headers, wait_for_server_ready
+
+
+@pytest.mark.parametrize("falsy", [None, ""])
+def test_bearer_auth_headers_empty_for_falsy(falsy):
+    assert bearer_auth_headers(falsy) == {}
+    assert "None" not in str(bearer_auth_headers(falsy))
+
+
+def test_bearer_auth_headers_sends_bearer_when_set():
+    assert bearer_auth_headers("secret") == {"Authorization": "Bearer secret"}
 
 
 def _find_free_port() -> int:

@@ -14,7 +14,7 @@ from miles.rollout.generate_utils.sample_utils import reward_log_summary, sample
 from miles.rollout.inference_rollout.inference_rollout_common import GenerateState, generate_and_rm_group
 from miles.rollout.submission_scheduler import make_submission_scheduler
 from miles.utils import dumper_utils
-from miles.utils.http_utils import get, post, router_worker_base_urls
+from miles.utils.http_utils import bearer_auth_headers, get, post, router_worker_base_urls
 from miles.utils.misc import as_completed_async, call_agent_abort_hook, load_function
 from miles.utils.types import Sample
 
@@ -29,7 +29,8 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
     urls = await get_worker_urls(args)
     logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+    worker_headers = bearer_auth_headers(getattr(args, "sglang_api_key", None))
+    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}, headers=worker_headers) for url in urls])
 
     # Let the agent integration tear down its in-flight trials so they stop hitting
     # SGLang, instead of running on until their own max_seq_len / timeout.
@@ -54,11 +55,18 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
 
 
 async def get_worker_urls(args: Namespace):
+    router_headers = bearer_auth_headers(getattr(args, "router_api_key", None))
     if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
+        response = await get(
+            f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers",
+            headers=router_headers,
+        )
         urls = response["urls"]
     else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+        response = await get(
+            f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers",
+            headers=router_headers,
+        )
         urls = [worker["url"] for worker in response["workers"]]
     return router_worker_base_urls(urls)
 

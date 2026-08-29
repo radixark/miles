@@ -20,7 +20,7 @@ from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
-from miles.utils.http_utils import get, post, router_worker_base_urls
+from miles.utils.http_utils import bearer_auth_headers, get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
@@ -396,16 +396,24 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
     assert not state.aborted
     state.aborted = True
 
+    router_headers = bearer_auth_headers(getattr(args, "router_api_key", None))
     if parse(sglang_router.__version__) <= parse("0.2.1") or args.use_miles_router:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers")
+        response = await get(
+            f"http://{args.sglang_router_ip}:{args.sglang_router_port}/list_workers",
+            headers=router_headers,
+        )
         urls = response["urls"]
     else:
-        response = await get(f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers")
+        response = await get(
+            f"http://{args.sglang_router_ip}:{args.sglang_router_port}/workers",
+            headers=router_headers,
+        )
         urls = [worker["url"] for worker in response["workers"]]
     urls = router_worker_base_urls(urls)
 
     logger.info(f"Abort request for {urls}")
-    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}) for url in urls]
+    worker_headers = bearer_auth_headers(getattr(args, "sglang_api_key", None))
+    abort_tasks = [post(f"{url}/abort_request", {"abort_all": True}, headers=worker_headers) for url in urls]
     abort_results = await asyncio.gather(*abort_tasks, return_exceptions=True)
     for url, result in zip(urls, abort_results, strict=False):
         if isinstance(result, Exception):
