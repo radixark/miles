@@ -27,6 +27,9 @@ _FIELDS_WITHOUT_A_RENDERABLE_CLI: dict[str, str] = {
     "custom_sigquit_handler": "A Python-only callable hook; sglang registers no CLI option for it.",
     "stat_loggers": "A Python-only injection point; sglang registers no CLI option for it.",
     "uses_mamba_radix_cache": "Derived inside __post_init__; sglang registers no CLI option for it.",
+    "_speculative_draft_quantization_explicitly_set": (
+        "Derived inside __post_init__ and declared Arg(no_cli=True); sglang registers no CLI option for it."
+    ),
     "cuda_graph_config": (
         "The CLI parses a validated per-phase JSON object while ServerArgs holds a CudaGraphConfig "
         "instance, so no generically rendered token parses back to the same value."
