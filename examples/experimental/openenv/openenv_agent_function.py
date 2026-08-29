@@ -28,9 +28,10 @@ Env vars:
   MILES_ROUTER_EXTERNAL_HOST  optional host rewrite for off-cluster agents
 
 Server contract: the env server must run tbench2_env at or after the
-huggingface/OpenEnv#1012 merge (04d259ea6; install per the README) —
+huggingface/OpenEnv#1025 merge (38b2a3135; install per the README) —
 canonical tests/test.sh scoring inside the standard ``evaluate`` action, task
-WORKDIR resolved server-side, verifier assets withheld. The adapter verifies
+WORKDIR resolved server-side, verifier assets withheld, and a verifier that
+never writes its verdict reported as a scoring error rather than reward 0. The adapter verifies
 the contract on every episode rather than trusting the deployment: an
 ``evaluate`` reply without the canonical-harness marker is treated as no
 verdict and the episode is dropped with a warning (see the guard in
@@ -338,7 +339,8 @@ async def multi_turn(
         # No canonical verdict -> reward None (the training wrapper drops the
         # sample instead of ingesting a false-negative 0):
         #   - reward=None / `error` set: the scoring step itself errored
-        #     server-side (toolkit timeout, staging I/O) -- not tests failing.
+        #     server-side (toolkit timeout, staging I/O, or test.sh never
+        #     wrote reward.txt) -- not tests failing.
         #   - harness marker absent: the server scored, but not through the
         #     canonical tests/test.sh (a tbench2_env install predating the
         #     contract in the module docstring, or a task dir without test.sh
