@@ -178,6 +178,10 @@ def setup_model_and_optimizer(
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):
+        if args.stream_optimizer_state_to_disk:
+            from miles_plugins.optimizers.nvme_stream import setup_muon_state_on_disk
+
+            setup_muon_state_on_disk(args)
         if config.muon_split_qkv and "inkling" in (getattr(args, "custom_model_provider_path", None) or ""):
             if is_first_replica_megatron_main_rank():
                 logger.info(
@@ -201,7 +205,8 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if args.stream_optimizer_state_to_disk:
+    if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
+        # Muon took the chunked-offloader route above; this store is DistOpt-only.
         from miles_plugins.optimizers.nvme_stream import setup_optimizer_state_streaming
 
         setup_optimizer_state_streaming(args, optimizer)

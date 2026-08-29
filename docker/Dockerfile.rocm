@@ -106,7 +106,7 @@ RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==$
     cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')" && \
     rm -rf /tmp/mc
 
-RUN pip install flash-linear-attention==0.4.2
+RUN pip install flash-linear-attention==0.5.2
 
 # Enable deepseek-ai/TileKernels on ROCm/gfx950 for mHC and FP8 QAT cast-back.
 # These temporary build-time patches make tile_kernels import lazy, remove CUDA/Hopper-only PDL from mhc_post,
