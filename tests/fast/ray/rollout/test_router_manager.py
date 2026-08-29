@@ -60,7 +60,7 @@ class TestStartSessionServer:
             sglang_router_ip="127.0.0.1",
             sglang_router_port=20000,
             session_server_ip="127.0.0.1",
-            session_server_port=[20001],
+            session_server_port=20001,
         )
         with patch("miles.ray.rollout.router_manager.is_port_available", return_value=False):
             with pytest.raises(RuntimeError, match="already in use"):
@@ -70,18 +70,15 @@ class TestStartSessionServer:
 class TestResolveSessionServerPorts:
     def test_none_auto_allocates_one_port(self):
         with patch("miles.ray.rollout.router_manager.find_available_port", return_value=20002):
-            assert _resolve_session_server_ports(None) == [20002]
+            assert _resolve_session_server_ports(None, 1) == [20002]
 
-    def test_single_value_is_a_single_server(self):
-        assert _resolve_session_server_ports([30000]) == [30000]
+    def test_one_worker_uses_the_starting_port(self):
+        assert _resolve_session_server_ports(30000, 1) == [30000]
 
-    def test_two_values_expand_to_half_open_range(self):
-        assert _resolve_session_server_ports([30000, 30004]) == [30000, 30001, 30002, 30003]
+    def test_workers_expand_from_the_starting_port(self):
+        assert _resolve_session_server_ports(30000, 4) == [30000, 30001, 30002, 30003]
 
-    def test_empty_range_raises(self):
-        with pytest.raises(ValueError, match="empty"):
-            _resolve_session_server_ports([30004, 30000])
-
-    def test_more_than_two_values_raises(self):
-        with pytest.raises(ValueError, match="one port or a start/end range"):
-            _resolve_session_server_ports([30000, 30001, 30002])
+    @pytest.mark.parametrize("workers", [0, -1])
+    def test_non_positive_workers_raise(self, workers):
+        with pytest.raises(ValueError, match="at least 1"):
+            _resolve_session_server_ports(30000, workers)

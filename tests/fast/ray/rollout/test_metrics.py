@@ -4,12 +4,87 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args, make_sample, make_samples_grouped
 
 from miles.ray.rollout.metrics import (
+    _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+from miles.utils.types import AdapterRef
+
+
+class TestEpisodeResponseLengthMetrics:
+    def test_compacted_siblings_are_summed_before_computing_statistics(self):
+        samples = [
+            make_sample(group_index=0, index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(group_index=0, index=0, rollout_id=10, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(group_index=0, index=1, rollout_id=11, response_length=4, loss_mask=[1, 1, 1, 1]),
+            make_sample(group_index=1, index=2, rollout_id=10, response_length=8, loss_mask=[1, 1, 1, 1, 1, 1, 0, 0]),
+        ]
+
+        out = _compute_episode_response_length_metrics(samples)
+
+        assert out == {
+            "episode_response_length/mean": pytest.approx(5.0),
+            "episode_response_length/median": pytest.approx(5.0),
+            "episode_response_length/max": pytest.approx(6.0),
+            "episode_response_length/min": pytest.approx(4.0),
+            "episode_total_response_length/mean": pytest.approx(8.0),
+        }
+
+    def test_single_sample_rollouts_match_sample_level_statistics(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(index=1, rollout_id=11, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(index=2, rollout_id=12, response_length=4, loss_mask=[1, 1, 1, 1]),
+        ]
+
+        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), samples)
+
+        for statistic in ("mean", "median", "max", "min"):
+            assert out[f"episode_response_length/{statistic}"] == out[f"response_len/{statistic}"]
+
+    def test_empty_samples_emit_no_episode_length_metrics(self):
+        assert _compute_episode_response_length_metrics([]) == {}
+
+    def test_total_length_counts_masked_and_unmasked_tokens_in_every_sample(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, response_length=5, loss_mask=[1, 1, 0, 0, 0]),
+            make_sample(index=0, rollout_id=10, response_length=7, loss_mask=[1, 1, 1, 0, 0, 0, 0]),
+            make_sample(index=1, rollout_id=11, response_length=4, loss_mask=[1, 1, 1, 1]),
+        ]
+
+        out = _compute_episode_response_length_metrics(samples)
+
+        assert out["episode_response_length/mean"] == pytest.approx(4.5)
+        assert out["episode_total_response_length/mean"] == pytest.approx(8.0)
+
+    def test_multi_lora_samples_emit_no_episode_length_metrics(self):
+        samples = [
+            make_sample(index=0, rollout_id=10, adapter=AdapterRef(name="adapter-a", slot=0)),
+            make_sample(index=0, rollout_id=10, adapter=AdapterRef(name="adapter-b", slot=1)),
+        ]
+
+        assert _compute_episode_response_length_metrics(samples) == {}
+        out = _compute_metrics_from_samples(make_args(advantage_estimator="ppo"), samples)
+        assert not any(key.startswith("episode_response_length/") for key in out)
+        assert "episode_total_response_length/mean" not in out
+        assert out["response_len/mean"] == pytest.approx(4.0)
+
+    def test_removed_sample_has_zero_effective_length_but_keeps_total_length(self):
+        sample = make_sample(
+            index=0,
+            rollout_id=10,
+            response_length=5,
+            loss_mask=[1, 1, 1, 1, 1],
+            remove_sample=True,
+        )
+
+        out = _compute_episode_response_length_metrics([sample])
+
+        assert out["episode_response_length/mean"] == pytest.approx(0.0)
+        assert out["episode_total_response_length/mean"] == pytest.approx(5.0)
 
 
 class TestTrainingSampleMetrics:
@@ -45,6 +120,21 @@ class TestTrainingSampleMetrics:
             make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
             make_sample(group_index=0, index=0, rollout_id=10, reward=1.0),
             make_sample(group_index=1, index=1, rollout_id=10, reward=0.0),
+        ]
+
+        out = _compute_training_sample_metrics(args, samples)
+
+        assert out["episode_raw_reward"] == pytest.approx(0.5)
+
+    def test_rollout_ids_are_scoped_by_adapter(self):
+        args = make_args(reward_key=None)
+        adapter_a = AdapterRef(name="adapter-a", slot=0)
+        adapter_b = AdapterRef(name="adapter-b", slot=1)
+        samples = [
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_a, reward=1.0),
+            make_sample(group_index=0, rollout_id=10, adapter=adapter_b, reward=0.0),
         ]
 
         out = _compute_training_sample_metrics(args, samples)
@@ -214,6 +304,8 @@ class TestTitoMismatchMetrics:
 
         assert logged["rollout/num_training_samples"] == 4
         assert logged["rollout/episode_raw_reward"] == pytest.approx(1.5)
+        assert logged["rollout/episode_response_length/mean"] == pytest.approx(4.0)
+        assert logged["rollout/episode_total_response_length/mean"] == pytest.approx(4.0)
         assert logged["rollout/tito_session_mismatch_rate/v2/assistant_text"] == 0.25
         assert "rollout/tito_session_mismatch_rate/assistant_text" not in logged
 

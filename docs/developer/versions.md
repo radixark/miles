@@ -44,7 +44,7 @@ The default build-args are the version surface:
 | `MILES_COMMIT` | `main` | The Miles checkout baked into the image |
 | `ENABLE_CUDA_13` | `1` | CUDA 13 plus the Mooncake structured-object-store wheel; `0` selects the CUDA 12.9 path |
 | `WHEELS_REPO` | `yueming-yuan/miles-wheels` | The prebuilt-wheels repository |
-| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-x86_64` / `cu130-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
+| `WHEELS_TAG_X86` / `WHEELS_TAG_ARM64` | `cu130-torch213-x86_64` / `cu130-torch213-aarch64` | Two complete wheels releases, selected by `TARGETARCH` and installed verbatim |
 
 Two design choices are worth naming. The Dockerfile holds the defaults and `build.py` owns
 the per-variant deltas, so there is exactly one place to look for what a variant changes.

@@ -376,6 +376,29 @@ class TestSessionServerV2Validation:
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
 
 
+class TestSessionServerScalingArguments:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_32_workers_and_an_auto_port(self):
+        args = self._parse([])
+
+        assert args.session_server_port is None
+        assert args.session_server_workers == 32
+
+    def test_parses_starting_port_and_worker_count(self):
+        args = self._parse(["--session-server-port", "30000", "--session-server-workers", "4"])
+
+        assert args.session_server_port == 30000
+        assert args.session_server_workers == 4
+
+    def test_rejects_the_removed_end_port_form(self):
+        with pytest.raises(SystemExit):
+            self._parse(["--session-server-port", "30000", "30004"])
+
+
 class TestSessionMessageMatcherArgument:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

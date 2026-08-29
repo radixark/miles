@@ -574,8 +574,8 @@ def run_http_bench(args) -> dict[str, Any]:
     try:
         from miles.rollout.session.server import run_session_server
 
-        # Consecutive ports from one free base, mirroring the production
-        # `--session-server-port start end` range deployment.
+        # Consecutive ports from one free base, mirroring production's
+        # `--session-server-port START --session-server-workers N` deployment.
         base_port = find_available_port(33000)
         ports = list(range(base_port, base_port + instances))
         for port in ports[1:]:
