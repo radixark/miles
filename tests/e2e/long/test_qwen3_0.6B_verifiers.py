@@ -60,7 +60,7 @@ def prepare():
 
 def execute():
     config_path = RUN_DIR / "code-golf.toml"
-    config_path.write_text('[taskset]\nid = "code-golf-v1"\n')
+    config_path.write_text('[taskset]\nid = "code-golf-v1"\n\n[timeout]\nrollout = 300\n')
     dump_dir = RUN_DIR / "dump"
 
     train_args = " ".join(
