@@ -110,7 +110,11 @@ export async function renderTokens(view, meta, route) {
 
   const conversationPane = renderConversation(conversationRow);
   const tabs = el("div", { class: "tabs" });
-  const body = el("div");
+  // both panes stay mounted and are toggled with `hidden`, because detaching a
+  // pane destroys its layout and the browser resets the token strip's scroll
+  // offset to 0 on re-attach — one glance at the conversation would otherwise
+  // send the reader back to token 0 of a several-thousand-token prompt
+  const body = el("div", {}, [conversationPane, tokensPane]);
   const select = (name) => {
     tabs.replaceChildren(
       ...["conversation", "tokens"].map((tab) =>
@@ -119,8 +123,12 @@ export async function renderTokens(view, meta, route) {
         ]),
       ),
     );
-    body.replaceChildren(name === "conversation" ? conversationPane : tokensPane);
-    if (name === "tokens") startTokens();
+    conversationPane.hidden = name !== "conversation";
+    tokensPane.hidden = name !== "tokens";
+    if (name === "tokens") {
+      startTokens();
+      tokensPane._onShown?.(); // work the load deferred because the pane was hidden
+    }
   };
   // chips sit above the tab bar, not inside either pane, so status/reward stay
   // on screen while reading tokens
@@ -262,9 +270,21 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
   paintStrip();
 
   root.replaceChildren(controls, strip, chartPanel);
-  renderChart();
-  // open on the first generated token: an agentic prompt runs to thousands of
-  // tokens of chat history, and none of the per-token metrics are defined over it
+
+  // Sizing the chart canvas and reading a token's offsetTop both need a layout
+  // box, and this load is slow enough to carry its own "several minutes" notice
+  // — long enough for the reader to have switched back to the Conversation tab
+  // before it lands. Rendering into a hidden pane would silently produce a 0x0
+  // canvas and a scrollTop of 0, so the layout-bound work waits to be replayed
+  // by whoever shows the pane next.
   const firstResponse = spans[payload.response_offset];
-  if (firstResponse) box.scrollTop = firstResponse.offsetTop;
+  root._onShown = () => {
+    if (!root.getClientRects().length) return; // still no layout box
+    renderChart();
+    // open on the first generated token: an agentic prompt runs to thousands of
+    // tokens of chat history, and none of the per-token metrics are defined over it
+    if (firstResponse) box.scrollTop = firstResponse.offsetTop;
+    root._onShown = null; // one-shot, so later tab switches never yank the reader's scroll
+  };
+  root._onShown();
 }
