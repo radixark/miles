@@ -299,8 +299,6 @@ class MegatronTrainRayActor(TrainRayActor):
         return start_rollout_id
 
     def _clear_quantized_weight_workspaces(self) -> None:
-        """Drop TE's cached quantized weights so offload does not back them up to pinned host
-        memory; they are derived from the high-precision weights and rebuilt on the next forward."""
         if not (
             self.args.clear_quantized_weight_workspaces_on_offload
             and self.args.transformer_impl == "transformer_engine"
