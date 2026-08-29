@@ -206,7 +206,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
             default_path=spec["default_path"],
             provision_hint=spec["provision_hint"],
         )
-        preflight_sdk(spec["sdk"], spec["sdk_hint"])
+        preflight_sdk(spec["sdk"], spec["sdk_hint"], spec.get("sdk_min_version"))
         # Addresses, not secrets: the SDK reads these from the environment on
         # every worker, so forward whatever is set here BY VALUE.
         for var in spec["forward"]:

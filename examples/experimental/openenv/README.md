@@ -97,7 +97,7 @@ microVM platform whose native API *is* the E2B API — set `E2B_API_URL` and
 `agentenv` is accepted as an alias for this backend.
 
 ```bash
-pip install e2b
+pip install -e '<miles>[e2b]'   # e2b>=2.12 (see the AgentENV recipe)
 export E2B_API_KEY=e2b_...     # or E2B_API_KEY_FILE (default ~/.config/e2b/api_key)
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py
