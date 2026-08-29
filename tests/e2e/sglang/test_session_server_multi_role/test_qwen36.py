@@ -17,6 +17,7 @@ CONFIG = ModelConfig(
     enable_spec=True,
     cycles=2,
     tool_call_failure_mode="append_tool",
+    anthropic_intermediate_system_expectation="forbidden",
 )
 
 
