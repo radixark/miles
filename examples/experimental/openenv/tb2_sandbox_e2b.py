@@ -138,11 +138,16 @@ def ensure_task_template(
     # `e2b` in sys.modules, and the sibling backends defer their SDKs the same way.
     from e2b import Template
 
+    import e2b_template_name_compat
+
     task_dir = Path(task_dir)
     alias = template_alias(task_dir)
     with _build_lock(alias):
         if not force and Template.alias_exists(alias, **_connection_opts()):
             return alias
+        # Some self-hosted servers want the name in a different field than the
+        # SDK sends (see the module); a no-op unless the variable is set.
+        e2b_template_name_compat.apply_from_env()
         base = resolve_docker_image(task_dir, None)
         # set_user before the first command: E2B runs template-build commands as
         # a NON-root user by default, which fails every layer of the recipe

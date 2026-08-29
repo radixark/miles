@@ -59,6 +59,9 @@ export E2B_API_URL=http://<server>:8000       # control plane
 export E2B_SANDBOX_URL=http://<server>:8000   # data plane (envd proxy)
 # plain-HTTP deployments only; the default is https
 export OPENENV_E2B_URL_SCHEME=http
+# the SDK sends the template name as `alias`; AgentENV reads `name`
+# (radixark/AgentENV#8). Drop this once the deployed server accepts `alias`.
+export OPENENV_E2B_TEMPLATE_NAME_FIELD=name
 # required, but any well-formed key passes: AgentENV does not check it, while
 # recent SDKs do validate the format client-side
 export E2B_API_KEY=e2b_0000000000000000000000000000000000000000

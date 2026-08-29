@@ -276,7 +276,13 @@ _PROVIDER_CREDENTIALS = {
         "sdk_hint": "pip install e2b",
         # E2B_API_URL unset means E2B Cloud; set, it usually points at a
         # self-hosted AgentENV deployment.
-        "forward": ("E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "OPENENV_E2B_URL_SCHEME"),
+        "forward": (
+            "E2B_API_URL",
+            "E2B_SANDBOX_URL",
+            "E2B_DOMAIN",
+            "OPENENV_E2B_URL_SCHEME",
+            "OPENENV_E2B_TEMPLATE_NAME_FIELD",
+        ),
         "target": ("E2B_API_URL", "endpoint", "E2B Cloud (default)"),
     },
     "modal": {

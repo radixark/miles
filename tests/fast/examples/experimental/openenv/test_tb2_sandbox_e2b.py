@@ -332,3 +332,53 @@ def test_keepalive_beats_then_exits_on_persistent_failure(monkeypatch):
             break
         time.sleep(0.01)
     assert not any("keepalive" in t.name for t in threading.enumerate())
+
+
+# --- template name field compat (e2b_template_name_compat) -------------------
+
+
+def _fake_request_model(monkeypatch):
+    """A stand-in for e2b.api.client.models.template_build_request_v3 whose
+    model serializes like the SDK's: alias only."""
+    import types
+
+    class TemplateBuildRequestV3:
+        def __init__(self, alias):
+            self.alias = alias
+
+        def to_dict(self):
+            return {"alias": self.alias, "cpuCount": 1}
+
+    mod = types.ModuleType("e2b.api.client.models.template_build_request_v3")
+    mod.TemplateBuildRequestV3 = TemplateBuildRequestV3
+    pkg_models = types.ModuleType("e2b.api.client.models")
+    pkg_models.template_build_request_v3 = mod
+    for name, m in (
+        ("e2b.api", types.ModuleType("e2b.api")),
+        ("e2b.api.client", types.ModuleType("e2b.api.client")),
+        ("e2b.api.client.models", pkg_models),
+        ("e2b.api.client.models.template_build_request_v3", mod),
+    ):
+        monkeypatch.setitem(sys.modules, name, m)
+    return TemplateBuildRequestV3
+
+
+def test_template_name_compat_copies_alias_into_named_field(monkeypatch, fake_e2b):
+    import e2b_template_name_compat as compat
+
+    cls = _fake_request_model(monkeypatch)
+    monkeypatch.setenv(compat.ENV_VAR, "name")
+    assert compat.apply_from_env() == "name"
+    assert cls("tb2-x").to_dict() == {"alias": "tb2-x", "cpuCount": 1, "name": "tb2-x"}
+    # idempotent: applying again does not wrap the wrapper
+    compat.apply_from_env()
+    assert cls("tb2-y").to_dict() == {"alias": "tb2-y", "cpuCount": 1, "name": "tb2-y"}
+
+
+def test_template_name_compat_is_a_no_op_when_unset(monkeypatch, fake_e2b):
+    import e2b_template_name_compat as compat
+
+    cls = _fake_request_model(monkeypatch)
+    monkeypatch.delenv(compat.ENV_VAR, raising=False)
+    assert compat.apply_from_env() is None
+    assert cls("tb2-x").to_dict() == {"alias": "tb2-x", "cpuCount": 1}
