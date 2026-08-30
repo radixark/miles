@@ -1,5 +1,20 @@
+"""Run GLM-5.3-Flash text or image-conditioned GRPO training.
+
+The Hugging Face checkpoint and its converted torch-dist checkpoint must exist
+under ``model_dir`` and ``ckpt_dir``. Geo3K additionally expects
+``geo3k_imgurl/train.parquet`` under ``data_dir``.
+
+Args:
+    task: ``dapo-math`` for the text baseline or ``geo3k`` for VLM training.
+    model_name: Full or reduced-layer GLM-5.3 checkpoint variant.
+
+Examples:
+    python scripts/run_glm5_3_flash.py train --num-nodes 1 --num-gpus-per-node 8
+    python scripts/run_glm5_3_flash.py train --task geo3k --num-nodes 1 --num-gpus-per-node 8
+"""
+
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import typer
@@ -18,9 +33,10 @@ _MODEL_REGISTRY = {
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal["GLM-5.3-Flash", "GLM-5.3-Flash-8layer", "GLM-5.3-Flash-4layer"] = "GLM-5.3-Flash-4layer"
+    task: Literal["dapo-math", "geo3k"] = "dapo-math"
     num_nodes: int = 2
     num_gpus_per_node: int = 4
-    run_id: str = "glm53flash-dapo"
+    run_id: str = field(default_factory=U.create_run_id)
     hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
     ckpt_dir: str = "/root/ckpt"
@@ -28,6 +44,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 5
+    rollout_batch_size: int = 4
+    n_samples_per_prompt: int = 8
+    global_batch_size: int | None = None
     rollout_max_response_len: int = 4096
     check_weight_update: bool = True
     enable_r3: bool = False
@@ -40,6 +59,36 @@ class ScriptArgs(U.ExecuteTrainConfig):
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
 
 
+def _get_rollout_args(args: ScriptArgs) -> str:
+    if args.task == "geo3k":
+        label_key = "answer"
+        prompt_data = f"{args.data_dir}/geo3k_imgurl/train.parquet"
+        input_key = "problem"
+        multimodal_args = '--multimodal-keys \'{"image": "images"}\' '
+    else:
+        label_key = "label"
+        prompt_data = f"{args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl"
+        input_key = "prompt"
+        multimodal_args = ""
+
+    return (
+        f"--label-key {label_key} "
+        "--apply-chat-template "
+        "--rollout-shuffle "
+        "--rm-type math "
+        f"--num-rollout {args.num_rollout} "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
+        "--rollout-temperature 0.8 "
+        "--num-steps-per-rollout 1 "
+        "--balance-data "
+        f"--prompt-data {prompt_data} "
+        f"--input-key {input_key} "
+        f"{multimodal_args}"
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
+    )
+
+
 def _train(args: ScriptArgs):
     shape = (args.num_nodes, args.num_gpus_per_node)
     assert shape in (
@@ -48,7 +97,7 @@ def _train(args: ScriptArgs):
         (6, 4),
         (2, 4),
         (1, 8),
-    ), "the parallel configs below are shaped for 16x4 / 8x4 / 6x4 (full) or 2x4 / 1x8 (8layer)"
+    ), "the parallel configs below are shaped for 16x4 / 8x4 / 6x4 (full) or 2x4 / 1x8 (slices)"
 
     megatron_model_type = _MODEL_REGISTRY[args.model_name]
 
@@ -62,21 +111,7 @@ def _train(args: ScriptArgs):
             "--no-save-optim --no-save-rng --no-load-optim --no-load-rng "
         )
 
-    rollout_args = (
-        "--label-key label "
-        "--apply-chat-template "
-        "--rollout-shuffle "
-        "--rm-type math "
-        f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
-        "--rollout-temperature 0.8 "
-        "--num-steps-per-rollout 1 "
-        "--balance-data "
-        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
-        "--input-key prompt "
-        f"--rollout-max-response-len {args.rollout_max_response_len} "
-    )
+    rollout_args = _get_rollout_args(args)
 
     if shape == (16, 4):
         parallel_args = (
@@ -131,6 +166,8 @@ def _train(args: ScriptArgs):
         "--micro-batch-size 1 "
         "--max-tokens-per-gpu 8192 "
     )
+    if args.global_batch_size is not None:
+        perf_args += f"--global-batch-size {args.global_batch_size} "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -162,6 +199,8 @@ def _train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "
     )
+    if args.task == "geo3k":
+        sglang_args += "--sglang-mm-attention-backend sdpa "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -183,6 +222,12 @@ def _train(args: ScriptArgs):
         "--distributed-timeout-minutes 60 "
         "--rollout-health-check-timeout 300 "
     )
+    if args.task == "geo3k":
+        misc_args += (
+            "--offload-rollout-level kv_cache "
+            "--custom-model-provider-path "
+            "miles_plugins.models.glm5_next.vision.glm5_next_vlm_model_provider "
+        )
     if args.check_weight_update:
         misc_args += "--check-weight-update-equal " "--check-weight-update-skip-list visual. "
     if args.enable_r3:

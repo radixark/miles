@@ -1,0 +1,132 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 4
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_SKIP_CHECKPOINT_LOAD_CHECK": "1", "SGLANG_HEALTH_CHECK_TIMEOUT": "120", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath", "PYTHONFAULTHANDLER": "1", "TORCHINDUCTOR_COMPILE_THREADS": "1", "TRITON_CACHE_DIR": "/tmp/triton_cache", "TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor_cache"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.glm5_next.glm5_next get_glm5_next_spec
+  --num-layers 4
+  --hidden-size 4096
+  --ffn-hidden-size 12288
+  --num-attention-heads 64
+  --multi-latent-attention
+  --q-lora-rank 1536
+  --kv-lora-rank 512
+  --qk-head-dim 256
+  --qk-pos-emb-head-dim 0
+  --v-head-dim 256
+  --kv-channels 256
+  --qk-layernorm
+  --moe-layer-freq '[0,1,1,1]'
+  --num-experts 288
+  --moe-router-topk 8
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-bias-update-rate 0
+  --moe-router-topk-scaling-factor 2.5
+  --moe-ffn-hidden-size 2048
+  --moe-shared-expert-intermediate-size 2048
+  --moe-router-dtype fp32
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --vocab-size 154880
+  --rotary-base 10000
+  --rope-type rope
+  --no-rope-fusion
+  --position-embedding-type rope
+  --normalization RMSNorm
+  --norm-epsilon 1e-5
+  --swiglu
+  --disable-bias-linear
+  --untie-embeddings-and-output-weights
+  --make-vocab-size-divisible-by 16
+  --enable-experimental
+  --hf-checkpoint /root/models/GLM-5.3-Flash-4layer
+  --ref-load /root/ckpt/glm5.3-flash-4layer_torch_dist 
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --rm-type math
+  --num-rollout 5
+  --rollout-batch-size 4
+  --n-samples-per-prompt 8
+  --rollout-temperature 0.8
+  --num-steps-per-rollout 1
+  --balance-data
+  --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
+  --input-key prompt
+  --rollout-max-response-len 4096 
+  --optimizer adam
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0.1
+  --adam-beta1 0.9
+  --adam-beta2 0.98 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.00
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.00
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_glm5_3_flash
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 2
+  --sequence-parallel
+  --pipeline-model-parallel-size 2
+  --context-parallel-size 1
+  --expert-model-parallel-size 2
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --micro-batch-size 1
+  --max-tokens-per-gpu 8192 
+  --rollout-num-gpus-per-engine 4
+  --sglang-tp-size 4
+  --sglang-ep-size 4
+  --sglang-dp-size 1
+  --sglang-chunked-prefill-size 8192
+  --sglang-disable-radix-cache
+  --sglang-dsa-prefill-backend tilelang
+  --sglang-dsa-decode-backend tilelang
+  --sglang-kv-cache-dtype bfloat16
+  --router-health-success-threshold 1
+  --router-health-check-interval-secs 15
+  --router-health-failure-threshold 40 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --attention-softmax-in-fp32
+  --accumulate-allreduce-grads-in-fp32
+  --update-weight-buffer-size 1073741824
+  --actor-num-nodes 2
+  --actor-num-gpus-per-node 4
+  --num-gpus-per-node 4
+  --train-memory-margin-bytes 3221225472
+  --offload-train-target disk
+  --offload-train-disk-dir /tmp/train_offload
+  --sglang-mem-fraction-static 0.7
+  --colocate
+  --model-name glm5_next
+  --qkv-format thd
+  --rollout-health-check-interval 300
+  --distributed-timeout-minutes 60
+  --rollout-health-check-timeout 300
+  --check-weight-update-equal
+  --check-weight-update-skip-list visual.   

@@ -2,8 +2,6 @@ import asyncio
 import logging
 import os
 
-from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
-
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
@@ -99,12 +97,7 @@ async def train(args):
         rollout_data_pack = await rollout_manager.generate.remote(rollout_id)
 
         if args.offload_rollout:
-            offload_tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
-            if "kv_cache" in args.offload_rollout_level:
-                offload_tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-            if "weight" in args.offload_rollout_level:
-                offload_tags.append(GPU_MEMORY_TYPE_WEIGHTS)
-            await rollout_manager.offload.remote(tags=offload_tags)
+            await rollout_manager.offload.remote()
 
         if args.use_critic:
             values = await critic_model.train(rollout_id, rollout_data_pack)

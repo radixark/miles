@@ -1,10 +1,11 @@
 ---
 title: GLM-5.3-Flash
-description: RL recipe for GLM-5.3-Flash, a KDA + DSA hybrid MoE with mHC hyper-connections and NoPE MLA.
+description: Text and vision-language RL recipes for GLM-5.3-Flash, a KDA + DSA hybrid MoE with mHC hyper-connections and NoPE MLA.
 ---
 
-Implementation: [`radixark/miles#2786`](https://github.com/radixark/miles/pull/2786). It goes
-with the SGLang
+Implementation: text support is in
+[`radixark/miles#2786`](https://github.com/radixark/miles/pull/2786), with vision-language
+support stacked in [`radixark/miles#2792`](https://github.com/radixark/miles/pull/2792). It goes with the SGLang
 [`sglang-miles-glm53next`](https://github.com/sgl-project/sglang/tree/sglang-miles-glm53next)
 branch and [`radixark/Megatron-LM#89`](https://github.com/radixark/Megatron-LM/pull/89); the
 image in section 3 pins all three.
@@ -46,6 +47,7 @@ the same tag serves GB300 and x86 nodes.
 ```bash
 hf download zai-org/GLM-5.3-Flash --local-dir /root/models/GLM-5.3-Flash
 hf download --repo-type dataset zhuzilin/dapo-math-17k --local-dir /root/datasets/dapo-math-17k
+hf download --repo-type dataset chenhegu/geo3k_imgurl --local-dir /root/datasets/geo3k_imgurl
 ```
 
 The reference checkpoint has to be converted first — `--ref-load` resolves to
@@ -81,12 +83,44 @@ Smoke slice on one node:
 python scripts/run_glm5_3_flash.py train --num-nodes 1 --num-gpus-per-node 8
 ```
 
+Vision-language smoke on Geo3K uses the same converted language checkpoint and
+the visual weights in the original Hugging Face checkpoint:
+
+```bash
+python scripts/run_glm5_3_flash.py train \
+  --task geo3k \
+  --num-nodes 1 --num-gpus-per-node 8 \
+  --rollout-batch-size 2 --n-samples-per-prompt 2 \
+  --global-batch-size 4 --rollout-max-response-len 512
+```
+
+The Geo3K path uses the model's native dynamic image resize and patch order in
+both Miles and SGLang. On the Megatron side, the original Hugging Face visual
+tower is loaded identically on the embedding pipeline stage, kept frozen, and
+its merged patch embeddings replace the checkpoint's image-token positions.
+Only the already validated language parameters are converted, optimized,
+checkpointed, and synchronized. The reduced-layer checkpoints therefore must
+retain the full `model.visual.*` tensor set as well as `vision_config`.
+Because that frozen tower is deliberately excluded from the optimizer and the
+normal language-weight stream, the B300 VLM recipe offloads only SGLang's KV
+cache and keeps its weights resident. SGLang loads the same Hugging Face visual
+tower at startup; only the language weights change during training. Validate
+the more expensive full-weight offload mode on the target topology before
+production use.
+
+For B300 (SM103), set `NCCL_NVLS_ENABLE=0`, keep Megatron's attention backend on
+`auto`, and use SGLang's `sdpa` multimodal attention backend. Do not select the
+Hopper-only FA3 path. The validated environment applies the KDA portion of
+upstream FLA commit `3c4c54ae`, which hoists `triton.next_power_of_2` out of the
+KDA JIT kernel for Triton 3.7; remove that compatibility patch once the pinned
+FLA release contains the upstream fix.
+
 | Shape | TP | PP | EP | Rollout engine |
 |---|---|---|---|---|
-| 16 × 4 (full, validated) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
+| 16 × 4 (full, text validated) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
 | 8 × 4 (full) | 8 | 4 | 16 | 8 GPUs, SGLang TP 8 / EP 8 |
 | 6 × 4 (full) | 8 | 3 | 8 | 8 GPUs, SGLang TP 8 / EP 8 |
-| 2 × 4 or 1 × 8 (slices) | 2 | 2 | 2 | 4 GPUs, SGLang TP 4 / EP 4 |
+| 2 × 4 or 1 × 8 (slices; 1 × 8 VLM smoke validated) | 2 | 2 | 2 | 4 GPUs, SGLang TP 4 / EP 4 |
 
 The PP-4 shapes run 11 / 11 / 11 / 12 layers per stage, since 45 does not divide by 4.
 GRPO on DAPO-Math-17k, Adam at `lr 1e-6`, `max_tokens_per_gpu 8192`, full uniform recompute.
@@ -108,3 +142,14 @@ From the validation run in [#2786](https://github.com/radixark/miles/pull/2786) 
 
 `train/train_rollout_logprob_abs_diff` is the one to read first on a fresh bring-up: it
 covers the KDA, DSA and hyper-connection paths at once.
+
+The VLM validation in [#2792](https://github.com/radixark/miles/pull/2792) is a two-step
+Geo3K smoke with the four-layer language slice and complete visual tower on one 8 × B300
+node ([W&B run](https://wandb.ai/nan-playground/miles-glm53-vlm/runs/049apd1e)). Step 0 had
+rollout/train mean log-probs of -9.5348/-9.5424, PPO KL 0.001155, and mean absolute
+log-prob difference 0.08584; step 1 had -9.4927/-9.5067, PPO KL 0.001375, and mean
+absolute difference 0.10136. The initial language-weight synchronization passed the exact
+tensor checker, and both post-step synchronizations completed successfully. The tiny
+language slice produced zero rewards, advantages, and gradient norm, as expected. This
+validates image preprocessing, frozen-tower parity, rollout, training, and post-step
+language-weight synchronization; it is not evidence for full 45-layer VLM convergence.

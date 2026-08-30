@@ -152,6 +152,11 @@ def load_processor(name_or_path: str, **kwargs):
 
         return InklingTrainProcessor(name_or_path)
 
+    from miles_plugins.models.glm5_next.processor import is_glm5_next_checkpoint, load_glm5_next_processor
+
+    if is_glm5_next_checkpoint(name_or_path):
+        return load_glm5_next_processor(name_or_path, **kwargs)
+
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)
     except (OSError, ValueError) as e:

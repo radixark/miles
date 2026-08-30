@@ -129,6 +129,107 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def build_default_gpt_model(
+    args: argparse.Namespace,
+    role: Literal["actor", "critic"],
+    *,
+    pre_process: bool,
+    post_process: bool,
+    vp_stage: int | None,
+) -> GPTModel:
+    """Build the standard Miles GPT model without provider-level wrappers."""
+    use_te = args.transformer_impl == "transformer_engine"
+    config = core_transformer_config_from_args(args)
+
+    # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
+    # (e.g. the run_megatron debug worker) won't have it, so default to False.
+    if getattr(args, "enable_mtp_training", False):
+        # Detach the MTP heads so RL MTP gradients do not flow into the shared
+        # output layer / embedding.
+        config.mtp_detach_heads = True
+
+    if args.spec is not None:
+        transformer_layer_spec = import_module(args.spec)
+        # Allow the spec to be a function so that user can use customized Megatron easier.
+        if callable(transformer_layer_spec):
+            transformer_layer_spec = transformer_layer_spec(args, config, vp_stage)
+    elif args.num_experts:
+        kwargs = {"use_transformer_engine": use_te}
+        if vp_stage is not None:
+            kwargs["vp_stage"] = vp_stage
+        transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
+    elif use_te:
+        transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
+            num_experts=args.num_experts,
+            moe_grouped_gemm=args.moe_grouped_gemm,
+            qk_layernorm=args.qk_layernorm,
+            multi_latent_attention=args.multi_latent_attention,
+        )
+    else:
+        transformer_layer_spec = get_gpt_layer_local_spec(
+            num_experts=args.num_experts,
+            moe_grouped_gemm=args.moe_grouped_gemm,
+            qk_layernorm=args.qk_layernorm,
+            multi_latent_attention=args.multi_latent_attention,
+            normalization=args.normalization,
+            use_kitchen=config.use_kitchen,
+            use_kitchen_attention=config.use_kitchen_attention,
+            kitchen_attention_backend=config.kitchen_attention_backend,
+        )
+
+    build_model_context = nullcontext
+    build_model_context_args = {}
+    if args.fp8_param_gather:
+        try:
+            from transformer_engine.pytorch import fp8_model_init
+
+            build_model_context = fp8_model_init
+            build_model_context_args["enabled"] = True
+            if "preserve_high_precision_init_val" in inspect.signature(fp8_model_init).parameters:
+                build_model_context_args["preserve_high_precision_init_val"] = True
+        except Exception as e:
+            raise RuntimeError(
+                "--fp8-param-gather requires `fp8_model_init` from TransformerEngine, but not found."
+            ) from e
+
+    kwargs = {
+        "config": config,
+        "transformer_layer_spec": transformer_layer_spec,
+        "vocab_size": args.padded_vocab_size,
+        "max_sequence_length": args.max_position_embeddings,
+        "pre_process": pre_process,
+        "post_process": post_process,
+        "fp16_lm_cross_entropy": args.fp16_lm_cross_entropy,
+        "parallel_output": True,
+        "share_embeddings_and_output_weights": role != "critic" and not args.untie_embeddings_and_output_weights,
+        "position_embedding_type": args.position_embedding_type,
+        "rotary_percent": args.rotary_percent,
+        "rotary_base": args.rotary_base,
+        "rope_scaling": args.use_rope_scaling,
+    }
+    if vp_stage is not None:
+        kwargs["vp_stage"] = vp_stage
+
+    if args.mtp_num_layers:
+        from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
+
+        mtp_kwargs = {"use_transformer_engine": use_te}
+        if vp_stage is not None:
+            mtp_kwargs["vp_stage"] = vp_stage
+
+        if getattr(args, "use_rollout_routing_replay", False):
+            prev_routing_replay_enabled = routing_replay_manager.enabled
+            routing_replay_manager.enabled = False
+            logger.warning("Rollout routing replay is not applicable for MTP modules, so skipped replay registration")
+        mtp_block_spec = get_gpt_mtp_block_spec(config, transformer_layer_spec, **mtp_kwargs)
+        kwargs["mtp_block_spec"] = mtp_block_spec
+        if getattr(args, "use_rollout_routing_replay", False):
+            routing_replay_manager.enabled = prev_routing_replay_enabled
+
+    with build_model_context(**build_model_context_args):
+        return GPTModel(**kwargs)
+
+
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -215,118 +316,22 @@ def get_model_provider_func(
         Returns:
             Union[GPTModel, megatron.legacy.model.GPTModel]: The returned model
         """
-        use_te = args.transformer_impl == "transformer_engine"
-
         # Experimental loading arguments from yaml
         assert config is None, "miles builds the config from args, so it expects config to be None"
-        config = core_transformer_config_from_args(args)
-
-        # `enable_mtp_training` comes from miles' arg parser; megatron-only arg contexts
-        # (e.g. the run_megatron debug worker) won't have it, so default to False.
-        if getattr(args, "enable_mtp_training", False):
-            # Detach the MTP heads so RL MTP gradients do not flow into the shared
-            # output layer / embedding.
-            config.mtp_detach_heads = True
-
-        if args.spec is not None:
-            transformer_layer_spec = import_module(args.spec)
-            # Allow the spec to be a function so that user can use customized Megatron easier.
-            if callable(transformer_layer_spec):
-                transformer_layer_spec = transformer_layer_spec(args, config, vp_stage)
-        else:
-            if args.num_experts:
-                # Define the decoder block spec
-                kwargs = {
-                    "use_transformer_engine": use_te,
-                }
-                if vp_stage is not None:
-                    kwargs["vp_stage"] = vp_stage
-                transformer_layer_spec = get_gpt_decoder_block_spec(config, **kwargs)
-            else:
-                # Define the decoder layer spec
-                if use_te:
-                    transformer_layer_spec = get_gpt_layer_with_transformer_engine_spec(
-                        num_experts=args.num_experts,
-                        moe_grouped_gemm=args.moe_grouped_gemm,
-                        qk_layernorm=args.qk_layernorm,
-                        multi_latent_attention=args.multi_latent_attention,
-                    )
-                else:
-                    transformer_layer_spec = get_gpt_layer_local_spec(
-                        num_experts=args.num_experts,
-                        moe_grouped_gemm=args.moe_grouped_gemm,
-                        qk_layernorm=args.qk_layernorm,
-                        multi_latent_attention=args.multi_latent_attention,
-                        normalization=args.normalization,
-                        use_kitchen=config.use_kitchen,
-                        use_kitchen_attention=config.use_kitchen_attention,
-                        kitchen_attention_backend=config.kitchen_attention_backend,
-                    )
-
-        build_model_context = nullcontext
-        build_model_context_args = {}
-        if args.fp8_param_gather:
-            try:
-                from transformer_engine.pytorch import fp8_model_init
-
-                build_model_context = fp8_model_init
-                build_model_context_args["enabled"] = True
-
-                # Check if fp8_model_init supports preserve_high_precision_init_val
-                if "preserve_high_precision_init_val" in inspect.signature(fp8_model_init).parameters:
-                    build_model_context_args["preserve_high_precision_init_val"] = True
-            except Exception as e:
-                raise RuntimeError(
-                    "--fp8-param-gather requires `fp8_model_init` from TransformerEngine, but not found."
-                ) from e
-
-        kwargs = {
-            "config": config,
-            "transformer_layer_spec": transformer_layer_spec,
-            "vocab_size": args.padded_vocab_size,
-            "max_sequence_length": args.max_position_embeddings,
-            "pre_process": pre_process,
-            "post_process": post_process,
-            "fp16_lm_cross_entropy": args.fp16_lm_cross_entropy,
-            "parallel_output": True,
-            "share_embeddings_and_output_weights": role != "critic" and not args.untie_embeddings_and_output_weights,
-            "position_embedding_type": args.position_embedding_type,
-            "rotary_percent": args.rotary_percent,
-            "rotary_base": args.rotary_base,
-            "rope_scaling": args.use_rope_scaling,
-        }
-
-        if vp_stage is not None:
-            kwargs["vp_stage"] = vp_stage
-
-        if args.mtp_num_layers:
-            from megatron.core.models.gpt.gpt_layer_specs import get_gpt_mtp_block_spec
-
-            mtp_kwargs = {
-                "use_transformer_engine": use_te,
-            }
-            if vp_stage is not None:
-                mtp_kwargs["vp_stage"] = vp_stage
-
-            # hard code here to skip r3 registration for mtp layers
-            # getattr is required to avoid ckpt conversion errors
-            if getattr(args, "use_rollout_routing_replay", False):
-                prev_routing_replay_enabled = routing_replay_manager.enabled
-                routing_replay_manager.enabled = False
-                logger.warning(
-                    "Rollout routing replay is not applicable for MTP modules, so skipped replay registration"
-                )
-            mtp_block_spec = get_gpt_mtp_block_spec(config, transformer_layer_spec, **mtp_kwargs)
-            kwargs["mtp_block_spec"] = mtp_block_spec
-            if getattr(args, "use_rollout_routing_replay", False):
-                # restore instead of forcing True: the critic role keeps the manager disabled
-                routing_replay_manager.enabled = prev_routing_replay_enabled
-
-        with build_model_context(**build_model_context_args):
-            model = GPTModel(**kwargs)
+        model = build_default_gpt_model(
+            args,
+            role,
+            pre_process=pre_process,
+            post_process=post_process,
+            vp_stage=vp_stage,
+        )
 
         if post_process and role == "critic":
-            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+            model.output_layer = LinearForLastLayer(
+                input_size=model.config.hidden_size,
+                output_size=1,
+                config=model.config,
+            )
 
         _maybe_install_witness(args, model)
 
