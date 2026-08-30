@@ -22,6 +22,7 @@ NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
 FIRST_INJECTED_ROLLOUT_ID: int = FAULT_ROLLOUT_ID
+FIRST_POST_FAULT_ROLLOUT_ID: int = FAULT_ROLLOUT_ID + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -157,7 +158,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
     )
 
     for rollout_id in phase_b_rollout_ids:
-        is_post_fault = mode.has_real_rollout and rollout_id >= FIRST_INJECTED_ROLLOUT_ID
+        is_post_fault = mode.has_real_rollout and rollout_id >= FIRST_POST_FAULT_ROLLOUT_ID
         compare_dumps(
             baseline_dir=f"{dump_dir}/baseline/phase_b",
             target_dir=f"{dump_dir}/target/phase_b",

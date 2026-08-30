@@ -5,6 +5,7 @@ from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     FAULT_ROLLOUT_ID,
     FIRST_INJECTED_ROLLOUT_ID,
+    FIRST_POST_FAULT_ROLLOUT_ID,
     _build_target_args,
 )
 
@@ -24,6 +25,7 @@ def test_real_rollout_injection_starts_at_fault_rollout() -> None:
     actions = json.loads(_option_value(args, "--ci-ft-test-actions"))
 
     assert FIRST_INJECTED_ROLLOUT_ID == FAULT_ROLLOUT_ID
+    assert FIRST_POST_FAULT_ROLLOUT_ID == FAULT_ROLLOUT_ID + 1
     assert int(_option_value(args, "--ci-inject-rollout-data-start-rollout-id")) == FAULT_ROLLOUT_ID
     assert {action["at_rollout"] for action in actions} == {FAULT_ROLLOUT_ID}
 
