@@ -38,8 +38,8 @@ def extract_choice(text: str) -> str | None:
     """Extract a final A-Z multiple-choice answer without scanning reasoning."""
     patterns = (
         r"\\boxed\s*\{\s*([A-Z])\s*\}",
-        r"(?im)^\s*final\s+answer\s*:\s*(?:\*\*)?([A-Z])\\b",
-        r"(?im)^\s*answer\s*:\s*(?:\*\*)?([A-Z])\\b",
+        r"(?im)^\s*final\s+answer\s*:\s*(?:\*\*)?([A-Z])\b",
+        r"(?im)^\s*answer\s*:\s*(?:\*\*)?([A-Z])\b",
         r"(?m)^\s*([A-Z])\s*[.)]?\s*$",
     )
     for pattern in patterns:
