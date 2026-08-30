@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.rollout.filter_hub.common_filters import check_no_aborted, group_staleness
+from miles.rollout.filter_hub.common_filters import check_no_aborted, check_no_missing_reward, group_staleness
 from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
@@ -73,6 +73,7 @@ class DefaultDataBuffer(DataBuffer):
     Rejected on put, because the verdict is fixed once the group is generated:
 
     - aborted groups (the generate function gave up, e.g. an agentic collect timeout)
+    - groups with a missing reward
     - groups ``--dynamic-sampling-filter-path`` does not keep
 
     Rejected on get, because staleness depends on when the group is consumed:
@@ -86,8 +87,8 @@ class DefaultDataBuffer(DataBuffer):
         training consumes.
     (2) unused handling: ``--async-unused-samples-handler`` decides what happens
         to aborted and stale groups: drop discards them, retry recycles their
-        prompts for regeneration. Dynamic-filter groups are processed per the
-        filter's ``keep``.
+        prompts for regeneration. Missing-reward and custom-filter rejections
+        are discarded directly.
     """
 
     def __init__(self, input: DataBufferConstructorInput):
@@ -124,6 +125,11 @@ class DefaultDataBuffer(DataBuffer):
         if not output.keep:
             self._metric_aborted_groups += 1
             self._unused_handler_fn(input.prompt_group)
+            return False
+
+        output = check_no_missing_reward(self._args, input.group)
+        if not output.keep:
+            self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             return False
 
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
