@@ -37,7 +37,8 @@ from miles.rollout.base_types import (
     RolloutFnTrainInput,
     RolloutFnTrainOutput,
 )
-from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
+from miles.rollout.filter_hub.base_types import MetricGatherer
+from miles.rollout.filter_hub.common_filters import apply_preput_filters
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.types import Sample
@@ -767,6 +768,7 @@ class VerifiersRolloutFn(BaseRolloutFn):
         all_groups = []
         all_traces = []
         metrics = MetricGatherer()
+
         semaphore = asyncio.Semaphore(self.max_concurrent)
         pending: set[asyncio.Task] = set()
         async with self.env.serving():
@@ -807,13 +809,13 @@ class VerifiersRolloutFn(BaseRolloutFn):
                             continue
                         await self._apply_miles_rewards(group)
                         all_groups.append(group)
-                        result = call_dynamic_filter(
-                            self.dynamic_filter,
+                        filter_output = apply_preput_filters(
                             self.args,
+                            self.dynamic_filter,
                             _flatten_samples(group),
                         )
-                        if not result.keep:
-                            metrics.on_dynamic_filter_drop(reason=result.reason)
+                        if not filter_output.keep:
+                            metrics.on_dynamic_filter_drop(reason=filter_output.reason)
                             continue
                         if len(groups) < target:
                             groups.append(group)
