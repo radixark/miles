@@ -210,9 +210,7 @@ def load_policy(path):
                 raw_group["repository_permissions"],
             ),
             "user_ids": (
-                frozenset(user["id"] for user in raw_group["users"])
-                if "users" in raw_group
-                else frozenset()
+                frozenset(user["id"] for user in raw_group["users"]) if "users" in raw_group else frozenset()
             ),
             "author_associations": (
                 _validate_author_associations(
