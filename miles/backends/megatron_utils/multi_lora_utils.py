@@ -292,6 +292,26 @@ def load_slot_training_state(optimizer, model, slot: int, ckpt_dir: Path) -> Non
         copy_fn()
 
 
+def export_adapter_slot(args, model, slot: int, *, adapter_rank: int, bridge=None) -> dict[str, torch.Tensor]:
+    """Gather one slot's adapter weights as HF-named CPU tensors sliced to the real rank; no push, no commit."""
+    from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+
+    from miles.utils import megatron_bridge_utils
+
+    if bridge is None:
+        from megatron.bridge import AutoBridge
+
+        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+
+    hf_state: dict[str, torch.Tensor] = {}
+    with expose_adapter_slot(model, slot):
+        with megatron_bridge_utils.patch_megatron_model(model):
+            for hf_name, weight, _megatron_name in bridge.export_adapter_weights(model, cpu=True, show_progress=False):
+                # Slice from the shared --lora-rank down to the adapter's real rank; clone() detaches from live storage.
+                hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, adapter_rank).clone()
+    return hf_state
+
+
 def save_multi_lora_checkpoints(
     args,
     model,
@@ -314,7 +334,6 @@ def save_multi_lora_checkpoints(
     from safetensors.torch import save_file as save_safetensors
 
     from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
-    from miles.utils import megatron_bridge_utils
 
     parallel_state = get_parallel_state()
     tp_rank = parallel_state.tp.rank
@@ -363,16 +382,7 @@ def save_multi_lora_checkpoints(
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
 
-            hf_state: dict[str, torch.Tensor] = {}
-            with megatron_bridge_utils.patch_megatron_model(model):
-                for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
-                    model,
-                    cpu=True,
-                    show_progress=False,
-                ):
-                    # Slice from the shared --lora-rank down to this adapter's real rank to
-                    # match adapter_config's r; clone() since safetensors rejects aliased views.
-                    hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, config.rank).clone()
+        hf_state = export_adapter_slot(args, model, adapter.slot, adapter_rank=config.rank, bridge=bridge)
 
         if write_training_state:
             rank = dist.get_rank() if dist.is_initialized() else 0
