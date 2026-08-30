@@ -431,13 +431,13 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
     from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
     from miles.utils.tracking_utils.structured_log import log_structured
 
-    # slot -> adapter_global_batch_size for adapter batches completing now.
+    # slot -> adapter_global_batch_size for adapter batches completing now; SCHEDULED_MEAN scales by 1/batch.
     step_batch_sizes = dict(rollout_data.get("step_adapter_batch_sizes", {}))
     grad_norms_by_slot = step_adapter_slots(
         optimizer,
         model,
-        step_batch_sizes,
-        clip_grad=args.clip_grad,
+        {slot: 1.0 / batch_size for slot, batch_size in step_batch_sizes.items()},
+        {slot: args.clip_grad for slot in step_batch_sizes},
     )
 
     if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
@@ -448,7 +448,7 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
             step=step_id,
             **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
         )
-    return max(grad_norms_by_slot.values(), default=0.0)
+    return max((norm for norm in grad_norms_by_slot.values() if norm is not None), default=0.0)
 
 
 def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:

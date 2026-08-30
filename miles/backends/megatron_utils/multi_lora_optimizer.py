@@ -2,6 +2,7 @@
 requires plain DDP all-reduce (use_distributed_optimizer OFF) so cross-batch gradient retention stays idempotent."""
 
 import logging
+import math
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -160,24 +161,40 @@ def zero_adapter_slot_grads(model, slot: int) -> None:
             main_param.grad = None
 
 
+def apply_adam_params(
+    optimizer, slot: int, *, lr: float, beta1: float, beta2: float, eps: float, weight_decay: float
+) -> None:
+    """Write per-call AdamW hyperparameters into one slot's param groups (tinker slots carry no scheduler)."""
+    for child in _slot_children(optimizer, slot):
+        for group in child.param_groups:
+            group["lr"] = lr
+            group["betas"] = (beta1, beta2)
+            group["eps"] = eps
+            group["weight_decay"] = weight_decay
+
+
 def step_adapter_slots(
     optimizer,
     model,
-    step_batch_sizes: dict[int, int],
-    clip_grad: float,
-) -> dict[int, float]:
-    """Step exactly the slots in ``step_batch_sizes`` (slot -> batch size), retaining all other slots' gradients;
-    scales each slot's accumulated grad sum by 1/batch_size and returns the grad norm per stepped slot."""
-    grad_norms: dict[int, float] = {}
+    step_scales: dict[int, float],
+    clip_grads: dict[int, float],
+    check_finite: bool = False,
+) -> dict[int, float | None]:
+    """Step exactly the slots in ``step_scales`` (slot -> grad multiplier: 1/batch for E2E mean, 1.0 for tinker sum),
+    retaining other slots' gradients; returns grad norm per slot, or None when check_finite rejects a non-finite
+    norm (that slot's grads are zeroed and it does not step)."""
+    grad_norms: dict[int, float | None] = {}
+    stepped_any = False
 
-    for slot, batch_size in step_batch_sizes.items():
+    for slot, scale in step_scales.items():
         children = _slot_children(optimizer, slot)
-        # Copy accumulated main_grads into the owned masters' grads, then scale the sum to the adapter-batch mean.
+        # Copy accumulated main_grads into the owned masters' grads, then apply the caller's scale to the sum.
         for child in children:
             child.prepare_grads()
-            for main_param in child.get_parameters():
-                if main_param.grad is not None:
-                    main_param.grad.mul_(1.0 / batch_size)
+            if scale != 1.0:
+                for main_param in child.get_parameters():
+                    if main_param.grad is not None:
+                        main_param.grad.mul_(scale)
 
         # Per-slot grad norm over the slot's children, reduced across the whole world (whole-param DP scatter).
         grads_for_norm = []
@@ -186,6 +203,12 @@ def step_adapter_slots(
             grads_for_norm += child.get_main_grads_for_grad_norm()
             slot_params += child.get_parameters()
         slot_norm = get_grad_norm_fp32(grads_for_norm, grad_stats_parallel_group=None)
+        # The norm is world-reduced, so this local check is a consistent all-rank vote.
+        if check_finite and not math.isfinite(float(slot_norm)):
+            zero_adapter_slot_grads(model, slot)
+            grad_norms[slot] = None
+            continue
+        clip_grad = clip_grads.get(slot, 0.0)
         if clip_grad > 0.0 and slot_params:
             clip_grad_by_total_norm_fp32(slot_params, clip_grad, slot_norm, False)
         grad_norms[slot] = float(slot_norm)
@@ -194,8 +217,9 @@ def step_adapter_slots(
             child.step_with_ready_grads()
 
         zero_adapter_slot_grads(model, slot)
+        stepped_any = True
 
-    if step_batch_sizes:
+    if stepped_any:
         optimizer.allgather_params()
 
     return grad_norms

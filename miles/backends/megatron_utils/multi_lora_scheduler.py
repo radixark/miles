@@ -81,7 +81,10 @@ def step_slot_schedulers(optimizer, step_batch_sizes: dict[int, int]) -> dict[in
     Returns slot -> new learning rate, for logging."""
     lr_by_slot: dict[int, float] = {}
     for slot, batch_size in step_batch_sizes.items():
-        scheduler = optimizer.miles_slot_schedulers[slot]
+        # Slots without an installed scheduler (tinker: per-call AdamParams) are skipped.
+        scheduler = getattr(optimizer, "miles_slot_schedulers", {}).get(slot)
+        if scheduler is None:
+            continue
         scheduler.step(increment=batch_size)
         if scheduler.optimizer.param_groups:  # empty on ranks owning none of the slot's params
             lr_by_slot[slot] = scheduler.optimizer.param_groups[0]["lr"]
