@@ -9,6 +9,15 @@ __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 logger = logging.getLogger(__name__)
 
 
+def _has_nvrx_async_ckpt_support() -> bool:
+    """Whether the NVRx async-checkpoint backend Megatron would import is actually installed."""
+    try:
+        from megatron.training.utils import has_nvrx_checkpointing_async_support
+    except ImportError:
+        return False
+    return bool(has_nvrx_checkpointing_async_support())
+
+
 def set_default_megatron_args(args):
     if getattr(args, "true_on_policy_mode", False):
         raise NotImplementedError(
@@ -36,6 +45,17 @@ def set_default_megatron_args(args):
     # fp32, and 20260819 convert the default to TE gemm which is bf16 x bf16 -> fp32. Result show
     # the TE one increase log prob diff so manually set back
     args.moe_router_use_torch_mm = True
+    # Since 20260819, Megatron defaults --async-strategy to "nvrx", which hard-requires
+    # nvidia-resiliency-ext. That package is CUDA-only, so the ROCm images drop it and an
+    # --async-save run would otherwise only discover the missing backend when the first
+    # checkpoint is written. Fall back to Megatron's in-tree "mcore" saver instead.
+    if (
+        getattr(args, "async_save", False)
+        and getattr(args, "async_strategy", None) == "nvrx"
+        and not _has_nvrx_async_ckpt_support()
+    ):
+        logger.warning("nvidia-resiliency-ext is not installed, falling back to --async-strategy mcore.")
+        args.async_strategy = "mcore"
     # compatible for megatron
     if hasattr(args, "rope_type") and args.rope_type is None:
         args.rope_type = "yarn" if args.multi_latent_attention else "rope"
