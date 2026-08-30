@@ -447,7 +447,7 @@ async def test_buffer_get_skips_groups_stale_at_consumption_time():
     buffer, unused = make_buffer(max_staleness=2)
     stale = make_group(1, weight_versions=["5"])
     await put_group(buffer, stale)
-    await put_group(buffer, make_group(2, weight_versions=["9"]))
+    await put_group(buffer, make_group(2, weight_versions=["8"]))
 
     assert (await buffer.get(current_version=10)).group[0].group_index == 2
     assert unused == [stale]
