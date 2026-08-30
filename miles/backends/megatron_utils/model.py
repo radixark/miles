@@ -438,6 +438,36 @@ def forward_with_request_loss(
     return out
 
 
+def forward_backward_with_request_loss(
+    args: Namespace,
+    model: Sequence[DDP],
+    data_iterator: Sequence[DataIterator],
+    num_microbatches: Sequence[int],
+    num_rollouts: Sequence[int],
+    rollout_id: int,
+    request_loss_fn: str,
+    request_loss_fn_config: dict | None = None,
+) -> tuple[TrainStepOutcome, list[dict]]:
+    """Deferred FB: the full train pipeline with optimizer=None accumulates request-loss grads; returns per-step losses."""
+    # Cross-call accumulation relies on the multi-LoRA keep-grads branch; plain DDP zeroes grads on entry.
+    assert is_multi_lora_enabled(args), "deferred forward_backward requires multi_lora"
+    losses: list[dict] = []
+    outcome = train(
+        rollout_id,
+        model,
+        None,
+        None,
+        data_iterator,
+        num_microbatches,
+        num_rollouts,
+        witness_info=None,
+        attempt=0,
+        extra_loss_batch={"request_loss_fn": request_loss_fn, "request_loss_fn_config": request_loss_fn_config},
+        loss_sink=losses,
+    )
+    return outcome, losses
+
+
 def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disable_optimizer: bool) -> None:
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
@@ -458,6 +488,7 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    extra_loss_batch: dict | None = None,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
@@ -545,6 +576,8 @@ def train_one_step(
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+        if extra_loss_batch:
+            batch.update(extra_loss_batch)
 
         if "adapter_token_counts" in batch:
             from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
@@ -722,6 +755,8 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    extra_loss_batch: dict | None = None,
+    loss_sink: list | None = None,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -829,7 +864,10 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
+            extra_loss_batch=extra_loss_batch,
         )
+        if loss_sink is not None:
+            loss_sink.append(loss_dict)
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
