@@ -280,6 +280,8 @@ class MegatronTrainRayActor(TrainRayActor):
         # Adapters with stale engine-side weights (newly loaded or just trained);
         # consumed by the next update_weights. Identical on every rank.
         self._multi_lora_pending_push: set[str] = set()
+        # Multi-LoRA v2: rank-local mirror of slot -> exact AdapterIdentity for handler validation.
+        self._multi_lora_bindings: dict = {}
 
         # empty cache after initialization
         clear_memory()
@@ -687,6 +689,187 @@ class MegatronTrainRayActor(TrainRayActor):
         if is_first_replica_megatron_main_rank():
             for name in cleanup_names - loaded_names:
                 ray.get(get_multi_lora_controller().free_slot.remote(name))
+
+    # ---- Multi-LoRA v2 rank-local operation handlers (dispatched by name from the multi-LoRA train group) ----
+
+    def _multi_lora_shard_path(self, ckpt_dir):
+        from pathlib import Path
+
+        from miles.backends.megatron_utils.multi_lora_utils import megatron_shard_name
+
+        parallel_state = get_parallel_state()
+        name = megatron_shard_name(
+            parallel_state.tp.rank, parallel_state.pp.rank, parallel_state.ep.rank, parallel_state.ep.size
+        )
+        return Path(ckpt_dir) / name
+
+    def multi_lora_preflight_create(self, identity, *, adapter_rank: int, alpha: float) -> None:
+        from miles.utils.multi_lora import validate_slot_create
+
+        validate_slot_create(
+            self._multi_lora_bindings,
+            identity,
+            n_slots=self.args.multi_lora_n_adapters,
+            max_rank=self.args.lora_rank,
+            adapter_rank=adapter_rank,
+            alpha=alpha,
+        )
+
+    def multi_lora_preflight_bound(self, identity) -> None:
+        from miles.utils.multi_lora import validate_slot_binding
+
+        validate_slot_binding(self._multi_lora_bindings, identity)
+
+    def multi_lora_create_model(
+        self, identity, *, adapter_rank: int, alpha: float, seed=None, load_dir=None, with_optimizer: bool = False
+    ) -> dict:
+        from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children
+        from miles.backends.megatron_utils.multi_lora_utils import install_adapter_slot, load_slot_training_state
+
+        self.multi_lora_preflight_create(identity, adapter_rank=adapter_rank, alpha=alpha)
+        state_dict = None
+        if load_dir is not None:
+            state_dict = torch.load(self._multi_lora_shard_path(load_dir), map_location="cpu", weights_only=True)
+        loaded = install_adapter_slot(
+            self.model, identity.slot, rank=adapter_rank, alpha=alpha, seed=seed, state_dict=state_dict
+        )
+        if load_dir is not None and with_optimizer:
+            # Masters come from the saved training state (master -> model sync inside).
+            load_slot_training_state(self.optimizer, self.model, identity.slot, load_dir)
+        else:
+            # Fresh or weights-only install: model weights are authoritative, refresh the slot's fp32 masters.
+            for child in _slot_children(self.optimizer, identity.slot):
+                child.reload_model_params()
+        self._multi_lora_bindings[identity.slot] = identity
+        return {"loaded_tensors": loaded}
+
+    def multi_lora_release_adapter(self, identity) -> None:
+        from miles.backends.megatron_utils.multi_lora_utils import release_adapter_slot
+
+        self.multi_lora_preflight_bound(identity)
+        release_adapter_slot(self.model, self.optimizer, identity.slot)
+        del self._multi_lora_bindings[identity.slot]
+
+    def multi_lora_clear_gradients(self, identity) -> None:
+        from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
+
+        self.multi_lora_preflight_bound(identity)
+        zero_adapter_slot_grads(self.model, identity.slot)
+
+    def multi_lora_optim_step(
+        self,
+        identity,
+        *,
+        grad_scale: float,
+        clip_grad: float,
+        adam_params: dict | None = None,
+        check_finite: bool = True,
+    ) -> dict:
+        from miles.backends.megatron_utils.multi_lora_optimizer import apply_adam_params, step_adapter_slots
+
+        self.multi_lora_preflight_bound(identity)
+        if adam_params is not None:
+            apply_adam_params(self.optimizer, identity.slot, **adam_params)
+        norms = step_adapter_slots(
+            self.optimizer,
+            self.model,
+            {identity.slot: grad_scale},
+            {identity.slot: clip_grad},
+            check_finite=check_finite,
+        )
+        return {"grad_norm": norms[identity.slot]}
+
+    def multi_lora_save_state(
+        self, identity, *, save_dir, step: int, adapter_rank: int, alpha: float, include_optimizer_state: bool = True
+    ) -> dict:
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from miles.backends.megatron_utils.multi_lora_utils import save_multi_lora_checkpoints
+
+        self.multi_lora_preflight_bound(identity)
+        shim = SimpleNamespace(
+            name=identity.name,
+            slot=identity.slot,
+            config=SimpleNamespace(save=Path(save_dir), rank=adapter_rank, alpha=alpha),
+        )
+        save_multi_lora_checkpoints(
+            self.args,
+            self.model,
+            {identity.name: step},
+            {identity.name: shim},
+            optimizer=self.optimizer,
+            include_optimizer_state=include_optimizer_state,
+        )
+        return {"path": str(Path(save_dir) / "checkpoints" / f"step_{step}")}
+
+    def multi_lora_load_state(self, identity, *, ckpt_dir, with_optimizer: bool) -> dict:
+        from megatron.bridge.peft.multi_lora_layers import load_adapter
+
+        from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children, zero_adapter_slot_grads
+        from miles.backends.megatron_utils.multi_lora_utils import (
+            load_slot_training_state,
+            zero_optimizer_state_for_adapter,
+        )
+
+        self.multi_lora_preflight_bound(identity)
+        state_dict = torch.load(self._multi_lora_shard_path(ckpt_dir), map_location="cpu", weights_only=True)
+        loaded = load_adapter(self.model, identity.slot, state_dict)
+        assert loaded > 0, f"loaded 0 tensors into slot {identity.slot} from {ckpt_dir}"
+        if with_optimizer:
+            load_slot_training_state(self.optimizer, self.model, identity.slot, ckpt_dir)
+        else:
+            # Weights-only: model -> master init and a clean Adam start.
+            zero_optimizer_state_for_adapter(self.optimizer, self.model, identity.slot)
+            zero_adapter_slot_grads(self.model, identity.slot)
+            for child in _slot_children(self.optimizer, identity.slot):
+                child.reload_model_params()
+        return {"loaded_tensors": loaded}
+
+    def multi_lora_export_adapter(self, identity, *, adapter_rank: int) -> dict:
+        from miles.backends.megatron_utils.multi_lora_utils import export_adapter_slot
+
+        self.multi_lora_preflight_bound(identity)
+        return export_adapter_slot(self.args, self.model, identity.slot, adapter_rank=adapter_rank)
+
+    def multi_lora_forward(
+        self, identity, *, rollout_data, request_loss_fn: str, request_loss_fn_config=None, extra_batch_keys=None
+    ) -> dict:
+        from miles.backends.megatron_utils.model import forward_with_request_loss
+
+        self.multi_lora_preflight_bound(identity)
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+        out = forward_with_request_loss(
+            self.args,
+            self.model,
+            data_iterator,
+            num_microbatches,
+            rollout_id=0,
+            request_loss_fn=request_loss_fn,
+            request_loss_fn_config=request_loss_fn_config,
+            extra_batch_keys=extra_batch_keys,
+        )
+        return {key: [t.cpu() for t in value] if isinstance(value, list) else value for key, value in out.items()}
+
+    def multi_lora_forward_backward(
+        self, identity, *, rollout_data, request_loss_fn: str, request_loss_fn_config=None
+    ) -> dict:
+        from miles.backends.megatron_utils.model import forward_backward_with_request_loss
+
+        self.multi_lora_preflight_bound(identity)
+        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
+        num_rollouts = [1] * len(num_microbatches)
+        outcome, losses = forward_backward_with_request_loss(
+            self.args,
+            self.model,
+            data_iterator,
+            num_microbatches,
+            num_rollouts,
+            rollout_id=0,
+            request_loss_fn=request_loss_fn,
+            request_loss_fn_config=request_loss_fn_config,
+        )
+        return {"outcome": outcome.name, "losses": losses}
 
     @timer
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:

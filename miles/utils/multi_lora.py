@@ -5,6 +5,7 @@ MultiLoRAHTTPServer) lives in ``miles/ray/multi_lora/``.
 """
 
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,8 @@ __all__ = [
     "parse_adapter",
     "slot_lora_name",
     "validate_multi_lora_args",
+    "validate_slot_binding",
+    "validate_slot_create",
 ]
 
 
@@ -56,6 +59,33 @@ class ServingRef:
 
     identity: AdapterIdentity
     version: int
+
+
+def validate_slot_binding(bindings: dict[int, AdapterIdentity], identity: AdapterIdentity) -> None:
+    """First-line exact-identity check for any mutation on a resident slot."""
+    bound = bindings.get(identity.slot)
+    if bound != identity:
+        raise ValueError(f"slot {identity.slot} is bound to {bound}, expected {identity}")
+
+
+def validate_slot_create(
+    bindings: dict[int, AdapterIdentity],
+    identity: AdapterIdentity,
+    *,
+    n_slots: int,
+    max_rank: int,
+    adapter_rank: int,
+    alpha: float,
+) -> None:
+    """Read-only create preflight: valid free slot and representable rank/alpha."""
+    if not isinstance(identity.slot, int) or isinstance(identity.slot, bool) or not 0 <= identity.slot < n_slots:
+        raise ValueError(f"slot {identity.slot!r} is outside the fixed slot range [0, {n_slots})")
+    if identity.slot in bindings:
+        raise ValueError(f"slot {identity.slot} is already bound to {bindings[identity.slot]}")
+    if not isinstance(adapter_rank, int) or isinstance(adapter_rank, bool) or not 0 < adapter_rank <= max_rank:
+        raise ValueError(f"adapter rank {adapter_rank!r} must be an int in (0, {max_rank}]")
+    if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError(f"adapter alpha {alpha!r} must be a finite positive number")
 
 
 def is_multi_lora_enabled(args: Any) -> bool:
