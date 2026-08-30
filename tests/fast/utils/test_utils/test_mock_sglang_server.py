@@ -256,8 +256,6 @@ class TestChatCompletionsEndpoint:
         choice = data["choices"][0]
         assert "meta_info" in choice
         choice.pop("meta_info")
-        prompt_token_ids = expected_prompt_token_ids(mock_server.tokenizer, messages, None)
-        completion_logprobs = expected_logprobs(mock_server.tokenizer, "\\boxed{6}")
         assert data == {
             "id": data["id"],
             "object": "chat.completion",
@@ -267,16 +265,11 @@ class TestChatCompletionsEndpoint:
                 {
                     "index": 0,
                     "message": {"role": "assistant", "content": "\\boxed{6}", "tool_calls": None},
-                    "logprobs": {"content": completion_logprobs},
-                    "prompt_token_ids": prompt_token_ids,
+                    "logprobs": {"content": expected_logprobs(mock_server.tokenizer, "\\boxed{6}")},
+                    "prompt_token_ids": expected_prompt_token_ids(mock_server.tokenizer, messages, None),
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {
-                "prompt_tokens": len(prompt_token_ids),
-                "completion_tokens": len(completion_logprobs),
-                "total_tokens": len(prompt_token_ids) + len(completion_logprobs),
-            },
         }
 
     def test_with_tool_calls(self):
