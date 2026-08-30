@@ -431,43 +431,11 @@ def save_multi_lora_checkpoints(
             dist.barrier()
 
 
-def _seeded_rng_scope(seed: int):
-    """Context: fork global+CUDA RNG and the megatron CUDA-RNG tracker, all reseeded deterministically."""
-    import contextlib
-
-    @contextlib.contextmanager
-    def scope():
-        devices = [torch.cuda.current_device()] if torch.cuda.is_available() else []
-        with torch.random.fork_rng(devices=devices):
-            torch.manual_seed(seed)
-            tracker, saved_states = None, None
-            try:
-                from megatron.core.tensor_parallel import get_cuda_rng_tracker
-
-                tracker = get_cuda_rng_tracker()
-                saved_states = tracker.get_states()
-                seeded_states = {}
-                for index, name in enumerate(sorted(saved_states)):
-                    torch.cuda.manual_seed(seed + index + 1)
-                    seeded_states[name] = torch.cuda.get_rng_state()
-                tracker.set_states(seeded_states)
-                torch.cuda.manual_seed(seed)
-            except Exception:
-                tracker, saved_states = None, None
-            try:
-                yield
-            finally:
-                if tracker is not None and saved_states is not None:
-                    tracker.set_states(saved_states)
-
-    return scope()
-
-
 def install_adapter_slot(
     model, slot: int, *, rank: int, alpha: float, seed: int | None = None, state_dict: dict | None = None
 ) -> int:
     """Policy-free slot install on this rank's model shard; returns the number of loaded tensors (0 = fresh init)."""
-    from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot, init_adapter_slot, load_adapter
+    from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
     loaded = 0
     if state_dict is not None:
@@ -476,15 +444,8 @@ def install_adapter_slot(
             loaded > 0
         ), f"loaded 0 tensors into slot {slot} (state_dict has {len(state_dict)} entries) — name mismatch?"
         init_adapter_slot(model, slot, rank=rank, alpha=alpha)
-    elif seed is None:
-        # Legacy fresh install: weights are whatever construction/release re-init left in the slot.
-        init_adapter_slot(model, slot, rank=rank, alpha=alpha)
     else:
-        # Deterministic fresh install: re-init the slot weights under the seed (bridge init draws from the
-        # megatron CUDA-RNG tracker, so it must be reseeded too), identical on every rank for a given seed.
-        with _seeded_rng_scope(seed):
-            clear_adapter_slot(model, slot)
-            init_adapter_slot(model, slot, rank=rank, alpha=alpha)
+        init_adapter_slot(model, slot, rank=rank, alpha=alpha, seed=seed)
     return loaded
 
 
