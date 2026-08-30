@@ -5,7 +5,7 @@ from torch.utils.checkpoint import checkpoint
 from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
-from miles.backends.training_utils.loss_hub.losses import get_loss_function
+from miles.backends.training_utils.loss_hub.losses import get_loss_function, resolve_request_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -170,7 +170,13 @@ def loss_function(
         denominators=batch.get("rollout_mask_sums", None),
     )
 
-    func = get_loss_function(args)
+    func = resolve_request_loss_function(batch)
+    if func is None:
+        func = get_loss_function(args)
+    elif args.recompute_loss_function:
+        raise ValueError(
+            "request-scoped loss does not support recompute_loss_function: checkpoint reruns the loss fn in backward"
+        )
 
     if args.recompute_loss_function:
         loss, log = checkpoint(
