@@ -9,31 +9,8 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
-from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
-from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
-from sglang.srt.parser.template_detection import detect_inline_system_support
-from starlette.responses import Response
 
-from miles.rollout.session.anthropic_adapter import (
-    _ANTHROPIC_ERROR_HEADER_ALLOWLIST as _ANTHROPIC_ERROR_HEADER_ALLOWLIST,
-)
-from miles.rollout.session.anthropic_adapter import (
-    _ANTHROPIC_ERROR_HEADER_PREFIXES as _ANTHROPIC_ERROR_HEADER_PREFIXES,
-)
-from miles.rollout.session.anthropic_adapter import (
-    _anthropic_error_response,
-    _anthropic_sse_body,
-    _anthropic_wire_json,
-    _parse_anthropic_request,
-    _restore_anthropic_reasoning_history,
-    _strip_anthropic_reasoning_history,
-)
-from miles.rollout.session.anthropic_adapter import (
-    _validate_anthropic_content_block as _validate_anthropic_content_block,
-)
-from miles.rollout.session.anthropic_adapter import _validate_anthropic_features
-from miles.rollout.session.core import JSON_MEDIA_TYPE, SessionCore, _render_json
+from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import SessionError
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.utils.chat_template_utils import get_tito_tokenizer
@@ -67,7 +44,6 @@ def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
         tokenizer_type=getattr(args, "tito_model", "default"),
         chat_template_kwargs=getattr(args, "apply_chat_template_kwargs", None),
     )
-    merge_inline_system = not detect_inline_system_support(getattr(tokenizer, "chat_template", None))
 
     use_v2 = getattr(args, "use_session_server", None) == "v2"
     if use_v2:
@@ -90,10 +66,7 @@ def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
 
     @app.get("/health")
     async def health():
-        response = await core.health()
-        body = json.loads(response.body)
-        body["anthropic_intermediate_system_supported"] = not merge_inline_system
-        return Response(content=_render_json(body), status_code=response.status_code, media_type=JSON_MEDIA_TYPE)
+        return await core.health()
 
     @app.post("/sessions")
     async def create_session():
@@ -117,78 +90,6 @@ def setup_session_routes(app, backend, args, *, use_addition_r3: bool = False):
             headers=dict(request.headers),
             body=body,
         )
-
-    # Keep before session_proxy: Starlette's first match must not bypass session/TITO.
-    @app.post("/sessions/{session_id}/v1/messages")
-    async def anthropic_messages(request: Request, session_id: str):
-        """Serve Anthropic Messages through the OpenAI session path."""
-        body = await request.body()
-        try:
-            anthropic_request = _parse_anthropic_request(body)
-            _validate_anthropic_features(anthropic_request)
-            try:
-                conversion_request, reasoning_history = _strip_anthropic_reasoning_history(anthropic_request)
-                openai_request = convert_to_chat_completion_request(
-                    conversion_request, merge_inline_system=merge_inline_system
-                )
-            except Exception as exc:
-                logger.exception("Error converting Anthropic request: %s", exc)
-                raise ValueError(str(exc)) from exc
-            # Core is non-streaming; build fake SSE from its complete response below.
-            openai_request.stream = False
-            openai_request.stream_options = None
-            # Omit defaults so equivalent Anthropic and OpenAI inputs produce the same canonical record.
-            openai_body_dict = openai_request.model_dump(
-                mode="json", exclude_none=True, exclude_unset=True, by_alias=True
-            )
-            _restore_anthropic_reasoning_history(openai_body_dict, reasoning_history)
-            openai_body = _render_json(openai_body_dict)
-        except ValueError as exc:
-            # Parsing and JSON encoding failures are invalid Anthropic requests.
-            return _anthropic_error_response(400, _render_json({"error": str(exc)}))
-
-        anthropic_stream = bool(anthropic_request.stream)
-
-        try:
-            core_response = await core.chat_completions(
-                session_id,
-                method=request.method,
-                query=request.url.query,
-                headers=dict(request.headers),
-                body=openai_body,
-            )
-        except SessionError as exc:
-            return _anthropic_error_response(exc.status_code, _render_json({"error": str(exc)}))
-        except Exception:
-            # Preserve Anthropic error framing; cancellation still propagates.
-            logger.exception("Anthropic chat processing failed for session %s", session_id)
-            return _anthropic_error_response(500, b"")
-
-        if core_response.status_code != 200:
-            return _anthropic_error_response(
-                core_response.status_code, core_response.body, dict(core_response.headers)
-            )
-
-        try:
-            openai_response = ChatCompletionResponse.model_validate_json(core_response.body)
-            if anthropic_stream:
-                events = anthropic_utils.to_anthropic_fake_sse_events(
-                    openai_response,
-                    model=anthropic_request.model,
-                    id_factory=lambda: openai_response.id,
-                )
-                return Response(
-                    content=_anthropic_sse_body(events),
-                    status_code=200,
-                    headers={"cache-control": "no-cache", "x-accel-buffering": "no"},
-                    media_type="text/event-stream",
-                )
-            envelope = convert_response(openai_response).model_copy(update={"id": openai_response.id})
-            return Response(content=_anthropic_wire_json(envelope), status_code=200, media_type=JSON_MEDIA_TYPE)
-        except Exception:
-            # Post-commit failures keep the record and return JSON 500, never partial SSE.
-            logger.exception("Anthropic response conversion failed for session %s", session_id)
-            return _anthropic_error_response(500, b"")
 
     @app.post("/sessions/{session_id}/samples")
     async def collect_samples(request: Request, session_id: str):
