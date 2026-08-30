@@ -296,11 +296,45 @@ def save_multi_lora_checkpoints(
             dist.barrier()
 
 
-def _register_adapter(adapter: AdapterRun, model) -> int:
-    """Install one adapter on this rank's local model shard. Returns the step
-    of the checkpoint it resumed from (0 for a fresh adapter)."""
+def install_adapter_slot(
+    model, slot: int, *, rank: int, alpha: float, seed: int | None = None, state_dict: dict | None = None
+) -> int:
+    """Policy-free slot install on this rank's model shard; returns the number of loaded tensors (0 = fresh init)."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
+    loaded = 0
+    if state_dict is not None:
+        loaded = load_adapter(model, slot, state_dict)
+        assert (
+            loaded > 0
+        ), f"loaded 0 tensors into slot {slot} (state_dict has {len(state_dict)} entries) — name mismatch?"
+    if seed is None:
+        init_adapter_slot(model, slot, rank=rank, alpha=alpha)
+    else:
+        # fork_rng keeps per-model init seeds from perturbing the global training RNG stream
+        devices = [torch.cuda.current_device()] if torch.cuda.is_available() else []
+        with torch.random.fork_rng(devices=devices):
+            torch.manual_seed(seed)
+            init_adapter_slot(model, slot, rank=rank, alpha=alpha)
+    return loaded
+
+
+def release_adapter_slot(model, optimizer, slot: int) -> None:
+    """Policy-free slot release: clear weights, optimizer state, grads, and scheduler so the next tenant starts clean."""
+    from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
+
+    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
+    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
+
+    clear_adapter_slot(model, slot)
+    zero_optimizer_state_for_adapter(optimizer, model, slot)
+    zero_adapter_slot_grads(model, slot)
+    drop_slot_scheduler(optimizer, slot)
+    optimizer.reload_model_params()
+
+
+def _register_adapter(adapter: AdapterRun, model) -> int:
+    """E2E install wrapper: checkpoint auto-resume around the policy-free install; returns the resumed step (0 = fresh)."""
     name = adapter.name
     config = adapter.config
     slot = adapter.slot
@@ -313,27 +347,22 @@ def _register_adapter(adapter: AdapterRun, model) -> int:
     else:
         ckpt = None
 
+    state_dict = None
     if ckpt is None:
         logger.info(f"{log_prefix} no checkpoint, starting from random init")
         step = 0
     else:
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=True)
-        loaded = load_adapter(model, slot, state_dict)
-        assert loaded > 0, (
-            f"{log_prefix} loaded 0 tensors from {ckpt} "
-            f"(state_dict has {len(state_dict)} entries) — name mismatch?"
-        )
-        logger.info(f"{log_prefix} loaded from {ckpt} ({loaded} tensors)")
 
-    init_adapter_slot(model, slot, rank=config.rank, alpha=config.alpha)
+    loaded = install_adapter_slot(model, slot, rank=config.rank, alpha=config.alpha, state_dict=state_dict)
+    if loaded:
+        logger.info(f"{log_prefix} loaded from {ckpt} ({loaded} tensors)")
     logger.info(f"{log_prefix} installed at slot {slot}")
     return step
 
 
 def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
-    """Model-side cleanup for one adapter."""
-    from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
-
+    """E2E release wrapper: final-checkpoint policy around the policy-free release."""
     name = adapter.name
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
@@ -346,20 +375,8 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     else:
         logger.info(f"{log_prefix} save_interval unset; skipping final checkpoint")
 
-    clear_adapter_slot(model, slot)
-    logger.info(f"{log_prefix} cleared adapter slot {slot}")
-
-    # Prevent future slot tenants from inheriting optimizer momentum or the
-    # previous tenant's partially accumulated gradients.
-    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
-
-    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
-
-    zero_optimizer_state_for_adapter(optimizer, model, slot)
-    zero_adapter_slot_grads(model, slot)
-    drop_slot_scheduler(optimizer, slot)
-    optimizer.reload_model_params()
-    logger.info(f"{log_prefix} cleared optimizer state and retained grads for slot {slot}")
+    release_adapter_slot(model, optimizer, slot)
+    logger.info(f"{log_prefix} released slot {slot}: weights, optimizer state, grads, and scheduler cleared")
 
 
 def load_adapters(args, model, optimizer, adapters) -> int:
