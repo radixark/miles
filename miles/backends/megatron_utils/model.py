@@ -40,7 +40,7 @@ from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
-from ..training_utils.loss import loss_function
+from ..training_utils.loss import loss_function, request_forward_collector
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
@@ -262,6 +262,8 @@ def forward_only(
     num_microbatches: Sequence[int],
     rollout_id: int,
     store_prefix: str = "",
+    extra_batch_keys: Sequence[str] | None = None,
+    include_batch_in_f: bool = False,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -320,7 +322,8 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
                 "witness_ids",
-            ],
+            ]
+            + list(extra_batch_keys or []),
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -355,6 +358,7 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            **({"batch": batch} if include_batch_in_f else {}),
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -398,6 +402,40 @@ def forward_only(
         for key, value in aggregated.items():
             rollout_data[f"{store_prefix}{key}"] = value
     return rollout_data
+
+
+def forward_with_request_loss(
+    args: Namespace,
+    model: Sequence[DDP],
+    data_iterator: Sequence[DataIterator],
+    num_microbatches: Sequence[int],
+    rollout_id: int,
+    request_loss_fn: str,
+    request_loss_fn_config: dict | None = None,
+    extra_batch_keys: Sequence[str] | None = None,
+) -> dict[str, list[torch.Tensor] | torch.Tensor]:
+    """Tinker forward: no-grad pass returning detached per-sample logprobs in input order plus the request loss."""
+    # Plain concat keeps sample order; dynamic micro-batching would need index restore for the per-microbatch loss key.
+    assert not getattr(args, "use_dynamic_batch_size", False), "request forward requires use_dynamic_batch_size=False"
+    collector = partial(
+        request_forward_collector,
+        request_loss_fn=request_loss_fn,
+        request_loss_fn_config=request_loss_fn_config,
+    )
+    out = forward_only(
+        collector,
+        args,
+        model,
+        data_iterator,
+        num_microbatches,
+        rollout_id=rollout_id,
+        extra_batch_keys=extra_batch_keys,
+        include_batch_in_f=True,
+    )
+    if "request_loss" in out:
+        # One scalar per microbatch; their sum is the sum over datums of the per-datum mean (weight-1 convention).
+        out["request_loss"] = torch.stack(out.pop("request_loss")).sum()
+    return out
 
 
 def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disable_optimizer: bool) -> None:

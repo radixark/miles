@@ -123,6 +123,36 @@ def compute_advantages_and_returns(
     rollout_data["returns"] = returns
 
 
+def request_forward_collector(
+    logits: torch.Tensor,
+    args: Namespace,
+    unconcat_tokens,
+    total_lengths,
+    response_lengths,
+    with_entropy: bool,
+    max_seq_lens,
+    batch: dict,
+    request_loss_fn: str,
+    request_loss_fn_config: dict | None,
+) -> dict[str, list[torch.Tensor]]:
+    """Collect detached per-sample logprobs plus the request-scoped loss for one no-grad forward microbatch."""
+    out = get_log_probs_and_entropy(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        with_entropy=with_entropy,
+        max_seq_lens=max_seq_lens,
+    )
+    result = {key: [tensor.detach() for tensor in values] for key, values in out.items()}
+    loss_batch = {**batch, "request_loss_fn": request_loss_fn, "request_loss_fn_config": request_loss_fn_config}
+    with torch.no_grad():
+        loss, _, _ = loss_function(args, loss_batch, num_microbatches=1, logits=logits)
+    result["request_loss"] = [loss.detach()]
+    return result
+
+
 def loss_function(
     args: Namespace,
     batch: RolloutBatch,
