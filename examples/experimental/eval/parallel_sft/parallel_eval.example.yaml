@@ -1,0 +1,56 @@
+# OmegaConf resolves these environment variables before command expansion.
+# Both commands start together after Miles has pinned the requested snapshot.
+commands:
+  - name: terminal_bench_2_1
+    argv:
+      - ${oc.env:TB21_PYTHON,python}
+      - ${oc.env:TB21_DRIVER}
+      - --agent_server_url
+      - ${oc.env:TB21_AGENT_SERVER_URL}
+      - --base_url
+      - "{openai_base_url}"
+      - --model
+      - "{litellm_model}"
+      - --agent_name
+      - terminus-2
+      - --api_key
+      - dummy
+      - --task_list_file
+      - ${oc.env:TB21_TASK_LIST}
+      - --n_trials
+      - ${oc.env:TB21_TRIALS,1}
+      - --concurrency
+      - ${oc.env:TB21_CONCURRENCY,16}
+      - --max_seq_len
+      - "262144"
+      - --max_tokens
+      - "81920"
+      - --temperature
+      - "1.0"
+      - --top_p
+      - "0.95"
+      - --top_k
+      - "20"
+      - --per_task_timeout_sec
+      - "12600"
+      - --output_jsonl
+      - "{output_dir}/tb21.jsonl"
+    metrics_path: "{output_dir}/tb21_summary.json"
+    timeout_secs: 50400
+
+  - name: hle_300
+    argv:
+      - ${oc.env:HLE_PYTHON,python}
+      - ${oc.env:HLE_DRIVER}
+      - --input
+      - ${oc.env:HLE_DATASET}
+      - --base-url
+      - "{openai_base_url}"
+      - --model
+      - "{model}"
+      - --output-jsonl
+      - "{output_dir}/hle_300.jsonl"
+      - --summary-json
+      - "{output_dir}/hle_300_summary.json"
+    metrics_path: "{output_dir}/hle_300_summary.json"
+    timeout_secs: 50400
