@@ -6,13 +6,16 @@ MultiLoRAHTTPServer) lives in ``miles/ray/multi_lora/``.
 
 import logging
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AdapterIdentity",
     "EmptyBatchTimeoutError",
     "RID_SEPARATOR",
+    "ServingRef",
     "define_new_adapter_metrics",
     "is_multi_lora_enabled",
     "make_rid",
@@ -29,6 +32,30 @@ RID_SEPARATOR = "::"
 
 class EmptyBatchTimeoutError(RuntimeError):
     """No trainable groups arrived before empty-wait timeout."""
+
+
+@dataclass(frozen=True)
+class AdapterIdentity:
+    """Exact adapter identity: ``utils.types.AdapterRef``'s (name, slot) plus the never-reused registration_id."""
+
+    name: str
+    registration_id: str
+    slot: int
+
+    def to_adapter_ref(self):
+        """Project onto the sample-routing ``AdapterRef`` (drops registration_id)."""
+        # lazy import: keep this module stdlib-only so every layer can import it cheaply
+        from miles.utils.types import AdapterRef
+
+        return AdapterRef(name=self.name, slot=self.slot)
+
+
+@dataclass(frozen=True)
+class ServingRef:
+    """Committed published-weights reference; version is the monotonic slot version captured at commit."""
+
+    identity: AdapterIdentity
+    version: int
 
 
 def is_multi_lora_enabled(args: Any) -> bool:

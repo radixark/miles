@@ -5,6 +5,7 @@ import logging
 from argparse import Namespace
 from collections.abc import Sequence
 from contextlib import contextmanager
+from typing import Literal
 
 import torch
 from megatron.core.optimizer import get_megatron_optimizer
@@ -15,6 +16,11 @@ from megatron.core.optimizer.optimizer_config import OptimizerConfig
 from megatron.core.process_groups_config import ProcessGroupCollection
 
 logger = logging.getLogger(__name__)
+
+# Step policies: request AdamW params applied to the raw gradient sum (tinker) vs per-slot scheduler with batch mean (E2E).
+OptimStepPolicy = Literal["explicit_adam_sum", "scheduled_mean"]
+EXPLICIT_ADAM_SUM: OptimStepPolicy = "explicit_adam_sum"
+SCHEDULED_MEAN: OptimStepPolicy = "scheduled_mean"
 
 
 def adapter_slot_parameters(model, slot: int) -> list[torch.nn.Parameter]:
