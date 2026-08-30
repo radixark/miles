@@ -25,9 +25,7 @@ from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_block_sparse_attn import (
     qsa_sparse_attention_from_indices,
     selection_to_block_bitmap,
 )
-from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import (  # noqa: E402
-    qsa_sparse_attention_triton,
-)
+from miles_plugins.models.qwen3_8_next.ops.kernel.qsa_sparse_attn import qsa_sparse_attention_triton  # noqa: E402
 
 BLK = 4
 HQ, HKV, D = 4, 1, 128
@@ -96,7 +94,9 @@ def test_gradients_match_gather_kernel():
         fn(qq, kk, vv, idx, SCALE).backward(gout)
         return qq.grad, kk.grad, vv.grad
 
-    for a, b, name in zip(run(qsa_sparse_attention_from_indices), run(qsa_sparse_attention_triton), "qkv"):
+    for a, b, name in zip(
+        run(qsa_sparse_attention_from_indices), run(qsa_sparse_attention_triton), "qkv", strict=True
+    ):
         rel = _rel(a, b)[1]
         assert rel < 1e-2, (name, rel)
 

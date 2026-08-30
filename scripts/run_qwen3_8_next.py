@@ -1,19 +1,22 @@
-"""Qwen3.8-Flash-Next (Qwen4Exp) DAPO training.
+"""Run Qwen3.8-Flash-Next text or image-conditioned GRPO training.
 
 Assumes an already-running ray cluster (MILES_SCRIPT_EXTERNAL_RAY=1) and a
-converted torch_dist reference checkpoint.
+converted torch_dist reference checkpoint. Geo3K additionally expects
+``geo3k_imgurl/train.parquet`` under ``data_dir``.
 
 Args:
+    task: ``dapo-math`` for the text baseline or ``geo3k`` for VLM training.
     model-name: "Qwen3.8-Flash-Next" (48-layer, 8 nodes x 4 GPUs, TP2 PP8 EP4)
-        or "Qwen3.8-Flash-Next-4layer" (smoke slice, 1 node x 4 GPUs,
-        TP2 PP2 EP2).
+        or "Qwen3.8-Flash-Next-4layer" (smoke slice, 1 node x 4/8 GPUs).
 
-Usage (inside the head-node container):
+Examples (inside the head-node container):
     python scripts/run_qwen3_8_next.py train --num-rollout 5
+    python scripts/run_qwen3_8_next.py train --task geo3k --model-name Qwen3.8-Flash-Next-4layer \
+        --num-nodes 1 --num-gpus-per-node 8
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import typer
@@ -31,9 +34,10 @@ _MODEL_REGISTRY = {
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     model_name: Literal["Qwen3.8-Flash-Next", "Qwen3.8-Flash-Next-4layer"] = "Qwen3.8-Flash-Next"
+    task: Literal["dapo-math", "geo3k"] = "dapo-math"
     num_nodes: int = 8
     num_gpus_per_node: int = 4
-    run_id: str = "qwen38next-dapo"
+    run_id: str = field(default_factory=U.create_run_id)
     hf_checkpoint: str | None = None
     model_dir: str = "/root/models"
     ckpt_dir: str = "/root/ckpt"
@@ -41,6 +45,9 @@ class ScriptArgs(U.ExecuteTrainConfig):
     save_dir: str = "/root/shared_data"
     megatron_path: str = "/root/Megatron-LM"
     num_rollout: int = 5
+    rollout_batch_size: int = 4
+    n_samples_per_prompt: int = 8
+    global_batch_size: int | None = None
     rollout_max_response_len: int = 4096
     check_weight_update: bool = True
     enable_r3: bool = False
@@ -50,6 +57,37 @@ class ScriptArgs(U.ExecuteTrainConfig):
     def __post_init__(self):
         if self.hf_checkpoint is None:
             self.hf_checkpoint = f"{self.model_dir}/{self.model_name}"
+
+
+def _get_rollout_args(args: ScriptArgs) -> str:
+    if args.task == "geo3k":
+        label_key = "answer"
+        prompt_data = f"{args.data_dir}/geo3k_imgurl/train.parquet"
+        input_key = "problem"
+        multimodal_args = '--multimodal-keys \'{"image": "images"}\' '
+    else:
+        label_key = "label"
+        prompt_data = f"{args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl"
+        input_key = "prompt"
+        multimodal_args = ""
+
+    return (
+        f"--label-key {label_key} "
+        "--apply-chat-template "
+        "--rollout-shuffle "
+        "--rm-type math "
+        f"--num-rollout {args.num_rollout} "
+        f"--rollout-batch-size {args.rollout_batch_size} "
+        f"--n-samples-per-prompt {args.n_samples_per_prompt} "
+        "--rollout-temperature 0.8 "
+        "--num-steps-per-rollout 1 "
+        "--balance-data "
+        f"--prompt-data {prompt_data} "
+        f"--input-key {input_key} "
+        f"{multimodal_args}"
+        f"--rollout-max-response-len {args.rollout_max_response_len} "
+        '--apply-chat-template-kwargs \'{"thinking_mode":"thinking"}\' '
+    )
 
 
 def _train(args: ScriptArgs):
@@ -72,22 +110,7 @@ def _train(args: ScriptArgs):
             "--no-save-optim --no-save-rng --no-load-optim --no-load-rng "
         )
 
-    rollout_args = (
-        "--label-key label "
-        "--apply-chat-template "
-        "--rollout-shuffle "
-        "--rm-type math "
-        f"--num-rollout {args.num_rollout} "
-        "--rollout-batch-size 4 "
-        "--n-samples-per-prompt 8 "
-        "--rollout-temperature 0.8 "
-        "--num-steps-per-rollout 1 "
-        "--balance-data "
-        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
-        "--input-key prompt "
-        f"--rollout-max-response-len {args.rollout_max_response_len} "
-        '--apply-chat-template-kwargs \'{"thinking_mode":"thinking"}\' '
-    )
+    rollout_args = _get_rollout_args(args)
 
     if shape == (8, 4):
         parallel_args = (
@@ -118,6 +141,8 @@ def _train(args: ScriptArgs):
         "--micro-batch-size 1 "
         "--max-tokens-per-gpu 8192 "
     )
+    if args.global_batch_size is not None:
+        perf_args += f"--global-batch-size {args.global_batch_size} "
 
     grpo_args = (
         "--advantage-estimator grpo "
@@ -148,6 +173,12 @@ def _train(args: ScriptArgs):
         "--router-health-check-interval-secs 15 "
         "--router-health-failure-threshold 40 "
     )
+    if args.task == "geo3k":
+        sglang_args += "--sglang-mm-attention-backend sdpa "
+
+    model_provider = "miles_plugins.models.qwen3_8_next.model_provider.get_qwen3_8_next_model_provider"
+    if args.task == "geo3k":
+        model_provider = "miles_plugins.models.qwen3_8_next.model_provider.get_qwen3_8_next_vlm_model_provider"
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -166,8 +197,7 @@ def _train(args: ScriptArgs):
         "--model-name qwen4_exp "
         "--qkv-format thd "
         "--linear-attention-backend flashqla "
-        "--custom-model-provider-path "
-        "miles_plugins.models.qwen3_8_next.model_provider.get_qwen3_8_next_model_provider "
+        f"--custom-model-provider-path {model_provider} "
         "--rollout-health-check-interval 300 "
         "--distributed-timeout-minutes 60 "
         "--rollout-health-check-timeout 300 "

@@ -256,28 +256,88 @@ def _reassemble_full_row(gathered, cu, cp_size):
     return full
 
 
-def _segment_positions(model, flat, cu, cu_t, kwargs, orig_get_rope_index):
+def get_qwen3_vl_position_ids(
+    input_ids,
+    *,
+    packed_seq_params,
+    image_grid_thw,
+    video_grid_thw,
+    spatial_merge_size,
+    image_token_id,
+    video_token_id,
+    vision_start_token_id,
+):
+    """Build Qwen3-VL-style position IDs, restarting each packed THD segment."""
+    from megatron.bridge.models.qwen_vl.modelling_qwen3_vl.rope import get_rope_index
+
+    parsed = _parse_packed_thd(
+        (),
+        {
+            "input_ids": input_ids,
+            "packed_seq_params": packed_seq_params,
+        },
+    )
+    if parsed is None:
+        position_ids, _ = get_rope_index(
+            spatial_merge_size,
+            image_token_id,
+            video_token_id,
+            vision_start_token_id,
+            input_ids,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
+        )
+        return position_ids
+
+    if parsed.cp_size != 1:
+        raise NotImplementedError("get_qwen3_vl_position_ids does not support context parallelism")
+    if parsed.cu[0] != 0 or parsed.cu[-1] != parsed.local_len:
+        raise ValueError("cu_seqlens_q must cover the packed Qwen3-VL input")
+
+    segments = _segment_positions(
+        parsed.flat,
+        parsed.cu,
+        parsed.cu_t,
+        image_grid_thw=image_grid_thw,
+        video_grid_thw=video_grid_thw,
+        spatial_merge_size=spatial_merge_size,
+        image_token_id=image_token_id,
+        video_token_id=video_token_id,
+        vision_start_token_id=vision_start_token_id,
+        get_rope_index=get_rope_index,
+    )
+    return torch.cat(segments, dim=2).contiguous()
+
+
+def _segment_positions(
+    flat,
+    cu,
+    cu_t,
+    *,
+    image_grid_thw,
+    video_grid_thw,
+    spatial_merge_size,
+    image_token_id,
+    video_token_id,
+    vision_start_token_id,
+    get_rope_index,
+):
     """Per-segment MRoPE positions for a full (unsharded) packed row `flat` with boundaries `cu`.
 
     Returns a list of [3, 1, seg_len] tensors (one per non-empty segment), text segments get
     a linear 0..L range, media segments call get_rope_index with the matching grid slice.
     """
-    image_grid_thw = kwargs.get("image_grid_thw")
-    video_grid_thw = kwargs.get("video_grid_thw")
-    merge = model.config.spatial_merge_size
-    img_id, vid_id, vstart = model.image_token_id, model.video_token_id, model.vision_start_token_id
-
     # Vectorized media count per segment (one GPU->host copy total, no per-segment .item()).
     num_segments = len(cu) - 1
     img_counts = [0] * num_segments
     vid_counts = [0] * num_segments
-    starts = torch.nonzero(flat == vstart, as_tuple=False).flatten()
+    starts = torch.nonzero(flat == vision_start_token_id, as_tuple=False).flatten()
     starts = starts[starts + 1 < flat.numel()]
     if starts.numel() > 0:
         toks = flat[starts + 1]
         seg_idx = torch.bucketize(starts, cu_t, right=True) - 1  # [start,end) -> segment index
-        img_counts = torch.bincount(seg_idx[toks == img_id], minlength=num_segments).cpu().tolist()
-        vid_counts = torch.bincount(seg_idx[toks == vid_id], minlength=num_segments).cpu().tolist()
+        img_counts = torch.bincount(seg_idx[toks == image_token_id], minlength=num_segments).cpu().tolist()
+        vid_counts = torch.bincount(seg_idx[toks == video_token_id], minlength=num_segments).cpu().tolist()
 
     img_off = vid_off = 0
     segments = []
@@ -289,11 +349,11 @@ def _segment_positions(model, flat, cu, cu_t, kwargs, orig_get_rope_index):
         if ic == 0 and vc == 0:
             pos = torch.arange(seg.numel(), dtype=seg.dtype, device=seg.device).view(1, 1, -1).expand(3, 1, -1)
         else:
-            pos, _ = orig_get_rope_index(
-                merge,
-                img_id,
-                vid_id,
-                vstart,
+            pos, _ = get_rope_index(
+                spatial_merge_size,
+                image_token_id,
+                video_token_id,
+                vision_start_token_id,
                 seg.unsqueeze(0),
                 image_grid_thw=_slice(image_grid_thw, img_off, ic),
                 video_grid_thw=_slice(video_grid_thw, vid_off, vc),
@@ -312,10 +372,19 @@ def _build_packed_positions(model, parsed, kwargs, orig_get_rope_index):
         return None
     flat, cu, cu_t = parsed.flat, parsed.cu, parsed.cu_t
     local_len, cp_size, cp_rank = parsed.local_len, parsed.cp_size, parsed.cp_rank
+    position_kwargs = {
+        "image_grid_thw": kwargs.get("image_grid_thw"),
+        "video_grid_thw": kwargs.get("video_grid_thw"),
+        "spatial_merge_size": model.config.spatial_merge_size,
+        "image_token_id": model.image_token_id,
+        "video_token_id": model.video_token_id,
+        "vision_start_token_id": model.vision_start_token_id,
+        "get_rope_index": orig_get_rope_index,
+    }
 
     # Non-CP (or single chunk): cu_seqlens_q already describes this row exactly.
     if cu[-1] == local_len:
-        segments = _segment_positions(model, flat, cu, cu_t, kwargs, orig_get_rope_index)
+        segments = _segment_positions(flat, cu, cu_t, **position_kwargs)
         return torch.cat(segments, dim=2).contiguous() if segments else None
 
     # CP + THD packing: cu_seqlens_q gives the FULL padded per-segment boundaries (miles
@@ -328,7 +397,7 @@ def _build_packed_positions(model, parsed, kwargs, orig_get_rope_index):
         if full_flat is None:
             logger.debug("qwen3_vl packed mRoPE: CP segment not divisible by 2*cp; dense path")
             return None
-        segments = _segment_positions(model, full_flat, cu, cu_t, kwargs, orig_get_rope_index)
+        segments = _segment_positions(full_flat, cu, cu_t, **position_kwargs)
         if not segments:
             return None
         local_segments = [_natural_to_zigzag_slice(p, cp_size, cp_rank, dim=2) for p in segments]

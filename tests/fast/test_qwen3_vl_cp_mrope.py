@@ -7,10 +7,14 @@ test checks that reconstruction is the exact inverse of `slice_with_cp` (the fun
 uses to shard the tokens), and that re-slicing with `_natural_to_zigzag_slice` round-trips.
 """
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn.functional as F
 
+import miles_plugins.models.qwen3_vl as qwen3_vl
 from miles_plugins.models.qwen3_vl import _natural_to_zigzag_slice, _reassemble_full_row
 
 
@@ -78,3 +82,24 @@ def test_reassemble_bails_on_indivisible_segment():
     cu = [0, 6]  # 6 not divisible by 2*cp=4
     gathered = [torch.zeros(3, dtype=torch.long), torch.zeros(3, dtype=torch.long)]
     assert _reassemble_full_row(gathered, cu, cp_size=2) is None
+
+
+def test_position_ids_restart_for_each_packed_segment(monkeypatch):
+    rope_module = "megatron.bridge.models.qwen_vl.modelling_qwen3_vl.rope"
+    monkeypatch.setitem(sys.modules, rope_module, SimpleNamespace(get_rope_index=None))
+    monkeypatch.setattr(qwen3_vl, "_cp_size_rank", lambda: (1, 0))
+    packed = SimpleNamespace(qkv_format="thd", cu_seqlens_q=torch.tensor([0, 2, 5], dtype=torch.int32))
+
+    position_ids = qwen3_vl.get_qwen3_vl_position_ids(
+        torch.tensor([[11, 12, 21, 22, 23]]),
+        packed_seq_params=packed,
+        image_grid_thw=None,
+        video_grid_thw=None,
+        spatial_merge_size=2,
+        image_token_id=3,
+        video_token_id=4,
+        vision_start_token_id=2,
+    )
+
+    expected = torch.tensor([0, 1, 0, 1, 2]).view(1, 1, -1).expand(3, 1, -1)
+    assert torch.equal(position_ids, expected)

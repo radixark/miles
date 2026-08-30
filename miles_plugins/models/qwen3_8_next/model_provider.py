@@ -2,6 +2,7 @@
 n-gram side channel (input token ids never reach a transformer layer).
 """
 
+import copy
 import logging
 
 from megatron.core.models.gpt import GPTModel
@@ -54,14 +55,24 @@ def get_qwen3_8_next_model_provider(pre_process: bool = True, post_process: bool
 
     from miles.backends.megatron_utils.model_provider import get_model_provider_func
 
-    args = get_args()
-    saved = args.custom_model_provider_path
+    args = copy.copy(get_args())
     args.custom_model_provider_path = None
-    try:
-        base_provider = get_model_provider_func(args)
-    finally:
-        args.custom_model_provider_path = saved
+    base_provider = get_model_provider_func(args)
 
     model = base_provider(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
     _install_ple_context_hooks(model)
+    return model
+
+
+def get_qwen3_8_next_vlm_model_provider(pre_process: bool = True, post_process: bool = True, vp_stage=None):
+    from megatron.training import get_args
+
+    from miles_plugins.models.qwen3_8_next.vision import wire_qwen3_8_next_visual
+
+    model = get_qwen3_8_next_model_provider(
+        pre_process=pre_process,
+        post_process=post_process,
+        vp_stage=vp_stage,
+    )
+    wire_qwen3_8_next_visual(model, get_args().hf_checkpoint)
     return model
