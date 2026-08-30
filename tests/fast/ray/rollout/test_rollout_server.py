@@ -79,6 +79,19 @@ class TestRolloutServerPureFunctions:
         assert by_name["eval"].server_groups[0].overrides["mem_fraction_static"] == 0.95
         assert by_name["default"].server_groups[0].overrides == {}
 
+    def test_debug_train_only_builds_only_the_eval_model(self):
+        args = make_args(
+            debug_train_only=True,
+            rollout_num_gpus=None,
+            eval_num_gpus=8,
+            eval_num_gpus_per_engine=1,
+        )
+
+        config = _resolve_sglang_config(args)
+
+        assert [model.name for model in config.models] == ["eval"]
+        assert config.total_num_gpus == 8
+
     def test_yaml_eval_model_is_filled_from_cli_without_clobbering(self, tmp_path):
         """Anything the YAML leaves unset falls through to the eval CLI args."""
         cfg_path = tmp_path / "cfg.yaml"
@@ -172,6 +185,14 @@ class TestRolloutServerPureFunctions:
             use_critic=False,
         )
         assert _compute_rollout_offset(args) == 0
+
+    def test_compute_rollout_offset_train_only_eval_starts_after_actor(self):
+        args = make_args(
+            debug_train_only=True,
+            actor_num_nodes=1,
+            actor_num_gpus_per_node=8,
+        )
+        assert _compute_rollout_offset(args) == 8
 
     def test_compute_rollout_offset_critic_train_only(self):
         args = make_args(

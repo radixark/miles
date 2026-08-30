@@ -3485,9 +3485,12 @@ def miles_validate_args(args):
             "or --save-hf (reuse periodic HF checkpoints)."
         )
         assert not args.colocate, "Snapshot eval is not supported with --colocate."
-        assert (
-            not args.debug_train_only and not args.debug_rollout_only
-        ), "Snapshot eval is not supported with debug_train_only/debug_rollout_only."
+        assert not args.debug_rollout_only, "Snapshot eval is not supported with debug_rollout_only."
+        if args.debug_train_only:
+            assert args.eval_function_path != args.rollout_function_path, (
+                "Snapshot eval during --debug-train-only requires an explicit "
+                "--eval-function-path; the SFT rollout function cannot evaluate snapshots."
+            )
         if args.eval_hf_dir is None:
             assert args.save_interval is not None and args.eval_interval % args.save_interval == 0, (
                 "Reusing --save-hf checkpoints for eval requires eval_interval to be a "

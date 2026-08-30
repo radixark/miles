@@ -36,6 +36,10 @@ def test_debug_train_only_counts_actor_bundles_once():
     assert _get_placement_group_layout(_layout_args(debug_train_only=True)) == (2, 0)
 
 
+def test_debug_train_only_reserves_dedicated_eval_bundles_after_actor():
+    assert _get_placement_group_layout(_layout_args(debug_train_only=True, eval_num_gpus=4)) == (6, 2)
+
+
 def test_external_rollout_only_reserves_no_local_bundles():
     assert _get_placement_group_layout(_layout_args(debug_rollout_only=True, rollout_external=True)) == (0, 0)
 

@@ -75,6 +75,7 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 router_ip=router_ip,
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
+                run_in_debug_train_only=model_cfg.name == "eval",
             )
             handles, new_engine_indices = group.start_engines(port_cursors)
             all_init_handles.extend(handles)
@@ -136,10 +137,11 @@ def _apply_eval_model_config(model_cfg: ModelConfig, args) -> None:
 def _resolve_sglang_config(args) -> SglangConfig:
     """Build a SglangConfig from args, choosing the right source."""
     eval_num_gpus = args.eval_num_gpus
+    rollout_num_gpus = 0 if args.debug_train_only else args.rollout_num_gpus
 
     if getattr(args, "sglang_config", None) is not None:
         config = SglangConfig.from_yaml(args.sglang_config)
-        expected = args.rollout_num_gpus + eval_num_gpus
+        expected = rollout_num_gpus + eval_num_gpus
         actual = config.total_num_gpus
         assert (
             actual == expected
@@ -153,7 +155,11 @@ def _resolve_sglang_config(args) -> SglangConfig:
             _apply_eval_model_config(eval_models[0], args)
         return config
 
-    if args.prefill_num_servers is not None:
+    if args.debug_train_only:
+        # SFT produces its batches from the dataset and therefore needs no
+        # default rollout model. Only construct the snapshot-eval model below.
+        config = SglangConfig(models=[])
+    elif args.prefill_num_servers is not None:
         config = SglangConfig.from_prefill_num_servers(args)
     else:
         config = SglangConfig(
@@ -177,7 +183,9 @@ def _resolve_sglang_config(args) -> SglangConfig:
 
 def _compute_rollout_offset(args) -> int:
     """Offset (in PG bundle slots) where rollout GPUs start."""
-    if args.debug_train_only or args.debug_rollout_only or args.colocate:
+    if args.debug_train_only:
+        return args.actor_num_nodes * args.actor_num_gpus_per_node
+    if args.debug_rollout_only or args.colocate:
         return 0
     if getattr(args, "critic_train_only", False):
         return args.critic_num_nodes * args.critic_num_gpus_per_node
