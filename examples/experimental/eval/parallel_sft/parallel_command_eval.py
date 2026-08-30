@@ -93,7 +93,10 @@ class ParallelCommandEvalFn:
             raise ValueError("Set MILES_PARALLEL_EVAL_CONFIG to a parallel eval YAML manifest.")
         self._commands = _load_commands(Path(config_path))
         self._output_root = Path(os.environ.get("MILES_PARALLEL_EVAL_OUTPUT_DIR", "/tmp/miles-parallel-eval"))
-        self._model = os.environ.get("MILES_PARALLEL_EVAL_MODEL", Path(self._args.hf_checkpoint).name)
+        # SGLang's default served-model name is the model path. Keep that exact
+        # value unless the launcher explicitly gives both SGLang and this
+        # command runner the same friendlier alias.
+        self._model = os.environ.get("MILES_PARALLEL_EVAL_MODEL", str(self._args.hf_checkpoint))
 
     async def __call__(self, input: RolloutFnInput) -> RolloutFnEvalOutput:
         if not isinstance(input, RolloutFnEvalInput) or not input.evaluation:

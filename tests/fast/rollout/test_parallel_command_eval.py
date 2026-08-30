@@ -80,3 +80,15 @@ async def test_parallel_command_eval_expands_endpoint_and_merges_metrics(monkeyp
     assert output.metrics["eval/terminal_bench/pass_rate"] == 0.4
     assert output.metrics["eval/hle/accuracy"] == 0.5
     assert output.data == {"hle": {"rewards": [1.0, 0.0]}}
+
+
+def test_parallel_command_eval_defaults_to_sglang_model_path(monkeypatch, tmp_path):
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text("commands:\n  - name: smoke\n    argv: [runner]\n")
+    monkeypatch.setenv("MILES_PARALLEL_EVAL_CONFIG", str(config_path))
+    monkeypatch.delenv("MILES_PARALLEL_EVAL_MODEL", raising=False)
+
+    args = Namespace(hf_checkpoint="/models/Qwen3.6-35B-A3B")
+    eval_fn = ParallelCommandEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
+
+    assert eval_fn._model == "/models/Qwen3.6-35B-A3B"

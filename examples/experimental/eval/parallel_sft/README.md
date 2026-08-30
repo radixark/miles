@@ -35,6 +35,7 @@ Add these to an SFT launch using `train_async.py`:
 --eval-keep-snapshots 1
 --skip-eval-before-train
 --eval-sglang-context-length 262144
+--eval-sglang-served-model-name qwen-checkpoint
 ```
 
 `--eval-datasets external-command` satisfies the generic eval CLI contract; the
@@ -49,6 +50,10 @@ MILES_PARALLEL_EVAL_CONFIG=/shared/config/parallel_eval.yaml
 MILES_PARALLEL_EVAL_OUTPUT_DIR=/shared/eval-results
 MILES_PARALLEL_EVAL_MODEL=qwen-checkpoint
 ```
+
+`MILES_PARALLEL_EVAL_MODEL` and `--eval-sglang-served-model-name` must match.
+You may omit both; the runner then uses the full `--hf-checkpoint` path, which
+is SGLang's default served-model name.
 
 Copy `parallel_eval.example.yaml` and set the referenced Terminal Bench and HLE
 environment variables. The Terminal Bench example matches the established
