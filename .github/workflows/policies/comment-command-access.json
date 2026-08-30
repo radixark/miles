@@ -3,7 +3,12 @@
   "groups": {
     "add_label_access": {
       "repository_permissions": ["write", "admin"],
-      "users": []
+      "users": [
+        {"id": 82826991, "login": "zyzshishui"},
+        {"id": 59716405, "login": "nanjiangwill"},
+        {"id": 101526713, "login": "xiuhu17"},
+        {"id": 106564213, "login": "zianglih"}
+      ]
     },
     "repo_write_access": {
       "repository_permissions": ["write", "admin"]
