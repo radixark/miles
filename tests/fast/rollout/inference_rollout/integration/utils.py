@@ -7,7 +7,7 @@ from miles.rollout.base_types import (
     RolloutFnOutput,
     RolloutFnTrainInput,
 )
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.rollout.inference_rollout.compatibility import call_rollout_function, load_rollout_function
 from miles.utils.types import Sample, WeightVersionsPerCall
 
@@ -85,5 +85,5 @@ def load_and_call_train(args, data_source):
 def filter_by_reward(args, samples, **kwargs):
     reward = samples[0].reward if not isinstance(samples[0], list) else samples[0][0].reward
     if reward == 1:
-        return DynamicFilterOutput(keep=True)
-    return DynamicFilterOutput(keep=False, reason="reward_zero")
+        return FilterOutput(keep=True)
+    return FilterOutput(keep=False, reason="reward_zero")

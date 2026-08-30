@@ -1,6 +1,6 @@
 import torch
 
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.utils.types import Sample
 
 __all__ = ["check_reward_nonzero_std", "check_no_aborted"]
@@ -18,7 +18,7 @@ def _flatten_samples(samples: list[Sample | list[Sample]]):
 def check_reward_nonzero_std(args, samples: list[Sample | list[Sample]], **kwargs):
     rewards = [sample.get_reward_value(args) for sample in _flatten_samples(samples)]
     keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
-    return DynamicFilterOutput(
+    return FilterOutput(
         keep=keep,
         reason=None if keep else f"zero_std_{round(rewards[0], 1)}",
     )
@@ -27,5 +27,5 @@ def check_reward_nonzero_std(args, samples: list[Sample | list[Sample]], **kwarg
 def check_no_aborted(args, samples: list[Sample | list[Sample]], **kwargs):
     """Reject entire group if any sample was aborted (e.g. env timeout, Docker crash)."""
     if any(s.status == Sample.Status.ABORTED for s in _flatten_samples(samples)):
-        return DynamicFilterOutput(keep=False, reason="group_has_aborted")
-    return DynamicFilterOutput(keep=True)
+        return FilterOutput(keep=False, reason="group_has_aborted")
+    return FilterOutput(keep=True)
