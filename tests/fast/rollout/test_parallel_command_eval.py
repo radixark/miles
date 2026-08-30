@@ -6,6 +6,7 @@ from argparse import Namespace
 from types import SimpleNamespace
 
 from examples.experimental.eval.parallel_sft.parallel_command_eval import ParallelCommandEvalFn
+from miles.ray.rollout.metrics import log_eval_rollout_data
 from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput
 
 
@@ -80,3 +81,35 @@ async def test_parallel_command_eval_expands_endpoint_and_merges_metrics(monkeyp
     assert output.metrics["eval/terminal_bench/pass_rate"] == 0.4
     assert output.metrics["eval/hle/accuracy"] == 0.5
     assert output.data == {"hle": {"rewards": [1.0, 0.0]}}
+    logged = {}
+
+    def fake_tracking_log(_args, metrics, *, step_key):
+        logged.update(metrics)
+        logged["step_key"] = step_key
+
+    monkeypatch.setattr("miles.ray.rollout.metrics.tracking.log", fake_tracking_log)
+    logging_args = Namespace(
+        custom_eval_rollout_log_function_path=None,
+        log_passrate=False,
+        wandb_always_use_train_step=False,
+    )
+
+    log_eval_rollout_data(200, logging_args, output.data, output.metrics)
+
+    assert logged["eval/terminal_bench/pass_rate"] == 0.4
+    assert logged["eval/hle/accuracy"] == 0.5
+    assert logged["eval/hle"] == 0.5
+    assert logged["eval/step"] == 200
+    assert logged["step_key"] == "eval/step"
+
+
+def test_parallel_command_eval_defaults_to_sglang_model_path(monkeypatch, tmp_path):
+    config_path = tmp_path / "eval.yaml"
+    config_path.write_text("commands:\n  - name: smoke\n    argv: [runner]\n")
+    monkeypatch.setenv("MILES_PARALLEL_EVAL_CONFIG", str(config_path))
+    monkeypatch.delenv("MILES_PARALLEL_EVAL_MODEL", raising=False)
+
+    args = Namespace(hf_checkpoint="/models/Qwen3.6-35B-A3B")
+    eval_fn = ParallelCommandEvalFn(RolloutFnConstructorInput(args=args, data_source=None))
+
+    assert eval_fn._model == "/models/Qwen3.6-35B-A3B"
