@@ -83,18 +83,19 @@ def start_router(args, *, has_pd_disaggregation: bool = False, force_new: bool =
 
 
 def _resolve_session_server_ports(start: int | None, workers: int) -> list[int]:
-    """Return the requested number of consecutive ports from the configured or auto-selected start."""
+    """Return consecutive ports from an explicit start, or auto-allocate each worker port."""
     if workers < 1:
         raise ValueError("--session-server-workers must be at least 1.")
     # TODO(#1837): Refactor IP/port allocation; keep this naive for now.
     if start is None:
         search_start = random.randint(5000, 6000)
-        while True:
-            start = find_available_port(search_start)
-            ports = list(range(start, start + workers))
-            if all(is_port_available(port) for port in ports):
-                return ports
-            search_start = ports[-1] + 1
+        ports = []
+        while len(ports) < workers:
+            port = find_available_port(search_start)
+            if port not in ports:
+                ports.append(port)
+            search_start = port + 1
+        return ports
     return list(range(start, start + workers))
 
 

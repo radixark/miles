@@ -2554,13 +2554,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--session-server-port",
                 type=int,
                 default=None,
-                help="Starting port for standalone session servers. Auto-allocated if not set.",
+                help="First port for standalone session servers. When unset, each worker port is auto-allocated.",
             )
             parser.add_argument(
                 "--session-server-workers",
                 type=int,
                 default=32,
-                help="Number of standalone session servers to launch on consecutive ports.",
+                help="Number of standalone session servers to launch. An explicit start uses consecutive ports.",
             )
             parser.add_argument(
                 "--tito-model",
