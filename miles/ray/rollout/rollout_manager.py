@@ -96,13 +96,16 @@ class RolloutManager:
             logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
             logger.info(f"import {self.args.eval_function_path} as eval_generate_rollout function.")
 
-        if self.args.debug_train_only:
-            self.servers: dict[str, RolloutServer] = {}
-        else:
+        if not self.args.debug_train_only or self.args.eval_uses_snapshots:
             init_http_client(args)
+
+        if not self.args.debug_train_only or self.args.eval_num_gpus > 0:
             self.servers = start_rollout_servers(args, pg)
-            start_session_server(args)
+            if not self.args.debug_train_only:
+                start_session_server(args)
             dashboard_hooks.register_router(args)
+        else:
+            self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
@@ -175,7 +178,7 @@ class RolloutManager:
         export_time_seconds: float | None = None,
         require_marker: bool = True,
     ):
-        if self.args.debug_train_only:
+        if self.args.debug_train_only and not self.args.eval_uses_snapshots:
             # if debug train only, we don't generate evaluation data
             return
         self._health_monitoring_resume()

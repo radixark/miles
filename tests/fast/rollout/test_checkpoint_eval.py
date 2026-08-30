@@ -114,6 +114,27 @@ async def test_eval_checkpoint_threads_input_and_logs(controller_env, tmp_path):
     assert extra["eval/export_time_seconds"] == 1.5
 
 
+async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
+    """Pure SFT skips shared-engine eval, but a separately pinned snapshot is valid."""
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    fn = CheckpointFnStub()
+    args = make_args(
+        debug_train_only=True,
+        hf_checkpoint="/base",
+        eval_hf_dir=str(tmp_path),
+        eval_keep_snapshots=2,
+    )
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5, hf_dir=str(snapshot))
+
+    assert len(fn.inputs) == 1
+    assert fn.inputs[0].weight_version == "5"
+
+
 async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, monkeypatch, tmp_path):
     """The fleet only delivers weights — the configured eval fn still generates, and it
     is the same object the shared posture would call."""
