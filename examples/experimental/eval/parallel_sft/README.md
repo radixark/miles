@@ -27,7 +27,7 @@ Add these to an SFT launch using `train_async.py`:
 --eval-num-gpus 8
 --eval-num-gpus-per-engine 1
 --eval-function-path examples.experimental.eval.parallel_sft.parallel_command_eval.ParallelCommandEvalFn
---eval-datasets external-command
+--eval-prompt-data external-command examples/experimental/eval/parallel_sft/eval_trigger.jsonl
 --eval-interval 200
 --eval-hf-dir /shared/eval-snapshots
 --eval-max-in-flight 1
@@ -38,8 +38,9 @@ Add these to an SFT launch using `train_async.py`:
 --eval-sglang-served-model-name qwen-checkpoint
 ```
 
-`--eval-datasets external-command` satisfies the generic eval CLI contract; the
-command manifest owns the actual benchmark inputs. Use a shared filesystem for
+`--eval-prompt-data` satisfies Miles' generic eval CLI contract. The single-row
+`eval_trigger.jsonl` is only a scheduling trigger; the command manifest owns the
+actual benchmark inputs. Use a shared filesystem for
 `--eval-hf-dir`, because the training actors export there and eval engines on
 another node load from it.
 

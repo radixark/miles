@@ -44,13 +44,13 @@ commands:
       - ${oc.env:HLE_DRIVER}
       - --input
       - ${oc.env:HLE_DATASET}
-      - --base-url
+      - --base_url
       - "{openai_base_url}"
       - --model
       - "{model}"
-      - --output-jsonl
+      - --output_jsonl
       - "{output_dir}/hle_300.jsonl"
-      - --summary-json
+      - --summary_json
       - "{output_dir}/hle_300_summary.json"
     metrics_path: "{output_dir}/hle_300_summary.json"
     timeout_secs: 50400
