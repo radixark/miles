@@ -181,11 +181,124 @@ def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) ->
     return tensor
 
 
+def _neutral_state_key(name: str, slot: int) -> str:
+    """Replace the slot index inside a param name so saved state can load into a different slot."""
+    return name.replace(f".adapters.{slot}.", ".adapters.{slot}.".replace(str(slot), "{slot}"))
+
+
+def slot_training_state_dict(optimizer, model, slot: int) -> dict:
+    """This rank's owned share of one slot's training state (fp32 masters, Adam moments, step clocks)."""
+    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children, adapter_slot_parameters
+
+    name_by_id = {}
+    model_chunks = model if isinstance(model, (list, tuple)) else [model]
+    for chunk in model_chunks:
+        for name, param in chunk.named_parameters():
+            name_by_id[id(param)] = name
+
+    state_by_main_id: dict[int, dict] = {}
+    group_steps: list = []
+    for child in _slot_children(optimizer, slot):
+        inner = getattr(child, "optimizer", child)
+        for param, state in inner.state.items():
+            state_by_main_id[id(param)] = state
+        for group in inner.param_groups:
+            if "step" in group:
+                step = group["step"]
+                group_steps.append(int(step.item()) if isinstance(step, torch.Tensor) else int(step))
+
+    masters: dict[str, torch.Tensor] = {}
+    moments: dict[str, dict] = {}
+    for param in adapter_slot_parameters(model, slot):
+        main = getattr(param, "main_param", None)
+        if main is None:
+            continue
+        key = _neutral_state_key(name_by_id[id(param)], slot)
+        masters[key] = main.detach().cpu().clone()
+        state = state_by_main_id.get(id(main), {})
+        entry = {}
+        for moment_key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            if moment_key in state:
+                entry[moment_key] = state[moment_key].detach().cpu().clone()
+        if "step" in state:
+            step = state["step"]
+            entry["step"] = int(step.item()) if isinstance(step, torch.Tensor) else int(step)
+        moments[key] = entry
+    return {"masters": masters, "moments": moments, "group_steps": group_steps}
+
+
+def load_slot_training_state(optimizer, model, slot: int, ckpt_dir: Path) -> None:
+    """Restore one slot's full training state from this rank's file and sync masters into the model weights."""
+    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children, adapter_slot_parameters
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    state_path = Path(ckpt_dir) / f"training_state_rank{rank}.pt"
+    assert state_path.exists(), f"missing slot training state for rank {rank}: {state_path}"
+    payload = torch.load(state_path, map_location="cpu", weights_only=False)
+    assert (
+        payload.get("world_size") == world
+    ), f"slot training state was saved with world_size={payload.get('world_size')}, current world_size={world}"
+    state = payload["state"]
+
+    name_by_id = {}
+    model_chunks = model if isinstance(model, (list, tuple)) else [model]
+    for chunk in model_chunks:
+        for name, param in chunk.named_parameters():
+            name_by_id[id(param)] = name
+
+    state_by_main_id: dict[int, dict] = {}
+    children = _slot_children(optimizer, slot)
+    for child in children:
+        inner = getattr(child, "optimizer", child)
+        for param, param_state in inner.state.items():
+            state_by_main_id[id(param)] = param_state
+
+    for param in adapter_slot_parameters(model, slot):
+        main = getattr(param, "main_param", None)
+        if main is None:
+            continue
+        key = _neutral_state_key(name_by_id[id(param)], slot)
+        assert key in state["masters"], f"slot training state has no entry for {key}; topology mismatch?"
+        main.data.copy_(state["masters"][key])
+        entry = state["moments"].get(key, {})
+        param_state = state_by_main_id.get(id(main), {})
+        for moment_key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            if moment_key in entry and moment_key in param_state:
+                param_state[moment_key].copy_(entry[moment_key])
+        if "step" in entry and "step" in param_state:
+            step = param_state["step"]
+            if isinstance(step, torch.Tensor):
+                step.fill_(entry["step"])
+            else:
+                param_state["step"] = entry["step"]
+
+    group_steps = list(state.get("group_steps", []))
+    group_index = 0
+    for child in children:
+        inner = getattr(child, "optimizer", child)
+        for group in inner.param_groups:
+            if "step" in group and group_index < len(group_steps):
+                if isinstance(group["step"], torch.Tensor):
+                    group["step"].fill_(group_steps[group_index])
+                else:
+                    group["step"] = group_steps[group_index]
+                group_index += 1
+
+    # Masters are authoritative now: sync master -> model; reload_model_params would overwrite them (model -> master).
+    for child in children:
+        copy_fn = getattr(child, "_copy_main_params_to_model_params", None)
+        assert copy_fn is not None, "full-state load requires the Float16 master-to-model sync"
+        copy_fn()
+
+
 def save_multi_lora_checkpoints(
     args,
     model,
     adapter_steps: Mapping[str, int],
     adapters: Mapping[str, AdapterRun],
+    optimizer=None,
+    include_optimizer_state: bool = False,
 ):
     """Save per-adapter checkpoints in two formats per adapter.
 
@@ -231,7 +344,8 @@ def save_multi_lora_checkpoints(
 
         final_dir = config.save / "checkpoints" / f"step_{iteration}"
         tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
-        if is_shard_writer:
+        write_training_state = include_optimizer_state and optimizer is not None
+        if is_shard_writer or write_training_state:
             tmp_dir.mkdir(parents=True, exist_ok=True)
         if dist.is_initialized():
             dist.barrier()
@@ -259,6 +373,17 @@ def save_multi_lora_checkpoints(
                     # Slice from the shared --lora-rank down to this adapter's real rank to
                     # match adapter_config's r; clone() since safetensors rejects aliased views.
                     hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, config.rank).clone()
+
+        if write_training_state:
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            world = dist.get_world_size() if dist.is_initialized() else 1
+            payload = {
+                "format": 1,
+                "world_size": world,
+                "state": slot_training_state_dict(optimizer, model, adapter.slot),
+            }
+            torch.save(payload, tmp_dir / f"training_state_rank{rank}.pt")
+            logger.info(f"{log_prefix} saved slot training state (rank {rank})")
 
         if is_global_writer:
             save_safetensors(
