@@ -132,10 +132,7 @@ def _repetition_windows(text: str) -> Iterator[str]:
 
 def has_repetition(text: str) -> bool:
     """Return whether any 10k-character window is highly compressible."""
-    return any(
-        compression_ratio(window)[0] > REPETITION_COMPRESSION_RATIO_THRESHOLD
-        for window in _repetition_windows(text)
-    )
+    return any(compression_ratio(window)[0] > REPETITION_COMPRESSION_RATIO_THRESHOLD for window in _repetition_windows(text))
 
 
 def compute_rollout_step(args, rollout_id):
