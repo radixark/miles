@@ -1,15 +1,16 @@
 {
-  "version": 3,
+  "version": 4,
   "groups": {
     "add_label_access": {
       "repository_permissions": ["write", "admin"],
-      "user_ids": []
+      "users": []
     },
     "repo_write_access": {
       "repository_permissions": ["write", "admin"]
     },
     "prior_contributor_access": {
       "repository_permissions": ["write", "admin"],
+      "users": [],
       "author_associations": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]
     }
   },
