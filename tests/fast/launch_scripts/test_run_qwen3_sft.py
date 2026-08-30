@@ -31,6 +31,7 @@ def test_qwen36_sft_profile_pins_model_data_and_observability(monkeypatch, tmp_p
             "expert_model_parallel_size": 8,
             "max_tokens_per_gpu": 262144,
             "wandb_project": "traffic-sft-smoke",
+            "wandb_run_name": "260830-qwen36-sft-parallel-eval-smoke",
         },
         sandbox=tmp_path,
     )
@@ -49,16 +50,18 @@ def test_qwen36_sft_profile_pins_model_data_and_observability(monkeypatch, tmp_p
         "--expert-model-parallel-size 8",
         "--context-parallel-size 1",
         "--max-tokens-per-gpu 262144",
+        "--recompute-loss-function",
         "--enable-mtp-training",
         "--moe-token-dispatcher-type flex",
         "--observe-training-entropy",
         "--use-rollout-entropy",
         "--use-prometheus",
-        "--prometheus-run-name 260827-12345678",
+        "--prometheus-run-name 260830-qwen36-sft-parallel-eval-smoke",
         "--use-miles-dashboard",
         "--dashboard-forward-prometheus",
         "--dump-details /scratch/260827-12345678/traces",
         "--wandb-project traffic-sft-smoke",
+        "--wandb-group 260830-qwen36-sft-parallel-eval-smoke",
     )
     for fragment in expected_fragments:
         assert fragment in train_command

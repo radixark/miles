@@ -91,3 +91,14 @@ score reporting, emit this shape:
 Stdout, stderr, and a copy of parsed metrics remain under the step output
 directory. A failed driver is recorded with success 0 and its return code; it
 does not terminate training or discard metrics from the other driver.
+
+Those flattened numeric leaves are sent through Miles' normal tracking layer
+with `eval/step` as the step key. When `--use-wandb` is enabled, they therefore
+appear in the training run itself (for example,
+`eval/terminal_bench_2_1/overall_pass_rate` and `eval/hle_300/accuracy`).
+
+`hle_eval.py` is a lightweight checkpoint smoke driver. Its built-in scorer is
+intentionally restricted to HLE multiple-choice rows, which makes the smoke
+signal deterministic and avoids requiring a second judge model. A full HLE
+quality run should replace it with the official LLM-judge pipeline while
+retaining the same summary JSON contract.
