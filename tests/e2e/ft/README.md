@@ -144,7 +144,7 @@ Phase B — target:
   6. Rollout 3: _refresh_cells() healing → N cells, trains with the healed cell
 
 Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
-also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault/injected rollouts'
+also tolerate max_abs <= 1e-3; in the real_rollout mode the fault-and-later injected rollouts'
 grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
 
 Healing witness: the target phase_b event dir must contain exactly two
@@ -163,12 +163,12 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
-- Post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout + 1).
+- The fault and later rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout).
 - Why inject: the degraded-quorum commit accumulates microbatches in a different fp bracketing than the fault-free side — a fault-inherent ulp diff no collective ordering removes. Under live sampling it flips sampled tokens, after which the two runs' rollout data diverges wholesale, so a strict vs-baseline comparison of real-sampled post-fault rollouts is ill-posed. Injection makes training inputs identical by construction → full strict comparison, zero relaxation.
 - Stays real on the target: engines + generation (samples discarded), `update_weights` after the degraded commit and after healing, health-monitor pause/resume — the whole crash→retry→heal→weight-sync path.
 - Post-healing `update_weights` is consumed: real_rollout asserts the target pushed bitwise-identical engine weights to the baseline (see inference engine weight checksum).
 - Injected rollouts' dump comparison floors `max_abs <= 3e-3` on the **noisy grad families only** (decoder-layer QK-norms, folded `layer_norm_weight`s, attn/MLP matrices): training data is bitwise-identical, but target weights carry the degraded commit's ulp drift, landing as ≤2.8e-3 absolute noise in those near-zero grads while real grads sit ~1e-2 (40 tensors, 2026-06-12; same argument as the 1e-3 QK-norm floor, recalibrated for the dense model). Embedding/output/final-norm grads, all activations, and all pre-fault rollouts keep the strict set.
-- Generation is still asserted: each injected rollout checks generated responses match the recording at a mean per-token ratio above threshold with bitwise-identical prompts (`RolloutDataInjectionUtil.assert_matches_generated`). Gross weight bugs (e.g. broken `update_weights`) drop the ratio ~2 orders → still fail. Exact post-fault sampled content beyond the ratio is not asserted. Pre-fault rollouts are not injected (real comparison).
+- Generation is still asserted: each injected rollout checks generated responses match the recording at a mean per-token ratio above threshold with bitwise-identical prompts (`RolloutDataInjectionUtil.assert_matches_generated`). Gross weight bugs (e.g. broken `update_weights`) drop the ratio ~2 orders → still fail. Exact fault-and-later sampled content beyond the ratio is not asserted. The target still runs generation before replacing its training data. Only rollout 1 is pre-fault and not injected (real comparison).
 
 Guard calibration (2026-06-12, first post-fault rollout, 256 samples, correct weights; metric counts everything after a response's first flipped token as mismatched):
 

@@ -20,6 +20,8 @@ from miles.utils.workers.naming import compute_cell_id
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
+FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
+FIRST_INJECTED_ROLLOUT_ID: int = FAULT_ROLLOUT_ID
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -60,14 +62,14 @@ def _build_actions(num_cells: int) -> list[dict]:
     target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
         {
-            "at_rollout": NUM_PHASE_A_STEPS + 1,
+            "at_rollout": FAULT_ROLLOUT_ID,
             "action": "crash_before_allreduce",
             "cell_id": target_cell_id,
             "rank": 0,
             "attempt": 0,
         },
-        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_id": target_cell_id},
-        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_id": target_cell_id},
+        {"at_rollout": FAULT_ROLLOUT_ID, "action": "stop_cell_at_end", "cell_id": target_cell_id},
+        {"at_rollout": FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_id": target_cell_id},
     ]
 
 
@@ -76,7 +78,7 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
         return []
     return [
         ReconfigureInfo(
-            rollout_id=NUM_PHASE_A_STEPS + 1,
+            rollout_id=FAULT_ROLLOUT_ID,
             src_cell_index=None,
             healed_cell_indices=[],
             alive_cell_indices_after=list(range(num_cells - 1)),
@@ -111,7 +113,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 2} "
+                    f"--ci-inject-rollout-data-start-rollout-id {FIRST_INJECTED_ROLLOUT_ID} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 
@@ -154,9 +156,8 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         f"{expected_leaves}; a new leaf would silently skip comparison"
     )
 
-    first_injected_rollout_id = NUM_PHASE_A_STEPS + 2
     for rollout_id in phase_b_rollout_ids:
-        is_post_fault = mode.has_real_rollout and rollout_id >= first_injected_rollout_id
+        is_post_fault = mode.has_real_rollout and rollout_id >= FIRST_INJECTED_ROLLOUT_ID
         compare_dumps(
             baseline_dir=f"{dump_dir}/baseline/phase_b",
             target_dir=f"{dump_dir}/target/phase_b",
