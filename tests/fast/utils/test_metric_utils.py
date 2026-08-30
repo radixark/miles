@@ -5,7 +5,9 @@ from miles.utils import metric_utils
 
 def test_has_repetition_checks_stride_aligned_middle_window(monkeypatch) -> None:
     text = "a" * 5_000 + "b" * 10_000 + "c" * 5_000
-    compression_ratio = Mock(side_effect=lambda window: (11.0, 0.0) if window == "b" * 10_000 else (1.0, 0.0))
+    compression_ratio = Mock(
+        side_effect=lambda window: (11.0, 0.0) if window == "b" * 10_000 else (1.0, 0.0)
+    )
     monkeypatch.setattr(metric_utils, "compression_ratio", compression_ratio)
 
     assert metric_utils.has_repetition(text)
@@ -15,7 +17,9 @@ def test_has_repetition_checks_stride_aligned_middle_window(monkeypatch) -> None
 def test_has_repetition_checks_unaligned_final_window(monkeypatch) -> None:
     text = "a" * 2_345 + "b" * 10_000
     final_window = text[-10_000:]
-    compression_ratio = Mock(side_effect=lambda window: (11.0, 0.0) if window == final_window else (1.0, 0.0))
+    compression_ratio = Mock(
+        side_effect=lambda window: (11.0, 0.0) if window == final_window else (1.0, 0.0)
+    )
     monkeypatch.setattr(metric_utils, "compression_ratio", compression_ratio)
 
     assert metric_utils.has_repetition(text)

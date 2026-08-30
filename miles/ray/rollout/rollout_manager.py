@@ -187,7 +187,9 @@ class RolloutManager:
 
         with timer("eval_rollout"):
             if not self.use_legacy_rollout_v1:
-                result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id))
+                result = await asyncio.to_thread(
+                    call_rollout_function, self.eval_generate_rollout, RolloutFnEvalInput(rollout_id=rollout_id)
+                )
             else:
                 result = await asyncio.to_thread(
                     call_rollout_fn,
@@ -203,7 +205,9 @@ class RolloutManager:
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
-    async def _eval_checkpoint(self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool):
+    async def _eval_checkpoint(
+        self, rollout_id: int, hf_dir: str | None, export_time_seconds: float | None, require_marker: bool
+    ):
         """Evaluate a snapshot through the checkpoint eval fn (fleet or external
         backend) and log at ``rollout_id``. Every failure degrades to a skipped
         point; the lock serializes pins against a single backend."""
@@ -217,7 +221,9 @@ class RolloutManager:
             version = str(rollout_id)
             try:
                 state = await self._eval_fleet.pin(hf_dir, version) if self._eval_fleet else None
-                eval_input = RolloutFnEvalInput(rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state)
+                eval_input = RolloutFnEvalInput(
+                    rollout_id=rollout_id, weight_version=version, hf_dir=hf_dir, generate_state=state
+                )
                 result = await asyncio.to_thread(call_rollout_function, self.eval_generate_rollout, eval_input)
             except EvalSkip as e:
                 return self.report_eval_skip(rollout_id, e.reason)
@@ -248,14 +254,20 @@ class RolloutManager:
                     RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
                 )
             else:
-                data = await asyncio.to_thread(call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False)
+                data = await asyncio.to_thread(
+                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
+                )
             metrics = data.metrics
             data = data.samples
-            data, metadata = postprocess_rollout_data(self.args, data, train_parallel_config=self.train_parallel_config)
+            data, metadata = postprocess_rollout_data(
+                self.args, data, train_parallel_config=self.train_parallel_config
+            )
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
                 data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
-                RolloutDataInjectionUtil.assert_matches_generated(self.args, generated=generated_data, injected=data, rollout_id=rollout_id)
+                RolloutDataInjectionUtil.assert_matches_generated(
+                    self.args, generated=generated_data, injected=data, rollout_id=rollout_id
+                )
                 metrics = None
 
         return data, metadata, metrics
@@ -338,7 +350,10 @@ class RolloutManager:
             case [srv]:
                 return srv
             case _:
-                raise ValueError(f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. Only one updatable server is supported.")
+                raise ValueError(
+                    f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
+                    f"Only one updatable server is supported."
+                )
 
     # -------------------------- external start/stop -----------------------------
 
@@ -359,12 +374,16 @@ class RolloutManager:
         assert self.args.rollout_global_dataset
         return len(self.data_source.dataset) // self.args.rollout_batch_size
 
-    async def check_weights(self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None):
+    async def check_weights(
+        self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
+    ):
         # Only the updatable model is re-synced; a frozen model would always mismatch.
         srv = self._get_updatable_server()
         if srv is None:
             return []
-        return await srv.check_weights(action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list)
+        return await srv.check_weights(
+            action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
+        )
 
     def set_weight_version(self, weight_version: int):
         # warning instead of assert when use indep_dp ft
@@ -403,7 +422,11 @@ class RolloutManager:
         # Only inject fault once
         self._ci_fault_injection_pending = False
 
-        if self._server and self._server.server_groups[0].all_engines and self._server.server_groups[0].all_engines[0].is_allocated:
+        if (
+            self._server
+            and self._server.server_groups[0].all_engines
+            and self._server.server_groups[0].all_engines[0].is_allocated
+        ):
             logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
             try:
                 # This will cause the ray actor to exit
