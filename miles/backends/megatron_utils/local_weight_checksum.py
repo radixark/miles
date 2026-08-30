@@ -102,13 +102,13 @@ def _collect_optimizer_hashes(
     """Collect optimizer state snapshots with tensors replaced by hashes."""
     from miles.utils.audit_utils.event_logger.models import OptimizerStateInfo
 
-    name_by_tensor_id = _build_name_by_tensor_id(model)
     result: list[OptimizerStateInfo] = []
 
     for sub_opt in _iter_sub_optimizers(optimizer):
         inner = sub_opt.optimizer
         assert isinstance(inner, torch.optim.Optimizer), f"Expected torch.optim.Optimizer, got {type(inner)}"
 
+        name_by_tensor_id = _build_name_by_tensor_id(model, optimizer=sub_opt)
         param_names = _build_param_names_for_optimizer(inner, name_by_tensor_id=name_by_tensor_id)
         sd = inner.state_dict()
         hashed_sd = _transform_tensor_to_hash(sd)
@@ -123,20 +123,57 @@ def _collect_optimizer_hashes(
     return result
 
 
-def _build_name_by_tensor_id(model: Sequence[DDP]) -> dict[_MainParamId, str]:
-    """Build _MainParamId(fp32_main_param) → name mapping from model parameters."""
+def _build_name_by_tensor_id(
+    model: Sequence[DDP],
+    *,
+    optimizer: MegatronOptimizer | None = None,
+) -> dict[_MainParamId, str]:
+    """Build optimizer tensor ID → model parameter name mapping.
+
+    DistributedOptimizer records every locally owned optimizer tensor in
+    ``model_param_group_index_map``. This is authoritative for both regular
+    mixed-precision main shards and precision-aware optimizer shards, where
+    ``main_param`` is intentionally ``None``. Non-distributed optimizers fall
+    back to the model parameter's ``main_param`` handle.
+    """
     name_map: dict[_MainParamId, str] = {}
+    inner = optimizer.optimizer if optimizer is not None else None
+    distributed_param_map = (
+        getattr(optimizer, "model_param_group_index_map", None) if optimizer is not None else None
+    )
+
     for pp_idx, model_chunk in enumerate(model):
         for name, param in model_chunk.named_parameters():
             assert param is not None, f"pp{pp_idx}.{name}: param is None"
-            main_param = getattr(param, "main_param", None)
-            if main_param is None:
-                assert getattr(param, "main_param_sharded", False), (
-                    f"pp{pp_idx}.{name}: main_param is None but main_param_sharded is not set. "
-                    "Expected only for distributed optimizer params not owned by this DP rank."
-                )
+            qualified_name = f"pp{pp_idx}.{name}"
+
+            if distributed_param_map is not None:
+                group_location = distributed_param_map.get(param)
+                if group_location is None:
+                    # Chained optimizers partition model parameters; another
+                    # sub-optimizer or DP rank owns this parameter.
+                    continue
+                assert inner is not None
+                group_index, group_order = group_location
+                optimizer_param = inner.param_groups[group_index]["params"][group_order]
+                name_map[_MainParamId.from_tensor(optimizer_param)] = qualified_name
                 continue
-            name_map[_MainParamId.from_tensor(main_param)] = f"pp{pp_idx}.{name}"
+
+            main_param = getattr(param, "main_param", None)
+            if main_param is not None:
+                name_map[_MainParamId.from_tensor(main_param)] = qualified_name
+                continue
+
+            if getattr(param, "main_param_sharded", False):
+                continue
+
+            assert param.dtype == torch.float32, (
+                f"{qualified_name}: main_param is None but main_param_sharded is not set "
+                f"for non-fp32 parameter dtype {param.dtype}."
+            )
+
+            # Non-distributed optimizers use the original fp32 parameter.
+            name_map[_MainParamId.from_tensor(param)] = qualified_name
     return name_map
 
 
@@ -148,10 +185,10 @@ def _build_param_names_for_optimizer(
     param_names: dict[int, str] = {}
     idx = 0
     for group in inner.param_groups:
-        for fp32_param in group["params"]:
-            key = _MainParamId.from_tensor(fp32_param)
+        for optimizer_param in group["params"]:
+            key = _MainParamId.from_tensor(optimizer_param)
             name = name_by_tensor_id.get(key)
-            assert name is not None, f"fp32 param {key} not found in model name mapping"
+            assert name is not None, f"optimizer param {key} not found in model name mapping"
             param_names[idx] = name
             idx += 1
     return param_names
