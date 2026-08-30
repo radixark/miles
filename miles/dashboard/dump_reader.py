@@ -305,6 +305,43 @@ class DumpReader:
     # bump to invalidate summary parquet caches when their columns change
     SUMMARY_VERSION: ClassVar[int] = 4  # v4: per-sample staleness
 
+    # Column order of summary(). Only needed to give a step with no samples the
+    # same shape as any other step; with rows present the schema comes from
+    # _summary_row itself. test_summary_columns_declaration_matches_reality
+    # pins the two together, so adding a column there fails loudly here.
+    SUMMARY_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "sample_index",
+        "group_index",
+        "status",
+        "remove_sample",
+        "response_length",
+        "total_length",
+        "reward",
+        "weight_version",
+        "weight_version_min",
+        "mixed_version",
+        "staleness",
+        "turns",
+        "tool_calls",
+        "non_generation_time",
+        "spec_accept_rate",
+        "prefix_cache_hit_rate",
+        "raw_reward",
+        "normalized_reward",
+        "truncated",
+        "dumped_rank",
+        "mean_entropy",
+        "max_entropy",
+        "ref_entropy_mean",
+        "mean_abs_lp_diff",
+        "max_abs_lp_diff",
+        "mean_imp_ratio",
+        "adv_mean",
+        "adv_std",
+        "return_mean",
+        "alignment_failed",
+    )
+
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
         self.rollout_dir = self.dump_dir / "rollout_data"
@@ -410,9 +447,16 @@ class DumpReader:
             return pl.read_parquet(cache_path)
 
         joined = self.joined(rollout_id, evaluation=evaluation)
-        df = pl.DataFrame(
-            [self._summary_row(s, joined.train_rows.get(s.index), rollout_id=rollout_id) for s in joined.samples],
-            strict=False,
+        rows = [self._summary_row(s, joined.train_rows.get(s.index), rollout_id=rollout_id) for s in joined.samples]
+        # A step can be dumped with no samples at all (aborted before any
+        # generation landed). Inferring the schema from an empty row list gives
+        # a frame with no COLUMNS, and every view below this one then dies on a
+        # missing column instead of simply reporting an empty step, so the
+        # declared schema is supplied explicitly in that case.
+        df = (
+            pl.DataFrame(rows, strict=False)
+            if rows
+            else pl.DataFrame(schema={name: pl.Null for name in self.SUMMARY_COLUMNS})
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         df.write_parquet(cache_path)
