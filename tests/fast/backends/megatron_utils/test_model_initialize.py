@@ -187,3 +187,11 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
     assert result == (model, optimizer, opt_param_scheduler, 100)
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+
+
+def test_sft_training_keeps_model_output_precision() -> None:
+    from miles.backends.megatron_utils.model import _training_model_output_kwargs
+
+    assert _training_model_output_kwargs(loss_type="sft_loss", use_mixed_precision=True) == {"fp32_output": False}
+    assert _training_model_output_kwargs(loss_type="sft_loss", use_mixed_precision=False) == {}
+    assert _training_model_output_kwargs(loss_type="value_loss", use_mixed_precision=True) == {}

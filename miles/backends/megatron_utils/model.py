@@ -62,6 +62,15 @@ def _has_loadable_ckpt(load_dir: str | None) -> bool:
     return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
 
 
+def _training_model_output_kwargs(*, loss_type: str, use_mixed_precision: bool) -> dict[str, bool]:
+    """Return output-precision controls that are safe for the selected loss."""
+    if loss_type == "sft_loss" and use_mixed_precision:
+        # The SFT loss slices response logits first and upcasts each configured
+        # log-probability chunk locally, so a full-size FP32 output is redundant.
+        return {"fp32_output": False}
+    return {}
+
+
 from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
 
 
@@ -544,7 +553,13 @@ def train_one_step(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(**forward_kwargs)
+            output_tensor = model(
+                **forward_kwargs,
+                **_training_model_output_kwargs(
+                    loss_type=args.loss_type,
+                    use_mixed_precision=args.bf16 or args.fp16,
+                ),
+            )
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
