@@ -1,4 +1,4 @@
-"""Unit tests for Sample.strip_last_output_tokens."""
+"""Unit tests for Sample mutation helpers."""
 
 from unittest.mock import MagicMock
 
@@ -105,3 +105,17 @@ class TestStripLastOutputTokens:
         original_tokens = list(s.tokens)
         s.strip_last_output_tokens(-1, tokenizer)
         assert s.tokens == original_tokens
+
+
+def test_reset_for_retry_clears_opd_response_state():
+    sample = _make_sample([1], [2, 3])
+    sample.teacher_log_probs = [-0.1, -0.2]
+    sample.opd_reverse_kl = [0.3, 0.4]
+    sample.metadata["opd_student_top_logprobs"] = [[[-0.1, 2]], [[-0.2, 3]]]
+
+    sample.reset_for_retry()
+
+    assert sample.teacher_log_probs is None
+    assert sample.opd_reverse_kl is None
+    assert "opd_student_top_logprobs" not in sample.metadata
+    sample.validate()

@@ -258,8 +258,11 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.teacher_log_probs = None
+        self.opd_reverse_kl = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
+        self.metadata.pop("opd_student_top_logprobs", None)
         self.status = Sample.Status.ABORTED
         self.non_generation_time = 0.0
         self.spec_info = Sample.SpecInfo()
