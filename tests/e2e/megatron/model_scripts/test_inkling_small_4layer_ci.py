@@ -1,6 +1,8 @@
 import os
 
 if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
+    import sglang.srt.models.inkling  # noqa: F401
+
     from scripts.amd.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
 else:
     from scripts.run_inkling import _MODEL_REGISTRY, ScriptArgs, _train
