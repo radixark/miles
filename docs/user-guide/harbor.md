@@ -18,8 +18,14 @@ hook.
 
 ## Try it
 
-The maintained recipe lives in
-[`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker),
-with synchronous and fully-async launchers. Follow the
-[recipe README](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/README.md)
-for the architecture, Harbor server setup, task format, and launch scripts.
+Two execution modes:
+
+- **Agent server** — Harbor runs on a separate host with a Docker daemon and
+  the trainer calls it over HTTP. The maintained recipe is
+  [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker),
+  with synchronous and fully-async launchers; its
+  [README](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/README.md)
+  covers the architecture, server setup, task format, and launch scripts.
+- **In-process** — Harbor runs inside the rollout worker against a cloud
+  sandbox backend (E2B / AgentENV, Daytona, Modal, ...), with no server in
+  between: [`examples/experimental/harbor`](https://github.com/radixark/miles/tree/main/examples/experimental/harbor).
