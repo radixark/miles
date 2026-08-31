@@ -95,6 +95,30 @@ class TestLogprobBranch:
         compare_impl(_make_compare_args())
         mock_logprob.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("baseline_logprob_dir", "target_logprob_dir"),
+        [(Path("/bl"), None), (None, Path("/tg"))],
+    )
+    @patch("miles.utils.debug_utils.run_megatron.cli.commands.compare.compare_logprobs")
+    @patch("miles.utils.debug_utils.run_megatron.cli.commands.compare.exec_command_cpu")
+    def test_one_missing_logprob_dir_fails(
+        self,
+        mock_exec: MagicMock,
+        mock_logprob: MagicMock,
+        baseline_logprob_dir: Path | None,
+        target_logprob_dir: Path | None,
+    ) -> None:
+        with pytest.raises(SystemExit) as exc_info:
+            compare_impl(
+                _make_compare_args(
+                    baseline_logprob_dir=baseline_logprob_dir,
+                    target_logprob_dir=target_logprob_dir,
+                )
+            )
+
+        assert exc_info.value.code == 1
+        mock_logprob.assert_not_called()
+
     @patch("miles.utils.debug_utils.run_megatron.cli.commands.compare.compare_logprobs")
     @patch("miles.utils.debug_utils.run_megatron.cli.commands.compare.exec_command_cpu")
     def test_logprob_default_threshold(self, mock_exec: MagicMock, mock_logprob: MagicMock) -> None:
