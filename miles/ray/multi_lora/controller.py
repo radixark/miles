@@ -10,6 +10,7 @@ from miles.ray.multi_lora.backend import MultiLoRABackend
 from miles.ray.multi_lora.http_server import MultiLoRAHTTPServer
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.misc import SingletonMeta, get_current_node_ip, load_function
+from miles.utils.multi_lora import is_tinker_frontend
 from miles.utils.ray_utils import compute_ray_pin_head_options
 
 CONTROLLER_NAME = "miles_multi_lora_controller"
@@ -63,11 +64,24 @@ class MultiLoRAController:
         server_cls = _load_subclass(getattr(args, "multi_lora_http_server_path", None), MultiLoRAHTTPServer)
         self.backend = backend_cls(args, router_url)
         self.server = server_cls(self.backend, host, api_port=getattr(args, "multi_lora_api_port", 0))
+        self.tinker_service = None
+        if is_tinker_frontend(args):
+            # Lazy import: the tinker package is frontend-scoped and stays out of e2e startup.
+            from miles.tinker.service import TinkerService
+
+            self.tinker_service = TinkerService(args, abort_requests=self.backend.abort_requests)
+            self.server.tinker_service = self.tinker_service
 
     async def start(self) -> int:
         await self.backend.init()
         await self.server.start()
         return self.server.actual_api_port
+
+    async def tinker_register_binding(self, key: str, info: dict) -> None:
+        self.tinker_service.register_binding(key, info)
+
+    async def tinker_abort_sample(self, request_id: str) -> bool:
+        return await self.tinker_service.abort_sample(request_id)
 
     async def stop(self) -> None:
         await self.server.stop()

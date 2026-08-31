@@ -37,6 +37,8 @@ class MultiLoRAHTTPServer:
         self.api_port = api_port
         self.api_server: uvicorn.Server | None = None
         self.api_task: asyncio.Task | None = None
+        # Set by the controller for frontend=tinker; mounts the SDK routes on the same app.
+        self.tinker_service = None
 
     @property
     def actual_api_port(self) -> int:
@@ -69,6 +71,10 @@ class MultiLoRAHTTPServer:
     async def start(self) -> None:
         app = self.create_app()
         self.add_routes(app)
+        if self.tinker_service is not None:
+            from miles.tinker.http_routes import mount_tinker_routes
+
+            mount_tinker_routes(app, self.tinker_service)
         config = uvicorn.Config(app, host=self.host, port=self.api_port, log_level="warning", access_log=False)
         self.api_server = uvicorn.Server(config)
         self.api_task = asyncio.create_task(self.api_server.serve())

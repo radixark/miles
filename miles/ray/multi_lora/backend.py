@@ -175,15 +175,18 @@ class MultiLoRABackend:
                 continue
         return []
 
-    async def abort_adapter_requests(self, adapter_name: str) -> None:
-        prefix = f"{adapter_name}{RID_SEPARATOR}"
+    async def abort_requests(self, rid_or_prefix: str, *, prefix: bool) -> None:
+        """Best-effort abort of in-flight requests by exact rid or rid prefix on every worker."""
         urls = await self.worker_urls()
         if not urls:
-            logger.warning(f"Abort for adapter '{adapter_name}': no workers discovered at {self.router_url}")
+            logger.warning(f"Abort for rid '{rid_or_prefix}': no workers discovered at {self.router_url}")
             return
         results = await asyncio.gather(
-            *(self.client.post(f"{url}/abort_request", json={"rid": prefix, "prefix": True}) for url in urls),
+            *(self.client.post(f"{url}/abort_request", json={"rid": rid_or_prefix, "prefix": prefix}) for url in urls),
             return_exceptions=True,
         )
         if failures := sum(isinstance(r, Exception) for r in results):
-            logger.warning(f"Abort for adapter '{adapter_name}': {failures}/{len(results)} posts failed")
+            logger.warning(f"Abort for rid '{rid_or_prefix}': {failures}/{len(results)} posts failed")
+
+    async def abort_adapter_requests(self, adapter_name: str) -> None:
+        await self.abort_requests(f"{adapter_name}{RID_SEPARATOR}", prefix=True)

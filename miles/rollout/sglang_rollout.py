@@ -149,6 +149,7 @@ async def call_sglang_generate_endpoint(
     extra_payload: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     url: str | None = None,
+    post_json: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
     """Neutral generation core: assemble the /generate payload, POST it, return the raw engine output."""
     payload: dict[str, Any] = {
@@ -166,7 +167,8 @@ async def call_sglang_generate_endpoint(
         payload.update(extra_payload)
     if url is None:
         url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
-    return await post(url, payload, headers=headers)
+    poster = post_json if post_json is not None else post
+    return await poster(url, payload, headers=headers)
 
 
 def parse_output_token_logprobs(output: dict[str, Any]) -> tuple[list[int], list[float]]:
