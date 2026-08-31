@@ -24,6 +24,7 @@ def test_hle_default_output_limit_is_128k() -> None:
     assert Args().judge_base_url is None
     assert Args().judge_api_key_env == "HLE_JUDGE_API_KEY"
     assert Args().judge_max_qps == 0.0
+    assert Args().disable_thinking is False
 
 
 def test_extract_choice_uses_explicit_final_answer() -> None:
@@ -208,6 +209,7 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         args.output_jsonl = str(output_path)
         args.summary_json = str(summary_path)
         args.n_trials = 2
+        args.disable_thinking = True
         args.judge_base_url = f"http://127.0.0.1:{port}/v1"
         args.judge_model = "grader-model"
         args.judge_max_retries = 1
@@ -224,6 +226,11 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         assert summary["metrics"]["judge_completed"] == 2
         assert summary["metrics"]["judge_completion_tokens"] == 18
         assert len(output_path.read_text().splitlines()) == 2
+        checkpoint_requests = [
+            request for request in requests if request["model"] == "checkpoint-model"
+        ]
+        assert len(checkpoint_requests) == 2
+        assert checkpoint_requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
         judge_requests = [request for request in requests if request["model"] == "grader-model"]
         assert len(judge_requests) == 2
         assert judge_requests[0]["response_format"]["type"] == "json_schema"

@@ -58,6 +58,7 @@ class Args(Tap):
     max_tokens: int = 131072
     temperature: float = 0.0
     request_timeout_sec: int = 3600
+    disable_thinking: bool = False
     multiple_choice_only: bool = False
 
     # ``judge_base_url`` is an OpenAI-compatible base URL, including ``/v1``.
@@ -202,12 +203,14 @@ async def evaluate_one(
     row: dict[str, Any],
     trial_index: int,
 ) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "model": args.model,
         "messages": [{"role": "user", "content": generation_prompt(row)}],
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
     }
+    if args.disable_thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     headers = {"Authorization": f"Bearer {args.api_key}"}
     started = time.monotonic()
     result: dict[str, Any] = {

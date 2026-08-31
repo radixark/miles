@@ -109,6 +109,12 @@ with `Final answer: ANSWER`; the driver extracts only that final line and never
 sends the reasoning trace to the grader. Multiple-choice answers are scored
 locally without consuming grader requests. Free-form grading requests contain
 only the extracted candidate answer and the reference answer.
+
+For models whose chat template supports it, pass `--disable_thinking` to render
+the generation prompt with `enable_thinking=false`. This is useful for pipeline
+smoke tests or checkpoints that fail to terminate their reasoning; normal HLE
+evaluation leaves thinking enabled.
+
 If the grader requires authentication, put its token in the environment variable
 named by `--judge_api_key_env` (default `HLE_JUDGE_API_KEY`) so the secret is not
 placed in command-line arguments. `--judge_max_qps` enforces a process-wide
