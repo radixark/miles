@@ -2906,6 +2906,13 @@ def _resolve_mini_ft_controller_enable(args: argparse.Namespace) -> bool:
 
 
 def miles_validate_args(args):
+    if args.custom_config_path:
+        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
+        for k, v in data.items():
+            if hasattr(args, k):
+                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
+            setattr(args, k, v)
+
     validate_dashboard_args(args)
 
     args.ft_components = _resolve_ft_components(args)
@@ -3555,13 +3562,6 @@ def miles_validate_args(args):
 
     if args.use_rollout_routing_replay:
         args.use_routing_replay = True
-
-    if args.custom_config_path:
-        data = yaml.safe_load(resolve_file_arg(args.custom_config_path)) or {}
-        for k, v in data.items():
-            if hasattr(args, k):
-                logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
-            setattr(args, k, v)
 
     args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
 

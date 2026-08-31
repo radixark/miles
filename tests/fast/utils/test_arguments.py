@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -26,6 +27,18 @@ from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+
+_MEGATRON_PARALLEL_SIZES: dict[str, int] = {
+    "world_size": 8,
+    "tensor_model_parallel_size": 2,
+    "pipeline_model_parallel_size": 1,
+    "context_parallel_size": 1,
+}
+
+
+def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
+    for name, size in _MEGATRON_PARALLEL_SIZES.items():
+        setattr(args, name, size)
 
 
 def make_class_with_add_arguments():
@@ -335,6 +348,117 @@ def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
 
     with pytest.raises(AssertionError, match="dedicated eval fleet"):
         miles_validate_args(args)
+
+
+class TestFaultToleranceResolutionOrder:
+    def _validate(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text(yaml_body)
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    def test_the_config_file_can_turn_fault_tolerance_off(self, tmp_path):
+        """Resolving ft_components before the file override left implicit healing on for a run that asked for none."""
+        args = self._validate(tmp_path, ["--use-fault-tolerance"], "use_fault_tolerance: false\n")
+
+        assert (args.ft_components, args.mini_ft_controller_enable, args.api_server_port) == ([], False, 0)
+
+    def test_the_config_file_can_turn_fault_tolerance_on(self, tmp_path):
+        """A file-only opt-in must reach the same defaults the flag would have produced."""
+        args = self._validate(tmp_path, [], "use_fault_tolerance: true\n")
+
+        assert (args.ft_components, args.mini_ft_controller_enable) == (["rollout"], True)
+
+    def test_the_config_file_can_select_the_train_component(self, tmp_path):
+        """Picking the component list after the derivations left a train-side run without the state it needs."""
+        args = self._validate(tmp_path, ["--use-fault-tolerance"], "ft_components: [train]\n")
+
+        assert args.ft_components == ["train"]
+        assert (args.indep_dp, args.enable_witness, args.non_persistent_ckpt_type) == (True, True, "local")
+        assert args.world_size == 2
+
+    def test_the_config_file_can_cancel_the_train_component(self, tmp_path):
+        """A file that switches fault tolerance off must also undo the per-cell world the train component implies."""
+        args = self._validate(
+            tmp_path, ["--use-fault-tolerance", "--ft-components", "train"], "use_fault_tolerance: false\n"
+        )
+
+        assert (args.ft_components, args.indep_dp, args.enable_witness) == ([], False, False)
+        assert args.world_size == 8
+
+    def test_the_config_file_keeps_an_explicit_api_server_port(self, tmp_path):
+        """The implicit healing defaults must follow the port the file asks for, not the one the flag implied."""
+        args = self._validate(tmp_path, [], "use_fault_tolerance: true\napi_server_port: 0\n")
+
+        assert (args.ft_components, args.api_server_port, args.mini_ft_controller_enable) == (["rollout"], 0, False)
+
+
+class TestCustomConfigAppliedBeforeDerivedArgs:
+    def _parse(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text(yaml_body)
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+
+    def test_a_dashboard_switched_on_by_the_config_file_is_still_checked(self, tmp_path):
+        """Checking the dashboard before the file override let a file-only opt-in start without a dump directory."""
+        args = self._parse(tmp_path, [], "use_miles_dashboard: true\n")
+
+        with pytest.raises(AssertionError, match="--dump-details is required"):
+            miles_validate_args(args)
+
+    def test_a_dashboard_switched_off_by_the_config_file_drops_its_requirement(self, tmp_path):
+        """A run whose file turns the dashboard off must not be rejected for telemetry it will never write."""
+        args = self._parse(tmp_path, ["--use-miles-dashboard"], "use_miles_dashboard: false\n")
+        miles_validate_args(args)
+
+        assert args.use_miles_dashboard is False
+
+    def test_eval_prompt_data_from_the_config_file_is_expanded_into_datasets(self, tmp_path):
+        """Building the dataset list before the file override left the file's paths as an unparsed raw list."""
+        args = self._parse(tmp_path, [], "eval_prompt_data: [/data/aime.jsonl]\n")
+        miles_validate_args(args)
+
+        assert [(dataset.name, dataset.path) for dataset in args.eval_datasets] == [("aime", "/data/aime.jsonl")]
+        assert args.eval_prompt_data == ["aime", "/data/aime.jsonl"]
+
+
+def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
+    """Deriving indep_dp after the disk-stream asserts would have let an unsupported pair through."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--stream-optimizer-state-to-disk",
+            "--use-fault-tolerance",
+            "--ft-components",
+            "train",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    args.optimizer = "adam"
+    args.use_distributed_optimizer = True
+    args.multi_lora = False
+    args.optimizer_cpu_offload = False
+    args.offload_optimizer_states = False
+    args.use_precision_aware_optimizer = False
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
