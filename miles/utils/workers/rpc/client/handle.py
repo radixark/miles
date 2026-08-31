@@ -13,7 +13,11 @@ from miles.utils.workers.rpc.client.misc import (
     BootUuidPin,
     RpcTransport,
 )
-from miles.utils.workers.rpc.common.metadata import RpcMethodSpec, collect_rpc_method_specs
+from miles.utils.workers.rpc.common.metadata import (
+    RpcMethodSpec,
+    canonicalize_method_arguments,
+    collect_rpc_method_specs,
+)
 from miles.utils.workers.rpc.common.protocol import HEALTH_PATH, HealthResponse
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 
@@ -54,8 +58,10 @@ class RpcWorkerHandle(BaseWorkerHandle):
         if spec is None:
             raise AttributeError(f"{self._worker_cls_name} has no rpc method {name!r}")
 
-        async def call(**kwargs: Any) -> Any:
-            return await self._perform_call(spec=spec, kwargs=kwargs)
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            return await self._perform_call(
+                spec=spec, kwargs=canonicalize_method_arguments(spec=spec, args=args, kwargs=kwargs)
+            )
 
         return call
 
