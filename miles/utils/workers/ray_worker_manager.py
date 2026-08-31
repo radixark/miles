@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -379,12 +380,33 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
 
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(
-            load_function(self.spec.worker_class),
+            self._compute_actor_class(),
             **self.spec.ctor_kwargs(self.launch_context),
+        )
+
+    def _compute_actor_class(self) -> type:
+        actor_class = load_function(self.spec.worker_class)
+        if (method_groups := self.spec.method_concurrency_groups) is None:
+            return actor_class
+        return type(
+            f"{actor_class.__name__}WithConcurrencyGroups",
+            (actor_class,),
+            {
+                name: _route_method_to_concurrency_group(getattr(actor_class, name), group=group)
+                for name, group in method_groups.items()
+            },
         )
 
     async def post_setup(self) -> None:
         pass
+
+
+def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Callable:
+    @functools.wraps(method)
+    def routed(self, *args, **kwargs):
+        return method(self, *args, **kwargs)
+
+    return ray.method(concurrency_group=group)(routed)
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:

@@ -98,6 +98,13 @@ class FakeRayModule:
             return FakeRayRemoteClass(cluster=self.cluster, actor_class=actor_class)
         return lambda cls: FakeRayRemoteClass(cluster=self.cluster, actor_class=cls, actor_options=decorator_options)
 
+    def method(self, *, concurrency_group: str):
+        def annotate(func: Any) -> Any:
+            func.__ray_concurrency_group__ = concurrency_group
+            return func
+
+        return annotate
+
     def get(self, ref: FakeRayObjectRef, timeout: float | None = None) -> Any:
         self.cluster.resolved_refs.append(ref.method)
         self.cluster.get_timeouts.append(timeout)

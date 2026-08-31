@@ -2,7 +2,7 @@ import copy
 import os
 from pathlib import Path
 
-from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TRAINER_METHOD_CONCURRENCY_GROUPS
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.indep_dp import create_tcp_store
@@ -104,7 +104,8 @@ def _compute_spec_trainer(
             role=role,
             cell_index=ctx.cell_index,
         ),
-        concurrency_groups=TRAINER_CONCURRENCY_GROUPS,
+        concurrency_groups=TRAINER_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
+        method_concurrency_groups=TRAINER_METHOD_CONCURRENCY_GROUPS if args.use_fault_tolerance else None,
         meta=lambda ctx: dict(role=role, cell_index=ctx.cell_index),
     )
 
