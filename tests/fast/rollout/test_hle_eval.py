@@ -3,10 +3,15 @@ import json
 from pathlib import Path
 
 from aiohttp import web
+from pytest import MonkeyPatch
 
+from examples.experimental.eval.parallel_sft import hle_eval
 from examples.experimental.eval.parallel_sft.hle_eval import (
     Args,
+    RequestStartRateLimiter,
     extract_choice,
+    extract_final_answer,
+    generation_prompt,
     judge_payload,
     main_async,
     parse_judgment,
@@ -18,12 +23,26 @@ def test_hle_default_output_limit_is_128k() -> None:
     assert Args().max_tokens == 131072
     assert Args().judge_base_url is None
     assert Args().judge_api_key_env == "HLE_JUDGE_API_KEY"
+    assert Args().judge_max_qps == 0.0
 
 
 def test_extract_choice_uses_explicit_final_answer() -> None:
     assert extract_choice("I considered A and B.\nFinal answer: **D**") == "D"
-    assert extract_choice("work\n\\boxed{C}") == "C"
+    assert extract_choice("work\nFinal answer: \\boxed{C}") == "C"
+    assert extract_choice("work\n\\boxed{C}") is None
+    assert extract_choice("Final answer: C\npostscript") is None
     assert extract_choice("A is tempting, but I will not state a final answer") is None
+
+
+def test_generation_prompt_requests_only_a_terminal_final_answer() -> None:
+    row = {"question": "What is 2 + 2?", "answer_type": "exactMatch"}
+
+    prompt = generation_prompt(row)
+
+    assert "Final answer: ANSWER" in prompt
+    assert "Confidence" not in prompt
+    assert "confidence" not in prompt
+    assert extract_final_answer("reasoning\nFinal answer: 4") == "4"
 
 
 def test_summarize_emits_wandb_ready_numeric_metrics_and_rewards() -> None:
@@ -57,22 +76,23 @@ def test_judge_payload_targets_external_sglang_model_with_json_schema() -> None:
         "answer_type": "exactMatch",
     }
 
-    payload = judge_payload(args, row, "Final answer: 4")
+    payload = judge_payload(args, row, "4")
 
     assert payload["model"] == "hle-grader"
     assert payload["max_tokens"] == 2048
     assert payload["response_format"]["type"] == "json_schema"
     schema = payload["response_format"]["json_schema"]["schema"]
     assert schema["properties"]["correct"]["enum"] == ["yes", "no"]
+    assert set(schema["required"]) == {"reasoning", "correct"}
+    assert "Candidate final answer:\n4" in payload["messages"][0]["content"]
     assert "Reference answer:\n4" in payload["messages"][0]["content"]
+    assert row["question"] not in payload["messages"][0]["content"]
 
 
 def test_parse_judgment_accepts_fenced_json_and_validates_fields() -> None:
     judgment = {
-        "extracted_final_answer": "4",
         "reasoning": "The answers match.",
         "correct": "yes",
-        "confidence": 83,
     }
 
     assert parse_judgment(f"```json\n{json.dumps(judgment)}\n```") == judgment
@@ -88,7 +108,6 @@ def test_summarize_preserves_four_trials_and_external_judge_metrics() -> None:
             "judge_requested": True,
             "judge_status_code": 200,
             "judge_completion_tokens": 5,
-            "judge_confidence": 90,
             "judgment": {"correct": "yes" if trial_index == 0 else "no"},
             "correct": float(trial_index == 0),
         }
@@ -108,6 +127,32 @@ def test_summarize_preserves_four_trials_and_external_judge_metrics() -> None:
     assert len(summary["per_task"]) == 4
 
 
+def test_judge_rate_limiter_spaces_request_starts(monkeypatch: MonkeyPatch) -> None:
+    async def run_test() -> None:
+        now = 0.0
+        sleeps: list[float] = []
+
+        def monotonic() -> float:
+            return now
+
+        async def sleep(delay: float) -> None:
+            nonlocal now
+            sleeps.append(delay)
+            now += delay
+
+        monkeypatch.setattr(hle_eval.time, "monotonic", monotonic)
+        monkeypatch.setattr(hle_eval.asyncio, "sleep", sleep)
+        limiter = RequestStartRateLimiter(max_qps=2.0)
+
+        await limiter.wait()
+        await limiter.wait()
+        await limiter.wait()
+
+        assert sleeps == [0.5, 0.5]
+
+    asyncio.run(run_test())
+
+
 def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
     async def run_test() -> None:
         requests: list[dict] = []
@@ -116,15 +161,13 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
             payload = await request.json()
             requests.append(payload)
             if payload["model"] == "checkpoint-model":
-                content = "Final answer: 4\nConfidence: 91"
+                content = "A long private reasoning trace.\nFinal answer: 4"
                 completion_tokens = 6
             else:
                 content = json.dumps(
                     {
-                        "extracted_final_answer": "4",
                         "reasoning": "The answers match.",
                         "correct": "yes",
-                        "confidence": 91,
                     }
                 )
                 completion_tokens = 9
@@ -184,5 +227,9 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         judge_requests = [request for request in requests if request["model"] == "grader-model"]
         assert len(judge_requests) == 2
         assert judge_requests[0]["response_format"]["type"] == "json_schema"
+        judge_prompt = judge_requests[0]["messages"][0]["content"]
+        assert "Candidate final answer:\n4" in judge_prompt
+        assert "long private reasoning trace" not in judge_prompt.lower()
+        assert "confidence" not in judge_prompt.lower()
 
     asyncio.run(run_test())

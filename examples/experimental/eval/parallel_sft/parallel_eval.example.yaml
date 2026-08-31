@@ -66,6 +66,8 @@ commands:
       - ${oc.env:HLE_JUDGE_MODEL}
       - --judge_concurrency
       - ${oc.env:HLE_JUDGE_CONCURRENCY,32}
+      - --judge_max_qps
+      - ${oc.env:HLE_JUDGE_MAX_QPS,1.8}
       - --judge_max_tokens
       - "16384"
     metrics_path: "{output_dir}/hle_300_summary.json"

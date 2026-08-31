@@ -18,39 +18,30 @@ from tap import Tap
 JUDGE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "extracted_final_answer": {"type": "string"},
         "reasoning": {"type": "string"},
         "correct": {"type": "string", "enum": ["yes", "no"]},
-        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
     },
     "required": [
-        "extracted_final_answer",
         "reasoning",
         "correct",
-        "confidence",
     ],
     "additionalProperties": False,
 }
 
-JUDGE_PROMPT = """Judge whether the response to the question is correct based only on the
-reference answer. Extract the response's final answer; do not solve the problem
-yourself or propose an alternative answer. Small numerical rounding differences
-are acceptable, but ambiguity or a missing final answer is incorrect.
+JUDGE_PROMPT = """Compare the candidate final answer with the reference answer.
+Do not solve the original problem or infer an answer that the candidate did not
+state. Small numerical rounding differences and mathematically equivalent forms
+are acceptable.
 
-Question:
-{question}
-
-Response:
-{response}
+Candidate final answer:
+{candidate_answer}
 
 Reference answer:
-{answer}
+{reference_answer}
 
 Return a JSON object with exactly these fields:
-- extracted_final_answer: string; use "None" if no final answer is present
-- reasoning: a brief comparison of the extracted and reference answers
+- reasoning: a brief comparison of the candidate and reference answers
 - correct: "yes" or "no"
-- confidence: the 0-100 confidence stated in the response, or 100 if absent
 """
 
 
@@ -76,25 +67,52 @@ class Args(Tap):
     judge_api_key: str = "dummy"
     judge_api_key_env: str = "HLE_JUDGE_API_KEY"
     judge_concurrency: int = 16
+    judge_max_qps: float = 0.0
     judge_max_tokens: int = 16384
     judge_temperature: float = 0.0
     judge_request_timeout_sec: int = 3600
     judge_max_retries: int = 3
 
 
+class RequestStartRateLimiter:
+    """Enforce a process-wide minimum interval between request starts."""
+
+    def __init__(self, max_qps: float) -> None:
+        self._minimum_interval = 1.0 / max_qps if max_qps > 0 else 0.0
+        self._next_start = 0.0
+        self._lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        if self._minimum_interval == 0:
+            return
+        async with self._lock:
+            delay = self._next_start - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next_start = time.monotonic() + self._minimum_interval
+
+
+def extract_final_answer(text: str) -> str | None:
+    """Extract an answer only when the final non-empty line follows the contract."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    match = re.fullmatch(r"(?:\*\*)?final\s+answer(?:\*\*)?\s*:\s*(.+)", lines[-1], re.IGNORECASE)
+    if match is None:
+        return None
+    answer = match.group(1).strip()
+    if answer.startswith("**") and answer.endswith("**") and len(answer) > 4:
+        answer = answer[2:-2].strip()
+    return answer or None
+
+
 def extract_choice(text: str) -> str | None:
     """Extract a final A-Z multiple-choice answer without scanning reasoning."""
-    patterns = (
-        r"\\boxed\s*\{\s*([A-Z])\s*\}",
-        r"(?im)^\s*final\s+answer\s*:\s*(?:\*\*)?([A-Z])\b",
-        r"(?im)^\s*answer\s*:\s*(?:\*\*)?([A-Z])\b",
-        r"(?m)^\s*([A-Z])\s*[.)]?\s*$",
-    )
-    for pattern in patterns:
-        matches = re.findall(pattern, text)
-        if matches:
-            return matches[-1].upper()
-    return None
+    answer = extract_final_answer(text)
+    if answer is None:
+        return None
+    match = re.fullmatch(r"(?:\\boxed\s*\{\s*)?([A-Z])(?:\s*\})?[.)]?", answer, re.IGNORECASE)
+    return match.group(1).upper() if match is not None else None
 
 
 def load_rows(path: Path, *, multiple_choice_only: bool, max_tasks: int | None) -> list[dict[str, Any]]:
@@ -115,28 +133,32 @@ def load_rows(path: Path, *, multiple_choice_only: bool, max_tasks: int | None) 
 def generation_prompt(row: dict[str, Any]) -> str:
     """Build the HLE response prompt for either answer type."""
     if row.get("answer_type") == "multipleChoice":
-        final_answer_instruction = "the answer-choice letter"
+        final_answer_instruction = "LETTER"
     else:
-        final_answer_instruction = "the exact final answer"
-    return f"{row['question']}\n\nSolve the problem carefully. End your response with two lines in this format:\nFinal answer: <{final_answer_instruction}>\nConfidence: <an integer from 0 to 100>"
-
-
-def judge_prompt(row: dict[str, Any], response: str) -> str:
-    """Build the reference-based HLE grading prompt."""
-    return JUDGE_PROMPT.format(
-        question=row["question"],
-        response=response,
-        answer=row["answer"],
+        final_answer_instruction = "ANSWER"
+    return (
+        f"{row['question']}\n\n"
+        "Solve the problem carefully. Your final non-empty line must use exactly "
+        f"this format:\nFinal answer: {final_answer_instruction}\n"
+        "Do not write anything after the final-answer line."
     )
 
 
-def judge_payload(args: Args, row: dict[str, Any], response: str) -> dict[str, Any]:
+def judge_prompt(row: dict[str, Any], candidate_answer: str) -> str:
+    """Build a reference-based prompt that excludes the model's reasoning trace."""
+    return JUDGE_PROMPT.format(
+        candidate_answer=candidate_answer,
+        reference_answer=row["answer"],
+    )
+
+
+def judge_payload(args: Args, row: dict[str, Any], candidate_answer: str) -> dict[str, Any]:
     """Build an SGLang/OpenAI-compatible schema-constrained grading request."""
     if args.judge_model is None:
         raise ValueError("--judge_model is required when --judge_base_url is set")
     return {
         "model": args.judge_model,
-        "messages": [{"role": "user", "content": judge_prompt(row, response)}],
+        "messages": [{"role": "user", "content": judge_prompt(row, candidate_answer)}],
         "max_tokens": args.judge_max_tokens,
         "temperature": args.judge_temperature,
         "response_format": {
@@ -165,11 +187,6 @@ def parse_judgment(text: str) -> dict[str, Any]:
         raise ValueError(f"Judge response is missing fields: {sorted(missing)}")
     if judgment["correct"] not in {"yes", "no"}:
         raise ValueError("Judge field 'correct' must be 'yes' or 'no'")
-    confidence = judgment["confidence"]
-    if isinstance(confidence, bool) or not isinstance(confidence, int):
-        raise ValueError("Judge field 'confidence' must be an integer")
-    if not 0 <= confidence <= 100:
-        raise ValueError("Judge field 'confidence' must be between 0 and 100")
     return judgment
 
 
@@ -228,20 +245,27 @@ async def evaluate_one(
             "completion_tokens": completion.get("usage", {}).get("completion_tokens", 0),
         }
     )
+    predicted = extract_final_answer(content)
+    result["predicted_answer"] = predicted
+    result["final_answer_format_valid"] = predicted is not None
+    if predicted is None:
+        result["correct"] = 0.0
+        result["final_answer_error"] = "The final non-empty line did not match 'Final answer: ANSWER'"
+        return result
+
     if row.get("answer_type") == "multipleChoice":
-        predicted = extract_choice(content)
-        result["direct_predicted_answer"] = predicted
-        if predicted is not None:
-            result["direct_correct"] = float(predicted == str(row["answer"]).strip().upper())
-            if args.judge_base_url is None:
-                result["predicted_answer"] = predicted
-                result["correct"] = result["direct_correct"]
+        predicted_choice = extract_choice(content)
+        result["predicted_answer"] = predicted_choice
+        result["direct_predicted_answer"] = predicted_choice
+        result["direct_correct"] = float(predicted_choice == str(row["answer"]).strip().upper())
+        result["correct"] = result["direct_correct"]
     return result
 
 
 async def judge_one(
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
+    rate_limiter: RequestStartRateLimiter,
     args: Args,
     row: dict[str, Any],
     result: dict[str, Any],
@@ -249,15 +273,18 @@ async def judge_one(
     """Grade one successful generation through the external judge endpoint."""
     if result.get("status_code") != 200 or args.judge_base_url is None:
         return
+    if row.get("answer_type") == "multipleChoice" or result.get("predicted_answer") is None:
+        return
 
     result["judge_requested"] = True
-    payload = judge_payload(args, row, result.get("content", ""))
+    payload = judge_payload(args, row, result["predicted_answer"])
     headers = {"Authorization": f"Bearer {resolve_judge_api_key(args)}"}
     started = time.monotonic()
     last_error = ""
     for attempt in range(1, args.judge_max_retries + 1):
         try:
             async with semaphore:
+                await rate_limiter.wait()
                 async with session.post(
                     f"{args.judge_base_url.rstrip('/')}/chat/completions",
                     json=payload,
@@ -277,9 +304,7 @@ async def judge_one(
                     "judge_content": content,
                     "judge_reasoning_content": message.get("reasoning_content"),
                     "judge_completion_tokens": completion.get("usage", {}).get("completion_tokens", 0),
-                    "predicted_answer": judgment["extracted_final_answer"],
                     "correct": float(judgment["correct"] == "yes"),
-                    "judge_confidence": judgment["confidence"],
                     "judge_attempts": attempt,
                     "judge_elapsed_sec": round(time.monotonic() - started, 3),
                 }
@@ -300,6 +325,7 @@ async def evaluate_and_judge_one(
     generation_semaphore: asyncio.Semaphore,
     judge_session: aiohttp.ClientSession,
     judge_semaphore: asyncio.Semaphore,
+    judge_rate_limiter: RequestStartRateLimiter,
     args: Args,
     row: dict[str, Any],
     trial_index: int,
@@ -312,7 +338,7 @@ async def evaluate_and_judge_one(
         row,
         trial_index,
     )
-    await judge_one(judge_session, judge_semaphore, args, row, result)
+    await judge_one(judge_session, judge_semaphore, judge_rate_limiter, args, row, result)
     return result
 
 
@@ -336,7 +362,6 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     judge_requested = [result for result in completed if result.get("judge_requested")]
     if judge_requested:
         judge_completed = [result for result in judge_requested if result.get("judge_status_code") == 200 and result.get("judgment") is not None]
-        judge_confidences = [result["judge_confidence"] for result in judge_completed]
         metrics.update(
             {
                 "judge_requested": len(judge_requested),
@@ -344,7 +369,6 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
                 "judge_errors": len(judge_requested) - len(judge_completed),
                 "judge_success_rate": len(judge_completed) / len(judge_requested),
                 "judge_completion_tokens": sum(result.get("judge_completion_tokens", 0) for result in judge_completed),
-                "mean_judge_confidence": sum(judge_confidences) / len(judge_confidences) if judge_confidences else 0.0,
             }
         )
 
@@ -374,6 +398,8 @@ async def main_async(args: Args) -> None:
         raise ValueError("--n_trials must be positive")
     if args.concurrency <= 0 or args.judge_concurrency <= 0:
         raise ValueError("Concurrency values must be positive")
+    if args.judge_max_qps < 0:
+        raise ValueError("--judge_max_qps must be non-negative")
     if args.judge_max_retries <= 0:
         raise ValueError("--judge_max_retries must be positive")
     if args.judge_base_url is not None and not args.judge_model:
@@ -398,6 +424,7 @@ async def main_async(args: Args) -> None:
             judge_timeout = aiohttp.ClientTimeout(total=args.judge_request_timeout_sec)
             judge_connector = aiohttp.TCPConnector(limit=args.judge_concurrency)
             judge_semaphore = asyncio.Semaphore(args.judge_concurrency)
+            judge_rate_limiter = RequestStartRateLimiter(args.judge_max_qps)
             async with aiohttp.ClientSession(timeout=judge_timeout, connector=judge_connector) as judge_session:
                 results = await asyncio.gather(
                     *(
@@ -406,6 +433,7 @@ async def main_async(args: Args) -> None:
                             semaphore,
                             judge_session,
                             judge_semaphore,
+                            judge_rate_limiter,
                             args,
                             row,
                             trial_index,
