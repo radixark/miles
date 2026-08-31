@@ -126,14 +126,17 @@ def test_resolve_reads_the_real_registry():
     assert plan["suite"] == "stage-a-cpu"
 
 
-def test_resolve_accepts_a_label_declared_by_the_source_snapshot(tmp_path):
+def test_resolve_accepts_a_label_declared_by_the_source_snapshot(tmp_path: Path) -> None:
     """Resolve registrations against the checked-out source label schema."""
     source_root = tmp_path / "source"
     test_root = source_root / "tests" / "e2e" / "example"
     label_root = source_root / "tests" / "ci"
     test_root.mkdir(parents=True)
     label_root.mkdir(parents=True)
-    (label_root / "labels.py").write_text('KNOWN_LABELS: dict[str, str] = {"source-new": "Source-only test domain"}\n')
+    (label_root / "labels.py").write_text(
+        'raise RuntimeError("must not execute source registry")\n'
+        'KNOWN_LABELS: dict[str, str] = {"source-new": "Source-only test domain"}\n'
+    )
     (test_root / "test_source_new.py").write_text(
         "from tests.ci.ci_register import register_cuda_ci\n"
         'register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["source-new"])\n'
@@ -143,6 +146,59 @@ def test_resolve_accepts_a_label_declared_by_the_source_snapshot(tmp_path):
 
     assert plan["hw"] == "cuda"
     assert plan["suite"] == "stage-c-4-gpu-h200"
+
+
+def test_resolve_rejects_a_dynamic_source_label_registry(tmp_path: Path) -> None:
+    """Reject source label schemas that trusted code cannot parse as data."""
+    source_root = tmp_path / "source"
+    test_root = source_root / "tests" / "fast"
+    label_root = source_root / "tests" / "ci"
+    test_root.mkdir(parents=True)
+    label_root.mkdir(parents=True)
+    (label_root / "labels.py").write_text("KNOWN_LABELS = make_labels()\n")
+    (test_root / "test_example.py").write_text("def test_example(): pass\n")
+
+    with pytest.raises(FileRunError, match="exactly one literal dictionary"):
+        resolve_file_run("tests/fast/test_example.py", "dev", source_root)
+
+
+@pytest.mark.parametrize(
+    ("registry", "error"),
+    [
+        ('KNOWN_LABELS = {"bad label": "Invalid name"}\n', "invalid CI label name"),
+        ('KNOWN_LABELS = {"short": ""}\n', "empty description"),
+        ('KNOWN_LABELS = {"short": "First", "short": "Second"}\n', "duplicate CI label"),
+        ('KNOWN_LABELS = {"short": 1}\n', "descriptions must be string literals"),
+    ],
+)
+def test_resolve_rejects_an_invalid_source_label_registry(tmp_path: Path, registry: str, error: str) -> None:
+    """Reject malformed source label entries before registry collection."""
+    source_root = tmp_path / "source"
+    test_root = source_root / "tests" / "fast"
+    label_root = source_root / "tests" / "ci"
+    test_root.mkdir(parents=True)
+    label_root.mkdir(parents=True)
+    (label_root / "labels.py").write_text(registry)
+    (test_root / "test_example.py").write_text("def test_example(): pass\n")
+
+    with pytest.raises(FileRunError, match=error):
+        resolve_file_run("tests/fast/test_example.py", "dev", source_root)
+
+
+def test_resolve_rejects_a_symlinked_source_label_registry(tmp_path: Path) -> None:
+    """Reject a source label registry that escapes through a symlink."""
+    source_root = tmp_path / "source"
+    test_root = source_root / "tests" / "fast"
+    label_root = source_root / "tests" / "ci"
+    test_root.mkdir(parents=True)
+    label_root.mkdir(parents=True)
+    payload = source_root / "labels.py"
+    payload.write_text('KNOWN_LABELS = {"short": "Short tests"}\n')
+    (label_root / "labels.py").symlink_to(payload)
+    (test_root / "test_example.py").write_text("def test_example(): pass\n")
+
+    with pytest.raises(FileRunError, match="label registry must not be a symlink"):
+        resolve_file_run("tests/fast/test_example.py", "dev", source_root)
 
 
 def test_resolve_rejects_a_symlinked_test_file(tmp_path):

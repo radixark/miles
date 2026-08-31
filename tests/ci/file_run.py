@@ -5,6 +5,7 @@ which runs on a bare hosted runner before any dependency install; this module
 may import only the stdlib and the dependency-free registry modules.
 """
 
+import ast
 import json
 import os
 import re
@@ -30,10 +31,50 @@ CUDA_SUITE_RUNS_ON = {
 
 # Same shape the pr-test.yml resolve-ci-image step enforces for a Docker tag.
 _IMAGE_TAG_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+_LABEL_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 class FileRunError(Exception):
     pass
+
+
+def _read_source_known_labels(source_root: Path) -> frozenset[str]:
+    label_path = source_root / "tests" / "ci" / "labels.py"
+    if label_path.is_symlink():
+        raise FileRunError(f"CI label registry must not be a symlink: {label_path}")
+    if not label_path.is_file():
+        raise FileRunError(f"CI label registry is not a regular file: {label_path}")
+    try:
+        tree = ast.parse(label_path.read_text(encoding="utf-8"), filename=str(label_path))
+    except (OSError, UnicodeDecodeError, SyntaxError) as error:
+        raise FileRunError(f"cannot parse CI label registry {label_path}: {error}") from error
+
+    assignments: list[ast.AST] = []
+    for statement in tree.body:
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            if statement.target.id == "KNOWN_LABELS" and statement.value is not None:
+                assignments.append(statement.value)
+        elif isinstance(statement, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == "KNOWN_LABELS" for target in statement.targets):
+                assignments.append(statement.value)
+    if len(assignments) != 1 or not isinstance(assignments[0], ast.Dict):
+        raise FileRunError(f"{label_path}: KNOWN_LABELS must be exactly one literal dictionary assignment")
+
+    labels: set[str] = set()
+    for key_node, description_node in zip(assignments[0].keys, assignments[0].values, strict=True):
+        if not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str):
+            raise FileRunError(f"{label_path}: KNOWN_LABELS keys must be string literals")
+        if not isinstance(description_node, ast.Constant) or not isinstance(description_node.value, str):
+            raise FileRunError(f"{label_path}: KNOWN_LABELS descriptions must be string literals")
+        label = key_node.value
+        if _LABEL_NAME_PATTERN.fullmatch(label) is None:
+            raise FileRunError(f"{label_path}: invalid CI label name: {label!r}")
+        if not description_node.value.strip():
+            raise FileRunError(f"{label_path}: CI label {label!r} has an empty description")
+        if label in labels:
+            raise FileRunError(f"{label_path}: duplicate CI label: {label!r}")
+        labels.add(label)
+    return frozenset(labels)
 
 
 def _discover_regular_ci_files() -> list[str]:
@@ -115,7 +156,8 @@ def resolve_file_run(test_file: str, image_tag: str, source_root: str | Path = "
     previous_directory = Path.cwd()
     try:
         os.chdir(root)
-        tests = collect_tests(_discover_regular_ci_files(), sanity_check=True)
+        files = _discover_regular_ci_files()
+        tests = collect_tests(files, sanity_check=True, known_labels=_read_source_known_labels(root))
     finally:
         os.chdir(previous_directory)
     return plan_file_run(tests, test_file, image_tag)
