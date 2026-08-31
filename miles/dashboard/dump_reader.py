@@ -303,7 +303,7 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 4  # v4: per-sample staleness
+    SUMMARY_VERSION: ClassVar[int] = 5  # v5: no-sample steps get the declared schema (v4 cached them columnless)
 
     # Column order of summary(). Only needed to give a step with no samples the
     # same shape as any other step; with rows present the schema comes from

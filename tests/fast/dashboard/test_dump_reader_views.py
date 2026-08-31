@@ -1,3 +1,4 @@
+import json
 import os
 import statistics
 import time
@@ -317,3 +318,20 @@ def test_empty_step_survives_the_parquet_cache(tmp_path):
     reloaded = DumpReader(tmp_path, cache_dir=tmp_path / "c").summary(1)  # served from the parquet written above
     assert reloaded.height == 0
     assert reloaded.columns == list(DumpReader.SUMMARY_COLUMNS)
+
+
+def test_pre_fix_columnless_cache_is_not_served(tmp_path):
+    """A cache dir populated before the no-sample schema fix holds a columnless
+    parquet for the aborted step, and its mtime stamps still match the dump.
+    Only SUMMARY_VERSION tells it apart from a valid cache, so the schema fix
+    had to ship with a bump past 4 -- the version that wrote those caches."""
+    dump_dummy_run(tmp_path, steps=2, with_eval=False)
+    _blank_samples(tmp_path, 1)
+    reader = DumpReader(tmp_path, cache_dir=tmp_path / "c")
+    reader.cache_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame([], strict=False).write_parquet(reader.cache_dir / "rollout_1.parquet")
+    stale = {**reader._source_stamps(1, evaluation=False), "_summary_version": 4}
+    (reader.cache_dir / "rollout_1.sources.json").write_text(json.dumps(stale))
+
+    assert reader.summary(1).columns == list(DumpReader.SUMMARY_COLUMNS)
+    assert DumpReader.SUMMARY_VERSION > 4  # regressing the bump re-serves those caches
