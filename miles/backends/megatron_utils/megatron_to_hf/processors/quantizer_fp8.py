@@ -94,7 +94,7 @@ def quantize_params_fp8(args, megatron_name, converted_named_params, quantizatio
         fp8_param_names.extend(
             [
                 "self_attention.wk.weight",
-                "self_attention.indexer.linear_wk.weight",
+                "self_attention.core_attention.indexer.linear_wk.weight",
             ]
         )
 
