@@ -58,9 +58,10 @@ is SGLang's default served-model name.
 
 Copy `parallel_eval.example.yaml` and set the referenced Terminal Bench and HLE
 environment variables. The Terminal Bench example matches the established
-Terminus-2 decoding settings (temperature 1.0, top-p 0.95, top-k 20, 81,920
-output tokens, and 262,144 context). The agent server still owns sandbox setup,
-summarization, and its three-hour agent timeout.
+Terminus-2 decoding settings (temperature 1.0, top-p 0.95, top-k 20, 131,072
+output tokens, and 262,144 context). The HLE example uses the same 131,072-token
+output limit. The agent server still owns sandbox setup, summarization, and its
+three-hour agent timeout.
 
 ## Driver contract
 

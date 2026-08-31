@@ -28,7 +28,7 @@ class Args(Tap):
     api_key: str = "dummy"
     concurrency: int = 8
     max_tasks: int | None = None
-    max_tokens: int = 8192
+    max_tokens: int = 131072
     temperature: float = 0.0
     request_timeout_sec: int = 3600
     multiple_choice_only: bool = False

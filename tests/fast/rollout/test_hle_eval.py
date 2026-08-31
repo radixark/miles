@@ -1,4 +1,8 @@
-from examples.experimental.eval.parallel_sft.hle_eval import extract_choice, summarize
+from examples.experimental.eval.parallel_sft.hle_eval import HLEArgs, extract_choice, summarize
+
+
+def test_hle_default_output_limit_is_128k() -> None:
+    assert HLEArgs().max_tokens == 131072
 
 
 def test_extract_choice_uses_explicit_final_answer() -> None:
