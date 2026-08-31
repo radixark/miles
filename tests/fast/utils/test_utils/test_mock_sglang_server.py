@@ -5,8 +5,10 @@ import time
 import pytest
 import requests
 
+from miles.utils.misc import get_current_node_ip
 from miles.utils.test_utils.mock_sglang_server import (
     Counter,
+    MockSGLangServer,
     ProcessResult,
     ProcessResultMetaInfo,
     default_process_fn,
@@ -463,3 +465,36 @@ class TestMultiTurnToolCallProcessFn:
             assert data["choices"][0]["message"]["content"] == expected_content
             assert data["choices"][0]["message"]["tool_calls"] == expected_tool_calls
             assert data["choices"][0]["finish_reason"] == expected_finish_reason
+
+
+class TestNodeAddress:
+    def test_the_default_host_is_the_node_ip_instead_of_loopback(self):
+        """``with_mock_server`` must default to an address other nodes can reach."""
+        with with_mock_server() as server:
+            assert server.host == get_current_node_ip()
+            assert server.host != "127.0.0.1"
+            assert server.url == f"http://{get_current_node_ip()}:{server.port}"
+
+
+class TestHostResolution:
+    def test_an_explicit_host_is_kept_instead_of_the_node_ip(self):
+        """A caller that pins a host keeps it, so a test can still ask for a loopback-only mock."""
+        server = MockSGLangServer(
+            model_name="Qwen/Qwen3-0.6B", process_fn=default_process_fn, host="127.0.0.1", port=0
+        )
+
+        assert server.host == "127.0.0.1"
+        assert server.url == f"http://127.0.0.1:{server.port}"
+
+    def test_a_missing_host_falls_back_to_the_node_ip(self):
+        """Without an explicit host the mock advertises the node ip so peers on other nodes can dial it."""
+        server = MockSGLangServer(model_name="Qwen/Qwen3-0.6B", process_fn=default_process_fn, host=None, port=0)
+
+        assert server.host == get_current_node_ip()
+        assert server.host != "127.0.0.1"
+
+    def test_a_server_advertising_the_node_ip_still_answers_on_loopback(self, mock_server):
+        """The mock binds every interface, so advertising the node ip must not cut off local clients."""
+        response = requests.get(f"http://127.0.0.1:{mock_server.port}/health", timeout=5)
+
+        assert response.status_code == 200
