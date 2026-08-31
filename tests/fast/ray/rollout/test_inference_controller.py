@@ -10,7 +10,7 @@ from tests.fast.ray.rollout.conftest import make_args
 from miles.ray.rollout import inference_controller as inference_controller_module
 from miles.ray.rollout.inference_controller import InferenceController, _compute_server_cell_meta_from_info
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import ServerCellMetadata
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
@@ -270,6 +270,59 @@ def _patch_init(
     )
 
 
+class TestReconcileAfterAFailedInit:
+    @pytest.mark.asyncio
+    async def test_an_unchanged_observation_rebuilds_a_cell_whose_init_failed(self, monkeypatch):
+        """A cell kept after a failed init keeps matching its own observation, so the identical next sweep never retries it."""
+        init_calls: list[str] = []
+
+        async def _record_then_raise(cell: ServerCell) -> None:
+            init_calls.append(cell.meta.cell_id)
+            raise RuntimeError("injected init failure")
+
+        async def _record(cell: ServerCell) -> None:
+            init_calls.append(cell.meta.cell_id)
+
+        controller = _make_controller({})
+        srv = RolloutServer(
+            server_cells={},
+            args=SimpleNamespace(colocate=False, ft_components=[]),
+            context_lock=controller.context_lock,
+        )
+        controller.servers = {"model-a": srv}
+        info = _make_cell_info()
+        monkeypatch.setattr(ServerCell, "init", _record_then_raise)
+
+        with pytest.raises(RuntimeError, match="injected init failure"):
+            await controller._reconcile(info.cell_id, info)
+
+        monkeypatch.setattr(ServerCell, "init", _record)
+        await controller._reconcile(info.cell_id, info)
+
+        assert init_calls == [info.cell_id, info.cell_id]
+        assert list(srv.server_cells) == [info.cell_id]
+        async with controller.context_lock:
+            await srv.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_cell_whose_init_failed_is_not_reported_as_a_live_cell(self, monkeypatch):
+        """A dropped cell must vanish from the status surface, otherwise the dashboard shows an engine nobody owns."""
+        controller = _make_controller({})
+        srv = RolloutServer(
+            server_cells={},
+            args=SimpleNamespace(colocate=False, ft_components=[]),
+            context_lock=controller.context_lock,
+        )
+        controller.servers = {"model-a": srv}
+        info = _make_cell_info()
+        monkeypatch.setattr(ServerCell, "init", _raise_async)
+
+        with pytest.raises(RuntimeError, match="injected init failure"):
+            await controller._reconcile(info.cell_id, info)
+
+        assert controller.get_cell_statuses() == {}
+
+
 class TestGlobalHealthCheckerActiveness:
     @pytest.mark.asyncio
     async def test_init_hands_the_cells_the_controller_wide_activeness(self, monkeypatch: pytest.MonkeyPatch):
@@ -482,3 +535,7 @@ class TestUpdatableModelSelection:
 
         assert await self._controller(ref).check_weights(action="compare") == []
         assert ref.calls == []
+
+
+async def _raise_async(cell: ServerCell) -> None:
+    raise RuntimeError("injected init failure")
