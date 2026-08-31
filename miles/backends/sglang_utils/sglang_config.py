@@ -161,7 +161,7 @@ class ServerGroupConfig(FrozenStrictBaseModel):
         default_model_path: str,
         gpu_offset_cursor: "_MutableBox",
     ) -> "ServerGroupConfig":
-        assert not ({"host", "port"} & set(raw.overrides)), (
+        assert not ({"host", "port", "gated_launch_port"} & set(raw.overrides)), (
             f"sglang_overrides must not override host/port ({raw.overrides=}): the rollout process derives "
             f"each engine's url from the addr allocator, so an override would make it talk to the wrong endpoint"
         )
