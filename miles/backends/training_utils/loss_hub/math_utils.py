@@ -1027,9 +1027,9 @@ def calculate_log_probs_and_entropy(
             if with_entropy:
                 entropy = compute_entropy(logits)
     else:
-        log_prob = logits.new_zeros((0,))
+        log_prob = logits.new_zeros((0,), dtype=torch.float32)
         if with_entropy:
-            entropy = logits.new_zeros((0,))
+            entropy = logits.new_zeros((0,), dtype=torch.float32)
 
     return log_prob, entropy
 
