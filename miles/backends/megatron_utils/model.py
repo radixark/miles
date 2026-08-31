@@ -264,6 +264,7 @@ def forward_only(
     store_prefix: str = "",
     extra_batch_keys: Sequence[str] | None = None,
     include_batch_in_f: bool = False,
+    fp32_output: bool = True,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
 
@@ -278,6 +279,7 @@ def forward_only(
         num_microbatches: Number of microbatches per rollout step.
         rollout_id: Rollout identifier (selects the per-rollout dump subdirectory).
         store_prefix: Prefix to prepend to stored output keys.
+        fp32_output: Whether Megatron should upcast the complete model output to FP32.
 
     Returns:
         Aggregated outputs keyed by ``store_prefix + key``.
@@ -348,6 +350,7 @@ def forward_only(
             loss_mask=batch["full_loss_masks"],
             **(filter_keys(batch, ["witness_ids"]) if args.enable_witness else {}),
             **(batch["multimodal_train_inputs"] if batch["multimodal_train_inputs"] is not None else {}),
+            fp32_output=fp32_output,
         )
 
         return output_tensor, partial(
@@ -615,7 +618,7 @@ def train_one_step(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(**forward_kwargs)
+            output_tensor = model(**forward_kwargs, fp32_output=args.loss_type not in ("policy_loss", "sft_loss"))
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage
