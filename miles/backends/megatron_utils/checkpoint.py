@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch.distributed as dist
@@ -97,6 +98,34 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
+@contextmanager
+def _hide_bridge_lora_adapters_from_dist_checkpoint():
+    """Expose only wrapped base modules to Megatron distributed checkpointing.
+
+    Megatron-Bridge applies LoRA before Miles loads the base checkpoint. Its
+    ``AdapterWrapper.sharded_state_dict`` normally includes the newly-created
+    adapter tensors, but a base-only checkpoint cannot contain those tensors.
+    This is especially invalid when loading with a different EP topology: the
+    fresh expert adapters look like checkpoint shards and fail integrity
+    validation before any base weight can be restored.
+
+    Temporarily delegating to ``to_wrap`` preserves the original checkpoint
+    keys and leaves the initialized adapter parameters attached to the model.
+    """
+    from megatron.bridge.peft.adapter_wrapper import AdapterWrapper
+
+    original = AdapterWrapper.sharded_state_dict
+
+    def base_sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
+        return self.to_wrap.sharded_state_dict(prefix, sharded_offsets, metadata)
+
+    AdapterWrapper.sharded_state_dict = base_sharded_state_dict
+    try:
+        yield
+    finally:
+        AdapterWrapper.sharded_state_dict = original
+
+
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
@@ -112,13 +141,15 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
         ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
-        result = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-        )
+        load_context = _hide_bridge_lora_adapters_from_dist_checkpoint() if is_lora_model(ddp_model) else nullcontext()
+        with load_context:
+            result = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     else:
         result = _load_checkpoint_hf(
             ddp_model=ddp_model,
