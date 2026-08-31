@@ -57,9 +57,9 @@ def _iter_response_chunks(
         assert max_seq_lens is not None
         logits = logits.view(-1, logits.size(-1))
 
-    if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
-        logits = logits.div(args.rollout_temperature)
     if args.true_on_policy_mode:
+        if logits.size(-1) > 1 and args.rollout_temperature > 0 and args.rollout_temperature != 1.0:
+            logits = logits.div(args.rollout_temperature)
         if getattr(args, "bf16", False):
             logits = logits.to(torch.bfloat16)
         elif getattr(args, "fp16", False):
@@ -203,7 +203,7 @@ def get_log_probs_and_entropy(
 
     Args:
         logits: Policy logits with shape `[1, T, V]`.
-        args: Configuration (temperature applied in `get_responses`).
+        args: Configuration (temperature applied in `calculate_log_probs_and_entropy`).
         unconcat_tokens: List of token tensors per sample.
         total_lengths: Total sequence lengths per sample.
         response_lengths: Response segment lengths per sample.
@@ -260,6 +260,7 @@ def get_log_probs_and_entropy(
             true_on_policy=args.true_on_policy_mode,
             vocab_size=getattr(args, "vocab_size", None),
             sampling_mask=sampling_mask,
+            temperature=1.0 if args.true_on_policy_mode else args.rollout_temperature,
         )
 
         log_probs_list.append(log_prob.squeeze(-1))
