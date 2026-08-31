@@ -7,6 +7,7 @@ from miles.rollout.agentic.credentials import (
     PROVIDER_CREDENTIALS,
     forward_address,
     preflight_sdk,
+    provision_provider,
     resolve_provider_api_key,
     sandbox_key_supply,
 )
@@ -189,3 +190,24 @@ def test_resolve_missing_key_names_both_supplies(monkeypatch, tmp_path):
     monkeypatch.setenv("PROV_API_KEY_FILE", str(tmp_path / "absent"))
     with pytest.raises(RuntimeError, match="PROV_API_KEY is unset"):
         resolve_provider_api_key("PROV_API_KEY", "PROV_API_KEY_FILE", "~/nope")
+
+
+# --- whole-provider provisioning ------------------------------------------------
+
+
+def test_provision_provider_wires_key_path_addresses_and_preflight(monkeypatch, tmp_path):
+    """The one call a launcher makes per provider: key file by path, endpoint
+    vars by value, SDK importable."""
+    key_file = tmp_path / "api_key"
+    key_file.write_text("e2b_secret\n")
+    monkeypatch.setenv("E2B_API_URL", "http://agentenv.internal:8000")
+    monkeypatch.delenv("E2B_SANDBOX_URL", raising=False)
+    monkeypatch.setitem(sys.modules, "e2b", types.ModuleType("e2b"))
+
+    env: dict[str, str] = {}
+    provision_provider(env, PROVIDER_CREDENTIALS["e2b"], arg_path=str(key_file))
+
+    assert env["E2B_API_KEY_FILE"] == str(key_file)
+    assert env["E2B_API_URL"] == "http://agentenv.internal:8000"
+    assert "E2B_SANDBOX_URL" not in env  # unset vars are not forwarded
+    assert "e2b_secret" not in str(env)
