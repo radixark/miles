@@ -82,7 +82,6 @@ legitimately not hold.
 | KL | At step 0, `abs(train/ppo_kl) < 1e-9` and `train/pg_clipfrac < 1e-10`, and `train/kl_loss` is zero. MLA relaxes to `1e-8`; LoRA relaxes because the Megatron-to-HF adapter conversion is not bit-exact | `--ci-disable-kl-checker` |
 | Log-probs | At rollout 0, trainer `rollout/log_probs` matches `rollout/ref_log_probs` within `1e-8` (`5e-3` under R3, whose reference does not replay routing); trainer versus engine log-probs within `0.03`; rollout entropy in `(0, 0.7)`. Under `--true-on-policy-mode` the two must be exactly equal | `--ci-disable-logprobs-checker` |
 | Weight update | Sets `check_weight_update_equal`, comparing trainer and engine weights after a sync. Skipped automatically under either `--debug-*-only` | `--ci-disable-weight-update-checker` |
-| Crashed eval | An async eval point whose dispatch raised (logged as `eval/skipped_crashed`) fails the run instead of degrading to a skipped point | none |
 
 Three more take values rather than switching off:
 
