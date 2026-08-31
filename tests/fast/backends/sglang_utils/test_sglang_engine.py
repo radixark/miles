@@ -9,9 +9,10 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 
 pytest.importorskip("sglang")
 
+from sglang.srt.server_args import ServerArgs
+
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
-from sglang.srt.server_args import ServerArgs
 
 
 def _cmd(
