@@ -104,13 +104,16 @@ appear in the training run itself (for example,
 `--judge_base_url` to an independently hosted OpenAI-compatible endpoint
 (including `/v1`) and set `--judge_model` to its served model name. SGLang's
 OpenAI server and router are supported directly. The grader request uses a JSON
-schema for `extracted_final_answer`, `reasoning`, `correct`, and `confidence`.
-The grader must have enough context for the question, the complete model response,
-and its own judgment; with a 131,072-token response limit, use at least a
-262,144-token grader context.
+schema for `reasoning` and `correct`. The evaluated model is instructed to end
+with `Final answer: ANSWER`; the driver extracts only that final line and never
+sends the reasoning trace to the grader. Multiple-choice answers are scored
+locally without consuming grader requests. Free-form grading requests contain
+only the extracted candidate answer and the reference answer.
 If the grader requires authentication, put its token in the environment variable
 named by `--judge_api_key_env` (default `HLE_JUDGE_API_KEY`) so the secret is not
-placed in command-line arguments.
+placed in command-line arguments. `--judge_max_qps` enforces a process-wide
+minimum interval between request starts, including retries. For an endpoint with
+a hard 2 QPS ceiling, use `--judge_max_qps 1.8` to leave scheduling margin.
 
 The example evaluates all 300 input rows four times and grades all 1,200
 responses through the external endpoint:
@@ -130,6 +133,7 @@ python examples/experimental/eval/parallel_sft/hle_eval.py \
     --judge_base_url http://external-grader:30000/v1 \
     --judge_model hle-grader \
     --judge_concurrency 32 \
+    --judge_max_qps 1.8 \
     --judge_max_tokens 16384
 ```
 
