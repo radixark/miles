@@ -5,8 +5,7 @@ import time
 
 import polars as pl
 import pytest
-import torch
-from tests.fast.dashboard.dummy_dump import dump_dummy_run
+from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
 from miles.dashboard.dump_reader import DumpReader
 
@@ -271,26 +270,13 @@ def test_summary_columns_declaration_matches_reality(reader):
     assert list(DumpReader.SUMMARY_COLUMNS) == reader.summary(0).columns
 
 
-def _blank_samples(dump_dir, rollout_id):
-    """Rewrite a step's rollout dump with no samples, as a step aborted before
-    any generation landed is written."""
-    path = dump_dir / "rollout_data" / f"{rollout_id}.pt"
-    pack = torch.load(path, map_location="cpu", weights_only=False)
-    pack["samples"] = []
-    torch.save(pack, path)
-    for shard in (dump_dir / "train_data").glob(f"{rollout_id}_*.pt"):
-        shard.unlink()
-    stale = time.time() - 3600  # past MIN_AGE_SECONDS, so the step stays listed
-    os.utime(path, (stale, stale))
-
-
 def test_step_with_no_samples_reads_as_empty_not_broken(tmp_path):
     """A step can be dumped with no samples at all. Its summary must still
     carry the full schema, or every view below it fails on a missing column
     instead of reporting an empty step -- and because step_aggregates() walks
     every step, one such step would take the whole metrics page down with it."""
     dump_dummy_run(tmp_path, steps=3, with_eval=False)
-    _blank_samples(tmp_path, 1)  # a MIDDLE step, so step_aggregates must walk past it
+    blank_samples(tmp_path, 1)  # a MIDDLE step, so step_aggregates must walk past it
     reader = DumpReader(tmp_path)
 
     empty = reader.summary(1)
@@ -313,7 +299,7 @@ def test_step_with_no_samples_reads_as_empty_not_broken(tmp_path):
 def test_empty_step_survives_the_parquet_cache(tmp_path):
     # the all-null frame is written to parquet and read back on the next call
     dump_dummy_run(tmp_path, steps=2, with_eval=False)
-    _blank_samples(tmp_path, 1)
+    blank_samples(tmp_path, 1)
     assert DumpReader(tmp_path, cache_dir=tmp_path / "c").summary(1).columns == list(DumpReader.SUMMARY_COLUMNS)
     reloaded = DumpReader(tmp_path, cache_dir=tmp_path / "c").summary(1)  # served from the parquet written above
     assert reloaded.height == 0
@@ -326,7 +312,7 @@ def test_pre_fix_columnless_cache_is_not_served(tmp_path):
     Only SUMMARY_VERSION tells it apart from a valid cache, so the schema fix
     had to ship with a bump past 4 -- the version that wrote those caches."""
     dump_dummy_run(tmp_path, steps=2, with_eval=False)
-    _blank_samples(tmp_path, 1)
+    blank_samples(tmp_path, 1)
     reader = DumpReader(tmp_path, cache_dir=tmp_path / "c")
     reader.cache_dir.mkdir(parents=True, exist_ok=True)
     pl.DataFrame([], strict=False).write_parquet(reader.cache_dir / "rollout_1.parquet")
