@@ -73,6 +73,7 @@ def router_env():
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
                 save_debug_trajectory_data=None,
+                pause_generation_mode="retract",
             )
             server_obj = SessionServer(args, backend_url=backend.url)
 
@@ -578,7 +579,7 @@ class TestChatFakeStreaming:
         assert finish_reason == "stop"
 
 
-# ── additional R3 (colocated abort and in-place weight updates): derivation and request offsets ──
+# ── additional R3 (non-retract pause modes): derivation and request offsets ──
 
 
 @contextmanager
@@ -600,7 +601,7 @@ def _serve_router(extra_args: dict | None = None):
             trajectory_manager="linear_trajectory",
             session_server_instance_id=uuid.uuid4().hex,
             save_debug_trajectory_data=None,
-            **(extra_args or {}),
+            **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
         server_obj = SessionServer(args, backend_url=backend.url)
         port = find_available_port(31000)
@@ -620,10 +621,6 @@ class TestUseAdditionR3Derivation:
     def test_mode_mapping(self, mode, expected):
         args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
         assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
-
-    def test_absent_mode_keeps_full_r3(self):
-        args = SimpleNamespace(hf_checkpoint=None)
-        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is False
 
 
 class TestAdditionR3RequestOffset:

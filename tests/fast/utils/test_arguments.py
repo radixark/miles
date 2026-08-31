@@ -360,7 +360,6 @@ class TestSessionServerV2Validation:
         ("extra", "flag"),
         [
             (["--group-rm"], "--group-rm"),
-            (["--partial-rollout"], "--partial-rollout"),
             (
                 ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
                 "--recompute-logprobs-via-prefill",
@@ -429,14 +428,12 @@ class TestSessionServerPauseGenerationMode:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
-    def test_session_server_rejects_non_colocate_abort(self):
-        args = self._parse(["--use-session-server", "--pause-generation-mode", "abort"])
-
-        with pytest.raises(AssertionError, match="requires --colocate"):
-            miles_validate_args(args)
-
-    def test_session_server_accepts_colocate_abort(self):
-        args = self._parse(["--use-session-server", "--colocate", "--pause-generation-mode", "abort"])
+    @pytest.mark.parametrize("colocate", [False, True])
+    def test_session_server_accepts_abort(self, colocate):
+        extra = ["--use-session-server", "--pause-generation-mode", "abort"]
+        if colocate:
+            extra.append("--colocate")
+        args = self._parse(extra)
 
         miles_validate_args(args)
 
@@ -446,6 +443,16 @@ class TestSessionServerPauseGenerationMode:
     @pytest.mark.parametrize("mode", ["retract", "in_place"])
     def test_session_server_accepts_non_abort_modes(self, mode):
         miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
+
+    @pytest.mark.parametrize(
+        "session_server_args",
+        [["--use-session-server"], ["--use-session-server", "v1"], ["--use-session-server", "v2"]],
+    )
+    def test_session_server_rejects_partial_rollout(self, session_server_args):
+        args = self._parse([*session_server_args, "--partial-rollout"])
+
+        with pytest.raises(AssertionError, match="does not support --partial-rollout"):
+            miles_validate_args(args)
 
     @pytest.mark.parametrize(
         ("extra", "expect_warning"),

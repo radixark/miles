@@ -48,7 +48,7 @@ def _serve_router(extra_args: dict | None = None):
             save_debug_trajectory_data=None,
             session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
             session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-            **(extra_args or {}),
+            **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
         server_obj = SessionServer(args, backend_url=backend.url)
         port = find_available_port(31000)
@@ -454,7 +454,7 @@ class TestTruncationAndCompaction:
         assert nodes[1]["parent"] == nodes[0]["id"]
 
 
-# ── additional R3 (colocated abort and in-place weight updates): request offsets on the tree ──
+# ── additional R3 (non-retract pause modes): request offsets on the tree ──
 
 
 class TestAdditionR3RequestOffsetV2:

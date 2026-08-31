@@ -2909,12 +2909,15 @@ def miles_validate_args(args):
             "tree serving."
         )
 
+    assert not (
+        args.use_session_server and args.partial_rollout
+    ), "--use-session-server does not support --partial-rollout"
+
     if args.use_session_server == "v2":
         unsupported = [
             flag
             for enabled, flag in (
                 (args.group_rm, "--group-rm"),
-                (args.partial_rollout, "--partial-rollout"),
                 (args.recompute_logprobs_via_prefill, "--recompute-logprobs-via-prefill"),
             )
             if enabled
@@ -2924,15 +2927,12 @@ def miles_validate_args(args):
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
 
-    assert not (
-        args.use_session_server and not args.colocate and args.pause_generation_mode == "abort"
-    ), "--use-session-server with --pause-generation-mode=abort requires --colocate"
-
     if args.use_session_server and args.use_rollout_routing_replay and args.pause_generation_mode == "retract":
         logger.warning(
             "--use-session-server with --use-rollout-routing-replay and "
             "--pause-generation-mode=retract returns full R3 data on every turn; "
-            "R3 payloads can become very large."
+            "R3 payloads can become very large. TODO: Retract-mode weight updates "
+            "have known issues in SGLang and need to be fixed."
         )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:

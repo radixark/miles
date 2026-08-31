@@ -41,10 +41,9 @@ class SessionServer:
         # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
         self.app.router.on_shutdown.append(self.client.aclose)
 
-        # Validated `abort` (colocated only) and `in_place` produce append-only
-        # R3; `retract` may recompute earlier rows and must return full R3.
-        pause_generation_mode = getattr(args, "pause_generation_mode", None)
-        self.use_addition_r3 = pause_generation_mode in ("abort", "in_place")
+        # `retract` may recompute earlier rows and must return full R3; all other
+        # pause modes preserve prior rows and can request only the appended R3.
+        self.use_addition_r3 = args.pause_generation_mode != "retract"
         setup_session_routes(self.app, self, args, use_addition_r3=self.use_addition_r3)
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
