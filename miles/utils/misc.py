@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
@@ -84,6 +85,24 @@ def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
         return [None] * len(gpu_ids)
 
 
+def _to_local_gpu_id(physical_gpu_id: int) -> int:
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    if not cvd:
+        return physical_gpu_id  # no remapping
+    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
+    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
+    # In a remapped process, valid torch device indices are 0..len(visible)-1
+    if physical_gpu_id in visible:
+        return visible.index(physical_gpu_id)
+    # If we're already getting local IDs, allow them
+    if 0 <= physical_gpu_id < len(visible):
+        return physical_gpu_id
+    raise RuntimeError(
+        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
+        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
+    )
+
+
 class NodeProbeMixin:
     @staticmethod
     def _get_node_ip() -> str:
@@ -92,6 +111,10 @@ class NodeProbeMixin:
     @staticmethod
     def _get_free_port_block(*, start_port: int, count: int) -> int:
         return get_free_port(start_port=start_port, consecutive=count)
+
+    @staticmethod
+    def _to_local_gpu_ids(*, gpu_ids: list[int]) -> list[int]:
+        return [_to_local_gpu_id(gpu_id) for gpu_id in gpu_ids]
 
     @staticmethod
     def _is_port_available(*, port: int) -> bool:

@@ -20,6 +20,7 @@ from miles.ray.specs.inference import (
     compute_router_pool_id,
     spec_session_server,
     specs_inference_engine,
+    specs_router,
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
@@ -52,6 +53,7 @@ def _make_router_ctx(*, port: int = 20000, prometheus_port: int = 4001) -> Launc
         ),
         pool_addrs={},
         gpu_ids=[],
+        local_gpu_ids=[],
     )
 
 
@@ -138,7 +140,7 @@ class TestComputeSpecRouterLaunchCommand:
 
 class TestComputeSpecSessionServer:
     def test_launch_command_wires_the_router_backend_and_roundtrips(self):
-        """The session server command targets the router addr from spec_addrs and its config parses back losslessly."""
+        """The session server command targets the router addr from pool_addrs and its config parses back losslessly."""
         args = make_args(
             use_session_server="v1",
             hf_checkpoint="/fake/model",
@@ -164,8 +166,9 @@ class TestComputeSpecSessionServer:
             cell_index=1,
             worker_in_cell_index=0,
             self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
-            spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            pool_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
             gpu_ids=[],
+            local_gpu_ids=[],
         )
         argv = shlex.split(spec.launch_command(ctx))
 
@@ -187,6 +190,23 @@ class TestComputeSpecSessionServer:
         """Disabling the session server removes its cells instead of launching idle servers."""
         args = make_args(use_session_server=False)
         assert spec_session_server(args).scheduling.num_cells == 0
+
+    def test_debug_train_only_schedules_zero_cells(self):
+        """Its launch command reads the router address, and --debug-train-only leaves the router unlaunched."""
+        args = _make_session_server_args(debug_train_only=True)
+
+        assert spec_session_server(args).scheduling.num_cells == 0
+
+    def test_only_the_debug_train_only_flag_empties_an_enabled_session_server(self):
+        """An enabled session server keeps every requested cell until --debug-train-only takes the router away."""
+        cells = {
+            debug_train_only: spec_session_server(
+                _make_session_server_args(debug_train_only=debug_train_only)
+            ).scheduling.num_cells
+            for debug_train_only in (False, True)
+        }
+
+        assert cells == {False: 2, True: 0}
 
 
 def _make_session_server_args(**overrides) -> Namespace:
@@ -223,14 +243,106 @@ class TestSessionServerAddressPinning:
             cell_index=0,
             worker_in_cell_index=0,
             self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
-            spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            pool_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
             gpu_ids=[],
+            local_gpu_ids=[],
         )
 
         config = parse_config_argv(SessionServerConfig, shlex.split(spec.launch_command(ctx))[3:])
 
         assert config.host == "10.20.30.40"
         assert config.port == 5006
+
+
+class TestSessionServerInterpreterFlags:
+    def test_the_launch_command_carries_the_parent_interpreter_flags(self, monkeypatch: pytest.MonkeyPatch):
+        """A session server launched by a bare interpreter runs with different semantics than its own job."""
+        monkeypatch.setattr(
+            sys,
+            "orig_argv",
+            [sys.executable, "-O", "-X", "faulthandler", "-m", "miles.train", "--config", "x.yaml"],
+        )
+        spec = spec_session_server(_make_session_server_args())
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            pool_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            gpu_ids=[],
+            local_gpu_ids=[],
+        )
+
+        argv = shlex.split(spec.launch_command(ctx))
+
+        assert argv[:6] == [sys.executable, "-O", "-X", "faulthandler", "-m", "miles.rollout.session.server"]
+        assert parse_config_argv(SessionServerConfig, argv[6:]).port == 5006
+
+    def test_the_flags_are_captured_when_the_spec_is_built(self, monkeypatch: pytest.MonkeyPatch):
+        """The command is rendered inside the worker manager actor, whose own argv is Ray's worker script."""
+        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "-O", "-m", "miles.train"])
+        spec = spec_session_server(_make_session_server_args())
+        monkeypatch.setattr(sys, "orig_argv", [sys.executable, "/ray/workers/setup_worker.py"])
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            pool_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="127.0.0.1", port=3000))]},
+            gpu_ids=[],
+            local_gpu_ids=[],
+        )
+
+        argv = shlex.split(spec.launch_command(ctx))
+
+        assert argv[:4] == [sys.executable, "-O", "-m", "miles.rollout.session.server"]
+
+
+class TestSessionServerRouterPoolLookup:
+    def _make_ctx(self, pool_addrs: dict) -> LaunchCommandContext:
+        return LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="127.0.0.1", port=5006)),
+            pool_addrs=pool_addrs,
+            gpu_ids=[],
+            local_gpu_ids=[],
+        )
+
+    def _make_args(self) -> Namespace:
+        return _make_session_server_args(sglang_router_ip=None, sglang_router_port=None)
+
+    def test_the_backend_is_read_under_the_router_specs_own_pool_id(self):
+        """The key the session server looks up is exactly the name the router pool is registered under."""
+        args = self._make_args()
+        router_spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+        ctx = self._make_ctx({router_spec.name: [dict(primary=HostAndPort(host="10.0.0.2", port=3210))]})
+
+        config = parse_config_argv(SessionServerConfig, shlex.split(spec_session_server(args).launch_command(ctx))[3:])
+
+        assert config.backend_url == "http://10.0.0.2:3210"
+
+    def test_an_address_map_keyed_by_worker_names_fails_loudly(self):
+        """The map is keyed per pool, not per worker, so a worker-keyed map must raise instead of launching unwired."""
+        args = self._make_args()
+        ctx = self._make_ctx(
+            {f"{compute_router_pool_id(0)}-0-0": [dict(primary=HostAndPort(host="10.0.0.2", port=3210))]}
+        )
+
+        with pytest.raises(KeyError):
+            spec_session_server(args).launch_command(ctx)
+
+    def test_another_models_router_pool_is_not_mistaken_for_the_first(self):
+        """With several router pools present the session server must still target model 0's router."""
+        args = self._make_args()
+        ctx = self._make_ctx(
+            {
+                compute_router_pool_id(1): [dict(primary=HostAndPort(host="10.0.0.3", port=3211))],
+                compute_router_pool_id(0): [dict(primary=HostAndPort(host="10.0.0.2", port=3210))],
+            }
+        )
+
+        config = parse_config_argv(SessionServerConfig, shlex.split(spec_session_server(args).launch_command(ctx))[3:])
+
+        assert config.backend_url == "http://10.0.0.2:3210"
 
 
 class TestInferenceEngineEnvVars:
@@ -306,6 +418,83 @@ class TestSpecsInferenceEngine:
         )
 
         assert specs_inference_engine(args) == []
+
+
+class TestSpecsRouter:
+    def test_one_router_spec_per_model_is_specced_by_default(self, tmp_path):
+        """Rollout runs still get their router, one per model in the sglang config."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=8)
+
+        assert [spec.name for spec in specs_router(args)] == ["inference-router-0"]
+
+    def test_debug_train_only_produces_no_router_spec(self, tmp_path):
+        """--debug-train-only starts no engines, so a router worker would only wait for workers that never come."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
+            )
+        )
+        args = make_args(
+            sglang_config=str(config_path),
+            rollout_num_gpus=8,
+            colocate=True,
+            debug_train_only=True,
+        )
+
+        assert specs_router(args) == []
+
+    def test_flipping_only_the_debug_train_only_flag_removes_the_router(self, tmp_path):
+        """One identical run specs a router with the flag off and none with it on, so nothing else decides it."""
+        names = {
+            debug_train_only: [
+                spec.name for spec in specs_router(_make_router_args(tmp_path, debug_train_only=debug_train_only))
+            ]
+            for debug_train_only in (False, True)
+        }
+
+        assert names == {False: ["inference-router-0"], True: []}
+
+    def test_debug_train_only_skips_the_router_however_the_router_itself_is_configured(self, tmp_path):
+        """Pinning a port, picking the miles router or asking for session servers must not resurrect it."""
+        args = _make_router_args(
+            tmp_path,
+            debug_train_only=True,
+            use_miles_router=True,
+            sglang_router_port=31000,
+            use_session_server="v1",
+        )
+
+        assert specs_router(args) == []
+
+    def test_debug_train_only_skips_the_router_in_a_disaggregated_run(self, tmp_path):
+        """The skip is keyed on the flag alone, so a prefill/decode config gets no router either."""
+        args = _make_router_args(
+            tmp_path,
+            server_groups=[
+                {"worker_type": "prefill", "num_gpus": 4, "num_gpus_per_engine": 1},
+                {"worker_type": "decode", "num_gpus": 4, "num_gpus_per_engine": 1},
+            ],
+            debug_train_only=True,
+        )
+
+        assert specs_router(args) == []
+
+
+def _make_router_args(tmp_path, *, server_groups: list[dict] | None = None, **overrides) -> Namespace:
+    config_path = tmp_path / "sglang.yaml"
+    config_path.write_text(
+        make_sglang_config_yaml(
+            server_groups=server_groups or [{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
+        )
+    )
+    return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
 
 
 class TestComputeEngineSpecNames:
@@ -592,7 +781,13 @@ class TestInferenceEngineRandomSeed:
         assert shifted == {pool_id: [seed + 7 for seed in seeds] for pool_id, seeds in base.items()}
 
 
-def _make_engine_ctx(*, cell_index: int = 0, worker_in_cell_index: int = 0) -> LaunchCommandContext:
+def _make_engine_ctx(
+    *,
+    cell_index: int = 0,
+    worker_in_cell_index: int = 0,
+    gpu_ids: list[int] | None = None,
+    local_gpu_ids: list[int] | None = None,
+) -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_index=cell_index,
         worker_in_cell_index=worker_in_cell_index,
@@ -603,9 +798,34 @@ def _make_engine_ctx(*, cell_index: int = 0, worker_in_cell_index: int = 0) -> L
             engine_info_bootstrap=HostAndPort(host="10.0.0.1", port=12000),
             gate=HostAndPort(host="10.0.0.1", port=13007),
         ),
-        spec_addrs={},
-        gpu_ids=[0, 1],
+        pool_addrs={},
+        gpu_ids=[0, 1] if gpu_ids is None else gpu_ids,
+        local_gpu_ids=[0, 1] if local_gpu_ids is None else local_gpu_ids,
     )
+
+
+class TestEngineBaseGpuId:
+    def test_the_launch_command_uses_the_gpu_ids_the_worker_itself_resolved(self, tmp_path, monkeypatch):
+        """The manager runs without a visibility mask, so passing its physical ids would point sglang at
+        a device the engine process cannot see."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+        recorded: dict = {}
+
+        def _record(**kwargs) -> str:
+            recorded.update(kwargs)
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        spec.launch_command(_make_engine_ctx(gpu_ids=[6, 7], local_gpu_ids=[2, 3]))
+
+        assert recorded["base_gpu_id"] == 2
 
 
 class TestEngineMetaApiKey:
@@ -789,3 +1009,26 @@ class TestEngineCellChunking:
         spec = self._spec_for(tmp_path, num_gpus=16, num_gpus_per_engine=1, gpu_offset=8)
         offsets = [spec.meta(WorkerMetaContext(cell_index=index))["gpu_offset"] for index in range(16)]
         assert offsets == list(range(8, 24))
+
+
+class TestRouterInterpreterFlags:
+    @pytest.mark.parametrize(
+        ("use_miles_router", "module"),
+        [(True, "miles.router.router"), (False, "sglang_router.launch_router")],
+        ids=["miles_router", "sglang_router"],
+    )
+    def test_the_router_launch_command_carries_the_parent_interpreter_flags(
+        self, monkeypatch: pytest.MonkeyPatch, use_miles_router: bool, module: str
+    ):
+        """A router launched by a bare interpreter runs with different semantics than the job that spawned it."""
+        monkeypatch.setattr(
+            sys,
+            "orig_argv",
+            [sys.executable, "-O", "-X", "faulthandler", "-m", "miles.train", "--config", "x.yaml"],
+        )
+        args = make_args(use_miles_router=use_miles_router, sglang_router_ip=None, sglang_router_port=None)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx()))
+
+        assert argv[:6] == [sys.executable, "-O", "-X", "faulthandler", "-m", module]

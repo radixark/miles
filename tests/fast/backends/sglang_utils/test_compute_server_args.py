@@ -63,6 +63,24 @@ class TestRandomSeed:
         assert server_args["random_seed"] == 99
 
 
+class TestBaseGpuId:
+    def test_the_given_base_gpu_id_is_used_verbatim_under_a_visibility_mask(self, monkeypatch):
+        """The id already names the engine's own device space, so remapping it here moves the engine."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+        server_args = compute(make_args(), base_gpu_id=6)
+
+        assert server_args["base_gpu_id"] == 6
+
+    def test_a_base_gpu_id_outside_this_processs_visibility_mask_is_not_rejected(self, monkeypatch):
+        """The engine's mask differs from this process's, so judging the id here fails a valid launch."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
+
+        server_args = compute(make_args(), base_gpu_id=7)
+
+        assert server_args["base_gpu_id"] == 7
+
+
 class TestSglangOverridePrecedence:
     """An override must win over every args-derived default, including the conditional ones."""
 
