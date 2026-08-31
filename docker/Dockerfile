@@ -167,6 +167,8 @@ RUN TMS_CUDA_MAJOR=$(python3 -c "import torch; print(torch.version.cuda.split('.
 RUN pip install "nvidia-modelopt[torch]>=0.37.0" --no-build-isolation
 # Multi-LoRA v2 prep: follow Megatron-Bridge @bridge for the MultiLoRA fixes (moving ref; rebuild with --no-cache to refresh).
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
+# Multi-LoRA v2 prep: tinker SDK 0.26.1 wire contract for the tinker frontend (needs Python >= 3.11; image ships 3.12).
+RUN pip install tinker==0.26.1
 RUN pip install megatron-energon --no-deps
 RUN pip install multi-storage-client --no-deps
 
