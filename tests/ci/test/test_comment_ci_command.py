@@ -196,6 +196,7 @@ def policy(
     *,
     permissions=("write", "admin"),
     user_ids=(),
+    prior_user_ids=(),
     labels=("run-ci-short", "bypass-fastfail"),
     repo_permissions=("write", "admin"),
     author_associations=("OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"),
@@ -214,7 +215,7 @@ def policy(
             },
             "prior_contributor_access": {
                 "repository_permissions": frozenset(repo_permissions),
-                "user_ids": frozenset(),
+                "user_ids": frozenset(prior_user_ids),
                 "author_associations": frozenset(author_associations),
             },
         },
@@ -358,15 +359,16 @@ def test_unknown_request_type_fails_closed():
 
 def raw_policy():
     return {
-        "version": 3,
+        "version": 4,
         "groups": {
             "add_label_access": {
                 "repository_permissions": ["write", "admin"],
-                "user_ids": [],
+                "users": [],
             },
             "repo_write_access": {"repository_permissions": ["write", "admin"]},
             "prior_contributor_access": {
                 "repository_permissions": ["write", "admin"],
+                "users": [],
                 "author_associations": ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"],
             },
         },
@@ -471,12 +473,10 @@ def test_policy_parser_rejects_legacy_or_nonstandard_schema(tmp_path, text, mess
 @pytest.mark.parametrize(
     ("path_parts", "value", "message"),
     [
-        (("version",), 2, "version must be 3"),
+        (("version",), 3, "version must be 4"),
         (("groups", "add_label_access", "repository_permissions"), [True], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["read"], "only write or admin"),
         (("groups", "add_label_access", "repository_permissions"), ["write", "write"], "duplicate permissions"),
-        (("groups", "add_label_access", "user_ids"), [True], "only positive integers"),
-        (("groups", "add_label_access", "user_ids"), [123, 123], "duplicate user IDs"),
         (("groups", "prior_contributor_access", "author_associations"), [], "non-empty array"),
         (("groups", "prior_contributor_access", "author_associations"), [True], "only GitHub author associations"),
         (
@@ -493,7 +493,7 @@ def test_policy_parser_rejects_legacy_or_nonstandard_schema(tmp_path, text, mess
         (("commands", "add_label", "allowed_labels"), ["run-ci-short", "run-ci-short"], "duplicate labels"),
         (("commands", "add_label", "group"), "missing", "unknown group"),
         (("commands", "clear_labels", "unexpected"), True, "invalid fields"),
-        (("groups", "repo_write_access", "user_ids"), [123], "invalid fields"),
+        (("groups", "repo_write_access", "users"), [{"id": 123, "login": "actor"}], "invalid fields"),
         (("groups", "repo_write_access", "author_associations"), ["MEMBER"], "invalid fields"),
         (("groups", "add_label_access", "author_associations"), ["MEMBER"], "invalid fields"),
     ],
@@ -510,6 +510,43 @@ def test_policy_parser_rejects_invalid_group_command_or_resource(tmp_path, path_
         HANDLER.load_policy(path)
 
 
+def test_policy_parser_loads_independent_users_for_both_customizable_tiers(tmp_path):
+    raw = raw_policy()
+    raw["groups"]["add_label_access"]["users"] = [{"id": 111, "login": "alice"}]
+    raw["groups"]["prior_contributor_access"]["users"] = [{"id": 222, "login": "bob"}]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+
+    loaded = HANDLER.load_policy(path)
+
+    assert loaded["groups"]["add_label_access"]["user_ids"] == {111}
+    assert loaded["groups"]["prior_contributor_access"]["user_ids"] == {222}
+
+
+@pytest.mark.parametrize(
+    ("group", "body"),
+    [
+        ("add_label_access", "/run-ci-short"),
+        ("prior_contributor_access", RUN_FILE_BODY),
+    ],
+)
+def test_user_login_is_display_only_for_authorization(tmp_path, group, body):
+    raw = raw_policy()
+    raw["groups"][group]["users"] = [{"id": ACTOR_ID, "login": "stale-login"}]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(raw))
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.authorize_policy(
+        event(body=body, author_association="FIRST_TIMER"),
+        HANDLER.load_policy(path),
+        api,
+    )
+
+    assert result[0:2] == (123, ACTOR_ID)
+    assert api.calls == []
+
+
 @pytest.mark.parametrize("section", ["groups", "commands"])
 def test_policy_parser_rejects_unknown_group_or_command(tmp_path, section):
     raw = raw_policy()
@@ -521,9 +558,9 @@ def test_policy_parser_rejects_unknown_group_or_command(tmp_path, section):
         HANDLER.load_policy(path)
 
 
-def test_non_label_commands_cannot_use_a_group_with_explicit_user_ids(tmp_path):
+def test_repo_write_command_cannot_use_a_group_with_explicit_user_ids(tmp_path):
     raw = raw_policy()
-    raw["groups"]["add_label_access"]["user_ids"] = [ACTOR_ID]
+    raw["groups"]["add_label_access"]["users"] = [{"id": ACTOR_ID, "login": "actor"}]
     raw["commands"]["clear_labels"]["group"] = "add_label_access"
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(raw))
@@ -531,7 +568,7 @@ def test_non_label_commands_cannot_use_a_group_with_explicit_user_ids(tmp_path):
         HANDLER.load_policy(path)
 
 
-def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
+def test_checked_in_policy_exposes_exact_labels_and_access_groups():
     loaded = HANDLER.load_policy(POLICY_PATH)
     labels = loaded["commands"]["add_label"]["allowed_labels"]
     assert labels == {f"run-ci-{key}" for key in KNOWN_LABELS} | {
@@ -540,7 +577,7 @@ def test_checked_in_policy_exposes_exact_labels_and_add_label_access_group():
     }
     assert loaded["groups"]["add_label_access"] == {
         "repository_permissions": WRITE_PERMISSIONS,
-        "user_ids": frozenset(),
+        "user_ids": frozenset({82826991, 59716405, 101526713, 106564213}),
         "author_associations": frozenset(),
     }
     assert loaded["groups"]["repo_write_access"] == {
@@ -624,6 +661,27 @@ def test_add_label_access_user_id_preflight_does_not_require_repository_permissi
         HANDLER.AddLabel("run-ci-short"),
         HANDLER.COMMAND_REGISTRY[HANDLER.AddLabel],
     )
+    assert api.calls == []
+
+
+@pytest.mark.parametrize(
+    ("body", "request_type"),
+    [
+        (RUN_FILE_BODY, HANDLER.RunTestFile),
+        ("/rerun-failed-ci", HANDLER.RerunFailedCI),
+    ],
+)
+def test_prior_contributor_access_user_id_preflight_does_not_require_repository_permission(body, request_type):
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.authorize_policy(
+        event(body=body, author_association="FIRST_TIMER"),
+        policy(prior_user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    assert result[0:2] == (123, ACTOR_ID)
+    assert type(result[2]) is request_type
     assert api.calls == []
 
 
@@ -1725,6 +1783,26 @@ def test_first_time_contributor_cannot_dispatch_a_file_run(author_association):
     assert api.dispatch_calls == []
 
 
+def test_prior_contributor_access_user_id_dispatches_a_file_run():
+    api = FakeAPI(pull(), permission="none")
+
+    result = HANDLER.process_event(
+        event(body=RUN_FILE_BODY, author_association="FIRST_TIMER"),
+        policy(prior_user_ids=(ACTOR_ID,)),
+        api,
+    )
+
+    assert api.permission_calls == []
+    assert api.dispatch_calls == [
+        (
+            "run-ci-file.yml",
+            "main",
+            {"pull_number": "123", "head_sha": HEAD_SHA, "test_file": RUN_FILE_PATH},
+        )
+    ]
+    assert result["decision"] == "ALLOW_FILE_RUN_DISPATCHED"
+
+
 @pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels"])
 def test_contributor_association_grants_no_label_command(body):
     api = FakeAPI(pull(labels=("run-ci-short",)), permission="read")
@@ -1738,12 +1816,45 @@ def test_contributor_association_grants_no_label_command(body):
     assert api.dispatch_calls == []
 
 
+@pytest.mark.parametrize("body", ["/run-ci-short", "/clear-labels"])
+def test_prior_contributor_access_user_id_grants_no_label_command(body):
+    api = FakeAPI(pull(labels=("run-ci-short",)), permission="none")
+
+    with pytest.raises(HANDLER.CommentCommandError, match="not authorized"):
+        HANDLER.process_event(
+            event(body=body, author_association="FIRST_TIMER"),
+            policy(prior_user_ids=(ACTOR_ID,)),
+            api,
+        )
+
+    assert api.add_calls == []
+    assert api.remove_calls == []
+    assert api.rerun_calls == []
+    assert api.dispatch_calls == []
+
+
 def test_contributor_reruns_failed_ci_without_a_permission_lookup():
     api = FakeAPI(pull(), permission="none")
     workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
     api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
 
     result = HANDLER.process_event(event(body="/rerun-failed-ci", author_association="CONTRIBUTOR"), policy(), api)
+
+    assert api.permission_calls == []
+    assert api.rerun_calls == [10]
+    assert result["decision"] == "ALLOW_RERUN_REQUESTED"
+
+
+def test_prior_contributor_access_user_id_reruns_failed_ci():
+    api = FakeAPI(pull(), permission="none")
+    workflow_file, workflow_path = HANDLER.RERUN_WORKFLOWS[0]
+    api.workflow_runs[workflow_file] = [workflow_run(workflow_path)]
+
+    result = HANDLER.process_event(
+        event(body="/rerun-failed-ci", author_association="FIRST_TIMER"),
+        policy(prior_user_ids=(ACTOR_ID,)),
+        api,
+    )
 
     assert api.permission_calls == []
     assert api.rerun_calls == [10]
