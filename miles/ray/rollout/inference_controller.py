@@ -24,6 +24,8 @@ from miles.utils.context_lock import (
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.misc import SimpleTicker
+from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_provider.utils import apply_cell_observation
@@ -220,6 +222,23 @@ class InferenceController:
                     f"Multiple servers have update_weights=True: {[srv.model_name for srv in updatable]}. "
                     f"Only one updatable server is supported."
                 )
+
+    # -------------------------- cell operations -----------------------------
+
+    # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await RayWorkerManager.get_handle().stop_cells.remote([cell_id])
+
+    # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        # TEMPORARY: colocate cannot kill rollout workers while trainer ranks own the shared GPUs
+        if not self._health_checker_activeness.get().active:
+            raise RuntimeError(f"Rollout cell {cell_id!r} is offloaded; refusing fault injection")
+        await RayWorkerManager.get_handle().inject_fault.remote(
+            cell_id, mode=mode.value, worker_in_cell_index=sub_index
+        )
 
     # -------------------------- misc APIs -----------------------------
 

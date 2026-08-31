@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Protocol
+import asyncio
+from collections.abc import Coroutine
+from typing import Any, Protocol
 
 import ray
 
@@ -14,6 +16,16 @@ class _CellStatusSource(Protocol):
     def get_cell_statuses(self) -> dict[str, CellStatus]: ...
 
 
+# TEMPORARY: this layer is not meant to know the inference controller, deliberately violated
+# until the weight-update fault tolerance work removes the need
+class _CellOperations(Protocol):
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None: ...
+
+    async def inject_fault_between_weight_updates(
+        self, cell_id: str, *, mode: FailureMode, sub_index: int
+    ) -> None: ...
+
+
 class _CellHandler:
     def __init__(
         self,
@@ -22,11 +34,18 @@ class _CellHandler:
         worker_manager: ray.actor.ActorHandle,
         controller: _CellStatusSource,
         pool_ids: list[str],
+        cell_operations: _CellOperations | None = None,
+        cell_operations_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
+        assert (cell_operations is None) == (
+            cell_operations_loop is None
+        ), "cell operations only run on the loop that owns them, so both must be given together"
         self._cell_type = cell_type
         self._worker_manager = worker_manager
         self._controller = controller
         self._pool_ids = pool_ids
+        self._cell_operations = cell_operations
+        self._cell_operations_loop = cell_operations_loop
 
     @property
     def cell_type(self) -> str:
@@ -79,13 +98,28 @@ class _CellHandler:
         return await self._worker_manager.get_cell_infos.remote(pool_ids=self._pool_ids)
 
     async def suspend(self, cell_id: str) -> None:
+        # TEMPORARY: taking the lock the weight update holds, reverted with that fault tolerance work
+        if (operations := self._cell_operations) is not None:
+            await self._run_on_cell_operations_loop(operations.stop_cell_between_weight_updates(cell_id=cell_id))
+            return
         await self._worker_manager.stop_cells.remote([cell_id])
 
     async def resume(self, cell_id: str) -> None:
         await self._worker_manager.start_cells.remote([cell_id])
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        # TEMPORARY: taking the lock the weight update holds, reverted with that fault tolerance work
+        if (operations := self._cell_operations) is not None:
+            await self._run_on_cell_operations_loop(
+                operations.inject_fault_between_weight_updates(cell_id=cell_id, mode=mode, sub_index=sub_index)
+            )
+            return
         await self._worker_manager.inject_fault.remote(cell_id, mode=mode.value, worker_in_cell_index=sub_index)
+
+    async def _run_on_cell_operations_loop(self, coroutine: Coroutine[Any, Any, None]) -> None:
+        loop = self._cell_operations_loop
+        assert loop is not None
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(coroutine, loop))
 
 
 def _compute_status_of_generation(status: CellStatus | None, *, workers_hash: str) -> CellStatus:

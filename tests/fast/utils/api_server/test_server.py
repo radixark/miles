@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 import threading
 from types import SimpleNamespace
@@ -320,6 +321,23 @@ class TestStartApiServerRegistration:
 
         assert [handler.cell_type for handler in registry._handlers] == ["actor", "rollout"]
 
+
+    @pytest.mark.asyncio
+    async def test_only_the_rollout_handler_routes_operations_through_the_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Engine suspension must serialize against weight updates; trainer cells have no such window."""
+        registry = self._start(
+            monkeypatch,
+            ft_components=["train", "rollout"],
+            cell_ids=["trainer-actor-0", "inference-engine-0-0-0"],
+            actor_cells=[MockTrainerCell(phase="Running")],
+        )
+
+        actor_handler, rollout_handler = registry._handlers
+        assert actor_handler._cell_operations is None
+        assert rollout_handler._cell_operations is rollout_handler._controller
+        assert rollout_handler._cell_operations_loop is asyncio.get_running_loop()
 
 class TestDynamicCells:
     @pytest.mark.asyncio

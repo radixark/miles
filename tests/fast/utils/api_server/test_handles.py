@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
+from typing import Any
 
 import pytest
 
@@ -8,6 +11,7 @@ from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, Tr
 from miles.utils.test_utils.fault_injector import FailureMode
 
 from .conftest import (
+    MockCellOperations,
     MockInferenceController,
     MockRayTrainCell,
     MockRemoteCall,
@@ -380,6 +384,127 @@ class TestRolloutCellHandlerInjectFault:
         ]
 
 
+class TestRolloutCellHandlerSerializesThroughTheController:
+    @pytest.mark.asyncio
+    async def test_suspend_goes_through_the_inference_controller(self) -> None:
+        """The controller holds the weight-update lock, so suspension must take its turn there."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        operations = MockCellOperations()
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        await handler.suspend(ENGINE_CELL_ID)
+
+        assert operations.stopped_cells == [ENGINE_CELL_ID]
+        assert manager.stopped_cells == []
+
+    @pytest.mark.asyncio
+    async def test_injection_goes_through_the_inference_controller(self) -> None:
+        """Injecting straight into the manager would crash an engine mid-broadcast."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        manager.inject_fault = MockRemoteCall(None)
+        operations = MockCellOperations()
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=1)
+
+        assert operations.injected == [(ENGINE_CELL_ID, FailureMode.SIGKILL, 1)]
+        assert manager.inject_fault.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_refused_injection_reaches_the_caller(self) -> None:
+        """The controller refuses while probing is paused, and the api server must report that."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        operations = MockCellOperations(inject_fault_error=RuntimeError("refusing fault injection"))
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        with pytest.raises(RuntimeError, match="refusing fault injection"):
+            await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0)
+
+        assert operations.injected == []
+
+    @pytest.mark.asyncio
+    async def test_resume_still_goes_straight_to_the_worker_manager(self) -> None:
+        """Relaunching a stopped cell touches no engine the trainer is broadcasting to."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID, suspended=True))
+        operations = MockCellOperations()
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        await handler.resume(ENGINE_CELL_ID)
+
+        assert manager.started_cells == [[ENGINE_CELL_ID]]
+        assert operations.stopped_cells == []
+
+
+class TestRolloutCellHandlerReachesTheControllerLoop:
+    @pytest.mark.asyncio
+    async def test_an_operation_requested_from_the_api_server_loop_runs_on_the_controller_loop(self) -> None:
+        """Uvicorn serves on its own loop, and the controller's asyncio lock is only usable from the loop that made it."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        operations = _LoopRecordingCellOperations()
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        await _await_on_a_separate_loop(handler.suspend(ENGINE_CELL_ID))
+
+        assert operations.stopped_cells == [ENGINE_CELL_ID]
+        assert operations.loops == [asyncio.get_running_loop()]
+
+    @pytest.mark.asyncio
+    async def test_a_failure_on_the_controller_loop_reaches_the_api_server_loop(self) -> None:
+        """A refusal that never crosses back leaves the heal loop believing the injection succeeded."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        operations = _LoopRecordingCellOperations(inject_fault_error=RuntimeError("refusing fault injection"))
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        with pytest.raises(RuntimeError, match="refusing fault injection"):
+            await _await_on_a_separate_loop(
+                handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0)
+            )
+
+        assert operations.loops == [asyncio.get_running_loop()]
+
+
 class TestCellStatusGeneration:
     @pytest.mark.asyncio
     async def test_a_status_about_an_older_generation_carries_no_verdict(self) -> None:
@@ -564,3 +689,125 @@ class TestCellStatusGeneration:
             ("Healthy", TriState.FALSE),
         ]
         assert cell.status.workers_hash == "gen-2"
+
+
+class _LoopRecordingCellOperations:
+    def __init__(self, *, inject_fault_error: Exception | None = None) -> None:
+        self.loops: list[asyncio.AbstractEventLoop] = []
+        self.stopped_cells: list[str] = []
+        self.injected: list[tuple[str, FailureMode, int]] = []
+        self._inject_fault_error = inject_fault_error
+
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        self.loops.append(asyncio.get_running_loop())
+        self.stopped_cells.append(cell_id)
+
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        self.loops.append(asyncio.get_running_loop())
+        if self._inject_fault_error is not None:
+            raise self._inject_fault_error
+        self.injected.append((cell_id, mode, sub_index))
+
+
+async def _await_on_a_separate_loop(coroutine: Coroutine[Any, Any, None]) -> None:
+    return await asyncio.to_thread(lambda: asyncio.run(coroutine))
+
+
+class TestCellHandlerCellOperationsWiring:
+    async def test_cell_operations_given_without_their_loop_are_rejected(self) -> None:
+        """Operations without a loop to run on would only fail much later, when a heal request arrives."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+
+        with pytest.raises(AssertionError, match="both must be given together"):
+            _CellHandler(
+                cell_type="rollout",
+                worker_manager=manager,
+                controller=MockInferenceController(),
+                pool_ids=_pool_ids_of(manager),
+                cell_operations=MockCellOperations(),
+            )
+
+    async def test_a_loop_given_without_cell_operations_is_rejected(self) -> None:
+        """A loop with no operations means the caller believed it was serializing when it was not."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+
+        with pytest.raises(AssertionError, match="both must be given together"):
+            _CellHandler(
+                cell_type="rollout",
+                worker_manager=manager,
+                controller=MockInferenceController(),
+                pool_ids=_pool_ids_of(manager),
+                cell_operations_loop=asyncio.get_running_loop(),
+            )
+
+
+class TestRolloutCellHandlerRefusedInjection:
+    async def test_a_refused_injection_is_not_retried_against_the_worker_manager(self) -> None:
+        """Falling back to the manager after a refusal would kill the offloaded engine the refusal protected."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        manager.inject_fault = MockRemoteCall(None)
+        operations = MockCellOperations(inject_fault_error=RuntimeError("refusing fault injection"))
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        with pytest.raises(RuntimeError, match="refusing fault injection"):
+            await handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=0)
+
+        assert manager.inject_fault.calls == []
+
+
+class TestRolloutCellHandlerAwaitsTheControllerLoop:
+    async def test_a_suspension_returns_only_after_the_controller_has_carried_it_out(self) -> None:
+        """A fire-and-forget hop would answer the heal loop before the cell is stopped, so it would heal a live cell."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        operations = _SlowCellOperations()
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        await _await_on_a_separate_loop(handler.suspend(ENGINE_CELL_ID))
+
+        assert operations.stopped_cells == [ENGINE_CELL_ID]
+
+    async def test_an_injection_returns_only_after_the_controller_has_carried_it_out(self) -> None:
+        """Answering before the kill lands would let the soak assert on a cell that is still serving."""
+        manager = MockWorkerManager(make_cell_summaries(ENGINE_CELL_ID))
+        operations = _SlowCellOperations()
+        handler = _CellHandler(
+            cell_type="rollout",
+            worker_manager=manager,
+            controller=MockInferenceController(),
+            pool_ids=_pool_ids_of(manager),
+            cell_operations=operations,
+            cell_operations_loop=asyncio.get_running_loop(),
+        )
+
+        await _await_on_a_separate_loop(handler.inject_fault(ENGINE_CELL_ID, mode=FailureMode.SIGKILL, sub_index=2))
+
+        assert operations.injected == [(ENGINE_CELL_ID, FailureMode.SIGKILL, 2)]
+
+
+class _SlowCellOperations:
+    def __init__(self, *, delay_seconds: float = 0.05) -> None:
+        self.stopped_cells: list[str] = []
+        self.injected: list[tuple[str, FailureMode, int]] = []
+        self._delay_seconds = delay_seconds
+
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await asyncio.sleep(self._delay_seconds)
+        self.stopped_cells.append(cell_id)
+
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        await asyncio.sleep(self._delay_seconds)
+        self.injected.append((cell_id, mode, sub_index))
