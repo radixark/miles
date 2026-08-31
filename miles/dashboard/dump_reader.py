@@ -17,6 +17,7 @@ surfacing as corruption.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -459,7 +460,9 @@ class DumpReader:
             else pl.DataFrame(schema={name: pl.Null for name in self.SUMMARY_COLUMNS})
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(cache_path)
+        tmp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
+        df.write_parquet(tmp_path)
+        tmp_path.replace(cache_path)
         sources_path.write_text(json.dumps(sources))
         return df
 
