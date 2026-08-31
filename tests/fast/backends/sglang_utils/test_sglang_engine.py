@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shlex
 import sys
+from dataclasses import fields
 
 import pytest
 from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_model_path
@@ -10,6 +11,7 @@ pytest.importorskip("sglang")
 
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
 from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from sglang.srt.server_args import ServerArgs
 
 
 def _cmd(
@@ -58,7 +60,10 @@ class TestComputeEngineLaunchCmd:
         parsed = parse_server_args_argv(tokens[3:])
         assert parsed.host == "10.0.0.1" and parsed.port == 30000
         assert parsed.dist_init_addr == "10.0.0.1:20000"
-        assert parsed.gated_launch_port == 20034
+        if "gated_launch_port" in {field.name for field in fields(ServerArgs)}:
+            assert parsed.gated_launch_port == 20034
+        else:
+            assert "--gated-launch-port" not in tokens
         assert parsed.model_path == str(tiny_model_path())
 
     def test_a_bracketed_v6_host_is_stripped_for_the_server_but_kept_in_dist_addr(self):
@@ -94,12 +99,22 @@ class TestLoraTargetModules:
 
         assert sorted(targets) == ["k_proj", "q_proj", "v_proj"]
 
-    def test_gdn_attention_targets_are_named_one_by_one(self):
+    def test_gdn_attention_targets_are_named_one_by_one(self, monkeypatch: pytest.MonkeyPatch):
         """Qwen3.5 GDN adapters must reach the engine as the exact fused slices, not as the
         auto-detecting shorthand that would cover every compatible module instead."""
-        targets = self._parsed_lora_targets(["layers.*.self_attention.in_proj"])
+        rendered_args = None
 
-        assert sorted(targets) == ["in_proj_ba", "in_proj_qkvz"]
+        def capture_server_args(server_args_dict: dict) -> list[str]:
+            nonlocal rendered_args
+            rendered_args = server_args_dict
+            return []
+
+        monkeypatch.setattr("miles.backends.sglang_utils.sglang_engine.server_args_to_argv", capture_server_args)
+        args = make_engine_args(lora_rank=16, target_modules=["layers.*.self_attention.in_proj"])
+
+        _cmd(args=args)
+
+        assert sorted(rendered_args["lora_target_modules"]) == ["in_proj_ba", "in_proj_qkvz"]
 
     def test_an_inkling_checkpoint_asks_sglang_to_discover_the_names(self, monkeypatch: pytest.MonkeyPatch):
         """Inkling exposes module names the megatron-to-HF mapping cannot produce, so it is the
