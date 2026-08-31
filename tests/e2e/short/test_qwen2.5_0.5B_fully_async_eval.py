@@ -88,7 +88,10 @@ def execute():
 
     sglang_args = "--rollout-num-gpus-per-engine 1 " "--sglang-mem-fraction-static 0.65 " "--sglang-enable-metrics "
 
-    ci_args = "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
+    ci_args = (
+        "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
+        "--ci-metric-checker-policy all "
+    )
 
     misc_args = (
         "--attention-dropout 0.0 "
