@@ -86,6 +86,13 @@ CONFIGS = [
         [40, 60],
         [20, 40],
     ),
+    (
+        "sft_chunked_b2",
+        dict(loss_type="sft_loss", true_on_policy_mode=False, log_probs_chunk_size=8),
+        2,
+        [64, 128],
+        [32, 64],
+    ),
     # bshd format (padded sequences)
     (
         "grpo_bshd_b3",
