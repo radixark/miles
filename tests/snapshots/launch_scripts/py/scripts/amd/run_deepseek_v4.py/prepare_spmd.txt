@@ -41,7 +41,6 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --moe-aux-loss-coeff 0
   --moe-grouped-gemm
   --moe-router-topk-scaling-factor 1.5
-  --experimental-attention-variant dsv4
   --num-residual-streams 4
   --mhc-sinkhorn-iterations 20
   --csa-compress-ratios '[0,0,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]'
@@ -59,6 +58,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --no-activation-func-clamp-shared-expert
   --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8-bf16
   --save /root/models/DeepSeek-V4-Flash-FP8_torch_dist
+  --dsv4-impl miles
   --expert-tensor-parallel-size 1
   --context-parallel-size 1
   --tensor-model-parallel-size 1

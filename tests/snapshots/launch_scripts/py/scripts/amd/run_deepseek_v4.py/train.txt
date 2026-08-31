@@ -57,7 +57,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-aux-loss-coeff 0
   --moe-grouped-gemm
   --moe-router-topk-scaling-factor 1.5
-  --experimental-attention-variant dsv4
   --num-residual-streams 4
   --mhc-sinkhorn-iterations 20
   --csa-compress-ratios '[0,0,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,128,4,0]'
@@ -147,6 +146,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-mem-fraction-static 0.5
   --sglang-watchdog-timeout 1800
   --accumulate-allreduce-grads-in-fp32
+  --dsv4-impl miles
   --model-name deepseekv4
   --qkv-format bshd
   --moe-router-freeze-gate
@@ -161,5 +161,5 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --bf16
   --fp8-format e4m3
   --fp8-recipe blockwise
-  --train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"1"}'
+  --train-env-vars '{"NVTE_FP8_BLOCK_SCALING_FP32_SCALES":"0"}'
   --no-gradient-accumulation-fusion   
