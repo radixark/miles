@@ -8,7 +8,7 @@ import pytest
 
 from miles.ray.specs import train as train_specs
 from miles.ray.specs.train import compute_trainer_pool_id, specs_trainer
-from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TrainRayActor
+from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TRAINER_METHOD_CONCURRENCY_GROUPS, TrainRayActor
 from miles.utils.workers.worker_spec import WorkerLaunchContext
 
 
@@ -191,35 +191,50 @@ class TestConcurrencyGroups:
 
         assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
-    def test_the_groups_do_not_depend_on_fault_tolerance(self):
-        """The actor class declares the groups statically, so the spec cannot drop them."""
-        (spec,) = specs_trainer(_make_args())
+    def test_the_isolated_methods_travel_with_the_groups(self):
+        """Declaring groups without routing any method to them leaves the heartbeat behind a train step."""
+        (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
 
-        assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
-
-    def test_the_isolated_methods_are_annotated_on_the_actor(self):
-        """Dropping a @ray.method annotation would silently queue that call behind a train step."""
-        annotations: dict[str, str | None] = {
-            name: getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
-            for name in ("get_heartbeat_status", "inject_fault", "kill_self")
-        }
-
-        assert annotations == {
+        assert spec.method_concurrency_groups == {
             "get_heartbeat_status": "heartbeat_status",
             "inject_fault": "fault_injector",
             "kill_self": "kill_self",
         }
 
-    def test_every_annotated_group_is_declared(self):
-        """Ray rejects an actor whose method names a concurrency group the class never declares."""
-        annotated_groups: set[str] = {
-            group
-            for member in vars(TrainRayActor).values()
-            if (group := getattr(member, "__ray_concurrency_group__", None)) is not None
-        }
+    def test_a_run_without_fault_tolerance_gets_a_plain_actor(self):
+        """A threaded trainer actor runs NCCL setup off the main thread and deadlocked a non-FT run."""
+        (spec,) = specs_trainer(_make_args())
 
-        assert annotated_groups
-        assert annotated_groups <= set(TRAINER_CONCURRENCY_GROUPS)
+        assert (spec.concurrency_groups, spec.method_concurrency_groups) == (None, None)
+
+    def test_the_actor_is_not_annotated_statically(self):
+        """A static @ray.method(concurrency_group=...) makes Ray reject the plain non-FT actor."""
+        annotations: list[str | None] = [
+            getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
+            for name in TRAINER_METHOD_CONCURRENCY_GROUPS
+        ]
+
+        assert annotations == [None, None, None]
+
+    def test_every_routed_method_exists_on_the_trainer_actor(self):
+        """A routed name the actor never defines only blows up when a fault-tolerant run launches."""
+        methods = [getattr(TrainRayActor, name, None) for name in TRAINER_METHOD_CONCURRENCY_GROUPS]
+
+        assert all(callable(method) for method in methods)
+
+    def test_both_trainer_roles_follow_the_same_gate(self):
+        """A critic threaded while its actor is not would deadlock exactly the run the gate protects."""
+        fault_tolerant_specs = specs_trainer(_make_args(use_critic=True, use_fault_tolerance=True))
+        plain_specs = specs_trainer(_make_args(use_critic=True))
+
+        assert [spec.concurrency_groups is None for spec in fault_tolerant_specs] == [False, False]
+        assert [spec.concurrency_groups is None for spec in plain_specs] == [True, True]
+
+    def test_every_routed_group_is_declared(self):
+        """Ray rejects an actor whose method names a concurrency group the class never declares."""
+        (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
+
+        assert set(spec.method_concurrency_groups.values()) <= set(TRAINER_CONCURRENCY_GROUPS)
 
 
 class TestEnvironmentVariables:

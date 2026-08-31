@@ -14,6 +14,12 @@ class DemoServeWorker:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
 
+    def ping(self) -> str:
+        return "pong"
+
+    def echo(self, value: str, *, times: int = 1) -> str:
+        return value * times
+
 
 _WORKER_CLASS_PATH = f"{DemoServeWorker.__module__}.{DemoServeWorker.__qualname__}"
 
@@ -25,6 +31,7 @@ def _make_spec(
     num_workers_per_cell: int = 1,
     ctor_kwargs=None,
     concurrency_groups: dict[str, int] | None = None,
+    method_concurrency_groups: dict[str, str] | None = None,
     num_gpus_per_worker: float = 0,
     num_cpus_per_worker: float = 0.2,
     num_gpu_slots_per_worker: int = 0,
@@ -47,6 +54,7 @@ def _make_spec(
         worker_class=worker_class,
         ctor_kwargs=ctor_kwargs if ctor_kwargs is not None else (lambda _ctx: {}),
         concurrency_groups=concurrency_groups,
+        method_concurrency_groups=method_concurrency_groups,
     )
 
 
@@ -135,7 +143,7 @@ class TestServeSchedulingOptions:
         """The trainer heartbeat rpc must not queue behind a running train step."""
         groups = {"heartbeat_status": 1, "default": 1}
 
-        await _launch([_make_spec(concurrency_groups=groups)])
+        await _launch([_make_spec(concurrency_groups=groups, method_concurrency_groups={"ping": "heartbeat_status"})])
 
         assert _options(fake_ray_cluster)[0]["concurrency_groups"] == groups
 
@@ -145,11 +153,94 @@ class TestServeSchedulingOptions:
 
         assert "concurrency_groups" not in _options(fake_ray_cluster)[0]
 
+    async def test_the_routed_methods_are_annotated_on_a_subclass(self, fake_ray_cluster: FakeRayCluster):
+        """A declared group nobody is routed to leaves the isolated rpc queued behind the default group."""
+        await _launch(
+            [
+                _make_spec(
+                    concurrency_groups={"probe": 1, "default": 1},
+                    method_concurrency_groups={"ping": "probe"},
+                )
+            ]
+        )
+
+        actor_class = _actor_classes(fake_ray_cluster)[0]
+        assert actor_class is not DemoServeWorker
+        assert actor_class.ping.__ray_concurrency_group__ == "probe"
+
+    async def test_a_worker_without_groups_reaches_ray_unannotated(self, fake_ray_cluster: FakeRayCluster):
+        """Ray refuses to build an actor whose method names a group the class never declares."""
+        await _launch([_make_spec()])
+
+        actor_class = _actor_classes(fake_ray_cluster)[0]
+        assert actor_class is DemoServeWorker
+        assert not hasattr(actor_class.ping, "__ray_concurrency_group__")
+
     async def test_the_cpu_request_comes_from_the_spec(self, fake_ray_cluster: FakeRayCluster):
         """Trainer actors reserve a whole slot, unlike the small command workers."""
         await _launch([_make_spec(num_cpus_per_worker=0.4)])
 
         assert _options(fake_ray_cluster)[0]["num_cpus"] == 0.4
+
+
+class TestServeConcurrencyGroupRouting:
+    async def test_the_declared_worker_class_stays_unannotated(self, fake_ray_cluster: FakeRayCluster):
+        """Annotating the class itself would follow every later non-fault-tolerant run of that class."""
+        await _launch(
+            [
+                _make_spec(
+                    concurrency_groups={"probe": 1, "default": 1},
+                    method_concurrency_groups={"ping": "probe"},
+                )
+            ]
+        )
+
+        assert not hasattr(DemoServeWorker.ping, "__ray_concurrency_group__")
+
+    async def test_each_routed_method_lands_in_its_own_group(self, fake_ray_cluster: FakeRayCluster):
+        """Collapsing every routed method into one group serializes the heartbeat with the fault injector."""
+        await _launch(
+            [
+                _make_spec(
+                    concurrency_groups={"probe": 1, "killer": 1, "default": 1},
+                    method_concurrency_groups={"ping": "probe", "echo": "killer"},
+                )
+            ]
+        )
+
+        actor_class = _actor_classes(fake_ray_cluster)[0]
+        assert (actor_class.ping.__ray_concurrency_group__, actor_class.echo.__ray_concurrency_group__) == (
+            "probe",
+            "killer",
+        )
+
+    async def test_an_unrouted_method_is_inherited_untouched(self, fake_ray_cluster: FakeRayCluster):
+        """A train step pushed out of the default group would no longer block the group it must own."""
+        await _launch(
+            [
+                _make_spec(
+                    concurrency_groups={"probe": 1, "default": 1},
+                    method_concurrency_groups={"ping": "probe"},
+                )
+            ]
+        )
+
+        actor_class = _actor_classes(fake_ray_cluster)[0]
+        assert actor_class.echo is DemoServeWorker.echo
+
+    async def test_a_routed_method_still_runs_the_original_body(self, fake_ray_cluster: FakeRayCluster):
+        """A wrapper that swallowed the arguments or the return value would break every isolated rpc."""
+        await _launch(
+            [
+                _make_spec(
+                    concurrency_groups={"probe": 1, "default": 1},
+                    method_concurrency_groups={"echo": "probe"},
+                )
+            ]
+        )
+
+        worker = _actor_classes(fake_ray_cluster)[0]()
+        assert worker.echo("ab", times=2) == "abab"
 
 
 class TestServeWorkersAreStopped:

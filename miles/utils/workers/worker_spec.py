@@ -95,6 +95,22 @@ class ServeWorkerSpec(BaseWorkerSpec):
     worker_class: str
     ctor_kwargs: Callable[[WorkerLaunchContext], dict[str, Any]]
     concurrency_groups: dict[str, int] | None = None
+    method_concurrency_groups: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _require_the_groups_and_their_methods_together(self) -> "ServeWorkerSpec":
+        assert (self.concurrency_groups is None) == (self.method_concurrency_groups is None), (
+            f"Worker {self.name!r} must declare concurrency_groups and method_concurrency_groups "
+            f"together: groups nobody is assigned to are dead weight, and a method assigned to a "
+            f"group the actor never declares makes Ray reject the actor"
+        )
+        assert self.method_concurrency_groups is None or set(self.method_concurrency_groups.values()) <= set(
+            self.concurrency_groups
+        ), (
+            f"Worker {self.name!r} routes methods to undeclared concurrency groups: "
+            f"{sorted(set(self.method_concurrency_groups.values()) - set(self.concurrency_groups))}"
+        )
+        return self
 
     @model_validator(mode="before")
     @classmethod

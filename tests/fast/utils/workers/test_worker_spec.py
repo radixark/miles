@@ -277,9 +277,69 @@ class TestServeWorkerSpecExtraScheduling:
             worker_class="miles.demo.Worker",
             ctor_kwargs=lambda _ctx: {},
             concurrency_groups={"heartbeat_status": 1, "default": 1},
+            method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
         )
 
         assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1}
+        assert spec.method_concurrency_groups == {"get_heartbeat_status": "heartbeat_status"}
+
+    def test_groups_without_routed_methods_are_rejected(self):
+        """Threading the actor while every method stays in the default group buys nothing."""
+        with pytest.raises(ValidationError, match="together"):
+            ServeWorkerSpec(
+                **_make_base_kwargs(),
+                worker_class="miles.demo.Worker",
+                ctor_kwargs=lambda _ctx: {},
+                concurrency_groups={"heartbeat_status": 1, "default": 1},
+            )
+
+    def test_routed_methods_without_groups_are_rejected(self):
+        """Ray rejects an actor whose method names a concurrency group the class never declares."""
+        with pytest.raises(ValidationError, match="together"):
+            ServeWorkerSpec(
+                **_make_base_kwargs(),
+                worker_class="miles.demo.Worker",
+                ctor_kwargs=lambda _ctx: {},
+                method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
+            )
+
+    def test_a_method_routed_to_an_undeclared_group_is_rejected(self):
+        """Ray rejects the actor at creation time, long after the spec could have said why."""
+        with pytest.raises(ValidationError, match="undeclared concurrency groups"):
+            ServeWorkerSpec(
+                **_make_base_kwargs(),
+                worker_class="miles.demo.Worker",
+                ctor_kwargs=lambda _ctx: {},
+                concurrency_groups={"default": 1},
+                method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
+            )
+
+    def test_a_declared_group_nobody_routes_to_is_allowed(self):
+        """The trainer declares a default group precisely because no method is routed to it."""
+        spec = ServeWorkerSpec(
+            **_make_base_kwargs(),
+            worker_class="miles.demo.Worker",
+            ctor_kwargs=lambda _ctx: {},
+            concurrency_groups={"heartbeat_status": 1, "default": 1, "kill_self": 1},
+            method_concurrency_groups={"get_heartbeat_status": "heartbeat_status"},
+        )
+
+        assert set(spec.concurrency_groups) - set(spec.method_concurrency_groups.values()) == {"default", "kill_self"}
+
+    def test_the_rejection_names_the_worker_and_every_undeclared_group(self):
+        """A message listing the declared groups instead of the missing ones sends the reader the wrong way."""
+        with pytest.raises(ValidationError, match=r"'demo-worker'.*\['fault_injector', 'kill_self'\]"):
+            ServeWorkerSpec(
+                **_make_base_kwargs(),
+                worker_class="miles.demo.Worker",
+                ctor_kwargs=lambda _ctx: {},
+                concurrency_groups={"heartbeat_status": 1, "default": 1},
+                method_concurrency_groups={
+                    "get_heartbeat_status": "heartbeat_status",
+                    "kill_self": "kill_self",
+                    "inject_fault": "fault_injector",
+                },
+            )
 
     def test_ctor_kwargs_receive_the_worker_position(self):
         """Each worker needs its own rank, so the callable is per worker."""
