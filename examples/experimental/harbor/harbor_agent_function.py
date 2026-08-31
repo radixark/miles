@@ -95,19 +95,29 @@ def _allowed_hosts(var: str) -> list[str]:
 # What Miles must know per harness to hand it the session URL: which env vars /
 # kwargs carry the endpoint and key, and what the model is called on its wire.
 # Everything else about running the harness is Harbor's.
+#
+# Ported from harbor-framework/harbor agent_server/trial_runner.py
+# ``_agent_connection_config`` at harbor-miles-v0.20.0 (53a6e92a). That copy
+# keeps serving the agent-server path and keeps evolving; when bumping the
+# harbor pin, diff that function against this table. The tests assert WHY each
+# line exists (terminus-2 must abort on truncation, opencode must not resolve
+# the ``openai`` provider id, ...), so a re-sync knows which lines carry a
+# constraint and which just follow the harness.
 
 
 @dataclass(frozen=True)
 class HarnessBinding:
-    # (session_url, api_key, sampling_params, model) -> AgentConfig.kwargs
-    kwargs: Callable[[str, str, dict[str, Any], str], dict[str, Any]]
+    # (session_url, api_key, sampling_params, model, max_seq_len) -> AgentConfig.kwargs
+    kwargs: Callable[[str, str, dict[str, Any], str, int | None], dict[str, Any]]
     # (session_url, api_key) -> AgentConfig.env
     env: Callable[[str, str], dict[str, str]]
     # the model name Harbor passes to the harness
     model_name: Callable[[str], str] = lambda model: model
 
 
-def _terminus_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str) -> dict[str, Any]:
+def _terminus_kwargs(
+    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "parser_name": "xml",
         "interleaved_thinking": True,
@@ -132,7 +142,9 @@ def _openai_env(session_url: str, api_key: str) -> dict[str, str]:
     return {"OPENAI_API_KEY": api_key, "OPENAI_API_BASE": session_url}
 
 
-def _claude_code_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str) -> dict[str, Any]:
+def _claude_code_kwargs(
+    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
+) -> dict[str, Any]:
     # WebSearch / WebFetch are Anthropic server-side tools; the session server
     # translates client-side tools onto an OpenAI-compatible backend only.
     kwargs: dict[str, Any] = {"disallowed_tools": "WebSearch,WebFetch"}
@@ -157,8 +169,68 @@ def _mini_swe_agent_env(session_url: str, api_key: str) -> dict[str, str]:
     return {**_openai_env(session_url, api_key), "MSWEA_COST_TRACKING": "ignore_errors"}
 
 
-def _no_kwargs(session_url: str, api_key: str, sampling_params: dict[str, Any], model: str) -> dict[str, Any]:
+def _no_kwargs(
+    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
+) -> dict[str, Any]:
     return {}
+
+
+# OpenCode resolves the provider id "openai" through @ai-sdk/openai, which
+# issues Responses API calls the session server's chat-completions backend
+# rejects. Renaming just the provider id keeps the model id after the slash
+# intact, so the request body still names the served model.
+_OPENCODE_COMPAT_PROVIDER = "openai-compatible"
+
+
+def _opencode_provider_model(model: str) -> tuple[str, str]:
+    provider, sep, model_id = model.partition("/")
+    if not sep:
+        return _OPENCODE_COMPAT_PROVIDER, model
+    if provider == "openai":
+        return _OPENCODE_COMPAT_PROVIDER, model_id
+    return provider, model_id
+
+
+def _opencode_model_entry(sampling_params: dict[str, Any], max_seq_len: int | None) -> dict[str, Any]:
+    """The OpenCode model entry, including its context/output limits.
+
+    OpenCode only auto-compacts a session when it knows the model's context
+    window; a model served from a custom provider resolves to 0 and never
+    compacts, so a long trial degrades silently. Either key is omitted when
+    unknown, so no limit is asserted that cannot be substantiated.
+    """
+    limit: dict[str, int] = {}
+    if max_seq_len:
+        limit["context"] = int(max_seq_len)
+    if output := (sampling_params.get("max_tokens") or _env_int("AGENT_MAX_OUTPUT_TOKENS")):
+        limit["output"] = int(output)
+    return {"limit": limit} if limit else {}
+
+
+def _opencode_kwargs(
+    session_url: str, api_key: str, sampling_params: dict[str, Any], model: str, max_seq_len: int | None
+) -> dict[str, Any]:
+    provider, model_id = _opencode_provider_model(model)
+    # Deliberately no max_turns: the OpenCode agent exposes no turn-cap flag,
+    # so honouring HARBOR_AGENT_MAX_ITERATIONS would be a silent no-op.
+    return {
+        "opencode_config": {
+            "provider": {
+                provider: {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {"baseURL": session_url, "apiKey": api_key},
+                    "models": {model_id: _opencode_model_entry(sampling_params, max_seq_len)},
+                }
+            }
+        }
+    }
+
+
+def _opencode_env(session_url: str, api_key: str) -> dict[str, str]:
+    # OpenCode reads OPENAI_BASE_URL when deciding whether to write
+    # provider.options.baseURL; the generic OPENAI_API_BASE is not consulted.
+    # Export both so either lookup resolves.
+    return {"OPENAI_BASE_URL": session_url, "OPENAI_API_BASE": session_url, "OPENAI_API_KEY": api_key}
 
 
 HARNESS_BINDINGS: dict[str, HarnessBinding] = {
@@ -166,6 +238,11 @@ HARNESS_BINDINGS: dict[str, HarnessBinding] = {
     "terminus-1": HarnessBinding(kwargs=_terminus_kwargs, env=_openai_env),
     "terminus": HarnessBinding(kwargs=_terminus_kwargs, env=_openai_env),
     "claude-code": HarnessBinding(kwargs=_claude_code_kwargs, env=_claude_code_env),
+    "opencode": HarnessBinding(
+        kwargs=_opencode_kwargs,
+        env=_opencode_env,
+        model_name=lambda model: "/".join(_opencode_provider_model(model)),
+    ),
     "mini-swe-agent": HarnessBinding(kwargs=_no_kwargs, env=_mini_swe_agent_env),
 }
 # Any other installed agent that speaks OpenAI chat completions.
@@ -213,7 +290,9 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
     api_key = "dummy"
     binding = HARNESS_BINDINGS.get(agent_name, _DEFAULT_BINDING)
 
-    agent_kwargs = binding.kwargs(session_url, api_key, request_kwargs, model)
+    raw_max_seq_len = metadata.get("max_seq_len") or _env_int("HARBOR_MAX_SEQ_LEN")
+    max_seq_len = int(raw_max_seq_len) if raw_max_seq_len is not None else None
+    agent_kwargs = binding.kwargs(session_url, api_key, request_kwargs, model, max_seq_len)
     if "openai" in model:
         agent_kwargs["model_info"] = {
             "max_input_tokens": int(os.getenv("AGENT_MAX_INPUT_TOKENS", "32768")),
@@ -221,9 +300,8 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
             "input_cost_per_token": 0.0,
             "output_cost_per_token": 0.0,
         }
-    max_seq_len = metadata.get("max_seq_len") or _env_int("HARBOR_MAX_SEQ_LEN")
     if max_seq_len is not None:
-        agent_kwargs["max_seq_len"] = int(max_seq_len)
+        agent_kwargs["max_seq_len"] = max_seq_len
 
     extra: dict[str, Any] = {}
     if verifier_timeout := os.getenv("HARBOR_VERIFIER_TIMEOUT_SEC"):
