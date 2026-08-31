@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import torch.distributed as dist
 
 from miles.backends.training_utils.loss import compute_advantages_and_returns, loss_function
 from miles.backends.training_utils.loss_hub.corrections import icepop_function, vanilla_tis_function
@@ -71,6 +72,20 @@ CONFIGS = [
         [40, 60],
         [20, 40],
     ),
+    # chunked non-true-on-policy path (fused vocab-parallel CE)
+    (
+        "grpo_chunked_temp_b2",
+        dict(
+            advantage_estimator="grpo",
+            loss_type="policy_loss",
+            true_on_policy_mode=False,
+            log_probs_chunk_size=8,
+            rollout_temperature=0.7,
+        ),
+        2,
+        [40, 60],
+        [20, 40],
+    ),
     # bshd format (padded sequences)
     (
         "grpo_bshd_b3",
@@ -92,6 +107,21 @@ CONFIGS = [
 # ---------------------------------------------------------------------------
 # pytest hooks & fixtures
 # ---------------------------------------------------------------------------
+
+
+# The non-true-on-policy configs reach collectives (fused CE); give them a 1-rank group.
+@pytest.fixture(scope="module", autouse=True)
+def process_group(tmp_path_factory):
+    if dist.is_initialized():
+        yield
+        return
+
+    rendezvous = tmp_path_factory.mktemp("loss-snapshot") / "process-group"
+    dist.init_process_group("gloo", init_method=f"file://{rendezvous}", rank=0, world_size=1)
+    try:
+        yield
+    finally:
+        dist.destroy_process_group()
 
 
 @pytest.fixture
