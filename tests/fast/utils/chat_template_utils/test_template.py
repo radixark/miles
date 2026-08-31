@@ -23,14 +23,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
 try:
-    from sglang.srt.entrypoints.openai.chat_encoding import (
-        resolve_dsv4_reasoning_effort_profile,
-    )
+    from sglang.srt.entrypoints.openai.chat_encoding import resolve_dsv4_reasoning_effort_profile
 except ImportError:
 
     def resolve_dsv4_reasoning_effort_profile(*, model_path: str) -> None:
         return None
+
 
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
