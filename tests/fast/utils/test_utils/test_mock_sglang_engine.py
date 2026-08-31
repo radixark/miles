@@ -9,7 +9,7 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
-from miles.utils.misc import get_free_port
+from miles.utils.misc import get_current_node_ip, get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
 # tests/fast/utils/test_utils/test_mock_sglang_engine.py → 4 levels up → repo root
@@ -145,3 +145,24 @@ class TestRealRayActorLifecycle:
             assert ray.get(actor.shutdown.remote()) is True
         finally:
             ray.kill(actor)
+
+
+class TestNodeAddress:
+    def test_the_mock_reports_the_node_ip_instead_of_loopback(self) -> None:
+        """A mock engine placed on another node must publish an address its peers can reach."""
+        engine = MockSGLangEngine.__ray_actor_class__()
+
+        assert engine._get_node_ip() == get_current_node_ip()
+        assert engine._get_node_ip() != "127.0.0.1"
+
+
+class TestNodeIpReporting:
+    def test_get_node_ip_reports_the_reachable_node_ip_and_records_the_call(self) -> None:
+        """Driven in process, the mock hands back the node's routable ip rather than loopback."""
+        engine = MockSGLangEngine.__ray_actor_class__()
+
+        node_ip = engine._get_node_ip()
+
+        assert node_ip == get_current_node_ip()
+        assert node_ip != "127.0.0.1"
+        assert engine.get_calls() == [("_get_node_ip", (), {})]

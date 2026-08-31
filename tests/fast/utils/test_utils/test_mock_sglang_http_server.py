@@ -6,6 +6,7 @@ import json
 import pytest
 from tests.fast.utils.test_utils.conftest import connect_via_url
 
+from miles.utils.misc import get_current_node_ip
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer, RecordedRequest
 
 
@@ -128,3 +129,31 @@ class TestMalformedRequest:
         good_connection.close()
 
         assert server.paths == ["/health"]
+
+
+class TestNodeAddress:
+    def test_the_server_listens_on_every_interface_and_publishes_the_node_ip(self, make_server):
+        """A mock engine's http server must be reachable from another node, not only from loopback."""
+        server = make_server()
+
+        assert server._server.server_address[0] == "0.0.0.0"
+        assert server.host == get_current_node_ip()
+        assert server.host != "127.0.0.1"
+        assert server.url == f"http://{get_current_node_ip()}:{server.port}"
+
+
+class TestNodeReachability:
+    def test_the_server_answers_on_both_loopback_and_the_node_ip(self, make_server):
+        """Binding the wildcard address keeps local clients working while remote nodes gain access."""
+        server = make_server()
+        node_ip = get_current_node_ip()
+
+        for host in ["127.0.0.1", node_ip]:
+            connection = http.client.HTTPConnection(host, server.port, timeout=5)
+            connection.request("GET", "/health")
+            response = connection.getresponse()
+            assert response.status == 200
+            response.read()
+            connection.close()
+
+        assert server.paths == ["/health", "/health"]

@@ -8,6 +8,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from miles.utils.misc import get_current_node_ip
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,13 +27,13 @@ class MockSGLangHttpServer:
         self._lock = threading.Lock()
         self._connections: set[socket.socket] = set()
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", port), self._make_handler())
+        self._server = ThreadingHTTPServer(("0.0.0.0", port), self._make_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
     @property
     def host(self) -> str:
-        return self._server.server_address[0]
+        return get_current_node_ip()
 
     @property
     def port(self) -> int:
