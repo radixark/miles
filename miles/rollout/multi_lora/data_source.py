@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import ray
 
 from miles.ray.multi_lora.controller import get_multi_lora_controller
-from miles.rollout.data_source import DataSource, RolloutDataSource
+from miles.rollout.data_source import DataSource, RolloutDataSourceWithBuffer
 from miles.utils.adapter_config import AdapterRun
 from miles.utils.types import AdapterRef, RewardSpec, Sample
 
@@ -31,13 +31,16 @@ def sampleable(snapshot: dict) -> dict[str, AdapterRun]:
 class MultiLoRAAsyncDataSource(DataSource):
     def __init__(self, args: Namespace):
         self.args = args
-        self.sources: dict[str, RolloutDataSource] = {}
+        self.sources: dict[str, RolloutDataSourceWithBuffer] = {}
+        self.source_registrations: dict[str, str] = {}
         self.source_queue: deque = deque()
 
     def reconcile(self, adapters: dict[str, AdapterRun]) -> None:
         for name in list(self.sources):
-            if name not in adapters:
+            # A re-registered name is a new tenant: its source must be rebuilt from the new config.
+            if name not in adapters or self.source_registrations.get(name) != adapters[name].registration_id:
                 del self.sources[name]
+                self.source_registrations.pop(name, None)
                 logger.info(f"Removed data source for adapter '{name}'")
         pending = [(name, a) for name, a in adapters.items() if name not in self.sources]
         if pending:
@@ -49,13 +52,14 @@ class MultiLoRAAsyncDataSource(DataSource):
                 built = [(name, self.create_source(a)) for name, a in pending]
             for name, source in built:
                 self.sources[name] = source
+                self.source_registrations[name] = adapters[name].registration_id
                 logger.info(f"Created data source for adapter '{name}'")
                 # Post-filter dataset length; the controller derives num_step
                 # from num_epoch for adapters that didn't set it.
                 ray.get(get_multi_lora_controller().resolve_num_step.remote(name, len(source.dataset)))
         self.update_queue(set(adapters))
 
-    def create_source(self, adapter: AdapterRun) -> RolloutDataSource:
+    def create_source(self, adapter: AdapterRun) -> RolloutDataSourceWithBuffer:
         config = adapter.config
         adapter_args = copy.copy(self.args)
         adapter_args.prompt_data = config.data
@@ -66,7 +70,8 @@ class MultiLoRAAsyncDataSource(DataSource):
         adapter_args.load = config.save or self.args.load
         adapter_args.n_samples_per_prompt = config.n_samples_per_prompt or self.args.n_samples_per_prompt
         adapter_args.start_rollout_id = 0
-        return RolloutDataSource(adapter_args)
+        # Buffered so recycled groups actually return to this adapter.
+        return RolloutDataSourceWithBuffer(adapter_args)
 
     def update_queue(self, active_names: set[str]) -> None:
         new_queue: deque = deque()
@@ -80,11 +85,12 @@ class MultiLoRAAsyncDataSource(DataSource):
                 new_queue.append(name)
         self.source_queue = new_queue
 
-    def get_samples(self, num_samples: int = 1) -> list[list[Sample]]:
+    def get_samples(self, num_samples: int = 1, eligible: set[str] | None = None) -> list[list[Sample]]:
         """Return the next prompt group, round-robined across adapters.
 
         One rotation of the queue: pull one group from the first adapter that
         yields, stamp it, and return. Empty list when no adapter can produce.
+        ``eligible`` restricts the rotation to adapters whose batch is still open.
         """
         assert num_samples == 1, "the async producer dispatches one prompt group at a time"
         snapshot = fetch_snapshot()
@@ -95,6 +101,8 @@ class MultiLoRAAsyncDataSource(DataSource):
         for _ in range(len(self.source_queue)):
             name = self.source_queue.popleft()
             self.source_queue.append(name)
+            if eligible is not None and name not in eligible:
+                continue
             source = self.sources[name]
             groups = source.get_samples(1)
             if not groups:
