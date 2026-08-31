@@ -302,7 +302,14 @@ rollout/fully_async/stale_groups_filtered
 rollout/fully_async/avg_staleness, rollout/fully_async/max_staleness
 rollout/fully_async/buffer_avg_staleness, rollout/fully_async/buffer_max_staleness
 rollout/dynamic_filter/drop_<reason>
+rollout/aborted/drop_<exit_status>
 ```
+
+`aborted_groups_filtered` counts every group dropped for containing an aborted
+sample; `rollout/aborted/drop_<exit_status>` splits the same count by the cause
+the aborted sample recorded (`NoModelCalls`, `CollectFailed`, or the
+`exit_status` of the agent function's `InfraAbort`). The sync rollout reports
+the latter too.
 
 The `avg_staleness` and `max_staleness` pair covers the groups training actually
 consumed, while the `buffer_` pair covers the groups still sitting in the buffer when

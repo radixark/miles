@@ -199,6 +199,8 @@ async def test_aborted_group_recycled(monkeypatch):
     output = await fn(RolloutFnTrainInput(rollout_id=0))
 
     assert data_source.recycled == [aborted]
+    assert output.metrics["rollout/fully_async/aborted_groups_filtered"] == 1
+    assert output.metrics["rollout/aborted/drop_unknown"] == 1
     # reset_for_retry cleared generated outputs so the prompt can be re-sampled
     assert all(sample.response == "" and sample.weight_versions == [] for sample in aborted)
     assert output.samples[0][0].group_index != 1
