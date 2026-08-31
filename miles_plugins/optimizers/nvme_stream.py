@@ -625,9 +625,12 @@ def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> N
         return update_successful
 
     def reload_model_params(self, state_dict=None) -> None:
-        store.refresh_main_from_model_params(
-            lambda: DistributedOptimizer.reload_model_params(self, state_dict=state_dict)
-        )
+        if state_dict is None:
+            store.initialize_main_from_model_params()
+        else:
+            store.refresh_main_from_model_params(
+                lambda: DistributedOptimizer.reload_model_params(self, state_dict=state_dict)
+            )
 
     # save_to()/load_from() carry the real state; returning empties here rather than forcing
     # --no-save-optim keeps opt_param_scheduler, saved under the same guard, working.
