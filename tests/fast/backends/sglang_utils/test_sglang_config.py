@@ -320,3 +320,59 @@ class TestHostPortOverrideRejection:
                 "          host: 10.0.0.1\n",
                 rollout_num_gpus=8,
             )
+
+    def test_a_gated_launch_port_override_is_rejected_at_resolve_time(self, tmp_path):
+        """The launch gate port belongs to the allocator; an override would make the engine wait on the wrong socket."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "        overrides:\n"
+                "          gated_launch_port: 13007\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_gated_launch_port_override_in_a_later_group_is_rejected(self, tmp_path):
+        """The check runs per group, so a gate port hidden behind valid groups and valid keys still fails fast."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 4\n"
+                "  - name: ref\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n"
+                "        overrides:\n"
+                "          mem_fraction_static: 0.5\n"
+                "          gated_launch_port: 13007\n",
+                rollout_num_gpus=8,
+            )
+
+    def test_a_gated_launch_port_reaching_the_eval_fleet_from_the_cli_is_rejected(self, tmp_path):
+        """An --eval-sglang-* gate port becomes an eval override, and that channel must be refused too."""
+        with pytest.raises(AssertionError, match="must not override host/port"):
+            _resolve_yaml(
+                tmp_path,
+                "sglang:\n"
+                "  - name: actor\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 8\n"
+                "  - name: eval\n"
+                "    server_groups:\n"
+                "      - worker_type: regular\n"
+                "        num_gpus: 2\n",
+                rollout_num_gpus=8,
+                eval_num_gpus=2,
+                eval_sglang_gated_launch_port=13007,
+            )
