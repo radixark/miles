@@ -64,6 +64,13 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user"}),
         {"preserve_thinking": True},
     ),
+    (
+        "qwen3.8_small_fixed_preserve_thinking",
+        _load_fixed(TITOTokenizerType.QWEN38_SMALL),
+        True,
+        frozenset({"tool", "user"}),
+        {"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    ),
     ("qwen3_thinking_2507_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
     ("qwen3_next_thinking_fixed", _load_fixed(TITOTokenizerType.QWENNEXT), True, frozenset({"tool"}), {}),
     (
@@ -254,6 +261,10 @@ def _unique_thinking_templates():
     for name, content, supports_thinking, _, _ in _TEMPLATES:
         if not supports_thinking:
             continue
+        # Qwen3.8 preserves reasoning by default, so it has no cross-user
+        # compression mismatch under the registered contract.
+        if name.startswith("qwen3.8_"):
+            continue
         # Kimi K2.5/K2.6 compress reasoning at the "first non-tool-call assistant"
         # boundary (single_tool_thinking trajectories), not at the "last user
         # message" boundary like qwen3/glm — so MultiUserTurnThinking's
@@ -295,6 +306,8 @@ _APPEND_ROLE_FAMILIES = [
     (TITOTokenizerType.QWEN3, None),
     (TITOTokenizerType.QWEN35, None),
     (TITOTokenizerType.QWEN36, None),
+    (TITOTokenizerType.QWEN38_SMALL, None),
+    (TITOTokenizerType.QWEN4_EXP, None),
     (TITOTokenizerType.QWENNEXT, None),
     (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
     (TITOTokenizerType.KIMI25, None),
@@ -334,7 +347,16 @@ def test_appends_are_append_only_on_family_template(family, hf_model_id, shape):
     ]
 
     base = apply_chat_template_from_str(template, history, add_generation_prompt=False, **kwargs)
-    if family in (TITOTokenizerType.QWEN35, TITOTokenizerType.QWEN36) and shape == "system":
+    if (
+        family
+        in (
+            TITOTokenizerType.QWEN35,
+            TITOTokenizerType.QWEN36,
+            TITOTokenizerType.QWEN38_SMALL,
+            TITOTokenizerType.QWEN4_EXP,
+        )
+        and shape == "system"
+    ):
         with pytest.raises(ValueError, match="System message must be at the beginning"):
             apply_chat_template_from_str(
                 template,

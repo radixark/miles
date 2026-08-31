@@ -36,7 +36,7 @@ from pathlib import Path
 
 import torch
 
-from miles.ray.rollout.debug_data import save_debug_rollout_data
+from miles.ray.rollout.debug_data import save_dashboard_columns, save_debug_rollout_data
 from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     process_rollout_data_shard,
@@ -233,3 +233,19 @@ def age_files(dump_dir: Path, *, seconds: float = 100.0) -> None:
     stamp = time.time() - seconds
     for path in dump_dir.rglob("*.pt"):
         os.utime(path, (stamp, stamp))
+
+
+def blank_samples(dump_dir: Path, rollout_id: int, *, seconds: float = 100.0) -> None:
+    """Rewrite a step as one aborted before any generation landed."""
+    path = dump_dir / "rollout_data" / f"{rollout_id}.pt"
+    pack = torch.load(path, map_location="cpu", weights_only=False)
+    pack["samples"] = []
+    torch.save(pack, path)
+
+    save_dashboard_columns([], dump_dir / "dashboard_columns" / f"rollout_{rollout_id}.parquet")
+    (dump_dir / "trajectory" / f"{rollout_id}.jsonl").unlink(missing_ok=True)
+    for shard in (dump_dir / "train_data").glob(f"{rollout_id}_*.pt"):
+        shard.unlink()
+
+    stamp = time.time() - seconds
+    os.utime(path, (stamp, stamp))

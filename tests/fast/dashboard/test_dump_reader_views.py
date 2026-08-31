@@ -1,10 +1,11 @@
+import json
 import os
 import statistics
 import time
 
 import polars as pl
 import pytest
-from tests.fast.dashboard.dummy_dump import dump_dummy_run
+from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
 from miles.dashboard.dump_reader import DumpReader
 
@@ -261,3 +262,63 @@ def test_groups_null_rewards_are_not_zero_std(tmp_path):
         }
     )
     assert not reader.groups(0)["zero_std"].any()
+
+
+def test_summary_columns_declaration_matches_reality(reader):
+    # SUMMARY_COLUMNS only shapes the no-sample case, so nothing else would
+    # notice it drifting: pin it against the columns a real summary produces
+    assert list(DumpReader.SUMMARY_COLUMNS) == reader.summary(0).columns
+    assert list(DumpReader.SUMMARY_COLUMNS) == reader.summary(0, evaluation=True).columns
+
+
+def test_step_with_no_samples_reads_as_empty_not_broken(tmp_path):
+    """A step can be dumped with no samples at all. Its summary must still
+    carry the full schema, or every view below it fails on a missing column
+    instead of reporting an empty step -- and because step_aggregates() walks
+    every step, one such step would take the whole metrics page down with it."""
+    dump_dummy_run(tmp_path, steps=3, with_eval=False)
+    blank_samples(tmp_path, 1)  # a MIDDLE step, so step_aggregates must walk past it
+    reader = DumpReader(tmp_path)
+
+    empty = reader.summary(1)
+    assert empty.height == 0
+    assert empty.columns == list(DumpReader.SUMMARY_COLUMNS)
+    assert empty["sample_index"].to_list() == []  # the trajectories endpoint indexes this
+
+    assert reader.groups(1).height == 0
+    assert "zero_std" in reader.groups(1).columns
+
+    aggregates = reader.step_aggregates()
+    assert aggregates["rollout_id"].to_list() == [0, 1, 2]
+    blank = aggregates.filter(pl.col("rollout_id") == 1).row(0, named=True)
+    assert blank["n_samples"] == 0
+    assert blank["reward_mean"] is None
+    # the steps on either side are still measured normally
+    assert aggregates.filter(pl.col("rollout_id") == 2).row(0, named=True)["n_samples"] == reader.summary(2).height
+
+
+def test_empty_step_survives_the_parquet_cache(tmp_path):
+    # the all-null frame is written to parquet and read back on the next call
+    dump_dummy_run(tmp_path, steps=2, with_eval=False)
+    blank_samples(tmp_path, 1)
+    assert DumpReader(tmp_path, cache_dir=tmp_path / "c").summary(1).columns == list(DumpReader.SUMMARY_COLUMNS)
+    reloaded = DumpReader(tmp_path, cache_dir=tmp_path / "c").summary(1)  # served from the parquet written above
+    assert reloaded.height == 0
+    assert reloaded.columns == list(DumpReader.SUMMARY_COLUMNS)
+
+
+def test_pre_fix_columnless_cache_is_not_served(tmp_path):
+    """A cache dir populated before the no-sample schema fix holds a columnless
+    parquet for the aborted step, and its mtime stamps still match the dump.
+    Only SUMMARY_VERSION tells it apart from a valid cache, so the schema fix
+    had to ship with a bump past 4 -- the version that wrote those caches."""
+    dump_dummy_run(tmp_path, steps=2, with_eval=False)
+    blank_samples(tmp_path, 1)
+    reader = DumpReader(tmp_path, cache_dir=tmp_path / "c")
+    reader.cache_dir.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame([], strict=False).write_parquet(reader.cache_dir / "rollout_1.parquet")
+    stale = {**reader._source_stamps(1, evaluation=False), "_summary_version": 4}
+    (reader.cache_dir / "rollout_1.sources.json").write_text(json.dumps(stale))
+
+    assert reader.summary(1).columns == list(DumpReader.SUMMARY_COLUMNS)
+    assert DumpReader.SUMMARY_VERSION > 4  # regressing the bump re-serves those caches

@@ -12,7 +12,7 @@ The mapping is kept in sync by hand on both sides:
 - A `suite=` with no matching job never runs.
 - A stage job whose suite no test uses runs zero tests and exits 0 (intended during incremental migration).
 
-Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e.g. `stage-a-cpu`): `tier ∈ {a, b, c}` classifies cost/role, `gpus` is the GPU count the test needs, `hw ∈ {cpu, h100, h200, mi350}` is the hardware class. A `nightly-` prefix marks a suite that only the external MI350 nightly schedules, keeping its registrations in a separate namespace from the ones this repository's own workflows consume.
+Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e.g. `stage-a-cpu`): `tier ∈ {a, b, c}` classifies cost/role, `gpus` is the GPU count the test needs, `hw ∈ {cpu, h100, h200, b200, mi350}` is the hardware class. A `nightly-` prefix marks a suite that only the external MI350 nightly schedules, keeping its registrations in a separate namespace from the ones this repository's own workflows consume.
 
 ## Stage roster
 
@@ -25,10 +25,13 @@ Stage names follow `stage-<tier>-<gpus>-<hw>` (or `stage-<tier>-<hw>` for CPU, e
 | `stage-c-4-gpu-h200` | 4× H200 | `["h200","4gpu"]` | 3 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h100` | 8× H100 | `["h100","8gpu"]` | 2 | both resolvers, `stage-a-cpu` |
 | `stage-c-8-gpu-h200` | 8× H200 | `["h200","8gpu"]` | 2 | both resolvers, `stage-a-cpu` |
+| `stage-c-8-gpu-b200` | 8× B200 | `["b200","8gpu"]` | 1 | both resolvers, `stage-a-cpu` |
 | `stage-c-4-gpu-mi350` | 4× MI350 | `["self-hosted","amd","mi350","4gpu"]` | 2 | both resolvers |
 | `nightly-stage-c-2-gpu-mi350` | 2× MI350 | external nightly | — | — |
 | `nightly-stage-c-4-gpu-mi350` | 4× MI350 | external nightly | — | — |
 | `nightly-stage-c-8-gpu-mi350` | 8× MI350 | external nightly | — | — |
+
+`stage-c-8-gpu-b200` is the only Blackwell stage: the Blackwell fleet is a single unpartitioned host, and an 8-GPU runner cannot share a node with 2/4-GPU runners without both claiming the same physical GPUs. Blackwell tests needing fewer than eight GPUs therefore register against this suite too and leave the surplus idle, which is correct because a test declares its own GPU budget (`ray start --num-gpus`, `torchrun --nproc-per-node`) rather than inferring one from the devices it can see.
 
 In `pr-test.yml`, `tier a` (CPU fast) gates PR-image preparation and the NVIDIA GPU fleet; its GPU stages (`b` / `c`) all depend on both resolvers and `stage-a-cpu`, and run concurrently with each other — the `b` / `c` letters classify role, they are not a sequential pipeline. The MI350 stage has no CPU-test gate.
 

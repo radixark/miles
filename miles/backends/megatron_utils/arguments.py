@@ -4,6 +4,8 @@ import os
 from megatron.core.tokenizers.utils.build_tokenizer import vocab_size_with_padding as _vocab_size_with_padding
 from megatron.training.arguments import parse_args, validate_args
 
+from miles_plugins.models.deepseek_v4.arguments import is_dsv4_model, normalize_dsv4_args
+
 __all__ = ["validate_args", "parse_args", "set_default_megatron_args"]
 
 logger = logging.getLogger(__name__)
@@ -52,5 +54,8 @@ def set_default_megatron_args(args):
 
     if not hasattr(args, "miles_dsa_topk_backend"):
         args.miles_dsa_topk_backend = "torch"
+
+    if is_dsv4_model(args):
+        normalize_dsv4_args(args)
 
     return args

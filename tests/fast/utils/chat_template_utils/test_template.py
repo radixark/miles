@@ -212,6 +212,8 @@ _MODELS: list[tuple[str, bool, TITOTokenizerType | None, frozenset[str]]] = [
     ("zai-org/GLM-4.7-Flash", True, None, frozenset({"tool", "user", "system"})),
     ("Qwen/Qwen3.5-4B", True, TITOTokenizerType.QWEN35, frozenset({"tool"})),
     ("Qwen/Qwen3.6-35B-A3B", True, TITOTokenizerType.QWEN36, frozenset({"tool"})),
+    ("Qwen/Qwen3.8-27B", True, TITOTokenizerType.QWEN38_SMALL, frozenset({"tool"})),
+    ("Qwen/Qwen3.8-Flash-Next", True, TITOTokenizerType.QWEN4_EXP, frozenset({"tool"})),
     ("Qwen/Qwen3-Coder-Next", False, None, frozenset({"tool", "user", "system"})),
 ]
 
