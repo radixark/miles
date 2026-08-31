@@ -46,8 +46,8 @@ def _iter_response_chunks(
     qkv_format = args.qkv_format
 
     if not args.true_on_policy_mode:
-        # FSDP hands native bf16 here (no full-vocab fp32 buffer); chunks are upcast to fp32 downstream
-        assert logits.dtype in (torch.float32, torch.bfloat16), f"{logits.dtype}"
+        # Model-precision callers hand native bf16/fp16 logits; chunks are upcast to fp32 downstream
+        assert logits.dtype in (torch.float32, torch.bfloat16, torch.float16), f"{logits.dtype}"
     assert len(logits.shape) == 3, f"{logits.shape}"
 
     if qkv_format == "thd":
