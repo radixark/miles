@@ -1,7 +1,3 @@
-from tests.ci.ci_register import register_cpu_ci
-
-register_cpu_ci(est_time=10, suite="stage-a-cpu", labels=[])
-
 import subprocess
 import sys
 from miles.rollout.agentic.session import resolve_session_url
