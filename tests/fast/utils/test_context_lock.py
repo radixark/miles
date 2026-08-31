@@ -4,8 +4,9 @@ import functools
 import inspect
 import itertools
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -62,6 +63,11 @@ class _Guarded:
         return self._private_method()
 
     @with_lock
+    async def locked_method_waiting_in_a_released_section(self, resume: asyncio.Event) -> None:
+        async with self.context_lock.with_released():
+            await resume.wait()
+
+    @with_lock
     async def locked_method_fanning_out(self) -> list[bool]:
         return await asyncio.gather(self.async_private_method(), self.async_private_method())
 
@@ -90,6 +96,16 @@ class _Guarded:
     @acquires_lock
     async def start_window_that_waits(self, delay: float) -> None:
         await asyncio.sleep(delay)
+
+    @acquires_lock
+    async def start_window_waiting_in_a_released_section(self, resume: asyncio.Event) -> None:
+        async with self.context_lock.with_released():
+            await resume.wait()
+
+    @acquires_lock
+    async def start_window_that_hands_the_lock_back_before_raising(self) -> None:
+        self.context_lock.release()
+        raise RuntimeError("boom")
 
     @releases_lock
     async def end_window(self) -> int:
@@ -236,6 +252,42 @@ class TestContextLock:
             async with lock:
                 raise RuntimeError("boom")
         assert not lock.locked
+
+    @pytest.mark.asyncio
+    async def test_async_with_reports_the_bodys_own_error_when_the_lock_is_already_gone(self):
+        """Asserting on the way out would bury the failure the caller actually needs to see."""
+        lock = ContextLock("test")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            async with lock:
+                lock.release()
+                raise RuntimeError("boom")
+
+        assert not lock.locked
+
+    @pytest.mark.asyncio
+    async def test_async_with_logs_the_skipped_release_when_the_lock_is_already_gone(self, caplog):
+        """Skipping the release silently would hide broken release discipline from the operator."""
+        lock = ContextLock("named-lock")
+
+        with caplog.at_level(logging.ERROR, logger="miles.utils.context_lock"):
+            with pytest.raises(RuntimeError, match="boom"):
+                async with lock:
+                    lock.release()
+                    raise RuntimeError("boom")
+
+        assert _skipped_release_messages(caplog) == [
+            "Lock 'named-lock' is not held by the current context on exception exit; skipping release"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_async_with_still_asserts_when_a_successful_body_gave_the_lock_away(self):
+        """Tolerating a missing lock on the success path would let a stray release go unnoticed."""
+        lock = ContextLock("test")
+
+        with pytest.raises(AssertionError, match="must be held"):
+            async with lock:
+                lock.release()
 
 
 class TestWithLock:
@@ -402,6 +454,48 @@ async def _cancel(task: asyncio.Task) -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def _cancel_while_reacquiring(lock: ContextLock) -> tuple[asyncio.Task, _HolderTask]:
+    resume = asyncio.Event()
+
+    async def _released_section() -> None:
+        async with lock:
+            async with lock.with_released():
+                await resume.wait()
+
+    section = asyncio.create_task(_released_section())
+    await asyncio.sleep(0)
+    holder = _HolderTask(lock)
+    await holder.start()
+    resume.set()
+    for _ in range(4):
+        await asyncio.sleep(0)
+    section.cancel()
+    await asyncio.gather(section, return_exceptions=True)
+    return section, holder
+
+
+async def _cancel_a_reacquiring_call(
+    lock: ContextLock, call: Callable[[asyncio.Event], Coroutine[Any, Any, Any]]
+) -> asyncio.Task:
+    resume = asyncio.Event()
+
+    task = asyncio.create_task(call(resume))
+    await asyncio.sleep(0)
+    holder = _HolderTask(lock)
+    await holder.start()
+    resume.set()
+    for _ in range(4):
+        await asyncio.sleep(0)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await holder.finish()
+    return task
+
+
+def _skipped_release_messages(caplog) -> list[str]:
+    return [record.message for record in caplog.records if "skipping release" in record.message]
 
 
 def _reminder_messages(caplog) -> list[str]:
@@ -868,6 +962,80 @@ class TestWithReleased:
                 guarded._private_method()
 
 
+class TestCancelledReacquire:
+    @pytest.mark.asyncio
+    async def test_the_cancellation_reaches_the_caller_unchanged(self):
+        """An AssertionError from the outer release would replace the caller's own CancelledError."""
+        lock = ContextLock("test")
+
+        section, holder = await _cancel_while_reacquiring(lock)
+
+        assert section.cancelled()
+        await holder.finish()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_reacquire_leaves_the_lock_free(self):
+        """A half-acquired lock would deadlock every later waiter on a lock nobody can release."""
+        lock = ContextLock("test")
+
+        _, holder = await _cancel_while_reacquiring(lock)
+        await holder.finish()
+
+        await lock.acquire()
+
+        assert lock.held_in_current_context
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_reacquire_does_not_take_the_lock_away_from_its_new_holder(self):
+        """Releasing the underlying lock on the way out would hand a second context the same section."""
+        lock = ContextLock("test")
+
+        _, holder = await _cancel_while_reacquiring(lock)
+
+        assert lock.locked
+        await holder.finish()
+        assert not lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_locked_method_cancelled_while_reacquiring_stays_cancelled(self):
+        """A with_lock body that gave the lock away must still report cancellation, not a release assertion."""
+        guarded = _Guarded()
+
+        call = await _cancel_a_reacquiring_call(
+            lock=guarded.context_lock, call=guarded.locked_method_waiting_in_a_released_section
+        )
+
+        assert call.cancelled()
+        assert not guarded.context_lock.locked
+        assert await guarded.locked_method() is True
+
+    @pytest.mark.asyncio
+    async def test_a_start_call_cancelled_while_reacquiring_stays_cancelled(self):
+        """An acquires_lock body that gave the lock away must still report cancellation to its caller."""
+        guarded = _Guarded()
+
+        call = await _cancel_a_reacquiring_call(
+            lock=guarded.context_lock, call=guarded.start_window_waiting_in_a_released_section
+        )
+
+        assert call.cancelled()
+        assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_the_window_can_be_opened_again_after_a_start_call_is_cancelled_while_reacquiring(self):
+        """The controller must keep working after a caller abandons a released section."""
+        guarded = _Guarded()
+
+        await _cancel_a_reacquiring_call(
+            lock=guarded.context_lock, call=guarded.start_window_waiting_in_a_released_section
+        )
+
+        await guarded.start_window()
+        await guarded.end_window()
+
+        assert not guarded.context_lock.locked
+
+
 class TestAcquiresAndReleasesLock:
     @pytest.mark.asyncio
     async def test_the_lock_stays_locked_between_the_start_and_end_calls(self):
@@ -939,6 +1107,29 @@ class TestAcquiresAndReleasesLock:
         await guarded.start_window()
         await guarded.end_window()
         assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_start_call_that_handed_the_lock_back_reports_its_own_error(self):
+        """A start that fails after giving the lock away must surface its error, not a release assertion."""
+        guarded = _Guarded()
+
+        with pytest.raises(RuntimeError, match="boom"):
+            await guarded.start_window_that_hands_the_lock_back_before_raising()
+
+        assert not guarded.context_lock.locked
+
+    @pytest.mark.asyncio
+    async def test_a_start_call_that_handed_the_lock_back_logs_the_skipped_release(self, caplog):
+        """The operator needs to see which lock the failed start could no longer release."""
+        guarded = _Guarded()
+
+        with caplog.at_level(logging.ERROR, logger="miles.utils.context_lock"):
+            with pytest.raises(RuntimeError, match="boom"):
+                await guarded.start_window_that_hands_the_lock_back_before_raising()
+
+        assert _skipped_release_messages(caplog) == [
+            "Lock 'guarded' is not held by the current context on exception exit; skipping release"
+        ]
 
     @pytest.mark.asyncio
     async def test_a_raising_end_call_still_releases_the_lock(self):

@@ -63,7 +63,10 @@ class ContextLock:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        self.release()
+        if exc_type is None:
+            self.release()
+        else:
+            self._release_if_held()
 
     async def acquire(self) -> None:
         self._assert_no_live_grant("acquire")
@@ -79,6 +82,12 @@ class ContextLock:
         self._active_generation = None
         _held_lock.set(None)
         self._lock.release()
+
+    def _release_if_held(self) -> None:
+        if self.held_in_current_context:
+            self.release()
+        else:
+            logger.error(f"Lock {self._name!r} is not held by the current context on exception exit; skipping release")
 
     @contextlib.asynccontextmanager
     async def with_released(self) -> AsyncIterator[None]:
@@ -159,7 +168,7 @@ def acquires_lock(fn: Callable[..., Any]) -> Callable[..., Any]:
         try:
             result = await fn(self, *args, **kwargs)
         except BaseException:
-            lock.release()
+            lock._release_if_held()
             raise
         lock.detach()
         return result
