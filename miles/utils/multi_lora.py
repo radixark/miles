@@ -19,6 +19,7 @@ __all__ = [
     "ServingRef",
     "define_new_adapter_metrics",
     "is_multi_lora_enabled",
+    "is_tinker_frontend",
     "make_rid",
     "min_groups_per_dp_split",
     "parse_adapter",
@@ -92,6 +93,10 @@ def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
 
 
+def is_tinker_frontend(args: Any) -> bool:
+    return getattr(args, "multi_lora_frontend", "e2e") == "tinker"
+
+
 def define_new_adapter_metrics(snapshot: dict) -> None:
     """Declare metric axes for new adapters ({name}/* -> {name}/step, {name}/perf/* -> rollout/step); must run
     in the primary tracking writer. Already-declared adapters are skipped, so calling every snapshot is free."""
@@ -127,14 +132,16 @@ def validate_multi_lora_args(args: Any) -> None:
     if not args.multi_lora:
         return
 
-    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags elsewhere.
-    if args.rollout_function_path is None:
-        args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-    if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
-        args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-    # The per-adapter data source is inherently global (the controller owns
-    # what is sampleable); rollout workers must not shard it.
-    args.rollout_global_dataset = True
+    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags
+    # elsewhere (e2e only: the tinker frontend is serving-only and wires no dataset/rollout fn).
+    if not is_tinker_frontend(args):
+        if args.rollout_function_path is None:
+            args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
+        if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
+            args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+        # The per-adapter data source is inherently global (the controller owns
+        # what is sampleable); rollout workers must not shard it.
+        args.rollout_global_dataset = True
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"

@@ -7,6 +7,7 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.environ import enable_experimental_ft_trainer
+from miles.utils.multi_lora import is_tinker_frontend
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.rollout_manager import RolloutManager
 
@@ -203,9 +204,9 @@ def create_rollout_manager(args, pg):
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
     ).remote(args, pg)
 
-    # calculate num_rollout from num_epoch
+    # calculate num_rollout from num_epoch (dataset-backed frontends only; serving-only has no dataset)
     num_rollout_per_epoch = None
-    if args.num_rollout is None:
+    if args.num_rollout is None and not is_tinker_frontend(args):
         num_rollout_per_epoch = ray.get(rollout_manager.get_num_rollout_per_epoch.remote())
         args.num_rollout = num_rollout_per_epoch * args.num_epoch
         assert args.num_rollout > 0
