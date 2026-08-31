@@ -24,6 +24,7 @@ from megatron.core.transformer.spec_utils import ModuleSpec
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
 
+from miles_plugins.models.deepseek_v4.lora import apply_grouped_wo_a
 from miles_plugins.models.deepseek_v4.ops.compressor import DeepSeekV4Compressor
 from miles_plugins.models.deepseek_v4.ops.cp_utils import (
     all_gather_cp,
@@ -310,8 +311,12 @@ class DeepSeekV4Attention(MegatronModule):
         apply_rotary_emb(o[..., -rd:], freqs_cis, inverse=True)
 
         o = o.view(bsz, seqlen_local, self.n_local_groups, -1)
-        wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)
-        o = torch.einsum("bsgd,grd->bsgr", o, wo_a)
+        o = apply_grouped_wo_a(
+            self.wo_a,
+            o,
+            num_groups=self.n_local_groups,
+            group_output_dim=self.o_lora_rank,
+        )
         x, _ = self.wo_b(o.flatten(2))
 
         output = einops.rearrange(x, "b s d -> s b d")
