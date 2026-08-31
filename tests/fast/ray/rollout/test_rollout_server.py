@@ -316,16 +316,104 @@ class TestAddCellRollback:
         )
 
     @pytest.mark.asyncio
-    async def test_a_failed_add_still_tracks_the_cell_so_nothing_leaks(self, monkeypatch):
-        """The cell is committed before init runs, so a failing init cannot orphan its health checker task."""
+    async def test_a_failed_add_drops_the_cell_after_disposing_it(self, monkeypatch):
+        """A cell kept after a failed init still matches its own observation, so no later sweep ever retries it."""
+        disposed: list[ServerCell] = []
+
+        async def _record_dispose(cell: ServerCell) -> None:
+            disposed.append(cell)
+
         srv = RolloutServer(
             server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
         )
         monkeypatch.setattr(ServerCell, "init", _raise_async)
+        monkeypatch.setattr(ServerCell, "dispose", _record_dispose)
 
         async with srv.context_lock:
             with pytest.raises(RuntimeError, match="injected init failure"):
                 await srv.add_cell(self._make_meta())
+
+            assert srv.server_cells == {}
+            assert len(disposed) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_add_really_disposes_the_dropped_cell(self, monkeypatch):
+        """Forgetting the entry without disposing it leaves the cell's health checker task running for ever."""
+        built: list[ServerCell] = []
+
+        async def _record_then_raise(cell: ServerCell) -> None:
+            built.append(cell)
+            raise RuntimeError("injected init failure")
+
+        srv = RolloutServer(
+            server_cells={},
+            args=make_args(colocate=False, ft_components=["rollout"]),
+            context_lock=_make_lock(),
+        )
+        monkeypatch.setattr(ServerCell, "init", _record_then_raise)
+
+        async with srv.context_lock:
+            with pytest.raises(RuntimeError, match="injected init failure"):
+                await srv.add_cell(self._make_meta())
+
+        [cell] = built
+        assert cell.cell_status().phase == "Suspended"
+        cell.__del__()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_add_leaves_the_cells_already_tracked_alone(self, monkeypatch):
+        """Only the cell that failed may be dropped, or a single bad engine unmanages the healthy ones too."""
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _noop_async)
+
+        async with srv.context_lock:
+            await srv.add_cell(self._make_meta())
+            monkeypatch.setattr(ServerCell, "init", _raise_async)
+
+            with pytest.raises(RuntimeError, match="injected init failure"):
+                await srv.add_cell(self._make_meta(cell_id="inference-engine-0-0-1"))
+
+            assert list(srv.server_cells) == ["inference-engine-0-0-0"]
+            await srv.dispose()
+
+    @pytest.mark.asyncio
+    async def test_a_cell_whose_dispose_also_fails_is_still_dropped(self, monkeypatch):
+        """Disposing before forgetting would re-strand the cell in the map whenever teardown itself errors."""
+        real_dispose = ServerCell.dispose
+
+        async def _dispose_then_fail(cell: ServerCell) -> None:
+            await real_dispose(cell)
+            raise RuntimeError("injected dispose failure")
+
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _raise_async)
+        monkeypatch.setattr(ServerCell, "dispose", _dispose_then_fail)
+
+        async with srv.context_lock:
+            with pytest.raises(RuntimeError, match="injected dispose failure"):
+                await srv.add_cell(self._make_meta())
+
+            assert srv.server_cells == {}
+
+    @pytest.mark.asyncio
+    async def test_a_dropped_cell_id_can_be_added_again(self, monkeypatch):
+        """Retrying is the whole point: the next observation of the same cell must be able to build it again."""
+        srv = RolloutServer(
+            server_cells={}, args=SimpleNamespace(colocate=False, ft_components=[]), context_lock=_make_lock()
+        )
+        monkeypatch.setattr(ServerCell, "init", _raise_async)
+        monkeypatch.setattr(ServerCell, "dispose", _noop_async)
+
+        async with srv.context_lock:
+            with pytest.raises(RuntimeError, match="injected init failure"):
+                await srv.add_cell(self._make_meta())
+
+            monkeypatch.setattr(ServerCell, "init", _noop_async)
+            await srv.add_cell(self._make_meta())
 
             assert list(srv.server_cells) == ["inference-engine-0-0-0"]
             await srv.dispose()

@@ -118,7 +118,12 @@ class RolloutServer:
         )
         self.server_cells[cell_id] = cell
         if not (self.args.colocate and cell_meta.needs_offload):
-            await cell.init()
+            try:
+                await cell.init()
+            except Exception:
+                del self.server_cells[cell_id]
+                await cell.dispose()
+                raise
 
     @requires_lock
     async def remove_cell(self, cell_id: str):
