@@ -31,7 +31,7 @@ class MetricChecker:
 
     def dispose(self) -> None:
         assert self._num_checks > 0, "[MetricChecker] no metrics checked"
-        assert self._check_success, (
-            f"[MetricChecker] accuracy check failed with policy {self.args.ci_metric_checker_policy}"
-        )
+        assert (
+            self._check_success
+        ), f"[MetricChecker] accuracy check failed with policy {self.args.ci_metric_checker_policy}"
         logger.info("[MetricChecker] pass dispose check")
