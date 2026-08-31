@@ -123,8 +123,9 @@ def hf_download_dataset(full_name: str, data_dir: str = "/root/datasets"):
 @contextmanager
 def _exclusive_path_lock(path_dst: str):
     """Serialize prepare steps racing on a cache dir shared between runners on one host."""
-    Path(path_dst).parent.mkdir(parents=True, exist_ok=True)
-    with open(f"{path_dst}.lock", "w") as lock_file:
+    path = Path(path_dst)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_name(path.name + ".lock"), "w") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX)
         yield
 
