@@ -72,6 +72,13 @@ class TestResolveSessionServerPorts:
         with patch("miles.ray.rollout.router_manager.find_available_port", return_value=20002):
             assert _resolve_session_server_ports(None, 1) == [20002]
 
+    def test_none_auto_allocates_each_port_independently(self):
+        with patch("miles.ray.rollout.router_manager.find_available_port", side_effect=[6360, 6380]) as find_port:
+            ports = _resolve_session_server_ports(None, 2)
+
+        assert ports == [6360, 6380]
+        assert find_port.call_count == 2
+
     def test_one_worker_uses_the_starting_port(self):
         assert _resolve_session_server_ports(30000, 1) == [30000]
 

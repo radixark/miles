@@ -55,8 +55,9 @@ Views:
   (`zero_std`), average weight-version staleness, eval tab.
 - **sample view** — a `conversation` tab (role-tagged turns with thinking /
   tool calls, from the trajectory sidecar) and a lazily-loaded `tokens` tab
-  (per-token metric strips + a selectable metric-vs-position chart,
-  loss-masked regions dimmed).
+  (the whole sequence in one scrollable metric-colored strip, opened at the
+  first generated token, + a selectable metric-vs-position chart, loss-masked
+  regions dimmed).
 
 ## Develop
 
