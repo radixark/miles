@@ -99,8 +99,40 @@ with `eval/step` as the step key. When `--use-wandb` is enabled, they therefore
 appear in the training run itself (for example,
 `eval/terminal_bench_2_1/overall_pass_rate` and `eval/hle_300/accuracy`).
 
-`hle_eval.py` is a lightweight checkpoint smoke driver. Its built-in scorer is
-intentionally restricted to HLE multiple-choice rows, which makes the smoke
-signal deterministic and avoids requiring a second judge model. A full HLE
-quality run should replace it with the official LLM-judge pipeline while
-retaining the same summary JSON contract.
+`hle_eval.py` separates answer generation from grading. `--base_url` and
+`--model` select the checkpoint endpoint. For a full HLE run, set
+`--judge_base_url` to an independently hosted OpenAI-compatible endpoint
+(including `/v1`) and set `--judge_model` to its served model name. SGLang's
+OpenAI server and router are supported directly. The grader request uses a JSON
+schema for `extracted_final_answer`, `reasoning`, `correct`, and `confidence`.
+The grader must have enough context for the question, the complete model response,
+and its own judgment; with a 131,072-token response limit, use at least a
+262,144-token grader context.
+If the grader requires authentication, put its token in the environment variable
+named by `--judge_api_key_env` (default `HLE_JUDGE_API_KEY`) so the secret is not
+placed in command-line arguments.
+
+The example evaluates all 300 input rows four times and grades all 1,200
+responses through the external endpoint:
+
+```fish
+set -x HLE_JUDGE_API_KEY <token-if-required>
+python examples/experimental/eval/parallel_sft/hle_eval.py \
+    --input /path/to/hle_text_only_300.jsonl \
+    --base_url http://checkpoint-router:30000/v1 \
+    --model qwen-checkpoint \
+    --output_jsonl /path/to/hle_300.jsonl \
+    --summary_json /path/to/hle_300_summary.json \
+    --n_trials 4 \
+    --concurrency 32 \
+    --max_tokens 131072 \
+    --temperature 1.0 \
+    --judge_base_url http://external-grader:30000/v1 \
+    --judge_model hle-grader \
+    --judge_concurrency 32 \
+    --judge_max_tokens 16384
+```
+
+Without `--judge_base_url`, the script retains its judge-free smoke behavior:
+multiple-choice rows can be scored from an explicit final answer, while
+free-form rows remain ungraded.

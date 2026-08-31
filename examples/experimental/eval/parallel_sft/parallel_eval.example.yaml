@@ -52,7 +52,21 @@ commands:
       - "{output_dir}/hle_300.jsonl"
       - --summary_json
       - "{output_dir}/hle_300_summary.json"
+      - --n_trials
+      - ${oc.env:HLE_TRIALS,4}
+      - --concurrency
+      - ${oc.env:HLE_CONCURRENCY,32}
       - --max_tokens
       - "131072"
+      - --temperature
+      - "1.0"
+      - --judge_base_url
+      - ${oc.env:HLE_JUDGE_BASE_URL}
+      - --judge_model
+      - ${oc.env:HLE_JUDGE_MODEL}
+      - --judge_concurrency
+      - ${oc.env:HLE_JUDGE_CONCURRENCY,32}
+      - --judge_max_tokens
+      - "16384"
     metrics_path: "{output_dir}/hle_300_summary.json"
-    timeout_secs: 50400
+    timeout_secs: 259200
