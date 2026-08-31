@@ -1,15 +1,35 @@
 """Qwen3-Coder SWE-bench agentic training launcher (AMD ROCm / MI350X).
 
-Standalone async launcher for Qwen3-Coder-30B-A3B-Instruct on Harbor.
-Training and rollout run on separate GPU sets concurrently (train_async.py).
+Standalone launcher for Qwen3-Coder-30B-A3B on Harbor, supporting both
+colocate and async training. Tested on a single node.
+
+Pass --async-mode to enable async training: on one 8-GPU node it runs a 4+4
+split -- 4 GPUs run Megatron training and the other 4 run SGLang rollout
+concurrently (train_async.py). Without --async-mode, colocate mode shares all
+GPUs between training and rollout in the same process (train.py).
+
+Pass --mode debug_rollout_only to run rollout generation only, with no
+Megatron. The default, --mode normal, runs the full train + rollout loop.
 
 Prerequisites:
+    - Prompt dataset (.jsonl) prepared and available at --prompt-data
     - HF checkpoint converted to torch_dist (run without --skip-prepare first)
     - harbor-server container running on swe-net
     - /data/miles_ci/trials writable
 
-Usage:
-    python run-qwen3-swe.py --async-mode
+Every invocation must supply the compulsory arguments enforced by
+ScriptArgs.__post_init__ (via CLI flag or the matching env var), else it
+raises "Required fields not set":
+    --megatron-path (MEGATRON_PATH), --hf-checkpoint (HF_CHECKPOINT),
+    --ref-load (MILES_REF_LOAD), --save-dir (MILES_SAVE_DIR),
+    --prompt-data (MILES_PROMPT_DATA), --harbor-tasks-dir (HARBOR_TASKS_DIR)
+
+Usage (add the compulsory arguments above to each):
+    # Colocate (default): all GPUs shared between training and rollout
+    python run-qwen3-swe.py --skip-prepare \\
+        --prompt-data /root/datasets/swe_gym_lite_clean.jsonl
+
+    # Async: --async-mode enables the 4+4 split (4 train + 4 rollout) on one node
     python run-qwen3-swe.py --async-mode --skip-prepare \\
         --prompt-data /root/datasets/swe_gym_lite_clean.jsonl \\
         --wandb-project qwen3-coder-swe \\
@@ -51,7 +71,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
     train_num_gpus: int = 4
 
     skip_prepare: bool = False
-    base_dir: str = os.environ.get("MILES_BASE_DIR", "")
     hf_checkpoint: str = os.environ.get("HF_CHECKPOINT", "")
     ref_load: str = os.environ.get("MILES_REF_LOAD", "")
     save_dir: str = os.environ.get("MILES_SAVE_DIR", "")
@@ -104,12 +123,51 @@ class ScriptArgs(U.ExecuteTrainConfig):
             "prompt_data": self.prompt_data,
             "harbor_tasks_dir": self.harbor_tasks_dir,
         }
-        # base_dir is only consumed by prepare(); required unless preparation is skipped.
-        if not self.skip_prepare:
-            required["base_dir"] = self.base_dir
         missing = [k for k, v in required.items() if not v]
         if missing:
             raise ValueError(f"Required fields not set: {', '.join(missing)}")
+        if self.async_mode and self.rollout_gpus <= 0:
+            raise ValueError(
+                f"--train-num-gpus {self.train_num_gpus} >= --num-gpus-per-node "
+                f"{self.num_gpus_per_node}: no GPUs left for rollout"
+            )
+        # Megatron training doesn't launch in debug_rollout_only mode, so its
+        # tensor/expert-parallel divisibility (and train_gpus >= 1) don't apply.
+        if self.mode != "debug_rollout_only":
+            if self.train_gpus < 1:
+                raise ValueError(f"--train-num-gpus must be >= 1, got {self.train_num_gpus}")
+            if self.train_gpus % self.tp_size != 0:
+                raise ValueError(
+                    f"train GPUs {self.train_gpus} not divisible by tp_size {self.tp_size}: "
+                    f"invalid Megatron tensor parallelism config"
+                )
+            if self.train_gpus % self.ep_size != 0:
+                raise ValueError(
+                    f"train GPUs {self.train_gpus} not divisible by ep_size {self.ep_size}: "
+                    f"invalid Megatron expert parallelism config"
+                )
+
+    # Single-node topology: async = train_num_gpus for Megatron and the rest for
+    # SGLang (concurrent); colocate = all GPUs shared between training and rollout.
+    @property
+    def train_gpus(self) -> int:
+        return self.train_num_gpus if self.async_mode else self.num_gpus_per_node
+
+    @property
+    def rollout_gpus(self) -> int:
+        if self.async_mode:
+            return self.num_gpus_per_node - self.train_num_gpus
+        return self.num_gpus_per_node
+
+    # TP=2, EP=4 for async; TP=1, EP=8 for colocate. Both clamped to the GPU
+    # count so a sub-8-GPU node stays valid (TP/EP must divide the world size).
+    @property
+    def tp_size(self) -> int:
+        return min(2 if self.async_mode else 1, self.train_gpus)
+
+    @property
+    def ep_size(self) -> int:
+        return min(4 if self.async_mode else 8, self.train_gpus)
 
 
 def _model_cfg() -> tuple[str, str]:
@@ -142,7 +200,7 @@ def prepare(args: ScriptArgs):
         model_name=model_name,
         megatron_model_type=megatron_model_type,
         num_gpus_per_node=args.num_gpus_per_node,
-        dir_dst=args.base_dir,
+        dir_dst=str(Path(args.ref_load).parent),
         hf_checkpoint=args.hf_checkpoint,
         megatron_path=args.megatron_path,
     )
@@ -173,26 +231,12 @@ def execute(args: ScriptArgs):
         "--balance-data "
     )
 
-    # Parallelism derived from GPU split.
-    # Async:   train_num_gpus for Megatron, rest for SGLang (concurrent).
-    # Colocate: all GPUs shared sequentially.
-    train_gpus = args.train_num_gpus if args.async_mode else args.num_gpus_per_node
-    rollout_gpus = args.num_gpus_per_node - train_gpus if args.async_mode else args.num_gpus_per_node
-
-    # TP=2, EP=4 for 4-GPU training; TP=1, EP=8 for 8-GPU colocate
-    if train_gpus <= 4:
-        tp_size = 2
-        ep_size = min(4, train_gpus)
-    else:
-        tp_size = 1
-        ep_size = min(8, train_gpus)
-
     perf_args = (
-        f"--tensor-model-parallel-size {tp_size} "
-        "--sequence-parallel "
-        "--pipeline-model-parallel-size 1 "
+        f"--tensor-model-parallel-size {args.tp_size} "
+        + ("--sequence-parallel " if args.tp_size > 1 else "")
+        + "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        f"--expert-model-parallel-size {ep_size} "
+        f"--expert-model-parallel-size {args.ep_size} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -222,9 +266,13 @@ def execute(args: ScriptArgs):
     )
 
     sglang_args = (
-        f"--rollout-num-gpus-per-engine {rollout_gpus} "
-        "--sglang-mem-fraction-static 0.7 "
-        "--sglang-cuda-graph-max-bs 512 "
+        f"--rollout-num-gpus-per-engine {args.rollout_gpus} "
+        + (
+            "--sglang-mem-fraction-static 0.5 "
+            if (IS_ROCM and not args.async_mode)
+            else "--sglang-mem-fraction-static 0.7 "
+        )
+        + "--sglang-cuda-graph-max-bs 512 "
         + ("--sglang-moe-runner-backend triton " if IS_ROCM else "")
         + f"--sglang-context-length {args.max_seq_len} "
         "--sglang-tool-call-parser qwen25 "
@@ -246,8 +294,8 @@ def execute(args: ScriptArgs):
     if args.async_mode:
         placement_args = (
             f"--actor-num-nodes {args.num_nodes} "
-            f"--actor-num-gpus-per-node {train_gpus} "
-            f"--rollout-num-gpus {rollout_gpus} "
+            f"--actor-num-gpus-per-node {args.train_gpus} "
+            f"--rollout-num-gpus {args.rollout_gpus * args.num_nodes} "
         )
     else:
         offload_flags = "--no-offload-train --no-offload-rollout " if IS_ROCM else ""
@@ -256,7 +304,6 @@ def execute(args: ScriptArgs):
             f"{offload_flags}"
             f"--actor-num-nodes {args.num_nodes} "
             f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-            f"--rollout-num-gpus {args.num_gpus_per_node} "
         )
 
     misc_args = (
@@ -265,6 +312,7 @@ def execute(args: ScriptArgs):
         "--accumulate-allreduce-grads-in-fp32 "
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
+        f"--num-gpus-per-node {args.num_gpus_per_node} "
         f"{placement_args}"
     )
 
@@ -320,12 +368,6 @@ def execute(args: ScriptArgs):
     }
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
-
-    # Parse any extra env vars passed as JSON string (e.g. '{"SGLANG_USE_AITER": "0"}')
-    if args.extra_env_vars:
-        import json
-
-        extra_env_vars.update(json.loads(args.extra_env_vars))
 
     train_script = "train_async.py" if args.async_mode else "train.py"
 
