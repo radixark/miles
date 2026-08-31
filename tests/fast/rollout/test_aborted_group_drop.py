@@ -15,11 +15,7 @@ from tests.fast.rollout.inference_rollout.test_sample_completion_backfill import
 )
 
 import miles.rollout.inference_rollout.inference_rollout_train as train
-from miles.rollout.filter_hub.base_types import (
-    MetricGatherer,
-    aborted_exit_status,
-    group_has_aborted,
-)
+from miles.rollout.filter_hub.base_types import MetricGatherer, aborted_exit_status, group_has_aborted
 from miles.utils.types import Sample
 
 
