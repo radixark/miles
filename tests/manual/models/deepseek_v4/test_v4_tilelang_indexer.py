@@ -13,11 +13,16 @@ if tilelang is not None:
     from miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd import (
         _make_causal_cu_seqlens,
         batched_indexer_fwd,
+        batched_indexer_topk,
     )
+    from miles_plugins.models.dsa_topk import get_dsa_topk_fn, torch_dsa_topk
 else:
     v4_lighting_indexer = None
     _make_causal_cu_seqlens = None
     batched_indexer_fwd = None
+    batched_indexer_topk = None
+    get_dsa_topk_fn = None
+    torch_dsa_topk = None
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +278,120 @@ def test_indexer_forward_topk(seqlen_q, batch, heads, dim, compress_ratio, topk)
         violation_rate = violations / total
         # Allow small violation rate due to kernel non-determinism on tied scores
         assert violation_rate < 0.05, f"topk violation rate too high: {violation_rate:.4f}"
+
+
+@requires_tilelang()
+def test_batched_indexer_topk_chunks_queries_in_order_with_full_keys(monkeypatch):
+    seen_shapes = []
+
+    def fake_indexer(q, kv, weights, cu_ks, cu_ke):
+        seen_shapes.append((q.shape[0], kv.shape[0]))
+        key_positions = torch.arange(kv.shape[0]).unsqueeze(0)
+        scores = key_positions.float().expand(q.shape[0], -1).clone()
+        valid = (key_positions >= cu_ks.unsqueeze(1)) & (key_positions < cu_ke.unsqueeze(1))
+        return scores.masked_fill(~valid, float("-inf"))
+
+    monkeypatch.setattr(
+        "miles_plugins.models.deepseek_v4.ops.kernel.tilelang_indexer_fwd.indexer_fwd_interface",
+        fake_indexer,
+    )
+    q = torch.zeros(5, 2, 64, 1, dtype=torch.bfloat16)
+    k = torch.zeros(7, 2, 1, dtype=torch.bfloat16)
+    weights = torch.ones(5, 2, 64, dtype=torch.float32)
+    cu_ks = torch.tensor([0, 1, 0, 2, 3], dtype=torch.int32)
+    cu_ke = torch.tensor([2, 4, 5, 7, 7], dtype=torch.int32)
+    full_logits = torch.stack(
+        [
+            fake_indexer(q[:, batch_index], k[:, batch_index], weights[:, batch_index], cu_ks, cu_ke)
+            for batch_index in range(2)
+        ]
+    )
+    expected = torch_dsa_topk(full_logits, 3)
+    seen_shapes.clear()
+
+    actual = batched_indexer_topk(
+        q,
+        k,
+        weights,
+        cu_ks,
+        cu_ke,
+        topk=3,
+        topk_fn=torch_dsa_topk,
+        query_chunk_size=2,
+    )
+
+    assert torch.equal(actual, expected)
+    assert seen_shapes == [(2, 7), (2, 7), (2, 7), (2, 7), (2, 7), (2, 7)]
+
+
+@requires_tilelang()
+def test_batched_indexer_topk_rejects_nonpositive_chunk_size():
+    q = torch.empty(0, 1, 1, 1, dtype=torch.bfloat16)
+    k = torch.empty(0, 1, 1, dtype=torch.bfloat16)
+    weights = torch.empty(0, 1, 1, dtype=torch.float32)
+    cu_seqlens = torch.empty(0, dtype=torch.int32)
+
+    with pytest.raises(ValueError, match="query_chunk_size must be positive"):
+        batched_indexer_topk(q, k, weights, cu_seqlens, cu_seqlens, 0, torch_dsa_topk, 0)
+
+
+@requires_cuda()
+@requires_tilelang()
+@pytest.mark.parametrize("topk_backend", ["torch", "flashinfer"])
+def test_batched_indexer_topk_gpu_matches_full_logits_with_remainder(topk_backend):
+    if topk_backend == "flashinfer":
+        pytest.importorskip("flashinfer")
+    seqlen_q, batch, heads, dim, compress_ratio, topk = 130, 1, 64, 128, 4, 16
+    q, k, weights = make_inputs(seqlen_q, batch, heads, dim, compress_ratio)
+    cu_ks, cu_ke = _make_causal_cu_seqlens(seqlen_q, k.shape[0], compress_ratio, q.device)
+    full_logits = batched_indexer_fwd(q, k, weights, cu_ks, cu_ke)
+    topk_fn = get_dsa_topk_fn(topk_backend)
+    expected = topk_fn(full_logits, topk)
+
+    actual = batched_indexer_topk(
+        q,
+        k,
+        weights,
+        cu_ks,
+        cu_ke,
+        topk=topk,
+        topk_fn=topk_fn,
+        query_chunk_size=31,
+    )
+
+    assert torch.equal(actual, expected)
+
+
+@requires_cuda()
+@requires_tilelang()
+def test_v4_query_chunking_rejects_non_tilelang_indexer():
+    from miles_plugins.models.deepseek_v4.deepseek_v4 import _validate_v4_indexer_options
+
+    with pytest.raises(ValueError, match="only supported with V4_INDEXER_IMPL=tilelang"):
+        _validate_v4_indexer_options("megatron", "torch", 4096)
+
+
+@requires_cuda()
+@requires_tilelang()
+def test_dsv4_spec_projects_query_chunk_size(monkeypatch):
+    from types import SimpleNamespace
+
+    from miles_plugins.models.deepseek_v4 import deepseek_v4
+
+    result = object()
+    monkeypatch.setattr(
+        deepseek_v4,
+        "get_transformer_block_with_experimental_attention_variant_spec",
+        lambda config, vp_stage: result,
+    )
+    args = SimpleNamespace(
+        miles_dsa_topk_backend="torch",
+        miles_dsa_indexer_query_chunk_size=4096,
+    )
+    config = SimpleNamespace()
+
+    assert deepseek_v4.get_dsv4_spec(args, config, vp_stage=0) is result
+    assert config.miles_dsa_indexer_query_chunk_size == 4096
 
 
 # ---------------------------------------------------------------------------
