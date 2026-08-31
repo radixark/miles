@@ -25,6 +25,7 @@ def make_args(**overrides) -> Namespace:
         eval_uses_snapshots=True,
         eval_function_path=None,
         debug_train_only=False,
+        ci_test=False,
         sglang_model_routers={"default": ("10.0.0.1", 30000), "eval": ("10.0.0.2", 31000)},
     )
     defaults.update(overrides)
