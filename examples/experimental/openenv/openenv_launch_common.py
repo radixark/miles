@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Protocol
 
 import openenv_sandbox_common as sandbox_common
-from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, forward_address, preflight_sdk, sandbox_key_supply
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provision_provider
 
 
 class LaunchArgs(Protocol):
@@ -197,25 +197,7 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
     backend = resolve_sandbox_backend(args)
     if backend:
         spec = PROVIDER_CREDENTIALS[backend]
-        sandbox_key_supply(
-            env,
-            provider=spec["provider"],
-            key_env_vars=spec["key_env_vars"],
-            file_env_var=spec["file_env_var"],
-            arg_path=getattr(args, spec["arg_attr"], "") or "",
-            default_path=spec["default_path"],
-            provision_hint=spec["provision_hint"],
-        )
-        preflight_sdk(spec["sdk"], spec["sdk_hint"])
-        # Addresses, not secrets: the SDK reads these from the environment on
-        # every worker, so forward whatever is set here BY VALUE.
-        for var in spec["forward"]:
-            value = os.environ.get(var, "").strip()
-            if value:
-                forward_address(env, var, value)
-        if spec["target"]:
-            var, label, default_desc = spec["target"]
-            print(f"openenv: {spec['provider']} {label}: {env.get(var, default_desc)}", flush=True)
+        provision_provider(env, spec, arg_path=getattr(args, spec["arg_attr"], "") or "")
         # Preflight the env package the recipe bakes into each task image —
         # shared by every sandbox backend. The import check catches a missing
         # install; the source probe catches an install that imports fine but
