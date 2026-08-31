@@ -683,25 +683,22 @@ class DumpReader:
             ),
         )
         if row is None:
-            train_columns = dict.fromkeys(
-                (
-                    "raw_reward",
-                    "normalized_reward",
-                    "dumped_rank",
-                    "mean_entropy",
-                    "max_entropy",
-                    "ref_entropy_mean",
-                    "mean_abs_lp_diff",
-                    "max_abs_lp_diff",
-                    "mean_imp_ratio",
-                    "adv_mean",
-                    "adv_std",
-                    "return_mean",
-                )
+            return entry | dict(
+                raw_reward=None,
+                normalized_reward=None,
+                truncated=sample.status == Sample.Status.TRUNCATED,
+                dumped_rank=None,
+                mean_entropy=None,
+                max_entropy=None,
+                ref_entropy_mean=None,
+                mean_abs_lp_diff=None,
+                max_abs_lp_diff=None,
+                mean_imp_ratio=None,
+                adv_mean=None,
+                adv_std=None,
+                return_mean=None,
+                alignment_failed=False,
             )
-            train_columns["alignment_failed"] = False
-            train_columns["truncated"] = sample.status == Sample.Status.TRUNCATED
-            return entry | train_columns
 
         mask = row.loss_mask > 0
         lp_diff = (

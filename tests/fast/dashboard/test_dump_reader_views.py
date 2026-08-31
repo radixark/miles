@@ -268,6 +268,7 @@ def test_summary_columns_declaration_matches_reality(reader):
     # SUMMARY_COLUMNS only shapes the no-sample case, so nothing else would
     # notice it drifting: pin it against the columns a real summary produces
     assert list(DumpReader.SUMMARY_COLUMNS) == reader.summary(0).columns
+    assert list(DumpReader.SUMMARY_COLUMNS) == reader.summary(0, evaluation=True).columns
 
 
 def test_step_with_no_samples_reads_as_empty_not_broken(tmp_path):
