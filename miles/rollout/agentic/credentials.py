@@ -119,7 +119,7 @@ def sandbox_key_supply(
     if key_present:
         env[file_env_var] = str(key_file)
         print(
-            f"openenv: {provider} credential supply: file {key_file} "
+            f"{provider} credential supply: file {key_file} "
             "(readable here; forwarding the path, workers read it themselves)",
             flush=True,
         )
@@ -129,7 +129,7 @@ def sandbox_key_supply(
         raise ValueError(f"{file_env_var}={arg_path} is missing or empty")
     elif all(os.environ.get(var, "").strip() for var in key_env_vars):
         print(
-            f"openenv: {provider} credential supply: worker environment ({names} "
+            f"{provider} credential supply: worker environment ({names} "
             "set here; workers are assumed to have them in their own env — "
             "single-host inheritance or platform-injected pod env)",
             flush=True,
