@@ -2931,7 +2931,7 @@ def miles_validate_args(args):
         logger.warning(
             "--use-session-server with --use-rollout-routing-replay and "
             "--pause-generation-mode=retract returns full R3 data on every turn; "
-            "R3 payloads can become very large. TODO: Retract-mode weight updates "
+            "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
             "have known issues in SGLang and need to be fixed."
         )
 
