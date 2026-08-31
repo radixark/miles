@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 def set_default_megatron_args(args):
+    _normalize_gloo_process_groups_arg(args)
+
     if getattr(args, "true_on_policy_mode", False):
         raise NotImplementedError(
             "--true-on-policy-mode is not supported on the megatron backend with this Megatron "
@@ -57,3 +59,8 @@ def set_default_megatron_args(args):
         args.miles_dsa_topk_backend = "torch"
 
     return args
+
+
+def _normalize_gloo_process_groups_arg(args) -> None:
+    if not hasattr(args, "use_gloo_process_groups"):
+        args.use_gloo_process_groups = args.enable_gloo_process_groups
