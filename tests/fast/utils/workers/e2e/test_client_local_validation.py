@@ -37,11 +37,18 @@ class TestNoRequestIsSent:
             await handle.demo_sync(a="not-a-number", b=2)
         assert dead_proxy.requests == []
 
-    async def test_positional_arguments_are_rejected(self, dead_proxy, make_handle):
-        """Calls are keyword-only, so positional arguments fail locally."""
+    async def test_too_many_positional_arguments_are_rejected(self, dead_proxy, make_handle):
+        """Positionals bind to declared parameters, so one argument too many fails locally."""
         handle = make_handle(dead_proxy)
-        with pytest.raises(TypeError):
-            await handle.demo_sync(1, 2)
+        with pytest.raises(TypeError, match="takes at most"):
+            await handle.demo_sync(1, 2, 3)
+        assert dead_proxy.requests == []
+
+    async def test_a_parameter_filled_positionally_and_by_keyword_is_rejected(self, dead_proxy, make_handle):
+        """Filling the same parameter twice is a caller mistake, caught before any request goes out."""
+        handle = make_handle(dead_proxy)
+        with pytest.raises(TypeError, match="multiple values"):
+            await handle.demo_sync(1, a=2)
         assert dead_proxy.requests == []
 
 

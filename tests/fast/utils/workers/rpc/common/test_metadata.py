@@ -8,7 +8,13 @@ from pydantic import Field, ValidationError
 from tests.fast.utils.workers.rpc.common.postponed_annotation_worker import LatePayload, PostponedWorker
 
 from miles.utils.pydantic_utils import StrictBaseModel
-from miles.utils.workers.rpc.common.metadata import DEFAULT_CONCURRENCY_GROUP, collect_rpc_method_specs, rpc
+from miles.utils.workers.rpc.common.metadata import (
+    DEFAULT_CONCURRENCY_GROUP,
+    RpcMethodSpec,
+    canonicalize_method_arguments,
+    collect_rpc_method_specs,
+    rpc,
+)
 
 
 class _Payload(StrictBaseModel):
@@ -432,3 +438,174 @@ class TestFailLoud:
 
         specs = collect_rpc_method_specs(Worker)
         assert specs["demo_any"].serializer.decode_query({"x": [1, "a"]}) == {"x": [1, "a"]}
+
+    def test_only_positional_or_keyword_parameters_may_be_filled_positionally(self):
+        """A caller's positional arguments are named in declaration order, and keyword-only names are not in it."""
+
+        class Worker:
+            def demo_mixed(self, a: int, b: int, *, c: int) -> int:
+                return a + b + c
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_mixed"].positional_parameter_names == ("a", "b")
+
+
+def _spec_of(method: Callable[..., Any]) -> RpcMethodSpec:
+    worker_cls = type("Worker", (), {method.__name__: method})
+    return collect_rpc_method_specs(worker_cls)[method.__name__]
+
+
+class TestPositionalParameterNames:
+    def test_positional_parameter_names_keep_declaration_order(self):
+        """Parameter names are recorded in declaration order, not the alphabetical order methods are collected in."""
+
+        def demo_pair(self, zeta: int, alpha: int) -> int:
+            return zeta - alpha
+
+        assert _spec_of(demo_pair).positional_parameter_names == ("zeta", "alpha")
+
+    def test_the_receiver_is_not_a_positional_parameter_name(self):
+        """The receiver never reaches the wire, so a caller's first positional binds to the first real parameter."""
+
+        def demo_one(self, value: int) -> int:
+            return value
+
+        assert _spec_of(demo_one).positional_parameter_names == ("value",)
+
+    def test_a_positional_only_receiver_does_not_shift_the_parameter_names(self):
+        """A method declaring its receiver positional-only still binds callers to its own first parameter."""
+
+        def demo_positional_receiver(self, /, value: int) -> int:
+            return value
+
+        assert _spec_of(demo_positional_receiver).positional_parameter_names == ("value",)
+
+    def test_a_method_without_parameters_has_no_positional_parameter_names(self):
+        """A method taking only the receiver accepts no positional arguments at all."""
+
+        def demo_none(self) -> int:
+            return 0
+
+        assert _spec_of(demo_none).positional_parameter_names == ()
+
+    def test_keyword_only_parameters_are_absent_from_the_positional_names(self):
+        """Keyword-only parameters cannot be filled positionally, so they are not part of the positional order."""
+
+        def demo_keyword_only(self, *, a: int, b: int) -> int:
+            return a + b
+
+        assert _spec_of(demo_keyword_only).positional_parameter_names == ()
+
+
+class TestCanonicalizeMethodArguments:
+    def test_positional_arguments_are_named_in_declaration_order(self):
+        """Positionals are zipped onto parameter names in order, so the wire carries each value under its own name."""
+
+        def demo_pair(self, zeta: int, alpha: int) -> int:
+            return zeta - alpha
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2), kwargs={})
+        assert canonical == {"zeta": 1, "alpha": 2}
+
+    def test_unfilled_trailing_parameters_are_omitted_rather_than_padded(self):
+        """A short positional call leaves later parameters absent so the server still applies their defaults."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        assert canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1,), kwargs={}) == {"a": 1}
+
+    def test_keyword_arguments_alone_are_passed_through_unchanged(self):
+        """A purely keyword call keeps working exactly as before positional support existed."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(), kwargs={"a": 1, "b": 2})
+        assert canonical == {"a": 1, "b": 2}
+
+    def test_positional_and_keyword_arguments_are_merged(self):
+        """Positionals and keywords naming distinct parameters combine into one keyword-shaped payload."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1,), kwargs={"b": 2})
+        assert canonical == {"a": 1, "b": 2}
+
+    def test_a_keyword_only_parameter_is_still_reachable_by_keyword(self):
+        """Positionals fill the ordinary parameters while a keyword-only parameter arrives by name."""
+
+        def demo_mixed(self, a: int, *, c: int) -> int:
+            return a + c
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_mixed), args=(1,), kwargs={"c": 3})
+        assert canonical == {"a": 1, "c": 3}
+
+    def test_filling_every_parameter_positionally_is_allowed(self):
+        """Supplying exactly as many positionals as parameters is the boundary case and must not be rejected."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2), kwargs={})
+        assert canonical == {"a": 1, "b": 2}
+
+    def test_one_positional_too_many_is_rejected(self):
+        """An excess positional cannot be named, so it fails locally with the TypeError an in-process call raises."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        with pytest.raises(TypeError) as excinfo:
+            canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2, 3), kwargs={})
+        assert "demo_pair() takes at most 2 positional arguments, got 3" in str(excinfo.value)
+
+    def test_a_keyword_only_parameter_cannot_be_filled_positionally(self):
+        """A keyword-only parameter is not part of the positional order, so a positional for it is an error."""
+
+        def demo_mixed(self, a: int, *, c: int) -> int:
+            return a + c
+
+        with pytest.raises(TypeError, match="at most 1 positional arguments"):
+            canonicalize_method_arguments(spec=_spec_of(demo_mixed), args=(1, 3), kwargs={})
+
+    def test_a_parameterless_method_rejects_any_positional_argument(self):
+        """A method taking only the receiver has no name to bind a positional to."""
+
+        def demo_none(self) -> int:
+            return 0
+
+        with pytest.raises(TypeError, match="at most 0 positional arguments"):
+            canonicalize_method_arguments(spec=_spec_of(demo_none), args=(1,), kwargs={})
+
+    def test_a_parameter_given_positionally_and_by_keyword_is_rejected(self):
+        """A duplicated parameter must raise instead of one value silently overwriting the other."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        with pytest.raises(TypeError) as excinfo:
+            canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1,), kwargs={"a": 2})
+        assert "demo_pair() got multiple values for ['a']" in str(excinfo.value)
+
+    def test_every_duplicated_parameter_is_reported_in_sorted_order(self):
+        """All conflicting names are listed, sorted, so the message does not depend on dict iteration order."""
+
+        def demo_pair(self, zeta: int, alpha: int) -> int:
+            return zeta - alpha
+
+        with pytest.raises(TypeError) as excinfo:
+            canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2), kwargs={"zeta": 3, "alpha": 4})
+        assert "['alpha', 'zeta']" in str(excinfo.value)
+
+    def test_an_unknown_keyword_is_left_for_the_server_to_reject(self):
+        """Client-side canonicalization only binds positionals; unknown names stay for query validation to refuse."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        spec = _spec_of(demo_pair)
+        assert canonicalize_method_arguments(spec=spec, args=(1,), kwargs={"nope": 2}) == {"a": 1, "nope": 2}
+        with pytest.raises(ValidationError):
+            spec.serializer.decode_query(canonicalize_method_arguments(spec=spec, args=(1,), kwargs={"nope": 2}))

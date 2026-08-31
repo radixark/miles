@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -49,6 +50,14 @@ class _Worker:
 class _WiderWorker(_Worker):
     def demo_extra(self) -> int:
         return 1
+
+
+class _PositionalWorker:
+    def demo_join(self, first: str, second: str, *, separator: str = "-") -> str:
+        return f"{first}{separator}{second}"
+
+    def demo_nothing(self) -> int:
+        return 0
 
 
 class _HookTransport(httpx.AsyncBaseTransport):
@@ -174,6 +183,23 @@ class TestTypedCalls:
         """An omitted defaulted argument uses the declared default value."""
         async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
             assert await handle.demo_default_arg(a=1) == 101
+
+    async def test_positional_arguments_are_bound_by_name(self):
+        """A positional call is bound to parameter names client-side, so the wire stays keyword-shaped."""
+        async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            assert await handle.demo_default_arg(1, 2) == 3
+
+    async def test_a_positional_and_keyword_duplicate_is_rejected_locally(self):
+        """The same parameter given twice is a caller bug and must not reach the server."""
+        async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            with pytest.raises(TypeError, match="multiple values"):
+                await handle.demo_default_arg(1, a=2)
+
+    async def test_excess_positional_arguments_are_rejected_locally(self):
+        """More positionals than the method declares is a caller bug and must not reach the server."""
+        async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            with pytest.raises(TypeError, match="at most 2 positional arguments"):
+                await handle.demo_default_arg(1, 2, 3)
 
     async def test_model_result_revived(self):
         """Pydantic model results come back as real model instances."""
@@ -769,3 +795,68 @@ class TestWaitReady:
             async with _handle_over(transport) as handle:
                 await handle.wait_ready(timeout=5.0)
                 assert transport.requests >= 3
+
+
+class TestPositionalCalls:
+    async def test_positional_arguments_reach_the_worker_in_declaration_order(self):
+        """Positionals bind to parameters left to right, so an order-sensitive method sees the caller's order."""
+        async with (
+            _running_app(_PositionalWorker()) as app,
+            _handle_over(httpx.ASGITransport(app=app), worker_cls=_PositionalWorker) as handle,
+        ):
+            assert await handle.demo_join("left", "right") == "left-right"
+
+    async def test_positional_arguments_travel_as_named_query_fields(self):
+        """The wire stays keyword-shaped, so the server never has to know the caller used positionals."""
+        async with _running_app(_PositionalWorker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, worker_cls=_PositionalWorker) as handle:
+                await handle.demo_join("left", "right")
+
+            submits = [r for r in transport.seen if r.method == "POST"]
+            assert [json.loads(r.content)["query"] for r in submits] == [
+                {"first": "left", "second": "right", "separator": "-"}
+            ]
+
+    async def test_a_positional_and_keyword_mix_leaves_the_remaining_default_intact(self):
+        """A short positional call omits the parameters it does not fill, so their declared defaults still apply."""
+        async with (
+            _running_app(_PositionalWorker()) as app,
+            _handle_over(httpx.ASGITransport(app=app), worker_cls=_PositionalWorker) as handle,
+        ):
+            assert await handle.demo_join("left", second="right") == "left-right"
+
+    async def test_a_keyword_only_parameter_is_reachable_alongside_positionals(self):
+        """Positionals fill the ordinary parameters while a keyword-only parameter still arrives by name."""
+        async with (
+            _running_app(_PositionalWorker()) as app,
+            _handle_over(httpx.ASGITransport(app=app), worker_cls=_PositionalWorker) as handle,
+        ):
+            assert await handle.demo_join("left", "right", separator="+") == "left+right"
+
+    async def test_a_positional_for_a_keyword_only_parameter_fails_before_any_request(self):
+        """A keyword-only parameter cannot be filled positionally, and the bad call never reaches the network."""
+        async with _running_app(_PositionalWorker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, worker_cls=_PositionalWorker) as handle:
+                with pytest.raises(TypeError, match="at most 2 positional arguments"):
+                    await handle.demo_join("left", "right", "+")
+                assert transport.requests == 0
+
+    async def test_a_duplicated_parameter_fails_before_any_request(self):
+        """The same parameter given positionally and by keyword raises locally instead of one value winning."""
+        async with _running_app(_PositionalWorker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, worker_cls=_PositionalWorker) as handle:
+                with pytest.raises(TypeError, match=r"multiple values for \['first'\]"):
+                    await handle.demo_join("left", first="other")
+                assert transport.requests == 0
+
+    async def test_a_parameterless_method_rejects_a_positional_argument(self):
+        """A method taking only the receiver has no parameter name to bind a positional to."""
+        async with _running_app(_PositionalWorker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, worker_cls=_PositionalWorker) as handle:
+                with pytest.raises(TypeError, match="at most 0 positional arguments"):
+                    await handle.demo_nothing(1)
+                assert transport.requests == 0
