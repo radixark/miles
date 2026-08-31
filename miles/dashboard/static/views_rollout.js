@@ -94,7 +94,11 @@ export async function renderRollout(view, meta, route) {
       return;
     }
     view.replaceChildren(el("p", { class: "muted" }, ["finding the newest step with data…"]));
+    const entryHash = location.hash;
     rolloutId = await resolveLatest(candidates, evaluation);
+    // the resolve spans several requests; if the user navigated away in the
+    // meantime, rewriting the URL now would drag them back into this view
+    if (location.hash !== entryHash) return;
     // rewrite the URL to the step actually shown, so reloads, Prev/Next and
     // the breadcrumb all work off a real id
     location.replace(`#/rollout/${rolloutId}${evaluation ? "?eval=1" : ""}`);
