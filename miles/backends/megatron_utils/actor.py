@@ -274,6 +274,9 @@ class MegatronTrainRayActor(TrainRayActor):
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=lora_rollout_enabled(args),
         )
+        self.weight_updater.weight_version = (
+            args.start_rollout_id if args.start_rollout_id is not None else start_rollout_id
+        )
 
         # Adapters currently loaded into Megatron slots on this rank.
         self.loaded_adapters: dict[str, object] = {}
