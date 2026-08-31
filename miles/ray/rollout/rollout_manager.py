@@ -239,6 +239,8 @@ class RolloutManager:
 
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
+        if self.args.ci_test:
+            raise RuntimeError(f"CI eval {rollout_id} skipped: {reason}")
 
     async def _get_rollout_data(self, rollout_id):
         if self.args.load_debug_rollout_data is not None:

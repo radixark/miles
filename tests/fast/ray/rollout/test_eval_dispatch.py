@@ -40,12 +40,23 @@ def failed_ref(error: Exception):
 
 
 class TestSettle:
-    async def test_a_crashed_eval_fails_the_run_under_ci_test(self, tmp_path):
-        """With --ci-test a raised eval is reported as crashed and then re-raised so CI goes red."""
+    async def test_a_crashed_eval_fails_when_reporting_the_ci_skip(self, tmp_path):
+        """A crashed eval fails CI through the centralized skipped-point contract."""
         dispatcher = make_dispatcher(ci_test=True)
         exported_dir = str(tmp_path / "step_3")
 
-        with pytest.raises(RuntimeError, match="engine gone"):
+        class FailingRemoteMethod(FakeRemoteMethod):
+            def remote(self, *args):
+                self.log.append((self.name, args))
+                fut = asyncio.get_event_loop().create_future()
+                fut.set_exception(RuntimeError("CI eval 3 skipped: crashed"))
+                return fut
+
+        dispatcher.rollout_manager.report_eval_skip = FailingRemoteMethod(
+            dispatcher.rollout_manager.log, "report_eval_skip"
+        )
+
+        with pytest.raises(RuntimeError, match="CI eval 3 skipped: crashed"):
             await dispatcher._settle(3, failed_ref(RuntimeError("engine gone")), exported_dir)
 
         assert dispatcher.rollout_manager.log == [("report_eval_skip", (3, "crashed"))]

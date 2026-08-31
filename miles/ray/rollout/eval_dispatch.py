@@ -13,9 +13,9 @@ class EvalDispatcher:
     """Dispatches eval points without holding up the training loop.
 
     Exports a snapshot per point, fires the eval, and reclaims the snapshot once the
-    point settles. Failures degrade to a skipped point, never a crash, except that under
-    ``--ci-test`` an eval that raised fails the run so CI cannot pass on skipped points.
-    Shared-engine eval takes the plain blocking call instead.
+    point settles. Failures degrade to a skipped point outside CI; under ``--ci-test``,
+    every skipped point fails the run. Shared-engine eval takes the plain blocking call
+    instead.
     """
 
     def __init__(self, args, actor_model, rollout_manager):
@@ -82,8 +82,6 @@ class EvalDispatcher:
         except Exception:
             logger.exception(f"Async eval for rollout {rollout_id} raised")
             await self.rollout_manager.report_eval_skip.remote(rollout_id, "crashed")
-            if self.args.ci_test:
-                raise
         finally:
             self._retire(exported_dir)
 
