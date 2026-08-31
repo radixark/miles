@@ -1,11 +1,81 @@
-"""Offline tests for the in-process Harbor agent function (no Harbor, no sandbox)."""
+"""Offline tests for the in-process Harbor agent function (no Harbor, no sandbox).
+
+The ``harbor`` package is faked in sys.modules (module-local autouse fixture),
+so these tests run where Harbor is not installed. The contract against the
+REAL package lives in test_harbor_contract.py.
+"""
 
 import asyncio
+import enum
+import sys
+import types
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import harbor_agent_function as haf
 import pytest
+
+
+class _EnvironmentType(str, enum.Enum):
+    DOCKER = "docker"
+    DAYTONA = "daytona"
+    E2B = "e2b"
+    MODAL = "modal"
+
+
+def _record(name):
+    def ctor(**kwargs):
+        return SimpleNamespace(_kind=name, **kwargs)
+
+    return ctor
+
+
+class FakeTrial:
+    """Records the config it was created with; ``run`` returns a scripted result."""
+
+    created: list = []
+    result = None
+    run_delay_s = 0.0
+
+    def __init__(self, config):
+        self.config = config
+        self.paths = SimpleNamespace(trial_dir=f"/tmp/harbor_trials/{config.task.path.name}")
+
+    @classmethod
+    async def create(cls, config):
+        trial = cls(config)
+        cls.created.append(trial)
+        return trial
+
+    async def run(self):
+        import asyncio
+
+        if self.run_delay_s:
+            await asyncio.sleep(self.run_delay_s)
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+@pytest.fixture(autouse=True)
+def fake_harbor(monkeypatch):
+    harbor = types.ModuleType("harbor")
+    models = types.ModuleType("harbor.models")
+    env_type = types.ModuleType("harbor.models.environment_type")
+    env_type.EnvironmentType = _EnvironmentType
+    trial_models = types.ModuleType("harbor.models.trial")
+    config = types.ModuleType("harbor.models.trial.config")
+    for name in ("AgentConfig", "TaskConfig", "TrialConfig", "VerifierConfig", "EnvironmentConfig"):
+        setattr(config, name, _record(name))
+    trial_pkg = types.ModuleType("harbor.trial")
+    trial_mod = types.ModuleType("harbor.trial.trial")
+    trial_mod.Trial = FakeTrial
+    for mod in (harbor, models, env_type, trial_models, config, trial_pkg, trial_mod):
+        monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    FakeTrial.created = []
+    FakeTrial.result = None
+    FakeTrial.run_delay_s = 0.0
+    yield FakeTrial
 
 
 def run_async(coro):
@@ -33,7 +103,7 @@ def _verdict(reward=1.0, **agent_fields):
             cost_usd=None,
             n_steps=7,
             metadata={"tool_calls": 5},
-            **agent_fields
+            **agent_fields,
         ),
         started_at=t0,
         finished_at=t0 + timedelta(seconds=90),
@@ -103,6 +173,39 @@ def test_claude_code_binding_uses_anthropic_env(tasks_dir, monkeypatch):
     assert cfg.agent.env["ENABLE_TOOL_SEARCH"] == "false"
     assert cfg.agent.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
     assert cfg.agent.kwargs["disallowed_tools"] == "WebSearch,WebFetch"
+
+
+def test_opencode_binding_remaps_the_openai_provider(tasks_dir, monkeypatch):
+    """OpenCode resolves provider id "openai" to the Responses API, which the session server rejects."""
+    monkeypatch.setenv("AGENT_MODEL_NAME", "glm")
+    monkeypatch.delenv("AGENT_MAX_OUTPUT_TOKENS", raising=False)
+    cfg = haf.build_trial_config(
+        {"instance_id": "task-1", "agent_name": "opencode", "max_seq_len": 65536}, "http://s/v1", {"max_tokens": 512}
+    )
+    assert cfg.agent.model_name == "openai-compatible/glm"
+    provider = cfg.agent.kwargs["opencode_config"]["provider"]
+    entry = provider["openai-compatible"]
+    assert entry["npm"] == "@ai-sdk/openai-compatible"
+    assert entry["options"]["baseURL"] == "http://s/v1"
+    # limits: without them OpenCode never auto-compacts a custom-provider model
+    assert entry["models"]["glm"] == {"limit": {"context": 65536, "output": 512}}
+    # both URL vars: OpenCode consults OPENAI_BASE_URL, litellm-style agents OPENAI_API_BASE
+    assert cfg.agent.env["OPENAI_BASE_URL"] == "http://s/v1"
+    assert cfg.agent.env["OPENAI_API_BASE"] == "http://s/v1"
+    # no turn cap: OpenCode has no flag for it, a kwarg would be silently discarded
+    assert "max_turns" not in cfg.agent.kwargs
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("openai/glm", ("openai-compatible", "glm")),
+        ("bare-model", ("openai-compatible", "bare-model")),
+        ("anthropic/claude", ("anthropic", "claude")),
+    ],
+)
+def test_opencode_provider_split(model, expected):
+    assert haf._opencode_provider_model(model) == expected
 
 
 @pytest.mark.parametrize("bad", ["", "../etc", "no-such-task"])
