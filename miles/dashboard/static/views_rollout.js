@@ -72,7 +72,7 @@ const LANDING_LOOKBACK = 5;
 async function resolveLatest(ids, evaluation) {
   for (const id of ids.slice(-LANDING_LOOKBACK).reverse()) {
     try {
-      const summary = await api(`/api/rollout/${id}/summary`, { eval: evaluation });
+      const summary = await api(`/api/rollout/${id}/summary`, { eval: evaluation }, { retry503: false });
       if (summary.rows.length) return id;
     } catch {
       /* mid-write, truncated, or already rotated away: try the step before it */
