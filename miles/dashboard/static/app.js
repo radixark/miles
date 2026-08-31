@@ -64,7 +64,8 @@ function parseRoute() {
 }
 
 function crumbs(route, meta) {
-  const nav = (label, href, active) => el("a", { class: `nav${active ? " active" : ""}`, href }, [label]);
+  const nav = (label, href, active, onclick = null) =>
+    el("a", { class: `nav${active ? " active" : ""}`, href, onclick }, [label]);
   const parts = [nav("Metrics", "#/", route.view === "metrics")];
   if (meta.capabilities.has_timeline) {
     parts.push(nav("Compute Utilization", "#/timeline", route.view === "timeline"));
@@ -72,7 +73,12 @@ function crumbs(route, meta) {
   // the per-step data view is a top-level destination, not a hidden
   // click-through from chart points; land on the newest usable train step
   if (meta.rollout_ids.train.length) {
-    parts.push(nav("Rollouts", "#/rollout/latest", route.view === "rollout" || route.view === "tokens"));
+    const onRollout = route.view === "rollout" || route.view === "tokens";
+    const replaceInPlace = (event) => {
+      event.preventDefault();
+      location.replace("#/rollout/latest");
+    };
+    parts.push(nav("Rollouts", "#/rollout/latest", onRollout, onRollout ? replaceInPlace : null));
   }
   if ((route.view === "rollout" || route.view === "tokens") && route.rolloutId !== null) {
     const evalSuffix = route.evaluation ? "?eval=1" : "";
