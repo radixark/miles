@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -34,6 +35,7 @@ def start_api_server(
     port: int,
     ft_components: list[str],
 ) -> None:
+    controller_loop = asyncio.get_running_loop()
     handlers: list[_CellHandler] = []
 
     if "train" in ft_components:
@@ -53,6 +55,10 @@ def start_api_server(
                 worker_manager=RayWorkerManager.get_handle(),
                 controller=inference_controller,
                 pool_ids=compute_engine_pool_ids(args),
+                # TEMPORARY: routed through the controller so a suspend takes the lock the weight update holds,
+                # reverted with the weight-update fault tolerance work
+                cell_operations=inference_controller,
+                cell_operations_loop=controller_loop,
             )
         )
 

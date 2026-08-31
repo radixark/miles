@@ -156,6 +156,21 @@ class MockInferenceController:
         self._statuses[cell_id] = status
 
 
+class MockCellOperations:
+    def __init__(self, *, inject_fault_error: Exception | None = None) -> None:
+        self.stopped_cells: list[str] = []
+        self.injected: list[tuple[str, FailureMode, int]] = []
+        self._inject_fault_error = inject_fault_error
+
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        self.stopped_cells.append(cell_id)
+
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        if self._inject_fault_error is not None:
+            raise self._inject_fault_error
+        self.injected.append((cell_id, mode, sub_index))
+
+
 class MockWorkerManager:
     def __init__(self, summaries: dict[str, CellInfo] | None = None) -> None:
         self._summaries = dict(summaries or {})

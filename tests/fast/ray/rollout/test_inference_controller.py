@@ -20,6 +20,7 @@ from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
 from miles.ray.specs.inference import compute_engine_pool_ids, compute_router_pool_id, specs_inference_engine
 from miles.utils.context_lock import ContextLock
 from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.worker_provider.base import CellInfo, ReconcileFn, StopWatchFn
 from miles.utils.workers.worker_spec import WorkerMetaContext
 
@@ -903,3 +904,243 @@ class TestEvalFleetConstruction:
 
 async def _raise_async(cell: ServerCell) -> None:
     raise RuntimeError("injected init failure")
+
+
+class _RecordingWorkerManager:
+    def __init__(self) -> None:
+        self.stopped_cells: list[list[str]] = []
+        self.injected: list[tuple[str, dict[str, Any]]] = []
+
+    @property
+    def stop_cells(self) -> Any:
+        return _RecordingRemoteCall(lambda cell_ids: self.stopped_cells.append(list(cell_ids)))
+
+    @property
+    def inject_fault(self) -> Any:
+        return _RecordingRemoteCall(lambda cell_id, **kwargs: self.injected.append((cell_id, kwargs)))
+
+
+class _RecordingRemoteCall:
+    def __init__(self, record: Any) -> None:
+        self._record = record
+
+    def remote(self, *args: Any, **kwargs: Any) -> asyncio.Future:
+        self._record(*args, **kwargs)
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        future.set_result(None)
+        return future
+
+
+def _patch_worker_manager(monkeypatch: pytest.MonkeyPatch) -> _RecordingWorkerManager:
+    manager = _RecordingWorkerManager()
+    monkeypatch.setattr(inference_controller_module, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
+    return manager
+
+
+class _BlockingWorkerManager:
+    def __init__(self, *, completion: asyncio.Future) -> None:
+        self.requested = asyncio.Event()
+        self.stopped_cells: list[list[str]] = []
+        self.completion = completion
+
+    @property
+    def stop_cells(self) -> Any:
+        return _BlockingRemoteCall(manager=self)
+
+
+class _BlockingRemoteCall:
+    def __init__(self, *, manager: _BlockingWorkerManager) -> None:
+        self._manager = manager
+
+    def remote(self, cell_ids: list[str]) -> asyncio.Future:
+        self._manager.stopped_cells.append(list(cell_ids))
+        self._manager.requested.set()
+        return self._manager.completion
+
+
+def _patch_blocking_worker_manager(
+    monkeypatch: pytest.MonkeyPatch, *, completion: asyncio.Future
+) -> _BlockingWorkerManager:
+    manager = _BlockingWorkerManager(completion=completion)
+    monkeypatch.setattr(inference_controller_module, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
+    return manager
+
+
+class TestCellOperations:
+    @pytest.mark.asyncio
+    async def test_stop_cell_between_weight_updates_is_forwarded_to_the_worker_manager(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The manager owns the processes, so the controller only serializes the suspension."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+
+        await controller.stop_cell_between_weight_updates("engine-0")
+
+        assert manager.stopped_cells == [["engine-0"]]
+
+    @pytest.mark.asyncio
+    async def test_inject_fault_between_weight_updates_is_forwarded_to_the_worker_manager(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Injection targets one worker of one cell, and only the manager can reach it."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+
+        await controller.inject_fault_between_weight_updates("engine-0", mode=FailureMode.SIGKILL, sub_index=1)
+
+        assert manager.injected == [("engine-0", {"mode": "sigkill", "worker_in_cell_index": 1})]
+
+    @pytest.mark.asyncio
+    async def test_inject_fault_between_weight_updates_is_refused_while_probing_is_paused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An offloaded or updating cell would report a crash that the trainer cannot distinguish from its own pause."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+        controller._health_checker_activeness.bump_active(False)
+
+        with pytest.raises(RuntimeError, match="refusing fault injection"):
+            await controller.inject_fault_between_weight_updates("engine-0", mode=FailureMode.SIGKILL, sub_index=0)
+
+        assert manager.injected == []
+
+    @pytest.mark.asyncio
+    async def test_stop_cell_between_weight_updates_waits_until_the_weight_update_window_closes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Suspending a cell mid-broadcast leaves the trainer waiting on an engine that is being torn down."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+        entered = asyncio.Event()
+        may_finish = asyncio.Event()
+
+        async def _hold_lock() -> None:
+            async with controller.context_lock:
+                entered.set()
+                await may_finish.wait()
+
+        holder = asyncio.create_task(_hold_lock())
+        await entered.wait()
+        stopping = asyncio.create_task(controller.stop_cell_between_weight_updates("engine-0"))
+        await asyncio.sleep(0)
+
+        assert manager.stopped_cells == []
+
+        may_finish.set()
+        await holder
+        await stopping
+
+        assert manager.stopped_cells == [["engine-0"]]
+
+    @pytest.mark.asyncio
+    async def test_inject_fault_between_weight_updates_waits_until_the_weight_update_window_closes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Injection racing a broadcast is the same hazard as suspension, so it takes the same turn."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+        entered = asyncio.Event()
+        may_finish = asyncio.Event()
+
+        async def _hold_lock() -> None:
+            async with controller.context_lock:
+                entered.set()
+                await may_finish.wait()
+
+        holder = asyncio.create_task(_hold_lock())
+        await entered.wait()
+        injecting = asyncio.create_task(
+            controller.inject_fault_between_weight_updates("engine-0", mode=FailureMode.SIGKILL, sub_index=0)
+        )
+        await asyncio.sleep(0)
+
+        assert manager.injected == []
+
+        may_finish.set()
+        await holder
+        await injecting
+
+        assert manager.injected == [("engine-0", {"mode": "sigkill", "worker_in_cell_index": 0})]
+
+    async def test_stop_cell_between_weight_updates_is_allowed_while_probing_is_paused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """An offloaded cell is the one a heal loop most needs to suspend, so only injection is refused."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+        controller._health_checker_activeness.bump_active(False)
+
+        await controller.stop_cell_between_weight_updates("engine-0")
+
+        assert manager.stopped_cells == [["engine-0"]]
+
+    async def test_inject_fault_between_weight_updates_refuses_a_pause_that_began_while_it_waited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Reading the pause before taking the lock would kill a cell the offload has since put to sleep."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+        entered = asyncio.Event()
+        may_finish = asyncio.Event()
+
+        async def _pause_probing_under_the_lock() -> None:
+            async with controller.context_lock:
+                entered.set()
+                await may_finish.wait()
+                controller._health_checker_activeness.bump_active(False)
+
+        holder = asyncio.create_task(_pause_probing_under_the_lock())
+        await entered.wait()
+        injecting = asyncio.create_task(
+            controller.inject_fault_between_weight_updates("engine-0", mode=FailureMode.SIGKILL, sub_index=0)
+        )
+        await asyncio.sleep(0)
+        may_finish.set()
+        await holder
+
+        with pytest.raises(RuntimeError, match="refusing fault injection"):
+            await injecting
+
+        assert manager.injected == []
+
+    async def test_a_refused_injection_leaves_the_weight_update_lock_free(self, monkeypatch: pytest.MonkeyPatch):
+        """A refusal that kept the lock would hang the next weight update instead of only skipping the injection."""
+        manager = _patch_worker_manager(monkeypatch)
+        controller = _make_controller({})
+        controller._health_checker_activeness.bump_active(False)
+
+        with pytest.raises(RuntimeError, match="refusing fault injection"):
+            await controller.inject_fault_between_weight_updates("engine-0", mode=FailureMode.SIGKILL, sub_index=0)
+
+        assert not controller.context_lock.locked
+
+        await controller.stop_cell_between_weight_updates("engine-0")
+
+        assert manager.stopped_cells == [["engine-0"]]
+
+    async def test_a_weight_update_cannot_start_while_a_suspension_is_still_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Releasing the lock before the manager has torn the cell down reopens the very race this serializes."""
+        completion: asyncio.Future = asyncio.get_running_loop().create_future()
+        manager = _patch_blocking_worker_manager(monkeypatch, completion=completion)
+        controller = _make_controller({})
+        weight_update_started = asyncio.Event()
+
+        async def _start_weight_update() -> None:
+            async with controller.context_lock:
+                weight_update_started.set()
+
+        stopping = asyncio.create_task(controller.stop_cell_between_weight_updates("engine-0"))
+        await manager.requested.wait()
+        weight_update = asyncio.create_task(_start_weight_update())
+        await asyncio.sleep(0)
+
+        assert not weight_update_started.is_set()
+
+        completion.set_result(None)
+        await stopping
+        await weight_update
+
+        assert weight_update_started.is_set()
