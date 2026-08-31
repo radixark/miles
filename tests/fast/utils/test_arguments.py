@@ -429,13 +429,16 @@ class TestSessionServerPauseGenerationMode:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
-    def test_session_server_rejects_abort(self):
+    def test_session_server_rejects_non_colocate_abort(self):
         args = self._parse(["--use-session-server", "--pause-generation-mode", "abort"])
 
-        with pytest.raises(
-            AssertionError, match="--use-session-server is incompatible with --pause-generation-mode=abort"
-        ):
+        with pytest.raises(AssertionError, match="requires --colocate"):
             miles_validate_args(args)
+
+    def test_session_server_accepts_colocate_abort(self):
+        args = self._parse(["--use-session-server", "--colocate", "--pause-generation-mode", "abort"])
+
+        miles_validate_args(args)
 
     def test_abort_without_session_server_passes(self):
         miles_validate_args(self._parse(["--pause-generation-mode", "abort"]))
@@ -443,6 +446,40 @@ class TestSessionServerPauseGenerationMode:
     @pytest.mark.parametrize("mode", ["retract", "in_place"])
     def test_session_server_accepts_non_abort_modes(self, mode):
         miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
+
+    @pytest.mark.parametrize(
+        ("extra", "expect_warning"),
+        [
+            (
+                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
+                True,
+            ),
+            (["--use-session-server", "--pause-generation-mode", "retract"], False),
+            (["--use-rollout-routing-replay", "--pause-generation-mode", "retract"], False),
+            (
+                [
+                    "--use-session-server",
+                    "--use-rollout-routing-replay",
+                    "--colocate",
+                    "--pause-generation-mode",
+                    "abort",
+                ],
+                False,
+            ),
+            (
+                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "in_place"],
+                False,
+            ),
+        ],
+    )
+    def test_retract_r3_warning(self, caplog, extra, expect_warning):
+        args = self._parse(extra)
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
+        assert warned is expect_warning
 
 
 class TestTitoFixedTemplateConfiguration:

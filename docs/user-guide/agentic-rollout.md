@@ -145,9 +145,7 @@ Whether a replayed message counts as "the same" as the stored one is decided by
 `--session-message-matcher` (default `strict`); see
 [Choose replay matching](#choose-replay-matching).
 
-The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
-for each selected tree leaf. Both versions reject `--pause-generation-mode=abort`
-and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
+The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one for each selected tree leaf. Both versions reject `--partial-rollout`. With R3 replay, colocated `abort` and `in_place` request only additional R3 rows, while `retract` returns full R3 data on every turn and emits a warning because the payloads can become very large. Non-colocated session servers cannot use `abort`.
 
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.

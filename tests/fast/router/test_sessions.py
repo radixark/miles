@@ -578,7 +578,7 @@ class TestChatFakeStreaming:
         assert finish_reason == "stop"
 
 
-# ── additional R3 (in-place weight updates): derivation and request offsets ──
+# ── additional R3 (colocated abort and in-place weight updates): derivation and request offsets ──
 
 
 @contextmanager
@@ -616,7 +616,7 @@ class TestUseAdditionR3Derivation:
     """use_addition_r3 is derived once at server bootstrap from
     pause_generation_mode; it is not independently configurable."""
 
-    @pytest.mark.parametrize(("mode", "expected"), [("in_place", True), ("retract", False)])
+    @pytest.mark.parametrize(("mode", "expected"), [("abort", True), ("in_place", True), ("retract", False)])
     def test_mode_mapping(self, mode, expected):
         args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
         assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
@@ -640,8 +640,9 @@ class TestAdditionR3RequestOffset:
             {"role": "tool", "content": tool_content, "tool_call_id": "t0"},
         ]
 
-    def test_in_place_offsets_across_turns_and_rollback(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    def test_incremental_offsets_across_turns_and_rollback(self, mode):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
 
             first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})

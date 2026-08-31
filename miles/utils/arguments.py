@@ -2925,8 +2925,15 @@ def miles_validate_args(args):
             )
 
     assert not (
-        args.use_session_server and args.pause_generation_mode == "abort"
-    ), "--use-session-server is incompatible with --pause-generation-mode=abort"
+        args.use_session_server and not args.colocate and args.pause_generation_mode == "abort"
+    ), "--use-session-server with --pause-generation-mode=abort requires --colocate"
+
+    if args.use_session_server and args.use_rollout_routing_replay and args.pause_generation_mode == "retract":
+        logger.warning(
+            "--use-session-server with --use-rollout-routing-replay and "
+            "--pause-generation-mode=retract returns full R3 data on every turn; "
+            "R3 payloads can become very large."
+        )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
