@@ -84,6 +84,7 @@ NamedHostAndPorts = dict[str, HostAndPort]
 class LaunchCommandContext(WorkerLaunchContext):
     self_addrs: NamedHostAndPorts
     pool_addrs: dict[str, list[NamedHostAndPorts]]
+    local_gpu_ids: list[int]
 
 
 class CommandWorkerSpec(BaseWorkerSpec):

@@ -236,6 +236,7 @@ class _BaseActorManager(Generic[SpecT]):
     spec: SpecT
     actor_handle: ray.actor.ActorHandle | None
     self_addrs: NamedHostAndPorts | None = None
+    local_gpu_ids: list[int] | None = None
     gpu_slot_index: int | None
 
     async def launch_actor(self) -> None:
@@ -247,7 +248,10 @@ class _BaseActorManager(Generic[SpecT]):
     async def alloc_ports(self) -> None:
         allocated: NamedHostAndPorts = {}
 
-        node_ip = await self.actor_handle._get_node_ip.remote()
+        node_ip, self.local_gpu_ids = await asyncio.gather(
+            self.actor_handle._get_node_ip.remote(),
+            self.actor_handle._to_local_gpu_ids.remote(gpu_ids=self.gpu_ids),
+        )
         for port_info in self.spec.port_infos:
             if self.worker_in_cell_index != 0 and port_info.mode == "master":
                 continue
@@ -354,6 +358,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
                 **self.parent.actors[0].master_mode_addrs,
             },
             pool_addrs=self.manager.get_addrs(),
+            local_gpu_ids=self.local_gpu_ids,
         )
         launch_cmd = self.spec.launch_command(ctx)
         self.actor_handle.run.remote(cmd=launch_cmd, envs={})

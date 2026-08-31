@@ -175,7 +175,7 @@ def _compute_spec_inference_engine(
             # TODO: make the indexing it k8s native compatible
             node_rank=ctx.worker_in_cell_index,
             worker_type=server_group_config.worker_type,
-            base_gpu_id=ctx.gpu_ids[0],
+            base_gpu_id=ctx.local_gpu_ids[0],
             sglang_overrides=server_group_config.overrides,
             num_gpus_per_engine=server_group_config.num_gpus_per_engine,
             dist_init_addr=f"{dist_init.host}:{dist_init.port}",

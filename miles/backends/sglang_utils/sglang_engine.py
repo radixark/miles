@@ -15,24 +15,6 @@ from miles.utils.multi_lora import is_multi_lora_enabled
 logger = logging.getLogger(__name__)
 
 
-def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
-    if not cvd:
-        return physical_gpu_id  # no remapping
-    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
-    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
-    # In a remapped process, valid torch device indices are 0..len(visible)-1
-    if physical_gpu_id in visible:
-        return visible.index(physical_gpu_id)
-    # If we're already getting local IDs, allow them
-    if 0 <= physical_gpu_id < len(visible):
-        return physical_gpu_id
-    raise RuntimeError(
-        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
-        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
-    )
-
-
 def format_v6_uri(addr: str | None) -> str | None:
     if not addr or addr.startswith("["):
         return addr
@@ -105,7 +87,6 @@ def _compute_server_args(
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
-    base = _to_local_gpu_id(base_gpu_id)
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
@@ -120,7 +101,7 @@ def _compute_server_args(
         "node_rank": node_rank,
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
-        "base_gpu_id": base,
+        "base_gpu_id": base_gpu_id,
         "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,

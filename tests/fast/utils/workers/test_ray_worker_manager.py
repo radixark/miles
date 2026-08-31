@@ -996,6 +996,51 @@ class TestGpuPlacement:
         assert recorder.context_of(cell_index=0, worker_in_cell_index=0).gpu_ids == [4, 5]
         assert recorder.context_of(cell_index=0, worker_in_cell_index=1).gpu_ids == [6, 7]
 
+    async def test_local_gpu_ids_are_resolved_by_the_worker_itself_before_its_command_is_built(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """The manager has no visibility mask of its own, so only the worker can turn its ids into local ones."""
+        recorder = _LaunchRecorder()
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+            launch_command=recorder.command,
+        )
+        await _launch([spec], _make_pgs(num_slots=8, first_gpu_id=4))
+
+        assert [call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("_to_local_gpu_ids")] == [[4, 5], [6, 7]]
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).local_gpu_ids == [0, 1]
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=1).local_gpu_ids == [0, 1]
+        assert fake_ray_cluster.last_event_index("_to_local_gpu_ids") < fake_ray_cluster.first_event_index("run")
+
+    async def test_each_worker_is_asked_about_its_own_gpu_ids(self, fake_ray_cluster: FakeRayCluster):
+        """Probing one worker on behalf of the whole cell would describe every engine with that worker's mask."""
+        spec = _make_spec(
+            "engine",
+            num_workers_per_cell=2,
+            num_gpus_per_worker=0.2,
+            num_gpu_slots_per_worker=2,
+            pg_name="rollout",
+        )
+        await _launch([spec], _make_pgs(num_slots=8, first_gpu_id=4))
+
+        asked = {call.handle.index: call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("_to_local_gpu_ids")}
+        assert asked == {0: [4, 5], 1: [6, 7]}
+
+    async def test_a_worker_that_owns_no_gpu_is_launched_with_an_empty_local_gpu_id_list(
+        self, fake_ray_cluster: FakeRayCluster
+    ):
+        """A gpu-less worker is probed like any other, and its command still has to receive a list."""
+        recorder = _LaunchRecorder()
+        spec = _make_spec("router", launch_command=recorder.command)
+        await _launch([spec])
+
+        assert [call.kwargs["gpu_ids"] for call in fake_ray_cluster.calls_of("_to_local_gpu_ids")] == [[]]
+        assert recorder.context_of(cell_index=0, worker_in_cell_index=0).local_gpu_ids == []
+
     async def test_a_pg_worker_is_scheduled_on_the_bundle_its_slot_maps_to(self, fake_ray_cluster: FakeRayCluster):
         """The actor is placed on the reordered bundle of its slot, not on the raw slot index."""
         pgs = _make_pgs(num_slots=8)

@@ -145,6 +145,71 @@ class TestNodeProbeMixin:
                     )
                     available_socket.bind(("", port))
 
+    def test_to_local_gpu_ids_passes_ids_through_without_a_visibility_mask(self, monkeypatch):
+        """A worker that sees every gpu already got local ids, so remapping them would corrupt them."""
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[4, 5]) == [4, 5]
+
+    def test_to_local_gpu_ids_remaps_physical_ids_under_a_visibility_mask(self, monkeypatch):
+        """The probe must run where the mask is, otherwise a masked worker is told to use a device it cannot see."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[4, 6]) == [0, 2]
+
+    def test_to_local_gpu_ids_rejects_an_id_outside_the_visibility_mask(self, monkeypatch):
+        """An id belonging to no visible device is a placement bug and must not be silently passed on."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+
+        with pytest.raises(RuntimeError, match="not valid under CUDA_VISIBLE_DEVICES"):
+            NodeProbeMixin._to_local_gpu_ids(gpu_ids=[7])
+
+    def test_to_local_gpu_ids_falls_back_to_the_rocm_visibility_mask(self, monkeypatch):
+        """On an AMD node the mask lives in HIP_VISIBLE_DEVICES, and ignoring it hands out a foreign id."""
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "4,5,6,7")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[5, 7]) == [1, 3]
+
+    def test_to_local_gpu_ids_prefers_the_cuda_mask_when_both_masks_are_set(self, monkeypatch):
+        """Torch honours CUDA_VISIBLE_DEVICES first, so resolving against the rocm mask would disagree with it."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "6,7")
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "4,5")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[7]) == [1]
+
+    def test_to_local_gpu_ids_accepts_ids_that_are_already_local_to_the_mask(self, monkeypatch):
+        """A caller that resolved its ids elsewhere must not be rejected as out of range."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[0, 1]) == [0, 1]
+
+    def test_to_local_gpu_ids_keeps_the_order_of_the_ids_it_was_given(self, monkeypatch):
+        """The first entry becomes the engine base id, so reordering silently moves the engine to another device."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[7, 5]) == [3, 1]
+
+    def test_to_local_gpu_ids_answers_a_worker_that_owns_no_gpu_with_an_empty_list(self, monkeypatch):
+        """Every worker is probed, including the gpu-less ones, so no gpu must not mean no answer."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[]) == []
+
+    def test_to_local_gpu_ids_ignores_blank_entries_in_the_visibility_mask(self, monkeypatch):
+        """A trailing comma is legal in the mask and must not crash the probe that parses it."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,")
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[5]) == [1]
+
+    def test_to_local_gpu_ids_treats_an_empty_visibility_mask_as_no_mask(self, monkeypatch):
+        """An empty mask spans no id space to map into, so the ids have to pass through untouched."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
+
+        assert NodeProbeMixin._to_local_gpu_ids(gpu_ids=[3]) == [3]
+
     def test_get_gpu_uuids_returns_one_entry_per_gpu(self):
         """The uuid probe is best-effort: without NVML it still answers per gpu."""
         uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])

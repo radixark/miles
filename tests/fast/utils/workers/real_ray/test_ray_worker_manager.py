@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -11,6 +12,7 @@ from tests.fast.utils.workers.real_ray.conftest import (
     wait_until_named_manager_is_gone,
 )
 
+from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.utils.http_utils import wait_tcp_ready
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
@@ -283,6 +285,7 @@ class TestPlacementOnRealRay:
                     num_gpus_per_worker=0.5,
                     num_gpu_slots_per_worker=2,
                     pg_name="rollout",
+                    env_var={name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
                 )
             ],
             pgs,
@@ -292,7 +295,9 @@ class TestPlacementOnRealRay:
 
         assert records["0-0"]["context"]["gpu_ids"] == [10, 11]
         assert records["1-0"]["context"]["gpu_ids"] == [12, 13]
-        assert all(record["env"]["CUDA_VISIBLE_DEVICES"] for record in records.values())
+        assert {record["env"]["CUDA_VISIBLE_DEVICES"] for record in records.values()} == {
+            os.environ.get("CUDA_VISIBLE_DEVICES")
+        }
         assert len(ray.get(handle.get_addrs.remote())["engine"]) == 2
 
 

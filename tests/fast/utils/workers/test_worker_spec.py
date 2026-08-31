@@ -33,6 +33,7 @@ def _make_launch_command_context(**overrides) -> LaunchCommandContext:
         cell_index=0,
         worker_in_cell_index=0,
         gpu_ids=[],
+        local_gpu_ids=[],
         self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
         pool_addrs={},
     )
@@ -122,6 +123,21 @@ class TestBaseWorkerSpec:
         spec = BaseWorkerSpec(**_make_base_kwargs())
         with pytest.raises(ValidationError):
             spec.name = "other"
+
+
+class TestLaunchCommandContext:
+    def test_the_context_refuses_to_be_built_without_local_gpu_ids(self):
+        """A default here would let a manager that never probed the worker launch it against the wrong devices."""
+        kwargs = dict(
+            cell_index=0,
+            worker_in_cell_index=0,
+            gpu_ids=[],
+            self_addrs={"http": HostAndPort(host="127.0.0.1", port=8000)},
+            pool_addrs={},
+        )
+
+        with pytest.raises(ValidationError):
+            LaunchCommandContext(**kwargs)
 
 
 class TestCommandWorkerSpec:

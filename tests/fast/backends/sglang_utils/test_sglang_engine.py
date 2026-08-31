@@ -63,6 +63,14 @@ class TestComputeEngineLaunchCmd:
         assert parsed.gated_launch_port == 20034
         assert parsed.model_path == str(tiny_model_path())
 
+    def test_the_base_gpu_id_reaches_the_server_unchanged_under_a_visibility_mask(self, monkeypatch):
+        """Whoever renders the command may see a different set of devices than the engine will."""
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+
+        parsed = parse_server_args_argv(shlex.split(_cmd(base_gpu_id=6))[3:])
+
+        assert parsed.base_gpu_id == 6
+
     def test_a_bracketed_v6_host_is_stripped_for_the_server_but_kept_in_dist_addr(self):
         """sglang binds a bare v6 host while the rendezvous addr stays bracketed."""
         cmd = _cmd(addr_overrides=dict(host="[fd00::2]", port=31007, dist_init_addr="[fd00::1]:15003"))

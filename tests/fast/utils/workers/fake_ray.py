@@ -9,12 +9,13 @@ from typing import Any
 _ASYNC_METHOD_NODE_IP = "_get_node_ip"
 _ASYNC_METHOD_FREE_PORT_BLOCK = "_get_free_port_block"
 _ASYNC_METHOD_IS_PORT_AVAILABLE = "_is_port_available"
+_ASYNC_METHOD_TO_LOCAL_GPU_IDS = "_to_local_gpu_ids"
 
 EVENT_CREATE = "create"
 EVENT_KILL = "kill"
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, eq=False)
 class FakeRayObjectRef:
     method: str
     value: Any = None
@@ -52,7 +53,7 @@ class FakeRayActorMethod:
         return self.handle.cluster.dispatch(handle=self.handle, method=self.method, args=args, kwargs=kwargs)
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, eq=False)
 class FakeRayActorHandle:
     cluster: FakeRayCluster
     actor_class: type
@@ -183,6 +184,9 @@ class FakeRayCluster:
     def _compute_value(self, *, handle: FakeRayActorHandle, method: str, kwargs: dict[str, Any]) -> Any:
         if method == _ASYNC_METHOD_NODE_IP:
             return handle.node_ip
+        if method == _ASYNC_METHOD_TO_LOCAL_GPU_IDS:
+            # a worker whose visibility mask hides the leading gpus sees itself starting at 0
+            return list(range(len(kwargs["gpu_ids"])))
         if method == _ASYNC_METHOD_IS_PORT_AVAILABLE:
             return kwargs["port"] not in self._used_ports.get(handle.node_ip, set())
         if method == _ASYNC_METHOD_FREE_PORT_BLOCK:
