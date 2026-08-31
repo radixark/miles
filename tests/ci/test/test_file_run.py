@@ -133,9 +133,7 @@ def test_resolve_accepts_a_label_declared_by_the_source_snapshot(tmp_path):
     label_root = source_root / "tests" / "ci"
     test_root.mkdir(parents=True)
     label_root.mkdir(parents=True)
-    (label_root / "labels.py").write_text(
-        'KNOWN_LABELS: dict[str, str] = {"source-new": "Source-only test domain"}\n'
-    )
+    (label_root / "labels.py").write_text('KNOWN_LABELS: dict[str, str] = {"source-new": "Source-only test domain"}\n')
     (test_root / "test_source_new.py").write_text(
         "from tests.ci.ci_register import register_cuda_ci\n"
         'register_cuda_ci(est_time=60, suite="stage-c-4-gpu-h200", labels=["source-new"])\n'
