@@ -55,6 +55,9 @@ done
 echo "Teacher model server is up at $TEACHER_IP:$TEACHER_PORT."
 
 export PYTHONUNBUFFERED=1
+# Only the v1 rollout records the student's per-position top-k, which rm.py reads from
+# sample metadata. Validation rejects a student-side top-k strategy without it.
+export MILES_USE_LEGACY_ROLLOUT_V1=1
 
 MODEL_ARGS_LINE="$(python3 "${SCRIPT_DIR}/../../../miles/utils/external_utils/model_args_utils.py" "qwen3-1.7B")" || exit 1
 read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
@@ -124,13 +127,16 @@ PERF_ARGS=(
    --max-tokens-per-gpu 16384
 )
 
-# The task reward is 0, so the teacher log-probs are the entire learning signal.
+# The task reward is 0, so the divergence from the teacher is the entire learning signal.
 GRPO_ARGS=(
    --advantage-estimator grpo
    --use-opd
    --opd-type sglang
    --opd-kl-coef 1.0
-   --opd-log-prob-top-k 0
+   # Puts top_logprobs_num on the rollout request, so the student's top-k arrives with
+   # generation and rm.py needs no second scoring call to build the support.
+   --opd-log-prob-top-k 16
+   --opd-top-k-strategy intersection
    --use-kl-loss
    --kl-loss-coef 0.00
    --kl-loss-type low_var_kl

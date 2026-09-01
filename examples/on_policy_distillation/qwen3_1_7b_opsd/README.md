@@ -26,7 +26,7 @@ evaluation keep it on, which is the configuration the paper adopts. Each trainin
 carries the rendered teacher prompt in `metadata`.
 
 `rm.py` is wired through `--custom-rm-path`. For a training row it scores the teacher and
-sets `sample.teacher_log_probs`, returning 0.0 so the task reward contributes nothing. For
+sets `sample.opd_reverse_kl`, returning 0.0 so the task reward contributes nothing. For
 a held-out row it grades the boxed answer. Held-out rows are scored here rather than by
 `rm_type` because `--custom-rm-path` is consulted unconditionally.
 
@@ -39,16 +39,24 @@ AIME24 Avg@12, temperature 1.0, top-p 0.95, top-k -1, 38912 new tokens, thinking
 
 ## Objective
 
-The teacher's log-probs at the student's own sampled tokens, handed to miles as
-`sample.teacher_log_probs`. `--use-opd` turns those into the per-token reverse KL
-`log p_S - log p_T` and subtracts it from the advantage. This is the paper's documented
-sampled-token alternative, not the objective its headline numbers come from.
+Top-k reverse KL, clipped per vocabulary entry at tau=0.05, which is the paper's
+`jsd_token_clip`. For each response position `rm.py` sums `p_S(v) * (log p_S(v) - log
+p_T(v))` over the ids both sides ranked, clipping each entry before the sum so a few
+stylistic tokens cannot carry the update, and hands the result to miles as
+`sample.opd_reverse_kl`.
 
-That headline objective is forward KL over the teacher's distribution, clipped per
-vocabulary entry. It cannot be expressed in a reward function: a reward function runs
-after generation and sees only the sampled tokens, while forward KL needs the student's
-logits at training time to be differentiable. It is therefore a core feature rather than
-an example, and this example does not reproduce the paper's accuracy curve.
+Neither side costs an extra scoring call. `--opd-log-prob-top-k` puts `top_logprobs_num`
+on the rollout request, so the student's top-k arrives with generation and lands in
+sample metadata; the teacher's comes from the same call that reads the privileged prompt.
+That is what keeps the objective expressible as a reward function. It does require
+`MILES_USE_LEGACY_ROLLOUT_V1=1`, since only the v1 rollout records the student's
+per-position top-k.
+
+The paper's headline objective is forward KL rather than reverse, and that one cannot
+live here. The advantage path applies a per-token scalar through the policy gradient,
+which recovers the reverse-KL gradient but not the forward-KL one, and forward KL needs
+the student's logits at training time to be differentiable. It is a core feature, so this
+example does not reproduce the paper's accuracy curve.
 
 `math_verify` is graded with `parsing_timeout=None`. Its default timeout uses
 `signal.alarm()`, which only works on the main thread, and reward functions run on a
