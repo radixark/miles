@@ -90,7 +90,8 @@ def allocate_gpus_for_actor(
             ),
         )
         if args.offload_train_target == "disk" and args.offload_train and args.train_backend == "megatron":
-            rank_dir = os.path.join(args.offload_train_disk_dir, f"cell{cell_index}_rank{rank}")
+            role_tag = "" if role == "actor" else f"{role}_"
+            rank_dir = os.path.join(args.offload_train_disk_dir, f"{role_tag}cell{cell_index}_rank{rank}")
             options["runtime_env"] = {"env_vars": {**env_vars, "TMS_DISK_BACKUP_DIR": rank_dir}}
         actor = TrainRayActor.options(**options).remote(
             args,
