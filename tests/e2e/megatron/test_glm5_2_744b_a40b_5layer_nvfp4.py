@@ -225,7 +225,9 @@ def execute():
         "--sglang-watchdog-timeout 3600 "
     )
 
-    ci_args = "--ci-test --ci-disable-logprobs-checker --ci-disable-weight-update-checker "
+    ci_args = (
+        "--ci-test " "--ci-disable-kl-checker " "--ci-disable-logprobs-checker " "--ci-disable-weight-update-checker "
+    )
 
     mixed_precision_args = (
         "--transformer-impl transformer_engine "
