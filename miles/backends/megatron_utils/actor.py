@@ -290,6 +290,21 @@ class MegatronTrainRayActor(TrainRayActor):
 
         return start_rollout_id
 
+    def _clear_quantized_weight_workspaces(self) -> None:
+        if not (
+            self.args.clear_quantized_weight_workspaces_on_offload
+            and self.args.transformer_impl == "transformer_engine"
+            # A captured CUDA graph replays with the workspace address baked in.
+            and self.args.cuda_graph_impl == "none"
+        ):
+            return
+        from transformer_engine.pytorch.module.base import TransformerEngineBaseModule
+
+        for model_chunk in self.model:
+            for module in model_chunk.modules():
+                if isinstance(module, TransformerEngineBaseModule):
+                    module._fp8_workspaces.clear()
+
     @with_logs
     @timer
     def sleep(self) -> None:
@@ -298,6 +313,7 @@ class MegatronTrainRayActor(TrainRayActor):
             logger.info("sleep() called while already offloaded; skipping")
             return
 
+        self._clear_quantized_weight_workspaces()
         clear_memory(clear_host_memory=True)
         print_memory("before offload model")
         should_log_cpu_memory = is_first_replica_megatron_main_rank() and hasattr(self, "_last_rollout_id")
@@ -371,6 +387,7 @@ class MegatronTrainRayActor(TrainRayActor):
                 num_microbatches,
                 rollout_id=rollout_id,
                 store_prefix=store_prefix,
+                fp32_output=False,
             )
 
     @with_logs

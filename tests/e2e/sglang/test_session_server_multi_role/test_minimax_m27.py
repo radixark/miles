@@ -12,7 +12,7 @@ from tests.ci.metric_history import register_ci_gate
 from tests.e2e.sglang.test_session_server_multi_role._common import ModelConfig, run_both_versions
 
 register_cuda_ci(
-    est_time=800,
+    est_time=1200,
     suite="stage-c-4-gpu-h200",
     labels=["sglang"],
     disabled="MiniMax-M2.7 is deprecated.",
@@ -48,6 +48,8 @@ CONFIG = ModelConfig(
     cycles=2,
     assistant_text_threshold=0.1,
     tool_call_failure_mode="append_user",
+    # MiniMax does not reliably honor forced Anthropic tool_use responses.
+    verify_anthropic=False,
 )
 
 

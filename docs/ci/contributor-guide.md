@@ -31,6 +31,7 @@ Pick the `suite` by the hardware your test needs. The simplest reliable choice i
 | `stage-c-2-gpu-h200` | 2× H200 | 2-GPU tests |
 | `stage-c-4-gpu-h200` | 4× H200 | 4-GPU tests |
 | `stage-c-8-gpu-h100` | 8× H100 | 8-GPU tests |
+| `stage-c-8-gpu-b200` | 8× B200 | tests that need Blackwell (nvfp4, mxfp8) — any GPU count |
 
 ### Verify it definitely runs
 

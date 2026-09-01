@@ -24,7 +24,7 @@ class SGLangServerActor:
         placement_group = ray.util.get_current_placement_group()
         assert placement_group is not None
         engine = launch_engine(server_args, placement_group=placement_group)
-        _, _, _, scheduler_init_result, _ = engine
+        _, _, _, scheduler_init_result, _, _ = engine
         self._serve_thread = threading.Thread(
             target=serve_http,
             args=(engine, server_args),
