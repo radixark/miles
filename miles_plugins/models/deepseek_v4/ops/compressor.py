@@ -1,6 +1,7 @@
 import einops
 import torch
 import torch.nn as nn
+from megatron.core.transformer.module import mark_keep_in_fp32
 from megatron.core.transformer.transformer_config import TransformerConfig
 from torch.nn import Linear
 
@@ -83,13 +84,13 @@ class DeepSeekV4Compressor(nn.Module):
         self.cp_rank = cp_group.rank() if cp_group is not None else 0
 
         self.ape = nn.Parameter(torch.empty(compress_ratio, coff * self.head_dim, dtype=torch.float32))
-        self.wkv = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
-        self.wgate = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
+        self.linear_wkv = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
+        self.linear_wgate = Linear(self.dim, coff * self.head_dim, bias=False, dtype=torch.bfloat16)
         self.norm = RMSNorm(self.head_dim, norm_eps)
 
-        self.ape._keep_fp32 = True
+        mark_keep_in_fp32(self.ape)
 
-        base = config.dsv4_compress_rope_theta
+        base = config.csa_compress_rotary_base
         assert rope_head_dim == 64
         assert base == 160000
 
@@ -121,8 +122,8 @@ class DeepSeekV4Compressor(nn.Module):
 
     def forward_raw(self, x: torch.Tensor) -> torch.Tensor:
         assert self.ape.dtype == torch.float32
-        assert self.wkv.weight.dtype == torch.bfloat16
-        assert self.wgate.weight.dtype == torch.bfloat16
+        assert self.linear_wkv.weight.dtype == torch.bfloat16
+        assert self.linear_wgate.weight.dtype == torch.bfloat16
 
         bsz, seqlen_local, _ = x.size()
         ratio, overlap, _ = self.compress_ratio, self.overlap, self.head_dim
@@ -132,8 +133,8 @@ class DeepSeekV4Compressor(nn.Module):
         if self.cp_size > 1:
             assert seqlen_local % (ratio * 2) == 0
 
-        kv = linear_bf16_fp32(x, self.wkv.weight)
-        score = linear_bf16_fp32(x, self.wgate.weight)
+        kv = linear_bf16_fp32(x, self.linear_wkv.weight)
+        score = linear_bf16_fp32(x, self.linear_wgate.weight)
 
         kv = kv.unflatten(1, (-1, ratio))
         score = score.unflatten(1, (-1, ratio)) + self.ape
@@ -150,7 +151,7 @@ class DeepSeekV4Compressor(nn.Module):
         freqs_cis = wrapped_precompute_freqs_cis(
             self.config,
             self.rope_head_dim,
-            self.config.dsv4_compress_rope_theta,
+            self.config.csa_compress_rotary_base,
             False,
             seqlen_local * self.cp_size,
             x.device,

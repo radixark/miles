@@ -60,8 +60,50 @@ function sortableTable(rows, columns, { onRowClick, flagRow, sortState }) {
   return wrap;
 }
 
+// How far back the "latest" landing will look for a step it can actually show.
+// Anything deeper than this is not a fresh-dump race any more, so stopping lets
+// the real error surface instead of silently walking the reader into old data.
+const LANDING_LOOKBACK = 5;
+
+// The newest step is listed as soon as its dump file exists, which is earlier
+// than it can be read: the dump may still be mid-write (503), truncated, or
+// recorded with no samples at all. Land on the newest step that actually has
+// samples instead of on an error page.
+async function resolveLatest(ids, evaluation) {
+  for (const id of ids.slice(-LANDING_LOOKBACK).reverse()) {
+    try {
+      const summary = await api(`/api/rollout/${id}/summary`, { eval: evaluation }, { retry503: false });
+      if (summary.rows.length) return id;
+    } catch {
+      /* mid-write, truncated, or already rotated away: try the step before it */
+    }
+  }
+  // nothing readable nearby: go to the newest anyway so the reader sees the
+  // real error rather than a silent redirect into stale data
+  return ids.at(-1);
+}
+
 export async function renderRollout(view, meta, route) {
-  const { rolloutId, evaluation } = route;
+  const { evaluation } = route;
+  let { rolloutId } = route;
+  if (rolloutId === null) {
+    const candidates = evaluation ? meta.rollout_ids.eval : meta.rollout_ids.train;
+    if (!candidates.length) {
+      const kind = evaluation ? "eval" : "rollout";
+      view.replaceChildren(el("p", { class: "muted" }, [`No ${kind} steps have been dumped yet.`]));
+      return;
+    }
+    view.replaceChildren(el("p", { class: "muted" }, ["finding the newest step with data…"]));
+    const entryHash = location.hash;
+    rolloutId = await resolveLatest(candidates, evaluation);
+    // the resolve spans several requests; if the user navigated away in the
+    // meantime, rewriting the URL now would drag them back into this view
+    if (location.hash !== entryHash) return;
+    // rewrite the URL to the step actually shown, so reloads, Prev/Next and
+    // the breadcrumb all work off a real id
+    location.replace(`#/rollout/${rolloutId}${evaluation ? "?eval=1" : ""}`);
+    return;
+  }
   const [summary, groups] = await Promise.all([
     api(`/api/rollout/${rolloutId}/summary`, { eval: evaluation }),
     api(`/api/rollout/${rolloutId}/groups`, { eval: evaluation }),
