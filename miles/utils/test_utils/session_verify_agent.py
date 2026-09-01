@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from enum import Enum
+from functools import wraps
 
 try:
     from enum import StrEnum
@@ -26,6 +27,48 @@ from miles.utils.chat_template_utils.tito_tokenizer import VALID_APPEND_ROLES, T
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 
 logger = logging.getLogger(__name__)
+
+
+def _append_session_verify_record(entry: dict) -> bool:
+    metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
+    if not metrics_path:
+        return False
+    payload = (json.dumps(entry) + "\n").encode()
+    fd = os.open(
+        metrics_path,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_CLOEXEC", 0),
+        0o600,
+    )
+    try:
+        written = os.write(fd, payload)
+        if written != len(payload):
+            raise OSError(f"short metrics sidecar write: expected {len(payload)} bytes, wrote {written}")
+    finally:
+        os.close(fd)
+    return True
+
+
+def _journal_verifier_assertions(stage: str):
+    def decorate(func):
+        @wraps(func)
+        async def wrapped(*args, **kwargs):
+            try:
+                return await func(*args, **kwargs)
+            except AssertionError as exc:
+                _append_session_verify_record(
+                    {
+                        "verification_error": {
+                            "stage": stage,
+                            "type": type(exc).__name__,
+                            "message": str(exc)[:1000],
+                        }
+                    }
+                )
+                raise
+
+        return wrapped
+
+    return decorate
 
 
 class DriverAction(Enum):
@@ -80,7 +123,7 @@ TOOL_CALL_PARSE_FAILURE_TEXT = (
 
 # Mismatch tiers reported by the session-server's per-sample comparator
 # (sessions.py:83).  Any occurrence of these "hard" types in a sample's
-# tito_session_mismatch indicates a TITO bug and fails the sample.  The
+# tito_session_mismatch indicates a TITO bug and fails the verifier run.  The
 # soft `assistant_text` tier is excluded — it is aggregated across samples
 # and gated by a ratio threshold instead.
 _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
@@ -91,6 +134,8 @@ _FORBIDDEN_MISMATCH_TYPES: frozenset[str] = frozenset(
 # (pytest via ``run_session_verify``).  Smaller-context models with a 4K
 # response budget should drop to 2 to avoid context overflow.
 DEFAULT_CYCLES = 3
+_MAX_INCOMPLETE_TURN_RETRIES = 2
+_RETRY_SEED_STRIDE = 1_000_000
 
 
 def fixed_template_append_roles(tito_model: TITOTokenizerType | str) -> tuple[str, ...]:
@@ -203,6 +248,21 @@ async def _chat(client, base_url, messages, request_kwargs, *, label):
     return resp.json()
 
 
+async def _chat_complete(client, base_url, messages, request_kwargs, *, label):
+    for retry in range(_MAX_INCOMPLETE_TURN_RETRIES + 1):
+        attempt_kwargs = request_kwargs
+        if retry and request_kwargs.get("seed") is not None:
+            attempt_kwargs = {
+                **request_kwargs,
+                "seed": request_kwargs["seed"] + retry * _RETRY_SEED_STRIDE,
+            }
+        response = await _chat(client, base_url, messages, attempt_kwargs, label=label)
+        if response["choices"][0].get("finish_reason") != "length":
+            return response
+    raise AssertionError(f"{label} exhausted {_MAX_INCOMPLETE_TURN_RETRIES} retries after finish_reason='length'")
+
+
+@_journal_verifier_assertions("session_verify_agent.run_agent")
 async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     """Custom-agent entry point.  Returns ``{"driver_events": [...], **counters}``.
 
@@ -248,7 +308,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
 
     async with httpx.AsyncClient(timeout=180) as client:
         # Initial completion — no driver action yet.
-        resp = await _chat(client, base_url, messages, rk, label="Initial")
+        resp = await _chat_complete(client, base_url, messages, rk, label="Initial")
         assistant = resp["choices"][0]["message"]
         messages.append(assistant)
         events.append("initial")
@@ -356,7 +416,7 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
             else:
                 raise AssertionError(f"Unknown DriverAction {action!r}")
 
-            resp = await _chat(client, base_url, messages, rk, label=label)
+            resp = await _chat_complete(client, base_url, messages, rk, label=label)
             assistant = resp["choices"][0]["message"]
             messages.append(assistant)
             counters["tool_call_count"] += len(assistant.get("tool_calls") or [])
@@ -366,6 +426,65 @@ async def run_agent(base_url, prompt, request_kwargs, metadata, **kwargs):
     return {"driver_events": events, **counters}
 
 
+def _verify_tito_samples(samples, events_per_sample, *, allowed_roles) -> None:
+    """Record every sample and defer hard failures to the run-level gate.
+
+    The rollout loop treats custom-generate exceptions as retryable sample
+    failures.  With a metrics sidecar, hard TITO mismatches must therefore be
+    persisted instead of raised here and discarded with the sample.  Direct
+    callers without a sidecar retain the immediate-failure behavior.
+    """
+    metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
+    for i, sample in enumerate(samples):
+        mismatches = sample.metadata.get("tito_session_mismatch")
+        if mismatches is None:
+            raise AssertionError(
+                f"Session multi-role e2e: sample {i} has no tito_session_mismatch "
+                f"in metadata.  The session-server's compute_session_mismatch raised "
+                f"TokenizationError (sessions.py:83 swallows it) — this always "
+                f"indicates a TITO subclass / setup bug, not a real PASS."
+            )
+        forbidden = [m for m in mismatches if m.get("type") in _FORBIDDEN_MISMATCH_TYPES]
+        assistant_mismatches = [m for m in mismatches if m.get("type") == "assistant_text"]
+        if metrics_path:
+            had_assistant_mismatch = bool(assistant_mismatches)
+            assistant_example = None
+            if assistant_mismatches:
+                first = assistant_mismatches[0]
+                assistant_example = {
+                    "segment_index": first.get("segment_index"),
+                    "expected_text": (first.get("expected_text") or "")[:300],
+                    "actual_text": (first.get("actual_text") or "")[:300],
+                }
+            hard_example = None
+            if forbidden:
+                first = forbidden[0]
+                hard_example = {
+                    "type": first.get("type"),
+                    "segment_index": first.get("segment_index"),
+                    "detail": str(first.get("detail") or "")[:500],
+                }
+            entry = {
+                "sample_index": i,
+                "driver_events": events_per_sample[i],
+                "had_assistant_mismatch": had_assistant_mismatch,
+                "total_mismatches": len(mismatches),
+                "assistant_mismatch_count": len(assistant_mismatches),
+                "assistant_mismatch_example": assistant_example,
+                "hard_mismatch_count": len(forbidden),
+                "hard_mismatch_types": sorted({m.get("type") for m in forbidden}),
+                "hard_mismatch_example": hard_example,
+            }
+            _append_session_verify_record(entry)
+        elif forbidden:
+            raise AssertionError(
+                f"Session multi-role e2e: sample {i} has forbidden mismatches "
+                f"{forbidden}. allowed_roles={allowed_roles}.  These types must be 0 "
+                f"for any TITO-correct setup."
+            )
+
+
+@_journal_verifier_assertions("session_verify_agent.generate")
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     """Custom-generate wrapper that asserts driver-action coverage.
 
@@ -389,6 +508,10 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     events_per_sample = [s.metadata.get("driver_events", []) for s in samples]
     metrics_path = os.environ.get("MILES_SESSION_VERIFY_METRICS_PATH")
 
+    if not samples:
+        raise AssertionError("Session multi-role e2e: generate returned no samples")
+    _verify_tito_samples(samples, events_per_sample, allowed_roles=allowed_roles)
+
     required_per_sample = ["rollback"]
     if "user" in allowed_roles:
         required_per_sample.append("append_user")
@@ -410,48 +533,6 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
             "Session multi-role e2e: no sample produced an append_tool action — "
             f"the model may not be tool-calling.  events_per_sample={events_per_sample}"
         )
-
-    for i, sample in enumerate(samples):
-        mismatches = sample.metadata.get("tito_session_mismatch")
-        if mismatches is None:
-            raise AssertionError(
-                f"Session multi-role e2e: sample {i} has no tito_session_mismatch "
-                f"in metadata.  The session-server's compute_session_mismatch raised "
-                f"TokenizationError (sessions.py:83 swallows it) — this always "
-                f"indicates a TITO subclass / setup bug, not a real PASS."
-            )
-        forbidden = [m for m in mismatches if m.get("type") in _FORBIDDEN_MISMATCH_TYPES]
-        if forbidden:
-            raise AssertionError(
-                f"Session multi-role e2e: sample {i} has forbidden mismatches "
-                f"{forbidden}. allowed_roles={allowed_roles}.  These types must be 0 "
-                f"for any TITO-correct setup."
-            )
-        if metrics_path:
-            assistant_mismatches = [m for m in mismatches if m.get("type") == "assistant_text"]
-            had_assistant_mismatch = bool(assistant_mismatches)
-            example = None
-            if assistant_mismatches:
-                first = assistant_mismatches[0]
-                example = {
-                    "segment_index": first.get("segment_index"),
-                    "expected_text": (first.get("expected_text") or "")[:300],
-                    "actual_text": (first.get("actual_text") or "")[:300],
-                }
-            with open(metrics_path, "a") as f:
-                f.write(
-                    json.dumps(
-                        {
-                            "sample_index": i,
-                            "driver_events": events_per_sample[i],
-                            "had_assistant_mismatch": had_assistant_mismatch,
-                            "total_mismatches": len(mismatches),
-                            "assistant_mismatch_count": len(assistant_mismatches),
-                            "assistant_mismatch_example": example,
-                        }
-                    )
-                    + "\n"
-                )
 
     logger.info(
         "Multi-role coverage verified: per_sample=%s, samples=%d, events=%s",

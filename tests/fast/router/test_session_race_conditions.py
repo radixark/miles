@@ -65,6 +65,7 @@ def _router_env(process_fn, *, latency: float = 0.0):
                 chat_template_path=None,
                 trajectory_manager="linear_trajectory",
                 sglang_speculative_algorithm=None,
+                pause_generation_mode="retract",
             )
             server_obj = SessionServer(args, backend_url=backend.url)
 
