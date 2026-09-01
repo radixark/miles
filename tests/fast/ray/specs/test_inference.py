@@ -29,6 +29,13 @@ def _make_model_cfg(*worker_types: str) -> ModelConfig:
     return ModelConfig(name="default", model_path=None, server_groups=groups, update_weights=True)
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_miles_host_ip(monkeypatch):
+    """The specs read MILES_HOST_IP, so an ambient value would skew every
+    launch-command assertion in this module; tests that want it set it."""
+    monkeypatch.delenv("MILES_HOST_IP", raising=False)
+
+
 def _make_router_ctx(*, port: int = 20000, prometheus_port: int = 4001) -> LaunchCommandContext:
     return LaunchCommandContext(
         cell_index=0,
@@ -98,6 +105,35 @@ class TestComputeSpecRouterLaunchCommand:
         assert config.port == 20000
         assert config.max_connections == 100
 
+    @pytest.mark.parametrize("use_miles_router", [False, True], ids=["sgl", "miles"])
+    def test_bind_host_falls_back_to_miles_host_ip(self, monkeypatch, use_miles_router):
+        """Either router binds MILES_HOST_IP when set, so a recipe passing
+        --miles-host-ip 0.0.0.0 still gets a router that accepts forwarded
+        connections; the placed address is the default."""
+        args = make_args(
+            use_miles_router=use_miles_router,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            miles_router_max_connections=100,
+            miles_router_timeout=None,
+            miles_router_health_check_failure_threshold=3,
+            rollout_health_check_interval=10.0,
+        )
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        def bind_host() -> str:
+            # Parse rather than scan the argv: the sgl renderer omits args that
+            # equal the CLI default, and parsing yields the effective value either way.
+            argv = shlex.split(spec.launch_command(_make_router_ctx()))
+            if use_miles_router:
+                return parse_config_argv(MilesRouterConfig, argv[3:]).host
+            return parse_router_args_argv(argv[3:]).host
+
+        assert bind_host() == "127.0.0.1"
+
+        monkeypatch.setenv("MILES_HOST_IP", "0.0.0.0")
+        assert bind_host() == "0.0.0.0"
+
 
 class TestComputeSpecSessionServer:
     def test_launch_command_wires_the_router_backend_and_roundtrips(self):
@@ -138,6 +174,48 @@ class TestComputeSpecSessionServer:
         assert config.host == "127.0.0.1"
         assert config.port == 5006
         assert config.instance_id == f"{args.run_uuid}-1"
+
+    def test_bind_host_falls_back_from_the_flag_to_miles_host_ip_to_the_placement(self, monkeypatch):
+        """--session-server-ip wins; MILES_HOST_IP is next, so a recipe passing
+        --miles-host-ip 0.0.0.0 still gets a server that accepts forwarded
+        connections; the placed address is the default."""
+        args = make_args(
+            use_session_server="v1",
+            hf_checkpoint="/fake/model",
+            num_session_servers=1,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            miles_router_timeout=None,
+            chat_template_path=None,
+            tito_model="default",
+            apply_chat_template_kwargs=None,
+            use_rollout_indexer_replay=False,
+            sglang_speculative_algorithm=None,
+            num_layers=None,
+            moe_router_topk=None,
+            save_debug_trajectory_data=None,
+            lora_rank=0,
+            lora_adapter_path=None,
+        )
+        ctx = LaunchCommandContext(
+            cell_index=0,
+            worker_in_cell_index=0,
+            self_addrs=dict(primary=HostAndPort(host="10.0.0.9", port=5005)),
+            spec_addrs={compute_router_pool_id(0): [dict(primary=HostAndPort(host="10.0.0.9", port=3000))]},
+            gpu_ids=[],
+        )
+
+        def bind_host() -> str:
+            argv = shlex.split(spec_session_server(args).launch_command(ctx))
+            return parse_config_argv(SessionServerConfig, argv[3:]).host
+
+        assert bind_host() == "10.0.0.9"
+
+        monkeypatch.setenv("MILES_HOST_IP", "0.0.0.0")
+        assert bind_host() == "0.0.0.0"
+
+        args.session_server_ip = "127.0.0.1"
+        assert bind_host() == "127.0.0.1"
 
     def test_disabled_schedules_zero_cells(self):
         """Disabling the session server removes its cells instead of launching idle servers."""

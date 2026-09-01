@@ -10,6 +10,7 @@ from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 from miles.rollout.session.config import compute_session_server_config
 from miles.router.config import compute_miles_router_config
 from miles.utils import dumper_utils
+from miles.utils.http_utils import MILES_HOST_IP_ENV
 from miles.utils.workers.argv_utils import config_to_argv
 from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandContext, PortInfo, SchedulingSpec
 
@@ -31,15 +32,19 @@ def compute_router_pool_id(model_idx: int) -> str:
 def _compute_spec_router(args, model_idx: int, model_cfg: ModelConfig) -> CommandWorkerSpec:
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         primary = ctx.self_addrs["primary"]
+        # Bind address, not the address peers reach the router on. On main the router
+        # bound get_host_info()[1], which reads MILES_HOST_IP, so the recipes documenting
+        # --miles-host-ip 0.0.0.0 to accept forwarded connections keep working here.
+        bind_host = os.environ.get(MILES_HOST_IP_ENV) or primary.host
 
         if args.use_miles_router:
             assert not model_cfg.has_pd_disaggregation, "miles router does not support PD disaggregation."
-            router_config = compute_miles_router_config(args, host=primary.host, port=primary.port)
+            router_config = compute_miles_router_config(args, host=bind_host, port=primary.port)
             launch_argv = [sys.executable, "-m", "miles.router.router", *config_to_argv(router_config)]
         else:
             router_args = compute_sglang_router_args(
                 args,
-                host=primary.host,
+                host=bind_host,
                 port=primary.port,
                 prometheus_port=ctx.self_addrs["prometheus"].port,
                 has_pd_disaggregation=model_cfg.has_pd_disaggregation,
@@ -77,7 +82,9 @@ def spec_session_server(args) -> CommandWorkerSpec:
     def _compute_launch_command(ctx: LaunchCommandContext) -> str:
         config = compute_session_server_config(
             args,
-            host=args.session_server_ip or ctx.self_addrs["primary"].host,
+            # Bind address; same MILES_HOST_IP contract as the router above, with the
+            # explicit --session-server-ip taking precedence.
+            host=args.session_server_ip or os.environ.get(MILES_HOST_IP_ENV) or ctx.self_addrs["primary"].host,
             port=ctx.self_addrs["primary"].port,
             # TODO: make the indexing it k8s native compatible
             instance_id=compute_session_server_instance_id(args, ctx.cell_index),
