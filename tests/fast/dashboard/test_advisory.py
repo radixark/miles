@@ -1,7 +1,8 @@
 import polars as pl
+from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
 from miles.dashboard.advisory import compute_advisories
-from miles.dashboard.dump_reader import RolloutIds
+from miles.dashboard.dump_reader import DumpReader, RolloutIds
 from miles.dashboard.store import EngineSample, Meta, MetricsRecord, MetricStore, PhaseEvent, Stream
 
 
@@ -433,3 +434,11 @@ def test_no_mfu_metric_no_claim(tmp_path):
         )
     writer.flush()
     assert compute_advisories(MetricStore.load(tmp_path)) == []
+
+
+def test_blank_newest_step_does_not_break_rollout_advisories(tmp_path):
+    dump_dir = tmp_path / "dump"
+    dump_dummy_run(dump_dir, steps=2, with_eval=False)
+    blank_samples(dump_dir, 1)
+    store = _store(tmp_path, args={}, engine_samples=[])
+    assert compute_advisories(store, DumpReader(dump_dir)) == []

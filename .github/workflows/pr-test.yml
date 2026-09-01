@@ -327,3 +327,29 @@ jobs:
         --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
         ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
     secrets: inherit
+
+  # The Blackwell fleet is one unpartitioned 8-GPU host: an 8-GPU runner cannot
+  # coexist with 2/4-GPU runners on the same node, since GitHub would dispatch
+  # jobs onto overlapping devices. Tests needing fewer than 8 GPUs therefore
+  # register against this suite too. No partition matrix: one runner serialises
+  # shards anyway, and the suite's current budget is far inside the job timeout.
+  stage-c-8-gpu-b200:
+    needs: [resolve-ci-policy, resolve-ci-image, stage-a-cpu]
+    if: |
+      always() && !cancelled() &&
+      needs.resolve-ci-policy.result == 'success' &&
+      needs.resolve-ci-image.result == 'success' &&
+      !contains(fromJSON(needs.resolve-ci-policy.outputs.skipped_stages || '[]'), 'stage-c-8-gpu-b200') &&
+      (needs.stage-a-cpu.result == 'success' ||
+        needs.resolve-ci-policy.outputs.bypass_fastfail == 'true')
+    uses: ./.github/workflows/_run-ci.yml
+    with:
+      runs_on: '["b200", "8gpu"]'
+      container_image: ${{ needs.resolve-ci-image.outputs.container_image }}
+      ref: ${{ inputs.ref || '' }}
+      execute_command: >-
+        python tests/ci/run_suite.py --hw cuda --suite stage-c-8-gpu-b200
+        --cadence ${{ needs.resolve-ci-policy.outputs.cadence }}
+        --labels ${{ needs.resolve-ci-policy.outputs.raw_labels }}
+        ${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}
+    secrets: inherit

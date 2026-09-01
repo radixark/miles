@@ -1,13 +1,13 @@
 const RETRIES_503 = 3;
 
-async function fetchOk(path, params) {
+async function fetchOk(path, params, { retry503 = true } = {}) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, v);
   }
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(url);
-    if (res.status === 503 && attempt < RETRIES_503) {
+    if (res.status === 503 && retry503 && attempt < RETRIES_503) {
       await new Promise((r) => setTimeout(r, 1500));
       continue;
     }
@@ -24,8 +24,8 @@ async function fetchOk(path, params) {
   }
 }
 
-export async function api(path, params = {}) {
-  return (await fetchOk(path, params)).json();
+export async function api(path, params = {}, options = {}) {
+  return (await fetchOk(path, params, options)).json();
 }
 
 // framed binary endpoints (/api/timeline/heatmap):

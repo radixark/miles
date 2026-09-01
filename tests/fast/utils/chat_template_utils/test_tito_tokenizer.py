@@ -66,6 +66,8 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     InklingTITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
+    Qwen36TITOTokenizer,
+    Qwen38SmallTITOTokenizer,
     QwenNextTITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
@@ -674,6 +676,9 @@ class TestFactory:
         [
             ("qwen3", "Qwen/Qwen3-4B", Qwen3TITOTokenizer),
             ("qwen35", "Qwen/Qwen3-4B", Qwen35TITOTokenizer),
+            ("qwen36", "Qwen/Qwen3-4B", Qwen36TITOTokenizer),
+            ("qwen38small", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
+            ("qwen4exp", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
@@ -691,7 +696,13 @@ class TestFactory:
 
     @pytest.mark.parametrize(
         "type_str, cls",
-        [("qwen35", Qwen35TITOTokenizer), ("qwennext", QwenNextTITOTokenizer)],
+        [
+            ("qwen35", Qwen35TITOTokenizer),
+            ("qwen36", Qwen36TITOTokenizer),
+            ("qwen38small", Qwen38SmallTITOTokenizer),
+            ("qwen4exp", Qwen38SmallTITOTokenizer),
+            ("qwennext", QwenNextTITOTokenizer),
+        ],
     )
     def test_qwen_variant_inherits_qwen3_boundary_logic(self, type_str, cls):
         """Qwen3.5 / Qwen3-Next reuse Qwen3's boundary handling via inheritance.
@@ -723,6 +734,9 @@ class TestParserBinding:
         [
             (TITOTokenizerType.QWEN3, "qwen3", "qwen25"),
             (TITOTokenizerType.QWEN35, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN36, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN38_SMALL, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN4_EXP, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
@@ -746,6 +760,9 @@ class TestParserBinding:
 
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN3) == ("qwen3", "qwen25")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN36) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN38_SMALL) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN4_EXP) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
         # DEFAULT family has no binding for either parser; both come back None.

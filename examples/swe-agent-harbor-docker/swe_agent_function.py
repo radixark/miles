@@ -144,8 +144,13 @@ async def abort(args) -> None:
     available.
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
-    instance_id = getattr(args, "session_server_instance_id", None)
-    if not agent_server_url or not instance_id:
+
+    instance_ids = set((getattr(args, "session_server_instance_ids", None) or {}).values())
+    singular = getattr(args, "session_server_instance_id", None)  # back-compat / child path
+    if singular:
+        instance_ids.add(singular)
+
+    if not agent_server_url or not instance_ids:
         return
 
     headers = None
@@ -153,13 +158,14 @@ async def abort(args) -> None:
     if admin_secret:
         headers = {"Authorization": f"Bearer {admin_secret}"}
 
-    try:
-        result = await post(
-            f"{agent_server_url.rstrip('/')}/flush",
-            {"session_server_instance_id": instance_id},
-            max_retries=3,
-            headers=headers,
-        )
-        logger.info(f"Flushed agent server {agent_server_url}: {result}")
-    except Exception as e:
-        logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
+    for instance_id in instance_ids:
+        try:
+            result = await post(
+                f"{agent_server_url.rstrip('/')}/flush",
+                {"session_server_instance_id": instance_id},
+                max_retries=3,
+                headers=headers,
+            )
+            logger.info(f"Flushed agent server {agent_server_url}: {result}")
+        except Exception as e:
+            logger.warning(f"Failed to flush agent server {agent_server_url}: {e}")
