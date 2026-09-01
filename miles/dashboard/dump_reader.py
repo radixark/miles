@@ -17,6 +17,7 @@ surfacing as corruption.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -303,7 +304,44 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 4  # v4: per-sample staleness
+    SUMMARY_VERSION: ClassVar[int] = 5  # v5: no-sample steps get the declared schema (v4 cached them columnless)
+
+    # Column order of summary(). Only needed to give a step with no samples the
+    # same shape as any other step; with rows present the schema comes from
+    # _summary_row itself. test_summary_columns_declaration_matches_reality
+    # pins the two together, so adding a column there fails loudly here.
+    SUMMARY_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "sample_index",
+        "group_index",
+        "status",
+        "remove_sample",
+        "response_length",
+        "total_length",
+        "reward",
+        "weight_version",
+        "weight_version_min",
+        "mixed_version",
+        "staleness",
+        "turns",
+        "tool_calls",
+        "non_generation_time",
+        "spec_accept_rate",
+        "prefix_cache_hit_rate",
+        "raw_reward",
+        "normalized_reward",
+        "truncated",
+        "dumped_rank",
+        "mean_entropy",
+        "max_entropy",
+        "ref_entropy_mean",
+        "mean_abs_lp_diff",
+        "max_abs_lp_diff",
+        "mean_imp_ratio",
+        "adv_mean",
+        "adv_std",
+        "return_mean",
+        "alignment_failed",
+    )
 
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
@@ -410,12 +448,21 @@ class DumpReader:
             return pl.read_parquet(cache_path)
 
         joined = self.joined(rollout_id, evaluation=evaluation)
-        df = pl.DataFrame(
-            [self._summary_row(s, joined.train_rows.get(s.index), rollout_id=rollout_id) for s in joined.samples],
-            strict=False,
+        rows = [self._summary_row(s, joined.train_rows.get(s.index), rollout_id=rollout_id) for s in joined.samples]
+        # A step can be dumped with no samples at all (aborted before any
+        # generation landed). Inferring the schema from an empty row list gives
+        # a frame with no COLUMNS, and every view below this one then dies on a
+        # missing column instead of simply reporting an empty step, so the
+        # declared schema is supplied explicitly in that case.
+        df = (
+            pl.DataFrame(rows, strict=False)
+            if rows
+            else pl.DataFrame(schema={name: pl.Null for name in self.SUMMARY_COLUMNS})
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(cache_path)
+        tmp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
+        df.write_parquet(tmp_path)
+        tmp_path.replace(cache_path)
         sources_path.write_text(json.dumps(sources))
         return df
 
@@ -639,25 +686,22 @@ class DumpReader:
             ),
         )
         if row is None:
-            train_columns = dict.fromkeys(
-                (
-                    "raw_reward",
-                    "normalized_reward",
-                    "dumped_rank",
-                    "mean_entropy",
-                    "max_entropy",
-                    "ref_entropy_mean",
-                    "mean_abs_lp_diff",
-                    "max_abs_lp_diff",
-                    "mean_imp_ratio",
-                    "adv_mean",
-                    "adv_std",
-                    "return_mean",
-                )
+            return entry | dict(
+                raw_reward=None,
+                normalized_reward=None,
+                truncated=sample.status == Sample.Status.TRUNCATED,
+                dumped_rank=None,
+                mean_entropy=None,
+                max_entropy=None,
+                ref_entropy_mean=None,
+                mean_abs_lp_diff=None,
+                max_abs_lp_diff=None,
+                mean_imp_ratio=None,
+                adv_mean=None,
+                adv_std=None,
+                return_mean=None,
+                alignment_failed=False,
             )
-            train_columns["alignment_failed"] = False
-            train_columns["truncated"] = sample.status == Sample.Status.TRUNCATED
-            return entry | train_columns
 
         mask = row.loss_mask > 0
         lp_diff = (

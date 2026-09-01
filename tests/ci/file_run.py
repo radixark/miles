@@ -25,6 +25,7 @@ CUDA_SUITE_RUNS_ON = {
     "stage-c-8-gpu-h200": ["h200", "8gpu"],
     "stage-c-4-gpu-h200": ["h200", "4gpu"],
     "stage-c-2-gpu-h200": ["h200", "2gpu"],
+    "stage-c-8-gpu-b200": ["b200", "8gpu"],
 }
 
 # Same shape the pr-test.yml resolve-ci-image step enforces for a Docker tag.

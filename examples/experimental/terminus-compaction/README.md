@@ -135,10 +135,7 @@ python examples/experimental/terminus-compaction/run.py \
     --router-external-host <trainer-address-reachable-from-agent-server>
 ```
 
-`--session-server-ip` is the local bind address. `--router-external-host` is the
-address Harbor uses to call back into the session server and SGLang router; it
-must resolve from the agent-server host. Allow inbound TCP connections to ports
-30000 and 31000 from that host.
+`--session-server-ip` is the local bind address. `--router-external-host` is the address Harbor uses to call back into the session server and SGLang router; it must resolve from the agent-server host. The launcher starts 32 session-server workers on ports 30000-30031 and the SGLang router on port 31000, so allow inbound TCP connections to that range and port from the agent-server host.
 
 For a local smoke test, run Harbor on the trainer, use
 `--agent-server-url http://127.0.0.1:11000`, and set both session addresses to a
@@ -162,10 +159,20 @@ Useful per-step metrics are:
   32 without compaction and rises when episodes produce extra retained leaves.
 - `rollout/episode_raw_reward`: terminal reward averaged once per original
   rollout, so compacted episodes are not over-weighted.
+- `rollout/episode_response_length/{mean,median,max,min}`: total trainable
+  model-output tokens per original rollout after applying loss masks. Compacted
+  sibling samples are summed without double-counting their shared prefixes.
+- `rollout/episode_total_response_length/mean`: masked plus unmasked response
+  tokens summed across every sample in each original rollout, then averaged
+  across rollouts. Shared prefixes count each time they occur in a sample.
 - `rollout/raw_reward`: reward averaged over flattened samples; this can differ
   from the episode-level metric when rollouts produce different sample counts.
 - `rollout/truncated_ratio`: should stay low. A high value usually means a
   per-turn or total-context cap is too small.
+
+The per-rollout response-length metrics are not emitted for Multi-LoRA
+workloads because rollout identifiers are local to each adapter's data source.
+Multi-LoRA training itself is unaffected.
 
 Inspect `rollout_data/<step>.pt` or the dashboard's sample view to confirm that:
 

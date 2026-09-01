@@ -217,6 +217,10 @@ def create_rollout_manager(args, pg):
         )
 
     if args.offload_rollout:
-        ray.get(rollout_manager.offload.remote())
+        if args.colocate_memory_peak_device == "gpu":
+            # keep weight on GPU to reduce peak CPU memory
+            ray.get(rollout_manager.offload_kv.remote())
+        else:
+            ray.get(rollout_manager.offload.remote())
 
     return rollout_manager, num_rollout_per_epoch
