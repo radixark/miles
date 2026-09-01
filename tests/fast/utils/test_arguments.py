@@ -313,6 +313,17 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+def test_shared_actor_critic_ppo_rejects_indep_dp():
+    """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--advantage-estimator", "ppo", "--indep-dp", "--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        miles_validate_args(args)
+
+
 def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
     """The eval fleet pins engine addresses once, so a healed eval cell would be skipped silently."""
     parser = argparse.ArgumentParser()

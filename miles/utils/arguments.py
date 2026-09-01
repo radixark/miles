@@ -3273,6 +3273,10 @@ def miles_validate_args(args):
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
+        assert not args.indep_dp, (
+            "Shared Actor/Critic PPO hands the critic outputs to a single trainer cell as external data; "
+            "it does not support --indep-dp, which train fault tolerance also implies"
+        )
         if args.train_backend != "megatron":
             raise ValueError("Shared Actor/Critic PPO requires the Megatron backend")
         assert not enable_experimental_ft_trainer(), (
