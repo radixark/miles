@@ -24,7 +24,9 @@ PR_GPU_STAGES = frozenset(
     }
 )
 
-_BROAD_PR_SCOPES = frozenset({"nightly", "run-ci-all", "run-ci-image"})
+# Broad over domain labels; the resolved policy still restricts
+# `run-ci-blackwell-only` to Blackwell stages.
+_BROAD_PR_SCOPES = frozenset({"nightly", "run-ci-all", "run-ci-image", "run-ci-blackwell-only"})
 # Keep this allowlist to paths proven not to affect GPU runtime. Every
 # unmatched path deliberately fans out to all local GPU stages.
 _NO_GPU_PATHS = frozenset({".pre-commit-config.yaml", "scripts/tools/sync_example_docs.py"})

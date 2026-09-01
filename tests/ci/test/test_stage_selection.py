@@ -133,6 +133,19 @@ def test_broad_scope_adds_every_runnable_stage():
     assert skipped == PR_GPU_STAGES - {"stage-b-2-gpu-h200", "stage-c-8-gpu-h100"}
 
 
+@pytest.mark.parametrize("changed_path", ["docs/index.md", "tests/e2e/test_hopper.py"])
+def test_blackwell_only_scope_keeps_b200_for_non_blackwell_changes(changed_path):
+    registrations = [
+        _registration("tests/e2e/test_hopper.py", "stage-c-8-gpu-h200", hardware=["hopper"]),
+        _registration("tests/e2e/test_blackwell.py", "stage-c-8-gpu-b200", hardware=["blackwell"]),
+    ]
+    changed_files = (ChangedFile("M", (changed_path,)),)
+
+    skipped = set(_select(changed_files, registrations, raw_labels=("run-ci-blackwell-only",)))
+
+    assert skipped == PR_GPU_STAGES - {"stage-c-8-gpu-b200"}
+
+
 def test_bypass_fastfail_does_not_make_a_docs_change_affect_gpu_stages():
     registrations = [_registration("tests/fast-gpu/test_precision.py", "stage-b-2-gpu-h200")]
     changed_files = (ChangedFile("M", ("docs/index.md",)),)
