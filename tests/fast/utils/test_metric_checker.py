@@ -5,13 +5,18 @@ import pytest
 from miles.utils.metric_checker import MetricChecker
 
 
-def _make_checker(policy: str) -> MetricChecker:
-    args = Namespace(
+def _make_checker(policy: str, num_rollout: int = 2, **overrides: object) -> MetricChecker:
+    values: dict[str, object] = dict(
         ci_metric_checker_key="eval/gsm8k",
         ci_metric_checker_threshold=0.4,
         ci_metric_checker_policy=policy,
+        eval_interval=1,
+        num_rollout=num_rollout,
+        skip_eval_before_train=True,
+        start_rollout_id=0,
     )
-    return MetricChecker(args)
+    values.update(overrides)
+    return MetricChecker(Namespace(**values))
 
 
 class TestAnyPolicy:
@@ -44,6 +49,16 @@ class TestAllPolicy:
         checker.on_eval({"eval/gsm8k": 0.5})
 
         checker.dispose()
+
+    def test_fewer_results_than_scheduled_fails_the_gate(self):
+        """The all policy counts the baseline, periodic points, and forced final point."""
+        checker = _make_checker("all", num_rollout=3, eval_interval=2, skip_eval_before_train=False)
+
+        checker.on_eval({"eval/gsm8k": 0.5})
+        checker.on_eval({"eval/gsm8k": 0.5})
+
+        with pytest.raises(AssertionError, match="_expected_num_checks=3"):
+            checker.dispose()
 
 
 @pytest.mark.parametrize("policy", ["any", "all"])
