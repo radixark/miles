@@ -17,7 +17,6 @@ from miles.ray.specs import train as train_specs
 from miles.ray.specs.train import (
     TRAINER_CONCURRENCY_GROUPS,
     TRAINER_CONTROLLER_WORKER_CLASS,
-    TRAINER_METHOD_CONCURRENCY_GROUPS,
     _compute_trainer_controller_provider,
     compute_trainer_configs,
     compute_trainer_controller_pool_id,
@@ -157,7 +156,6 @@ class TestScheduling:
     def test_independent_dp_critic_cells_use_the_critic_gpu_shape(self, monkeypatch):
         """A critic sized differently from the actor must be split by its own GPU count."""
         monkeypatch.setattr("miles.ray.specs.train.compute_megatron_world_size_except_dp", lambda _args: 2)
-        monkeypatch.setattr("miles.ray.specs.train._create_indep_dp_store_addr", lambda: "10.0.0.1:1234")
 
         _actor_spec, critic_spec = specs_trainer(
             _make_args(
@@ -290,36 +288,20 @@ class TestConcurrencyGroups:
 
         assert spec.concurrency_groups == {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
 
-    def test_the_isolated_methods_travel_with_the_groups(self):
-        """Declaring groups without routing any method to them leaves the heartbeat behind a train step."""
-        (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
-
-        assert spec.method_concurrency_groups == {
-            "get_heartbeat_status": "heartbeat_status",
-            "inject_fault": "fault_injector",
-            "kill_self": "kill_self",
-        }
-
     def test_a_run_without_fault_tolerance_gets_a_plain_actor(self):
         """A threaded trainer actor runs NCCL setup off the main thread and deadlocked a non-FT run."""
         (spec,) = specs_trainer(_make_args())
 
-        assert (spec.concurrency_groups, spec.method_concurrency_groups) == (None, None)
+        assert spec.concurrency_groups is None
 
     def test_the_actor_is_not_annotated_statically(self):
         """A static @ray.method(concurrency_group=...) makes Ray reject the plain non-FT actor."""
         annotations: list[str | None] = [
             getattr(getattr(TrainRayActor, name), "__ray_concurrency_group__", None)
-            for name in TRAINER_METHOD_CONCURRENCY_GROUPS
+            for name in declared_concurrency_groups(TrainRayActor)
         ]
 
-        assert annotations == [None, None, None]
-
-    def test_every_routed_method_exists_on_the_trainer_actor(self):
-        """A routed name the actor never defines only blows up when a fault-tolerant run launches."""
-        methods = [getattr(TrainRayActor, name, None) for name in TRAINER_METHOD_CONCURRENCY_GROUPS]
-
-        assert all(callable(method) for method in methods)
+        assert annotations and annotations == [None] * len(annotations)
 
     def test_both_trainer_roles_follow_the_same_gate(self):
         """A critic threaded while its actor is not would deadlock exactly the run the gate protects."""
@@ -328,12 +310,6 @@ class TestConcurrencyGroups:
 
         assert [spec.concurrency_groups is None for spec in fault_tolerant_specs] == [False, False]
         assert [spec.concurrency_groups is None for spec in plain_specs] == [True, True]
-
-    def test_every_routed_group_is_declared(self):
-        """Ray rejects an actor whose method names a concurrency group the class never declares."""
-        (spec,) = specs_trainer(_make_args(use_fault_tolerance=True))
-
-        assert set(spec.method_concurrency_groups.values()) <= set(TRAINER_CONCURRENCY_GROUPS)
 
     def test_the_isolated_methods_are_annotated_on_the_actor(self):
         """Dropping an @rpc concurrency group would silently queue that call behind a train step."""
