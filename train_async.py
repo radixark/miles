@@ -42,6 +42,7 @@ async def train(args):
             args=args,
             actor_model=actor_model,
             inference_controller=inference_controller,
+            host=args.api_server_host,
             port=args.api_server_port,
             ft_components=args.ft_components,
         )

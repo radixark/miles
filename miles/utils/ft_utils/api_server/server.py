@@ -32,6 +32,7 @@ def start_api_server(
     args,
     actor_model: TrainerController,
     inference_controller: object,
+    host: str = "127.0.0.1",
     port: int,
     ft_components: list[str],
 ) -> None:
@@ -62,13 +63,13 @@ def start_api_server(
             )
         )
 
-    _start_api_server_raw(registry=_CellRegistry(handlers), port=port)
+    _start_api_server_raw(registry=_CellRegistry(handlers), host=host, port=port)
 
 
-def _start_api_server_raw(registry: _CellRegistry, port: int) -> uvicorn.Server:
+def _start_api_server_raw(*, registry: _CellRegistry, port: int, host: str) -> uvicorn.Server:
     app = _create_api_app(registry)
 
-    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port))
+    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port))
     _start_and_wait_thread(
         target=server.run,
         is_ready=lambda: server.started,

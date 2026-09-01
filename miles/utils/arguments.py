@@ -983,6 +983,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 failure_threshold_default=1,
             )
             parser.add_argument(
+                "--api-server-host",
+                type=str,
+                default="127.0.0.1",
+                help="Host the HTTP api server binds to. The default only serves the local mini "
+                "fault-tolerance controller; set 0.0.0.0 to accept remote controllers.",
+            )
+            parser.add_argument(
                 "--api-server-port",
                 type=int,
                 default=None,
