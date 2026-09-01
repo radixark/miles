@@ -24,6 +24,7 @@
       "group": "add_label_access",
       "allowed_labels": [
         "bypass-fastfail",
+        "run-ci-agentic",
         "run-ci-amd",
         "run-ci-ckpt",
         "run-ci-eval",
