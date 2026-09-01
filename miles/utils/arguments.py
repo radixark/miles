@@ -100,6 +100,21 @@ def reset_arg(parser, name, **kwargs):
 _FT_CHOICES = ["rollout", "train"]
 
 
+def add_model_impl_argument(parser):
+    """Shared with the standalone megatron-parse tools (checkpoint conversion, replay worker)."""
+    parser.add_argument(
+        "--model-impl",
+        type=str,
+        choices=["miles", "megatron"],
+        default="megatron",
+        help=(
+            "Which implementation trains the model's non-standard layers: 'megatron' "
+            "(native modules, default) or 'miles' (the miles_plugins path). Most models "
+            "ship only the megatron implementation."
+        ),
+    )
+
+
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
         # Ray
@@ -2455,9 +2470,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             Add custom Megatron plugins arguments.
             This is a placeholder for any additional arguments that might be needed.
             """
-            from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
-
-            add_dsv4_arguments(parser)
+            add_model_impl_argument(parser)
             parser.add_argument(
                 "--freeze-indexer",
                 action="store_true",

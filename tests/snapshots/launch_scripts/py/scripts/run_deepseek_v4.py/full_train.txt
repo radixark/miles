@@ -90,7 +90,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --no-activation-func-clamp-shared-expert
   --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8-4layer-bf16
   --save /root/models/DeepSeek-V4-Flash-FP8-4layer_torch_dist
-  --dsv4-impl megatron
+  --model-impl megatron
   --expert-tensor-parallel-size 1
   --context-parallel-size 1
   --tensor-model-parallel-size 1
@@ -245,7 +245,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --train-memory-margin-bytes 3221225472
   --sglang-mem-fraction-static 0.7
   --accumulate-allreduce-grads-in-fp32
-  --dsv4-impl megatron
+  --model-impl megatron
   --model-name deepseekv4
   --qkv-format thd
   --moe-router-freeze-gate

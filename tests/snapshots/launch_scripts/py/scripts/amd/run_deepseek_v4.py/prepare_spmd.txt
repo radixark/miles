@@ -58,7 +58,7 @@ PYTHONPATH=<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath torchrun
   --no-activation-func-clamp-shared-expert
   --hf-checkpoint /root/models/DeepSeek-V4-Flash-FP8-bf16
   --save /root/models/DeepSeek-V4-Flash-FP8_torch_dist
-  --dsv4-impl miles
+  --model-impl miles
   --expert-tensor-parallel-size 1
   --context-parallel-size 1
   --tensor-model-parallel-size 1

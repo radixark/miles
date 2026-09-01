@@ -26,7 +26,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="DeepSeek-V4-Flash-FP8-4layer",
-        dsv4_impl="miles",
+        model_impl="miles",
         task="gsm8k",
         enable_eval=False,
         num_nodes=1,
