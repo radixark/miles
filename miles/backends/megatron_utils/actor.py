@@ -28,7 +28,7 @@ from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
-from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.memory_utils import clear_memory, expandable_segments_during_training, print_memory
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -465,13 +465,14 @@ class MegatronTrainRayActor(TrainRayActor):
                 with timer("critic_train"):
                     result = self.train_critic(rollout_id, rollout_data)
             else:
-                result = self.train_actor(
-                    rollout_id,
-                    rollout_data,
-                    external_data=external_data,
-                    witness_info=witness_info,
-                    attempt=attempt,
-                )
+                with expandable_segments_during_training():
+                    result = self.train_actor(
+                        rollout_id,
+                        rollout_data,
+                        external_data=external_data,
+                        witness_info=witness_info,
+                        attempt=attempt,
+                    )
 
             return result
 
