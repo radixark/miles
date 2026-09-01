@@ -313,6 +313,15 @@ def forward_only(
 
         assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
+        # The previous microbatch's activations are unreachable once its outputs are collected --
+        # this pass runs under no_grad, so nothing downstream reads them -- but part of them is held
+        # by reference cycles between an autograd.Function's ctx and its node, which refcounting
+        # alone never breaks. Waiting for the generational collector does not work here: it triggers
+        # on container allocation counts, and a handful of multi-GiB tensors barely move that
+        # counter, so they can sit on the device for the rest of the pass. Collecting per microbatch
+        # bounds the garbage to one microbatch.
+        gc.collect()
+
         # Get the batch.
         batch = get_batch(
             data_iterator,
