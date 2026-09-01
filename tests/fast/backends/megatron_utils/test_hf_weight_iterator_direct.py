@@ -124,12 +124,18 @@ def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
 
     param_names = [
         "module.module.decoder.layers.0.input_layernorm.weight",
-        "module.module.decoder.layers.0.self_attention.wq_a.weight",
-        "module.module.decoder.layers.0.self_attention.wkv.weight",
-        "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
-        "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
-        "module.module.decoder.layers.0.self_attention.indexer.compressor.wkv.weight",
-        "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
+        "module.module.decoder.layers.0.self_attention_hyper_connection.alpha_pre",
+        "module.module.decoder.layers.0.self_attention_hyper_connection.alpha_post",
+        "module.module.decoder.layers.0.self_attention_hyper_connection.alpha_res",
+        "module.module.decoder.layers.0.mlp_hyper_connection.alpha_pre",
+        "module.module.decoder.layers.0.mlp_hyper_connection.alpha_post",
+        "module.module.decoder.layers.0.mlp_hyper_connection.alpha_res",
+        "module.module.decoder.layers.0.self_attention.linear_q_down_proj.weight",
+        "module.module.decoder.layers.0.self_attention.linear_kv_proj.weight",
+        "module.module.decoder.layers.0.self_attention.core_attention.compressor.linear_wkv.weight",
+        "module.module.decoder.layers.0.self_attention.core_attention.compressor.linear_wgate.weight",
+        "module.module.decoder.layers.0.self_attention.core_attention.indexer.compressor.linear_wkv.weight",
+        "module.module.decoder.layers.0.self_attention.core_attention.indexer.compressor.linear_wgate.weight",
     ]
 
     update_units = direct_module.get_named_update_units(
@@ -139,16 +145,26 @@ def test_deepseekv4_atomic_groups_use_named_update_units(direct_module):
     assert [unit.names for unit in update_units] == [
         ("module.module.decoder.layers.0.input_layernorm.weight",),
         (
-            "module.module.decoder.layers.0.self_attention.wq_a.weight",
-            "module.module.decoder.layers.0.self_attention.wkv.weight",
+            "module.module.decoder.layers.0.self_attention_hyper_connection.alpha_pre",
+            "module.module.decoder.layers.0.self_attention_hyper_connection.alpha_post",
+            "module.module.decoder.layers.0.self_attention_hyper_connection.alpha_res",
         ),
         (
-            "module.module.decoder.layers.0.self_attention.compressor.wkv.weight",
-            "module.module.decoder.layers.0.self_attention.compressor.wgate.weight",
+            "module.module.decoder.layers.0.mlp_hyper_connection.alpha_pre",
+            "module.module.decoder.layers.0.mlp_hyper_connection.alpha_post",
+            "module.module.decoder.layers.0.mlp_hyper_connection.alpha_res",
         ),
         (
-            "module.module.decoder.layers.0.self_attention.indexer.compressor.wkv.weight",
-            "module.module.decoder.layers.0.self_attention.indexer.compressor.wgate.weight",
+            "module.module.decoder.layers.0.self_attention.linear_q_down_proj.weight",
+            "module.module.decoder.layers.0.self_attention.linear_kv_proj.weight",
+        ),
+        (
+            "module.module.decoder.layers.0.self_attention.core_attention.compressor.linear_wkv.weight",
+            "module.module.decoder.layers.0.self_attention.core_attention.compressor.linear_wgate.weight",
+        ),
+        (
+            "module.module.decoder.layers.0.self_attention.core_attention.indexer.compressor.linear_wkv.weight",
+            "module.module.decoder.layers.0.self_attention.core_attention.indexer.compressor.linear_wgate.weight",
         ),
     ]
 

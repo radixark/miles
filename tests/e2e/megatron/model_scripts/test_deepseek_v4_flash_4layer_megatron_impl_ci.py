@@ -1,20 +1,10 @@
 import os
 
-if os.getenv("MILES_HARDWARE_PLATFORM") == "rocm":
-    from scripts.amd.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
-else:
-    from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
-
-from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from scripts.run_deepseek_v4 import ScriptArgs, _prepare_download, _prepare_single, _prepare_spmd, _train
+from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
 register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
-register_rocm_ci(
-    est_time=1900,
-    suite="stage-c-4-gpu-mi350",
-    labels=["megatron", "model-scripts", "amd"],
-    disabled="FIXME: re-enable once this case passes on the MI350 runners.",
-)
 
 register_ci_gate(metric_key="train/grad_norm")
 register_ci_gate(metric_key="train/ppo_kl")
@@ -26,7 +16,6 @@ register_ci_gate(metric_key="rollout/raw_reward")
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="DeepSeek-V4-Flash-FP8-4layer",
-        dsv4_impl="miles",
         task="gsm8k",
         enable_eval=False,
         num_nodes=1,
@@ -34,6 +23,11 @@ def _args() -> ScriptArgs:
         hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
+        dsv4_impl="megatron",
+        # The CI image ships neither flash_mla nor cudnn-frontend DSA, so the
+        # default cuDNN backend cannot start; the PyTorch fallback still covers
+        # the megatron-impl model path (dsv4_hybrid attention, native mHC).
+        dsa_kernel_backend="none",
         extra_args=(
             "--ci-test " "--check-weight-update-allow-quant-error " "--ci-disable-logprobs-checker " "--num-rollout 2 "
         ),

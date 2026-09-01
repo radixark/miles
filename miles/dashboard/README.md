@@ -52,7 +52,9 @@ Views:
   lane-selection grammar (`g:` / `rank:` / `node:` / `every:`) and outlier
   quick-picks.
 - **Rollouts** — per-step trajectory table and scatter, GRPO group degeneracy
-  (`zero_std`), average weight-version staleness, eval tab.
+  (`zero_std`), average weight-version staleness, eval tab. Opens on the newest
+  step that has samples, skipping one still being dumped; a step named in the
+  URL is always shown as asked.
 - **sample view** — a `conversation` tab (role-tagged turns with thinking /
   tool calls, from the trajectory sidecar) and a lazily-loaded `tokens` tab
   (the whole sequence in one scrollable metric-colored strip, opened at the

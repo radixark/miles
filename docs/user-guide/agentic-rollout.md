@@ -169,6 +169,8 @@ but treat it as best-effort until it passes the checks below.
 | Qwen3 | `qwen3` |
 | Qwen3.5 | `qwen35` |
 | Qwen3.6 | `qwen36` |
+| Qwen3.8-27B | `qwen38small` |
+| Qwen3.8-Flash-Next | `qwen4exp` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
 | GLM-4.7 / 5 / 5.1 / 5.2 | `glm47` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |

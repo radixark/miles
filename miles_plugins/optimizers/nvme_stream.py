@@ -312,9 +312,6 @@ class NVMeOptimizerStateStore:
         self.buckets = self._build_buckets()
         self._fp32_group_indices, self._fp32_adam = self._build_fp32_optimizer()
 
-        for bucket in self.buckets:
-            bucket.flush(segments=("main",))
-
         total_gb = sum(b.nbytes for b in self.buckets) / 1024**3
         logger.info(
             f"NVMe optimizer state store: {len(self.buckets)} buckets, {total_gb:.1f} GB at "
@@ -418,6 +415,22 @@ class NVMeOptimizerStateStore:
         return True
 
     @torch.no_grad()
+    def initialize_main_from_model_params(self) -> int:
+        dist_opt = self.dist_opt
+        written = 0
+        for bucket in self.buckets:
+            bucket.materialize_main()
+            for entry in bucket.entries:
+                param_range = dist_opt._get_model_param_range_map(entry.model_param)["param"]
+                assert param_range.size == entry.main_param.nelement()
+                source_shard = entry.model_param.view(-1)[param_range.start : param_range.end]
+                entry.main_param.copy_(source_shard)
+            written += bucket.flush(segments=("main",))
+            os.fdatasync(bucket.fd)
+            os.posix_fadvise(bucket.fd, 0, bucket.offsets["exp_avg"][0], os.POSIX_FADV_DONTNEED)
+        return written
+
+    @torch.no_grad()
     def refresh_main_from_model_params(self, copy_fn) -> None:
         for bucket in self.buckets:
             bucket.materialize_main()
@@ -498,8 +511,9 @@ class NVMeOptimizerStateStore:
 def setup_optimizer_state_streaming(args, optimizer) -> None:
     """Give every DistributedOptimizer in ``optimizer``'s chain a store and route it there.
 
-    Must run before load_checkpoint: the constructor evicts the fp32 main params, and the
-    bindings are what keep the load path from writing into the evicted storage.
+    Must run before load_checkpoint: Megatron constructs stable fp32 main-param handles with
+    deferred storage, this function populates them directly into final bucket files, and the
+    bindings keep the load path from writing into evicted storage.
     """
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
 
@@ -511,12 +525,20 @@ def setup_optimizer_state_streaming(args, optimizer) -> None:
         ), f"--stream-optimizer-state-to-disk requires the distributed optimizer, got {type(dist_opt).__name__}"
         if dist_opt.is_stub_optimizer:
             continue
+        assert dist_opt.config.defer_main_param_initialization, (
+            "--stream-optimizer-state-to-disk must defer distributed-optimizer main "
+            "initialization before constructing the optimizer"
+        )
         store = NVMeOptimizerStateStore(
             dist_opt,
             dir_root,
             args.offload_train_disk_chunk_mb,
             args.stream_optimizer_state_moment_dtype,
             allow_fresh_state=args.no_load_optim,
+        )
+        written = store.initialize_main_from_model_params()
+        logger.info(
+            f"NVMe optimizer main-param initialization: wrote {written / 1024**3:.1f} GB " f"directly to {store.dir}"
         )
         _bind(dist_opt, store)
 
@@ -603,9 +625,12 @@ def _bind(dist_opt: "DistributedOptimizer", store: NVMeOptimizerStateStore) -> N
         return update_successful
 
     def reload_model_params(self, state_dict=None) -> None:
-        store.refresh_main_from_model_params(
-            lambda: DistributedOptimizer.reload_model_params(self, state_dict=state_dict)
-        )
+        if state_dict is None:
+            store.initialize_main_from_model_params()
+        else:
+            store.refresh_main_from_model_params(
+                lambda: DistributedOptimizer.reload_model_params(self, state_dict=state_dict)
+            )
 
     # save_to()/load_from() carry the real state; returning empties here rather than forcing
     # --no-save-optim keeps opt_param_scheduler, saved under the same guard, working.

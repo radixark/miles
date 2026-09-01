@@ -497,6 +497,13 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith(f"/{template}")
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
 
+    @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
+    def test_qwen38_families_resolve_default_template(self, family):
+        args = self._parse(["--use-session-server", "--tito-model", family])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
+        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
             [
