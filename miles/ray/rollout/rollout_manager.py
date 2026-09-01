@@ -50,6 +50,16 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
+def _save_eval_debug_data(args: object, data: object, rollout_id: int) -> bool:
+    """Best-effort eval artifact dump; metric logging must remain authoritative."""
+    try:
+        save_debug_rollout_data(args, data, rollout_id=rollout_id, evaluation=True)
+    except Exception:
+        logger.exception(f"Failed to save optional debug data for eval {rollout_id}")
+        return False
+    return True
+
+
 @ray.remote
 class RolloutManager:
     """The class to run rollout and convert rollout data to training data."""
@@ -201,8 +211,11 @@ class RolloutManager:
                     evaluation=True,
                 )
         data = result.data
-        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
-        metrics = log_eval_rollout_data(rollout_id, self.args, data, result.metrics)
+        extra_metrics = result.metrics
+        if not _save_eval_debug_data(self.args, data, rollout_id):
+            extra_metrics = dict(extra_metrics or {})
+            extra_metrics["eval/debug_dump_failed"] = 1.0
+        metrics = log_eval_rollout_data(rollout_id, self.args, data, extra_metrics)
         if self._metric_checker is not None:
             self._metric_checker.on_eval(metrics)
 
@@ -230,8 +243,9 @@ class RolloutManager:
                 return self.report_eval_skip(rollout_id, e.reason)
 
             data = result.data
-            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=True)
             extra_metrics = dict(result.metrics or {})
+            if not _save_eval_debug_data(self.args, data, rollout_id):
+                extra_metrics["eval/debug_dump_failed"] = 1.0
             extra_metrics["eval/lag_steps"] = max(self.rollout_id - rollout_id, 0)
             extra_metrics["eval/duration_seconds"] = time.time() - start_time
             if export_time_seconds is not None:

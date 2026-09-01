@@ -103,11 +103,22 @@ def load_debug_rollout_data(args, rollout_id: int) -> tuple[list[Sample], dict]:
 def save_debug_rollout_data(args, data, rollout_id, evaluation: bool, metadata: dict | None = None) -> None:
     # TODO to be refactored (originally Buffer._set_data)
     if (path_template := args.save_debug_rollout_data) is not None:
+        samples = (
+            [sample for info in data.values() for sample in info.get("samples", [])]
+            if evaluation
+            else list(data)
+        )
+        if evaluation and not samples:
+            logger.info(
+                f"Skip debug rollout data for eval {rollout_id}: "
+                "the eval result contains metrics but no samples"
+            )
+            return
+
         path = Path(path_template.format(rollout_id=("eval_" if evaluation else "") + str(rollout_id)))
         logger.info(f"Save debug rollout data to {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        samples = [sample for info in data.values() for sample in info["samples"]] if evaluation else list(data)
         save_debug_trajectory_data(args, samples, rollout_id, evaluation)
         stem = ("eval_" if evaluation else "") + str(rollout_id)
         save_dashboard_columns(samples, path.parent.parent / "dashboard_columns" / f"rollout_{stem}.parquet")

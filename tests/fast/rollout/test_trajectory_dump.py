@@ -66,6 +66,12 @@ def test_save_eval_flattens_datasets(dump_args, tmp_path):
     assert json.loads(line)["messages"] == MESSAGES
 
 
+def test_save_eval_accepts_reward_only_results(dump_args, tmp_path):
+    data = {"hle": {"rewards": [1.0, 0.0]}}
+    save_debug_rollout_data(dump_args, data, 1, evaluation=True)
+    assert not (tmp_path / "rollout_data" / "eval_1.pt").exists()
+
+
 def test_no_conversations_means_no_file(dump_args, tmp_path):
     save_debug_rollout_data(dump_args, [make_sample()], 9, evaluation=False)
     assert (tmp_path / "rollout_data" / "9.pt").exists()
