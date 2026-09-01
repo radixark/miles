@@ -77,6 +77,12 @@ in every `argv`, `env`, and `metrics_path` value:
 - `{router_url}`
 - `{weight_version}`
 
+Benchmark drivers run as subprocesses of the Ray `RolloutManager`. In a typical
+two-node SFT job, that process is on the head/training node, not on the node that
+hosts the eval SGLang engines. Any executable, local input, or credential source
+used by a driver must therefore be readable in the `RolloutManager` process
+namespace. The eval-engine nodes only serve the checkpoint endpoint.
+
 The same values are exported as `MILES_EVAL_*` environment variables. A command
 may write any JSON object to `metrics_path`. Numeric leaves are logged under
 `eval/<command>/...`. A top-level `per_task` mapping is retained in the artifact
@@ -120,6 +126,11 @@ named by `--judge_api_key_env` (default `HLE_JUDGE_API_KEY`) so the secret is no
 placed in command-line arguments. `--judge_max_qps` enforces a process-wide
 minimum interval between request starts, including retries. For an endpoint with
 a hard 2 QPS ceiling, use `--judge_max_qps 1.8` to leave scheduling margin.
+Make sure the variable reaches the Ray job and its `RolloutManager`; setting it
+only in the eval-server shell is insufficient. If a wrapper loads the token from
+a mounted secret file instead, verify that file on the `RolloutManager` node
+before launch. Never put the token in the YAML manifest, command arguments, or a
+shared snapshot directory.
 
 The example evaluates all 300 input rows four times and grades all 1,200
 responses through the external endpoint:
