@@ -194,6 +194,8 @@ def workflow_run(
         "/run-ci",
         "/run-ci ",
         "/run-ci tests/e2e/test_a.py",
+        "/run-on-blackwell extra",
+        "/run-on-",
         "/rerun-test",
         "/rerun-test ",
         "/rerun-test tests/e2e/test_a.py extra",
@@ -218,8 +220,9 @@ def test_command_parser_rejects_non_exact_commands(body):
         HANDLER.parse_command(body)
 
 
-def test_command_parser_accepts_one_exact_command_with_outer_whitespace():
-    assert HANDLER.parse_command(" \n/run-ci-a_B.c-d\t") == HANDLER.AddLabel("run-ci-a_B.c-d")
+@pytest.mark.parametrize("label", ["run-ci-a_B.c-d", "run-on-blackwell"])
+def test_command_parser_accepts_one_exact_command_with_outer_whitespace(label):
+    assert HANDLER.parse_command(f" \n/{label}\t") == HANDLER.AddLabel(label)
 
 
 def test_command_parser_accepts_exact_bypass_fastfail_command():
@@ -568,6 +571,8 @@ def test_repository_writer_clears_only_ci_control_labels(permission):
                 "run-ci",
                 "run-ci-all",
                 "run-ci-historical",
+                "run-on-blackwell",
+                "run-on-hopper",
                 "nightly",
                 "bypass-fastfail",
                 "documentation",
@@ -586,6 +591,8 @@ def test_repository_writer_clears_only_ci_control_labels(permission):
         "run-ci-all",
         "run-ci-historical",
         "run-ci-short",
+        "run-on-blackwell",
+        "run-on-hopper",
     ]
     assert result == {
         "actor_id": ACTOR_ID,

@@ -39,7 +39,12 @@ A declaration sits at top level of the test file, next to its CI registration â€
 from tests.ci.ci_register import register_cuda_ci
 from tests.ci.metric_history import register_ci_gate
 
-register_cuda_ci(est_time=300, suite="stage-c-8-gpu-h100", labels=["megatron"])
+register_cuda_ci(
+    est_time=300,
+    suite="stage-c-8-gpu-h100",
+    labels=["megatron"],
+    hardware=["hopper", "blackwell"],
+)
 
 register_ci_gate(
     metric_key="train/ppo_kl",                     # must be a captured key (whitelist)

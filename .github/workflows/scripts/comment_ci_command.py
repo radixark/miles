@@ -23,10 +23,17 @@ RERUN_WORKFLOWS = (
     ("pr-test.yml", ".github/workflows/pr-test.yml"),
     ("pr-test-rocm.yml", ".github/workflows/pr-test-rocm.yml"),
 )
-COMMAND_PATTERN = re.compile(r"/(run-ci-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
-# "/run-ci" remains the label-family marker, while "/rerun-test" owns targeted
-# file runs; either family must parse as one exact command or fail loudly.
-COMMAND_MARKERS = ("/run-ci", "/rerun-test", "/bypass-fastfail", "/clear-labels", "/rerun-failed-ci")
+COMMAND_PATTERN = re.compile(r"/(run-(?:ci|on)-[A-Za-z0-9][A-Za-z0-9_.-]*|bypass-fastfail)")
+# Label-family markers and "/rerun-test" must parse as one exact command or
+# fail loudly.
+COMMAND_MARKERS = (
+    "/run-ci",
+    "/run-on",
+    "/rerun-test",
+    "/bypass-fastfail",
+    "/clear-labels",
+    "/rerun-failed-ci",
+)
 # Registered test files only: fixed roots, path segments that cannot form
 # ".." or an absolute path, and a test_*.py basename. The dispatched workflow
 # re-validates the same shape before the path reaches any shell command.
@@ -529,7 +536,7 @@ def require_access(api, actor_id, actor_login, allowed_permissions, allowed_user
 
 
 def _is_ci_control_label(label):
-    return label.startswith("run-ci") or label in CLEAR_EXACT_LABELS
+    return label.startswith(("run-ci", "run-on-")) or label in CLEAR_EXACT_LABELS
 
 
 def _latest_failed_run(
