@@ -152,6 +152,17 @@ class _FailingOnceReconciler(_RecordingReconciler):
         await super().__call__(cell_id, info)
 
 
+class _FailingForCellReconciler(_RecordingReconciler):
+    def __init__(self, *, failing_cell_id: str) -> None:
+        super().__init__()
+        self._failing_cell_id = failing_cell_id
+
+    async def __call__(self, cell_id: str, info: CellInfo | None) -> None:
+        await super().__call__(cell_id, info)
+        if cell_id == self._failing_cell_id:
+            raise RuntimeError(f"reconcile rejected {cell_id}")
+
+
 class _StuckOnCancelReconciler(_RecordingReconciler):
     def __init__(self) -> None:
         super().__init__()
@@ -325,3 +336,34 @@ class TestRayWorkerProviderWatchCellsStop:
         await stop()
 
         assert stopper.cancelled() and returned == []
+
+
+class TestRayWorkerProviderPollIsolation:
+    async def test_one_cells_failing_reconcile_does_not_block_the_others(self):
+        """A cell that keeps failing to reconcile must not leave the rest of the pool unobserved."""
+        handle = _make_watching_handle({"cell-a": _cell_info("cell-a"), "cell-b": _cell_info("cell-b")})
+        provider = RayWorkerProvider(worker_manager_handle=handle, pool_ids=["inference-engine-0-0"])
+        reconciler = _FailingForCellReconciler(failing_cell_id="cell-a")
+
+        with pytest.raises(RuntimeError, match="reconcile rejected cell-a"):
+            await provider.watch_cells(reconciler)
+
+        assert [cell_id for cell_id, _ in reconciler.calls] == ["cell-a", "cell-b"]
+
+    async def test_a_failed_cell_is_retried_while_the_others_are_not(self):
+        """Only the cell whose reconcile failed stays unobserved for the next poll."""
+        info_a = _cell_info("cell-a")
+        info_b = _cell_info("cell-b")
+        handle = _make_watching_handle({}, {"cell-a": info_a, "cell-b": info_b})
+        provider = RayWorkerProvider(
+            worker_manager_handle=handle, pool_ids=["inference-engine-0-0"], poll_interval_seconds=0.001
+        )
+        reconciler = _FailingOnceReconciler(failing_cell_id="cell-a")
+
+        stop = await provider.watch_cells(reconciler)
+        try:
+            await _wait_until(lambda: ("cell-a", info_a) in reconciler.calls)
+        finally:
+            await stop()
+
+        assert reconciler.calls == [("cell-b", info_b), ("cell-a", info_a)]
