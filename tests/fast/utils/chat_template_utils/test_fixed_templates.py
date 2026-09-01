@@ -9,6 +9,7 @@ import os
 import pytest
 
 from miles.utils.chat_template_utils import TEMPLATE_DIR, TITOTokenizerType, resolve_fixed_chat_template
+from miles.utils.chat_template_utils.template import apply_chat_template_from_str
 from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
     DeepSeekV4TITOTokenizer,
@@ -17,12 +18,23 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     MinimaxM27TITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
+    Qwen36TITOTokenizer,
+    Qwen38SmallTITOTokenizer,
     TITOTokenizer,
 )
 
 _EXPECTED_FIXED_TEMPLATES = {
     TITOTokenizerType.QWEN3: ("qwen3_fixed.jinja", {"clear_thinking": False}),
-    TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"clear_thinking": False}),
+    TITOTokenizerType.QWEN35: ("qwen3.5_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.QWEN36: ("qwen3.6_fixed.jinja", {"preserve_thinking": True}),
+    TITOTokenizerType.QWEN38_SMALL: (
+        "qwen3.8_small_and_flash_next_fixed.jinja",
+        {"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    ),
+    TITOTokenizerType.QWEN4_EXP: (
+        "qwen3.8_small_and_flash_next_fixed.jinja",
+        {"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    ),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
@@ -75,7 +87,14 @@ def test_fixed_template_rejects_unknown_role():
 
 @pytest.mark.parametrize(
     "tokenizer_cls",
-    [DeepSeekV4TITOTokenizer, Qwen35TITOTokenizer, MinimaxM25TITOTokenizer, MinimaxM27TITOTokenizer],
+    [
+        DeepSeekV4TITOTokenizer,
+        Qwen35TITOTokenizer,
+        Qwen36TITOTokenizer,
+        Qwen38SmallTITOTokenizer,
+        MinimaxM25TITOTokenizer,
+        MinimaxM27TITOTokenizer,
+    ],
 )
 def test_restricted_fixed_template_excludes_mid_session_system(tokenizer_cls):
     assert tokenizer_cls.FIXED_TEMPLATE.allowed_append_roles == frozenset({"tool", "user", "assistant"})
@@ -97,6 +116,62 @@ def test_kwargs_are_copied_not_shared(monkeypatch):
     assert Qwen3TITOTokenizer.FIXED_TEMPLATE.extra_kwargs == {"clear_thinking": False}
 
 
-def test_registered_kwargs_cannot_be_overridden():
+@pytest.mark.parametrize(
+    ("tokenizer_cls", "chat_template_kwargs"),
+    [
+        (Qwen3TITOTokenizer, {"clear_thinking": True}),
+        (Qwen38SmallTITOTokenizer, {"reasoning_effort": "low"}),
+    ],
+)
+def test_registered_kwargs_cannot_be_overridden(tokenizer_cls, chat_template_kwargs):
     with pytest.raises(ValueError, match="conflicts with the value registered"):
-        Qwen3TITOTokenizer(object(), chat_template_kwargs={"clear_thinking": True})
+        tokenizer_cls(object(), chat_template_kwargs=chat_template_kwargs)
+
+
+@pytest.mark.parametrize(
+    ("family", "expected_boolean", "expected_nothing"),
+    [
+        (TITOTokenizerType.QWEN35, "False", "None"),
+        (TITOTokenizerType.QWEN36, "false", "null"),
+    ],
+)
+def test_qwen35_and_qwen36_preserve_family_tool_argument_serialization(family, expected_boolean, expected_nothing):
+    template_path, kwargs = resolve_fixed_chat_template(family)
+    assert template_path is not None
+    with open(template_path, encoding="utf-8") as template_file:
+        chat_template = template_file.read()
+    rendered = apply_chat_template_from_str(
+        chat_template,
+        [
+            {"role": "user", "content": "call"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "f",
+                            "arguments": {
+                                "string": "value",
+                                "boolean": False,
+                                "number": 3,
+                                "nothing": None,
+                                "array": [1, 2],
+                                "object": {"a": 1},
+                            },
+                        },
+                    }
+                ],
+            },
+        ],
+        add_generation_prompt=False,
+        **kwargs,
+    )
+    assert "<parameter=string>\nvalue\n</parameter>" in rendered
+    assert f"<parameter=boolean>\n{expected_boolean}\n</parameter>" in rendered
+    assert "<parameter=number>\n3\n</parameter>" in rendered
+    assert f"<parameter=nothing>\n{expected_nothing}\n</parameter>" in rendered
+    assert "<parameter=array>\n[1, 2]\n</parameter>" in rendered
+    assert '<parameter=object>\n{"a": 1}\n</parameter>' in rendered

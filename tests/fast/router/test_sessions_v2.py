@@ -48,7 +48,7 @@ def _serve_router(extra_args: dict | None = None):
             save_debug_trajectory_data=None,
             session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
             session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-            **(extra_args or {}),
+            **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
         server_obj = SessionServer(args, backend_url=backend.url)
         port = find_available_port(31000)
@@ -454,7 +454,7 @@ class TestTruncationAndCompaction:
         assert nodes[1]["parent"] == nodes[0]["id"]
 
 
-# ── additional R3 (in-place weight updates): request offsets on the tree ──
+# ── additional R3 (non-retract pause modes): request offsets on the tree ──
 
 
 class TestAdditionR3RequestOffsetV2:
@@ -464,8 +464,9 @@ class TestAdditionR3RequestOffsetV2:
         data = requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()
         return data["metadata"]["accumulated_token_ids"]
 
-    def test_in_place_offsets_across_turns_and_branches(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    def test_incremental_offsets_across_turns_and_branches(self, mode):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
 
             first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})
