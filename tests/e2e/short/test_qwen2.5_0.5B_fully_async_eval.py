@@ -90,7 +90,7 @@ def execute():
 
     ci_args = (
         "--ci-test --ci-metric-checker-key eval/gsm8k --ci-metric-checker-threshold 0.4 "
-        "--ci-metric-checker-policy all "
+        "--ci-metric-checker-expect-num 3 "
     )
 
     misc_args = (

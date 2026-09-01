@@ -2512,10 +2512,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
             )
             parser.add_argument(
-                "--ci-metric-checker-policy",
-                choices=["any", "all"],
-                default="any",
-                help="Require any or all reported eval metrics to meet the CI threshold.",
+                "--ci-metric-checker-expect-num",
+                type=int,
+                default=None,
+                help="Require exactly this many eval checks, all meeting the CI threshold.",
             )
             parser.add_argument(
                 "--ci-save-grad-norm",

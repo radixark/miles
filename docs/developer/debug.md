@@ -86,12 +86,10 @@ legitimately not hold.
 Three more take values rather than switching off:
 
 **Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>`
-checks eval metrics when the checker is disposed at the end of the run. The default
-`--ci-metric-checker-policy any` passes when at least one eval reported `key >= x`;
-`--ci-metric-checker-policy all` requires every scheduled eval to report a result and meet
-the threshold. The `all` policy requires an explicit `--num-rollout` so the checker can
-derive the expected baseline, periodic, and final eval count. Both policies fail a run
-with no eval.
+checks eval metrics when the checker is disposed at the end of the run. By default, at
+least one eval must report `key >= x`. Set `--ci-metric-checker-expect-num <n>` to
+require exactly `n` eval checks and require all of them to succeed. A run with no eval
+always fails.
 
 **Gradient-norm comparison.** `--ci-save-grad-norm <path>` writes the grad norm, and
 `--ci-load-grad-norm <path>` asserts a later run matches within `rel_tol=abs_tol=0.03`.

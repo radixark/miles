@@ -371,7 +371,7 @@ probe: frozen weights, and the metrics report exactly how far the two forwards d
 ### CI
 
 `--ci-test`, `--ci-metric-checker-key`, `--ci-metric-checker-threshold`,
-`--ci-metric-checker-policy`. Used by `tests/e2e`;
+`--ci-metric-checker-expect-num`. Used by `tests/e2e`;
 not meant for manual runs.
 
 ---
