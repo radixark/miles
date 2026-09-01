@@ -4,8 +4,6 @@ import { el, fmtNum } from "./app.js";
 import { divergingColor, drawChart, hideTooltip, sequentialColor, showTooltip } from "./charts.js";
 import { renderConversation, renderSampleChips } from "./conversation.js";
 
-const WINDOW_SIZES = [256, 1024, 4096];
-
 // stat -> how to color a value: diverging stats define center/scale via values
 const STATS = {
   imp_ratio: { color: (v) => divergingColor(Math.log(Math.max(v, 1e-6))) },
@@ -112,7 +110,11 @@ export async function renderTokens(view, meta, route) {
 
   const conversationPane = renderConversation(conversationRow);
   const tabs = el("div", { class: "tabs" });
-  const body = el("div");
+  // both panes stay mounted and are toggled with `hidden`, because detaching a
+  // pane destroys its layout and the browser resets the token strip's scroll
+  // offset to 0 on re-attach — one glance at the conversation would otherwise
+  // send the reader back to token 0 of a several-thousand-token prompt
+  const body = el("div", {}, [conversationPane, tokensPane]);
   const select = (name) => {
     tabs.replaceChildren(
       ...["conversation", "tokens"].map((tab) =>
@@ -121,8 +123,12 @@ export async function renderTokens(view, meta, route) {
         ]),
       ),
     );
-    body.replaceChildren(name === "conversation" ? conversationPane : tokensPane);
-    if (name === "tokens") startTokens();
+    conversationPane.hidden = name !== "conversation";
+    tokensPane.hidden = name !== "tokens";
+    if (name === "tokens") {
+      startTokens();
+      tokensPane._onShown?.(); // work the load deferred because the pane was hidden
+    }
   };
   // chips sit above the tab bar, not inside either pane, so status/reward stay
   // on screen while reading tokens
@@ -131,18 +137,15 @@ export async function renderTokens(view, meta, route) {
 }
 
 async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
-  const probe = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
-    start: 0,
-    end: 1,
-    eval: evaluation,
-  });
-  const total = probe.total_len;
+  // one full-range read feeds both panes. The chart always spanned the whole
+  // response, so the windowed strip fetch this replaces was re-requesting a
+  // slice of bytes the server was already sending.
+  const payload = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, { eval: evaluation });
+  const available = Object.keys(STATS).filter((s) => payload[s] !== null && payload[s] !== undefined);
 
-  let windowSize = total <= 4096 ? total : 1024;
-  let start = 0;
   let stat = "imp_ratio";
+  if (!available.includes(stat)) stat = available[0];
   let chartMetric = "imp_ratio";
-  let chartData = null; // full-range payload: the chart spans the whole response
 
   const controls = el("div", { class: "controls" });
   const strip = el("div", { class: "panel" });
@@ -150,7 +153,6 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
   const chartCanvas = el("canvas", { class: "chart" }); // persistent: zoom survives metric switches
 
   function renderChart() {
-    const available = Object.keys(STATS).filter((s) => chartData[s] !== null && chartData[s] !== undefined);
     if (!available.length) {
       chartPanel.replaceChildren();
       return;
@@ -178,7 +180,7 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
       ]),
       chartCanvas,
     );
-    const values = chartData[chartMetric];
+    const values = payload[chartMetric];
     const points = [];
     let afterGap = false;
     values.forEach((v, i) => {
@@ -186,111 +188,103 @@ async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
         afterGap = true;
         return;
       }
-      const pos = chartData.prompt_len + i;
+      const pos = payload.prompt_len + i;
       points.push({ x: pos, y: v, gap: afterGap, label: `pos ${pos}\n${chartMetric} = ${fmtNum(v)}` });
       afterGap = false;
     });
     // shade the prompt and mask=0 runs: regions the policy did not generate
-    const bands = [{ x0: 0, x1: chartData.prompt_len, strong: true, label: "prompt" }];
-    const mask = chartData.loss_mask;
+    const bands = [{ x0: 0, x1: payload.prompt_len, strong: true, label: "prompt" }];
+    const mask = payload.loss_mask;
     if (mask) {
       let runStart = null;
       mask.forEach((m, i) => {
         if (m === 0 && runStart === null) runStart = i;
         if (m !== 0 && runStart !== null) {
-          bands.push({ x0: chartData.prompt_len + runStart, x1: chartData.prompt_len + i });
+          bands.push({ x0: payload.prompt_len + runStart, x1: payload.prompt_len + i });
           runStart = null;
         }
       });
-      if (runStart !== null) bands.push({ x0: chartData.prompt_len + runStart, x1: chartData.prompt_len + mask.length });
+      if (runStart !== null) bands.push({ x0: payload.prompt_len + runStart, x1: payload.prompt_len + mask.length });
     }
     queueMicrotask(() => drawChart(chartCanvas, points, { bands }));
   }
 
-  async function loadChart() {
-    chartData = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
-      start: 0,
-      end: total,
-      eval: evaluation,
-    });
-    renderChart();
-  }
-
-  async function load() {
-    const payload = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
-      start,
-      end: Math.min(start + windowSize, total),
-      eval: evaluation,
-    });
-    const available = Object.keys(STATS).filter((s) => payload[s] !== null && payload[s] !== undefined);
-    if (!available.includes(stat)) stat = available[0];
-
-    // ---- controls ----
-    const statSelect = el("select", {}, available.map((s) =>
-      Object.assign(el("option", { value: s }, [s]), { selected: s === stat }),
-    ));
-    statSelect.onchange = () => {
-      stat = statSelect.value;
-      load();
+  // ---- token strip ----
+  // the loss ignores masked positions, so they are dimmed and never tinted: a
+  // color there would read as signal that does not exist
+  const isMasked = (respPos) =>
+    payload.loss_mask !== null && respPos >= 0 && respPos < payload.loss_mask.length && payload.loss_mask[respPos] === 0;
+  const responseLen = (payload.train_log_probs ?? payload.rollout_log_probs ?? []).length;
+  const heading = el("h3", {});
+  // built once, then only recolored when "color by" changes: a rebuild would
+  // throw away wherever in the sequence the reader had scrolled to
+  const spans = payload.token_ids.map((tokenId, i) => {
+    const respPos = i - payload.response_offset; // index into stat arrays
+    const inResponse = respPos >= 0 && respPos < responseLen;
+    const text = payload.token_text ? payload.token_text[i] : `·${tokenId}`;
+    const masked = inResponse && isMasked(respPos);
+    const span = el("span", { class: `tok ${inResponse ? "" : "prompt"} ${masked ? "masked" : ""}` }, [
+      text.replaceAll("\n", "⏎\n"),
+    ]);
+    span.onmousemove = (ev) => {
+      const lines = [`#${payload.start + i} id=${tokenId} ${JSON.stringify(text)}`];
+      if (!inResponse) lines.push("(prompt)");
+      else {
+        for (const s of available) lines.push(`${s} = ${fmtNum(payload[s][respPos])}`);
+        if (masked) lines.push("loss_mask = 0");
+      }
+      showTooltip(ev.clientX, ev.clientY, lines.join("\n"));
     };
-    const sizeSelect = el("select", {}, WINDOW_SIZES.filter((w) => w < total).concat([total]).map((w) =>
-      Object.assign(el("option", { value: w }, [w === total ? `all ${total}` : String(w)]), {
-        selected: w === windowSize,
-      }),
-    ));
-    sizeSelect.onchange = () => {
-      windowSize = Number(sizeSelect.value);
-      load();
-    };
-    const startInput = el("input", { type: "number", value: start, min: 0, max: total - 1 });
-    startInput.onchange = () => {
-      start = Math.max(0, Math.min(Number(startInput.value), total - 1));
-      load();
-    };
-    controls.replaceChildren(
-      el("button", { onclick: () => ((start = Math.max(0, start - windowSize)), load()) }, ["◀"]),
-      el("span", {}, [`tokens ${payload.start}–${payload.end} of ${total} (prompt ${payload.prompt_len})`]),
-      el("button", { onclick: () => ((start = Math.min(total - 1, start + windowSize)), load()) }, ["▶"]),
-      el("span", { class: "muted" }, [" window"]),
-      sizeSelect,
-      el("span", { class: "muted" }, [" start"]),
-      startInput,
-      el("span", { class: "muted" }, [" color by"]),
-      statSelect,
-    );
+    span.onmouseleave = hideTooltip;
+    return span;
+  });
+  const box = el("div", { class: "tokens" }, spans);
 
-    // ---- token strip ----
+  // the color scale spans the whole response, so a given value keeps one color
+  // no matter where in the sequence it sits
+  function paintStrip() {
     const values = payload[stat] ?? [];
     const color = values.length ? colorFor(stat, values) : () => "transparent";
-    const spans = payload.token_ids.map((tokenId, i) => {
-      const respPos = i - payload.response_offset; // index into stat arrays
-      const inResponse = respPos >= 0 && respPos < (payload.train_log_probs ?? payload.rollout_log_probs ?? []).length;
-      const text = payload.token_text ? payload.token_text[i] : `·${tokenId}`;
-      const masked = inResponse && payload.loss_mask !== null && payload.loss_mask[respPos] === 0;
-      const value = inResponse && values.length ? values[respPos] : null;
-      const span = el("span", { class: `tok ${inResponse ? "" : "prompt"} ${masked ? "masked" : ""}` }, [
-        text.replaceAll("\n", "⏎\n"),
-      ]);
-      if (value !== null && value !== undefined && !masked) span.style.background = color(value);
-      span.onmousemove = (ev) => {
-        const lines = [`#${payload.start + i} id=${tokenId} ${JSON.stringify(text)}`];
-        if (!inResponse) lines.push("(prompt)");
-        else {
-          for (const s of available) lines.push(`${s} = ${fmtNum(payload[s][respPos])}`);
-          if (masked) lines.push("loss_mask = 0");
-        }
-        showTooltip(ev.clientX, ev.clientY, lines.join("\n"));
-      };
-      span.onmouseleave = hideTooltip;
-      return span;
+    spans.forEach((span, i) => {
+      const respPos = i - payload.response_offset;
+      const value = respPos >= 0 && respPos < values.length ? values[respPos] : null;
+      const tinted = value !== null && value !== undefined && !isMasked(respPos);
+      span.style.background = tinted ? color(value) : "";
     });
-    strip.replaceChildren(
-      el("h3", {}, [`Tokens — colored by ${stat}${payload.token_text ? "" : " (no tokenizer: ids shown)"}`]),
-      el("div", { class: "tokens" }, spans),
-    );
-
+    heading.textContent = `Tokens — colored by ${stat}${payload.token_text ? "" : " (no tokenizer: ids shown)"}`;
   }
 
+  const statSelect = el("select", {}, available.map((s) =>
+    Object.assign(el("option", { value: s }, [s]), { selected: s === stat }),
+  ));
+  statSelect.onchange = () => {
+    stat = statSelect.value;
+    paintStrip();
+  };
+  controls.replaceChildren(
+    el("span", {}, [`${payload.total_len} tokens (prompt ${payload.prompt_len})`]),
+    el("span", { class: "muted" }, [" color by"]),
+    statSelect,
+  );
+  strip.replaceChildren(heading, box);
+  paintStrip();
+
   root.replaceChildren(controls, strip, chartPanel);
-  await Promise.all([load(), loadChart()]);
+
+  // Sizing the chart canvas and reading a token's offsetTop both need a layout
+  // box, and this load is slow enough to carry its own "several minutes" notice
+  // — long enough for the reader to have switched back to the Conversation tab
+  // before it lands. Rendering into a hidden pane would silently produce a 0x0
+  // canvas and a scrollTop of 0, so the layout-bound work waits to be replayed
+  // by whoever shows the pane next.
+  const firstResponse = spans[payload.response_offset];
+  root._onShown = () => {
+    if (!root.getClientRects().length) return; // still no layout box
+    renderChart();
+    // open on the first generated token: an agentic prompt runs to thousands of
+    // tokens of chat history, and none of the per-token metrics are defined over it
+    if (firstResponse) box.scrollTop = firstResponse.offsetTop;
+    root._onShown = null; // one-shot, so later tab switches never yank the reader's scroll
+  };
+  root._onShown();
 }

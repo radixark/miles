@@ -63,7 +63,6 @@ ENV CMAKE_PREFIX_PATH=/opt/rocm:/opt/rocm/hip:/usr/local:/usr
 
 # Patches + requirements consumed below.
 # TODO: remove these patches once the changes are merged into the main codebase.
-COPY docker/amd_patch/latest/megatron.patch /tmp/amd_patch/megatron.patch
 COPY docker/amd_patch/latest/tile_kernels.patch /tmp/amd_patch/tile_kernels.patch
 COPY docker/amd_patch/latest/tilelang_hip_fp8.patch /tmp/amd_patch/tilelang_hip_fp8.patch
 COPY requirements.txt /tmp/requirements.txt
@@ -107,7 +106,7 @@ RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==$
     cp -n /tmp/mc/mooncake/*.py "$(python3 -c 'import mooncake, os; print(os.path.dirname(mooncake.__file__))')" && \
     rm -rf /tmp/mc
 
-RUN pip install flash-linear-attention==0.4.2
+RUN pip install flash-linear-attention==0.5.2
 
 # Enable deepseek-ai/TileKernels on ROCm/gfx950 for mHC and FP8 QAT cast-back.
 # These temporary build-time patches make tile_kernels import lazy, remove CUDA/Hopper-only PDL from mhc_post,
@@ -120,7 +119,6 @@ RUN pip install --no-deps tile_kernels==1.0.0 && \
 RUN rm -rf /root/Megatron-LM && \
     git clone --recursive -b ${MEGATRON_BRANCH} https://github.com/${MEGATRON_REPO}.git /root/Megatron-LM && \
     cd /root/Megatron-LM && \
-    git apply /tmp/amd_patch/megatron.patch && \
     pip install -e .
 
 RUN cd /sgl-workspace/sglang && \

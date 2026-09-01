@@ -39,8 +39,13 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
         return export_inkling_lora_hf_named(self.model)
 
     def _convert_to_hf_param_units(self, param_infos: Sequence[ParamInfo], params: Sequence[torch.Tensor]):
+        # A converter may need siblings from the same atomic update group — those are in this
+        # bucket by construction, since the group is what keeps them together.
+        bucket = {info.name: param for info, param in zip(param_infos, params, strict=True)}
         for info, param in zip(param_infos, params, strict=True):
-            yield list(convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config))
+            yield list(
+                convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config, bucket=bucket)
+            )
 
 
 def _get_megatron_full_params(
