@@ -700,13 +700,35 @@ class SGLangEngine(RayActor):
         response.raise_for_status()
         return response
 
+    def _make_optional_request(self, endpoint: str, payload: dict | None = None):
+        """Like _make_request, but tolerate an SGLang build that does not expose the endpoint.
+
+        The weight-update session endpoints are newer than some SGLang releases. Where they are
+        absent the server answers 404 and the older contract applies: update_weights_from_tensor
+        does its own packing/post-processing, so skipping the session is correct for an unquantized
+        target model. Anything other than 404 is still an error.
+        """
+        try:
+            return self._make_request(endpoint, payload)
+        except requests.exceptions.HTTPError as e:
+            if e.response is None or e.response.status_code != 404:
+                raise
+            absent = self.__dict__.setdefault("_absent_endpoints", set())
+            if endpoint not in absent:
+                absent.add(endpoint)
+                logger.warning(
+                    f"SGLang server has no /{endpoint} (404); skipping it — this SGLang build "
+                    f"predates the weight-update session API."
+                )
+            return None
+
     def begin_weight_update(self, selector: str = "all"):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
-        return self._make_request("begin_weight_update", {"selector": selector})
+        return self._make_optional_request("begin_weight_update", {"selector": selector})
 
     def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
-        return self._make_request("end_weight_update", {})
+        return self._make_optional_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):
         return self._make_request(
