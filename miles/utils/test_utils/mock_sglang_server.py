@@ -211,12 +211,23 @@ class MockSGLangServer:
         if prompt_ids is not None:
             choice["prompt_token_ids"] = prompt_ids
 
+        # Real SGLang chat responses always carry ``usage``; clients that
+        # validate the full ChatCompletionResponse schema require it.
+        if payload.get("input_ids") is not None:
+            prompt_token_count = len(payload["input_ids"])
+        else:
+            prompt_token_count = len(self.tokenizer.encode(prompt_str, add_special_tokens=False))
         return {
             "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
             "object": "chat.completion",
             "created": int(time.time()),
             "model": "mock-model",
             "choices": [choice],
+            "usage": {
+                "prompt_tokens": prompt_token_count,
+                "completion_tokens": len(output_ids),
+                "total_tokens": prompt_token_count + len(output_ids),
+            },
         }
 
 

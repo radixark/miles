@@ -16,10 +16,12 @@ from miles.backends.megatron_utils.initialize import init
 from miles.backends.megatron_utils.model_provider import get_model_provider_func
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.memory_utils import print_memory
+from miles_plugins.models.deepseek_v4.arguments import add_dsv4_arguments
 
 
 def add_conversion_args(parser):
-    """Add conversion arguments to the parser"""
+    """Add conversion arguments, plus the plugin arguments the model scripts pass through."""
+    add_dsv4_arguments(parser)
     parser.add_argument("--hf-checkpoint", type=str, required=True, help="HuggingFace model path")
     parser.add_argument(
         "--megatron-to-hf-mode",

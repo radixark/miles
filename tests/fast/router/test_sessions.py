@@ -73,6 +73,7 @@ def router_env():
                 trajectory_manager="linear_trajectory",
                 session_server_instance_id=uuid.uuid4().hex,
                 save_debug_trajectory_data=None,
+                pause_generation_mode="retract",
             )
             server_obj = SessionServer(args, backend_url=backend.url)
 
@@ -578,7 +579,7 @@ class TestChatFakeStreaming:
         assert finish_reason == "stop"
 
 
-# ── additional R3 (in-place weight updates): derivation and request offsets ──
+# ── additional R3 (non-retract pause modes): derivation and request offsets ──
 
 
 @contextmanager
@@ -600,7 +601,7 @@ def _serve_router(extra_args: dict | None = None):
             trajectory_manager="linear_trajectory",
             session_server_instance_id=uuid.uuid4().hex,
             save_debug_trajectory_data=None,
-            **(extra_args or {}),
+            **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
         server_obj = SessionServer(args, backend_url=backend.url)
         port = find_available_port(31000)
@@ -616,14 +617,10 @@ class TestUseAdditionR3Derivation:
     """use_addition_r3 is derived once at server bootstrap from
     pause_generation_mode; it is not independently configurable."""
 
-    @pytest.mark.parametrize(("mode", "expected"), [("in_place", True), ("retract", False)])
+    @pytest.mark.parametrize(("mode", "expected"), [("abort", True), ("in_place", True), ("retract", False)])
     def test_mode_mapping(self, mode, expected):
         args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
         assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
-
-    def test_absent_mode_keeps_full_r3(self):
-        args = SimpleNamespace(hf_checkpoint=None)
-        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is False
 
 
 class TestAdditionR3RequestOffset:
@@ -640,8 +637,9 @@ class TestAdditionR3RequestOffset:
             {"role": "tool", "content": tool_content, "tool_call_id": "t0"},
         ]
 
-    def test_in_place_offsets_across_turns_and_rollback(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    def test_incremental_offsets_across_turns_and_rollback(self, mode):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
 
             first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})

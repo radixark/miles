@@ -102,6 +102,7 @@ class TestCISuites:
             "stage-c-8-gpu-h200",
             "stage-c-4-gpu-h200",
             "stage-c-2-gpu-h200",
+            "stage-c-8-gpu-b200",
         ]
 
     def test_no_legacy_suite_names_remain(self):
@@ -268,7 +269,7 @@ class TestWorkflowScopeSeam:
     def test_every_stage_consumes_resolved_policy(self):
         workflow = self._workflow()
         commands = workflow.split("execute_command:")[1:]
-        assert len(commands) == 7, "stage inventory changed; update this lock test"
+        assert len(commands) == 8, "stage inventory changed; update this lock test"
         for block in commands:
             cmd = block.split("secrets:")[0]
             assert "--cadence ${{ needs.resolve-ci-policy.outputs.cadence }}" in cmd
@@ -290,7 +291,7 @@ class TestWorkflowScopeSeam:
     def test_cpu_and_gpu_stages_use_dedicated_reusable_workflows(self):
         workflow = self._workflow()
         assert workflow.count("uses: ./.github/workflows/_run-cpu-ci.yml") == 2
-        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 5
+        assert workflow.count("uses: ./.github/workflows/_run-ci.yml") == 6
         assert workflow.count("uses: ./.github/workflows/_build-pr-ci-image.yml") == 1
         assert "cpu_runner" not in workflow
 
@@ -416,15 +417,15 @@ class TestWorkflowScopeSeam:
         assert "ci_scope" not in dispatch_inputs
         manual_scope = "${{ github.event_name == 'workflow_dispatch' && '--match-all-labels' || '' }}"
         cuda_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
-        assert cuda_stages.count(manual_scope) == 5
+        assert cuda_stages.count(manual_scope) == 6
 
     def test_gpu_gates_consume_shared_bypass_output(self):
         workflow = self._workflow()
         gpu_stages = workflow.split("  stage-b-2-gpu-h200:", 1)[1]
         bypass_gate = "needs.resolve-ci-policy.outputs.bypass_fastfail == 'true'"
-        assert gpu_stages.count(bypass_gate) == 5
-        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 5
-        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 5
+        assert gpu_stages.count(bypass_gate) == 6
+        assert gpu_stages.count("needs.resolve-ci-policy.result == 'success'") == 6
+        assert gpu_stages.count("needs.resolve-ci-image.result == 'success'") == 6
         assert "needs.stage-a-cpu.result == 'failure'" not in gpu_stages
 
     def test_each_cuda_stage_consumes_the_fail_open_skip_list(self):
@@ -522,22 +523,15 @@ class TestRocmWorkflowScopeSeam:
         assert "allow-unsafe-pr-checkout" not in reusable
         assert "MILES_HARDWARE_PLATFORM: rocm" in reusable
 
-    def test_megatron_override_preserves_rocm_patch(self):
+    def test_megatron_override_installs_the_checked_out_ref_unpatched(self):
         reusable = (Path(__file__).resolve().parents[3] / ".github" / "workflows" / "_run-ci-rocm.yml").read_text()
         override = reusable.split('if [ -n "$MEGATRON_PR" ]; then', 1)[1].split("          cd $GITHUB_WORKSPACE", 1)[0]
 
         checkout = override.index("git checkout -f FETCH_HEAD")
-        check_patch = override.index('git apply --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"')
-        apply_patch = override.index('git apply "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"')
-        reverse_check = override.index(
-            'elif git apply --reverse --check "$GITHUB_WORKSPACE/docker/amd_patch/latest/megatron.patch"; then'
-        )
-        error = override.index('echo "::error::Selected Megatron ref is incompatible with the ROCm patch"')
-        fail = override.index("exit 1")
         install = override.index("pip install -e . --no-deps --break-system-packages")
 
-        assert checkout < check_patch < apply_patch < reverse_check < error < fail < install
-        assert "/tmp/amd_patch/megatron.patch" not in override
+        assert checkout < install
+        assert "amd_patch" not in override
 
 
 # --- CLI seam: local nightly alias and invalid-suite exit behavior -----------
