@@ -42,22 +42,15 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
     supports_lora = True
 
     def __init__(self, args: Namespace) -> None:
-        """
-        Create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
-        """
         super().__init__(args)
         self._selector = weight_update_selector(args)
         self._model_update_groups = None
+        # IPC gather groups are derived from the engine layout on connect.
+        self._ipc_gather_group = None
+        self._ipc_gather_src = None
+        self._ipc_layout = None
         # Overwritten with "miles" when connect finds a distributed engine tail.
         self._group_name = "miles-colocate"
-
-        for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
-            end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
-            group_ranks = list(range(start_rank, end_rank))
-            new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-            if dist.get_rank() in group_ranks:
-                self._ipc_gather_group = new_group
-                self._ipc_gather_src = start_rank
 
     def connect(
         self,
@@ -121,29 +114,22 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         colocate_gpu_offsets = engine_gpu_offsets[:colocate_engine_nums]
         colocate_gpu_counts = engine_gpu_counts[:colocate_engine_nums]
 
-        # Determine whether this rank is covered by any colocated engine.
-        all_colocated_ranks = set()
-        for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
-            all_colocated_ranks.update(range(offset, offset + count))
-        rank_has_engine = dist.get_rank() in all_colocated_ranks
-
-        # Create IPC Gloo gather groups matching actual engine layout.
-        # Re-create on first call or when engine layout changes (placeholder ranks
-        # that had a group from __init__ but no actual engine need to be reset).
-        if rank_has_engine:
-            if self._ipc_gather_group is None:
-                for i in range(colocate_engine_nums):
-                    group_ranks = list(
-                        range(colocate_gpu_offsets[i], colocate_gpu_offsets[i] + colocate_gpu_counts[i])
-                    )
-                    new_group = dist.new_group(ranks=group_ranks, backend="gloo")
-                    if dist.get_rank() in group_ranks:
-                        self._ipc_gather_group = new_group
-                        self._ipc_gather_src = colocate_gpu_offsets[i]
-        else:
-            # Ranks not covered by any engine (e.g. placeholder GPU slots)
+        # The gather groups must mirror the actual engine layout: a group whose members
+        # or src disagree with it misroutes the IPC handles while the sync still bumps
+        # weight_version. new_group is a world-collective call and the layout inputs are
+        # identical on every rank, so keying the rebuild on the layout keeps all ranks
+        # on the same branch. Ranks outside every engine (placeholder slots) keep None.
+        layout = (tuple(colocate_gpu_offsets), tuple(colocate_gpu_counts))
+        if layout != self._ipc_layout:
             self._ipc_gather_group = None
             self._ipc_gather_src = None
+            for offset, count in zip(colocate_gpu_offsets, colocate_gpu_counts, strict=True):
+                group_ranks = list(range(offset, offset + count))
+                new_group = dist.new_group(ranks=group_ranks, backend="gloo")
+                if dist.get_rank() in group_ranks:
+                    self._ipc_gather_group = new_group
+                    self._ipc_gather_src = offset
+            self._ipc_layout = layout
 
         # Map training ranks to colocated engine actors.
         self._ipc_engine = None
