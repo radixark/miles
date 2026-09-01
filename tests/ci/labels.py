@@ -36,5 +36,6 @@ KNOWN_LABELS: dict[str, str] = {
     "qwen35": "Qwen3.5-35B-A3B MTP / spec-v2 e2e tests",
     "mooncake": "Mooncake object-store rollout transfer tests",
     "miles-plugin": "miles_plugins extension tests (optimizers, model plugins)",
+    "agentic": "Agentic sandbox training tests (need the sandbox-service and its key on the runner)",
     "amd": "AMD MI350 ROCm tests (stage-c-4-gpu-mi350)",
 }
