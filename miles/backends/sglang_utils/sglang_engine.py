@@ -70,7 +70,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     from sglang.srt.entrypoints.http_server import launch_server
 
     multiprocessing.set_start_method("spawn", force=True)
-    server_args.host = server_args.host.strip("[]")
     p = multiprocessing.Process(target=launch_server, args=(server_args,))
     p.start()
 
@@ -88,7 +87,6 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
 
 def _launch_sglang_server(server_args: ServerArgs, bundle_indices: list[int]):
     """Host the Ray HTTP server in a same-job child actor. Returns (actor, scheduler_actors)."""
-    server_args.host = server_args.host.strip("[]")
     placement_group = ray.util.get_current_placement_group()
     assert placement_group is not None
     http_actor = (
@@ -289,7 +287,10 @@ class SGLangEngine(RayActor):
             f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}"
             f"{' (use_ray=True for RDT)' if use_rdt else ''}"
         )
-        server_args = ServerArgs(**server_args_dict)
+        # ServerArgs refuses writes once its declarations materialise, so the ipv6
+        # host loses its brackets here rather than at the launch sites. The dict
+        # keeps the bracketed form, which self.server_host uses to build urls.
+        server_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
         if use_rdt:
             self._sglang_server_actor, self._scheduler_actors = _launch_sglang_server(
                 server_args, bundle_indices=self.pg_bundles

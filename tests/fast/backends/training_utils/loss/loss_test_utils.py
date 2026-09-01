@@ -27,6 +27,7 @@ from argparse import Namespace
 from pathlib import Path
 
 import torch
+import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import GroupInfo, ParallelState, set_parallel_state
 
@@ -43,11 +44,14 @@ def make_parallel_state() -> ParallelState:
     def _trivial_group() -> GroupInfo:
         return GroupInfo(rank=0, size=1, group=None)
 
+    # The fused vocab-parallel CE needs a real group object; use the 1-rank
+    # world group when the test initialized one.
+    tp_group = dist.group.WORLD if dist.is_initialized() else None
     state = ParallelState(
         intra_dp=_trivial_group(),
         intra_dp_cp=_trivial_group(),
         cp=_trivial_group(),
-        tp=_trivial_group(),
+        tp=GroupInfo(rank=0, size=1, group=tp_group),
         pp=_trivial_group(),
         ep=_trivial_group(),
         etp=_trivial_group(),

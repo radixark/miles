@@ -150,6 +150,7 @@ def agent_args(tito_model: str, sandbox_backend: str = "") -> str:
         f"--tito-model {tito_model} "
         "--use-session-server "
         "--session-server-port 30000 "
+        "--session-server-workers 32 "
     )
 
 

@@ -28,6 +28,43 @@ from miles.utils.distributed_utils import get_gloo_group
 
 logger = logging.getLogger(__name__)
 
+# Safetensors stores its own dtype codes in the file header but does not expose a
+# public torch-dtype encoder. Disk-delta needs the exact code because it patches
+# raw bytes without rewriting that header.
+_SAFETENSORS_DTYPE_BY_TORCH_DTYPE = {
+    torch.float64: "F64",
+    torch.float32: "F32",
+    torch.float16: "F16",
+    torch.bfloat16: "BF16",
+    torch.int64: "I64",
+    torch.int32: "I32",
+    torch.int16: "I16",
+    torch.int8: "I8",
+    torch.uint8: "U8",
+    torch.bool: "BOOL",
+    torch.complex64: "C64",
+    **{
+        getattr(torch, torch_dtype_name): safetensors_dtype
+        for torch_dtype_name, safetensors_dtype in (
+            ("float8_e4m3fn", "F8_E4M3"),
+            ("float8_e4m3fnuz", "F8_E4M3FNUZ"),
+            ("float8_e5m2", "F8_E5M2"),
+            ("float8_e5m2fnuz", "F8_E5M2FNUZ"),
+            ("uint64", "U64"),
+            ("uint32", "U32"),
+            ("uint16", "U16"),
+        )
+        if hasattr(torch, torch_dtype_name)
+    },
+}
+
+
+def _safetensors_dtype(dtype: torch.dtype) -> str:
+    try:
+        return _SAFETENSORS_DTYPE_BY_TORCH_DTYPE[dtype]
+    except KeyError:
+        raise ValueError(f"Disk-delta does not support trainer tensor dtype {dtype}") from None
+
 
 class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     """
@@ -122,9 +159,10 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         """Capture the baseline snapshot the first delta diffs against (no publish), and clear any
         stale stream from a prior run. Seeds from hf_checkpoint — what each host materializes its
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
-        round-trip trims vocab-padding rows (embed/lm_head). A tensor absent there (rare) falls back
-        to the gathered value. pull_weights(0) makes each host materialize its local base now,
-        overlapped with the snapshot gather, so the first real sync only pays the delta apply."""
+        round-trip trims vocab-padding rows (embed/lm_head). Every emitted tensor must have the same
+        layout as that canonical checkpoint because deltas operate on raw bytes. pull_weights(0)
+        makes each host materialize its local base now, overlapped with the snapshot gather, so the
+        first real sync only pays the delta apply."""
         # a prior run's versions would apply against the wrong base; start the dir clean
         pulls = []
         if dist.get_rank() == 0:
@@ -135,18 +173,54 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
             pulls = [engine.pull_weights.remote(target_version=0) for engine in self.rollout_engines]
         dist.barrier(group=get_gloo_group())
 
-        read_hf = make_tensor_reader(self.args.hf_checkpoint)  # index the HF headers once
+        read_hf = None
+        local_error: ValueError | None = None
+        if self._is_source:
+            try:
+                read_hf = make_tensor_reader(self.args.hf_checkpoint)  # index the HF headers once
+            except ValueError as error:
+                local_error = error
 
         for bucket in iter_buckets(materialize=self.is_sender):
-            if not self.is_sender:
+            if not self.is_sender or local_error is not None:
                 continue
-            for name, tensor in bucket:
-                try:
-                    self._snapshot[name] = read_hf(name)
-                except KeyError:
-                    self._snapshot[name] = tensor.detach().cpu().contiguous().view(torch.uint8).numpy().reshape(-1)
-                    logger.warning("seed: %s absent from hf_checkpoint; seeding from current weights", name)
-        dist.barrier(group=get_gloo_group())
+            assert read_hf is not None
+            try:
+                for name, tensor in bucket:
+                    try:
+                        baseline = read_hf(
+                            name,
+                            expected_dtype=_safetensors_dtype(tensor.dtype),
+                            expected_shape=tuple(tensor.shape),
+                        )
+                    except KeyError as error:
+                        raise ValueError(
+                            f"Trainer emitted {name!r}, but it is absent from the canonical checkpoint"
+                        ) from error
+                    emitted_nbytes = tensor.numel() * tensor.element_size()
+                    if emitted_nbytes != baseline.nbytes:
+                        raise ValueError(
+                            f"Checkpoint tensor {name!r} has {baseline.nbytes} bytes; "
+                            f"trainer emitted {emitted_nbytes} bytes"
+                        )
+                    self._snapshot[name] = baseline
+            except ValueError as error:
+                # Source ranks read the checkpoint, but every rank drives the bucket iterator's
+                # collectives. Defer the error until iteration finishes, then make every rank fail.
+                local_error = error
+
+        group = get_gloo_group()
+        error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
+        local_error_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
+        dist.all_gather_object(error_messages, local_error_message, group=group)
+        if any(error_messages):
+            failed_rank, error_message = next(
+                (rank, message) for rank, message in enumerate(error_messages) if message is not None
+            )
+            error = RuntimeError(f"Disk-delta baseline validation failed on rank {failed_rank}: {error_message}")
+            if local_error is not None:
+                raise error from local_error
+            raise error
 
         if dist.get_rank() == 0:
             check_weight_sync_results(ray.get(pulls), is_lora=False)

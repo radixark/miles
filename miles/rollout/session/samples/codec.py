@@ -13,7 +13,9 @@ from copy import copy, deepcopy
 
 import numpy as np
 import safetensors.numpy
+import torch
 
+from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
 
 
@@ -21,7 +23,7 @@ from miles.utils.types import Sample
 class ValueSpec:
     """Wire contract of one computed field."""
 
-    codec: str  # "tensor": ndarray on both sides | "tensor_list": tensor on the wire, list on decode | "json"
+    codec: str  # "tensor" | "tensor_list" | "sampling_mask" | "json"
     dtype: np.dtype | None = None  # tensor codecs: pinned on both sides; a mismatch raises instead of converting
     strict: bool = False  # encode never converts, only validates (R3 replay tensors must arrive as int32)
     null: object = None  # decoded value for a null-marked field; copied per sample so no instance is shared
@@ -35,6 +37,7 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "response_length": ValueSpec("json"),
     "loss_mask": ValueSpec("tensor_list", np.dtype(np.uint8)),
     "rollout_log_probs": ValueSpec("tensor_list", np.dtype(np.float64)),
+    "rollout_sampling_mask": ValueSpec("sampling_mask"),
     "rollout_routed_experts": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "status": ValueSpec("json"),
@@ -49,16 +52,18 @@ SAMPLES_VALUE_SPEC_V2: dict[str, ValueSpec] = {
     "reward": ValueSpec("json"),
 }
 
+ROLLOUT_SAMPLING_MASK_FIELDS = ("rollout_sampling_mask",)
+
 # The wire allowlists, derived: only table fields cross the samples wire.
-COMPUTED_FIELDS = tuple(SAMPLES_VALUE_SPEC)
-COMPUTED_FIELDS_V2 = tuple(SAMPLES_VALUE_SPEC_V2)
+COMPUTED_FIELDS = tuple(field for field in SAMPLES_VALUE_SPEC if field not in ROLLOUT_SAMPLING_MASK_FIELDS)
+COMPUTED_FIELDS_V2 = tuple(field for field in SAMPLES_VALUE_SPEC_V2 if field not in ROLLOUT_SAMPLING_MASK_FIELDS)
 
 assert all(
-    spec.codec in ("tensor", "tensor_list", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
+    spec.codec in ("tensor", "tensor_list", "sampling_mask", "json") for spec in SAMPLES_VALUE_SPEC_V2.values()
 ), "unknown codec in SAMPLES_VALUE_SPEC"
 
 _TENSOR_FIELDS = frozenset(field for field, spec in SAMPLES_VALUE_SPEC_V2.items() if spec.codec != "json")
-assert _TENSOR_FIELDS <= set(COMPUTED_FIELDS), "every tensor field must be on the v1 wire too"
+assert _TENSOR_FIELDS <= set(COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS)
 
 _SAMPLES_META_KEY = "_samples_meta"
 _OPD_STUDENT_TOP_LOGPROBS_KEY = "opd_student_top_logprobs"
@@ -115,6 +120,13 @@ def encode_samples(
                 continue
             if value is None:
                 nulls.append(field)
+                continue
+            if spec.codec == "sampling_mask":
+                if not isinstance(value, RolloutSamplingMask):
+                    raise TypeError(f"{field} must be a RolloutSamplingMask, got {type(value).__name__}")
+                ids, offsets = value._as_tensors()
+                tensors[f"{field}.ids.{sample_index}"] = np.ascontiguousarray(ids.numpy())
+                tensors[f"{field}.offsets.{sample_index}"] = np.ascontiguousarray(offsets.numpy())
                 continue
             if spec.strict:
                 arr = np.asarray(value)
@@ -182,6 +194,19 @@ def decode_samples_and_merge_input_sample(
                 continue
             if field in nulls:
                 setattr(sample, field, copy(spec.null))
+                continue
+            if spec.codec == "sampling_mask":
+                ids = tensors.pop(f"{field}.ids.{sample_index}")
+                offsets = tensors.pop(f"{field}.offsets.{sample_index}")
+                if ids.dtype != np.int32 or offsets.dtype != np.int64:
+                    raise ValueError(
+                        f"{field} must use int32 ids and int64 offsets, got {ids.dtype} and {offsets.dtype}"
+                    )
+                setattr(
+                    sample,
+                    field,
+                    RolloutSamplingMask(ids=torch.from_numpy(ids), offsets=torch.from_numpy(offsets)),
+                )
                 continue
             arr = tensors.pop(f"{field}.{sample_index}")  # KeyError propagates: a promised tensor must exist
             if arr.dtype != spec.dtype:

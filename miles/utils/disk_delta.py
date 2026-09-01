@@ -58,9 +58,9 @@ def checksum(algorithm: str, buf) -> str:
     return hasher.hexdigest()
 
 
-def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int]]:
-    """Map each tensor name to (file, byte offset, nbytes) by reading every safetensors header."""
-    locations: dict[str, tuple[str, int, int]] = {}
+def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int, str, tuple[int, ...]]]:
+    """Index each tensor's byte range and declared safetensors layout."""
+    locations: dict[str, tuple[str, int, int, str, tuple[int, ...]]] = {}
     for path in glob.glob(os.path.join(ckpt_dir, "*.safetensors")):
         with open(path, "rb") as f:
             (header_len,) = struct.unpack("<Q", f.read(8))
@@ -69,17 +69,34 @@ def _tensor_locations(ckpt_dir: str) -> dict[str, tuple[str, int, int]]:
             if name == "__metadata__":
                 continue
             begin, end = info["data_offsets"]
-            locations[name] = (path, 8 + header_len + begin, end - begin)
+            locations[name] = (
+                path,
+                8 + header_len + begin,
+                end - begin,
+                info["dtype"],
+                tuple(info["shape"]),
+            )
     return locations
 
 
 def make_tensor_reader(ckpt_dir: str):
-    """Index the headers once, then return ``read(name) -> uint8 bytes`` that seeks straight to the
-    tensor — for reading many tensors without rescanning every header. KeyError if absent."""
+    """Index headers once and return a layout-aware raw tensor reader."""
     locations = _tensor_locations(ckpt_dir)
 
-    def read(name: str) -> np.ndarray:
-        path, offset, nbytes = locations[name]
+    def read(
+        name: str,
+        *,
+        expected_dtype: str | None = None,
+        expected_shape: tuple[int, ...] | None = None,
+    ) -> np.ndarray:
+        path, offset, nbytes, dtype, shape = locations[name]
+        if (expected_dtype is not None and dtype != expected_dtype) or (
+            expected_shape is not None and shape != expected_shape
+        ):
+            raise ValueError(
+                f"Checkpoint tensor {name!r} has dtype={dtype}, shape={shape}; "
+                f"trainer emitted dtype={expected_dtype}, shape={expected_shape}"
+            )
         with open(path, "rb") as f:
             f.seek(offset)
             return np.frombuffer(f.read(nbytes), dtype=np.uint8)
