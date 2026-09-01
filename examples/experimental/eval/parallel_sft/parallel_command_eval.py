@@ -44,6 +44,7 @@ class EvalCommand:
     argv: tuple[str, ...]
     metrics_path: str | None = None
     timeout_secs: float | None = None
+    interval_steps: int | None = None
     env: Mapping[str, str] | None = None
 
     @classmethod
@@ -64,13 +65,30 @@ class EvalCommand:
         if timeout_secs is not None and float(timeout_secs) <= 0:
             raise ValueError(f"Eval command {name!r} timeout_secs must be positive.")
 
+        raw_interval_steps = raw.get("interval_steps")
+        interval_steps = None
+        if raw_interval_steps is not None:
+            if isinstance(raw_interval_steps, bool):
+                raise ValueError(f"Eval command {name!r} interval_steps must be a positive integer.")
+            try:
+                interval_steps = int(raw_interval_steps)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Eval command {name!r} interval_steps must be a positive integer.") from exc
+            if interval_steps <= 0 or str(raw_interval_steps).strip() != str(interval_steps):
+                raise ValueError(f"Eval command {name!r} interval_steps must be a positive integer.")
+
         return cls(
             name=name,
             argv=tuple(str(item) for item in argv),
             metrics_path=str(raw["metrics_path"]) if raw.get("metrics_path") else None,
             timeout_secs=float(timeout_secs) if timeout_secs is not None else None,
+            interval_steps=interval_steps,
             env={str(key): str(value) for key, value in raw_env.items()} if raw_env else None,
         )
+
+    def is_due(self, rollout_id: int) -> bool:
+        """Return whether this command should run at a zero-based optimizer step."""
+        return self.interval_steps is None or (rollout_id + 1) % self.interval_steps == 0
 
 
 @dataclass(frozen=True)
@@ -106,20 +124,29 @@ class ParallelCommandEvalFn:
 
         eval_args = input.generate_state.args
         router_url = f"http://{eval_args.sglang_router_ip}:{eval_args.sglang_router_port}"
+        openai_base_url = f"{router_url}/v1"
+        agent_openai_base_url = os.environ.get("MILES_PARALLEL_EVAL_AGENT_BASE_URL", openai_base_url)
         output_dir = self._output_root / f"step_{input.rollout_id}"
         output_dir.mkdir(parents=True, exist_ok=True)
+        commands = tuple(command for command in self._commands if command.is_due(input.rollout_id))
+        if not commands:
+            logger.info("No parallel eval command is scheduled at optimizer step %s", input.rollout_id + 1)
+            return RolloutFnEvalOutput(data={}, metrics={})
+
         context = {
             "checkpoint_dir": input.hf_dir or "",
+            "agent_openai_base_url": agent_openai_base_url,
             "litellm_model": f"openai/{self._model}",
             "model": self._model,
-            "openai_base_url": f"{router_url}/v1",
+            "openai_base_url": openai_base_url,
             "output_dir": str(output_dir),
             "rollout_id": str(input.rollout_id),
             "router_url": router_url,
+            "training_step": str(input.rollout_id + 1),
             "weight_version": input.weight_version or str(input.rollout_id),
         }
 
-        results = await asyncio.gather(*(self._run_guarded(command, context, output_dir) for command in self._commands))
+        results = await asyncio.gather(*(self._run_guarded(command, context, output_dir) for command in commands))
         data: dict[str, dict[str, Any]] = {}
         metrics: dict[str, float] = {}
         for result in results:
@@ -180,10 +207,12 @@ async def _run_command(
         **os.environ,
         **command_env,
         "MILES_EVAL_CHECKPOINT_DIR": context["checkpoint_dir"],
+        "MILES_EVAL_AGENT_OPENAI_BASE_URL": context["agent_openai_base_url"],
         "MILES_EVAL_MODEL": context["model"],
         "MILES_EVAL_OPENAI_BASE_URL": context["openai_base_url"],
         "MILES_EVAL_OUTPUT_DIR": context["output_dir"],
         "MILES_EVAL_ROLLOUT_ID": context["rollout_id"],
+        "MILES_EVAL_TRAINING_STEP": context["training_step"],
         "MILES_EVAL_WEIGHT_VERSION": context["weight_version"],
     }
     stdout_path = output_dir / f"{command.name}.stdout.log"

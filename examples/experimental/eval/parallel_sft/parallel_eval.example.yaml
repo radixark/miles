@@ -1,26 +1,27 @@
 # OmegaConf resolves these environment variables before command expansion.
 # Both commands start together after Miles has pinned the requested snapshot.
 commands:
-  - name: terminal_bench_2_1
+  - name: tb21
+    interval_steps: ${oc.env:TB21_INTERVAL_STEPS,200}
     argv:
       - ${oc.env:TB21_PYTHON,python}
-      - ${oc.env:TB21_DRIVER}
+      - ${oc.env:TB21_DRIVER,examples/experimental/eval/parallel_sft/terminal_bench_eval.py}
       - --agent_server_url
       - ${oc.env:TB21_AGENT_SERVER_URL}
       - --base_url
-      - "{openai_base_url}"
+      - "{agent_openai_base_url}"
       - --model
       - "{litellm_model}"
       - --agent_name
       - terminus-2
-      - --api_key
-      - dummy
       - --task_list_file
-      - ${oc.env:TB21_TASK_LIST}
+      - ${oc.env:TB21_TASK_LIST,examples/experimental/eval/parallel_sft/terminal_bench_2_1_tasks.txt}
+      - --expected_tasks
+      - "89"
       - --n_trials
-      - ${oc.env:TB21_TRIALS,1}
+      - "2"
       - --concurrency
-      - ${oc.env:TB21_CONCURRENCY,16}
+      - ${oc.env:TB21_CONCURRENCY,32}
       - --max_seq_len
       - "262144"
       - --max_tokens
@@ -35,10 +36,13 @@ commands:
       - "12600"
       - --output_jsonl
       - "{output_dir}/tb21.jsonl"
+      - --summary_json
+      - "{output_dir}/tb21_summary.json"
     metrics_path: "{output_dir}/tb21_summary.json"
-    timeout_secs: 50400
+    timeout_secs: 86400
 
-  - name: hle_300
+  - name: hle_300_x4
+    interval_steps: ${oc.env:HLE_INTERVAL_STEPS,50}
     argv:
       - ${oc.env:HLE_PYTHON,python}
       - ${oc.env:HLE_DRIVER}
@@ -65,10 +69,14 @@ commands:
       - --judge_model
       - ${oc.env:HLE_JUDGE_MODEL}
       - --judge_concurrency
-      - ${oc.env:HLE_JUDGE_CONCURRENCY,32}
+      - ${oc.env:HLE_JUDGE_CONCURRENCY,16}
       - --judge_max_qps
       - ${oc.env:HLE_JUDGE_MAX_QPS,1.8}
       - --judge_max_tokens
-      - "16384"
+      - "1024"
+      - --judge_request_timeout_sec
+      - "180"
+      - --judge_max_retries
+      - "2"
     metrics_path: "{output_dir}/hle_300_summary.json"
     timeout_secs: 259200
