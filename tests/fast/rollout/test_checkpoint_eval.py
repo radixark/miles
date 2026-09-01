@@ -160,6 +160,26 @@ async def test_bare_eval_without_save_hf_skips(controller_env, tmp_path):
     assert controller_env.logged["skip"] == (5, "no_snapshot")
 
 
+async def test_eval_checkpoint_logs_metrics_when_debug_dump_fails(controller_env, monkeypatch, tmp_path):
+    snapshot = tmp_path / "step_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    def fail_debug_dump(*args, **kwargs):
+        raise OSError("debug volume unavailable")
+
+    monkeypatch.setattr(rollout_manager_mod, "save_debug_rollout_data", fail_debug_dump)
+    fn = CheckpointFnStub()
+    args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path), eval_keep_snapshots=2)
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5, hf_dir=str(snapshot))
+
+    rollout_id, _data, extra = controller_env.logged["eval"]
+    assert rollout_id == 5
+    assert extra["eval/debug_dump_failed"] == 1.0
+
+
 async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
     """Pure SFT skips shared-engine eval, but a separately pinned snapshot is valid."""
     snapshot = tmp_path / "step_5"
