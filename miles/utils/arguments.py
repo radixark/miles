@@ -1827,6 +1827,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
             parser.add_argument(
+                "--multi-lora-frontend",
+                type=str,
+                choices=["e2e", "tinker"],
+                default="e2e",
+                help="Multi-LoRA frontend: 'e2e' runs the built-in RL loop; 'tinker' serves the tinker SDK with a serving-only rollout fleet (default: e2e)",
+            )
+            parser.add_argument(
                 "--multi-lora-adapter",
                 nargs=2,
                 action="append",

@@ -1,5 +1,5 @@
-"""Fully-async multi-LoRA rollout: a background producer fills per-adapter buffers; batches are collected
-round-robin in ``min_groups_per_dp_split`` multiples without overshooting any adapter's remaining batch."""
+"""Fully-async multi-LoRA rollout: a background producer fills per-adapter buffers; an adapter is admitted
+to training only as one whole completed batch under its exact ServingRef, and ready adapters coalesce."""
 
 import asyncio
 import itertools
@@ -15,11 +15,12 @@ from miles.ray.multi_lora.controller import AdaptersCache, get_multi_lora_contro
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
+from miles.rollout.multi_lora.data_source import fetch_snapshot, sampleable
 from miles.rollout.sglang_rollout import GenerateState, generate_and_rm_group, get_model_url
 from miles.utils.async_utils import run
 from miles.utils.metric_utils import compute_statistics, dict_add_prefix
 from miles.utils.misc import load_function
-from miles.utils.multi_lora import EmptyBatchTimeoutError, min_groups_per_dp_split
+from miles.utils.multi_lora import AdapterIdentity, EmptyBatchTimeoutError, ServingRef, min_groups_per_dp_split
 from miles.utils.tracking_utils import tracking
 from miles.utils.types import Sample
 
@@ -118,6 +119,11 @@ class TrainBatch:
     step_slots: list[int]
 
 
+def exact_identity(adapter) -> AdapterIdentity:
+    """The shared exact-identity key (same type the tinker-side trainer handlers take)."""
+    return AdapterIdentity(name=adapter.name, registration_id=adapter.registration_id, slot=adapter.slot)
+
+
 def remaining_groups(adapter) -> int:
     """Groups still needed to complete the adapter's batch."""
     remaining = adapter.config.rollout_batch_size - adapter.accumulated_groups
@@ -156,7 +162,7 @@ async def process_group(
     if any(s.status == Sample.Status.ABORTED for s in iter_group_samples(result)):
         for s in iter_group_samples(result):
             s.reset_for_retry()
-        # Re-queuing is not wired up (the per-adapter source is read-only).
+        # The dropped group frees admission capacity; the producer refills the same adapter.
         return None
     return result
 
@@ -294,6 +300,9 @@ class AsyncMultiLoRAWorker:
         self.registrations: dict[str, str] = {}
         # Set when run_loop dies; collect_batch surfaces it instead of a misleading empty-batch timeout.
         self.failure: Exception | None = None
+        # Whole-batch admission bookkeeping, keyed by the shared exact-identity types.
+        self.inflight_groups: dict[AdapterIdentity, int] = defaultdict(int)
+        self.awaiting_publication: dict[str, ServingRef] = {}
 
     @classmethod
     def get_or_create(cls, args, data_source, generate_fn: GenerateFn, concurrency: int = None):
@@ -337,10 +346,17 @@ class AsyncMultiLoRAWorker:
                     active.discard(t)
 
                 while len(active) < max_concurrent and self.running:
-                    samples = self.data_source.get_samples(1)
+                    adapters = sampleable(fetch_snapshot())
+                    eligible = self._eligible_adapters(adapters)
+                    if not eligible:
+                        break
+                    samples = self.data_source.get_samples(1, eligible=eligible)
                     if not samples:
                         break
-                    active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
+                    identity = exact_identity(adapters[group_adapter_name(samples[0])])
+                    with self.buffer_lock:
+                        self.inflight_groups[identity] += 1
+                    active.add(asyncio.create_task(self.process_and_enqueue(samples[0], identity)))
 
                 await asyncio.sleep(0.01)
         except Exception as e:
@@ -354,22 +370,56 @@ class AsyncMultiLoRAWorker:
             if active:
                 await asyncio.gather(*active, return_exceptions=True)
 
-    async def process_and_enqueue(self, group: list[Sample]) -> None:
-        result = await process_group(self.args, group, self.state.sampling_params, self.generate_fn, self.data_source)
-        if result is None:
-            return
-
-        filter_result = call_dynamic_filter(self.dynamic_filter, self.args, result)
-        if not filter_result.keep:
-            if filter_result.reason:
-                self.metrics.record_dynamic_filter_drop(filter_result.reason)
-            return
-
-        adapter_name = group_adapter_name(result)
-        if adapter_name is None:
-            return
+    def _eligible_adapters(self, adapters: dict) -> set[str]:
+        """An adapter may produce only while its current whole batch is still open under its exact ServingRef."""
+        eligible = set()
         with self.buffer_lock:
-            self.buffers[adapter_name].put(result)
+            for name in list(self.awaiting_publication):
+                if name not in adapters:
+                    del self.awaiting_publication[name]
+            for name, adapter in adapters.items():
+                ref = self.awaiting_publication.get(name)
+                if ref is not None:
+                    if ref.identity.registration_id == adapter.registration_id and adapter.version <= ref.version:
+                        continue
+                    # Publication advanced the version (or a new tenant took the name): reopen.
+                    del self.awaiting_publication[name]
+                quota = adapter.config.rollout_batch_size - adapter.accumulated_groups
+                if quota <= 0:
+                    continue
+                if quota > MAX_BUFFERED_GROUPS:
+                    raise ValueError(
+                        f"adapter '{name}' batch quota {quota} exceeds the {MAX_BUFFERED_GROUPS}-group buffer"
+                    )
+                if len(self.buffers[name]) + self.inflight_groups.get(exact_identity(adapter), 0) >= quota:
+                    continue
+                eligible.add(name)
+        return eligible
+
+    async def process_and_enqueue(self, group: list[Sample], identity: AdapterIdentity) -> None:
+        try:
+            result = await process_group(
+                self.args, group, self.state.sampling_params, self.generate_fn, self.data_source
+            )
+            if result is None:
+                return
+
+            filter_result = call_dynamic_filter(self.dynamic_filter, self.args, result)
+            if not filter_result.keep:
+                if filter_result.reason:
+                    self.metrics.record_dynamic_filter_drop(filter_result.reason)
+                return
+
+            adapter_name = group_adapter_name(result)
+            if adapter_name is None:
+                return
+            with self.buffer_lock:
+                self.buffers[adapter_name].put(result)
+        finally:
+            with self.buffer_lock:
+                self.inflight_groups[identity] -= 1
+                if self.inflight_groups[identity] <= 0:
+                    self.inflight_groups.pop(identity, None)
 
     def queue_size(self) -> int:
         with self.buffer_lock:
@@ -415,32 +465,44 @@ class AsyncMultiLoRAWorker:
             for name in sorted(set(adapters) - set(self.rotation)):
                 self.rotation.append(name)
 
-            while popped_samples < num_samples:
-                made_progress = False
-                for _ in range(len(self.rotation)):
-                    name = self.rotation[0]
-                    self.rotation.rotate(-1)
-                    adapter = adapters[name]
-                    buffer = self.buffers[name]
-                    if dropped := buffer.drop_stale(adapter.version, max_staleness):
-                        self.metrics.record_stale_drops(name, dropped)
-                    # In-flight stragglers of a retired same-name tenant that
-                    # landed after the re-registration sweep reset the buffer.
-                    if foreign := buffer.drop_foreign(adapter.registration_id):
-                        logger.warning(f"Dropped {foreign} buffered groups from a previous registration of '{name}'")
-                    min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
-                    trainable_groups = len(buffer) // min_groups_per_pop * min_groups_per_pop
-                    remaining_allowed_groups = max(0, remaining_groups(adapter) - group_counts.get(name, 0))
-                    groups_to_pop = min(min_groups_per_pop, trainable_groups, remaining_allowed_groups)
-                    if groups_to_pop <= 0:
+            for _ in range(len(self.rotation)):
+                name = self.rotation[0]
+                self.rotation.rotate(-1)
+                adapter = adapters[name]
+                buffer = self.buffers[name]
+                if dropped := buffer.drop_stale(adapter.version, max_staleness):
+                    self.metrics.record_stale_drops(name, dropped)
+                # In-flight stragglers of a retired same-name tenant that
+                # landed after the re-registration sweep reset the buffer.
+                if foreign := buffer.drop_foreign(adapter.registration_id):
+                    logger.warning(f"Dropped {foreign} buffered groups from a previous registration of '{name}'")
+                ref = self.awaiting_publication.get(name)
+                if ref is not None:
+                    if ref.identity.registration_id == adapter.registration_id and adapter.version <= ref.version:
                         continue
-                    popped.extend(buffer.get(groups_to_pop))
-                    popped_samples += groups_to_pop * adapter.config.n_samples_per_prompt
-                    group_counts[name] = group_counts.get(name, 0) + groups_to_pop
-                    made_progress = True
-                    break
-                if not made_progress:
-                    break  # a full pass over rotation yielded nothing
+                    # Publication advanced the version (or a new tenant took the name): reopen.
+                    del self.awaiting_publication[name]
+                if group_counts.get(name, 0) > 0:
+                    continue
+                quota = adapter.config.rollout_batch_size - adapter.accumulated_groups
+                min_groups_per_pop = min_groups_per_dp_split(adapter.config.n_samples_per_prompt, dp_size)
+                if quota % min_groups_per_pop != 0:
+                    raise ValueError(f"adapter '{name}' batch of {quota} groups does not split across dp={dp_size}")
+                if quota <= 0 or len(buffer) < quota or self.inflight_groups.get(exact_identity(adapter), 0) != 0:
+                    continue
+                oversize = popped_samples + quota * adapter.config.n_samples_per_prompt > num_samples
+                if oversize and (popped or num_samples <= 0):
+                    continue  # a whole batch never splits; it ships in a later round
+                batch_groups = buffer.get(quota)
+                for group in batch_groups:
+                    head = first_sample(group)
+                    assert head.metadata.get("registration_id") in (None, adapter.registration_id)
+                    assert head.metadata.get("slot_version") in (None, adapter.version)
+                # Popping the whole batch and closing the adapter are atomic under buffer_lock.
+                self.awaiting_publication[name] = ServingRef(identity=exact_identity(adapter), version=adapter.version)
+                popped.extend(batch_groups)
+                popped_samples += quota * adapter.config.n_samples_per_prompt
+                group_counts[name] = quota
         return popped, group_counts
 
 
@@ -536,7 +598,9 @@ async def generate_rollout_multi_lora_async(
     await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch.group_counts, batch.step_names)
 
     if (x := args.rollout_sample_filter_path) is not None:
+        groups_before = len(data)
         load_function(x)(args, data)
+        assert len(data) == groups_before, "batch-level sample filters must not change the group count"
 
     await recompute_samples_rollout_logprobs_via_prefill(
         args,

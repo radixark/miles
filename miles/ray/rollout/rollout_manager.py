@@ -40,6 +40,7 @@ from miles.utils.http_utils import init_http_client
 from miles.utils.logging_utils import configure_logger
 from miles.utils.metric_checker import MetricChecker
 from miles.utils.misc import load_function
+from miles.utils.multi_lora import is_tinker_frontend
 from miles.utils.timer import timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
@@ -66,11 +67,19 @@ class RolloutManager:
         init_tracking(args, primary=False, router_addr=f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
         object_store.init_instance(args, contribute_segment=False)
 
-        data_source_cls = load_function(self.args.data_source_path)
-        self.data_source = data_source_cls(args)
+        # Serving-only tinker frontend: fleet/router lifecycle only, no data or rollout-fn wiring.
+        self._serving_only = is_tinker_frontend(args)
+        if self._serving_only:
+            self.data_source = None
+        else:
+            data_source_cls = load_function(self.args.data_source_path)
+            self.data_source = data_source_cls(args)
 
         self.use_legacy_rollout_v1 = use_legacy_rollout_v1()
-        if not self.use_legacy_rollout_v1:
+        if self._serving_only:
+            self.generate_rollout = None
+            self.eval_generate_rollout = None
+        elif not self.use_legacy_rollout_v1:
             if self.args.load_debug_rollout_data is not None:
                 self.generate_rollout = None
                 self.eval_generate_rollout = None
@@ -87,10 +96,10 @@ class RolloutManager:
             self.generate_rollout = load_function(self.args.rollout_function_path)
             self.eval_generate_rollout = load_function(self.args.eval_function_path)
         self.custom_reward_post_process_func = None
-        if (x := self.args.custom_reward_post_process_path) is not None:
+        if not self._serving_only and (x := self.args.custom_reward_post_process_path) is not None:
             self.custom_reward_post_process_func = load_function(x)
         self.custom_convert_samples_to_train_data_func = None
-        if (x := self.args.custom_convert_samples_to_train_data_path) is not None:
+        if not self._serving_only and (x := self.args.custom_convert_samples_to_train_data_path) is not None:
             self.custom_convert_samples_to_train_data_func = load_function(x)
         if self.generate_rollout is not None:
             logger.info(f"import {self.args.rollout_function_path} as generate_rollout function.")
@@ -106,7 +115,8 @@ class RolloutManager:
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self._eval_lock = asyncio.Lock()
-        self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
+        use_eval_fleet = args.eval_num_gpus > 0 and not self._serving_only
+        self._eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if use_eval_fleet else None
 
         self._metric_checker = MetricChecker.maybe_create(args)
 
@@ -273,11 +283,13 @@ class RolloutManager:
     # -------------------------- checkpointing -----------------------------
 
     def save(self, rollout_id):
-        if self.args.rollout_global_dataset:
+        if self.args.rollout_global_dataset and not self._serving_only:
             self.data_source.save(rollout_id)
         event_logger_checkpoint.snapshot(self.args, rollout_id)
 
     def load(self, rollout_id=None):
+        if self._serving_only:
+            return
         self.data_source.load(rollout_id)
 
     # -------------------------- offload/onload -----------------------------

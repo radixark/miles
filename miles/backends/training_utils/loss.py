@@ -5,7 +5,7 @@ from torch.utils.checkpoint import checkpoint
 from miles.backends.training_utils.cp_utils import get_local_response_loss_masks, get_sum_of_sample_mean
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
-from miles.backends.training_utils.loss_hub.losses import get_loss_function
+from miles.backends.training_utils.loss_hub.losses import get_loss_function, resolve_request_loss_function
 from miles.backends.training_utils.loss_hub.math_utils import compute_approx_kl
 from miles.backends.training_utils.loss_hub.opd import apply_opd_kl_to_advantages
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -123,6 +123,36 @@ def compute_advantages_and_returns(
     rollout_data["returns"] = returns
 
 
+def request_forward_collector(
+    logits: torch.Tensor,
+    args: Namespace,
+    unconcat_tokens,
+    total_lengths,
+    response_lengths,
+    with_entropy: bool,
+    max_seq_lens,
+    batch: dict,
+    request_loss_fn: str,
+    request_loss_fn_config: dict | None,
+) -> dict[str, list[torch.Tensor]]:
+    """Collect detached per-sample logprobs plus the request-scoped loss for one no-grad forward microbatch."""
+    out = get_log_probs_and_entropy(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        with_entropy=with_entropy,
+        max_seq_lens=max_seq_lens,
+    )
+    result = {key: [tensor.detach() for tensor in values] for key, values in out.items()}
+    loss_batch = {**batch, "request_loss_fn": request_loss_fn, "request_loss_fn_config": request_loss_fn_config}
+    with torch.no_grad():
+        loss, _, _ = loss_function(args, loss_batch, num_microbatches=1, logits=logits)
+    result["request_loss"] = [loss.detach()]
+    return result
+
+
 def loss_function(
     args: Namespace,
     batch: RolloutBatch,
@@ -170,7 +200,13 @@ def loss_function(
         denominators=batch.get("rollout_mask_sums", None),
     )
 
-    func = get_loss_function(args)
+    func = resolve_request_loss_function(batch)
+    if func is None:
+        func = get_loss_function(args)
+    elif args.recompute_loss_function:
+        raise ValueError(
+            "request-scoped loss does not support recompute_loss_function: checkpoint reruns the loss fn in backward"
+        )
 
     if args.recompute_loss_function:
         loss, log = checkpoint(

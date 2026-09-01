@@ -5,21 +5,28 @@ MultiLoRAHTTPServer) lives in ``miles/ray/multi_lora/``.
 """
 
 import logging
+import math
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AdapterIdentity",
     "EmptyBatchTimeoutError",
     "RID_SEPARATOR",
+    "ServingRef",
     "define_new_adapter_metrics",
     "is_multi_lora_enabled",
+    "is_tinker_frontend",
     "make_rid",
     "min_groups_per_dp_split",
     "parse_adapter",
     "slot_lora_name",
     "validate_multi_lora_args",
+    "validate_slot_binding",
+    "validate_slot_create",
 ]
 
 
@@ -31,8 +38,63 @@ class EmptyBatchTimeoutError(RuntimeError):
     """No trainable groups arrived before empty-wait timeout."""
 
 
+@dataclass(frozen=True)
+class AdapterIdentity:
+    """Exact adapter identity: ``utils.types.AdapterRef``'s (name, slot) plus the never-reused registration_id."""
+
+    name: str
+    registration_id: str
+    slot: int
+
+    def to_adapter_ref(self):
+        """Project onto the sample-routing ``AdapterRef`` (drops registration_id)."""
+        # lazy import: keep this module stdlib-only so every layer can import it cheaply
+        from miles.utils.types import AdapterRef
+
+        return AdapterRef(name=self.name, slot=self.slot)
+
+
+@dataclass(frozen=True)
+class ServingRef:
+    """Committed published-weights reference; version is the monotonic slot version captured at commit."""
+
+    identity: AdapterIdentity
+    version: int
+
+
+def validate_slot_binding(bindings: dict[int, AdapterIdentity], identity: AdapterIdentity) -> None:
+    """First-line exact-identity check for any mutation on a resident slot."""
+    bound = bindings.get(identity.slot)
+    if bound != identity:
+        raise ValueError(f"slot {identity.slot} is bound to {bound}, expected {identity}")
+
+
+def validate_slot_create(
+    bindings: dict[int, AdapterIdentity],
+    identity: AdapterIdentity,
+    *,
+    n_slots: int,
+    max_rank: int,
+    adapter_rank: int,
+    alpha: float,
+) -> None:
+    """Read-only create preflight: valid free slot and representable rank/alpha."""
+    if not isinstance(identity.slot, int) or isinstance(identity.slot, bool) or not 0 <= identity.slot < n_slots:
+        raise ValueError(f"slot {identity.slot!r} is outside the fixed slot range [0, {n_slots})")
+    if identity.slot in bindings:
+        raise ValueError(f"slot {identity.slot} is already bound to {bindings[identity.slot]}")
+    if not isinstance(adapter_rank, int) or isinstance(adapter_rank, bool) or not 0 < adapter_rank <= max_rank:
+        raise ValueError(f"adapter rank {adapter_rank!r} must be an int in (0, {max_rank}]")
+    if isinstance(alpha, bool) or not isinstance(alpha, (int, float)) or not math.isfinite(alpha) or alpha <= 0:
+        raise ValueError(f"adapter alpha {alpha!r} must be a finite positive number")
+
+
 def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
+
+
+def is_tinker_frontend(args: Any) -> bool:
+    return getattr(args, "multi_lora_frontend", "e2e") == "tinker"
 
 
 def define_new_adapter_metrics(snapshot: dict) -> None:
@@ -70,14 +132,16 @@ def validate_multi_lora_args(args: Any) -> None:
     if not args.multi_lora:
         return
 
-    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags elsewhere.
-    if args.rollout_function_path is None:
-        args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-    if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
-        args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
-    # The per-adapter data source is inherently global (the controller owns
-    # what is sampleable); rollout workers must not shard it.
-    args.rollout_global_dataset = True
+    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags
+    # elsewhere (e2e only: the tinker frontend is serving-only and wires no dataset/rollout fn).
+    if not is_tinker_frontend(args):
+        if args.rollout_function_path is None:
+            args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
+        if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
+            args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+        # The per-adapter data source is inherently global (the controller owns
+        # what is sampleable); rollout workers must not shard it.
+        args.rollout_global_dataset = True
     assert args.lora_rank > 0, "--lora-rank must be set when --multi-lora-n-adapters > 0"
     assert args.target_modules is not None, "--target-modules must be set when --multi-lora-n-adapters > 0"
     assert args.train_backend == "megatron", "Multi-LoRA currently requires --train-backend megatron"

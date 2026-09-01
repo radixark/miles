@@ -22,6 +22,13 @@ from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.misc import load_function
 from miles.utils.types import RolloutBatch
 
+# Request-scoped loss names (tinker wire vocabulary) mapped onto args.loss_type vocabulary; other names are rejected upstream.
+REQUEST_LOSS_TYPES: dict[str, str] = {
+    "cross_entropy": "sft_loss",
+    "importance_sampling": "policy_loss",
+    "ppo": "policy_loss",
+}
+
 
 class LossFunction(Protocol):
     """Common signature of the per-loss-type functions dispatched by `get_loss_function`."""
@@ -517,3 +524,21 @@ def get_loss_function(args: Namespace) -> LossFunction:
             return load_function(args.custom_loss_function_path)
         case _:
             raise ValueError(f"Unknown loss type: {args.loss_type}")
+
+
+def resolve_request_loss_function(batch: RolloutBatch) -> LossFunction | None:
+    """Resolve a batch's request-scoped loss override; None means args-driven dispatch."""
+    name = batch.get("request_loss_fn")
+    if name is None:
+        return None
+    loss_type = REQUEST_LOSS_TYPES.get(name)
+    if loss_type is None:
+        raise ValueError(f"unsupported request loss function: {name!r}")
+    config = batch.get("request_loss_fn_config")
+
+    def func_with_config(args: Namespace, batch: RolloutBatch, logits, sum_of_sample_mean):
+        # Request config shadows args knobs for this call only; resolved rank-side, never pickled.
+        merged = Namespace(**{**vars(args), **(config or {}), "loss_type": loss_type})
+        return get_loss_function(merged)(merged, batch, logits, sum_of_sample_mean)
+
+    return func_with_config

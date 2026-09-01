@@ -14,7 +14,7 @@ from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.logging_utils import configure_logger
-from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics
+from miles.utils.multi_lora import EmptyBatchTimeoutError, define_new_adapter_metrics, is_tinker_frontend
 from miles.utils.tracking_utils.tracking import init_tracking
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,30 @@ def _is_empty_batch_timeout(task_error: ray.exceptions.RayTaskError) -> bool:
     return isinstance(task_error.as_instanceof_cause(), EmptyBatchTimeoutError)
 
 
+async def tinker_serving_main(args):
+    """Serving-only tinker bootstrap: SGLang fleet plus controller; the Tinker HTTP service lands in S2."""
+    from miles.tinker import ensure_tinker_runtime
+
+    ensure_tinker_runtime()
+    configure_logger(args, source=MainProcessIdentity())
+    pgs = create_placement_groups(args)
+    object_store.init_instance(args, contribute_segment=False)
+    init_tracking(args)
+    rollout_manager, _ = create_rollout_manager(args, pgs["rollout"])
+    router_ip, router_port = await rollout_manager.get_router_address.remote()
+    args.sglang_router_ip, args.sglang_router_port = router_ip, router_port
+    controller = create_multilora_controller(args, f"http://{router_ip}:{router_port}")
+    await controller.start.remote()
+    host = await controller.http_host.remote()
+    api_port = await controller.api_port.remote()
+    logger.info(f"Tinker serving-only fleet ready; control API http://{host}:{api_port}")
+    return rollout_manager, controller
+
+
 async def main(args):
+    if is_tinker_frontend(args):
+        await tinker_serving_main(args)
+        return
     assert (
         not args.colocate
     ), "Colocation is not supported for fully-async training (generation needs continuous GPU; colocate time-shares)."

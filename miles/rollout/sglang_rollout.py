@@ -43,7 +43,7 @@ from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
 from .rm_hub import async_rm, batched_async_rm
 
-__all__ = ["generate_rollout", "get_model_url"]
+__all__ = ["call_sglang_generate_endpoint", "generate_rollout", "get_model_url"]
 
 logger = logging.getLogger(__name__)
 
@@ -138,13 +138,55 @@ class GenerateState(metaclass=SingletonMeta):
         self.remaining_batch_size += len(samples)
 
 
+async def call_sglang_generate_endpoint(
+    args: Namespace,
+    *,
+    input_ids: list[int],
+    sampling_params: dict[str, Any],
+    lora_path: str | None = None,
+    rid: str | None = None,
+    extra_key: str | None = None,
+    extra_payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    url: str | None = None,
+    post_json: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Neutral generation core: assemble the /generate payload, POST it, return the raw engine output."""
+    payload: dict[str, Any] = {
+        "input_ids": input_ids,
+        "sampling_params": sampling_params,
+        "return_logprob": True,
+    }
+    if lora_path is not None:
+        payload["lora_path"] = lora_path
+    if rid is not None:
+        payload["rid"] = rid
+    if extra_key is not None:
+        payload["extra_key"] = extra_key
+    if extra_payload:
+        payload.update(extra_payload)
+    if url is None:
+        url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
+    poster = post_json if post_json is not None else post
+    return await poster(url, payload, headers=headers)
+
+
+def parse_output_token_logprobs(output: dict[str, Any]) -> tuple[list[int], list[float]]:
+    """Split raw /generate meta_info output_token_logprobs into response token ids and logprobs."""
+    if "output_token_logprobs" in output["meta_info"]:
+        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
+        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
+    else:
+        new_response_tokens, new_response_log_probs = [], []
+    return new_response_tokens, new_response_log_probs
+
+
 async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, Any]) -> Sample:
     """Generate using traditional SGLang router with token-based workflow"""
     if args.ci_test:
         assert isinstance(sample.prompt, str)
 
     state = GenerateState(args)
-    url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     assert (
         sample.status == Sample.Status.PENDING or sample.status == Sample.Status.ABORTED
@@ -171,16 +213,13 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         sample.status = Sample.Status.TRUNCATED
         return sample
 
-    # Prepare payload for sglang server
-    payload = {
-        "sampling_params": sampling_params,
-        "return_logprob": True,
-    }
+    extra_payload: dict[str, Any] = {}
     opd_top_k = getattr(args, "opd_log_prob_top_k", 0) or 0
     opd_top_k_strategy = getattr(args, "opd_top_k_strategy", "only-student")
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
-        payload["top_logprobs_num"] = opd_top_k
+        extra_payload["top_logprobs_num"] = opd_top_k
 
+    lora_path = rid = extra_key = None
     if sample.adapter is not None:
         from miles.ray.multi_lora.controller import AdaptersCache
 
@@ -193,50 +232,54 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             )
             sample.status = Sample.Status.ABORTED
             return sample
-        payload["lora_path"] = slot_lora_name(sample.adapter.slot)
-        payload["rid"] = make_rid(sample.adapter.name)
-        payload["extra_key"] = f"{sample.adapter.name}:v{adapter.version}"
+        lora_path = slot_lora_name(sample.adapter.slot)
+        rid = make_rid(sample.adapter.name)
+        extra_key = f"{sample.adapter.name}:v{adapter.version}"
     elif lora_rollout_enabled(args):
-        payload["lora_path"] = LORA_ADAPTER_NAME
+        lora_path = LORA_ADAPTER_NAME
 
     if args.use_rollout_routing_replay:
-        payload["return_routed_experts"] = True
+        extra_payload["return_routed_experts"] = True
     if getattr(args, "use_rollout_indexer_replay", False):
-        payload["return_indexer_topk"] = True
+        extra_payload["return_indexer_topk"] = True
 
     if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
         image_data = sample.multimodal_inputs["images"]
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+        extra_payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
         import base64 as _b64
 
-        payload["audio_data"] = [
+        extra_payload["audio_data"] = [
             f"data:audio;base64,{_b64.b64encode(a).decode('ascii')}" for a in sample.multimodal_inputs["audios"]
         ]
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
-        payload["input_ids"] = sample.tokens
+        input_ids = sample.tokens
     else:
-        payload["input_ids"] = prompt_ids
+        input_ids = prompt_ids
         if not sample.tokens:  # Initialize sample.tokens for the first turn
             sample.tokens = prompt_ids
 
-    headers = compute_routing_headers(args, sample)
+    output = await call_sglang_generate_endpoint(
+        args,
+        input_ids=input_ids,
+        sampling_params=sampling_params,
+        lora_path=lora_path,
+        rid=rid,
+        extra_key=extra_key,
+        extra_payload=extra_payload,
+        headers=compute_routing_headers(args, sample),
+    )
 
-    output = await post(url, payload, headers=headers)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
             sample.metadata.setdefault("opd_student_top_logprobs", [])
             sample.metadata["opd_student_top_logprobs"].extend(output_top_logprobs)
 
-    if "output_token_logprobs" in output["meta_info"]:
-        new_response_tokens = [item[1] for item in output["meta_info"]["output_token_logprobs"]]
-        new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
-    else:
-        new_response_tokens, new_response_log_probs = [], []
+    new_response_tokens, new_response_log_probs = parse_output_token_logprobs(output)
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens

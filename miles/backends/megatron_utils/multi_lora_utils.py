@@ -181,11 +181,144 @@ def slice_lora_to_rank(hf_name: str, tensor: torch.Tensor, adapter_rank: int) ->
     return tensor
 
 
+def _neutral_state_key(name: str, slot: int) -> str:
+    """Replace the slot index inside a param name so saved state can load into a different slot."""
+    return name.replace(f".adapters.{slot}.", ".adapters.{slot}.".replace(str(slot), "{slot}"))
+
+
+def slot_training_state_dict(optimizer, model, slot: int) -> dict:
+    """This rank's owned share of one slot's training state (fp32 masters, Adam moments, step clocks)."""
+    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children, adapter_slot_parameters
+
+    name_by_id = {}
+    model_chunks = model if isinstance(model, (list, tuple)) else [model]
+    for chunk in model_chunks:
+        for name, param in chunk.named_parameters():
+            name_by_id[id(param)] = name
+
+    state_by_main_id: dict[int, dict] = {}
+    group_steps: list = []
+    for child in _slot_children(optimizer, slot):
+        inner = getattr(child, "optimizer", child)
+        for param, state in inner.state.items():
+            state_by_main_id[id(param)] = state
+        for group in inner.param_groups:
+            if "step" in group:
+                step = group["step"]
+                group_steps.append(int(step.item()) if isinstance(step, torch.Tensor) else int(step))
+
+    masters: dict[str, torch.Tensor] = {}
+    moments: dict[str, dict] = {}
+    for param in adapter_slot_parameters(model, slot):
+        main = getattr(param, "main_param", None)
+        if main is None:
+            continue
+        key = _neutral_state_key(name_by_id[id(param)], slot)
+        masters[key] = main.detach().cpu().clone()
+        state = state_by_main_id.get(id(main), {})
+        entry = {}
+        for moment_key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            if moment_key in state:
+                entry[moment_key] = state[moment_key].detach().cpu().clone()
+        if "step" in state:
+            step = state["step"]
+            entry["step"] = int(step.item()) if isinstance(step, torch.Tensor) else int(step)
+        moments[key] = entry
+    return {"masters": masters, "moments": moments, "group_steps": group_steps}
+
+
+def load_slot_training_state(optimizer, model, slot: int, ckpt_dir: Path) -> None:
+    """Restore one slot's full training state from this rank's file and sync masters into the model weights."""
+    from miles.backends.megatron_utils.multi_lora_optimizer import _slot_children, adapter_slot_parameters
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world = dist.get_world_size() if dist.is_initialized() else 1
+    state_path = Path(ckpt_dir) / f"training_state_rank{rank}.pt"
+    assert state_path.exists(), f"missing slot training state for rank {rank}: {state_path}"
+    payload = torch.load(state_path, map_location="cpu", weights_only=False)
+    assert (
+        payload.get("world_size") == world
+    ), f"slot training state was saved with world_size={payload.get('world_size')}, current world_size={world}"
+    state = payload["state"]
+
+    name_by_id = {}
+    model_chunks = model if isinstance(model, (list, tuple)) else [model]
+    for chunk in model_chunks:
+        for name, param in chunk.named_parameters():
+            name_by_id[id(param)] = name
+
+    state_by_main_id: dict[int, dict] = {}
+    children = _slot_children(optimizer, slot)
+    for child in children:
+        inner = getattr(child, "optimizer", child)
+        for param, param_state in inner.state.items():
+            state_by_main_id[id(param)] = param_state
+
+    for param in adapter_slot_parameters(model, slot):
+        main = getattr(param, "main_param", None)
+        if main is None:
+            continue
+        key = _neutral_state_key(name_by_id[id(param)], slot)
+        assert key in state["masters"], f"slot training state has no entry for {key}; topology mismatch?"
+        main.data.copy_(state["masters"][key])
+        entry = state["moments"].get(key, {})
+        param_state = state_by_main_id.get(id(main), {})
+        for moment_key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            if moment_key in entry and moment_key in param_state:
+                param_state[moment_key].copy_(entry[moment_key])
+        if "step" in entry and "step" in param_state:
+            step = param_state["step"]
+            if isinstance(step, torch.Tensor):
+                step.fill_(entry["step"])
+            else:
+                param_state["step"] = entry["step"]
+
+    group_steps = list(state.get("group_steps", []))
+    group_index = 0
+    for child in children:
+        inner = getattr(child, "optimizer", child)
+        for group in inner.param_groups:
+            if "step" in group and group_index < len(group_steps):
+                if isinstance(group["step"], torch.Tensor):
+                    group["step"].fill_(group_steps[group_index])
+                else:
+                    group["step"] = group_steps[group_index]
+                group_index += 1
+
+    # Masters are authoritative now: sync master -> model; reload_model_params would overwrite them (model -> master).
+    for child in children:
+        copy_fn = getattr(child, "_copy_main_params_to_model_params", None)
+        assert copy_fn is not None, "full-state load requires the Float16 master-to-model sync"
+        copy_fn()
+
+
+def export_adapter_slot(args, model, slot: int, *, adapter_rank: int, bridge=None) -> dict[str, torch.Tensor]:
+    """Gather one slot's adapter weights as HF-named CPU tensors sliced to the real rank; no push, no commit."""
+    from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+
+    from miles.utils import megatron_bridge_utils
+
+    if bridge is None:
+        from megatron.bridge import AutoBridge
+
+        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+
+    hf_state: dict[str, torch.Tensor] = {}
+    with expose_adapter_slot(model, slot):
+        with megatron_bridge_utils.patch_megatron_model(model):
+            for hf_name, weight, _megatron_name in bridge.export_adapter_weights(model, cpu=True, show_progress=False):
+                # Slice from the shared --lora-rank down to the adapter's real rank; clone() detaches from live storage.
+                hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, adapter_rank).clone()
+    return hf_state
+
+
 def save_multi_lora_checkpoints(
     args,
     model,
     adapter_steps: Mapping[str, int],
     adapters: Mapping[str, AdapterRun],
+    optimizer=None,
+    include_optimizer_state: bool = False,
 ):
     """Save per-adapter checkpoints in two formats per adapter.
 
@@ -201,7 +334,6 @@ def save_multi_lora_checkpoints(
     from safetensors.torch import save_file as save_safetensors
 
     from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf
-    from miles.utils import megatron_bridge_utils
 
     parallel_state = get_parallel_state()
     tp_rank = parallel_state.tp.rank
@@ -231,7 +363,8 @@ def save_multi_lora_checkpoints(
 
         final_dir = config.save / "checkpoints" / f"step_{iteration}"
         tmp_dir = config.save / "checkpoints" / f"_tmp_step_{iteration}"
-        if is_shard_writer:
+        write_training_state = include_optimizer_state and optimizer is not None
+        if is_shard_writer or write_training_state:
             tmp_dir.mkdir(parents=True, exist_ok=True)
         if dist.is_initialized():
             dist.barrier()
@@ -249,16 +382,18 @@ def save_multi_lora_checkpoints(
                 torch.save(shard, native_path)
                 logger.info(f"{log_prefix} saved Megatron shard " f"({len(shard)} tensors) to {native_path}")
 
-            hf_state: dict[str, torch.Tensor] = {}
-            with megatron_bridge_utils.patch_megatron_model(model):
-                for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
-                    model,
-                    cpu=True,
-                    show_progress=False,
-                ):
-                    # Slice from the shared --lora-rank down to this adapter's real rank to
-                    # match adapter_config's r; clone() since safetensors rejects aliased views.
-                    hf_state[hf_name] = slice_lora_to_rank(hf_name, weight, config.rank).clone()
+        hf_state = export_adapter_slot(args, model, adapter.slot, adapter_rank=config.rank, bridge=bridge)
+
+        if write_training_state:
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            world = dist.get_world_size() if dist.is_initialized() else 1
+            payload = {
+                "format": 1,
+                "world_size": world,
+                "state": slot_training_state_dict(optimizer, model, adapter.slot),
+            }
+            torch.save(payload, tmp_dir / f"training_state_rank{rank}.pt")
+            logger.info(f"{log_prefix} saved slot training state (rank {rank})")
 
         if is_global_writer:
             save_safetensors(
@@ -296,11 +431,40 @@ def save_multi_lora_checkpoints(
             dist.barrier()
 
 
-def _register_adapter(adapter: AdapterRun, model) -> int:
-    """Install one adapter on this rank's local model shard. Returns the step
-    of the checkpoint it resumed from (0 for a fresh adapter)."""
+def install_adapter_slot(
+    model, slot: int, *, rank: int, alpha: float, seed: int | None = None, state_dict: dict | None = None
+) -> int:
+    """Policy-free slot install on this rank's model shard; returns the number of loaded tensors (0 = fresh init)."""
     from megatron.bridge.peft.multi_lora_layers import init_adapter_slot, load_adapter
 
+    loaded = 0
+    if state_dict is not None:
+        loaded = load_adapter(model, slot, state_dict)
+        assert (
+            loaded > 0
+        ), f"loaded 0 tensors into slot {slot} (state_dict has {len(state_dict)} entries) — name mismatch?"
+        init_adapter_slot(model, slot, rank=rank, alpha=alpha)
+    else:
+        init_adapter_slot(model, slot, rank=rank, alpha=alpha, seed=seed)
+    return loaded
+
+
+def release_adapter_slot(model, optimizer, slot: int) -> None:
+    """Policy-free slot release: clear weights, optimizer state, grads, and scheduler so the next tenant starts clean."""
+    from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
+
+    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
+    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
+
+    clear_adapter_slot(model, slot)
+    zero_optimizer_state_for_adapter(optimizer, model, slot)
+    zero_adapter_slot_grads(model, slot)
+    drop_slot_scheduler(optimizer, slot)
+    optimizer.reload_model_params()
+
+
+def _register_adapter(adapter: AdapterRun, model) -> int:
+    """E2E install wrapper: checkpoint auto-resume around the policy-free install; returns the resumed step (0 = fresh)."""
     name = adapter.name
     config = adapter.config
     slot = adapter.slot
@@ -313,27 +477,22 @@ def _register_adapter(adapter: AdapterRun, model) -> int:
     else:
         ckpt = None
 
+    state_dict = None
     if ckpt is None:
         logger.info(f"{log_prefix} no checkpoint, starting from random init")
         step = 0
     else:
         state_dict = torch.load(ckpt, map_location="cpu", weights_only=True)
-        loaded = load_adapter(model, slot, state_dict)
-        assert loaded > 0, (
-            f"{log_prefix} loaded 0 tensors from {ckpt} "
-            f"(state_dict has {len(state_dict)} entries) — name mismatch?"
-        )
-        logger.info(f"{log_prefix} loaded from {ckpt} ({loaded} tensors)")
 
-    init_adapter_slot(model, slot, rank=config.rank, alpha=config.alpha)
+    loaded = install_adapter_slot(model, slot, rank=config.rank, alpha=config.alpha, state_dict=state_dict)
+    if loaded:
+        logger.info(f"{log_prefix} loaded from {ckpt} ({loaded} tensors)")
     logger.info(f"{log_prefix} installed at slot {slot}")
     return step
 
 
 def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
-    """Model-side cleanup for one adapter."""
-    from megatron.bridge.peft.multi_lora_layers import clear_adapter_slot
-
+    """E2E release wrapper: final-checkpoint policy around the policy-free release."""
     name = adapter.name
     slot = adapter.slot
     log_prefix = f"[multilora] ({name})"
@@ -346,20 +505,8 @@ def _deregister_adapter(adapter: AdapterRun, args, model, optimizer) -> None:
     else:
         logger.info(f"{log_prefix} save_interval unset; skipping final checkpoint")
 
-    clear_adapter_slot(model, slot)
-    logger.info(f"{log_prefix} cleared adapter slot {slot}")
-
-    # Prevent future slot tenants from inheriting optimizer momentum or the
-    # previous tenant's partially accumulated gradients.
-    from miles.backends.megatron_utils.multi_lora_optimizer import zero_adapter_slot_grads
-
-    from miles.backends.megatron_utils.multi_lora_scheduler import drop_slot_scheduler
-
-    zero_optimizer_state_for_adapter(optimizer, model, slot)
-    zero_adapter_slot_grads(model, slot)
-    drop_slot_scheduler(optimizer, slot)
-    optimizer.reload_model_params()
-    logger.info(f"{log_prefix} cleared optimizer state and retained grads for slot {slot}")
+    release_adapter_slot(model, optimizer, slot)
+    logger.info(f"{log_prefix} released slot {slot}: weights, optimizer state, grads, and scheduler cleared")
 
 
 def load_adapters(args, model, optimizer, adapters) -> int:
@@ -414,13 +561,13 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
     from miles.backends.megatron_utils.multi_lora_scheduler import step_slot_schedulers
     from miles.utils.tracking_utils.structured_log import log_structured
 
-    # slot -> adapter_global_batch_size for adapter batches completing now.
+    # slot -> adapter_global_batch_size for adapter batches completing now; SCHEDULED_MEAN scales by 1/batch.
     step_batch_sizes = dict(rollout_data.get("step_adapter_batch_sizes", {}))
     grad_norms_by_slot = step_adapter_slots(
         optimizer,
         model,
-        step_batch_sizes,
-        clip_grad=args.clip_grad,
+        {slot: 1.0 / batch_size for slot, batch_size in step_batch_sizes.items()},
+        {slot: args.clip_grad for slot in step_batch_sizes},
     )
 
     if lr_by_slot := step_slot_schedulers(optimizer, step_batch_sizes):
@@ -431,7 +578,7 @@ def step_stepped_adapter_slots(args, model, optimizer, rollout_data, rollout_id:
             step=step_id,
             **{f"slot_{slot}": lr for slot, lr in lr_by_slot.items()},
         )
-    return max(grad_norms_by_slot.values(), default=0.0)
+    return max((norm for norm in grad_norms_by_slot.values() if norm is not None), default=0.0)
 
 
 def commit_trained_batch(rollout_data, rollout_id: int, pending_push: set) -> None:

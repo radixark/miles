@@ -40,7 +40,7 @@ from ...utils.misc import filter_keys
 from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
-from ..training_utils.loss import loss_function
+from ..training_utils.loss import loss_function, request_forward_collector
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
@@ -264,6 +264,8 @@ def forward_only(
     num_microbatches: Sequence[int],
     rollout_id: int,
     store_prefix: str = "",
+    extra_batch_keys: Sequence[str] | None = None,
+    include_batch_in_f: bool = False,
     fp32_output: bool = True,
 ) -> dict[str, list[torch.Tensor]]:
     """Run forward passes only and collect non-loss outputs (e.g., logprobs).
@@ -324,7 +326,8 @@ def forward_only(
                 "response_lengths",
                 "max_seq_lens",
                 "witness_ids",
-            ],
+            ]
+            + list(extra_batch_keys or []),
             args.data_pad_size_multiplier,
             args.qkv_format,
             allgather_cp=args.allgather_cp,
@@ -360,6 +363,7 @@ def forward_only(
             response_lengths=response_lengths,
             with_entropy=args.use_rollout_entropy,
             max_seq_lens=batch.get("max_seq_lens", None),
+            **({"batch": batch} if include_batch_in_f else {}),
         )
 
     # Turn on evaluation mode which disables dropout.
@@ -405,6 +409,70 @@ def forward_only(
     return rollout_data
 
 
+def forward_with_request_loss(
+    args: Namespace,
+    model: Sequence[DDP],
+    data_iterator: Sequence[DataIterator],
+    num_microbatches: Sequence[int],
+    rollout_id: int,
+    request_loss_fn: str,
+    request_loss_fn_config: dict | None = None,
+    extra_batch_keys: Sequence[str] | None = None,
+) -> dict[str, list[torch.Tensor] | torch.Tensor]:
+    """Tinker forward: no-grad pass returning detached per-sample logprobs in input order plus the request loss."""
+    # Plain concat keeps sample order; dynamic micro-batching would need index restore for the per-microbatch loss key.
+    assert not getattr(args, "use_dynamic_batch_size", False), "request forward requires use_dynamic_batch_size=False"
+    collector = partial(
+        request_forward_collector,
+        request_loss_fn=request_loss_fn,
+        request_loss_fn_config=request_loss_fn_config,
+    )
+    out = forward_only(
+        collector,
+        args,
+        model,
+        data_iterator,
+        num_microbatches,
+        rollout_id=rollout_id,
+        extra_batch_keys=extra_batch_keys,
+        include_batch_in_f=True,
+    )
+    if "request_loss" in out:
+        # One scalar per microbatch; their sum is the sum over datums of the per-datum mean (weight-1 convention).
+        out["request_loss"] = torch.stack(out.pop("request_loss")).sum()
+    return out
+
+
+def forward_backward_with_request_loss(
+    args: Namespace,
+    model: Sequence[DDP],
+    data_iterator: Sequence[DataIterator],
+    num_microbatches: Sequence[int],
+    num_rollouts: Sequence[int],
+    rollout_id: int,
+    request_loss_fn: str,
+    request_loss_fn_config: dict | None = None,
+) -> tuple[TrainStepOutcome, list[dict]]:
+    """Deferred FB: the full train pipeline with optimizer=None accumulates request-loss grads; returns per-step losses."""
+    # Cross-call accumulation relies on the multi-LoRA keep-grads branch; plain DDP zeroes grads on entry.
+    assert is_multi_lora_enabled(args), "deferred forward_backward requires multi_lora"
+    losses: list[dict] = []
+    outcome = train(
+        rollout_id,
+        model,
+        None,
+        None,
+        data_iterator,
+        num_microbatches,
+        num_rollouts,
+        witness_info=None,
+        attempt=0,
+        extra_loss_batch={"request_loss_fn": request_loss_fn, "request_loss_fn_config": request_loss_fn_config},
+        loss_sink=losses,
+    )
+    return outcome, losses
+
+
 def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disable_optimizer: bool) -> None:
     for model_chunk in model:
         model_chunk.zero_grad_buffer()
@@ -425,6 +493,7 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    extra_loss_batch: dict | None = None,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
@@ -512,6 +581,8 @@ def train_one_step(
             args.qkv_format,
             allgather_cp=args.allgather_cp,
         )
+        if extra_loss_batch:
+            batch.update(extra_loss_batch)
 
         if "adapter_token_counts" in batch:
             from megatron.bridge.peft.multi_lora_layers import set_tokens_per_adapter_slot
@@ -689,6 +760,8 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    extra_loss_batch: dict | None = None,
+    loss_sink: list | None = None,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -796,7 +869,10 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
+            extra_loss_batch=extra_loss_batch,
         )
+        if loss_sink is not None:
+            loss_sink.append(loss_dict)
 
         if step_id == 0:
             # Enable forward pre-hook after training step has successfully run. All subsequent
