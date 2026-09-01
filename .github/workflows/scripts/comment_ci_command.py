@@ -536,7 +536,7 @@ def require_access(api, actor_id, actor_login, allowed_permissions, allowed_user
 
 
 def _is_ci_control_label(label):
-    return label.startswith("run-ci") or label in CLEAR_EXACT_LABELS
+    return label.startswith(("run-ci", "run-on-")) or label in CLEAR_EXACT_LABELS
 
 
 def _latest_failed_run(

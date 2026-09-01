@@ -78,7 +78,7 @@ Unrecognized comments exit after trusted parsing with capability `none`; they do
 
 The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
 
-Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
+Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, dispatch, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
 
 Post `/rerun-failed-ci` as the entire comment to request failed-job reruns for the current open PR head. The handler considers only the latest run of each allowlisted PR workflow: `pre-commit.yml`, `pr-test.yml`, and `pr-test-rocm.yml`. A latest run is rerun only when it belongs to this PR and exact head SHA and has completed with conclusion `failure`.
 

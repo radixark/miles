@@ -571,6 +571,8 @@ def test_repository_writer_clears_only_ci_control_labels(permission):
                 "run-ci",
                 "run-ci-all",
                 "run-ci-historical",
+                "run-on-blackwell",
+                "run-on-hopper",
                 "nightly",
                 "bypass-fastfail",
                 "documentation",
@@ -589,6 +591,8 @@ def test_repository_writer_clears_only_ci_control_labels(permission):
         "run-ci-all",
         "run-ci-historical",
         "run-ci-short",
+        "run-on-blackwell",
+        "run-on-hopper",
     ]
     assert result == {
         "actor_id": ACTOR_ID,
