@@ -329,11 +329,6 @@ Every skipped point is logged at the step it would have landed on, with the reas
 | `eval/skipped_crashed` | Anything else the eval raised |
 | `eval/skipped_<reason>` | A `CheckpointEvalFn` raised `EvalSkip(reason)` |
 
-Under `--ci-test`, every skipped point raises after logging and fails the run. This
-includes overflow, export failure, incomplete checkpoints, backend `EvalSkip` results,
-and unexpected eval crashes. Outside CI, these problems remain attributable skips so a
-long-running training job can continue.
-
 For a point that did run, `eval/{dataset}/weight_version/mean == eval/step` and
 `eval/{dataset}/weight_version/mixed_version_ratio == 0` together confirm it measured
 exactly the intended weights. A checkpoint backend measures the actor's exact weights at
