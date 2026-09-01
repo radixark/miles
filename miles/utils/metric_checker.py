@@ -29,7 +29,6 @@ class MetricChecker:
             assert any(self._check_results), f"[MetricChecker] accuracy check failed: {self._check_results=}"
         else:
             assert len(self._check_results) == expected and all(self._check_results), (
-                f"[MetricChecker] expected exactly {expected} checks and all to succeed: "
-                f"{self._check_results=}"
+                f"[MetricChecker] expected exactly {expected} checks and all to succeed: " f"{self._check_results=}"
             )
         logger.info("[MetricChecker] pass dispose check")
