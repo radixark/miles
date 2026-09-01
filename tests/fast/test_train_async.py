@@ -10,6 +10,7 @@ from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRollou
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
     args = SimpleNamespace(
+        api_server_host="127.0.0.1",
         api_server_port=None,
         check_weight_update_allow_quant_error=False,
         check_weight_update_equal=False,

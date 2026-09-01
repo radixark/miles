@@ -283,7 +283,9 @@ class TestStartApiServerRegistration:
         registries: list[_CellRegistry] = []
 
         monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
-        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: registries.append(registry))
+        monkeypatch.setattr(
+            server, "_start_api_server_raw", lambda *, registry, port, host: registries.append(registry)
+        )
 
         server.start_api_server(
             args=make_rollout_args(),
@@ -393,7 +395,7 @@ class TestStartApiServerRegistration:
         ports: list[int] = []
         manager = MockWorkerManager(make_cell_summaries("trainer-actor-0"))
         monkeypatch.setattr(server, "RayWorkerManager", SimpleNamespace(get_handle=lambda: manager))
-        monkeypatch.setattr(server, "_start_api_server_raw", lambda registry, port: ports.append(port))
+        monkeypatch.setattr(server, "_start_api_server_raw", lambda *, registry, port, host: ports.append(port))
 
         server.start_api_server(
             args=make_rollout_args(),
@@ -408,7 +410,7 @@ class TestStartApiServerRegistration:
 
 class TestStartApiServerRaw:
     def test_uvicorn_serves_the_registry_app_on_a_daemon_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A foreground server blocks the training driver, and a loopback bind hides it from the FT controller."""
+        """A foreground server blocks the training driver, and a non-loopback bind exposes unauthenticated cell control."""
         serving_threads: list[threading.Thread] = []
         start_and_wait_thread = server._start_and_wait_thread
 
@@ -420,12 +422,32 @@ class TestStartApiServerRaw:
         monkeypatch.setattr(server, "_start_and_wait_thread", _record_thread)
         port = find_available_port(21200)
 
-        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port, host="127.0.0.1")
 
         try:
             [thread] = serving_threads
             assert thread.daemon is True
             assert isinstance(running.config.app, FastAPI)
+            assert (running.config.host, running.config.port) == ("127.0.0.1", port)
+        finally:
+            running.should_exit = True
+
+    def test_a_caller_supplied_host_overrides_the_loopback_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Remote FT controllers are opted into by passing a wider bind host explicitly."""
+        serving_threads: list[threading.Thread] = []
+        start_and_wait_thread = server._start_and_wait_thread
+
+        def _record_thread(**kwargs) -> threading.Thread:
+            thread = start_and_wait_thread(**kwargs)
+            serving_threads.append(thread)
+            return thread
+
+        monkeypatch.setattr(server, "_start_and_wait_thread", _record_thread)
+        port = find_available_port(21300)
+
+        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port, host="0.0.0.0")
+
+        try:
             assert (running.config.host, running.config.port) == ("0.0.0.0", port)
         finally:
             running.should_exit = True
@@ -434,7 +456,7 @@ class TestStartApiServerRaw:
         """The happy path must still return once uvicorn is actually accepting connections."""
         port = find_available_port(21000)
 
-        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+        running = server._start_api_server_raw(registry=_CellRegistry([]), port=port, host="127.0.0.1")
         try:
             resp = httpx.get(f"http://127.0.0.1:{port}/api/v1/health", timeout=10.0)
             assert resp.status_code == 200
@@ -450,7 +472,7 @@ class TestStartApiServerRaw:
             occupied.listen()
 
             with pytest.raises(RuntimeError, match=f"port {port} failed during startup"):
-                server._start_api_server_raw(registry=_CellRegistry([]), port=port)
+                server._start_api_server_raw(registry=_CellRegistry([]), port=port, host="127.0.0.1")
 
 
 class TestDynamicCells:
