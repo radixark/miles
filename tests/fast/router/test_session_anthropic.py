@@ -59,7 +59,7 @@ def _anthropic_env(extra_args: dict | None = None, *, latency: float = 0.0):
             trajectory_manager="linear_trajectory",
             session_server_instance_id=uuid.uuid4().hex,
             save_debug_trajectory_data=None,
-            **(extra_args or {}),
+            **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
         server_obj = SessionServer(args, backend_url=backend.url)
         port = find_available_port(31000)
