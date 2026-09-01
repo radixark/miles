@@ -56,6 +56,7 @@ from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
+from .recompute_gc import enable_recompute_backward_gc
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
 from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
@@ -99,6 +100,7 @@ class MegatronTrainRayActor(TrainRayActor):
         indep_dp_info: IndepDPInfo,
     ) -> int | None:
         monkey_patch_torch_dist()
+        enable_recompute_backward_gc()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
 
