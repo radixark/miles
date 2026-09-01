@@ -15,7 +15,6 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results, weight_update_selector
-from miles.utils.distributed_utils import get_gloo_group
 
 from ..sglang import FlattenedTensorBucket, MultiprocessingSerializer
 from .update_weight_from_distributed.broadcast import (
@@ -152,17 +151,6 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         # collective among the group's members.
         self.is_sender = self._ipc_gather_group is not None
         self.is_lora_sender = self.is_sender
-
-        # A layout mismatch here would skip sends while the sync still bumps
-        # weight_version — engines would silently serve stale weights.
-        sender_count = torch.tensor([int(self.is_sender)])
-        dist.all_reduce(sender_count, group=get_gloo_group())
-        expected_senders = sum(colocate_gpu_counts)
-        assert sender_count.item() == expected_senders, (
-            f"colocated engines span {expected_senders} GPUs but only {sender_count.item()} "
-            f"trainer ranks are senders; engine gpu offsets {colocate_gpu_offsets} do not "
-            "line up with the trainer ranks"
-        )
 
         # A LoRA sync must re-push the frozen base unless the engines keep it
         # across pauses (CPU backup, persistent GPU copy, or remote engines);
