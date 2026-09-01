@@ -11,8 +11,16 @@ import pytest
 import safetensors.numpy
 from safetensors import SafetensorError
 
-from miles.rollout.session.samples.codec import decode_samples_and_merge_input_sample, encode_samples
+from miles.rollout.session.samples.codec import (
+    COMPUTED_FIELDS,
+    ROLLOUT_SAMPLING_MASK_FIELDS,
+    decode_samples_and_merge_input_sample,
+    encode_samples,
+)
+from miles.utils.sampling_mask import RolloutSamplingMask
 from miles.utils.types import Sample
+
+_FIELDS_WITH_SAMPLING_MASK = COMPUTED_FIELDS + ROLLOUT_SAMPLING_MASK_FIELDS
 
 
 def _computed_sample(**overrides) -> Sample:
@@ -23,6 +31,7 @@ def _computed_sample(**overrides) -> Sample:
     s.response_length = 2
     s.loss_mask = [1, 1]
     s.rollout_log_probs = [-0.5, -0.1234567891234567]
+    s.rollout_sampling_mask = RolloutSamplingMask(ids=[10, 4, 11], offsets=[0, 2, 3])
     s.rollout_routed_experts = np.arange(24, dtype=np.int32).reshape(4, 3, 2)
     s.rollout_indexer_topk = None
     s.status = Sample.Status.COMPLETED
@@ -59,8 +68,8 @@ class TestSamplesWireCodec:
             routing_key="rk",
             train_metadata={"loss": "ppo"},
         )
-        payload = encode_samples([_computed_sample()], {"max_trim_tokens": 1}, None)
-        reply = decode_samples_and_merge_input_sample(payload, template)
+        payload = encode_samples([_computed_sample()], {"max_trim_tokens": 1}, None, fields=_FIELDS_WITH_SAMPLING_MASK)
+        reply = decode_samples_and_merge_input_sample(payload, template, fields=_FIELDS_WITH_SAMPLING_MASK)
 
         assert reply.empty_reason is None
         assert reply.session_metadata == {"max_trim_tokens": 1}
@@ -68,6 +77,9 @@ class TestSamplesWireCodec:
         # computed fields overlaid, with exact types/values
         assert out.tokens == [1, 2, 3, 10, 11] and type(out.tokens) is list
         assert out.rollout_log_probs == [-0.5, -0.1234567891234567]
+        sampling_mask_ids, sampling_mask_offsets = out.rollout_sampling_mask._as_tensors()
+        assert sampling_mask_ids.tolist() == [10, 4, 11]
+        assert sampling_mask_offsets.tolist() == [0, 2, 3]
         assert out.loss_mask == [1, 1]
         assert out.response == "[10][11]" and out.response_length == 2
         assert out.status == Sample.Status.COMPLETED
@@ -138,7 +150,7 @@ class TestSamplesWireCodec:
         assert not routed.flags["C_CONTIGUOUS"] and not indexer.flags["C_CONTIGUOUS"]
         sample = _computed_sample(rollout_routed_experts=routed, rollout_indexer_topk=indexer)
 
-        payload = encode_samples([sample], {}, None)
+        payload = encode_samples([sample], {}, None, fields=_FIELDS_WITH_SAMPLING_MASK)
         # the reply is a plain safetensors buffer: no Miles framing needed to open it
         tensors = safetensors.numpy.load(payload)
         assert set(tensors) == {
@@ -146,18 +158,30 @@ class TestSamplesWireCodec:
             "tokens.0",
             "loss_mask.0",
             "rollout_log_probs.0",
+            "rollout_sampling_mask.ids.0",
+            "rollout_sampling_mask.offsets.0",
             "rollout_routed_experts.0",
             "rollout_indexer_topk.0",
         }
         assert tensors["_samples_meta"].dtype == np.uint8 and tensors["_samples_meta"].ndim == 1
         assert tensors["loss_mask.0"].dtype == np.uint8
 
-        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample(), fields=_FIELDS_WITH_SAMPLING_MASK).samples
         assert out.tokens == sample.tokens and type(out.tokens) is list
         assert out.rollout_log_probs == sample.rollout_log_probs
         assert out.rollout_routed_experts.dtype == np.int32 and out.rollout_routed_experts.shape == (4, 3, 2)
         assert np.array_equal(out.rollout_routed_experts, routed)
         assert out.rollout_indexer_topk.dtype == np.int32 and np.array_equal(out.rollout_indexer_topk, indexer)
+
+    def test_default_fields_do_not_emit_sampling_mask(self):
+        payload = encode_samples([_computed_sample()], {}, None)
+        tensors = safetensors.numpy.load(payload)
+        meta = json.loads(tensors["_samples_meta"].tobytes().decode("utf-8"))
+
+        assert "rollout_sampling_mask" not in meta["samples"][0]["nulls"]
+        assert not any(name.startswith("rollout_sampling_mask.") for name in tensors)
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample()).samples
+        assert out.rollout_sampling_mask is None
 
     def test_zero_size_tensor_is_distinct_from_none(self):
         sample = _computed_sample(

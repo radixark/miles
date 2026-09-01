@@ -81,7 +81,12 @@ table.data tr.flagged td { color: var(--bad); }
 .tablewrap { max-height: 480px; overflow: auto; }
 
 .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
-.tokens { line-height: 1.9; font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all; }
+/* position: relative makes the box the offsetParent of its tokens, so a token's
+   offsetTop is the scroll offset that brings it to the top of the box */
+.tokens {
+  line-height: 1.9; font-family: ui-monospace, monospace; font-size: 13px; word-break: break-all;
+  max-height: 480px; overflow-y: auto; position: relative;
+}
 .tok { border-radius: 2px; padding: 1px 0; position: relative; }
 .tok.prompt { color: var(--muted); }
 .tok.masked { opacity: 0.35; }

@@ -50,9 +50,12 @@ class HfWeightIteratorDirect(MegatronHfWeightIteratorBase):
 
     def _convert_to_hf_named_tensors(self, megatron_full_params: Sequence[torch.Tensor], param_infos: list[ParamInfo]):
         hf_named_tensors = []
+        # A converter may need siblings from the same atomic update group — those are in this
+        # bucket by construction, since the group is what keeps them together.
+        bucket = {info.name: param for info, param in zip(param_infos, megatron_full_params, strict=False)}
         for info, param in zip(param_infos, megatron_full_params, strict=False):
             hf_named_tensors.extend(
-                convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config)
+                convert_to_hf(self.args, self.model_name, info.name, param, self.quantization_config, bucket=bucket)
             )
         return hf_named_tensors
 

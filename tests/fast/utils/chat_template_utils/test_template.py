@@ -203,7 +203,7 @@ def _load_fixed_or_none(tito_model: TITOTokenizerType | None) -> str | None:
 # bundled fixed template registered for that family.  ``allowed_append_roles``
 # reflects the set of append-role combinations the model's template can render
 # without raising — test asserts that the sglang path and our path produce
-# identical tokens on all such cases.  Qwen3.5-4B uses the bundled fixed
+# identical tokens on all such cases. Qwen3.5/3.6 use the bundled fixed
 # template which raises on intermediate system post-revert, so the role set
 # is narrowed to {tool} only.
 
@@ -211,6 +211,9 @@ _MODELS: list[tuple[str, bool, TITOTokenizerType | None, frozenset[str]]] = [
     ("Qwen/Qwen3-4B", True, None, frozenset({"tool", "user", "system"})),
     ("zai-org/GLM-4.7-Flash", True, None, frozenset({"tool", "user", "system"})),
     ("Qwen/Qwen3.5-4B", True, TITOTokenizerType.QWEN35, frozenset({"tool"})),
+    ("Qwen/Qwen3.6-35B-A3B", True, TITOTokenizerType.QWEN36, frozenset({"tool"})),
+    ("Qwen/Qwen3.8-27B", True, TITOTokenizerType.QWEN38_SMALL, frozenset({"tool"})),
+    ("Qwen/Qwen3.8-Flash-Next", True, TITOTokenizerType.QWEN4_EXP, frozenset({"tool"})),
     ("Qwen/Qwen3-Coder-Next", False, None, frozenset({"tool", "user", "system"})),
 ]
 
