@@ -615,8 +615,6 @@ class MinimaxM27TITOTokenizer(MinimaxM25TITOTokenizer):
 # DeepSeek V3.2 implementation
 # ---------------------------------------------------------------------------
 
-_DEEPSEEK_MODE_KWARG_ALIASES = frozenset({"thinking_mode", "enable_thinking", "thinking"})
-
 
 class DeepSeekV32TITOTokenizer(TITOTokenizer):
     """DeepSeek V3.2 — miles' vendored copy of the official ``encoding_dsv32``.
@@ -637,7 +635,7 @@ class DeepSeekV32TITOTokenizer(TITOTokenizer):
 
     reasoning_parser = "deepseek-v3"
     tool_call_parser = "deepseekv32"
-    chat_template_kwarg_aliases = _DEEPSEEK_MODE_KWARG_ALIASES
+    chat_template_kwarg_aliases = deepseek.THINKING_MODE_KWARG_ALIASES
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
@@ -686,7 +684,7 @@ class DeepSeekV4TITOTokenizer(TITOTokenizer):
 
     reasoning_parser = "deepseek-v4"
     tool_call_parser = "deepseekv4"
-    chat_template_kwarg_aliases = _DEEPSEEK_MODE_KWARG_ALIASES
+    chat_template_kwarg_aliases = deepseek.THINKING_MODE_KWARG_ALIASES
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
