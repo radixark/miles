@@ -70,7 +70,7 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         if int(layer_idx) < head_end_idx or int(layer_idx) >= tail_start_idx:
             return converted_named_params
 
-    # experts
+    # routed experts
     expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
     match = re.match(expert_pattern, rest)
     if match:
@@ -78,17 +78,6 @@ def quantize_params_nvfp4(args, megatron_name, converted_named_params, quantizat
         if rest in [
             "linear_fc1",
             "linear_fc2",
-        ]:
-            return _quantize_moe_params(converted_named_params, ignore_rules)
-
-    # shared expert
-    shared_expert_pattern = r"mlp.shared_experts\.(.+)"
-    match = re.match(shared_expert_pattern, rest)
-    if match:
-        rest = match.groups()[0]
-        if rest in [
-            "linear_fc1.weight",
-            "linear_fc2.weight",
         ]:
             return _quantize_moe_params(converted_named_params, ignore_rules)
 

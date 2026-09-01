@@ -28,12 +28,6 @@ MODEL_DIR = "/root/models"
 DATA_DIR = "/root/datasets"
 MEGATRON_PATH = "/root/TransformerEngine:/root/Megatron-LM"
 
-EXTRA_HIGH_PRECISION_LAYERS_HF = (".shared_experts.",)
-EXTRA_HIGH_PRECISION_LAYERS_MEGATRON = (
-    ".shared_experts.linear_fc1",
-    ".shared_experts.linear_fc2",
-)
-
 NVFP4_ENV = {
     "NVTE_NVFP4_DISABLE_2D_QUANTIZATION": "1",
     "NVTE_NVFP4_DISABLE_RHT": "1",
@@ -82,30 +76,12 @@ matchers:
         enabled: true
         pattern: "*.mlp.experts.linear_fc2"
         config: "nvfp4"
-    shared_experts_fc1_bf16:
-        type: "glob"
-        enabled: true
-        pattern: "*.mlp.shared_experts.linear_fc1"
-        config: "bf16"
-    shared_experts_fc2_bf16:
-        type: "glob"
-        enabled: true
-        pattern: "*.mlp.shared_experts.linear_fc2"
-        config: "bf16"
     default_bf16:
         type: "glob"
         enabled: true
         pattern: "*"
         config: "bf16"
 """.strip()
-
-
-def _extra_high_precision_layers_hf_args() -> str:
-    return "--extra-high-precision-layers-hf " + " ".join(EXTRA_HIGH_PRECISION_LAYERS_HF) + " "
-
-
-def _extra_high_precision_layers_megatron_args() -> str:
-    return "--extra-high-precision-layers-megatron " + " ".join(EXTRA_HIGH_PRECISION_LAYERS_MEGATRON) + " "
 
 
 def _validate_glm_checkpoint():
@@ -145,7 +121,6 @@ def prepare():
         f"--save-dir {MODEL_DIR}/{MODEL_NAME}-NVFP4 "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
         f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
-        f"{_extra_high_precision_layers_hf_args()}"
     )
 
     U.convert_checkpoint(
@@ -260,8 +235,6 @@ def execute():
         "--first-last-layers-bf16 "
         f"--num-layers-at-start-in-bf16 {NUM_LAYERS_AT_START_IN_BF16} "
         f"--num-layers-at-end-in-bf16 {NUM_LAYERS_AT_END_IN_BF16} "
-        f"{_extra_high_precision_layers_hf_args()}"
-        f"{_extra_high_precision_layers_megatron_args()}"
         f"--te-precision-config-file {te_precision_config_path} "
     )
 
