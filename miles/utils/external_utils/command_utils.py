@@ -27,6 +27,41 @@ _ = exec_command_cpu, exec_command_gpu, exec_command_multi_node, dataclass_cli
 
 repo_base_dir = Path(os.path.abspath(__file__)).resolve().parents[3]
 
+# Every fixed port `ray start --head` would otherwise pick, as an offset from MILES_RAY_PORT_BASE.
+# Without an override, two containers sharing a host's network namespace both bind the defaults;
+# the second one silently attaches to the first one's GCS and then dies ~25 s into the job with
+# "Session name session_<new> does not match persisted value ... Perhaps there was an error
+# connecting to Redis" -- a message that names Redis and reads like a Ray bug.
+_RAY_PORT_OFFSETS = {
+    "--port": 0,
+    "--dashboard-port": 1,
+    "--dashboard-agent-listen-port": 2,
+    "--dashboard-agent-grpc-port": 3,
+    "--runtime-env-agent-port": 4,
+    "--metrics-export-port": 5,
+    "--node-manager-port": 6,
+    "--object-manager-port": 7,
+    "--ray-client-server-port": 8,
+}
+
+
+def _ray_port_args() -> str:
+    base = os.environ.get("MILES_RAY_PORT_BASE")
+    if not base:
+        return ""
+    base = int(base)
+    args = [f" {flag} {base + offset}" for flag, offset in _RAY_PORT_OFFSETS.items()]
+    # Workers get their own window too; the default range overlaps a neighbour's just as the
+    # fixed ports do.
+    args.append(f" --min-worker-port {base + 100} --max-worker-port {base + 4000}")
+    return "".join(args)
+
+
+def ray_dashboard_port() -> int:
+    """Where `ray job submit` should look, matching whatever `ray start --head` was told."""
+    base = os.environ.get("MILES_RAY_PORT_BASE")
+    return int(base) + _RAY_PORT_OFFSETS["--dashboard-port"] if base else 8265
+
 
 def _pythonpath_with_sources(megatron_path: str, *additional_pythonpaths: str | None) -> str:
     entries = [str(repo_base_dir), megatron_path]
@@ -203,7 +238,8 @@ def execute_train(
         exec_command_cpu(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONUNBUFFERED=1 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} "
+            f"--disable-usage-stats{_ray_port_args()}"
         )
 
     if (f := before_ray_job_submit) is not None:
@@ -249,7 +285,7 @@ def execute_train(
         model_args = shell_safe_model_args(megatron_model_type)
         exec_command_cpu(
             f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
-            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else '--address="http://127.0.0.1:8265" '}"""
+            f"""ray job submit {'' if 'RAY_ADDRESS' in os.environ else f'--address="http://127.0.0.1:{ray_dashboard_port()}" '}"""
             f"--runtime-env-json={shlex.quote(runtime_env_json)} "
             f"-- python3 {train_script} "
             f"{model_args} "
