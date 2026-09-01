@@ -209,6 +209,7 @@ class TestPassingAttemptSelection:
             good_record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
@@ -239,6 +240,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
             now_iso="2026-06-29T00:00:00+00:00",
@@ -301,6 +303,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
             now_iso="2026-06-29T00:00:00+00:00",
@@ -338,6 +341,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
@@ -363,6 +367,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
@@ -392,6 +397,7 @@ class TestBaselineWrite:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=True,
             provenance=PROVENANCE,
         )
@@ -403,6 +409,66 @@ class TestBaselineWrite:
 
 
 # --- PR no-write + shadow verdict -------------------------------------------
+
+
+class TestExecutingSuiteIdentity:
+    """A run's numbers belong to the stage that produced them.
+
+    Once a test can be dispatched to a second GPU generation, keying the
+    baseline on `register_*_ci(suite=...)` would merge two hardware populations
+    into one series and make the regression gate compare across generations.
+    """
+
+    def test_row_is_keyed_on_the_executing_stage_not_the_declared_one(self, tmp_path, store):
+        test_file = _write_test_file(
+            tmp_path,
+            """
+            register_ci_gate(metric_key="rollout/raw_reward",
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+            """,
+        )
+        registry = _registry(test_file)
+        assert registry.suite == "stage-c-8-gpu-h100"
+        record = _write_record(tmp_path, {"rollout/raw_reward": [[0, 0.81]]}, name="m.jsonl")
+
+        run_gate_hook(
+            test_file,
+            record,
+            store=store,
+            registry=registry,
+            executing_suite="stage-c-8-gpu-b200",
+            write_baseline=True,
+            provenance=PROVENANCE,
+        )
+
+        assert store._conn.execute("SELECT suite FROM runs").fetchone()[0] == "stage-c-8-gpu-b200"
+
+    def test_the_two_stages_keep_independent_series(self, tmp_path, store):
+        test_file = _write_test_file(
+            tmp_path,
+            """
+            register_ci_gate(metric_key="rollout/raw_reward",
+                             steps="last", constraint={"rel_up": 0.20, "rel_down": 0.20})
+            """,
+        )
+        registry = _registry(test_file)
+        for suite, value in (("stage-c-8-gpu-h100", 0.81), ("stage-c-8-gpu-b200", 0.42)):
+            run_gate_hook(
+                test_file,
+                _write_record(tmp_path, {"rollout/raw_reward": [[0, value]]}, name=f"{suite}.jsonl"),
+                store=store,
+                registry=registry,
+                executing_suite=suite,
+                write_baseline=True,
+                provenance=PROVENANCE,
+            )
+
+        coordinate = ("rollout/raw_reward", LAST_KEY, REL20_KEY, -1)
+        hopper = store.recent_trusted_values(registry.filename, "cuda", "stage-c-8-gpu-h100", *coordinate, 20)
+        blackwell = store.recent_trusted_values(registry.filename, "cuda", "stage-c-8-gpu-b200", *coordinate, 20)
+        # 0.42 against a 0.81 baseline would be a hard fail if the two shared a series.
+        assert hopper == [0.81]
+        assert blackwell == [0.42]
 
 
 class TestPrShadow:
@@ -427,6 +493,7 @@ class TestPrShadow:
                 record,
                 store=store,
                 registry=registry,
+                executing_suite="stage-c-8-gpu-h100",
                 write_baseline=False,
                 provenance=PROVENANCE,
             )
@@ -474,6 +541,7 @@ class TestNeverBlocks:
             record,
             store=store,
             registry=registry,
+            executing_suite="stage-c-8-gpu-h100",
             write_baseline=False,
             provenance=PROVENANCE,
         )
@@ -501,6 +569,7 @@ class TestNeverBlocks:
                 missing_record,
                 store=store,
                 registry=registry,
+                executing_suite="stage-c-8-gpu-h100",
                 write_baseline=True,
                 provenance=PROVENANCE,
             )
@@ -534,6 +603,7 @@ class TestNeverBlocks:
                 record,
                 store=store,
                 registry=registry,
+                executing_suite="stage-c-8-gpu-h100",
                 write_baseline=True,
                 provenance=PROVENANCE,
             )
@@ -567,6 +637,7 @@ def test_hook_signature_matches_metric_sample_contract(tmp_path, store, monkeypa
         record,
         store=store,
         registry=registry,
+        executing_suite="stage-c-8-gpu-h100",
         write_baseline=True,
         provenance=PROVENANCE,
     )

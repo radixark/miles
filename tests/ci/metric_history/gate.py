@@ -240,6 +240,7 @@ def evaluate_gate(
     merged_record_path: str,
     store: MetricHistoryStore,
     *,
+    executing_suite: str,
     registry: CIRegistry | None = None,
     history_limit: int = 20,
 ) -> GateResult:
@@ -252,6 +253,12 @@ def evaluate_gate(
     is handled without reparsing. When `registry` is None and the file has
     gate specs, identity is reparsed via `_registry_for` (the isolated
     unit-test convenience, which still refuses a no-register or ambiguous file).
+
+    `executing_suite` is the stage this run actually executed on, which is what
+    the identity's suite must be: a test dispatched to another GPU generation
+    produces numbers that belong in that generation's series, not in the one its
+    `register_*_ci(suite=...)` names. The two coincide whenever a test runs at
+    home, so this argument is not derivable from `registry`.
 
     A file with no gate specs is vacuously trusted and does NOT require a unique
     registry: identity is taken from `registry` if given, else filled
@@ -272,13 +279,13 @@ def evaluate_gate(
             return GateResult(
                 test_path=registry.filename,
                 backend=_BACKEND_STR[registry.backend],
-                suite=registry.suite,
+                suite=executing_suite,
                 metrics=[],
             )
         return GateResult(
             test_path=test_filename,
             backend="",
-            suite="",
+            suite=executing_suite,
             metrics=[],
         )
 
@@ -300,7 +307,7 @@ def evaluate_gate(
                 store,
                 test_path=registry.filename,
                 backend=backend,
-                suite=registry.suite,
+                suite=executing_suite,
                 history_limit=history_limit,
             )
         )
@@ -308,6 +315,6 @@ def evaluate_gate(
     return GateResult(
         test_path=registry.filename,
         backend=backend,
-        suite=registry.suite,
+        suite=executing_suite,
         metrics=results,
     )

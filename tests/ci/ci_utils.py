@@ -278,6 +278,7 @@ def run_gate_hook(
     *,
     store,
     registry: CIRegistry,
+    executing_suite: str,
     write_baseline: bool,
     provenance: RunProvenance,
     now_iso: str | None = None,
@@ -295,7 +296,7 @@ def run_gate_hook(
     this round.
     """
     try:
-        result = evaluate_gate(filename, merged_record_path, store, registry=registry)
+        result = evaluate_gate(filename, merged_record_path, store, executing_suite=executing_suite, registry=registry)
 
         if write_baseline:
             if not result.metrics:
@@ -386,6 +387,7 @@ def run_unittest_files(
     max_attempts: int = 2,
     retry_wait_seconds: int = 60,
     gate_store=None,
+    gate_executing_suite: str = "",
     gate_write_baseline: bool = False,
     gate_provenance: RunProvenance | None = None,
 ):
@@ -600,6 +602,7 @@ def run_unittest_files(
                 passing_record_path,
                 store=gate_store,
                 registry=file,
+                executing_suite=gate_executing_suite,
                 write_baseline=gate_write_baseline,
                 provenance=gate_provenance or gate_provenance_from_env(),
             )
