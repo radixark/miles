@@ -4,7 +4,7 @@ import warnings
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
-from tests.ci.hardware import CUDA_STAGE_ARCH, KNOWN_ARCHES, auto_arch
+from tests.ci.hardware import CUDA_STAGES, KNOWN_ARCHES, auto_arch
 from tests.ci.labels import KNOWN_LABELS
 
 __all__ = [
@@ -273,12 +273,12 @@ class RegistryVisitor(ast.NodeVisitor):
             )
         if len(set(hardware)) != len(hardware):
             raise ValueError(f"{self.filename}: duplicated arch in {func_name}() hardware={hardware}")
-        if suite not in CUDA_STAGE_ARCH:
+        if suite not in CUDA_STAGES:
             raise ValueError(
                 f"{self.filename}: unknown CUDA suite {suite!r} in {func_name}(); "
-                f"valid suites: {sorted(CUDA_STAGE_ARCH)}"
+                f"valid suites: {sorted(CUDA_STAGES)}"
             )
-        home_arch, first = CUDA_STAGE_ARCH[suite], auto_arch(hardware)
+        home_arch, first = CUDA_STAGES[suite].arch, auto_arch(hardware)
         if home_arch != first:
             raise ValueError(
                 f"{self.filename}: suite {suite!r} is {home_arch} but hardware={hardware} "

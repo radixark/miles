@@ -7,6 +7,7 @@ A label is a GitHub PR label that changes what CI runs or how it fails. Three ki
 | Kind | Example | Effect |
 |---|---|---|
 | Domain label | `run-ci-megatron` | selects which tests run |
+| Dispatch label | `run-on-blackwell` | selects which GPU generation runs them |
 | Scope label | `run-ci-image` | run every enabled tag except `long`, `ft-short`, and `ft-long` |
 | Cadence/scope label | `nightly` | select nightly cadence and every enabled tag except `long` and `ft-long`, with fast-fail disabled |
 | Scope label | `run-ci-all` | run every enabled tag |
@@ -35,6 +36,28 @@ Domain labels live in `tests/ci/labels.py` (`KNOWN_LABELS`); a `labels=[...]` va
 
 To add one: add the entry to `KNOWN_LABELS`, then create the matching `run-ci-<key>` label on the PR. No workflow edit needed.
 
+## Dispatch labels: which GPU generation runs the selection
+
+Domain labels pick *which* tests run; dispatch labels pick *where*. The two axes are independent, so `run-ci-megatron` + `run-on-blackwell` means "every megatron test that can run on Blackwell, on Blackwell, and nowhere else".
+
+Each CUDA test declares the GPU generations its kernels and precision paths support: `register_cuda_ci(..., hardware=["hopper", "blackwell"])`. Its `suite` must name a stage on the first supported generation, so a test's home stage is also where it runs when nothing asks otherwise.
+
+| PR labels | Effect |
+|---|---|
+| *(none)* | each test runs once, at its home stage |
+| `run-on-hopper` | only the Hopper stages; Blackwell-only tests do not run at all |
+| `run-on-blackwell` | every selected test that supports Blackwell moves to a Blackwell stage; Hopper-only tests do not run at all |
+| both | a test supporting both generations runs **twice**, once per generation |
+| `run-ci-blackwell-only` | every test that can *only* run on Blackwell, across all domains |
+
+`run-on-*` is what permits a test to execute outside its home stage. Without one — a plain PR, nightly, weekly, release, or a called workflow — nothing moves, so those runs select exactly what they always did.
+
+`run-ci-blackwell-only` and `run-on-blackwell` are one preposition apart and mean different things. The first runs the Blackwell-exclusive tests; the second moves whatever it can onto Blackwell. The `-only` suffix is the reminder.
+
+The generation order `hopper, blackwell` is the default-dispatch preference: a test supporting both lands on Hopper unless asked otherwise, because one Blackwell host against four-plus Hopper hosts would otherwise saturate the Blackwell queue. Adding Blackwell capacity is a change to `tests/ci/hardware.py::CUDA_STAGES`; nothing else routes.
+
+Each generation keeps its own performance baseline, keyed on the stage that executed the run — see [Metric history & regression gate](/ci/03-metric-history-gate). A test dispatched to both owns two independent series, so Blackwell numbers never regress against Hopper ones.
+
 ## Manage CI from PR comments
 
 The PR-comment entrypoint is a command gateway rather than a label handler. Each recognized comment becomes a typed request, and a code-defined static registry selects its fixed handler, policy key, and token capability. The JSON policy controls only access groups and per-command resource allowlists. The registry implements add-label, clear-labels, rerun-failed-ci, and run-test-file requests.
@@ -55,7 +78,7 @@ Unrecognized comments exit after trusted parsing with capability `none`; they do
 
 The gateway controls only the delegated comment path; it does not restrict users' existing GitHub UI/API label permissions and does not offer commands that add `run-ci-all`, `nightly`, or an arbitrary label absent from the policy.
 
-Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
+Post `/clear-labels` as the entire comment to remove every current label whose name starts with `run-ci` or `run-on-`, plus `nightly` and `bypass-fastfail`. All other PR labels are preserved. This stops stale CI scope, dispatch, cadence, fast-fail, and fork-approval choices from carrying into later pushes. It neither suppresses the ordinary always-on CI triggered by `synchronize` nor cancels a run that has already started.
 
 Post `/rerun-failed-ci` as the entire comment to request failed-job reruns for the current open PR head. The handler considers only the latest run of each allowlisted PR workflow: `pre-commit.yml`, `pr-test.yml`, and `pr-test-rocm.yml`. A latest run is rerun only when it belongs to this PR and exact head SHA and has completed with conclusion `failure`.
 
