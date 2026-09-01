@@ -60,13 +60,21 @@ class RayWorkerProvider(BaseWorkerProvider):
     ) -> None:
         all_infos = await self._worker_manager_handle.get_cell_infos.remote(pool_ids=pool_ids)
         observed_infos: dict[str, CellInfo] = {cell_id: info for cell_id, info in all_infos.items() if info.alive}
+        first_error: Exception | None = None
         for cell_id in sorted(set(seen_infos) | set(observed_infos)):
             observed_info = observed_infos.get(cell_id)
             if seen_infos.get(cell_id) == observed_info:
                 continue
-            await reconcile(cell_id, observed_info)
+            try:
+                await reconcile(cell_id, observed_info)
+            except Exception as error:
+                logger.exception(f"Reconciling cell {cell_id} failed; continuing with the other cells")
+                first_error = first_error or error
+                continue
             if observed_info is None:
                 seen_infos.pop(cell_id, None)
             else:
                 seen_infos[cell_id] = observed_info
 
+        if first_error is not None:
+            raise first_error
