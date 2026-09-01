@@ -25,6 +25,7 @@ def sparse_mqa_fwd(
     block_I=64,
     num_stages=2,
     threads=256,
+    block_H=None,
 ):
     assert dim == tilelang.math.next_power_of_2(dim), f"dim must be power of 2, got {dim}"
     assert topk % block_I == 0, f"topk ({topk}) must be divisible by block_I ({block_I})"
@@ -53,13 +54,20 @@ def sparse_mqa_fwd(
     NI = tilelang.cdiv(topk, block_I)
     D = dim
 
-    if heads > 64:
-        assert heads % 64 == 0, "heads should be a multiple of 64"
-        REPLICATE_H = heads // 64
+    # block_H caps how many heads one workgroup stages in LDS. Q_shared/O_shared are
+    # [H_per_block, D], so at D=512 bf16 a 64-head block is 65536 B for Q_shared alone -- the
+    # entire gfx942 (64 KiB) budget, with nothing left for KV_shared/S_shared/Lse_shared. Shrinking
+    # block_H is the only lever that helps; num_stages only multiplies KV_shared.
+    # block_H=None keeps the original behaviour (blocks of 64, and only when heads > 64).
+    if block_H is None:
+        block_H = 64
+    if heads > block_H:
+        assert heads % block_H == 0, f"heads ({heads}) should be a multiple of block_H ({block_H})"
+        REPLICATE_H = heads // block_H
+        H_per_block = block_H
     else:
         REPLICATE_H = 1
-
-    H_per_block = padded_H if REPLICATE_H == 1 else 64
+        H_per_block = padded_H
 
     is_hip = getattr(torch.version, "hip", None)
     if is_hip:
@@ -100,7 +108,7 @@ def sparse_mqa_fwd(
             b_i = by
             s_i = bx if REPLICATE_H == 1 else (bx // REPLICATE_H)
 
-            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * 64
+            H0 = 0 if REPLICATE_H == 1 else (bx % REPLICATE_H) * H_per_block
             H1 = H0 + H_per_block
 
             T.copy(Q[b_i, s_i, H0:H1, :D], Q_shared)
@@ -156,6 +164,80 @@ def sparse_mqa_fwd(
     return main
 
 
+_SHARED_MEM_ERROR = "exceeds device limit"
+# (num_stages, block_I, threads) in decreasing order of expected performance, tried when the
+# requested tiling does not build on this GPU. The default is sized for a 160 KiB LDS (gfx950);
+# gfx942 (MI300/MI308) has 64 KiB per workgroup, where KV_shared alone (block_I*dim*2 bytes per
+# pipeline stage) is the whole budget at block_I=64 and dim=512. Shrinking block_I in turn needs
+# fewer threads, or tilelang's warp partitioning degenerates into a divide-by-zero.
+# (num_stages, block_I, threads, block_H). block_H=None means "one block of padded_H", the
+# pre-existing behaviour. The first four entries are the original list and are tried first, so
+# nothing that used to build changes tiling. The block_H entries exist for 64-head models on a
+# 64 KiB-LDS GPU, where no block_H=None tiling can fit:
+#   block_H=32, block_I=16 -> Q 32768 + KV 16384 + S 1024 + Lse 128 = 50304 B
+#   block_H=16, block_I=32 -> Q 16384 + KV 32768 + S 1024 + Lse  64 = 50240 B
+#   block_H=16, block_I=16 -> Q 16384 + KV 16384 + S  512 + Lse  64 = 33344 B
+_FALLBACK_TILINGS = (
+    (1, 64, 256, None),
+    (1, 32, 128, None),
+    (1, 32, 64, None),
+    (1, 16, 64, None),
+    (1, 16, 64, 32),
+    (1, 32, 128, 16),
+    (1, 16, 64, 16),
+)
+_fitted_tiling: dict[tuple, tuple] = {}
+
+
+def _compile_within_shared_mem(heads, dim, topk, sm_scale, block_I, num_stages, threads):
+    """Compile sparse_mqa_fwd, shrinking the tiling if the GPU cannot host its shared memory.
+
+    Which tiling fits is not worth predicting: tilelang reuses and pads shared buffers, so the only
+    reliable check is asking it to build the kernel. The result is memoized per shape.
+
+    Candidates are (num_stages, block_I, threads, block_H). block_H shrinks the head block, which is
+    the only thing that helps a 64-head model on a 64 KiB-LDS GPU -- Q_shared alone is [64, 512] bf16
+    = 65536 B there, and num_stages only multiplies KV_shared.
+    """
+    key = (heads, dim, topk, sm_scale, block_I, num_stages, threads)
+    candidates = [_fitted_tiling[key]] if key in _fitted_tiling else [(num_stages, block_I, threads, None)]
+    candidates += [c for c in _FALLBACK_TILINGS if c not in candidates and topk % c[1] == 0]
+
+    # Carrying a rejected candidate's exception out of its `except` block keeps its __traceback__,
+    # and through the frame chain every local of every caller -- here the whole model forward, whose
+    # locals are activation tensors. The reference cycle that forms is only breakable by the cyclic
+    # collector, so those activations sit on the device until something triggers a full gc pass.
+    # Strip the traceback: the message is all `raise last_error` needs.
+    last_error = None
+    for stages, bi, thr, bh in candidates:
+        try:
+            kernel = sparse_mqa_fwd(heads, dim, topk, sm_scale, block_I=bi, num_stages=stages, threads=thr, block_H=bh)
+        except RuntimeError as e:
+            if _SHARED_MEM_ERROR not in str(e):
+                raise
+            last_error = e.with_traceback(None)
+            continue
+        except AssertionError as e:  # block_H does not divide this head count
+            last_error = e.with_traceback(None)
+            continue
+        except Exception as e:  # tilelang raises tvm InternalError for an unsupported tile shape
+            if "Divide by zero" not in str(e):
+                raise
+            last_error = e.with_traceback(None)
+            continue
+        if key not in _fitted_tiling:
+            _fitted_tiling[key] = (stages, bi, thr, bh)
+            if (stages, bi, thr, bh) != (num_stages, block_I, threads, None):
+                print(
+                    f"[sparse_mqa_fwd] shared memory forced a smaller tiling on this GPU: "
+                    f"num_stages={stages} block_I={bi} threads={thr} block_H={bh} "
+                    f"(requested {num_stages}/{block_I}/{threads}/None)",
+                    flush=True,
+                )
+        return kernel
+    raise last_error
+
+
 def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I=64, num_stages=2, threads=256):
     """Forward interface for V4 sparse MQA attention.
 
@@ -183,14 +265,6 @@ def sparse_mqa_fwd_interface(q, kv, attn_sink, topk_idxs, sm_scale=None, block_I
         topk_idxs = torch.cat([topk_idxs, pad], dim=-1).contiguous()
         topk = padded_topk
 
-    kernel = sparse_mqa_fwd(
-        heads,
-        dim,
-        topk,
-        sm_scale,
-        block_I=block_I,
-        num_stages=num_stages,
-        threads=threads,
-    )
+    kernel = _compile_within_shared_mem(heads, dim, topk, sm_scale, block_I, num_stages, threads)
     out, lse = kernel(q, kv, attn_sink, topk_idxs)
     return out, lse
