@@ -4,27 +4,21 @@ The student generates from the problem alone; the teacher scores that same respo
 prompt that also contains the reference solution. Both prompts are rendered by
 prepare_data.py, so the teacher prompt arrives on the sample as metadata.
 
-The divergence is forward KL over the teacher's top-k support, clipped per vocabulary
-entry, which is the objective the paper adopts. It is computed here and handed to miles
-as sample.opd_reverse_kl, the per-token divergence that --use-opd subtracts from the
-advantage. Held-out rows are scored for accuracy here because --custom-rm-path is
-consulted unconditionally, so a per-sample rm_type would never be reached.
+The teacher's log-probs at the student's own sampled tokens are handed to miles as
+sample.teacher_log_probs, which --use-opd turns into the per-token reverse KL
+(log p_S - log p_T) it subtracts from the advantage. Held-out rows are scored for
+accuracy here because --custom-rm-path is consulted unconditionally, so a per-sample
+rm_type would never be reached.
 """
 
-import math
 from typing import Any
 
 import torch
 from math_verify import parse, verify
 
 from miles.utils.http_utils import post
-from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.types import Sample
-
-# Teacher support width and the per-entry clip from the paper's Qwen3-1.7B configuration.
-TOP_K = 16
-TAU = 0.05
 
 
 def _extract_boxed(text: str) -> str | None:
@@ -53,57 +47,27 @@ def _is_correct(response: str, label: str) -> float:
     return 1.0 if verify(gold, guess, timeout_seconds=None) else 0.0
 
 
-def _per_position_maps(response: dict, field: str, response_length: int) -> list[dict[int, float]]:
-    entries = response["meta_info"][field][-response_length:]
-    return [{int(e[1]): float(e[0]) for e in (position or [])} for position in entries]
-
-
 async def _score_teacher(args: Any, sample: Sample) -> None:
     tokenizer = load_tokenizer(args.hf_checkpoint, chat_template_path=args.chat_template_path)
-    teacher_ids = tokenizer.encode(sample.metadata["teacher_prompt"], add_special_tokens=False)
-    response_length = sample.response_length
+    prompt_ids = tokenizer.encode(sample.metadata["teacher_prompt"], add_special_tokens=False)
+    response_ids = sample.tokens[len(sample.tokens) - sample.response_length :]
 
     # No lora_path, so the teacher is the base weights, which LoRA keeps frozen.
-    teacher = await post(
+    response = await post(
         args.rm_url,
         {
-            "input_ids": list(teacher_ids) + list(sample.tokens[-response_length:]),
+            "input_ids": list(prompt_ids) + list(response_ids),
             "sampling_params": {"temperature": 0, "max_new_tokens": 0, "skip_special_tokens": False},
             "return_logprob": True,
-            "top_logprobs_num": TOP_K,
-            "logprob_start_len": len(teacher_ids) - 1,
+            "logprob_start_len": len(prompt_ids) - 1,
         },
     )
-    teacher_top = _per_position_maps(teacher, "input_top_logprobs", response_length)
 
-    # The student's log-probs are needed at the teacher's ids, which only a scoring call
-    # against the rollout engine can provide. lora_path selects the current policy.
-    support = sorted({token_id for position in teacher_top for token_id in position})
-    student = await post(
-        f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate",
-        {
-            "input_ids": list(sample.tokens),
-            "sampling_params": {"temperature": 0, "max_new_tokens": 0, "skip_special_tokens": False},
-            "return_logprob": True,
-            "token_ids_logprob": support,
-            "logprob_start_len": len(sample.tokens) - response_length - 1,
-            "lora_path": LORA_ADAPTER_NAME,
-        },
-    )
-    student_top = _per_position_maps(student, "input_token_ids_logprobs", response_length)
-
-    # Forward KL over the teacher's support, clipped per entry before the sum so that a few
-    # stylistic tokens cannot dominate the update.
-    divergence = []
-    for teacher_pos, student_pos in zip(teacher_top, student_top, strict=True):
-        total = 0.0
-        for token_id, teacher_logp in teacher_pos.items():
-            student_logp = student_pos.get(token_id)
-            if student_logp is None:
-                continue
-            total += min(math.exp(teacher_logp) * (teacher_logp - student_logp), TAU)
-        divergence.append(total)
-    sample.opd_reverse_kl = torch.tensor(divergence, dtype=torch.float32)
+    scored = response["meta_info"]["input_token_logprobs"][-sample.response_length :]
+    # The teacher must have scored the student's own tokens; a mismatch means the
+    # privileged prompt shifted the response and every log-prob would be off by position.
+    assert [int(entry[1]) for entry in scored] == list(response_ids), "teacher/student token mismatch"
+    sample.teacher_log_probs = torch.tensor([entry[0] for entry in scored], dtype=torch.float32)
 
 
 async def reward_func(args: Any, sample: Sample, **kwargs: Any) -> float:

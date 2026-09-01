@@ -39,16 +39,16 @@ AIME24 Avg@12, temperature 1.0, top-p 0.95, top-k -1, 38912 new tokens, thinking
 
 ## Objective
 
-Forward KL over the teacher's top-k support, clipped per vocabulary entry at tau=0.05,
-which is what the paper adopts (its beta=0 case with `jsd_token_clip`). It is computed in
-`rm.py` and handed to miles as `sample.opd_reverse_kl`, the per-token divergence that
-`--use-opd` subtracts from the advantage.
+The teacher's log-probs at the student's own sampled tokens, handed to miles as
+`sample.teacher_log_probs`. `--use-opd` turns those into the per-token reverse KL
+`log p_S - log p_T` and subtracts it from the advantage. This is the paper's documented
+sampled-token alternative, not the objective its headline numbers come from.
 
-The student's log-probs at the teacher's ids need a second scoring call against the
-rollout engine, which costs roughly 14 to 24 seconds per step depending on the support
-width. The teacher is sharp because it has read the solution, so its top-16 union is only
-about 1000 ids and the call stays cheap; scoring the student's own top-k union would be
-several times larger.
+That headline objective is forward KL over the teacher's distribution, clipped per
+vocabulary entry. It cannot be expressed in a reward function: a reward function runs
+after generation and sees only the sampled tokens, while forward KL needs the student's
+logits at training time to be differentiable. It is therefore a core feature rather than
+an example, and this example does not reproduce the paper's accuracy curve.
 
 `math_verify` is graded with `parsing_timeout=None`. Its default timeout uses
 `signal.alarm()`, which only works on the main thread, and reward functions run on a
