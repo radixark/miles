@@ -125,6 +125,7 @@ def _create_runner() -> _MiniFTControllerRunner:
         api_server_url="http://127.0.0.1:8080",
         poll_interval=10.0,
         resume_delay=5.0,
+        cells_auto_resume=False,
     )
 
 
@@ -704,10 +705,13 @@ class TestFtControllerDefaults:
 
 
 class _FakeRunner:
-    def __init__(self, *, api_server_url: str, poll_interval: float, resume_delay: float) -> None:
+    def __init__(
+        self, *, api_server_url: str, poll_interval: float, resume_delay: float, cells_auto_resume: bool
+    ) -> None:
         self.api_server_url = api_server_url
         self.poll_interval = poll_interval
         self.resume_delay = resume_delay
+        self.cells_auto_resume = cells_auto_resume
         self.ran = threading.Event()
         self.thread_was_daemon: bool | None = None
         self.thread_was_main_thread: bool | None = None
@@ -739,6 +743,7 @@ class TestMaybeStartMiniFtController:
                 api_server_port=18231,
                 mini_ft_controller_poll_interval=1.5,
                 mini_ft_controller_resume_delay=2.5,
+                cluster_backend="kubernetes",
             )
         )
 
@@ -747,6 +752,7 @@ class TestMaybeStartMiniFtController:
         assert runner.api_server_url == "http://127.0.0.1:18231"
         assert runner.poll_interval == 1.5
         assert runner.resume_delay == 2.5
+        assert runner.cells_auto_resume is True
         assert runner.ran.wait(timeout=5.0)
         assert runner.thread_was_daemon is True
         assert runner.thread_was_main_thread is False
