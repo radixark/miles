@@ -4,6 +4,7 @@ from ray.actor import ActorHandle
 
 from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
+from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
 from miles.utils.logging_utils import configure_logger
@@ -11,6 +12,7 @@ from miles.utils.tracking_utils.tracking import init_tracking
 
 
 def init_orchestration_script(args: Namespace) -> ActorHandle | None:
+    event_logger_checkpoint.restore(args)
     configure_logger(args, source=SimpleProcessIdentity(component="main"))
     maybe_start_periodic_pyspy_dump()
     init_tracking(args)

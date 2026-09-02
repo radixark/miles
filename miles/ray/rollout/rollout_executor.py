@@ -64,7 +64,6 @@ class RolloutExecutor:
     ):
         self._init_once = InitOnce(type(self).__name__)
 
-        event_logger_checkpoint.restore(args)
         configure_logger(args, source=SimpleProcessIdentity(component="rollout_executor"))
 
         self.args = args
