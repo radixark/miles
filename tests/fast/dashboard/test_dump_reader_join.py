@@ -2,6 +2,7 @@ import os
 import time
 from collections import defaultdict
 
+import polars as pl
 import pytest
 import torch
 from tests.fast.dashboard.dummy_dump import dump_dummy_run
@@ -50,7 +51,7 @@ def test_load_joined_full_coverage(run):
         joined = reader.load_joined(rollout_id)
         assert len(joined.samples) == truth.n_samples_per_step
         assert joined.train_coverage == 1.0
-        assert set(joined.train_rows) == {s.index for s in joined.samples}
+        assert set(joined.train_rows) == {(s.index, 0) for s in joined.samples}
         assert all(isinstance(s, Sample) for s in joined.samples)
         assert all(isinstance(r, TrainRow) for r in joined.train_rows.values())
     # Sample deserialization went through miles' own from_dict: enums restored.
@@ -61,9 +62,9 @@ def test_load_joined_full_coverage(run):
 def test_join_row_matches_sample(run):
     reader, _ = run
     joined = reader.load_joined(1)
-    sample_of = {s.index: s for s in joined.samples}
-    for index, row in joined.train_rows.items():
-        sample = sample_of[index]
+    sample_of = {(s.index, 0): s for s in joined.samples}
+    for key, row in joined.train_rows.items():
+        sample = sample_of[key]
         assert row.response_length == sample.response_length
         assert row.total_length == len(sample.tokens)
         assert torch.equal(row.tokens, torch.tensor(sample.tokens))
@@ -80,7 +81,7 @@ def test_raw_reward_uses_batch_global_indexing(run):
     for rollout_id in reader.rollout_ids().train:
         joined = reader.load_joined(rollout_id)
         for sample in joined.samples:
-            assert joined.train_rows[sample.index].raw_reward == sample.reward
+            assert joined.train_rows[(sample.index, 0)].raw_reward == sample.reward
 
 
 def test_rewards_went_through_real_group_normalization(run):
@@ -88,10 +89,10 @@ def test_rewards_went_through_real_group_normalization(run):
     # mean-centering makes shard-local `rewards` sum to ~0 within each group.
     reader, _ = run
     joined = reader.load_joined(0)
-    group_of = {s.index: s.group_index for s in joined.samples}
+    group_of = {(s.index, 0): s.group_index for s in joined.samples}
     group_rewards = defaultdict(list)
-    for index, row in joined.train_rows.items():
-        group_rewards[group_of[index]].append(row.reward)
+    for key, row in joined.train_rows.items():
+        group_rewards[group_of[key]].append(row.reward)
     for rewards in group_rewards.values():
         assert abs(sum(rewards)) < 1e-4
 
@@ -104,7 +105,27 @@ def test_tp_duplicates_keep_first_rank(run):
     assert {row.rank for row in joined.train_rows.values()} == {0, 2}
     for shard_idx, indices in enumerate(truth.shard_indices[0]):
         for index in indices:
-            assert joined.train_rows[index].rank == shard_idx * 2
+            assert joined.train_rows[(index, 0)].rank == shard_idx * 2
+
+
+def test_duplicate_sample_indices_keep_tito_leaves_distinct(tmp_path):
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    reader = DumpReader(tmp_path)
+
+    joined = reader.load_joined(0)
+    assert joined.train_coverage == 1.0
+    assert (0, 0) in joined.train_rows
+    assert (0, 1) in joined.train_rows
+    for position, key in enumerate([(0, 0), (0, 1)]):
+        sample = joined.samples[position]
+        row = joined.train_rows[key]
+        assert row.response_length == sample.response_length
+        assert row.total_length == len(sample.tokens)
+        assert torch.equal(row.tokens, torch.tensor(sample.tokens))
+        assert row.raw_reward == sample.reward
+
+    duplicate_rows = reader.summary(0).filter(pl.col("sample_index") == 0)
+    assert duplicate_rows["sample_occurrence"].to_list() == [0, 1]
 
 
 def test_train_index_absent_from_rollout_asserts(run):
@@ -185,6 +206,11 @@ def test_realdata_join():
         row = next(iter(joined.train_rows.values()))
         assert len(row.log_probs) == row.response_length
         # raw_reward correspondence must hold on real data too
-        sample_of = {s.index: s for s in joined.samples}
-        for index, train_row in joined.train_rows.items():
-            assert train_row.raw_reward == sample_of[index].reward
+        occurrences = defaultdict(int)
+        sample_of = {}
+        for sample in joined.samples:
+            key = (sample.index, occurrences[sample.index])
+            occurrences[sample.index] += 1
+            sample_of[key] = sample
+        for key, train_row in joined.train_rows.items():
+            assert train_row.raw_reward == sample_of[key].reward

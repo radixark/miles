@@ -31,7 +31,7 @@ def test_summary_matches_hand_computed(reader):
 
     for sample in joined.samples:
         entry = _df_row(df, sample.index)
-        row = joined.train_rows[sample.index]
+        row = joined.train_rows[(sample.index, 0)]
         assert entry["group_index"] == sample.group_index
         assert entry["response_length"] == sample.response_length
         assert entry["raw_reward"] == sample.reward
@@ -112,7 +112,7 @@ def test_tokens_full_range(reader):
     assert len(payload["train_log_probs"]) == sample.response_length
     assert len(payload["imp_ratio"]) == sample.response_length
     assert payload["rollout_log_probs"] == pytest.approx(sample.rollout_log_probs)
-    row = joined.train_rows[sample.index]
+    row = joined.train_rows[(sample.index, 0)]
     assert payload["lp_diff"][0] == pytest.approx(float(row.log_probs[0] - row.rollout_log_probs[0]))
 
 
@@ -124,7 +124,7 @@ def test_tokens_null_the_stats_where_the_loss_is_masked(reader):
     for key in ("train_log_probs", "rollout_log_probs", "lp_diff", "imp_ratio", "ref_log_probs", "advantages"):
         assert masked[key] == [None] * len(masked["loss_mask"]), key
 
-    row = reader.load_joined(0).train_rows[0]
+    row = reader.load_joined(0).train_rows[(0, 0)]
     unmasked = reader.tokens(0, 0)
     assert set(unmasked["loss_mask"]) == {1}
     assert unmasked["train_log_probs"] == pytest.approx([float(v) for v in row.log_probs])
