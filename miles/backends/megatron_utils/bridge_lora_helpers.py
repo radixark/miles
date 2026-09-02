@@ -33,7 +33,7 @@ def _ensure_model_list(model):
     return model if isinstance(model, list) else [model]
 
 
-def _make_value_model_hook(hidden_size: int, sequence_parallel: bool):
+def _make_value_model_hook(hidden_size: int):
     """Create a pre-wrap hook that replaces the output layer with a value head."""
     from megatron.core import parallel_state
 
@@ -59,7 +59,7 @@ def _make_value_model_hook(hidden_size: int, sequence_parallel: bool):
             model_chunk.output_layer = LinearForLastLayer(
                 input_size=hidden_size,
                 output_size=1,
-                sequence_parallel=sequence_parallel,
+                config=model_chunk.config,
             )
 
     return hook
@@ -189,7 +189,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     )
     if is_value_model:
         hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
-        provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size, provider.sequence_parallel))
+        provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
     if is_multi_lora_enabled(args):
