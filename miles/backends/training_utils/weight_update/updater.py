@@ -24,7 +24,6 @@ from miles.backends.training_utils.weight_update.session import (
     register_lora_adapter,
     resume_engines,
     set_weight_version,
-    weight_update_selector,
 )
 from miles.backends.training_utils.weight_update.utils import record_lora_checksums
 from miles.utils.distributed_utils import get_gloo_group
@@ -86,6 +85,7 @@ class WeightUpdater:
             engine_gpu_offsets,
             self.parallel_state,
             self._hf_weight_iterator.placement,
+            self._hf_weight_iterator.weight_update_selector,
         )
         assert self.protocol.is_sender is not None, "connect() must set is_sender"
         self._registered_adapters.clear()
@@ -115,7 +115,9 @@ class WeightUpdater:
         if protocol.use_weight_update_session and driver:
             pause_engines(self.args, protocol.rollout_engines)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
-            begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
+            begin_weight_update(
+                protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
+            )
         dist.barrier(group=get_gloo_group())
 
         checksums = {name: {} for name, _ in adapters} if self.is_lora and self.args.check_lora_weight_equal else None

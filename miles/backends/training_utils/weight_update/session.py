@@ -67,17 +67,6 @@ def set_weight_version(rollout_engines: Sequence[ActorHandle], weight_version: i
     ray.get([engine.update_weight_version.remote(weight_version=str(weight_version)) for engine in rollout_engines])
 
 
-def weight_update_selector(args: Namespace) -> str:
-    """Exclude the draft only when the trainer provably has no MTP block to send it."""
-    if (
-        getattr(args, "sglang_speculative_algorithm", None)
-        and not getattr(args, "mtp_num_layers", None)
-        and getattr(args, "megatron_to_hf_mode", "raw") != "bridge"
-    ):
-        return "target"
-    return "all"
-
-
 def check_weight_sync_results(results: list, *, is_lora: bool) -> None:
     """Raise if any engine reported a failed weight-sync RPC."""
     sync_type = "LoRA" if is_lora else "Base model"
