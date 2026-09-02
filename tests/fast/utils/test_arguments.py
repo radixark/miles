@@ -495,10 +495,12 @@ class TestSnapshotEvalValidation:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
-    def test_snapshot_eval_rejects_load_debug_rollout_data(self):
+    def test_snapshot_eval_rejects_load_debug_rollout_data(self, tmp_path):
         """--load-debug-rollout-data implies --debug-train-only AND loads no rollout
         functions at all, so snapshot eval would crash on eval_generate_rollout=None;
         it must be rejected up front, not at the first eval."""
+        prompts = tmp_path / "eval.jsonl"
+        prompts.write_text("{}\n")
         args = self._parse(
             [
                 "--load-debug-rollout-data",
@@ -508,7 +510,10 @@ class TestSnapshotEvalValidation:
                 "--eval-interval",
                 "5",
                 "--eval-hf-dir",
-                "/tmp/snapshots",
+                str(tmp_path / "snapshots"),
+                "--eval-prompt-data",
+                "dummy",
+                str(prompts),
             ]
         )
         with pytest.raises(AssertionError, match="load-debug-rollout-data"):
