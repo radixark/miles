@@ -285,10 +285,25 @@ def named_params_and_buffers(
     args: Namespace,
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
+    read_tms_backup: bool = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
-        return _named_params_and_buffers_global(args, model)
-    return _named_params_and_buffers_vanilla(model)
+        named_tensors = _named_params_and_buffers_global(args, model)
+    else:
+        named_tensors = _named_params_and_buffers_vanilla(model)
+    if read_tms_backup:
+        named_tensors = ((name, _tms_backup_or_live(tensor)) for name, tensor in named_tensors)
+    return named_tensors
+
+
+def _tms_backup_or_live(tensor: torch.Tensor) -> torch.Tensor:
+    """The memory-saver host backup while the tensor is paused, the live tensor otherwise."""
+    from torch_memory_saver import torch_memory_saver
+
+    # zero_copy aliases the pinned backup; the default clone() would build a second host copy per call
+    if (cpu_tensor := torch_memory_saver.get_cpu_backup(tensor, zero_copy=True)) is not None:
+        return cpu_tensor
+    return tensor
 
 
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
