@@ -49,6 +49,8 @@ def test_qwen36_sft_profile_pins_model_data_and_observability(monkeypatch, tmp_p
         "--expert-model-parallel-size 8",
         "--context-parallel-size 1",
         "--max-tokens-per-gpu 262144",
+        "--recompute-loss-function",
+        "--accumulate-allreduce-grads-in-fp32",
         "--enable-mtp-training",
         "--moe-token-dispatcher-type flex",
         "--observe-training-entropy",
@@ -62,6 +64,7 @@ def test_qwen36_sft_profile_pins_model_data_and_observability(monkeypatch, tmp_p
     )
     for fragment in expected_fragments:
         assert fragment in train_command
+    assert "--grad-reduce-in-bf16" not in train_command
 
 
 def test_qwen36_muon_uses_layerwise_chunked_offload(monkeypatch, tmp_path) -> None:
@@ -75,6 +78,7 @@ def test_qwen36_muon_uses_layerwise_chunked_offload(monkeypatch, tmp_path) -> No
         {
             "model_name": "Qwen3.6-35B-A3B",
             "optimizer": "muon",
+            "grad_reduce_in_bf16": True,
             "muon_momentum": 0.95,
             "muon_extra_scale_factor": 0.2,
             "muon_tp_mode": "blockwise",
@@ -96,6 +100,7 @@ def test_qwen36_muon_uses_layerwise_chunked_offload(monkeypatch, tmp_path) -> No
         "--chunked-optimizer-state-offload",
         "--optimizer-state-offload-fraction 1.0",
         "--optimizer-state-offload-chunk-size-mb 256",
+        "--grad-reduce-in-bf16",
     )
     for fragment in expected_fragments:
         assert fragment in train_command
@@ -103,6 +108,7 @@ def test_qwen36_muon_uses_layerwise_chunked_offload(monkeypatch, tmp_path) -> No
     assert "--optimizer-cpu-offload" not in train_command
     assert "--overlap-cpu-optimizer-d2h-h2d" not in train_command
     assert "--use-precision-aware-optimizer" not in train_command
+    assert "--accumulate-allreduce-grads-in-fp32" not in train_command
 
 
 def test_qwen36_rejects_context_parallelism(monkeypatch, tmp_path: Path) -> None:
