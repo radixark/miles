@@ -90,13 +90,6 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         {"clear_thinking": False},
     ),
     (
-        "glm5.1_fixed_clear_thinking_off",
-        _load_fixed(TITOTokenizerType.GLM51),
-        True,
-        frozenset({"tool", "user"}),
-        {"clear_thinking": False},
-    ),
-    (
         "glm5.2_clear_thinking_off",
         load_hf_chat_template("zai-org/GLM-5.2"),
         True,
@@ -324,7 +317,6 @@ _APPEND_ROLE_FAMILIES = [
     (TITOTokenizerType.QWEN4_EXP, None),
     (TITOTokenizerType.QWENNEXT, None),
     (TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash"),
-    (TITOTokenizerType.GLM51, None),
     (TITOTokenizerType.GLM53, "zai-org/GLM-5.3"),
     (TITOTokenizerType.GLM53, "zai-org/GLM-5.3-Flash"),
     (TITOTokenizerType.KIMI25, None),

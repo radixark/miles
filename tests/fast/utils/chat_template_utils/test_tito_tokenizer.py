@@ -66,7 +66,6 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     DeepSeekV32TITOTokenizer,
     FixedTemplate,
     GLM47TITOTokenizer,
-    GLM51TITOTokenizer,
     GLM53TITOTokenizer,
     InklingTITOTokenizer,
     Qwen3TITOTokenizer,
@@ -121,7 +120,6 @@ def _get_tokenizer(model_id: str, tito_type: TITOTokenizerType | None = None) ->
 _TITO_MODELS: dict[str, tuple[str, type[TITOTokenizer], TITOTokenizerType]] = {
     "qwen3": ("Qwen/Qwen3-4B", Qwen3TITOTokenizer, TITOTokenizerType.QWEN3),
     "glm47": ("zai-org/GLM-4.7-Flash", GLM47TITOTokenizer, TITOTokenizerType.GLM47),
-    "glm51": ("zai-org/GLM-5.1", GLM51TITOTokenizer, TITOTokenizerType.GLM51),
     "glm53": ("zai-org/GLM-5.3", GLM53TITOTokenizer, TITOTokenizerType.GLM53),
     "glm53_flash": ("zai-org/GLM-5.3-Flash", GLM53TITOTokenizer, TITOTokenizerType.GLM53),
 }
@@ -772,7 +770,6 @@ class TestFactory:
             ("qwen4exp", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
-            ("glm51", "zai-org/GLM-5.1", GLM51TITOTokenizer),
             ("glm53", "zai-org/GLM-5.3", GLM53TITOTokenizer),
             ("glm53", "zai-org/GLM-5.3-Flash", GLM53TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
@@ -809,7 +806,6 @@ class TestFactory:
     @pytest.mark.parametrize(
         "type_str, model_id, cls",
         [
-            ("glm51", "zai-org/GLM-5.1", GLM51TITOTokenizer),
             ("glm53", "zai-org/GLM-5.3", GLM53TITOTokenizer),
             ("glm53", "zai-org/GLM-5.3-Flash", GLM53TITOTokenizer),
         ],
@@ -846,7 +842,6 @@ class TestParserBinding:
             (TITOTokenizerType.QWEN4_EXP, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
-            (TITOTokenizerType.GLM51, "glm45", "glm47"),
             (TITOTokenizerType.GLM53, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
             (TITOTokenizerType.KIMI25, None, None),
@@ -873,7 +868,6 @@ class TestParserBinding:
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN38_SMALL) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN4_EXP) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
-        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM51) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM53) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
         # DEFAULT family has no binding for either parser; both come back None.

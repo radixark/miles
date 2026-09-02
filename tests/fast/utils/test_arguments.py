@@ -684,12 +684,6 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
 
-    def test_glm51_resolves_fixed_template(self):
-        args = self._parse(["--use-session-server", "--tito-model", "glm51"])
-        miles_validate_args(args)
-        assert args.chat_template_path.endswith("/glm5.1_fixed.jinja")
-        assert args.apply_chat_template_kwargs == {"clear_thinking": False}
-
     def test_glm53_uses_native_template(self):
         args = self._parse(["--use-session-server", "--tito-model", "glm53"])
         miles_validate_args(args)

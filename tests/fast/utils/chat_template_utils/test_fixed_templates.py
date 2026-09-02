@@ -38,7 +38,6 @@ _EXPECTED_FIXED_TEMPLATES = {
     ),
     TITOTokenizerType.QWENNEXT: ("qwen3_thinking_2507_and_next_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM47: (None, {"clear_thinking": False}),
-    TITOTokenizerType.GLM51: ("glm5.1_fixed.jinja", {"clear_thinking": False}),
     TITOTokenizerType.GLM53: (None, {"clear_thinking": False, "enable_thinking": True}),
     TITOTokenizerType.NEMOTRON3: (None, {"truncate_history_thinking": False}),
     TITOTokenizerType.KIMI25: ("kimi_k25_fixed.jinja", {"preserve_thinking": True}),
@@ -136,35 +135,6 @@ def test_glm53_uses_native_renderer_and_pins_thinking_on():
     assert tokenizer_cls is GLM53TITOTokenizer
     assert tokenizer_cls.FIXED_TEMPLATE.template is None
     assert tokenizer_cls.FIXED_TEMPLATE.extra_kwargs["enable_thinking"] is True
-
-
-@pytest.mark.parametrize(
-    ("enable_thinking", "completion"),
-    [(True, "</think>answer"), (False, "answer")],
-    ids=["thinking_on", "thinking_off"],
-)
-def test_glm51_generation_prefix_matches_rendered_assistant_history(enable_thinking, completion):
-    template_path, kwargs = resolve_fixed_chat_template(TITOTokenizerType.GLM51)
-    assert template_path is not None
-    with open(template_path, encoding="utf-8") as template_file:
-        chat_template = template_file.read()
-    kwargs["enable_thinking"] = enable_thinking
-    user_message = {"role": "user", "content": "question"}
-
-    generation_prefix = apply_chat_template_from_str(
-        chat_template,
-        [user_message],
-        add_generation_prompt=True,
-        **kwargs,
-    )
-    rendered_history = apply_chat_template_from_str(
-        chat_template,
-        [user_message, {"role": "assistant", "content": "answer"}],
-        add_generation_prompt=False,
-        **kwargs,
-    )
-
-    assert generation_prefix + completion == rendered_history
 
 
 @pytest.mark.parametrize(
