@@ -50,6 +50,8 @@ import typer
 import miles.utils.external_utils.command_utils as U
 
 _MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B", "Qwen3.6-35B-A3B"]
+_OPTIMIZERS = Literal["adam", "muon"]
+_MUON_TP_MODES = Literal["blockwise", "duplicated", "distributed"]
 
 
 @dataclass(frozen=True)
@@ -122,6 +124,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     expert_tensor_parallel_size: int = 1
     learning_rate: float = 1e-5
     min_learning_rate: float = 1e-6
+    optimizer: _OPTIMIZERS = "adam"
+    muon_momentum: float = 0.95
+    muon_extra_scale_factor: float = 0.2
+    muon_tp_mode: _MUON_TP_MODES = "blockwise"
+    muon_state_offload_chunk_size_mb: int = 256
     wandb_project: str | None = None
     wandb_run_name: str | None = None
 
@@ -192,6 +199,15 @@ def _validate_parallelism(args: ScriptArgs) -> None:
             "log_probs_chunk_size must be -1 (disabled) or a positive integer, "
             f"got {args.effective_log_probs_chunk_size}"
         )
+    if args.optimizer == "muon":
+        if not 0.0 < args.muon_momentum < 1.0:
+            raise ValueError(f"muon_momentum must be between 0 and 1, got {args.muon_momentum}")
+        if args.muon_extra_scale_factor <= 0.0:
+            raise ValueError(f"muon_extra_scale_factor must be positive, got {args.muon_extra_scale_factor}")
+        if args.muon_state_offload_chunk_size_mb <= 0:
+            raise ValueError(
+                "muon_state_offload_chunk_size_mb must be positive, " f"got {args.muon_state_offload_chunk_size_mb}"
+            )
 
 
 def execute(args: ScriptArgs) -> None:
@@ -242,8 +258,9 @@ def execute(args: ScriptArgs) -> None:
     if args.recipe.recompute_loss_function:
         perf_args += "--recompute-loss-function "
 
+    optimizer_name = "dist_muon" if args.optimizer == "muon" else "adam"
     optimizer_args = (
-        "--optimizer adam "
+        f"--optimizer {optimizer_name} "
         f"--lr {args.learning_rate} "
         "--lr-decay-style cosine "
         f"--min-lr {args.min_learning_rate} "
@@ -252,7 +269,20 @@ def execute(args: ScriptArgs) -> None:
         "--adam-beta1 0.9 "
         f"--adam-beta2 {args.recipe.adam_beta2}"
     )
-    if args.recipe.optimizer_cpu_offload:
+    if args.optimizer == "muon":
+        optimizer_args += (
+            f" --muon-momentum {args.muon_momentum} "
+            "--muon-nesterov "
+            "--muon-scale-mode spectral "
+            f"--muon-extra-scale-factor {args.muon_extra_scale_factor} "
+            "--muon-coefficient-type quintic "
+            "--muon-num-ns-steps 5 "
+            f"--muon-tp-mode {args.muon_tp_mode} "
+            "--chunked-optimizer-state-offload "
+            "--optimizer-state-offload-fraction 1.0 "
+            f"--optimizer-state-offload-chunk-size-mb {args.muon_state_offload_chunk_size_mb}"
+        )
+    elif args.recipe.optimizer_cpu_offload:
         optimizer_args += (
             " --optimizer-cpu-offload " "--overlap-cpu-optimizer-d2h-h2d " "--use-precision-aware-optimizer"
         )
