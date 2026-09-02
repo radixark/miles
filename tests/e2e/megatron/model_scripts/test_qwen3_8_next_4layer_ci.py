@@ -23,7 +23,7 @@ _MODEL_ORG = "CharyZeng"
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_name="Qwen3.8-Flash-Next-4layer",
         num_nodes=1,
         num_gpus_per_node=8,

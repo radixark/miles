@@ -3,7 +3,19 @@ from typing import Any
 
 import pytest
 
+from miles.utils.external_utils.ray_job import _run_launcher_owned_job
 from miles.utils.tracking_utils.base import TrackingBackend, TrackingManager
+
+
+@pytest.fixture
+def unavailable_ray_job_client(commands: list[str], monkeypatch: pytest.MonkeyPatch) -> None:
+    from miles.utils.external_utils import ray_job
+
+    def fail_connect(address: str) -> None:
+        raise RuntimeError("Ray job service unavailable")
+
+    monkeypatch.setattr(ray_job, "_run_launcher_owned_job", _run_launcher_owned_job)
+    monkeypatch.setattr(ray_job, "JobSubmissionClient", fail_connect)
 
 
 @pytest.fixture

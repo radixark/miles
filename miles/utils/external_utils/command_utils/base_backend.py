@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from miles.utils.external_utils.command_utils.common import (
     ArgvManipulator,
@@ -36,6 +36,10 @@ class CommandUtilConfig:
     namespace: str = ""
     helm_values: tuple[str, ...] = ()
     ci_run: bool = False
+
+    @classmethod
+    def from_env(cls, **kwargs: Any) -> CommandUtilConfig:
+        return dataclass_from_env(cls, overrides=kwargs)
 
     def create_backend(self) -> BaseCommandBackend:
         match self.cluster_backend:
