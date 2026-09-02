@@ -128,6 +128,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
         """``connect`` here will:
 

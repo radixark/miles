@@ -106,6 +106,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
         # No NCCL groups: the transport is the shared filesystem. The rollout_engine_lock the
         # NCCL path uses isn't needed either — the engine-side apply is serialized by a per-host
