@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 from typing import Any
 
@@ -25,6 +26,35 @@ from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_fully_async_capacity(args: argparse.Namespace) -> None:
+    """Validate the existing execution and completed-group capacity controls."""
+    concurrent_samples = args.async_max_concurrent_samples
+    if concurrent_samples is not None:
+        if not isinstance(concurrent_samples, int) or isinstance(concurrent_samples, bool) or concurrent_samples <= 0:
+            raise ValueError(f"--async-max-concurrent-samples must be a positive integer, got {concurrent_samples!r}.")
+        if concurrent_samples < args.n_samples_per_prompt:
+            raise ValueError(
+                f"--async-max-concurrent-samples ({concurrent_samples}) must be at least "
+                f"--n-samples-per-prompt ({args.n_samples_per_prompt}): the worker submits whole groups, "
+                "so one group already puts n_samples_per_prompt trajectories in flight."
+            )
+
+    capacity_factor = args.async_data_buffer_capacity_factor
+    if not isinstance(capacity_factor, (int, float)) or isinstance(capacity_factor, bool):
+        raise ValueError(
+            f"--async-data-buffer-capacity-factor must be a positive finite number, got {capacity_factor!r}."
+        )
+    if not math.isfinite(capacity_factor) or capacity_factor <= 0:
+        raise ValueError(
+            f"--async-data-buffer-capacity-factor must be a positive finite number, got {capacity_factor!r}."
+        )
+    if int(capacity_factor * args.rollout_batch_size) < 1:
+        raise ValueError(
+            "--async-data-buffer-capacity-factor must retain at least one completed prompt group "
+            f"for --rollout-batch-size {args.rollout_batch_size}, got {capacity_factor!r}."
+        )
 
 
 def resolve_rollout_function_paths(args) -> tuple[str, str]:
@@ -705,7 +735,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     "Maximum allowed gap between a group's oldest weight version and the current "
                     "engine weight version. Groups exceeding this threshold are recycled back to "
                     "the data buffer instead of being sent to training. Only effective in fully "
-                    "async mode. None (default) disables staleness filtering."
+                    "async mode. None (default) disables numeric staleness filtering but recycles "
+                    "prefetched groups admitted before a recorded weight update. A numeric limit "
+                    "revalidates groups against the manager-published trainer weight version, "
+                    "so groups within the limit may be retained."
                 ),
             )
             parser.add_argument(
@@ -3464,12 +3497,7 @@ def miles_validate_args(args):
             f"chunk={args.offload_train_disk_chunk_mb}MB, moments={args.stream_optimizer_state_moment_dtype}"
         )
 
-    if args.async_max_concurrent_samples is not None:
-        assert args.async_max_concurrent_samples >= args.n_samples_per_prompt, (
-            f"--async-max-concurrent-samples ({args.async_max_concurrent_samples}) must be at least "
-            f"--n-samples-per-prompt ({args.n_samples_per_prompt}): the worker submits whole groups, "
-            f"so one group already puts n_samples_per_prompt trajectories in flight"
-        )
+    _validate_fully_async_capacity(args)
 
     _resolve_rollout_functions(args)
 

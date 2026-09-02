@@ -101,6 +101,7 @@ class TestInit:
 
         assert len(group._cells) == 3
         assert [c.cell_index for c in group._cells] == [0, 1, 2]
+        assert group.role == "actor"
 
     def test_cells_are_allocated_after_init(self):
         group = _make_group(num_cells=2)
@@ -596,6 +597,19 @@ class TestPerCellErrorIsolation:
             for handle in group._cells[cell_idx]._get_actor_handles():
                 calls = ray.get(handle.get_calls.remote())
                 assert any(c[0] == "train" for c in calls)
+
+    async def test_kill_on_failure_false_keeps_failing_cell_alive(self):
+        """Read-only probes such as train batch admission forward kill_on_failure=False."""
+        group = await _make_alive_group(num_cells=2)
+        for handle in group._cells[0]._get_actor_handles():
+            ray.get(handle.set_fail_methods.remote(["train"]))
+
+        cells, outputs = await group._execute_all_alive_and_catch("train", 0, "data", kill_on_failure=False)
+
+        assert [cell.cell_index for cell in cells] == [0, 1]
+        assert isinstance(outputs[0], BaseException)
+        assert group._cells[0].is_alive
+        assert group._cells[1].is_alive
 
     async def test_errored_cell_skipped_in_next_broadcast(self):
         """After marking a cell errored, subsequent broadcasts skip it."""

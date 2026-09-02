@@ -13,6 +13,7 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
+from miles.backends.training_utils.parallel import get_effective_dp_if_initialized, get_parallel_state
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils
@@ -45,7 +46,6 @@ from ..training_utils.loss import (
     get_values,
     log_train_advantage_computation_event,
 )
-from ..training_utils.parallel import get_parallel_state
 from ..training_utils.replay_data import fill_replay_data, register_replay_list_sequential
 from .checkpoint import load_checkpoint
 from .ft.checkpoint_transfer import recv_ckpt
@@ -86,6 +86,9 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
 
 
 class MegatronTrainRayActor(TrainRayActor):
+    def _admission_data_parallel(self) -> tuple[int, int] | None:
+        return get_effective_dp_if_initialized()
+
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
     def init(

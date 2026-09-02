@@ -24,6 +24,15 @@ def get_parallel_state() -> "ParallelState":
     return _parallel_state
 
 
+def get_effective_dp_if_initialized() -> tuple[int, int] | None:
+    """Return the effective data-parallel rank and size, or None before initialization."""
+    state = _parallel_state
+    if state is None:
+        return None
+    effective_dp = state.effective_dp
+    return effective_dp.rank, effective_dp.size
+
+
 class _DPMode(StrEnum):
     INTRA = auto()
     INDEP = auto()

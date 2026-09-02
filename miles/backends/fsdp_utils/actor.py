@@ -20,7 +20,11 @@ from miles.backends.training_utils.log_utils import (
     log_train_step,
 )
 from miles.backends.training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, loss_function
-from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
+from miles.backends.training_utils.parallel import (
+    get_effective_dp_if_initialized,
+    get_parallel_state,
+    set_parallel_state,
+)
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
@@ -58,6 +62,9 @@ class FSDPTrainRayActor(TrainRayActor):
     train / save / update_weights hooks. Weight sync: rank0 gathers the full state_dict and broadcasts
     tensor-by-tensor.
     """
+
+    def _admission_data_parallel(self) -> tuple[int, int] | None:
+        return get_effective_dp_if_initialized()
 
     @with_defer(lambda: Timer().start("train_wait"))
     def init(
