@@ -159,7 +159,10 @@ def _claude_code_kwargs(
 def _claude_code_env(session_url: str, api_key: str) -> dict[str, str]:
     env = {
         "ANTHROPIC_API_KEY": api_key,
-        "ANTHROPIC_BASE_URL": session_url,
+        # The Anthropic SDK appends /v1/messages itself, and the session
+        # server's Anthropic route hangs off the session root -- so hand it
+        # the root, not the /v1-suffixed URL the OpenAI-style clients get.
+        "ANTHROPIC_BASE_URL": session_url.removesuffix("/v1"),
         # Claude Code's server-side Tool Search cannot be forwarded to the backend.
         "ENABLE_TOOL_SEARCH": "false",
     }

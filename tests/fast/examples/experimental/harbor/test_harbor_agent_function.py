@@ -168,8 +168,10 @@ def test_terminus_2_binding_aborts_on_truncation_and_carries_sampling_params(tas
 
 def test_claude_code_binding_uses_anthropic_env(tasks_dir, monkeypatch):
     monkeypatch.setenv("AGENT_MAX_OUTPUT_TOKENS", "4096")
-    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "claude-code"}, "http://s/v1", {})
-    assert cfg.agent.env["ANTHROPIC_BASE_URL"] == "http://s/v1"
+    cfg = haf.build_trial_config({"instance_id": "task-1", "agent_name": "claude-code"}, "http://s/sess/v1", {})
+    # the session root: the SDK appends /v1/messages, the server route is
+    # /sessions/{id}/v1/messages -- a /v1-suffixed base would 404 on /v1/v1/messages
+    assert cfg.agent.env["ANTHROPIC_BASE_URL"] == "http://s/sess"
     assert cfg.agent.env["ENABLE_TOOL_SEARCH"] == "false"
     assert cfg.agent.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "4096"
     assert cfg.agent.kwargs["disallowed_tools"] == "WebSearch,WebFetch"
