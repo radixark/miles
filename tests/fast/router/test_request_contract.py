@@ -5,15 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import MessageValidationError
-from miles.rollout.session.request_contract import (
-    MISSING,
-    RequestFieldContract,
-    RequestValuePolicy,
-    SessionRequestContract,
-)
-from miles.utils.chat_template_utils.request_profile import ModelRequestProfile, RequestIntent
+from miles.rollout.session.request_contract import SessionRequestContract
 from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, TITOTokenizer
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+
+_ABSENT = object()
 
 
 def _contract(
@@ -23,30 +21,25 @@ def _contract(
     **launch_args,
 ) -> SessionRequestContract:
     tito_tokenizer = tito_tokenizer or TITOTokenizer(None, chat_template_kwargs=launch_kwargs)
-    return SessionRequestContract.from_launch_args(SimpleNamespace(**launch_args), tito_tokenizer)
+    args = SimpleNamespace(**launch_args)
+    return SessionRequestContract.from_settings(
+        tito_tokenizer,
+        force_return_routed_experts=getattr(args, "use_rollout_routing_replay", False),
+        force_return_indexer_topk=getattr(args, "use_rollout_indexer_replay", False),
+        lora_path=LORA_ADAPTER_NAME if is_lora_enabled(args) else None,
+    )
 
 
 def _body(**values) -> bytes:
     return json.dumps(values).encode()
 
 
-def test_request_or_default_distinguishes_missing_from_explicit_none():
-    field = RequestFieldContract(
-        "field",
-        RequestValuePolicy.REQUEST_OR_DEFAULT,
-        default="launch",
-    )
-
-    assert field.resolve(MISSING) == "launch"
-    assert field.resolve(None) is None
-
-
-def test_miles_owned_fields_override_client_values_and_unknown_fields_pass_through():
-    resolved = _contract(
+def test_prepare_forces_miles_fields_and_preserves_unknown_fields():
+    prepared = _contract(
         use_rollout_routing_replay=True,
         use_rollout_indexer_replay=True,
         lora_rank=8,
-    ).resolve(
+    ).prepare(
         _body(
             messages=[],
             custom_backend_field="keep",
@@ -59,7 +52,7 @@ def test_miles_owned_fields_override_client_values_and_unknown_fields_pass_throu
         )
     )
 
-    assert resolved.outbound_body == {
+    assert prepared.body == {
         "messages": [],
         "custom_backend_field": "keep",
         "logprobs": True,
@@ -71,44 +64,72 @@ def test_miles_owned_fields_override_client_values_and_unknown_fields_pass_throu
     }
 
 
-def test_client_input_ids_are_rejected_before_derived_ids_are_added():
-    with pytest.raises(MessageValidationError, match="input_ids is owned by Miles"):
-        _contract().resolve(_body(messages=[], input_ids=None))
+def test_disabled_launch_features_preserve_client_fields():
+    prepared = _contract().prepare(
+        _body(
+            messages=[],
+            return_routed_experts=False,
+            return_indexer_topk="client-indexer-value",
+            lora_path="client-adapter",
+        )
+    )
+
+    assert prepared.body["return_routed_experts"] is False
+    assert prepared.body["return_indexer_topk"] == "client-indexer-value"
+    assert prepared.body["lora_path"] == "client-adapter"
+
+
+def test_finalize_silently_overwrites_client_input_ids():
+    contract = _contract()
+    prepared = contract.prepare(_body(messages=[], input_ids=[1, 2, 3]))
+
+    outbound = contract.finalize(prepared, input_ids=[10, 11])
+
+    assert prepared.body["input_ids"] == [1, 2, 3]
+    assert outbound["input_ids"] == [10, 11]
 
 
 def test_request_chat_template_kwargs_override_launch_for_renderer_and_backend():
-    resolved = _contract(launch_kwargs={"enable_thinking": False}).resolve(
+    prepared = _contract(launch_kwargs={"enable_thinking": False}).prepare(
         _body(messages=[], chat_template_kwargs={"enable_thinking": True})
     )
 
-    assert resolved.render_kwargs == {"enable_thinking": True}
-    assert resolved.tito_tokenizer.chat_template_kwargs == resolved.render_kwargs
-    assert resolved.outbound_body["chat_template_kwargs"] == resolved.render_kwargs
+    assert prepared.tito_tokenizer.chat_template_kwargs == {"enable_thinking": True}
+    assert prepared.body["chat_template_kwargs"] == prepared.tito_tokenizer.chat_template_kwargs
 
 
 def test_null_chat_template_kwargs_preserve_launch_defaults():
-    resolved = _contract(launch_kwargs={"enable_thinking": False}).resolve(
+    prepared = _contract(launch_kwargs={"enable_thinking": False}).prepare(
         _body(messages=[], chat_template_kwargs=None)
     )
 
-    assert resolved.render_kwargs == {"enable_thinking": False}
-    assert resolved.outbound_body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert prepared.tito_tokenizer.chat_template_kwargs == {"enable_thinking": False}
+    assert prepared.body["chat_template_kwargs"] == {"enable_thinking": False}
 
 
 def test_non_object_chat_template_kwargs_are_rejected():
     with pytest.raises(MessageValidationError, match="chat_template_kwargs must be an object"):
-        _contract().resolve(_body(messages=[], chat_template_kwargs=[]))
+        _contract().prepare(_body(messages=[], chat_template_kwargs=[]))
 
 
 class _FixedTokenizer(TITOTokenizer):
     FIXED_TEMPLATE = FixedTemplate(extra_kwargs={"preserve_thinking": True})
 
 
-def test_per_request_fixed_template_keys_are_rejected_even_when_equal():
-    contract = _contract(tito_tokenizer=_FixedTokenizer(None))
+def test_matching_fixed_template_kwarg_is_accepted():
+    prepared = _contract(tito_tokenizer=_FixedTokenizer(None)).prepare(
+        _body(messages=[], chat_template_kwargs={"preserve_thinking": True})
+    )
 
-    with pytest.raises(MessageValidationError, match="chat_template_kwargs.preserve_thinking is owned by Miles"):
-        contract.resolve(_body(messages=[], chat_template_kwargs={"preserve_thinking": True}))
+    assert prepared.body["chat_template_kwargs"] == {"preserve_thinking": True}
+    assert prepared.tito_tokenizer.chat_template_kwargs == {"preserve_thinking": True}
+
+
+def test_conflicting_fixed_template_kwarg_is_rejected():
+    with pytest.raises(MessageValidationError, match="conflicts with the value registered"):
+        _contract(tito_tokenizer=_FixedTokenizer(None)).prepare(
+            _body(messages=[], chat_template_kwargs={"preserve_thinking": False})
+        )
 
 
 class _AliasTokenizer(TITOTokenizer):
@@ -117,48 +138,91 @@ class _AliasTokenizer(TITOTokenizer):
 
 def test_existing_chat_template_alias_group_merge_is_preserved():
     tokenizer = _AliasTokenizer(None, chat_template_kwargs={"thinking": False})
-    resolved = _contract(tito_tokenizer=tokenizer).resolve(
+    prepared = _contract(tito_tokenizer=tokenizer).prepare(
         _body(messages=[], chat_template_kwargs={"enable_thinking": True})
     )
 
-    assert resolved.render_kwargs == {"enable_thinking": True}
-
-
-class _TopLevelModeProfile(ModelRequestProfile):
-    def extract(self, request_body):
-        nested = super().extract(request_body)
-        mode = request_body.get("mode", MISSING)
-        request_kwargs = dict(nested.chat_template_kwargs)
-        if mode is not MISSING:
-            request_kwargs.setdefault("mode", mode)
-        return RequestIntent(
-            chat_template_kwargs=request_kwargs,
-            chat_template_kwargs_present=nested.chat_template_kwargs_present or mode is not MISSING,
-            consumed_fields=nested.consumed_fields | {"mode"},
-        )
-
-    def render_fingerprint(self, render_kwargs):
-        return ("mode", render_kwargs.get("mode", "default"))
-
-
-class _ProfiledTokenizer(TITOTokenizer):
-    request_profile = _TopLevelModeProfile()
-
-
-def test_profile_consumes_alias_and_drives_one_canonical_render_result():
-    resolved = _contract(tito_tokenizer=_ProfiledTokenizer(None)).resolve(
-        _body(messages=[], mode="low", chat_template_kwargs={"mode": "medium"})
-    )
-
-    assert "mode" not in resolved.outbound_body
-    assert resolved.render_kwargs == {"mode": "medium"}
-    assert resolved.outbound_body["chat_template_kwargs"] == resolved.render_kwargs
-    assert resolved.render_fingerprint == ("mode", "medium")
+    assert prepared.tito_tokenizer.chat_template_kwargs == {"enable_thinking": True}
+    assert prepared.body["chat_template_kwargs"] == {"enable_thinking": True}
 
 
 def test_stream_intent_is_client_only():
-    resolved = _contract().resolve(_body(messages=[], stream=True, stream_options={"include_usage": True}))
+    prepared = _contract().prepare(_body(messages=[], stream=True, stream_options={"include_usage": True}))
 
-    assert resolved.client_stream is True
-    assert "stream" not in resolved.outbound_body
-    assert "stream_options" not in resolved.outbound_body
+    assert prepared.client_stream is True
+    assert "stream" not in prepared.body
+    assert "stream_options" not in prepared.body
+
+
+def test_empty_body_preserves_existing_empty_object_behavior():
+    assert _contract().prepare(b"").body == {
+        "logprobs": True,
+        "return_meta_info": True,
+        "no_stop_trim": False,
+    }
+
+
+def test_malformed_json_is_a_message_validation_error():
+    with pytest.raises(MessageValidationError, match="invalid JSON body"):
+        _contract().prepare(b"{not json")
+
+
+@pytest.mark.parametrize(
+    ("body", "error_type"),
+    [
+        (b"[]", TypeError),
+        (b"null", AttributeError),
+        (b"1", AttributeError),
+        (b'"text"', AttributeError),
+        (b"\xff", UnicodeDecodeError),
+    ],
+)
+def test_non_object_and_non_utf8_json_keep_existing_error_boundary(body, error_type):
+    with pytest.raises(error_type):
+        _contract().prepare(body)
+
+
+@pytest.mark.parametrize(
+    (
+        "launch_replay",
+        "use_addition_r3",
+        "request_fields",
+        "expected_return_routed_experts",
+        "expected_start_len",
+    ),
+    [
+        (False, False, {}, _ABSENT, _ABSENT),
+        (False, False, {"routed_experts_start_len": 999}, _ABSENT, 999),
+        (False, True, {"return_routed_experts": True, "routed_experts_start_len": 999}, True, 2),
+        (True, True, {"return_routed_experts": False, "routed_experts_start_len": 999}, True, 2),
+        (False, True, {"return_routed_experts": False, "routed_experts_start_len": 999}, False, 999),
+        (False, False, {"return_routed_experts": True, "routed_experts_start_len": 999}, True, 999),
+    ],
+)
+def test_routed_experts_start_len_preserves_existing_conditional_precedence(
+    launch_replay,
+    use_addition_r3,
+    request_fields,
+    expected_return_routed_experts,
+    expected_start_len,
+):
+    contract = _contract(use_rollout_routing_replay=launch_replay)
+    prepared = contract.prepare(_body(messages=[], **request_fields))
+    core = object.__new__(SessionCore)
+    core.request_contract = contract
+    core.use_addition_r3 = use_addition_r3
+
+    outbound = core._finalize_chat_request(
+        prepared,
+        checkpoint_token_ids=[10, 11, 12],
+        prompt_token_ids=[10, 11, 12, 13],
+    )
+
+    if expected_return_routed_experts is _ABSENT:
+        assert "return_routed_experts" not in outbound
+    else:
+        assert outbound["return_routed_experts"] == expected_return_routed_experts
+    if expected_start_len is _ABSENT:
+        assert "routed_experts_start_len" not in outbound
+    else:
+        assert outbound["routed_experts_start_len"] == expected_start_len

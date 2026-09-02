@@ -21,8 +21,6 @@ from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
 from miles.rollout.session.server import SessionServer
-from miles.utils.chat_template_utils.request_profile import ModelRequestProfile, RequestIntent
-from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.misc import function_registry
@@ -31,14 +29,8 @@ from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
 @contextmanager
-def _serve_router(extra_args: dict | None = None, *, request_profile: ModelRequestProfile | None = None):
+def _serve_router(extra_args: dict | None = None):
     """A standalone v2 SessionServer with arg overrides."""
-
-    if request_profile is not None:
-        with patch.object(TITOTokenizer, "request_profile", request_profile):
-            with _serve_router(extra_args) as env:
-                yield env
-        return
 
     def process_fn(prompt: str) -> ProcessResult:
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
@@ -100,6 +92,25 @@ def router_env():
             yield env
 
 
+class TestRequestContract:
+    def test_client_input_ids_are_silently_overwritten(self, router_env):
+        messages = [{"role": "user", "content": "hi"}]
+        control_session = _create_session(router_env.url)
+        assert _post_chat(router_env.url, control_session, {"messages": messages}).status_code == 200
+        control_input_ids = router_env.backend.request_log[-1]["input_ids"]
+
+        client_session = _create_session(router_env.url)
+        response = _post_chat(
+            router_env.url,
+            client_session,
+            {"messages": messages, "input_ids": [1, 2, 3]},
+        )
+
+        assert response.status_code == 200
+        assert router_env.backend.request_log[-1]["input_ids"] == control_input_ids
+        assert router_env.backend.request_log[-1]["input_ids"] != [1, 2, 3]
+
+
 class TestRequestChatTemplateKwargs:
     def test_override_reaches_render_and_backend(self, router_env):
         default_session = _create_session(router_env.url)
@@ -121,73 +132,6 @@ class TestRequestChatTemplateKwargs:
         override_payload = router_env.backend.request_log[-1]
         assert override_payload["chat_template_kwargs"] == {"enable_thinking": True}
         assert override_payload["input_ids"] != default_payload["input_ids"]
-
-
-class _ModeProfile(ModelRequestProfile):
-    def extract(self, request_body):
-        nested = super().extract(request_body)
-        request_kwargs = dict(nested.chat_template_kwargs)
-        if "mode" in request_body:
-            request_kwargs.setdefault("mode", request_body["mode"])
-        return RequestIntent(
-            chat_template_kwargs=request_kwargs,
-            chat_template_kwargs_present=nested.chat_template_kwargs_present or "mode" in request_body,
-            consumed_fields=nested.consumed_fields | {"mode"},
-        )
-
-    def render_fingerprint(self, render_kwargs):
-        return ("mode", render_kwargs.get("mode", "default"))
-
-
-def test_render_fingerprint_mismatch_does_not_reposition_v2_session():
-    with _serve_router(request_profile=_ModeProfile()) as env:
-        session_id = _create_session(env.url)
-        first = _post_chat(
-            env.url,
-            session_id,
-            {"messages": [{"role": "user", "content": "winner"}], "mode": "low"},
-        )
-        assert first.status_code == 200
-        before = requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json()
-        previous_requests = len(env.backend.request_log)
-
-        losing = _post_chat(
-            env.url,
-            session_id,
-            {"messages": [{"role": "user", "content": "different root"}], "mode": "medium"},
-        )
-
-        assert losing.status_code == 400
-        assert "render configuration cannot change within a session" in losing.json()["error"]
-        assert len(env.backend.request_log) == previous_requests
-        assert requests.get(f"{env.url}/sessions/{session_id}", timeout=5.0).json() == before
-
-
-def test_non_200_dispatch_keeps_first_render_fingerprint_pinned():
-    with _serve_router(request_profile=_ModeProfile()) as env:
-        session_id = _create_session(env.url)
-
-        async def reject_request(self, request, compute_fn):
-            return JSONResponse(status_code=429, content={"error": "retry later"})
-
-        with patch.object(MockSGLangServer, "_handle_generate_like_request", new=reject_request):
-            rejected = _post_chat(
-                env.url,
-                session_id,
-                {"messages": [{"role": "user", "content": "first"}], "mode": "low"},
-            )
-        assert rejected.status_code == 429
-        previous_requests = len(env.backend.request_log)
-
-        changed = _post_chat(
-            env.url,
-            session_id,
-            {"messages": [{"role": "user", "content": "retry"}], "mode": "medium"},
-        )
-
-        assert changed.status_code == 400
-        assert "render configuration cannot change within a session" in changed.json()["error"]
-        assert len(env.backend.request_log) == previous_requests
 
 
 def test_lora_adapter_reaches_backend():

@@ -18,7 +18,7 @@ from starlette.responses import Response
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.linear_trajectory import SessionRegistry
-from miles.rollout.session.request_contract import SessionRequestContract
+from miles.rollout.session.request_contract import PreparedChatRequest, SessionRequestContract
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
@@ -26,6 +26,7 @@ from miles.rollout.session.samples.merge import (
     truncate_samples_by_total_tokens,
 )
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -195,29 +196,42 @@ class SessionCore:
         self.registry = registry
         self.args = args
         self.instance_id = session_server_instance_id
-        self.request_contract = SessionRequestContract.from_launch_args(args, registry.tito_tokenizer)
+        self.request_contract = SessionRequestContract.from_settings(
+            registry.tito_tokenizer,
+            force_return_routed_experts=getattr(args, "use_rollout_routing_replay", False),
+            force_return_indexer_topk=getattr(args, "use_rollout_indexer_replay", False),
+            lora_path=LORA_ADAPTER_NAME if is_lora_enabled(args) else None,
+        )
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
 
-    def _maybe_request_addition_r3(
-        self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
-    ) -> None:
-        """Ask SGLang to return only the R3 rows the session has not retained.
+    def _finalize_chat_request(
+        self,
+        prepared_request: PreparedChatRequest,
+        checkpoint_token_ids: list[int],
+        prompt_token_ids: list[int],
+    ) -> dict:
+        """Add session-derived values to the request sent to SGLang.
 
         ``checkpoint_token_ids`` is the stored snapshot this request builds on
         (v1: the post-rollback checkpoint; v2: the positioned attach node). The
         checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
         so every persisted patch starts exactly where the previous one ended.
         """
-        if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
-            return
-        previous_rows = max(0, len(checkpoint_token_ids) - 1)
-        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
-        assert (
-            stable_prefix_tokens >= previous_rows
-        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
-        request_body["routed_experts_start_len"] = previous_rows
+        finalize_kwargs = {}
+        if self.use_addition_r3 and prepared_request.body.get("return_routed_experts"):
+            previous_rows = max(0, len(checkpoint_token_ids) - 1)
+            stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
+            assert (
+                stable_prefix_tokens >= previous_rows
+            ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+            finalize_kwargs["routed_experts_start_len"] = previous_rows
+        return self.request_contract.finalize(
+            prepared_request,
+            input_ids=prompt_token_ids,
+            **finalize_kwargs,
+        )
 
     async def health(self) -> Response:
         body = {"status": "ok"}
@@ -317,25 +331,22 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            resolved_request = self.request_contract.resolve(body)
-            request_body = resolved_request.outbound_body
-            client_stream = resolved_request.client_stream
-            tito_tokenizer = resolved_request.tito_tokenizer
+            prepared_request = self.request_contract.prepare(body)
+            client_stream = prepared_request.client_stream
+            tito_tokenizer = prepared_request.tito_tokenizer
 
-            request_messages = request_body.get("messages", [])
+            request_messages = prepared_request.body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
-                tools=request_body.get("tools"),
+                tools=prepared_request.body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
-                render_fingerprint=resolved_request.render_fingerprint,
                 message_matcher=self.registry.message_matcher,
             )
-            request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             # prepare_pretokenized applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
-            self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            request_body = self._finalize_chat_request(prepared_request, session.token_ids, prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
             expected_num_assistant = session.num_assistant

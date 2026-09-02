@@ -1,12 +1,10 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import Hashable
 from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
-from miles.rollout.session.request_contract import validate_session_render_fingerprint
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
@@ -79,7 +77,6 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
-    render_fingerprint: Hashable | None = None
 
     @property
     def token_ids(self) -> list[int]:
@@ -95,7 +92,6 @@ class LinearTrajectory:
         tools: list[dict[str, Any]] | None = None,
         *,
         tito_tokenizer: TITOTokenizer,
-        render_fingerprint: Hashable | None = None,
         message_matcher: SessionMessageMatcher | None = None,
     ) -> list[int]:
         """Build the full prompt input_ids for *request_messages*.
@@ -110,7 +106,6 @@ class LinearTrajectory:
 
         Must be called under ``self.lock``.
         """
-        validate_session_render_fingerprint(self.render_fingerprint, render_fingerprint)
         matcher = message_matcher if message_matcher is not None else strict_message_matches
 
         # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
@@ -118,35 +113,31 @@ class LinearTrajectory:
         self._try_detect_and_rollback_to_assistant_checkpoint(request_messages, matcher)
 
         if not self.token_ids:
-            prompt_token_ids = tito_tokenizer.apply_chat_template(
+            return tito_tokenizer.apply_chat_template(
                 request_messages,
                 tools=tools,
                 add_generation_prompt=True,
                 tokenize=True,
             )
-        else:
-            # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
-            #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
-            try:
-                assert_messages_append_only_with_allowed_role(
-                    self.messages, request_messages, tito_tokenizer.allowed_append_roles, message_matcher=matcher
-                )
-            except ValueError as e:
-                raise MessageValidationError(
-                    f"{e}; the selected TITO fixed template does not support appending this role"
-                ) from e
 
-            effective_messages = self.messages + request_messages[len(self.messages) :]
-            prompt_token_ids = tito_tokenizer.merge_tokens(
-                old_messages=self.messages,
-                new_messages=effective_messages,
-                pretokenized_token_ids=self.token_ids,
-                tools=tools,
+        # 2. Confirm the (possibly rolled-back) stored messages are a prefix of request,
+        #    and that each appended message role is in tito_tokenizer.allowed_append_roles.
+        try:
+            assert_messages_append_only_with_allowed_role(
+                self.messages, request_messages, tito_tokenizer.allowed_append_roles, message_matcher=matcher
             )
+        except ValueError as e:
+            raise MessageValidationError(
+                f"{e}; the selected TITO fixed template does not support appending this role"
+            ) from e
 
-        if self.render_fingerprint is None:
-            self.render_fingerprint = render_fingerprint
-        return prompt_token_ids
+        effective_messages = self.messages + request_messages[len(self.messages) :]
+        return tito_tokenizer.merge_tokens(
+            old_messages=self.messages,
+            new_messages=effective_messages,
+            pretokenized_token_ids=self.token_ids,
+            tools=tools,
+        )
 
     def update_pretokenized_state(
         self,
