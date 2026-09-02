@@ -354,10 +354,13 @@ class MegatronTrainRayActor(TrainRayActor):
 
         tag = "default" if lora_rollout_enabled(self.args) else None
         torch_memory_saver.resume(tag=tag)
+        # The flag tracks the tensor state from here on: if the rest of the wake
+        # fails, the next sleep() must really pause instead of no-op'ing while
+        # the memory is resident.
+        self._asleep = False
 
         clear_memory()
         reload_process_groups()
-        self._asleep = False
         print_memory("after wake_up model")
 
     @property
@@ -751,7 +754,17 @@ class MegatronTrainRayActor(TrainRayActor):
         # for the export and restore the offloaded state afterwards.
         was_asleep = self._asleep
         if was_asleep:
-            self.wake_up()
+            try:
+                self.wake_up()
+            except Exception:
+                # If the tensors resumed before the failure, wake_up has already
+                # flagged the actor awake and its not-asleep path repairs the
+                # process groups; if the resume itself failed, the actor is
+                # still consistently asleep. Either way the export cannot run.
+                logger.exception("wake_up before HF export failed; repairing state before propagating")
+                if not self._asleep:
+                    self.wake_up()
+                raise
         try:
             save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
         finally:
