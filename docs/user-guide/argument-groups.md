@@ -43,7 +43,7 @@ Common entries:
 | Tokenizer/model dimensions | `--seq-length`, `--max-position-embeddings`, `--vocab-size` |
 | Rotary and attention variants | `--rotary-base`, `--rotary-percent`, `--kv-channels` |
 | MoE architecture | `--num-experts`, `--moe-router-topk`, `--moe-grouped-gemm` |
-| Plugin specs | `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` |
+| Plugin specs | `--spec miles_plugins.models.glm5.glm5 get_glm5_spec` |
 
 Keep these values aligned with the checkpoint's `config.json`. If one checkpoint in a
 family changes rotary base, vocab padding, or normalization epsilon, override the

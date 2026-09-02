@@ -35,7 +35,6 @@ DATA_DIR="${DATA_DIR}" envsubst < "${EXAMPLE_DIR}/eval_dapo_heldout.yaml" > "${E
 
 # Qwen3.5-35B-A3B architecture (no scripts/models/*.sh ships for it).
 MODEL_ARGS=(
-   --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
    --disable-bias-linear --qk-layernorm --group-query-attention
    --num-attention-heads 16 --num-query-groups 2 --kv-channels 256
    --num-layers 40 --hidden-size 2048 --ffn-hidden-size 512

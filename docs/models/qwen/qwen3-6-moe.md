@@ -13,8 +13,8 @@ reaches 262 K and extends past 1 M; weights are Apache 2.0 in BF16 and FP8.
 Qwen3.6 also ships native Multi-Token Prediction for speculative decoding,
 which this recipe trains and serves via EAGLE.
 
-In miles, Qwen3.6-35B-A3B reuses the Qwen3.5 spec
-(`miles_plugins.models.qwen3_5.get_qwen3_5_spec`) and bakes in MTP training
+In miles, Qwen3.6-35B-A3B reuses the Qwen3.5 implementation
+(`miles_plugins.models.qwen3_5`, the family's default `--model-impl miles`) and bakes in MTP training
 plus a shared-expert gate.
 
 **Key highlights:**
@@ -139,7 +139,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 
 From `scripts/models/qwen3.6-35B-A3B.py` and `scripts/run_qwen3_6_35b_a3b_mtp.py`:
 
-- `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — Qwen3.6 reuses the Qwen3.5 spec.
+- `--model-impl` defaults to `miles` — Qwen3.6 reuses the Qwen3.5 implementation; `--model-impl megatron` trains megatron-core's GDN through Megatron-Bridge instead.
 - 256 experts, `--moe-router-topk 8`, `--moe-router-score-function softmax`.
 - `--moe-shared-expert-gate` and `--moe-shared-expert-intermediate-size 512`.
 - Megatron-side dispatcher overridden to `--moe-token-dispatcher-type flex` at runtime; conversion uses `alltoall`.

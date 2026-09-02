@@ -22,6 +22,8 @@ def apply_dsv4_model_impl(args: Namespace) -> None:
     Must run before ``core_transformer_config_from_args``: the attention variant decides
     which post-init contract Megatron enforces on the config.
     """
+    if args.model_impl is None:
+        args.model_impl = "megatron"
     _validate_impl(args)
     # Both implementations take their hyper-connections from Megatron's own module.
     args.enable_hyper_connections = True

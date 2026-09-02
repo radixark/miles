@@ -13,8 +13,8 @@ multimodal text / image / video input. Context windows reach 262 K and
 extend past 1 M. Weights are Apache 2.0, available in BF16 and FP8.
 
 The dense **Qwen3.6-27B** is the single-GPU-friendly variant. In miles it
-reuses the Qwen3.5 Megatron spec
-(`miles_plugins.models.qwen3_5.get_qwen3_5_spec`); architecturally it's a
+reuses the Qwen3.5 implementation
+(`miles_plugins.models.qwen3_5`, the family's default `--model-impl miles`); architecturally it's a
 wider, deeper Qwen3.5 with the gated-attention design preserved.
 
 **Key highlights:**
@@ -111,7 +111,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 
 From `scripts/models/qwen3.6-27B.py`:
 
-- `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — Qwen3.6 reuses the Qwen3.5 spec (gated attention, FP32 `A_log`).
+- `--model-impl` defaults to `miles` — Qwen3.6 reuses the Qwen3.5 implementation (gated attention, FP32 `A_log`).
 - `--rotary-base 10000000`, `--rotary-percent 0.25`.
 - `--vocab-size 248320`.
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.

@@ -93,7 +93,7 @@ Only the 27 B recipe enables CPU Adam (`--optimizer-cpu-offload --overlap-cpu-op
 
 From `scripts/models/qwen3.5-4B.py` (and analogous configs for 9 B / 27 B):
 
-- `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — attention-output gate, `A_log` parameter handling.
+- `--model-impl` defaults to `miles` for the Qwen3.5 family — the GDN implementation in `miles_plugins.models.qwen3_5` (attention-output gate, `A_log` parameter handling).
 - `--rotary-base 10000000`, `--rotary-percent 0.25`.
 - `--vocab-size 248320`.
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.

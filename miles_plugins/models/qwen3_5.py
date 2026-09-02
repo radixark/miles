@@ -22,6 +22,24 @@ from .hf_attention import HuggingfaceAttention
 from .qwen_gdn_backend import get_chunk_gated_delta_rule
 
 
+QWEN3_5_SPEC = ["miles_plugins.models.qwen3_5", "get_qwen3_5_spec"]
+
+
+def apply_qwen3_5_model_impl(args, *, is_bridge: bool) -> None:
+    """Resolve --model-impl: miles selects this plugin's spec, megatron the bridge-built GatedDeltaNet."""
+    if args.model_impl is None:
+        args.model_impl = "megatron" if is_bridge else "miles"
+    if args.model_impl == "miles":
+        if args.spec is None:
+            args.spec = QWEN3_5_SPEC
+    # raw mode builds layers through get_gpt_decoder_block_spec, which rejects attention variants
+    elif not is_bridge:
+        raise ValueError(
+            "--model-impl megatron for Qwen3.5 is the bridge-built megatron-core GatedDeltaNet: "
+            "add --megatron-to-hf-mode bridge, or use --model-impl miles"
+        )
+
+
 def _get_text_config(hf_config):
     """Extract text config from a VLM config if needed."""
     if hasattr(hf_config, "text_config"):
