@@ -126,6 +126,12 @@ parallelism in the current Megatron backend, so the launcher rejects `CP>1`.
 On one 8-GPU node, `--tensor-model-parallel-size 8 --context-parallel-size 1`
 keeps all eight GPUs in one model replica while retaining `EP=8`.
 
+The launcher accumulates and reduces gradients in FP32 by default. For
+memory-constrained Muon runs, `--grad-reduce-in-bf16` switches only the gradient
+buffers and their reduction to BF16. It does not change logits or loss
+precision. This saves device memory at the cost of lower-precision gradient
+accumulation and communication.
+
 This is pure SFT: no SGLang rollout engine is started.
 
 ### 4.2 RL + MTP quick start

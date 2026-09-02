@@ -125,6 +125,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     learning_rate: float = 1e-5
     min_learning_rate: float = 1e-6
     optimizer: _OPTIMIZERS = "adam"
+    grad_reduce_in_bf16: bool = False
     muon_momentum: float = 0.95
     muon_extra_scale_factor: float = 0.2
     muon_tp_mode: _MUON_TP_MODES = "blockwise"
@@ -293,12 +294,15 @@ def execute(args: ScriptArgs) -> None:
     if args.recipe.moe_token_dispatcher_type is not None:
         model_feature_args += f"--moe-token-dispatcher-type {args.recipe.moe_token_dispatcher_type} "
 
+    gradient_reduction_args = (
+        "--grad-reduce-in-bf16 " if args.grad_reduce_in_bf16 else "--accumulate-allreduce-grads-in-fp32 "
+    )
     misc_args = (
         # default dropout in megatron is 0.1
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
         # should be good for model performance
-        "--accumulate-allreduce-grads-in-fp32 "
+        f"{gradient_reduction_args}"
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         f"--actor-num-nodes {args.recipe.actor_num_nodes} "
