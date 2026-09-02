@@ -22,11 +22,10 @@ logger = logging.getLogger(__name__)
 class AtomicUpdateGroup:
     key: str
     suffixes: tuple[str, ...]
-    optional: bool = False
 
 
 def get_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
-    model_groups = _get_model_atomic_update_groups(args, model_name)
+    model_groups = _get_model_atomic_update_groups(model_name)
     if model_groups:
         return model_groups
     return _get_q_lora_atomic_update_groups(args)
@@ -47,12 +46,8 @@ def _get_q_lora_atomic_update_groups(args) -> list[AtomicUpdateGroup]:
     ]
 
 
-def _get_model_atomic_update_groups(args, model_name) -> list[AtomicUpdateGroup]:
+def _get_model_atomic_update_groups(model_name) -> list[AtomicUpdateGroup]:
     model_name = model_name.lower()
-    if "inkling" in model_name:
-        from ..megatron_to_hf.inkling import get_inkling_atomic_update_groups
-
-        return get_inkling_atomic_update_groups(args)
     if "deepseekv4" in model_name:
         from ..megatron_to_hf.deepseekv4 import get_deepseek_v4_atomic_update_groups
 
@@ -108,7 +103,7 @@ def get_named_update_units(param_names: Sequence[str], atomic_update_groups) -> 
 
     for group in atomic_update_groups:
         assert (
-            group.optional or group.key in matched_group_keys
+            group.key in matched_group_keys
         ), f"Atomic update group {group.key} references no params matching suffixes {group.suffixes}"
 
     for (prefix, key), names in pending_groups.items():
