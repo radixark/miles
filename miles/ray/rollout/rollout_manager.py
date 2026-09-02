@@ -186,6 +186,18 @@ class RolloutManager:
         self._health_monitoring_resume()
 
         if self.args.eval_uses_snapshots:
+            if hf_dir is None:
+                # Bare eval calls come from the sync driver (train.py), which has
+                # no snapshot exporter. Reuse the periodic --save-hf checkpoint,
+                # like EvalDispatcher's no-export branch; a missing or incomplete
+                # snapshot then degrades to a skipped point in _eval_checkpoint.
+                if self.args.save_hf is None:
+                    logger.warning(
+                        f"eval {rollout_id}: no snapshot dir was supplied and --save-hf is unset; "
+                        "--eval-hf-dir exports need the async driver's EvalDispatcher. Skipping."
+                    )
+                    return self.report_eval_skip(rollout_id, "no_snapshot")
+                hf_dir = self.args.save_hf.format(rollout_id=rollout_id)
             return await self._eval_checkpoint(rollout_id, hf_dir, export_time_seconds, require_marker)
 
         with timer("eval_rollout"):

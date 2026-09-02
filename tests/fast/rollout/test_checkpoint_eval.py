@@ -114,6 +114,49 @@ async def test_eval_checkpoint_threads_input_and_logs(controller_env, tmp_path):
     assert extra["eval/export_time_seconds"] == 1.5
 
 
+async def test_bare_eval_reuses_save_hf_snapshot(controller_env, tmp_path):
+    """train.py calls eval() with no hf_dir; under snapshot eval the manager
+    reuses the periodic --save-hf checkpoint, mirroring EvalDispatcher's
+    no-export branch, instead of crashing on the hf_dir assert."""
+    snapshot = tmp_path / "hf_5"
+    snapshot.mkdir()
+    (snapshot / ".complete").touch()
+
+    fn = CheckpointFnStub()
+    args = make_args(
+        debug_train_only=True,
+        hf_checkpoint="/base",
+        eval_hf_dir=None,
+        save_hf=str(tmp_path / "hf_{rollout_id}"),
+        eval_keep_snapshots=2,
+    )
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5)
+
+    assert len(fn.inputs) == 1
+    assert fn.inputs[0].hf_dir == str(snapshot)
+
+
+async def test_bare_eval_without_save_hf_skips(controller_env, tmp_path):
+    """--eval-hf-dir exports need the async driver's dispatcher; a bare eval
+    call cannot export, so it degrades to a skipped point rather than a crash."""
+    fn = CheckpointFnStub()
+    args = make_args(
+        debug_train_only=True,
+        hf_checkpoint="/base",
+        eval_hf_dir=str(tmp_path),
+        save_hf=None,
+        eval_keep_snapshots=2,
+    )
+    mgr = make_manager(args, eval_fn=fn)
+
+    await mgr.eval(5)
+
+    assert fn.inputs == []
+    assert controller_env.logged["skip"] == (5, "no_snapshot")
+
+
 async def test_debug_train_only_runs_snapshot_eval(controller_env, tmp_path):
     """Pure SFT skips shared-engine eval, but a separately pinned snapshot is valid."""
     snapshot = tmp_path / "step_5"
