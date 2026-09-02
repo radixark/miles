@@ -746,7 +746,17 @@ class MegatronTrainRayActor(TrainRayActor):
         self._heartbeat.bump()
         from miles.backends.megatron_utils.hf_export import save_hf_model
 
-        save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+        # The sync driver dispatches snapshot evals after offload_train() put the
+        # model to sleep; exporting paused tensors would read freed storage. Wake
+        # for the export and restore the offloaded state afterwards.
+        was_asleep = self._asleep
+        if was_asleep:
+            self.wake_up()
+        try:
+            save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
+        finally:
+            if was_asleep:
+                self.sleep()
 
     @with_logs
     @timer
