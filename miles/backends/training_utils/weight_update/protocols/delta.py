@@ -175,7 +175,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
 
         read_hf = None
         local_error: ValueError | None = None
-        if self._is_source:
+        if self.is_sender:
             try:
                 read_hf = make_tensor_reader(self.args.hf_checkpoint)  # index the HF headers once
             except ValueError as error:
