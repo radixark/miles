@@ -338,7 +338,7 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
-    def _alloc(start_port: int = 15000, count: int = 1):
+    async def _alloc(start_port: int = 15000, count: int = 1):
         port = max(e._port_cursor, start_port)
         e._port_cursor = port + count
         return port
@@ -349,12 +349,3 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
     e._get_free_port_block.remote.side_effect = _alloc
     e._get_node_ip.remote.side_effect = _probe
     return e
-
-
-@pytest.fixture
-def patch_ray_get(monkeypatch):
-    """Make ``ray.get(remote_call(...))`` return the MagicMock's value directly,
-    so allocator tests don't need a real Ray cluster."""
-    import miles.utils.workers.addr_allocator as mod
-
-    monkeypatch.setattr(mod.ray, "get", lambda x: x)

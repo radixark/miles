@@ -17,13 +17,11 @@ from miles.utils.workers.worker_spec import CommandWorkerSpec, LaunchCommandCont
 @pytest.fixture
 def fake_ray_cluster(monkeypatch: pytest.MonkeyPatch) -> FakeRayCluster:
     """In-process stand-in for Ray, letting the manager allocate real addresses without a cluster."""
-    import miles.utils.workers.addr_allocator as addr_allocator_mod
     import miles.utils.workers.ray_worker_manager as ray_worker_manager_mod
 
     cluster = FakeRayCluster()
     fake_ray = FakeRayModule(cluster=cluster)
     monkeypatch.setattr(ray_worker_manager_mod, "ray", fake_ray)
-    monkeypatch.setattr(addr_allocator_mod, "ray", fake_ray)
     return cluster
 
 
