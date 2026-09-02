@@ -375,10 +375,11 @@ class MegatronTrainRayActor(TrainRayActor):
     def _weight_sync_reads_tms_backup(self) -> bool:
         """Under colocated LoRA the frozen base already has a memory-saver host backup; a
         pinned "actor" copy of it would duplicate the whole base per rank. Model switching
-        still needs the real backups."""
+        still needs the real backups, and a disk offload target leaves no host backup to read."""
         return (
             self.args.colocate
             and is_lora_enabled(self.args)
+            and self.args.offload_train_target == "cpu"
             and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
         )
 
