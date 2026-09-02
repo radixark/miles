@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 from tests.e2e.ft.conftest_ft.execution import DEFAULT_TRAIN_SCRIPT
 
+from miles.utils.test_utils import ft_test_actions
 from miles.utils.test_utils.ft_test_actions import (
     _ACTOR_ACTIONS,
     _CONTROLLER_ACTIONS,
@@ -18,6 +19,7 @@ from miles.utils.test_utils.ft_test_actions import (
     FTTestActionControllerExecutor,
     FTTestActionOrchestrationExecutor,
     _load_actions,
+    compute_ft_test_actions_arg,
     read_frozen_rollout_id,
     read_ft_test_actions,
     write_frozen_sentinel,
@@ -25,6 +27,28 @@ from miles.utils.test_utils.ft_test_actions import (
 )
 
 _POOL_ID = "trainer-engine-actor"
+
+
+class TestComputeFTTestActionsArg:
+    def test_the_launch_fragment_round_trips_the_complete_action_plan(self) -> None:
+        """The launch fragment preserves its flag, quoted action plan, and trailing separator."""
+        actions: list[dict[str, object]] = [
+            {"at_rollout": 2, "action": "stop_cell_at_end", "cell_id": "trainer-engine-actor-0"},
+            {
+                "at_rollout": 5,
+                "action": "crash_before_allreduce",
+                "cell_id": "trainer-engine-actor-1",
+                "rank": 3,
+                "attempt": 1,
+            },
+        ]
+
+        fragment = compute_ft_test_actions_arg(actions)
+
+        prefix = "--ci-ft-test-actions '"
+        assert fragment.startswith(prefix)
+        assert fragment.endswith("' ")
+        assert json.loads(fragment[len(prefix) : -2]) == actions
 
 
 def _args(ci_ft_test_actions: object = None, **overrides: object) -> SimpleNamespace:
@@ -168,6 +192,21 @@ class FakeCellOperations:
 
 
 class TestRunAfterStep:
+    async def test_start_cell_that_is_never_observed_fails_at_the_bounded_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A resumed cell that stays absent raises TimeoutError when the observation deadline expires."""
+        operations = FakeCellOperations()
+        controller = FakeController(num_cells=1, observed_after_reads=sys.maxsize)
+        action = FTTestAction(at_rollout=3, action="start_cell_at_end", cell_id="trainer-engine-actor-0")
+        executor = FTTestActionControllerExecutor(actions=[action], controller=controller, cell_operations=operations)
+        monkeypatch.setattr(ft_test_actions, "_CELL_RESUME_OBSERVED_TIMEOUT_SECONDS", 0.0)
+
+        with pytest.raises(TimeoutError, match="was resumed but is not observed yet"):
+            await executor.run_after_step(3)
+
+        assert operations.started == ["trainer-engine-actor-0"]
+
     @pytest.mark.asyncio
     async def test_stop_cell_fires_on_matching_rollout(self):
         """stop_cell_at_end suspends the action's cell_id through the backend's operations."""
