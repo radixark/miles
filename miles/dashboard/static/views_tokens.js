@@ -30,13 +30,28 @@ function colorFor(stat, values) {
   return (v) => sequentialColor(((spec.negate ? -v : v) - lo) / Math.max(hi - lo, 1e-9));
 }
 
-async function groupNavPanel(rolloutId, sampleIndex, evaluation) {
+function sampleHash(rolloutId, row, evaluation) {
+  const params = new URLSearchParams();
+  if (row.sample_occurrence) params.set("occurrence", String(row.sample_occurrence));
+  if (evaluation) params.set("eval", "1");
+  const query = params.toString();
+  return `#/rollout/${rolloutId}/sample/${row.sample_index}${query ? `?${query}` : ""}`;
+}
+
+async function groupNavPanel(rolloutId, sampleIndex, sampleOccurrence, evaluation) {
   const { rows } = await api(`/api/rollout/${rolloutId}/summary`, { eval: evaluation });
-  const groupIndex = rows.find((r) => r.sample_index === sampleIndex)?.group_index;
-  const siblings = groupIndex == null ? [] : rows.filter((r) => r.group_index === groupIndex).map((r) => r.sample_index).sort((a, b) => a - b);
+  const selected = rows.find(
+    (row) => row.sample_index === sampleIndex && row.sample_occurrence === sampleOccurrence,
+  );
+  const groupIndex = selected?.group_index;
+  const siblings = groupIndex == null
+    ? []
+    : rows
+      .filter((row) => row.group_index === groupIndex)
+      .sort((a, b) => a.sample_index - b.sample_index || a.sample_occurrence - b.sample_occurrence);
   if (siblings.length < 2) return null; // no group, or a lone sample: nothing to navigate
-  const position = siblings.indexOf(sampleIndex);
-  const goto = (idx) => (location.hash = `#/rollout/${rolloutId}/sample/${idx}${evaluation ? "?eval=1" : ""}`);
+  const position = siblings.indexOf(selected);
+  const goto = (row) => (location.hash = sampleHash(rolloutId, row, evaluation));
   return el("div", { class: "controls" }, [
     el("button", { onclick: () => position > 0 && goto(siblings[position - 1]) }, ["◀ Prev in group"]),
     el("span", {}, [`Group ${groupIndex} · sample ${position + 1}/${siblings.length}`]),
@@ -45,12 +60,12 @@ async function groupNavPanel(rolloutId, sampleIndex, evaluation) {
 }
 
 export async function renderTokens(view, meta, route) {
-  const { rolloutId, sampleIndex, evaluation } = route;
+  const { rolloutId, sampleIndex, sampleOccurrence, evaluation } = route;
   view.replaceChildren(el("p", { class: "muted" }, ["loading sample…"]));
 
   // group nav reuses the (parquet-cached, cheap) summary rows already fetched
   // for the step's samples tab — no detokenize needed to jump between siblings
-  const groupNav = await groupNavPanel(rolloutId, sampleIndex, evaluation);
+  const groupNav = await groupNavPanel(rolloutId, sampleIndex, sampleOccurrence, evaluation);
 
   // cheap panels first: the lifecycle lane (telemetry) and the conversation
   // (trajectory sidecar); the token machinery costs a full dump load plus
@@ -76,7 +91,10 @@ export async function renderTokens(view, meta, route) {
 
   let conversationRow = null;
   try {
-    conversationRow = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/messages`, { eval: evaluation });
+    conversationRow = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/messages`, {
+      occurrence: sampleOccurrence,
+      eval: evaluation,
+    });
   } catch (err) {
     if (!String(err).includes("404")) throw err; // 404 = run recorded no conversation
   }
@@ -91,7 +109,7 @@ export async function renderTokens(view, meta, route) {
         "loading tokens… the first open of a step detokenizes its whole dump and can take several minutes",
       ]),
     );
-    loadTokensPane(tokensPane, rolloutId, sampleIndex, evaluation).catch((err) => {
+    loadTokensPane(tokensPane, rolloutId, sampleIndex, sampleOccurrence, evaluation).catch((err) => {
       tokensPane.replaceChildren(el("div", { class: "error" }, [String(err)]));
     });
   };
@@ -136,11 +154,14 @@ export async function renderTokens(view, meta, route) {
   select("conversation");
 }
 
-async function loadTokensPane(root, rolloutId, sampleIndex, evaluation) {
+async function loadTokensPane(root, rolloutId, sampleIndex, sampleOccurrence, evaluation) {
   // one full-range read feeds both panes. The chart always spanned the whole
   // response, so the windowed strip fetch this replaces was re-requesting a
   // slice of bytes the server was already sending.
-  const payload = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, { eval: evaluation });
+  const payload = await api(`/api/rollout/${rolloutId}/sample/${sampleIndex}/tokens`, {
+    occurrence: sampleOccurrence,
+    eval: evaluation,
+  });
   const available = Object.keys(STATS).filter((s) => payload[s] !== null && payload[s] !== undefined);
 
   let stat = "imp_ratio";
