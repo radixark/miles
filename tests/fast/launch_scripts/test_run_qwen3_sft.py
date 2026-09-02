@@ -67,6 +67,47 @@ def test_qwen36_sft_profile_pins_model_data_and_observability(monkeypatch, tmp_p
         assert fragment in train_command
 
 
+def test_qwen36_muon_uses_layerwise_chunked_offload(monkeypatch, tmp_path) -> None:
+    freeze_environment(monkeypatch)
+    recording = install_command_recorder(monkeypatch)
+    module = import_launch_script(REPO_ROOT / "scripts/run_qwen3_sft.py")
+
+    call_entrypoint(
+        module,
+        "execute",
+        {
+            "model_name": "Qwen3.6-35B-A3B",
+            "optimizer": "muon",
+            "muon_momentum": 0.95,
+            "muon_extra_scale_factor": 0.2,
+            "muon_tp_mode": "blockwise",
+            "muon_state_offload_chunk_size_mb": 256,
+        },
+        sandbox=tmp_path,
+    )
+
+    train_command = recording.commands[-1]
+    expected_fragments = (
+        "--optimizer dist_muon",
+        "--muon-momentum 0.95",
+        "--muon-nesterov",
+        "--muon-scale-mode spectral",
+        "--muon-extra-scale-factor 0.2",
+        "--muon-coefficient-type quintic",
+        "--muon-num-ns-steps 5",
+        "--muon-tp-mode blockwise",
+        "--chunked-optimizer-state-offload",
+        "--optimizer-state-offload-fraction 1.0",
+        "--optimizer-state-offload-chunk-size-mb 256",
+    )
+    for fragment in expected_fragments:
+        assert fragment in train_command
+
+    assert "--optimizer-cpu-offload" not in train_command
+    assert "--overlap-cpu-optimizer-d2h-h2d" not in train_command
+    assert "--use-precision-aware-optimizer" not in train_command
+
+
 def test_qwen36_rejects_context_parallelism(monkeypatch, tmp_path: Path) -> None:
     freeze_environment(monkeypatch)
     install_command_recorder(monkeypatch)

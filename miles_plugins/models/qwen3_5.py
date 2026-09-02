@@ -67,6 +67,11 @@ class Qwen3_5GatedDeltaNet(nn.Module):
         projection_size_qkv = self.key_dim * 2 + self.value_dim
         projection_size_z = self.value_dim
         self.in_proj_qkv = nn.Linear(self.hidden_size, projection_size_qkv, bias=False)
+        # Megatron's Muon optimizer splits packed QKV matrices before
+        # orthogonalization. This custom projection does not use Megatron's
+        # usual ``linear_qkv`` name, so attach the metadata explicitly.
+        self.in_proj_qkv.weight.is_qkv = True
+        self.in_proj_qkv.weight.qkv_split_shapes = (self.key_dim, self.key_dim, self.value_dim)
         self.in_proj_z = nn.Linear(self.hidden_size, projection_size_z, bias=False)
         self.in_proj_b = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
         self.in_proj_a = nn.Linear(self.hidden_size, self.num_v_heads, bias=False)
