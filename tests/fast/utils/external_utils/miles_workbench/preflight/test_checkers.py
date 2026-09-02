@@ -8,6 +8,9 @@ from miles.utils.external_utils.miles_workbench.preflight import checkers as che
 from miles.utils.external_utils.miles_workbench.preflight.checkers import (
     BinaryPresenceChecker,
     ClusterReachableChecker,
+    LeaderWorkerSetApiChecker,
+    LeaderWorkerSetControllerChecker,
+    NamespaceListingChecker,
     ResourceVerb,
     ResourceVerbAvailabilityChecker,
     RoleDelegationChecker,
@@ -118,3 +121,74 @@ def _return_kubectl_result(
 
     monkeypatch.setattr(checkers_module.Kubectl, "run_raw", staticmethod(run_raw))
 
+
+class TestNamespaceListingChecker:
+    def test_cluster_provided_namespace_objects_are_not_reported_as_foreign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Kubernetes-created namespace objects are excluded while foreign objects remain."""
+        _return_kubectl_result(
+            monkeypatch,
+            returncode=0,
+            stdout=(
+                "configmap/kube-root-ca.crt\n"
+                "serviceaccount/default\n"
+                "secret/default-token-7qk2m\n"
+                "configmap/foreign-config\n"
+                "secret/foreign-secret\n"
+            ),
+        )
+        checker = NamespaceListingChecker(
+            namespace="rl", kind="all", selector="managed-by!=Helm", release="miles-workbench"
+        )
+
+        result = checker.check()
+
+        assert result.status is Status.PASS
+        assert checker.foreign == ("configmap/foreign-config", "secret/foreign-secret")
+
+    @pytest.mark.parametrize(
+        ("error", "expected_message"),
+        [
+            ("the server doesn't have a resource type leaderworkerset", "does not serve leaderworkerset"),
+            ("connection reset by peer", "listing leaderworkerset failed: connection reset by peer"),
+        ],
+    )
+    def test_namespace_listing_failures_distinguish_unserved_resources_from_query_errors(
+        self, monkeypatch: pytest.MonkeyPatch, error: str, expected_message: str
+    ) -> None:
+        """Unserved resources and ordinary listing failures retain distinct unknown explanations."""
+        _return_kubectl_result(monkeypatch, returncode=1, stderr=error)
+        checker = NamespaceListingChecker(
+            namespace="rl", kind="leaderworkerset", selector="managed-by!=Helm", release="miles-workbench"
+        )
+
+        result = checker.check()
+
+        assert result.status is Status.UNKNOWN
+        assert expected_message in result.message
+
+
+class TestLeaderWorkerSetCheckers:
+    @pytest.mark.parametrize(
+        ("checker", "error", "expected_status"),
+        [
+            (LeaderWorkerSetApiChecker(), "discovery unavailable", Status.UNKNOWN),
+            (LeaderWorkerSetControllerChecker(), "connection reset by peer", Status.FAIL),
+            (LeaderWorkerSetControllerChecker(), "deployments.apps is forbidden (Forbidden)", Status.UNKNOWN),
+        ],
+    )
+    def test_lws_query_failures_preserve_unknown_and_fail_classification(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        checker: LeaderWorkerSetApiChecker | LeaderWorkerSetControllerChecker,
+        error: str,
+        expected_status: Status,
+    ) -> None:
+        """LWS discovery and controller query failures preserve verifiability classifications."""
+        _return_kubectl_result(monkeypatch, returncode=1, stderr=error)
+
+        result = checker.check()
+
+        assert result.status is expected_status
+        assert error in result.message
