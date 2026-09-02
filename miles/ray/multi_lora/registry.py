@@ -1,28 +1,28 @@
-"""Multi-LoRA adapter registry: the controller-owned lifecycle state machine.
-
-One record per adapter name, walking PENDING -> ACTIVE -> RETIRING -> CLEANUP
--> COMPLETED. Slots are reused across registrations but ``slot_versions``
-never reset, so a (slot, version) pair never recurs.
-"""
+"""Controller-owned Multi-LoRA run lifecycle under fixed slot residency.
+Serving identity includes the registration ID to prevent same-name aliasing."""
 
 import logging
 import re
 import uuid
-from dataclasses import dataclass, field, replace
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from miles.utils.adapter_config import AdapterRun, AdapterRunConfig
+from miles.ray.multi_lora.config import AdapterRun
+from miles.ray.multi_lora.slot_pool import SlotPool
 
 logger = logging.getLogger(__name__)
 
 VALID_ADAPTER_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
+DIRTY_PIN = "dirty-grads"
+
 
 class AdapterState(str, Enum):
     PENDING = "PENDING"
-    ACTIVE = "ACTIVE"
+    READY = "READY"
     RETIRING = "RETIRING"
     CLEANUP = "CLEANUP"
     COMPLETED = "COMPLETED"
@@ -31,43 +31,41 @@ class AdapterState(str, Enum):
 # States that hold a slot.
 LIVE_STATES = (
     AdapterState.PENDING,
-    AdapterState.ACTIVE,
+    AdapterState.READY,
     AdapterState.RETIRING,
     AdapterState.CLEANUP,
 )
+
+MAX_COMPLETED_RECORDS = 1024
 
 
 @dataclass
 class AdapterRecord:
     name: str
-    slot: int
-    config: Any
+    config: Any = None
+    # Bound trainer slot; None while queued behind a full pool.
+    slot: int | None = None
     step: int = 0
-    # Baseline step for relative num_step stopping (supports checkpoint resume).
+    # Baseline step for the relative num_step bound (supports state resume).
     start_step: int = 0
-    # Committed prompt groups accumulated toward the current optimizer step.
-    # Only advanced by mark_batch_trained (after a successful train call).
-    accumulated_groups: int = 0
+    serving_version: int = 0
     state: AdapterState = AdapterState.PENDING
-    # Unique per registration: a re-registered name is a new tenant, and
-    # rollout-side state stamped by the previous tenant must not carry over.
     registration_id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
-
-MAX_BATCH_RECORDS = 16
-MAX_COMPLETED_RECORDS = 1024
+    @property
+    def tenant(self) -> tuple[str, str]:
+        return (self.name, self.registration_id)
 
 
 class AdapterRegistry:
-    """One record per name; ``slot_versions`` never reset, so (slot, version)
-    never recurs across slot reuse."""
+    """One record per name; slot tenancy delegated to the SlotPool."""
 
     def __init__(self, max_adapters: int) -> None:
         self.max_adapters = max_adapters
-        self.free_slots: set[int] = set(range(max_adapters))
-        self.slot_versions: list[int] = [0] * max_adapters
+        self.slot_pool = SlotPool(max_adapters)
         self.records: dict[str, AdapterRecord] = {}
-        self.batch_records: dict[int, dict] = {}
+        # Fires (name, registration_id) when a COMPLETED record leaves the ring; the backend wires ledger purging.
+        self.on_completed_evicted: Callable[[str, str], None] | None = None
 
     def in_state(self, *states: AdapterState) -> dict[str, AdapterRecord]:
         return {name: r for name, r in self.records.items() if r.state in states}
@@ -76,15 +74,13 @@ class AdapterRegistry:
         record = self.records.get(name)
         return record if record is not None and record.state in LIVE_STATES else None
 
-    def is_active(self, name: str) -> bool:
-        record = self.records.get(name)
-        return record is not None and record.state in (AdapterState.ACTIVE, AdapterState.RETIRING)
+    # ---------------------- registration lifecycle ----------------------
 
     def register(self, name: str, config: Any) -> dict:
         if not VALID_ADAPTER_NAME.match(name) or name in (".", ".."):
             raise ValueError(f"Adapter name '{name}' is invalid: use only letters, digits, '.', '_' and '-'")
         if (existing := self.records.get(name)) is not None:
-            if existing.state in (AdapterState.PENDING, AdapterState.ACTIVE):
+            if existing.state in (AdapterState.PENDING, AdapterState.READY):
                 raise ValueError(f"Adapter '{name}' already registered")
             if existing.state in (AdapterState.RETIRING, AdapterState.CLEANUP):
                 raise ValueError(f"Adapter '{name}' is still cleaning up; retry shortly")
@@ -95,17 +91,39 @@ class AdapterRegistry:
                     raise ValueError(
                         f"Adapter '{name}' save dir '{save_dir}' is already used by adapter '{record.name}'"
                     )
-        if not self.free_slots:
-            raise RuntimeError(f"No free adapter slots (max {self.max_adapters})")
-        slot = min(self.free_slots)
-        self.free_slots.remove(slot)
-        self.records.pop(name, None)
-        self.records[name] = AdapterRecord(name=name, slot=slot, config=config)
-        return {"name": name, "slot": slot}
+        record = AdapterRecord(name=name, config=config)
+        # Fixed residency: a full pool queues the registration unbound;
+        # bootstrap_pending binds it when a slot frees at retirement.
+        record.slot = self.slot_pool.bind_immediately(record.tenant)
+        if name in self.records:
+            self._evict_completed(name)
+        self.records[name] = record
+        if record.slot is None:
+            logger.info(f"[tinker] adapter '{name}' queued unbound: all {self.max_adapters} slots busy")
+        return {"name": name, "slot": record.slot}
+
+    def bootstrap_pending(self) -> list[str]:
+        bound = []
+        for name, record in self.in_state(AdapterState.PENDING).items():
+            if record.slot is not None:
+                continue
+            slot = self.slot_pool.bind_immediately(record.tenant)
+            if slot is None:
+                break
+            record.slot = slot
+            bound.append(name)
+            logger.info(f"[tinker] adapter '{name}' bound to freed slot {slot}")
+        return bound
+
+    def mark_ready(self, names: list[str]) -> None:
+        for name in names:
+            record = self.find(name)
+            if record is not None and record.state is AdapterState.PENDING and record.slot is not None:
+                record.state = AdapterState.READY
 
     def deregister(self, name: str) -> None:
         record = self.records.get(name)
-        if record is not None and record.state in (AdapterState.PENDING, AdapterState.ACTIVE):
+        if record is not None and record.state in (AdapterState.PENDING, AdapterState.READY):
             record.state = AdapterState.RETIRING
 
     def retire_adapters(self) -> list[str]:
@@ -118,13 +136,18 @@ class AdapterRegistry:
         record = self.records.get(name)
         if record is None or record.state is not AdapterState.CLEANUP:
             return -1
-        self.free_slots.add(record.slot)
+        self.slot_pool.release(record.tenant)
         record.state = AdapterState.COMPLETED
         self.records[name] = self.records.pop(name)
         completed = self.in_state(AdapterState.COMPLETED)
-        for oldest in list(completed)[: len(completed) - MAX_COMPLETED_RECORDS]:
-            self.records.pop(oldest)
+        for oldest in list(completed)[: max(0, len(completed) - MAX_COMPLETED_RECORDS)]:
+            self._evict_completed(oldest)
         return record.slot
+
+    def _evict_completed(self, name: str) -> None:
+        evicted = self.records.pop(name)
+        if self.on_completed_evicted is not None:
+            self.on_completed_evicted(evicted.name, evicted.registration_id)
 
     def adapter_state(self, name: str) -> AdapterState | None:
         record = self.records.get(name)
@@ -134,109 +157,71 @@ class AdapterRegistry:
             self.records[name] = self.records.pop(name)
         return record.state
 
+    # ---------------------- clocks and serving ----------------------
+
     def record_weight_update(self, names: list[str]) -> None:
-        """A weight push landed: bump slot versions, promote PENDING to ACTIVE."""
+        """A weight push landed on the engines: bump the serving version.
+        Publication is orthogonal to readiness (no state promotion here)."""
         for name in names:
             record = self.find(name)
-            if record is None:
-                continue
-            self.slot_versions[record.slot] += 1
-            if record.state is AdapterState.PENDING:
-                record.state = AdapterState.ACTIVE
+            if record is not None:
+                record.serving_version += 1
 
-    def record_batch_adapters(self, rollout_id: int, groups: dict[str, int], step_names: list[str]) -> None:
-        """Register what a train batch contains before it trains.
-
-        ``groups`` maps adapter name -> prompt groups riding in this batch;
-        ``step_names`` lists adapters whose adapter batch completes with
-        this batch (decided by the collection loop, which caps per-adapter
-        contributions at the adapter's remaining groups).
-        """
-        unknown = set(step_names) - set(groups)
-        assert not unknown, f"step adapters {sorted(unknown)} not present in batch groups"
-        self.batch_records[rollout_id] = {"groups": dict(groups), "step_names": list(step_names)}
-        while len(self.batch_records) > MAX_BATCH_RECORDS:
-            self.batch_records.pop(next(iter(self.batch_records)))
-
-    def mark_batch_trained(self, rollout_id: int) -> list[str]:
-        """Bank the batch's trained groups and fire steps; returns adapters that stepped. Only place
-        accumulation/step state advances, so a failed/retried train call leaves the registry untouched."""
-        record_entry = self.batch_records.pop(rollout_id, None)
-        if record_entry is None:
-            return []
-        stepped = []
-        reached_num_step = []
-        for name, n_groups in record_entry["groups"].items():
-            record = self.records.get(name)
-            if record is None or record.state not in (
-                AdapterState.ACTIVE,
-                AdapterState.RETIRING,
-                AdapterState.CLEANUP,
-            ):
-                continue
-            record.accumulated_groups += n_groups
-            if name in record_entry["step_names"]:
-                target = record.config.rollout_batch_size
-                if record.accumulated_groups != target:
-                    logger.warning(
-                        f"Adapter '{name}' stepped with accumulated_groups={record.accumulated_groups} "
-                        f"!= rollout_batch_size={target}; adapter batch accounting drifted"
-                    )
-                record.step += 1
-                record.accumulated_groups = 0
-                stepped.append(name)
-                if (
-                    getattr(record.config, "num_step", None) is not None
-                    and record.state is AdapterState.ACTIVE
-                    and (record.step - record.start_step) >= record.config.num_step
-                ):
-                    reached_num_step.append(name)
-        for name in reached_num_step:
-            logger.info(
-                f"Adapter '{name}' reached num_step={self.records[name].config.num_step} "
-                f"(start_step={self.records[name].start_step}, step={self.records[name].step}), deregistering"
-            )
-            self.deregister(name)
-        return stepped
-
-    def resolve_num_step(self, name: str, dataset_rows: int) -> None:
-        """Derive num_step from num_epoch once the data source knows the
-        post-filter dataset length. No-op when num_step was set explicitly."""
+    def on_step_committed(self, name: str, registration_id: str, step: int) -> None:
         record = self.find(name)
-        if record is None or not isinstance(record.config, AdapterRunConfig):
+        if record is None or record.registration_id != registration_id:
             return
-        if record.config.num_step is not None:
-            return
-        num_epoch = record.config.num_epoch or 1
-        num_step = max(1, num_epoch * dataset_rows // record.config.rollout_batch_size)
-        record.config = replace(record.config, num_step=num_step)
-        logger.info(f"Adapter '{name}': num_epoch={num_epoch} x {dataset_rows} rows -> num_step={num_step}")
+        record.step = step
+        self.slot_pool.unpin(record.tenant, DIRTY_PIN)
+        if (
+            getattr(record.config, "num_step", None) is not None
+            and record.state is AdapterState.READY
+            and (record.step - record.start_step) >= record.config.num_step
+        ):
+            logger.info(f"[tinker] adapter '{name}' reached num_step={record.config.num_step}, deregistering")
+            self.deregister(name)
 
     def set_step(self, name: str, step: int) -> None:
+        """Mirror hook: a restore (load_state / sidecar resume) repositioned
+        the stream's clock and its num_step baseline."""
         if (record := self.find(name)) is not None:
             record.step = step
             record.start_step = step
 
-    def step_count(self, name: str) -> int:
+    # ---------------------- gradient-state pins ----------------------
+
+    def mark_accumulated(self, names: list[str]) -> None:
+        for name in names:
+            record = self.find(name)
+            if record is not None:
+                self.slot_pool.pin(record.tenant, DIRTY_PIN)
+
+    def clear_dirty(self, name: str) -> None:
         record = self.find(name)
-        return record.step if record is not None else 0
+        if record is not None:
+            self.slot_pool.unpin(record.tenant, DIRTY_PIN)
+
+    def is_dirty(self, name: str) -> bool:
+        record = self.find(name)
+        return record is not None and self.slot_pool.is_pinned(record.tenant, DIRTY_PIN)
+
+    # ---------------------- views ----------------------
 
     def view(self, record: AdapterRecord) -> AdapterRun:
         return AdapterRun(
             name=record.name,
             config=record.config,
             slot=record.slot,
-            version=self.slot_versions[record.slot],
+            version=record.serving_version,
             step=record.step,
-            accumulated_groups=record.accumulated_groups,
             registration_id=record.registration_id,
         )
 
-    def active_adapters(self) -> dict[str, AdapterRun]:
-        """Sampleable view: RETIRING keeps serving until retired."""
+    def ready_adapters(self) -> dict[str, AdapterRun]:
+        """Operation-executable view: RETIRING keeps draining until retired."""
         return {
             name: self.view(record)
-            for name, record in self.in_state(AdapterState.ACTIVE, AdapterState.RETIRING).items()
+            for name, record in self.in_state(AdapterState.READY, AdapterState.RETIRING).items()
         }
 
     def snapshot(self) -> dict:
@@ -245,7 +230,7 @@ class AdapterRegistry:
 
         return {
             "pending": views(AdapterState.PENDING),
-            "active": views(AdapterState.ACTIVE),
+            "ready": views(AdapterState.READY),
             "retiring": views(AdapterState.RETIRING),
             "cleanup": list(self.in_state(AdapterState.CLEANUP)),
             "completed": list(self.in_state(AdapterState.COMPLETED)),

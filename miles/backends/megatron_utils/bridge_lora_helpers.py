@@ -168,7 +168,7 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     if is_multi_lora_enabled(args):
         _validate_multi_lora_moe_support(args, provider)
 
-        from miles.backends.megatron_utils.multi_lora_utils import create_multi_lora_instance
+        from miles.backends.megatron_utils.api_backends.multi_lora.model import create_multi_lora_instance
 
         lora = create_multi_lora_instance(args)
     else:

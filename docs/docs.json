@@ -244,7 +244,7 @@
       "pages": [
        "examples/geo3k-vlm",
        "examples/geo3k-vlm/multi-turn",
-       "examples/multi-lora",
+       "examples/multi-lora-operations",
        "examples/on-policy-distillation",
        "examples/on-policy-distillation/qwen3-5-35b-selfdistill",
        "examples/ppo",

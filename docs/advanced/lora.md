@@ -300,9 +300,9 @@ its own Adam state and independently clocked scheduler. The trainer coalesces
 ready prompt-group slices or partial adapter batches and selectively upserts
 only changed adapters into SGLang.
 
-Set the slot capacity with `--multi-lora-n-adapters N`. A bounded run registers
-repeatable `--multi-lora-adapter NAME PATH` entries at startup; service mode can
-start with empty slots and register adapters through the controller HTTP API.
+Set the slot capacity with `--multi-lora-n-adapters N`. The operation backend
+starts as a long-running service with empty slots and registers adapters at
+runtime through the controller HTTP API.
 This path currently forces Megatron-Bridge LoRA and requires disaggregated NCCL
 broadcast, PP1, THD, Adam, and no train offload. Shared-outer expert adapters are
 unsupported, and MoE expert adapters cannot use FP8/FP4 experts.
@@ -312,20 +312,20 @@ Native multi-LoRA is not implied by the native single-adapter work: both current
 Megatron-Bridge. Native multi-LoRA is tracked separately in
 [issue #2141](https://github.com/radixark/miles/issues/2141).
 
-### Future Tinker-compatible operation backend
+### Multi-LoRA operation backend and Tinker compatibility
 
 [PR #2273](https://github.com/radixark/miles/pull/2273) is the active
-Tinker-oriented backend proposal. It changes ownership of the training loop:
+Multi-LoRA operation-backend proposal. It changes ownership of the training loop:
 instead of the server owning a dataset, reward function, and one-step schedule,
 clients submit explicit operations against a registered adapter. Its primary
-intended consumer is a Tinker-compatible training service rather than a generic
-server-owned dataset scheduler.
+consumer today is a Tinker-compatible protocol adapter, but the trainer-side
+operation contract is named independently from that client protocol.
 
 ```text
-Tinker-style client
-  | register + ordered operations
+Tinker client -> Tinker protocol/frontend adapter
+  | normalized register + ordered operations
   v
-controller / operation ledger
+MultiLoraOperationBackend / operation ledger
   | bind one fixed LoRA slot
   v
 Megatron-Bridge multi-LoRA trainer
@@ -334,6 +334,12 @@ Megatron-Bridge multi-LoRA trainer
   v
 SGLang router + registration-scoped adapter identity
 ```
+
+The current concrete is `MultiLoraOperationBackend`, with
+`MultiLoraOperationBatchFn` and `MultiLoraParameterExecutor` handling adapter
+batching and slot execution. `Tinker` remains the wire/SDK compatibility name.
+A future full-parameter executor may reuse the normalized operation contract,
+but this PR does not implement or claim full-parameter training.
 
 The operation surface separates compute, optimization, and publication:
 
@@ -362,9 +368,10 @@ This backend is implemented in an open PR, not released on `main`; the PR
 reports H200 validation. PR #2273 provides the operation backend, but its v1
 training operations are still exposed through the controller's Ray API. The
 stacked [PR #2346](https://github.com/radixark/miles/pull/2346) adds a REST
-frontend compatible with the official `tinker==0.24.1` client; its GPU frontend
-E2E is still pending. If #2273 lands as proposed, it replaces the current
-dataset-driven driver.
+frontend compatible with the official `tinker==0.24.1` client. The stacked
+full system has passed both RL and pure-SFT 2xH200 acceptance; those results do
+not expand #2273 beyond its fixed-slot Multi-LoRA scope. If #2273 lands as
+proposed, it replaces the current dataset-driven driver.
 </Warning>
 
 ## Compatibility and limitations
@@ -404,5 +411,5 @@ dataset-driven driver.
 - `miles/rollout/session/core.py` attaches the single adapter to agentic session
   requests.
 - `miles/ray/multi_lora/`, `miles/rollout/multi_lora/`, and
-  `miles/backends/megatron_utils/multi_lora_*.py` implement the multi-adapter
+  `miles/backends/megatron_utils/api_backends/multi_lora/` implement the multi-adapter
   controller, routing, scheduling, optimization, and checkpoint path.

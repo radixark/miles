@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from miles.rollout.data_source import DataSource
@@ -49,11 +49,21 @@ class RolloutFnEvalInput(RolloutFnBaseInput):
         return True
 
 
+@dataclass(frozen=True)
+class RolloutPostprocessOptions:
+    """Postprocess policy declared by the rollout fn; pad_to_dp zero-weight pads to the DP grid instead of trimming."""
+
+    pad_to_dp: bool = False
+
+
 # TODO make it frozen
 @dataclass
 class RolloutFnTrainOutput:
     samples: list[list[Sample]]
     metrics: dict[str, Any] = None
+    metadata: dict[str, Any] | None = None
+    conversion_metadata: dict[str, Any] | None = None
+    postprocess: RolloutPostprocessOptions = field(default_factory=RolloutPostprocessOptions)
 
 
 # TODO make it frozen

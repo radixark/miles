@@ -1827,12 +1827,40 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
             parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
+                "--tinker-backend",
+                action="store_true",
+                default=False,
+                help="Enable the Tinker protocol adapter for Multi-LoRA (requires --multi-lora-n-adapters > 0)",
+            )
+            parser.add_argument(
+                "--tinker-max-coalesce-wait-s",
+                type=float,
+                default=2.0,
+                help="Keep coalescing ready batches into the same train call this long after the first (default: 2.0)",
+            )
+            parser.add_argument(
+                "--tinker-max-empty-wait-s",
+                type=float,
+                default=5.0,
+                help="Idle window before EmptyBatchTimeoutError; short so control ops never wait (default: 5.0)",
+            )
+            parser.add_argument(
+                "--tinker-operation-gap-timeout",
+                type=float,
+                default=600.0,
+                help="Gap-stall seconds before blocked ops fail and the hole seals; <= 0 disables (default: 600)",
+            )
+            parser.add_argument(
+                "--tinker-operation-claimed-ttl",
+                type=float,
+                default=1800.0,
+                help="Liveness backstop: fail orphaned CLAIMED ops after this long; <= 0 disables (default: 1800)",
+            )
+            parser.add_argument(
+                "--multi-lora-max-consecutive-generate-failures",
+                type=int,
+                default=10,
+                help="Consecutive generate failures skipped before re-raising; 0 fails fast (default: 10)",
             )
             parser.add_argument(
                 "--multi-lora-idle-poll-s",
@@ -1845,58 +1873,21 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                    "Dotted path to an AdapterRunControlServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: AdapterRunControlServer)"
                 ),
             )
             parser.add_argument(
                 "--multi-lora-backend-path",
                 type=str,
                 default=None,
-                help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
-                ),
+                help="Dotted path to a MultiLoraOperationBackend subclass (e.g. custom validate_adapter)",
             )
             parser.add_argument(
                 "--multi-lora-api-port",
                 type=int,
                 default=8068,
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
-            )
-            parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
-            )
-            parser.add_argument(
-                "--multi-lora-max-adapter-global-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "Registration-time upper bound on an adapter's samples per optimizer "
-                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
-                    "--global-batch-size."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-coalesce-wait-s",
-                type=float,
-                default=0.5,
-                help=(
-                    "Maximum time ready groups wait for the batch to fill toward "
-                    "--global-batch-size before training starts on what is ready (default: 0.5)."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-empty-wait-s",
-                type=float,
-                default=30.0,
-                help=(
-                    "How long a generate call waits for the first poppable group before "
-                    "failing with an empty-batch timeout (default: 30)."
-                ),
             )
             return parser
 
@@ -3173,6 +3164,10 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+
+    from miles.utils.tinker import validate_tinker_args
+
+    validate_tinker_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

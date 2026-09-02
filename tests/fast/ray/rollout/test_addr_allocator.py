@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from tests.fast.ray.rollout.conftest import fake_engine, make_args
 
 from miles.ray.rollout.addr_allocator import (
@@ -9,6 +11,13 @@ from miles.ray.rollout.addr_allocator import (
     allocate_rollout_engine_addr_and_ports_external,
     allocate_rollout_engine_addr_and_ports_normal,
 )
+
+
+@pytest.fixture
+def patch_ray_get(monkeypatch):
+    import miles.ray.rollout.addr_allocator as mod
+
+    monkeypatch.setattr(mod.ray, "get", lambda x: x)
 
 
 class TestPortCursors:
