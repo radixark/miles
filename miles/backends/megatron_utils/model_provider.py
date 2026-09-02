@@ -96,6 +96,11 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
 
+    # mtp_num_layers is model-defining and stays with the HF config
+    if getattr(args, "enable_mtp_training", False):
+        provider.mtp_detach_heads = True
+        provider.mtp_loss_scaling_factor = args.mtp_loss_scaling_factor
+
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
