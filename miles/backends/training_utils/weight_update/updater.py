@@ -114,8 +114,6 @@ class WeightUpdater:
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
             pause_engines(self.args, protocol.rollout_engines)
-            # registering re-zeroes a resident adapter (a reconnect re-registers every
-            # adapter), so it happens inside the quiesced window, after the pause
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
@@ -169,5 +167,4 @@ class WeightUpdater:
             if adapter is not None:
                 config = config | {"r": adapter.config.rank, "lora_alpha": adapter.config.alpha}
             register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
-            # cached only once every engine accepted it, so a failed RPC is retried next sync
             self._registered_adapters.add(lora_name)
