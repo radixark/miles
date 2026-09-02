@@ -62,6 +62,24 @@ Preparation downloads and converts `Qwen/Qwen3.6-35B-A3B`, installs Stockfish,
 checks out the pinned radix_raft chess harness, and installs its Python package.
 Use `--skip-prepare` only after those artifacts are present.
 
+For fully asynchronous training, reserve separate training and rollout nodes:
+
+```bash
+python examples/experimental/chess/run.py \
+    --run-id 260901-deadbeef \
+    --num-nodes 2 \
+    --train-num-nodes 1 \
+    --fully-async \
+    --num-rollout 1000 \
+    --rollout-batch-size 8 \
+    --n-samples-per-prompt 8
+```
+
+This uses `train_async.py`, keeps rollout production running during optimizer
+updates, trains on one node, and hosts one eight-GPU SGLang engine on the other.
+Truncated importance sampling is enabled to account for policy staleness. The
+synchronous default remains colocated and continues to use `train.py`.
+
 The launcher applies the game limit both in Miles' rollout scheduler and in the
 chess agent itself. This bounds the complete engine lifetime, not just the
 startup burst. Increase `--stockfish-max-concurrent-games` only after a real

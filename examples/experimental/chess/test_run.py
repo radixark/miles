@@ -1,6 +1,6 @@
 import pytest
 
-from run import ScriptArgs, _checkpoint_args, _grpo_args, _optimizer_args
+from run import ScriptArgs, _checkpoint_args, _grpo_args, _misc_args, _optimizer_args, _rollout_args
 
 
 def test_grpo_args_uses_configured_kl_loss_coefficient() -> None:
@@ -87,3 +87,45 @@ def test_scheduler_override_requires_resume_checkpoint() -> None:
             num_gpus_per_node=8,
             override_opt_param_scheduler=True,
         )
+
+
+def test_fully_async_requires_disaggregated_nodes() -> None:
+    with pytest.raises(ValueError, match="fully_async requires at least two nodes"):
+        ScriptArgs(
+            hardware="H200",
+            num_gpus_per_node=8,
+            num_nodes=1,
+            fully_async=True,
+        )
+
+
+def test_fully_async_uses_continuous_disaggregated_rollout() -> None:
+    args = ScriptArgs(
+        hardware="H200",
+        num_gpus_per_node=8,
+        num_nodes=2,
+        train_num_nodes=1,
+        fully_async=True,
+    )
+
+    rollout_args = _rollout_args(args)
+    misc_args = _misc_args(args)
+
+    assert "--fully-async " in rollout_args
+    assert "--pause-generation-mode in_place " in rollout_args
+    assert "--use-tis " in _grpo_args(args)
+    assert "--actor-num-nodes 1 " in misc_args
+    assert "--rollout-num-gpus 8 " in misc_args
+    assert "--colocate " not in misc_args
+
+
+def test_synchronous_mode_remains_colocated() -> None:
+    args = ScriptArgs(
+        hardware="H200",
+        num_gpus_per_node=8,
+        num_nodes=1,
+    )
+
+    assert "--fully-async " not in _rollout_args(args)
+    assert "--use-tis " not in _grpo_args(args)
+    assert "--colocate " in _misc_args(args)

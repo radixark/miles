@@ -13,6 +13,8 @@ Args:
     learning_rate: Constant Adam learning rate used for policy updates.
     kl_loss_coef: Coefficient for the low-variance KL regularization loss.
     repetition_reward_penalty: Reward subtracted once from repetitive rollouts.
+    fully_async: Run rollout generation continuously on disaggregated nodes.
+    train_num_nodes: Number of nodes reserved for policy training in async mode.
     load_checkpoint_path: Optional full training checkpoint to resume.
     override_opt_param_scheduler: Use current scheduler settings when resuming.
     max_model_turns: Maximum policy moves in each game.
@@ -76,6 +78,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     learning_rate: float = 1e-6
     kl_loss_coef: float = 0.0
     repetition_reward_penalty: float = 0.1
+    fully_async: bool = False
+    train_num_nodes: int = 1
 
     stockfish_elo: int = 1320
     max_model_turns: int = 8
@@ -124,6 +128,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise ValueError("repetition_reward_penalty must be nonnegative")
         if self.learning_rate <= 0:
             raise ValueError("learning_rate must be positive")
+        if self.fully_async:
+            if self.num_nodes < 2:
+                raise ValueError("fully_async requires at least two nodes")
+            if not 0 < self.train_num_nodes < self.num_nodes:
+                raise ValueError("train_num_nodes must leave at least one rollout node")
         if self.override_opt_param_scheduler and self.load_checkpoint_path is None:
             raise ValueError("override_opt_param_scheduler requires load_checkpoint_path")
 
@@ -282,8 +291,11 @@ def _checkpoint_args(args: ScriptArgs) -> str:
 
 
 def _rollout_args(args: ScriptArgs) -> str:
+    async_args = ""
+    if args.fully_async:
+        async_args = "--fully-async --pause-generation-mode in_place "
     return (
-        f"--prompt-data {_prompt_data_path(args)} "
+        async_args + f"--prompt-data {_prompt_data_path(args)} "
         "--input-key prompt "
         "--metadata-key metadata "
         "--rollout-shuffle "
@@ -317,7 +329,8 @@ def _performance_args(args: ScriptArgs) -> str:
 
 
 def _grpo_args(args: ScriptArgs) -> str:
-    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty {args.repetition_reward_penalty} "
+    tis_args = "--use-tis " if args.fully_async else ""
+    return f"--advantage-estimator grpo --use-kl-loss --kl-loss-coef {args.kl_loss_coef} --kl-loss-type low_var_kl --entropy-coef 0.00 --eps-clip 0.2 --eps-clip-high 0.28 --repetition-reward-penalty {args.repetition_reward_penalty} {tis_args}"
 
 
 def _optimizer_args(args: ScriptArgs) -> str:
@@ -356,20 +369,14 @@ def _observability_args(args: ScriptArgs) -> str:
 
 
 def _misc_args(args: ScriptArgs) -> str:
-    return (
-        "--attention-dropout 0.0 "
-        "--hidden-dropout 0.0 "
-        "--accumulate-allreduce-grads-in-fp32 "
-        "--attention-softmax-in-fp32 "
-        "--attention-backend flash "
-        "--moe-token-dispatcher-type flex "
-        "--observe-training-entropy "
-        "--log-multi-turn "
-        "--colocate "
-        f"--actor-num-nodes {args.num_nodes} "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        f"--num-gpus-per-node {args.num_gpus_per_node} "
-    )
+    actor_num_nodes = args.train_num_nodes if args.fully_async else args.num_nodes
+    placement_args = f"--actor-num-nodes {actor_num_nodes} --actor-num-gpus-per-node {args.num_gpus_per_node} --num-gpus-per-node {args.num_gpus_per_node} "
+    if args.fully_async:
+        rollout_num_nodes = args.num_nodes - args.train_num_nodes
+        placement_args += f"--rollout-num-gpus {rollout_num_nodes * args.num_gpus_per_node} "
+    else:
+        placement_args += "--colocate "
+    return f"--attention-dropout 0.0 --hidden-dropout 0.0 --accumulate-allreduce-grads-in-fp32 --attention-softmax-in-fp32 --attention-backend flash --moe-token-dispatcher-type flex --observe-training-entropy --log-multi-turn {placement_args}"
 
 
 def _mtp_args() -> str:
@@ -416,6 +423,7 @@ def _execute(args: ScriptArgs) -> None:
         config=args,
         num_gpus_per_node=args.num_gpus_per_node,
         megatron_model_type=args.megatron_model_type,
+        train_script="train_async.py" if args.fully_async else "train.py",
         megatron_path=args.megatron_path,
         extra_env_vars=_extra_env_vars(args),
     )
