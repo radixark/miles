@@ -15,7 +15,11 @@ from megatron.core.utils import get_attr_wrapped_model
 from miles.utils.hf_config import load_hf_config
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
-from .lora_utils import convert_target_modules_to_hf, patch_param_grad_buffer_for_colocate_mode_lora
+from .lora_utils import (
+    convert_target_modules_to_hf,
+    mark_shared_outer_lora_grads,
+    patch_param_grad_buffer_for_colocate_mode_lora,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +183,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     def apply_lora_hook(model_chunks):
         transformed = lora(model_chunks, training=True)
         lora.set_params_to_save(transformed)
+        if getattr(args, "experts_shared_outer_loras", False):
+            marked = mark_shared_outer_lora_grads(
+                transformed,
+                gradient_accumulation_fusion=args.gradient_accumulation_fusion,
+            )
+            logger.info("Tagged %d shared-outer expert LoRA factors for main-grad synchronization", marked)
         return transformed
 
     provider.register_pre_wrap_hook(apply_lora_hook)
