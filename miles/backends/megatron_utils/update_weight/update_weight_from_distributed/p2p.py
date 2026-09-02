@@ -35,12 +35,14 @@ logger = logging.getLogger(__name__)
 
 class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
     """P2P weight transfer using DistBucketedWeightUpdateMixin for bucketed all-gather + HF conversion,
-    and a single set of shared CPU pinned buffers for P2P writes.
+    and shared CPU pinned memory for P2P writes.
 
     Compute transfer_ready_params once (same for all engine ranks)
     For each engine rank:
         load_weights(shared buffer) → P2P write
         where the last rank's write is submitted to a background thread
+    When bounded staging is enabled, pack and synchronously write each staging
+    batch before reusing it.
     wait_transfers() at finish to collect all background writes
     """
 
@@ -68,6 +70,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self.transfer_plan = RemoteTransferPlan(args, model)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
+        self._p2p_staging_buffer_size = getattr(args, "p2p_staging_buffer_size", 0)
+        assert self._p2p_staging_buffer_size >= 0, "--p2p-staging-buffer-size must be non-negative"
+        self._p2p_staging_buffer: torch.Tensor | None = None
+        self._weight_memory_registry: dict[str, tuple[int, int, int]] = {}
         self._tensor_update_pending: dict[str, int] = {}
 
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
@@ -116,7 +122,20 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             return
 
         if not self._model_registered:
-            self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
+            if self._p2p_staging_buffer_size:
+                self._p2p_staging_buffer = torch.empty(
+                    self._p2p_staging_buffer_size,
+                    dtype=torch.uint8,
+                    pin_memory=True,
+                )
+                ret = self._transfer_engine.register_memory(
+                    self._p2p_staging_buffer.data_ptr(),
+                    self._p2p_staging_buffer.numel(),
+                )
+                if ret != 0:
+                    raise RuntimeError(f"register P2P staging buffer failed, error: {ret}")
+            else:
+                self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
         self._model_registered = True
 
     def _update_weight_implementation(
@@ -135,6 +154,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
 
         if transfer_ready_params and ready_hf_tensors:
+            if self._p2p_staging_buffer is not None:
+                for model_replica, remote_weight_infos in self._transfer_engine_meta_list:
+                    model_replica.load_weights(ready_hf_tensors)
+                    self._do_p2p_write_staged(remote_weight_infos, transfer_ready_params)
+                converted_named_tensors.clear()
+                return
+
             last_idx = len(self._transfer_engine_meta_list) - 1
             for i, (model_replica, remote_weight_infos) in enumerate(self._transfer_engine_meta_list):
                 model_replica.load_weights(ready_hf_tensors)
@@ -163,6 +189,95 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                         f.result()
 
         converted_named_tensors.clear()
+
+    def _do_p2p_write_staged(self, remote_sessions: list[RemoteWeightInfo], names: list[str]) -> None:
+        """Pack weights into bounded registered memory and write each full batch.
+
+        The batch is completed before its staging memory is reused. This mode is
+        intended for RDMA devices whose host-memory registration capacity is
+        smaller than a target model replica.
+        """
+        assert self._p2p_staging_buffer is not None
+        staging_ptr = self._p2p_staging_buffer.data_ptr()
+        staging_size = self._p2p_staging_buffer.numel()
+        batch: list[tuple[str, int, int, int]] = []
+        batch_size = 0
+
+        def flush() -> None:
+            nonlocal batch_size
+            if not batch:
+                return
+
+            futures = [
+                self.transfer_manager.submit_returning_future(
+                    self._do_p2p_write_staging_batch,
+                    remote_session,
+                    staging_ptr,
+                    batch,
+                )
+                for remote_session in remote_sessions
+            ]
+            for future in futures:
+                future.result()
+            batch.clear()
+            batch_size = 0
+
+        for name in names:
+            cpu_tensor = self._shared_params_dict[name].detach()
+            assert cpu_tensor.is_contiguous(), f"P2P source parameter {name} must be contiguous"
+            cpu_bytes = cpu_tensor.view(torch.uint8).reshape(-1)
+            tensor_offset = 0
+
+            while tensor_offset < cpu_bytes.numel():
+                if batch_size == staging_size:
+                    flush()
+
+                chunk_size = min(staging_size - batch_size, cpu_bytes.numel() - tensor_offset)
+                self._p2p_staging_buffer[batch_size : batch_size + chunk_size].copy_(
+                    cpu_bytes[tensor_offset : tensor_offset + chunk_size]
+                )
+                batch.append((name, tensor_offset, batch_size, chunk_size))
+                batch_size += chunk_size
+                tensor_offset += chunk_size
+
+        flush()
+
+    def _do_p2p_write_staging_batch(
+        self,
+        remote_session: RemoteWeightInfo,
+        staging_ptr: int,
+        batch: list[tuple[str, int, int, int]],
+    ) -> None:
+        """Write one packed staging batch to a remote rollout session."""
+        source_ptrs = []
+        target_ptrs = []
+        lengths = []
+
+        for name, tensor_offset, staging_offset, chunk_size in batch:
+            remote_weight = remote_session.weights_info.get(name)
+            assert (
+                remote_weight is not None
+            ), f"Remote parameter {name} not found in session {remote_session.session_id}"
+            target_ptr, target_numel, target_element_size = remote_weight
+            target_size = target_numel * target_element_size
+            source_size = self._shared_params_dict[name].numel() * self._shared_params_dict[name].element_size()
+            assert target_size == source_size, (
+                f"P2P size mismatch for {name} in session {remote_session.session_id}: "
+                f"source={source_size}, target={target_size}"
+            )
+
+            source_ptrs.append(staging_ptr + staging_offset)
+            target_ptrs.append(target_ptr + tensor_offset)
+            lengths.append(chunk_size)
+
+        ret = self._transfer_engine.batch_transfer_sync_write(
+            remote_session.session_id,
+            source_ptrs,
+            target_ptrs,
+            lengths,
+        )
+        if ret < 0:
+            raise RuntimeError(f"[P2P-Staged] Transfer failed for session {remote_session.session_id}, error: {ret}")
 
     # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
     def is_rollout_engines_fresh(self) -> bool:

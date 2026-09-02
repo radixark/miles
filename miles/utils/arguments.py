@@ -943,6 +943,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=30.0,
                 help="Timeout in seconds for each P2P transfer operation.",
             )
+            parser.add_argument(
+                "--p2p-staging-buffer-size",
+                type=int,
+                default=0,
+                help=(
+                    "Size in bytes of a bounded, registered CPU staging buffer for P2P weight transfer. "
+                    "Use this when the RDMA device cannot register the full target model replica. "
+                    "The default 0 directly registers model parameters."
+                ),
+            )
             return parser
 
         def add_fault_tolerance_arguments(parser):
