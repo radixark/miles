@@ -63,6 +63,21 @@ class RemoteTransferPlan:
         self._rollout_num_gpu_per_engine = args.rollout_num_gpus_per_engine
         self._rollout_engine_count = args.rollout_num_gpus // self._rollout_num_gpu_per_engine
         self._rollout_num_gpus = args.rollout_num_gpus
+        self._engine_gpu_counts = [self._rollout_num_gpu_per_engine] * self._rollout_engine_count
+
+    def set_target_topology(self, engine_gpu_counts: Sequence[int]) -> None:
+        """Use the update-enabled engines reported by the rollout manager.
+
+        ``rollout_num_gpus`` includes every server group in a P/D deployment,
+        while the updater receives only engines belonging to the model marked
+        for weight updates. Deriving targets from the former can therefore
+        produce engine indices that do not exist in ``rollout_engines``.
+        """
+        if not engine_gpu_counts or any(count <= 0 for count in engine_gpu_counts):
+            raise ValueError(f"P2P weight transfer requires positive engine GPU counts: {engine_gpu_counts}")
+        self._engine_gpu_counts = list(engine_gpu_counts)
+        self._rollout_engine_count = len(self._engine_gpu_counts)
+        self._rollout_num_gpus = sum(self._engine_gpu_counts)
 
     def plan_p2p(self) -> list[TransferTaskP2PMeta]:
         """
@@ -88,8 +103,8 @@ class RemoteTransferPlan:
         """
         all_targets = [
             (engine_idx, engine_rank)
-            for engine_idx in range(self._rollout_engine_count)
-            for engine_rank in range(self._rollout_num_gpu_per_engine)
+            for engine_idx, gpu_count in enumerate(self._engine_gpu_counts)
+            for engine_rank in range(gpu_count)
         ]
         assignments = defaultdict(lambda: defaultdict(list))
 
@@ -172,13 +187,16 @@ class P2PTransferManager:
 
     def wait_transfers(self) -> None:
         """Wait for all submitted tasks to complete."""
-        for future in self.transfer_futures:
+        futures, self.transfer_futures = self.transfer_futures, []
+        first_error: Exception | None = None
+        for future in futures:
             try:
                 future.result(timeout=self.transfer_timeout)
-            except Exception as e:
-                logger.error(f"[P2P] Transfer future failed: {e}")
-
-        self.transfer_futures.clear()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:

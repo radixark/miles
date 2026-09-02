@@ -33,6 +33,52 @@ from .p2p_transfer_utils import (
 logger = logging.getLogger(__name__)
 
 
+def _parameter_mapper_from_model(model: torch.nn.Module) -> ParameterMapper:
+    """Build a mapper, including mappings that DSV4 keeps local to load_weights."""
+    if getattr(getattr(model, "config", None), "model_type", None) != "deepseek_v4":
+        return ParameterMapper.from_model(model)
+
+    from sglang.srt.layers.moe.fused_moe_triton import FusedMoE
+    from sglang.srt.models.deepseek_v4 import DEEPSEEK_V4_STACKED_PARAMS_MAPPING
+
+    stacked_mapping = list(DEEPSEEK_V4_STACKED_PARAMS_MAPPING)
+    param_names = {name for name, _param in model.named_parameters()}
+    if any(".self_attn.wqkv_a." in name for name in param_names):
+        stacked_mapping.extend(
+            [
+                (".self_attn.wqkv_a.", ".self_attn.wq_a.", 0),
+                (".self_attn.wqkv_a.", ".self_attn.wkv.", 1),
+            ]
+        )
+    stacked_mapping.extend(
+        [
+            (".compressor.wkv_gate.", ".compressor.wkv.", 0),
+            (".compressor.wkv_gate.", ".compressor.wgate.", 1),
+        ]
+    )
+
+    num_routed_experts = model.config.n_routed_experts
+    num_fused_shared_experts = model.num_fused_shared_experts
+    expert_mapping = FusedMoE.make_expert_params_mapping(
+        ckpt_gate_proj_name="gate_proj",
+        ckpt_down_proj_name="down_proj",
+        ckpt_up_proj_name="up_proj",
+        num_experts=num_routed_experts + num_fused_shared_experts,
+    )
+
+    def mutate_weight_preload(name: str) -> str:
+        if num_fused_shared_experts > 0 and "mlp.shared_experts" in name:
+            return name.replace("mlp.shared_experts", f"mlp.experts.{num_routed_experts}")
+        return name
+
+    return ParameterMapper(
+        stacked_params_mapping=stacked_mapping,
+        expert_params_mapping=expert_mapping,
+        num_local_experts=num_routed_experts + num_fused_shared_experts,
+        mutate_weight_preload=mutate_weight_preload,
+    )
+
+
 class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
     """P2P weight transfer using DistBucketedWeightUpdateMixin for bucketed all-gather + HF conversion,
     and a single set of shared CPU pinned buffers for P2P writes.
@@ -192,6 +238,15 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
 
+        if engine_gpu_counts is None:
+            engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
+        if len(engine_gpu_counts) != len(rollout_engines):
+            raise ValueError(
+                f"P2P engine topology mismatch: {len(engine_gpu_counts)} GPU counts "
+                f"for {len(rollout_engines)} engines"
+            )
+        self.transfer_plan.set_target_topology(engine_gpu_counts)
+
         if self._is_source:
             self._group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
             targets = self.transfer_plan.plan_p2p()
@@ -230,7 +285,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 )
                 if first_engine_rank:
                     self._shared_params_dict = dict(model_replica.named_parameters())
-                    self._shared_param_mapper = ParameterMapper.from_model(model_replica)
+                    self._shared_param_mapper = _parameter_mapper_from_model(model_replica)
                     first_engine_rank = False
 
                 remote_infos = [
@@ -263,15 +318,15 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         initialize_fp8_gemm_config(server_args)
         initialize_fp4_gemm_config(server_args)
 
-        # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
-        # because get_model() calls post_load_weights() internally (loader.py:1310)
-        # which may invoke CUDA-only kernels (e.g., per_tensor_quant_fp8 for FP8 models).
-        # This is safe because the rollout engine runs post_load_weights on its own GPU
-        # after RDMA transfer, at end_weight_update.
+        # This CPU model is only a staging layout: every parameter is overwritten
+        # before publication. Skip dummy initialization and GPU-only post-load work.
+        # The rollout engine runs post_load_weights on its own GPU after transfer.
         from sglang.srt.model_loader import loader as model_loader_module
 
         original_post_load_weights = model_loader_module.post_load_weights
+        original_initialize_dummy_weights = model_loader_module.initialize_dummy_weights
         model_loader_module.post_load_weights = lambda *args, **kwargs: None
+        model_loader_module.initialize_dummy_weights = lambda *args, **kwargs: None
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
@@ -281,11 +336,17 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
                 )
         finally:
             model_loader_module.post_load_weights = original_post_load_weights
+            model_loader_module.initialize_dummy_weights = original_initialize_dummy_weights
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
         if hasattr(model, "post_load_weights"):
             model.post_load_weights = lambda *args, **kwargs: None
+        # DSV4 calls this directly from ``load_weights``. It compiles a CUDA
+        # kernel and needs an initialized TP group, neither of which applies to
+        # the CPU-only staging replica.
+        if hasattr(model, "_prewarm_mhc_pre_kernels"):
+            model._prewarm_mhc_pre_kernels = lambda *args, **kwargs: None
 
         if first_engine_rank:
             for param in model.parameters():
