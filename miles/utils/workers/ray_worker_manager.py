@@ -258,7 +258,7 @@ class _BaseActorManager(Generic[SpecT]):
             if self.worker_in_cell_index != 0 and port_info.mode == "master":
                 continue
             if port_info.allow_dynamic:
-                port = self.manager.port_allocator.alloc(
+                port = await self.manager.port_allocator.alloc(
                     self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
                 )
             else:
