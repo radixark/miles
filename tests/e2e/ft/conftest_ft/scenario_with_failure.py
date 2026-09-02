@@ -18,6 +18,9 @@ from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, asser
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
+_FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
+_FIRST_INJECTED_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID
+_FIRST_POST_FAULT_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -55,14 +58,14 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 _WITH_FAILURE_ACTIONS: list[dict] = [
     {
-        "at_rollout": NUM_PHASE_A_STEPS + 1,
+        "at_rollout": _FAULT_ROLLOUT_ID,
         "action": "crash_before_allreduce",
         "cell_index": -1,
         "rank": 0,
         "attempt": 0,
     },
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_index": -1},
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_index": -1},
+    {"at_rollout": _FAULT_ROLLOUT_ID, "action": "stop_cell_at_end", "cell_index": -1},
+    {"at_rollout": _FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_index": -1},
 ]
 
 
@@ -71,7 +74,7 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
         return []
     return [
         ReconfigureInfo(
-            rollout_id=NUM_PHASE_A_STEPS + 1,
+            rollout_id=_FAULT_ROLLOUT_ID,
             src_cell_index=None,
             healed_cell_indices=[],
             alive_cell_indices_after=list(range(num_cells - 1)),
@@ -106,7 +109,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 1} "
+                    f"--ci-inject-rollout-data-start-rollout-id {_FIRST_INJECTED_ROLLOUT_ID} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 
@@ -149,18 +152,22 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         f"{expected_leaves}; a new leaf would silently skip comparison"
     )
 
-    first_injected_rollout_id = NUM_PHASE_A_STEPS + 2
     for rollout_id in phase_b_rollout_ids:
-        is_post_fault = mode.has_real_rollout and rollout_id >= first_injected_rollout_id
         compare_dumps(
             baseline_dir=f"{dump_dir}/baseline/phase_b",
             target_dir=f"{dump_dir}/target/phase_b",
-            diff_thresholds=_POST_FAULT_DIFF_THRESHOLDS if is_post_fault else _DIFF_THRESHOLDS,
+            diff_thresholds=_diff_thresholds_for_rollout(mode, rollout_id),
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
             allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
         )
     print("With-failure comparison test PASSED")
+
+
+def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tuple[str, str]]:
+    if mode.has_real_rollout and rollout_id >= _FIRST_POST_FAULT_ROLLOUT_ID:
+        return _POST_FAULT_DIFF_THRESHOLDS
+    return _DIFF_THRESHOLDS
 
 
 TEST_NAME: str = "trainer_ft_with_failure"
