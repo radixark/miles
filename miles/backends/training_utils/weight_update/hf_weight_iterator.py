@@ -53,6 +53,8 @@ class HfWeightIteratorBase(ABC):
 
     # Placement this implementation can produce; None means any.
     forced_placement: ClassVar[WeightUpdatePlacement | None] = None
+    # Engine runners a sync covers ("all" or "target"); a backend narrows it when its draft is frozen.
+    weight_update_selector: str = "all"
 
     def __init__(
         self,
