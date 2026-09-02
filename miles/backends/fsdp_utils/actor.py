@@ -505,9 +505,21 @@ class FSDPTrainRayActor(TrainRayActor):
                 self.optimizer.zero_grad(set_to_none=True)
 
                 losses_reduced = []
-                for _ in self.prof.iterate_train_actor(
-                    tqdm(range(num_microbatches[step_id]), desc="actor_train", disable=dist.get_rank() != 0)
+                for micro_idx, _ in enumerate(
+                    self.prof.iterate_train_actor(
+                        tqdm(range(num_microbatches[step_id]), desc="actor_train", disable=dist.get_rank() != 0)
+                    )
                 ):
+                    # Name the actor update this micro-batch belongs to, so the
+                    # policy-loss dump can be attributed to one of the
+                    # num_steps_per_rollout optimizer steps instead of only a
+                    # monotonic call counter.
+                    from miles.backends.training_utils.debug_dump import policy_loss_dump_dir
+
+                    if policy_loss_dump_dir(self.args) is not None:
+                        from miles.backends.training_utils.debug_dump import set_dump_context
+
+                        set_dump_context(rollout_id=rollout_id, step_id=step_id, micro_idx=micro_idx)
                     batch = get_batch(
                         data_iterator,
                         [

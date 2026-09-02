@@ -208,7 +208,9 @@ def policy_loss_function(
         ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
     )
 
-    if getattr(args, "dump_details", None) is not None:
+    from miles.backends.training_utils.debug_dump import policy_loss_dump_dir
+
+    if policy_loss_dump_dir(args) is not None:
         from miles.backends.training_utils.debug_dump import maybe_dump_policy_loss_debug
 
         maybe_dump_policy_loss_debug(
