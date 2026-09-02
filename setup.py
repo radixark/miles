@@ -59,6 +59,13 @@ setup(
             "uvicorn>=0.41",
             "prometheus_client>=0.24",
         ],
+        # the openenv e2b sandbox backend, imported only when that backend is
+        # selected. 2.12 is the first release that sends the template name in
+        # the `name` field, which self-hosted AgentENV reads; older ones send
+        # the deprecated `alias` and every Template.build fails with 400
+        "e2b": [
+            "e2b>=2.12",
+        ],
     },
     python_requires=">=3.10",
     classifiers=[

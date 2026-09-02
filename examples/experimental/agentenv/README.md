@@ -54,7 +54,7 @@ documented in the [AgentENV docs](https://kvcache-ai.github.io/AgentENV/).
 ## 2. Point the E2B SDK at it
 
 ```bash
-pip install e2b
+pip install -e '<miles>[e2b]'   # e2b>=2.12: older releases send the template name in a field AgentENV does not read
 export E2B_API_URL=http://<server>:8000       # control plane
 export E2B_SANDBOX_URL=http://<server>:8000   # data plane (envd proxy)
 # plain-HTTP deployments only; the default is https
