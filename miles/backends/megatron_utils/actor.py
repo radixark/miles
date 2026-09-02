@@ -756,7 +756,13 @@ class MegatronTrainRayActor(TrainRayActor):
             save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
         finally:
             if was_asleep:
-                self.sleep()
+                try:
+                    self.sleep()
+                except Exception:
+                    # A failed re-sleep must not masquerade as an export failure
+                    # (the caller deletes the snapshot on error). Stay resident;
+                    # the loop's next offload_train() retries the sleep.
+                    logger.exception("re-sleep after HF export failed; leaving the model resident")
 
     @with_logs
     @timer
