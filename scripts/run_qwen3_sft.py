@@ -25,6 +25,8 @@ Args:
     and defaults this to <output-dir>/<run-id>/dump_details.
   --log-probs-chunk-size: Response-token chunk size for memory-efficient log-probability
     and entropy computation. Defaults to 4096 for Qwen3.6 and disabled for other recipes.
+  --empty-unused-memory-level: Release cached CUDA blocks around the optimizer step.
+    Level 2 also clears after gradient cleanup, before the next training step.
   --num-gpus-per-node: GPUs per node (default: 8).
   --join-ray-workers: For the multi-node recipe, ssh every host of /root/mpi_rack_hostfile
     into the ray cluster (default: on). Turn off when the cluster is already joined.
@@ -52,6 +54,7 @@ import miles.utils.external_utils.command_utils as U
 _MODEL_NAMES = Literal["Qwen3-4B-Base", "Qwen3-235B-A22B", "Qwen3.6-35B-A3B"]
 _OPTIMIZERS = Literal["adam", "muon"]
 _MUON_TP_MODES = Literal["blockwise", "duplicated", "distributed"]
+_EMPTY_UNUSED_MEMORY_LEVELS = Literal[0, 1, 2]
 
 
 @dataclass(frozen=True)
@@ -130,6 +133,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     muon_extra_scale_factor: float = 0.2
     muon_tp_mode: _MUON_TP_MODES = "blockwise"
     muon_state_offload_chunk_size_mb: int = 256
+    empty_unused_memory_level: _EMPTY_UNUSED_MEMORY_LEVELS = 0
     wandb_project: str | None = None
     wandb_run_name: str | None = None
 
@@ -193,8 +197,6 @@ def _validate_parallelism(args: ScriptArgs) -> None:
         raise ValueError(f"world_size={world_size} must be divisible by TP*PP*CP={decoder_parallel_size}")
     if world_size % expert_parallel_size:
         raise ValueError(f"world_size={world_size} must be divisible by ETP*EP*PP={expert_parallel_size}")
-    if args.model_name == "Qwen3.6-35B-A3B" and args.context_parallel_size != 1:
-        raise ValueError("Qwen3.6 gated-delta layers currently require context_parallel_size=1")
     if args.effective_log_probs_chunk_size == 0 or args.effective_log_probs_chunk_size < -1:
         raise ValueError(
             "log_probs_chunk_size must be -1 (disabled) or a positive integer, "
@@ -253,6 +255,7 @@ def execute(args: ScriptArgs) -> None:
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
         f"--max-tokens-per-gpu {args.tokens_per_gpu} "
+        f"--empty-unused-memory-level {args.empty_unused_memory_level} "
     )
     if args.effective_log_probs_chunk_size > 0:
         perf_args += f"--log-probs-chunk-size {args.effective_log_probs_chunk_size} "

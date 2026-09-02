@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from tests.fast.launch_scripts.py_harness import (
     REPO_ROOT,
     call_entrypoint,
@@ -113,21 +111,34 @@ def test_qwen36_muon_uses_layerwise_chunked_offload(monkeypatch, tmp_path) -> No
     assert "--accumulate-allreduce-grads-in-fp32" not in train_command
 
 
-def test_qwen36_rejects_context_parallelism(monkeypatch, tmp_path: Path) -> None:
+def test_qwen36_long_context_muon_uses_context_parallelism(monkeypatch, tmp_path: Path) -> None:
     freeze_environment(monkeypatch)
-    install_command_recorder(monkeypatch)
+    recording = install_command_recorder(monkeypatch)
     module = import_launch_script(REPO_ROOT / "scripts/run_qwen3_sft.py")
 
-    with pytest.raises(
-        ValueError,
-        match="gated-delta layers currently require context_parallel_size=1",
+    call_entrypoint(
+        module,
+        "execute",
+        {
+            "model_name": "Qwen3.6-35B-A3B",
+            "optimizer": "muon",
+            "tensor_model_parallel_size": 4,
+            "context_parallel_size": 2,
+            "expert_model_parallel_size": 8,
+            "max_tokens_per_gpu": 131072,
+            "empty_unused_memory_level": 2,
+        },
+        sandbox=tmp_path,
+    )
+
+    train_command = recording.commands[-1]
+    for fragment in (
+        "--tensor-model-parallel-size 4",
+        "--context-parallel-size 2",
+        "--expert-model-parallel-size 8",
+        "--max-tokens-per-gpu 131072",
+        "--empty-unused-memory-level 2",
+        "--accumulate-allreduce-grads-in-fp32",
     ):
-        call_entrypoint(
-            module,
-            "execute",
-            {
-                "model_name": "Qwen3.6-35B-A3B",
-                "context_parallel_size": 2,
-            },
-            sandbox=tmp_path,
-        )
+        assert fragment in train_command
+    assert "--grad-reduce-in-bf16" not in train_command

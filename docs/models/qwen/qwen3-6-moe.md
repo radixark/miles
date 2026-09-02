@@ -120,11 +120,25 @@ the details dump. Dataset-dependent choices such as sequence-length policy,
 batch sizes, epoch count, learning rate, and save interval should be selected
 after tokenizing the actual data.
 
-For very long sequences, override tensor parallelism and the dynamic token
-budget explicitly. Qwen3.6's gated-delta layers do not support context
-parallelism in the current Megatron backend, so the launcher rejects `CP>1`.
-On one 8-GPU node, `--tensor-model-parallel-size 8 --context-parallel-size 1`
-keeps all eight GPUs in one model replica while retaining `EP=8`.
+For very long sequences, override tensor parallelism, context parallelism, and
+the dynamic token budget explicitly. The FLA gated-delta backend supports
+context parallelism. A packed microbatch may contain at most
+`max_tokens_per_gpu * context_parallel_size` tokens; an individual example
+longer than that cannot be made smaller by ordinary bin packing. For data up
+to 262,144 tokens on one 8-GPU node, this layout keeps the intended 131,072
+token per-GPU ceiling while retaining `EP=8`:
+
+```bash
+--tensor-model-parallel-size 4 \
+--context-parallel-size 2 \
+--expert-model-parallel-size 8 \
+--max-tokens-per-gpu 131072
+```
+
+For a memory-constrained optimizer, `--empty-unused-memory-level 2` also asks
+the Miles Megatron loop to release cached activation and optimizer blocks
+between steps. This does not change parameter, gradient, logit, or loss
+precision.
 
 The launcher accumulates and reduces gradients in FP32 by default. For
 memory-constrained Muon runs, `--grad-reduce-in-bf16` switches only the gradient

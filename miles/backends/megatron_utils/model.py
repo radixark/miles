@@ -416,6 +416,12 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _empty_unused_cuda_memory(args: Namespace, *, level: int) -> None:
+    """Honor Megatron's cache-release levels in Miles' custom training loop."""
+    if args.empty_unused_memory_level >= level:
+        torch.cuda.empty_cache()
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -586,6 +592,11 @@ def train_one_step(
         forward_only=False,
     )
 
+    # Match Megatron's native training loop: level 1 releases cached activation
+    # blocks before the optimizer, while level 2 also releases blocks left by
+    # the optimizer/gradient cleanup before the next long microbatch.
+    _empty_unused_cuda_memory(args, level=1)
+
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
     valid_step = True
@@ -648,6 +659,7 @@ def train_one_step(
     # zeroed selectively inside step_adapter_slots)
     if not multi_lora:
         _zero_grads(model, optimizer, disable_optimizer)
+    _empty_unused_cuda_memory(args, level=2)
 
     log_structured(
         logger.info,
