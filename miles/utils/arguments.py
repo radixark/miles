@@ -2109,8 +2109,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Whether to only run the training without sglang servers. "
-                    "This is useful for debugging the rollout generation function."
+                    "Whether to run training without rollout generation. "
+                    "Rollout servers are skipped, but snapshot-eval servers may still "
+                    "start when configured. "
+                    "This is useful for debugging training."
                 ),
             )
             parser.add_argument(

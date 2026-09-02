@@ -373,7 +373,7 @@ contract, session behavior, and model-family selection.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--debug-rollout-only` | flag | off | Skip Megatron, only spin up SGLang. |
-| `--debug-train-only` | flag | off | Skip SGLang, only spin up Megatron. |
+| `--debug-train-only` | flag | off | Skip rollout generation; configured snapshot-eval engines may still start. |
 | `--save-debug-rollout-data` | path | – | Pickle every rollout to disk. |
 | `--load-debug-rollout-data` | path | – | Replay rollouts from disk (implies `--debug-train-only`). |
 | `--deterministic-mode` | flag | off | Megatron deterministic mode. |

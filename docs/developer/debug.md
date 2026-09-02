@@ -11,12 +11,16 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 | Flag | What it does |
 |---|---|
 | `--debug-rollout-only` | Run generation only. The training backend (Megatron or FSDP) is never initialized. |
-| `--debug-train-only` | Run training only. No SGLang engines are started. |
+| `--debug-train-only` | Run training without rollout generation. Rollout engines are skipped; configured snapshot-eval engines may still start. |
 | `--save-debug-rollout-data <path>` | Pickle every rollout to `path.format(rollout_id)`. |
 | `--load-debug-rollout-data <path>` | Train from those recordings instead of generating. Implies `--debug-train-only`, since it does not start engines. |
 
 The two `--debug-*-only` flags are mutually exclusive and argument validation rejects
 setting both.
+
+When `--eval-uses-snapshots` is configured, `--debug-train-only` suppresses only the
+training rollout engines. Miles can still start dedicated evaluation engines and
+asynchronously evaluate exported training snapshots.
 
 The pattern worth internalizing:
 
