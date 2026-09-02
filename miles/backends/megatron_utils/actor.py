@@ -759,10 +759,12 @@ class MegatronTrainRayActor(TrainRayActor):
                 try:
                     self.sleep()
                 except Exception:
-                    # A failed re-sleep must not masquerade as an export failure
-                    # (the caller deletes the snapshot on error). Stay resident;
-                    # the loop's next offload_train() retries the sleep.
-                    logger.exception("re-sleep after HF export failed; leaving the model resident")
+                    # sleep() destroys process groups before the fallible pause(),
+                    # so restore them: the actor must be genuinely resident, and
+                    # this failure must not masquerade as an export failure (the
+                    # caller deletes the snapshot on error).
+                    logger.exception("re-sleep after HF export failed; restoring process groups and staying resident")
+                    reload_process_groups()
 
     @with_logs
     @timer
