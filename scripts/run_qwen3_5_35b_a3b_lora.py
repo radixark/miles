@@ -7,8 +7,9 @@ GDN (gated-delta-net) linear attention; every layer carries 256 routed experts +
 1 shared expert. Qwen3.6-35B-A3B ships the same architecture and HF classes
 (``Qwen3_5MoeForConditionalGeneration``), so both run through this script.
 
-LoRA trains through the bridge path (``--megatron-to-hf-mode bridge``); the
-registry ``.sh`` only satisfies megatron argparse and its ``--spec`` is inert.
+LoRA trains through the bridge path (``--megatron-to-hf-mode bridge``) on the
+megatron-native GDN (``--model-impl megatron``); the registry only satisfies
+megatron argparse.
 
 Default target modules are wildcards anchored at ``language_model.decoder.layers.*``:
 this keeps LoRA off the MTP block (``language_model.mtp.*`` has no adapter export
@@ -20,7 +21,6 @@ and ``out_proj``.
 
 Constraints baked into the parallel config:
   * TP <= 2: num_query_groups=2 caps tensor parallelism for the 35B-A3B geometry.
-  * ``--qkv-format bshd``: megatron-core GatedDeltaNet rejects packed (thd) sequences.
 
 Usage:
   python scripts/run_qwen3_5_35b_a3b_lora.py prepare    --model-name Qwen3.5-35B-A3B
@@ -118,17 +118,13 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
 
 def _get_parallel_config(args: ScriptArgs) -> str:
-    """Single-node layout: TP2 (num_query_groups=2 caps TP), EP = num GPUs, DP for the rest.
-
-    bshd is required because the megatron-core GatedDeltaNet forward rejects packed
-    sequences; with --micro-batch-size 1 the batch stays unpacked.
-    """
+    """Single-node layout: TP2 (num_query_groups=2 caps TP), EP = num GPUs, DP for the rest."""
     return (
         "--tensor-model-parallel-size 2 --sequence-parallel --pipeline-model-parallel-size 1 "
         f"--context-parallel-size 1 --expert-model-parallel-size {args.num_gpus_per_node} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full --recompute-method uniform --recompute-num-layers 1 "
-        "--qkv-format bshd --micro-batch-size 1 --max-tokens-per-gpu 4096 "
+        "--use-dynamic-batch-size --max-tokens-per-gpu 4096 "
     )
 
 
@@ -154,7 +150,7 @@ def _train(args: ScriptArgs):
     )
     load_save_path = f"{args.save_dir}/{args.run_id}"
 
-    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge "
+    ckpt_args = f"--hf-checkpoint {args.hf_checkpoint} --megatron-to-hf-mode bridge --model-impl megatron "
 
     lora_args = f'--lora-rank {args.lora_rank} --lora-alpha {args.lora_alpha} --lora-dropout {args.lora_dropout} --target-modules "{args.target_modules}" '
     if args.experts_shared_outer_loras:
