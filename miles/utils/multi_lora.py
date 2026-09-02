@@ -1,8 +1,4 @@
-"""Small multi-LoRA helpers shared across the rollout, trainer, and controller.
-
-The controller-side machinery (AdapterRegistry, MultiLoRABackend,
-MultiLoRAHTTPServer) lives in ``miles/ray/multi_lora/``.
-"""
+"""Small Multi-LoRA helpers shared across rollout, trainer, and controller."""
 
 import logging
 import uuid
@@ -11,14 +7,12 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "EmptyBatchTimeoutError",
     "RID_SEPARATOR",
-    "define_new_adapter_metrics",
     "is_multi_lora_enabled",
     "make_rid",
-    "min_groups_per_dp_split",
-    "parse_adapter",
     "slot_lora_name",
+    "targets_expert_leaves",
+    "uses_multi_lora_operation_executor",
     "validate_multi_lora_args",
 ]
 
@@ -27,23 +21,15 @@ __all__ = [
 RID_SEPARATOR = "::"
 
 
-class EmptyBatchTimeoutError(RuntimeError):
-    """No trainable groups arrived before empty-wait timeout."""
-
-
 def is_multi_lora_enabled(args: Any) -> bool:
     return getattr(args, "multi_lora", False)
 
 
-def define_new_adapter_metrics(snapshot: dict) -> None:
-    """Declare metric axes for new adapters ({name}/* -> {name}/step, {name}/perf/* -> rollout/step); must run
-    in the primary tracking writer. Already-declared adapters are skipped, so calling every snapshot is free."""
-    # lazy import tracking deps
-    from miles.utils.tracking_utils.tracking import define_step_key_metric_group
+def uses_multi_lora_operation_executor(args: Any) -> bool:
+    """Whether explicit operations execute on fixed Multi-LoRA slots."""
+    from miles.utils.tinker import uses_explicit_training_operations
 
-    for name in {**snapshot["pending"], **snapshot["active"], **snapshot["retiring"]}:
-        define_step_key_metric_group(prefix=name, step_key=f"{name}/step")
-        define_step_key_metric_group(prefix=f"{name}/perf", step_key="rollout/step")
+    return uses_explicit_training_operations(args) and getattr(args, "multi_lora_n_adapters", 0) > 0
 
 
 # Leaf module names that can live inside MoE experts (they also name the dense MLP
@@ -64,17 +50,13 @@ def targets_expert_leaves(target_modules: Any) -> bool:
 
 
 def validate_multi_lora_args(args: Any) -> None:
-    """Set ``args.multi_lora``, then validate and default the multi-LoRA arg
-    surface. Called from ``miles_validate_args``; a no-op for normal runs."""
     args.multi_lora = getattr(args, "multi_lora_n_adapters", 0) > 0
     if not args.multi_lora:
         return
 
-    # Swap in the multi-LoRA rollout fn and data source unless the user pointed these flags elsewhere.
-    if args.rollout_function_path is None:
-        args.rollout_function_path = "miles.rollout.multi_lora.async_rollout.generate_rollout_multi_lora"
-    if args.data_source_path == "miles.rollout.data_source.RolloutDataSourceWithBuffer":
-        args.data_source_path = "miles.rollout.multi_lora.data_source.MultiLoRAAsyncDataSource"
+    assert getattr(
+        args, "tinker_backend", False
+    ), "multi-LoRA now requires --tinker-backend: the dataset-driven adapter-sample-level path was removed"
     # The per-adapter data source is inherently global (the controller owns
     # what is sampleable); rollout workers must not shard it.
     args.rollout_global_dataset = True
@@ -129,47 +111,17 @@ def validate_multi_lora_args(args: Any) -> None:
         "(sample-mean); per-token loss normalization would make adapter batch weights "
         "depend on batch contents. Drop --calculate-per-token-loss."
     )
-    assert args.multi_lora_max_coalesce_wait_s >= 0, "--multi-lora-max-coalesce-wait-s must be non-negative"
     assert (getattr(args, "optimizer", "adam") or "adam").lower() == "adam", (
         "Multi-LoRA requires --optimizer adam: the per-slot optimizer isolation "
-        "(build_multi_lora_optimizer, slot retirement state cleanup) only implements "
+        "(slot optimizer construction, slot retirement state cleanup) only implements "
         f"Adam semantics; got --optimizer {args.optimizer}"
     )
     from miles.utils.environ import enable_experimental_ft_trainer
 
     assert not enable_experimental_ft_trainer(), (
         "Multi-LoRA is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
-        "train group has no reconcile_adapters and does not return train outcomes"
+        "train group has no adapter reconcile verbs and does not return train outcomes"
     )
-    # --global-batch-size may legitimately be unset (Megatron derives it later);
-    # leave the adapter cap unset too rather than multiplying None.
-    if args.multi_lora_max_adapter_global_batch_size is None and getattr(args, "global_batch_size", None) is not None:
-        args.multi_lora_max_adapter_global_batch_size = 4 * args.global_batch_size
-    if args.multi_lora_max_adapter_global_batch_size is not None:
-        assert (
-            args.multi_lora_max_adapter_global_batch_size > 0
-        ), "--multi-lora-max-adapter-global-batch-size must be positive"
-
-    # Trainer DP size, used to validate adapter batch shapes; guarded for harnesses without megatron args set.
-    if all(
-        hasattr(args, name)
-        for name in (
-            "world_size",
-            "tensor_model_parallel_size",
-            "pipeline_model_parallel_size",
-            "context_parallel_size",
-        )
-    ):
-        from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-
-        model_parallel = compute_megatron_world_size_except_dp(args)
-        assert (
-            args.world_size % model_parallel == 0
-        ), f"actor world size {args.world_size} is not divisible by tp*pp*cp {model_parallel}"
-        args.multi_lora_dp_size = args.world_size // model_parallel
-    else:
-        args.multi_lora_dp_size = None
-
     # Batches are variable-sized; carry the exact sample
     # count through rollout conversion instead of trimming to --global-batch-size.
     assert not args.disable_rollout_trim_samples, (
@@ -184,31 +136,7 @@ def make_rid(adapter_name: str) -> str:
     return f"{adapter_name}{RID_SEPARATOR}{uuid.uuid4().hex}"
 
 
-def parse_adapter(rid: str) -> str:
-    return rid.rsplit(RID_SEPARATOR, 1)[0]
-
-
 def slot_lora_name(slot: int) -> str:
     """Engine-side LoRA adapter name for a controller slot. Weight pushes and
     every inference request (rollout and prefill scoring) must agree on this."""
     return f"__miles_slot_{slot}"
-
-
-def min_groups_per_dp_split(n_samples_per_prompt: int, dp_size: int) -> int:
-    """Minimum prompt-group count that splits cleanly across data-parallel
-    ranks.
-
-    Train batches only pop groups in multiples of this value, so each popped
-    slice has a sample count divisible by ``dp_size`` with no trimming.
-
-    Requires ``n_samples_per_prompt`` and ``dp_size`` to divide each other
-    (one must be a multiple of the other).
-    """
-    larger = max(dp_size, n_samples_per_prompt)
-    smaller = min(dp_size, n_samples_per_prompt)
-    if larger % smaller == 0:
-        return larger // n_samples_per_prompt
-    raise ValueError(
-        f"n_samples_per_prompt={n_samples_per_prompt} must be a divisor or a multiple of "
-        f"the data-parallel size {dp_size} so whole prompt groups can split evenly across ranks"
-    )

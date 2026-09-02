@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -30,3 +31,26 @@ def test_flush_cache_sleeps_between_pending_request_retries(monkeypatch):
         f"expected the loop to back off on every one of its 60 attempts, got {len(sleep_calls)} sleeps "
         "-- a 400 response (pending requests) must not skip the retry delay"
     )
+
+
+def test_update_weight_version_does_not_abort_in_flight_requests(monkeypatch):
+    pytest.importorskip("sglang")
+    from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+
+    engine = SGLangEngine.__new__(SGLangEngine)
+    engine.node_rank = 0
+    engine.server_host = "fake-host"
+    engine.server_port = 1234
+    posts = []
+
+    def fake_post(url, json=None):
+        posts.append((url, json))
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+
+    engine.update_weight_version("3")
+
+    assert posts == [
+        ("http://fake-host:1234/update_weight_version", {"new_version": "3", "abort_all_requests": False})
+    ]

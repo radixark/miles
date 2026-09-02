@@ -1827,12 +1827,40 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
             )
             parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
+                "--tinker-backend",
+                action="store_true",
+                default=False,
+                help="Enable the Tinker protocol adapter for Multi-LoRA (requires --multi-lora-n-adapters > 0)",
+            )
+            parser.add_argument(
+                "--tinker-max-coalesce-wait-s",
+                type=float,
+                default=2.0,
+                help="Keep coalescing ready batches into the same train call this long after the first (default: 2.0)",
+            )
+            parser.add_argument(
+                "--tinker-max-empty-wait-s",
+                type=float,
+                default=5.0,
+                help="Idle window before EmptyBatchTimeoutError; short so control ops never wait (default: 5.0)",
+            )
+            parser.add_argument(
+                "--tinker-operation-gap-timeout",
+                type=float,
+                default=600.0,
+                help="Gap-stall seconds before blocked ops fail and the hole seals; <= 0 disables (default: 600)",
+            )
+            parser.add_argument(
+                "--tinker-operation-claimed-ttl",
+                type=float,
+                default=1800.0,
+                help="Liveness backstop: fail orphaned CLAIMED ops after this long; <= 0 disables (default: 1800)",
+            )
+            parser.add_argument(
+                "--multi-lora-max-consecutive-generate-failures",
+                type=int,
+                default=10,
+                help="Consecutive generate failures skipped before re-raising; 0 fails fast (default: 10)",
             )
             parser.add_argument(
                 "--multi-lora-idle-poll-s",
@@ -1845,18 +1873,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=str,
                 default=None,
                 help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
+                    "Dotted path to an AdapterRunControlServer subclass to use for the multi-LoRA "
+                    "controller's HTTP server (default: AdapterRunControlServer)"
                 ),
             )
             parser.add_argument(
                 "--multi-lora-backend-path",
                 type=str,
                 default=None,
-                help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
-                ),
+                help="Dotted path to a MultiLoraOperationBackend subclass (e.g. custom validate_adapter)",
             )
             parser.add_argument(
                 "--multi-lora-api-port",
@@ -1865,38 +1890,68 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
             )
             parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
+                "--tinker-frontend",
+                action="store_true",
+                default=False,
+                help="Serve the official tinker SDK REST protocol (/api/v1) on the tinker "
+                "controller's HTTP server: an unmodified `tinker` client pointed at it "
+                "(base_url + api_key) drives training and sampling",
             )
             parser.add_argument(
-                "--multi-lora-max-adapter-global-batch-size",
+                "--tinker-api-key",
+                type=str,
+                default=None,
+                help="API key the tinker frontend requires in X-API-Key (single-tenant; the SDK "
+                "needs a 'tml-' prefix). Falls back to $MILES_TINKER_API_KEY. Required for a "
+                "non-loopback bind (fail closed)",
+            )
+            parser.add_argument(
+                "--tinker-sampling-max-active-subgenerations",
+                type=int,
+                default=64,
+                help="Global cap on concurrently executing sampling sub-generations across ALL "
+                "SDK clients (one request counts num_samples). Submissions over the cap get a "
+                "retryable 429 before consuming their identity, and the router transport holds "
+                "the same hard bound; the SDK's per-client limit of 64 never bounded the "
+                "aggregate (default: 64, validated on H200)",
+            )
+            parser.add_argument(
+                "--tinker-sampling-max-context",
                 type=int,
                 default=None,
-                help=(
-                    "Registration-time upper bound on an adapter's samples per optimizer "
-                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
-                    "--global-batch-size."
-                ),
+                help="Engine context limit (tokens) the tinker frontend preflights sample "
+                "requests against: prompt + max_tokens over the limit is a typed 400 before "
+                "the seq identity is consumed (the engine would otherwise silently truncate "
+                "the decode budget and return garbage). Default: --sglang-context-length when "
+                "set, else discovered from the router's /get_server_info on the first sample",
             )
             parser.add_argument(
-                "--multi-lora-max-coalesce-wait-s",
+                "--tinker-session-idle-ttl",
                 type=float,
-                default=0.5,
-                help=(
-                    "Maximum time ready groups wait for the batch to fill toward "
-                    "--global-batch-size before training starts on what is ready (default: 0.5)."
-                ),
+                default=3600.0,
+                help="Seconds without a session heartbeat before the tinker frontend reaps the "
+                "session and its sampling sessions (the SDK heartbeats continuously while the "
+                "client lives). Old sampler ids then fail closed, so nothing a vanished client "
+                "executed can re-execute. <= 0 disables (default: 3600)",
             )
             parser.add_argument(
-                "--multi-lora-max-empty-wait-s",
+                "--tinker-future-unpolled-ttl",
                 type=float,
-                default=30.0,
-                help=(
-                    "How long a generate call waits for the first poppable group before "
-                    "failing with an empty-batch timeout (default: 30)."
-                ),
+                default=900.0,
+                help="Seconds without a retrieve_future poll before the tinker frontend treats "
+                "a pending future as orphaned: an orphaned sample's server-side generation is "
+                "cancelled (SDK future cancellation never reaches the engine on its own) and "
+                "the future resolves typed; orphaned training futures are polled on the "
+                "client's behalf so the ledger's unacked-results budget drains. <= 0 disables "
+                "(default: 900)",
+            )
+            parser.add_argument(
+                "--tinker-future-undelivered-ttl",
+                type=float,
+                default=3600.0,
+                help="Seconds a terminal-but-never-retrieved future result is retained before "
+                "the reaper evicts it to a fingerprint tombstone (a late retry then gets a "
+                "typed 410, never a silent re-execution). <= 0 disables (default: 3600)",
             )
             return parser
 
@@ -3173,6 +3228,10 @@ def miles_validate_args(args):
     from miles.utils.multi_lora import validate_multi_lora_args
 
     validate_multi_lora_args(args)
+
+    from miles.utils.tinker import validate_tinker_args
+
+    validate_tinker_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
 

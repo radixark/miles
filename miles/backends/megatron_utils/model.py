@@ -32,8 +32,9 @@ from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
-from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.multi_lora import is_multi_lora_enabled, uses_multi_lora_operation_executor
 from miles.utils.test_utils.ft_test_actions import FTTestActionActorExecutor
+from miles.utils.tinker import uses_explicit_training_operations
 from miles.utils.tracking_utils.structured_log import log_structured
 
 from ...utils.misc import filter_keys
@@ -196,10 +197,12 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
-    elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
+    elif uses_multi_lora_operation_executor(args):
+        from miles.backends.megatron_utils.api_backends.multi_lora.optimizer import (
+            build_multi_lora_operation_optimizer,
+        )
 
-        optimizer = build_multi_lora_optimizer(args, config, model)
+        optimizer = build_multi_lora_operation_optimizer(args, config, model)
     else:
         optimizer = get_megatron_optimizer(
             config=config,
@@ -425,6 +428,7 @@ def train_one_step(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    forward_only: bool = False,
 ) -> tuple[dict[str, float], float, TrainStepOutcome]:
     """Execute a single pipeline-parallel training step.
 
@@ -432,8 +436,8 @@ def train_one_step(
     one scheduler step when gradients are valid.
 
     Multi-LoRA: gradients are retained across train calls (per-adapter
-    gradient accumulation); only the slots in the batch's ``step_slots`` step,
-    and only their gradients are zeroed.
+    gradient accumulation); slots step only when the client's optim_step
+    operation executes, and only their gradients are zeroed.
 
     Args:
         args: Runtime arguments.
@@ -453,10 +457,10 @@ def train_one_step(
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
-    multi_lora = is_multi_lora_enabled(args)
+    explicit_optim_step = uses_explicit_training_operations(args)
 
-    if multi_lora:
-        from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
+    if explicit_optim_step:
+        from miles.backends.training_utils.operation_execution import reset_grad_metadata_keep_grads
 
         # Retain accumulated per-adapter gradients; reset only the per-iteration
         # DDP bookkeeping. Slot grads are zeroed selectively at step time.
@@ -503,6 +507,8 @@ def train_one_step(
                 "advantages",
                 "returns",
                 "rollout_log_probs",
+                "loss_weights",
+                "sample_indices",
                 "max_seq_lens",
                 "witness_ids",
                 "opd_reverse_kl",
@@ -563,7 +569,6 @@ def train_one_step(
             num_rollouts=num_rollouts,
         )
 
-    # Forward pass.
     forward_backward_func = get_forward_backward_func()
     losses_reduced = forward_backward_func(
         forward_step_func=forward_step,
@@ -573,7 +578,7 @@ def train_one_step(
         seq_length=args.seq_length,
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
-        forward_only=False,
+        forward_only=forward_only,
     )
 
     outcome = TrainStepOutcome.NORMAL
@@ -595,7 +600,11 @@ def train_one_step(
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
 
-    if (not disable_optimizer) and (not multi_lora) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
+    if (
+        (not disable_optimizer)
+        and (not explicit_optim_step)
+        and (not getattr(args, "check_for_nan_in_loss_and_grad", True))
+    ):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
@@ -620,12 +629,8 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
-        if multi_lora:
-            from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
-
-            grad_norm = step_stepped_adapter_slots(
-                args, model, optimizer, data_iterator[0].rollout_data, rollout_id, step_id
-            )
+        if explicit_optim_step:
+            grad_norm = 0.0
         else:
             # Update parameters.
             update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
@@ -634,9 +639,7 @@ def train_one_step(
             assert update_successful
             opt_param_scheduler.step(increment=num_rollouts)
 
-    # release grad (multi-LoRA retains accumulated grads; stepped slots were
-    # zeroed selectively inside step_adapter_slots)
-    if not multi_lora:
+    if not explicit_optim_step:
         _zero_grads(model, optimizer, disable_optimizer)
 
     log_structured(
@@ -689,6 +692,7 @@ def train(
     witness_info: WitnessInfo | None,
     attempt: int,
     ft_test_action_executor: FTTestActionActorExecutor | None = None,
+    forward_only: bool = False,
 ) -> TrainStepOutcome:
     """Run training over a rollout consisting of multiple steps.
 
@@ -703,6 +707,8 @@ def train(
         data_iterator (Sequence[DataIterator]): Iterable(s) yielding training batches.
         num_microbatches (Sequence[int]): Microbatches per step in the rollout.
         num_rollouts (Sequence[int]): Rollout count per step (total across DP).
+        forward_only (bool): Run the schedule without backward (tinker
+            ``forward`` operations: logprobs only, gradients untouched).
     """
     parallel_state = get_parallel_state()
     args = get_args()
@@ -796,6 +802,7 @@ def train(
             witness_info=witness_info,
             attempt=attempt,
             ft_test_action_executor=ft_test_action_executor,
+            forward_only=forward_only,
         )
 
         if step_id == 0:

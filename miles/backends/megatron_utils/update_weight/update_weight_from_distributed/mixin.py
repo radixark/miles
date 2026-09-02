@@ -279,7 +279,7 @@ class DistBucketedWeightUpdateMixin:
 
         from miles.utils.multi_lora import slot_lora_name
 
-        from ...multi_lora_utils import slice_lora_to_rank
+        from ...api_backends.multi_lora.model import slice_lora_to_rank
 
         adapter_rank = adapter.config.rank
         lora_config = build_lora_sync_config(self.args) | {"r": adapter_rank, "lora_alpha": adapter.config.alpha}
@@ -302,12 +302,12 @@ class DistBucketedWeightUpdateMixin:
 
         self._update_multi_lora_weight_implementation(
             accumulated_named_tensors,
-            lora_name=slot_lora_name(adapter.slot),
+            lora_name=getattr(adapter, "serving_name", None) or slot_lora_name(adapter.slot),
             lora_config=lora_config,
         )
 
     def _pause_and_prepare_engines(self) -> None:
-        """Pause rollout engines, flush cache, and open the weight-update session."""
+        """Pause rollout engines and prepare base weights when they will be updated."""
         self._weight_update_selector = weight_update_selector(self.args)
         if dist.get_rank() == 0:
             mode = self.args.pause_generation_mode
@@ -315,10 +315,11 @@ class DistBucketedWeightUpdateMixin:
             if mode != "in_place":
                 ray.get([engine.flush_cache.remote() for engine in self.rollout_engines])
 
-            begin_weight_update(self.rollout_engines, self._weight_update_selector)
+            if not self.is_lora:
+                begin_weight_update(self.rollout_engines, self._weight_update_selector)
 
     def _finalize_and_resume_engines(self) -> None:
-        """Close the weight-update session and resume rollout engines."""
+        """Finalize base weights when updated and resume rollout engines."""
         if dist.get_rank() == 0:
             # unify update weight version here to cover both full param and lora update
             ray.get(
@@ -327,7 +328,8 @@ class DistBucketedWeightUpdateMixin:
                     for engine in self.rollout_engines
                 ]
             )
-            end_weight_update(self.rollout_engines)
+            if not self.is_lora:
+                end_weight_update(self.rollout_engines)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
 
     def pop_metrics(self) -> dict[str, float]:

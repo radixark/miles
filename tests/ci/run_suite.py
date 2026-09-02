@@ -177,12 +177,22 @@ def pretty_print_tests(
 def build_cpu_pytest_cmd(filenames: list[str], continue_on_error: bool) -> list[str]:
     """Build the single pytest invocation for a CPU suite.
 
+    Files are passed in sorted order so every package directory's arguments
+    stay contiguous. pytest 9.1 binds conftest fixtures to the package
+    collector *instance*, yet re-collects a package's children -- overwriting
+    the collection cache -- whenever an argument is a file directly inside it.
+    An interleaving like ``pkg/test_a.py ancestor/test_b.py pkg/test_c.py``
+    therefore rebuilds pkg's collector chain after its conftest fixtures were
+    bound to the old instance, and pkg/test_c.py dies at setup with "fixture
+    not found". Sorted paths keep each package's block contiguous, so a
+    package is never re-entered after an ancestor-level file re-collect.
+
     `-x` (stop at first failure) is the default regular-run behavior. With
     continue_on_error -- e.g. a PR carrying the `bypass-fastfail` label -- drop
     `-x` so every file runs; pytest still exits non-zero if any failed, so the
     stage stays red.
     """
-    cmd = ["pytest", *filenames, "-v"]
+    cmd = ["pytest", *sorted(filenames), "-v"]
     if not continue_on_error:
         cmd.append("-x")
     return cmd

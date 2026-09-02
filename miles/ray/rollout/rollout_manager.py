@@ -19,12 +19,14 @@ from miles.ray.rollout.train_data_conversion import (
     ROLLOUT_DATA_VALUE_SPEC,
     convert_samples_to_train_data,
     split_train_data_by_dp,
+    tinker_dispatch_summary,
 )
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnTrainInput,
+    RolloutPostprocessOptions,
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
@@ -162,11 +164,15 @@ class RolloutManager:
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
         sample_indices = data.get("sample_indices")
+        dispatch = tinker_dispatch_summary(data)
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        return dict(sample_indices=sample_indices, data_ref=data_ref)
+        if dispatch is not None:
+            return dict(sample_indices=sample_indices, data_ref=data_ref, tinker_dispatch=dispatch)
+        else:
+            return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(
         self,
@@ -256,10 +262,16 @@ class RolloutManager:
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
+            conversion_metadata = getattr(data, "conversion_metadata", None) or {}
+            postprocess = getattr(data, "postprocess", None) or RolloutPostprocessOptions()
             data = data.samples
             data, metadata = postprocess_rollout_data(
-                self.args, data, train_parallel_config=self.train_parallel_config
+                self.args,
+                data,
+                train_parallel_config=self.train_parallel_config,
+                pad_to_dp=postprocess.pad_to_dp,
             )
+            metadata.update(conversion_metadata)
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
                 data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)

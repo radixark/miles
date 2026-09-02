@@ -163,6 +163,34 @@ class TestSetupModelAndOptimizerLoraBranch:
         mock_lora_setup.assert_not_called()
         mock_get_model.assert_called_once()
 
+    @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
+    @patch("miles.backends.megatron_utils.api_backends.multi_lora.optimizer.build_multi_lora_operation_optimizer")
+    @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
+    @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
+    def test_multi_lora_operations_route_to_canonical_optimizer_builder(
+        self, mock_lora_setup, mock_megatron_opt, mock_operation_opt, mock_sched
+    ):
+        from miles.backends.megatron_utils.model import setup_model_and_optimizer
+
+        model = [MagicMock()]
+        optimizer = MagicMock()
+        mock_lora_setup.return_value = model
+        mock_operation_opt.return_value = optimizer
+        mock_sched.return_value = MagicMock()
+
+        args = self._make_args(lora_rank=32, role="actor", mode="bridge")
+        args.multi_lora = True
+        args.multi_lora_n_adapters = 2
+        args.tinker_backend = True
+
+        _, actual_optimizer, _ = setup_model_and_optimizer(args, role="actor")
+
+        mock_operation_opt.assert_called_once()
+        assert mock_operation_opt.call_args.args[0] is args
+        assert mock_operation_opt.call_args.args[2] is model
+        assert actual_optimizer is optimizer
+        mock_megatron_opt.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # save — LoRA vs regular branch

@@ -182,7 +182,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         payload["top_logprobs_num"] = opd_top_k
 
     if sample.adapter is not None:
-        from miles.ray.multi_lora.controller import AdaptersCache
+        from miles.ray.multi_lora.cache import AdaptersCache
 
         if (adapter := await AdaptersCache().get(sample.adapter.name)) is None:
             # Adapter deregistered: don't POST, or an orphan the abort round can't see

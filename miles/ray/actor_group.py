@@ -129,10 +129,13 @@ class RayTrainGroup:
 
         await self._broadcast("update_weights", info=info)
 
-    async def reconcile_adapters(self) -> None:
-        """Multi-LoRA: reconcile loaded adapters with the controller's active set
-        (load new, cleanup gone). Called by the trainer before generate."""
-        await self._broadcast("reconcile_adapters")
+    async def reconcile_tinker_adapters(self) -> None:
+        """Converge trainer residency to the tinker controller's registry."""
+        await self._broadcast("reconcile_tinker_adapters")
+
+    async def execute_tinker_controls(self, operations: list[dict], lease_metadata: dict) -> dict:
+        results = await self._broadcast("execute_tinker_controls", operations, lease_metadata)
+        return results[0]
 
     async def onload(self):
         await self._broadcast("wake_up")

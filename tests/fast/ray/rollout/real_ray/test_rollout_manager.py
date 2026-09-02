@@ -20,7 +20,13 @@ import ray
 from tests.fast.ray.rollout.conftest import make_args, make_samples_grouped
 
 from miles.ray.rollout.rollout_manager import RolloutManager
-from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnTrainInput, RolloutFnTrainOutput
+from miles.rollout.base_types import (
+    RolloutFnEvalInput,
+    RolloutFnEvalOutput,
+    RolloutFnTrainInput,
+    RolloutFnTrainOutput,
+    RolloutPostprocessOptions,
+)
 
 
 @pytest.fixture
@@ -625,6 +631,34 @@ class TestGenerate:
             assert "loss_masks" in partition
             # 8 samples / 2 dp = 4 per rank
             assert len(partition["tokens"]) == 4
+
+    async def test_typed_postprocess_options_drive_dp_padding(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        args.global_batch_size = 8
+        pg = placement_group_factory(2)
+
+        manager = _make_manager(args, pg)
+        manager.train_parallel_config = {"dp_size": 2}
+
+        def fake_rollout_fn(input):
+            return RolloutFnTrainOutput(
+                samples=[make_samples_grouped(n_groups=7, group_size=1)],
+                postprocess=RolloutPostprocessOptions(pad_to_dp=True),
+            )
+
+        manager.generate_rollout = fake_rollout_fn
+
+        result = await manager.generate(rollout_id=7)
+
+        assert result["sample_indices"] == [0, 1, 2, 3, 4, 5, 6, -1]
+        partitions = ray.get([box.inner for box in result["data_ref"]])
+        assert [len(p["tokens"]) for p in partitions] == [4, 4]
 
 
 @pytest.mark.asyncio
