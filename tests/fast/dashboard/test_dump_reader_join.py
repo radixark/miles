@@ -132,7 +132,7 @@ def test_partial_train_coverage_degrades_to_null_rows(tmp_path):
     """A sample can be missing from every train shard (e.g. dropped before
     training dumped its rows). Its train columns must come back null -- the
     step must keep loading, not 500."""
-    dump_dummy_run(tmp_path, steps=1, dp_size=2)
+    dump_dummy_run(tmp_path, steps=1, dp_size=2, tp_dup=1)  # tp_dup=1: one shard row per sample
     reader = DumpReader(tmp_path)
     path = reader.train_dir / "0_0.pt"
     pack = torch.load(path, weights_only=False)
