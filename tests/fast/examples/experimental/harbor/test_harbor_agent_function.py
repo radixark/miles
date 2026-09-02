@@ -285,7 +285,8 @@ def test_run_scores_a_trial_exception_zero(tasks_dir, fake_harbor):
     assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
 
 
-def test_run_scores_a_missing_task_zero(tasks_dir, fake_harbor):
-    out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "missing"}))
-    assert out["reward"] == 0.0 and out["exit_status"] == "AgentError"
+def test_run_raises_on_a_missing_task_instead_of_scoring_zero(tasks_dir, fake_harbor):
+    """A config error fails every sample; raising beats training on silent all-zero rewards."""
+    with pytest.raises(FileNotFoundError):
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "missing"}))
     assert fake_harbor.created == []

@@ -4,7 +4,7 @@ Runs one Harbor trial inside the rollout worker: build a ``TrialConfig`` from
 the sample, ``Trial.run()`` it, and hand the verdict back as sample metadata.
 Nothing sits between the worker and Harbor -- no agent server -- so this needs a
 sandbox backend the worker can drive over the network (``HARBOR_ENV_TYPE`` =
-``e2b`` for E2B Cloud or a self-hosted AgentENV, ``daytona``, ``modal``, ...).
+``e2b`` for E2B Cloud or a self-hosted E2B-compatible endpoint, ``daytona``, ``modal``, ...).
 The local ``docker`` backend needs a Docker daemon next to ``Trial.run()``;
 for that, keep the agent server (``examples/swe-agent-harbor-docker``).
 
@@ -51,8 +51,11 @@ Env vars (read on the rollout worker):
 Failure semantics: a verdict is returned as-is; every episode that ends
 without one scores 0 with a named ``exit_status`` (``TimeLimitExceeded``,
 ``SequenceLengthLimitExceeded``, ``AgentError``), matching the agent-server
-path. Nothing is discarded here yet; see the tracking issue for wiring the
-platform-side Harbor exceptions to ``InfraAbort`` once that contract lands.
+path. Configuration errors (missing task dir, bad env vars) raise instead:
+they would fail every sample, and a loud stop beats training on silent
+all-zero rewards. Nothing is discarded here yet; see the tracking issue for
+wiring the platform-side Harbor exceptions to ``InfraAbort`` once that
+contract lands.
 """
 
 import asyncio
@@ -246,7 +249,7 @@ HARNESS_BINDINGS: dict[str, HarnessBinding] = {
     "mini-swe-agent": HarnessBinding(kwargs=_no_kwargs, env=_mini_swe_agent_env),
 }
 # Any other installed agent that speaks OpenAI chat completions.
-_DEFAULT_BINDING = HarnessBinding(kwargs=_no_kwargs, env=_mini_swe_agent_env)
+_DEFAULT_BINDING = HarnessBinding(kwargs=_no_kwargs, env=_openai_env)
 
 
 # --- trial config ----------------------------------------------------------
@@ -293,13 +296,12 @@ def build_trial_config(metadata: dict[str, Any], session_url: str, request_kwarg
     raw_max_seq_len = metadata.get("max_seq_len") or _env_int("HARBOR_MAX_SEQ_LEN")
     max_seq_len = int(raw_max_seq_len) if raw_max_seq_len is not None else None
     agent_kwargs = binding.kwargs(session_url, api_key, request_kwargs, model, max_seq_len)
-    if "openai" in model:
-        agent_kwargs["model_info"] = {
-            "max_input_tokens": int(os.getenv("AGENT_MAX_INPUT_TOKENS", "32768")),
-            "max_output_tokens": int(os.getenv("AGENT_MAX_OUTPUT_TOKENS", "8192")),
-            "input_cost_per_token": 0.0,
-            "output_cost_per_token": 0.0,
-        }
+    agent_kwargs["model_info"] = {
+        "max_input_tokens": int(os.getenv("AGENT_MAX_INPUT_TOKENS", "32768")),
+        "max_output_tokens": int(os.getenv("AGENT_MAX_OUTPUT_TOKENS", "8192")),
+        "input_cost_per_token": 0.0,
+        "output_cost_per_token": 0.0,
+    }
     if max_seq_len is not None:
         agent_kwargs["max_seq_len"] = max_seq_len
 
@@ -402,8 +404,11 @@ async def run(
     instance_id = metadata.get("instance_id")
     trial_timeout_s = int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
 
+    # Config errors (missing task dir, bad env vars) fail every sample the same
+    # way; raising beats training on silent all-zero rewards.
+    config = build_trial_config(metadata, session_url, request_kwargs)
+
     try:
-        config = build_trial_config(metadata, session_url, request_kwargs)
         trial = await Trial.create(config)
         # wait_for cancels the coroutine on expiry; Trial.run handles the
         # cancellation and stops its environment.

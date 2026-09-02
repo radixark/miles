@@ -52,3 +52,22 @@ def test_the_built_config_is_a_valid_trial_config(tasks_dir, agent_name):
 
 def test_the_trial_entrypoints_exist():
     assert callable(Trial.create) and callable(Trial.run)
+
+
+def test_the_result_fields_the_mapping_reads_still_exist():
+    """trial_result_to_metadata reads these via getattr(default None): a rename
+    would silently drop metrics/timings, so lock the names here."""
+    from harbor.models.trial.result import TrialResult
+
+    fields = set(TrialResult.model_fields)
+    assert {
+        "started_at",
+        "finished_at",
+        "environment_setup",
+        "agent_setup",
+        "agent_execution",
+        "verifier",
+        "exception_info",
+        "verifier_result",
+        "agent_result",
+    } <= fields
