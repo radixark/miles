@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import shlex
 import sys
 
@@ -8,8 +9,9 @@ from tests.fast.backends.sglang_utils.conftest import make_engine_args, tiny_mod
 
 pytest.importorskip("sglang")
 
+from miles.backends.sglang_utils import sglang_engine
 from miles.backends.sglang_utils.server_args_utils import parse_server_args_argv
-from miles.backends.sglang_utils.sglang_engine import compute_engine_launch_cmd
+from miles.backends.sglang_utils.sglang_engine import _assert_launch_gate_served, compute_engine_launch_cmd
 from miles.utils.lora.utils import build_lora_config
 
 
@@ -39,9 +41,7 @@ def _cmd(
         node_rank=0,
         worker_type=worker_type,
         base_gpu_id=base_gpu_id,
-        # ServerArgs probes the local accelerator when no device is given, which a CPU-only
-        # CI runner cannot answer. Production resolves it to the engine's own device the same way.
-        sglang_overrides={"device": "cuda"},
+        sglang_overrides={},
         num_gpus_per_engine=1,
         dist_init_addr=addr_and_ports["dist_init_addr"],
         nccl_port=addr_and_ports["nccl_port"],
@@ -120,9 +120,16 @@ class TestLoraTargetModules:
         [
             [f"model.layers.*.self_attn.{projection}_proj" for projection in ("q", "k", "v")],
             [f"model.layers.*.linear_attn.in_proj_{projection}" for projection in ("qkv", "z", "b", "a")],
+            [
+                "model.layers.*.linear_attn.in_proj_qkv",
+                "model.layers.*.linear_attn.in_proj_z",
+                "model.layers.*.linear_attn.in_proj_b",
+                "model.layers.*.linear_attn.in_proj_a",
+                "model.layers.*.linear_attn.out_proj",
+            ],
             "all-linear",
         ],
-        ids=["qkv", "gdn", "inkling"],
+        ids=["qkv", "gdn", "gdn-output", "inkling"],
     )
     @pytest.mark.parametrize("multi_lora", [False, True], ids=["single", "multi"])
     def test_adapter_selection_reaches_engine_and_sync_config(self, adapter_targets, multi_lora):
@@ -138,3 +145,35 @@ class TestLoraTargetModules:
         targets = parse_server_args_argv(shlex.split(_cmd(args=args))[3:]).lora_target_modules
         assert set(targets) == ({"all"} if adapter_targets == "all-linear" else set(adapter_targets))
         assert build_lora_config(args, target_modules=adapter_targets)["target_modules"] == adapter_targets
+
+
+@dataclasses.dataclass
+class _SglangWithTheGate:
+    model_path: str = ""
+    gated_launch_port: int = 0
+
+
+@dataclasses.dataclass
+class _SglangWithoutTheGate:
+    model_path: str = ""
+
+
+class TestTheLaunchGateSglangMustServe:
+    @staticmethod
+    def _pretend_sglang_is(monkeypatch, server_args: type) -> None:
+        monkeypatch.setattr(sglang_engine, "ServerArgs", server_args)
+        _assert_launch_gate_served.cache_clear()
+
+    def test_an_sglang_that_serves_the_gate_is_accepted(self, monkeypatch) -> None:
+        """The run launches every engine through the gate, so the one field it needs is the whole check."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithTheGate)
+
+        _assert_launch_gate_served()
+
+    def test_an_sglang_without_the_gate_is_refused(self, monkeypatch) -> None:
+        """An sglang serving nothing on that port leaves each cell waiting out its whole activation
+        deadline against an engine that is already up, so it has to be refused at spec time."""
+        self._pretend_sglang_is(monkeypatch, _SglangWithoutTheGate)
+
+        with pytest.raises(AssertionError, match="--gated-launch-port"):
+            _assert_launch_gate_served()
