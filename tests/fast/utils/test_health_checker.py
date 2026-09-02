@@ -1,7 +1,5 @@
 import argparse
 import asyncio
-import logging
-import time
 
 import pytest
 from _pytest.recwarn import WarningsRecorder
@@ -959,99 +957,4 @@ class TestShippedRolloutConfig:
 
         assert checker.status == TriState.FALSE
         assert checker._consecutive_failures == 1
-        checker.stop()
-
-
-class TestProberStarvation:
-    def _hanging_check_fn(self, started: asyncio.Event):
-        async def check_fn() -> None:
-            started.set()
-            await asyncio.get_running_loop().create_future()
-
-        return check_fn
-
-    async def _wait_until(self, predicate, *, timeout: float = 5.0) -> None:
-        deadline = time.monotonic() + timeout
-        while not predicate():
-            assert time.monotonic() < deadline, "the checker never published a verdict"
-            await asyncio.sleep(0.01)
-
-    async def test_a_probe_deadline_the_prober_slept_through_publishes_no_verdict(self):
-        """A cell that another cell's recovery starved the event loop for must not be recycled as dead."""
-        results: list[bool] = []
-        started = asyncio.Event()
-        checker, clock = _make_checker(
-            check_fn=self._hanging_check_fn(started),
-            on_result=lambda s: results.append(s),
-            timeout=0.2,
-            interval=5.0,
-            failure_threshold=1,
-        )
-        checker.start()
-        await asyncio.wait_for(started.wait(), timeout=1)
-
-        time.sleep(0.5)
-        await self._wait_until(lambda: clock.pending_count >= 1)
-
-        assert results == []
-        assert checker._consecutive_failures == 0
-        assert checker.status == TriState.UNKNOWN
-        checker.stop()
-
-    async def test_a_probe_deadline_the_prober_stayed_awake_for_still_reports_a_failure(self):
-        """Isolating prober starvation must not stop a genuinely wedged cell from being reported unhealthy."""
-        results: list[bool] = []
-        started = asyncio.Event()
-        checker, clock = _make_checker(
-            check_fn=self._hanging_check_fn(started),
-            on_result=lambda s: results.append(s),
-            timeout=0.1,
-            interval=5.0,
-            failure_threshold=1,
-        )
-        checker.start()
-        await asyncio.wait_for(started.wait(), timeout=1)
-
-        await self._wait_until(lambda: bool(results))
-
-        assert results == [False]
-        assert checker.status == TriState.FALSE
-        checker.stop()
-
-
-class TestAFailedProbeSaysWhyItFailed:
-    async def test_a_probe_that_ran_out_of_time_is_logged_as_a_deadline(self, caplog):
-        """A cell wedged in a collective and a cell that answered an error need telling apart in a run's log."""
-        started = asyncio.Event()
-
-        async def check_fn() -> None:
-            started.set()
-            await asyncio.get_running_loop().create_future()
-
-        checker, clock = _make_checker(check_fn=check_fn, timeout=0.05, interval=5.0, failure_threshold=1)
-        with caplog.at_level(logging.ERROR):
-            checker.start()
-            await asyncio.wait_for(started.wait(), timeout=1)
-            deadline = time.monotonic() + 5.0
-            while checker.status != TriState.FALSE:
-                assert time.monotonic() < deadline, "the checker never published a verdict"
-                await asyncio.sleep(0.01)
-
-        assert "reason=deadline" in caplog.text
-        assert "reason=raised" not in caplog.text
-        checker.stop()
-
-    async def test_a_probe_that_raised_is_logged_as_raised(self, caplog):
-        """An engine that answers with an error is a different fault from one that answers not at all."""
-
-        async def check_fn() -> None:
-            raise RuntimeError("engine down")
-
-        checker, clock = _make_checker(check_fn=check_fn, timeout=5.0, interval=5.0, failure_threshold=1)
-        with caplog.at_level(logging.ERROR):
-            checker.start()
-            await _settle(clock)
-
-        assert "reason=raised" in caplog.text
-        assert "reason=deadline" not in caplog.text
         checker.stop()

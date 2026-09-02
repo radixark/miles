@@ -7,7 +7,7 @@ from tests.ci.ci_register import register_cuda_ci
 from tests.e2e.ft.conftest_ft.scenario_random_crash import run_ci
 
 register_cuda_ci(
-    est_time=6000, suite="stage-c-8-gpu-h200", labels=["ft-long"], disabled="FT soak tests pending CI infra support"
+    est_time=1800, suite="stage-c-8-gpu-h200", labels=["ft-long"], disabled="FT soak tests pending CI infra support"
 )
 
 _MODE: str = "kill_train__dp2_cp2_tp2_ep2__fake_rollout__moe_5layer"

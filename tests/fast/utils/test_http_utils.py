@@ -398,10 +398,10 @@ class TestGeneralHttpClientProvider:
         assert timeout.write == 60.0
         assert timeout.pool == 60.0
 
-    async def test_the_pool_is_unbounded_without_retaining_idle_connections(self):
-        """Live requests stay unbounded while stale idle connections cannot be reused."""
+    async def test_the_pool_is_configured_without_a_connection_cap(self):
+        """A capped pool queues the last requests behind the collective waiting for them."""
         assert GeneralHttpClientProvider._LIMITS.max_connections is None
-        assert GeneralHttpClientProvider._LIMITS.max_keepalive_connections == 0
+        assert GeneralHttpClientProvider._LIMITS.max_keepalive_connections is None
 
     async def test_more_requests_than_httpxs_default_cap_reach_the_server_at_once(self):
         """101 engines must all arrive before the caller joins the collective, and httpx caps

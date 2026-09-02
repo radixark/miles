@@ -20,52 +20,12 @@ def test_dump_dir_hangs_off_the_configured_root(tmp_path: Path, monkeypatch: pyt
     assert resolve_dump_dir("scenario_x", run_id="run-a") == str(tmp_path / "dumps" / "run-a" / "scenario_x")
 
 
-def _default_root_on_device(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, device_id: int, root_device_id: int
-) -> Path:
-    default_root = tmp_path / "node_public" / "dumps"
-    monkeypatch.setattr(app_module, "_DEFAULT_DUMPS_ROOT", default_root)
-    monkeypatch.setattr(app_module, "_device_id_of", lambda path: root_device_id if path == Path("/") else device_id)
-    return default_root
-
-
-def test_falling_back_to_the_platform_root_on_the_container_layer_fails_loudly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Dumps on the writable layer are ephemeral storage that gets the pod evicted hours later, silently."""
-    monkeypatch.delenv(_DUMPS_ROOT_ENV, raising=False)
-    _default_root_on_device(monkeypatch, tmp_path, device_id=7, root_device_id=7)
-
-    with pytest.raises(RuntimeError, match=_DUMPS_ROOT_ENV):
-        resolve_dump_dir("scenario_x", run_id="run-a")
-
-
-def test_falling_back_to_the_platform_root_is_fine_when_it_is_really_mounted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A cluster that mounts the platform path must not be refused for leaving the variable unset."""
-    monkeypatch.delenv(_DUMPS_ROOT_ENV, raising=False)
-    default_root = _default_root_on_device(monkeypatch, tmp_path, device_id=7, root_device_id=8)
-
-    assert resolve_dump_dir("scenario_x", run_id="run-a") == str(default_root / "run-a" / "scenario_x")
-
-
-def test_an_empty_configured_root_is_not_a_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_empty_configured_root_is_not_a_root(monkeypatch: pytest.MonkeyPatch) -> None:
     """An unset variable and one set to nothing both mean the cluster configured no root."""
     monkeypatch.setenv(_DUMPS_ROOT_ENV, "")
-    default_root = _default_root_on_device(monkeypatch, tmp_path, device_id=7, root_device_id=8)
+    monkeypatch.setattr("os.makedirs", lambda path, exist_ok: None)
 
-    assert resolve_dump_dir("scenario_x", run_id="run-a") == str(default_root / "run-a" / "scenario_x")
-
-
-def test_a_configured_root_is_trusted_even_on_the_container_layer(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A caller that names a root owns that choice; a single-disk machine is a legitimate one."""
-    monkeypatch.setenv(_DUMPS_ROOT_ENV, str(tmp_path / "dumps"))
-    monkeypatch.setattr(app_module, "_device_id_of", lambda path: 7)
-
-    assert resolve_dump_dir("scenario_x", run_id="run-a") == str(tmp_path / "dumps" / "run-a" / "scenario_x")
+    assert resolve_dump_dir("scenario_x", run_id="run-a") == "/node_public/dumps/run-a/scenario_x"
 
 
 def test_two_runs_of_one_test_do_not_share_a_dump_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

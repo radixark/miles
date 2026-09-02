@@ -256,9 +256,7 @@ class TestEngineListOrdering:
         cells = {}
         for index in sorted(range(num_cells), key=lambda i: f"inference-engine-0-0-{i}"):
             meta = SimpleNamespace(num_gpus_per_engine=index + 1, gpu_offset=index)
-            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(
-                meta=meta, api_client=f"client-{index}", is_faulted=False
-            )
+            cells[f"inference-engine-0-0-{index}"] = SimpleNamespace(meta=meta, api_client=f"client-{index}")
         return RolloutServer(
             server_cells=cells,
             args=SimpleNamespace(),

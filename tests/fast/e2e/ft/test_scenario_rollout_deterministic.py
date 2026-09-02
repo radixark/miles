@@ -2,7 +2,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from tests.e2e.ft.conftest_ft.execution import _DETERMINISTIC_ENV_VARS
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_rollout_deterministic import (
     NUM_ROLLOUTS,
@@ -21,7 +20,6 @@ def test_rollout_deterministic_uses_the_shared_deterministic_recipe_without_true
 
     assert "--sglang-enable-deterministic-inference " in args
     assert "--sglang-attention-backend flashinfer " in args
-    assert "--sglang-router-policy round_robin " in args
     assert '"SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false"' in args
     assert "--rollout-health-check-interval 1.0 " in args
     assert "--deterministic-mode " in args
@@ -31,11 +29,6 @@ def test_rollout_deterministic_uses_the_shared_deterministic_recipe_without_true
     assert "--true-on-policy-contract" not in args
     assert "--sglang-attention-backend fa3" not in args
     assert "--recompute-logprobs-via-prefill" not in args
-
-
-def test_the_batch_invariant_fallback_is_disabled_through_the_channel_the_engines_read() -> None:
-    """Engines take this from the run env, not from --train-env-vars, which only reaches the trainer."""
-    assert _DETERMINISTIC_ENV_VARS["SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT"] == "false"
 
 
 class TestComputeCrashedRollouts:

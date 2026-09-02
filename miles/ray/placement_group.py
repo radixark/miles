@@ -26,7 +26,6 @@ from miles.ray.specs.train import (
     external_trainer_controller_addrs,
 )
 from miles.ray.wiring import get_backend_capability
-from miles.utils.async_utils import await_task_result_despite_cancel, wait_task_until_done_despite_cancel
 from miles.utils.audit_utils.checksum_utils import flatten_inference_engine_checksums
 from miles.utils.audit_utils.event_logger import checkpoint as event_logger_checkpoint
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -44,8 +43,6 @@ from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.static import wait_static_addrs_ready
 
 logger = logging.getLogger(__name__)
-
-WEIGHT_UPDATE_TIMEOUT_SECONDS = 600.0
 
 
 @ray.remote(num_gpus=1)
@@ -306,43 +303,8 @@ async def update_weights(
         )
 
     info: UpdatableEngines = await inference_controller.start_update_weights(model_id=trainer_model_id)
-    update_task = asyncio.create_task(actor_model.update_weights(info=info, rollout_id=rollout_id))
-    cancelled = await wait_task_until_done_despite_cancel(update_task, timeout=WEIGHT_UPDATE_TIMEOUT_SECONDS)
-
-    if not update_task.done():
-        update_task.cancel()
-        try:
-            await _end_update_weights(inference_controller, snapshot_cell_id_to_hashes={})
-        except Exception:
-            logger.exception("Failed to close the inference weight update window after the trainer broadcast hung")
-        raise TimeoutError(
-            f"The trainer weight broadcast did not finish within {WEIGHT_UPDATE_TIMEOUT_SECONDS}s. Its window holds "
-            f"a detached lock that every rollout cell suspension and fault injection waits behind, so the window is "
-            f"closed here rather than left open for a broadcast that may never return."
-        )
-
-    try:
-        weight_version = update_task.result()
-    except asyncio.CancelledError:
-        await _end_update_weights(inference_controller, snapshot_cell_id_to_hashes={})
-        raise
-    except Exception:
-        try:
-            await _end_update_weights(inference_controller, snapshot_cell_id_to_hashes={})
-        except Exception:
-            logger.exception("Failed to close the inference weight update window after the trainer broadcast failed")
-        raise
-
-    if cancelled:
-        try:
-            await _end_update_weights(inference_controller, snapshot_cell_id_to_hashes={})
-        except Exception:
-            logger.exception(
-                "Failed to close the inference weight update window after the trainer broadcast was cancelled"
-            )
-        raise asyncio.CancelledError()
-
-    await _end_update_weights(inference_controller, snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+    weight_version = await actor_model.update_weights(info=info, rollout_id=rollout_id)
+    await inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
 
     await _maybe_log_inference_engine_weight_checksums(
         args, inference_controller=inference_controller, rollout_id=rollout_id, trainer_model_id=trainer_model_id
@@ -350,15 +312,6 @@ async def update_weights(
 
     if weight_version is not None:
         await rollout_executor.set_weight_version(weight_version, trainer_model_id=trainer_model_id)
-
-
-async def _end_update_weights(
-    inference_controller: BaseWorkerHandle, *, snapshot_cell_id_to_hashes: dict[str, str]
-) -> None:
-    task = asyncio.create_task(
-        inference_controller.end_update_weights(snapshot_cell_id_to_hashes=snapshot_cell_id_to_hashes)
-    )
-    await await_task_result_despite_cancel(task)
 
 
 async def _maybe_log_inference_engine_weight_checksums(

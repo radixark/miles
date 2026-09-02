@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS: float = 2.0
 QUIESCENT_POLLS_REQUIRED: int = 60
-SERIALIZED_INJECTION_QUIESCENT_POLLS_REQUIRED: int = 1
 
 
 def _compute_next_injection_time(rng: random.Random, mean_interval_seconds: float) -> float:
@@ -43,12 +42,6 @@ def run_fault_injection_loop(
     quiescent_polls_required: int = QUIESCENT_POLLS_REQUIRED,
 ) -> None:
     rng = random.Random(seed)
-    required_polls_of_cell_type: dict[str, int] = {
-        cell_type: compute_quiescent_polls_required(
-            cell_fault_forms.get(cell_type, []), fleet_wide=quiescent_polls_required
-        )
-        for cell_type in mean_interval_seconds_of_cell_type
-    }
     next_injection_time_of_cell_type: dict[str, float] = {
         cell_type: _compute_next_injection_time(rng, mean_interval_seconds)
         for cell_type, mean_interval_seconds in sorted(mean_interval_seconds_of_cell_type.items())
@@ -93,7 +86,7 @@ def run_fault_injection_loop(
         ready_types = [
             kind
             for kind in due_types
-            if quiescent_polls_of_cell_type[kind] >= required_polls_of_cell_type[kind] and len(cells_of_type[kind]) > 1
+            if quiescent_polls_of_cell_type[kind] >= quiescent_polls_required and len(cells_of_type[kind]) > 1
         ]
         if not ready_types:
             logger.info(
@@ -129,12 +122,6 @@ def run_fault_injection_loop(
             rng, mean_interval_seconds_of_cell_type[cell_type]
         )
         logger.info("Injected fault %s into %s", form.name, cell_name)
-
-
-def compute_quiescent_polls_required(forms: list[BaseFaultForm], *, fleet_wide: int) -> int:
-    if forms and all(form.serialized_against_weight_updates for form in forms):
-        return SERIALIZED_INJECTION_QUIESCENT_POLLS_REQUIRED
-    return fleet_wide
 
 
 def _kind_is_quiescent(kind_cells: list[dict], *, expected_num_cells: int) -> bool:

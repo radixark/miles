@@ -17,10 +17,9 @@ PYTHONPATH=. python tests/e2e/deploy/conftest_deploy/hot_restart/scenario_hot_re
   `generate-data`; the multi policy one exposes `run` / `verify`; the realistic soak exposes `run`
   only; hot restart deterministic nests these under one subcommand per mode.
 - **Dump dirs**: `$MILES_TEST_DUMPS_ROOT/<run_id>/<TEST_NAME>/`, defaulting to `/node_public/dumps` when
-  the cluster sets no root — and refusing that default when it is on the same filesystem as `/`,
-  which means nothing mounted it and the dumps would be evictable container storage (only `run`
-  deletes it, and only its own run id's subtree; `--dump-dir` overrides for `baseline` / `target` /
-  `compare`); multi policy: `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
+  the cluster sets no root (only `run` deletes it, and only its own run id's subtree; `--dump-dir`
+  overrides for `baseline` / `target` / `compare`); multi policy:
+  `<output_dir>/multi_policy_solver_verifier/<run_id>/`.
 
 ## Test Specifications
 

@@ -4,12 +4,7 @@
 from pathlib import Path
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import (
-    DISABLED_API_SERVER_ARGS,
-    get_common_train_args,
-    get_ft_args,
-    get_train_env_vars_arg,
-)
+from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.ray.specs.train import compute_trainer_pool_id
@@ -71,7 +66,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     base += "--debug-deterministic-collective "
 
     if is_target:
-        base += get_ft_args(mode) + DISABLED_API_SERVER_ARGS
+        base += get_ft_args(mode)
 
     base += f"--save {dump_dir}/ckpt --save-interval {NUM_ROLLOUTS_PER_PHASE} "
     base += f"--debug-exit-after-rollout {NUM_ROLLOUTS_PER_PHASE} "

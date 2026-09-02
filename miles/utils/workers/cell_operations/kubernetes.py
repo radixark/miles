@@ -39,8 +39,7 @@ class KubernetesCellOperations(BaseCellOperations):
             "a deleted cell comes back when its workload recreates it, so resume has no moment to return at"
         )
 
-    async def inject_fault(self, *, cell_id: str, cell_type: str, mode: FailureMode, sub_index: int) -> None:
-        del cell_type
+    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
         await self._ensure_watching()
 
         (infos,) = self._provider.get_worker_infos(cell_ids=[cell_id])

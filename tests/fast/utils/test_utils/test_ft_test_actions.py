@@ -141,31 +141,18 @@ def test_load_actions_validates_cell_id_of_actions_outside_the_filter() -> None:
 
 
 class FakeController:
-    def __init__(
-        self,
-        num_cells: int,
-        *,
-        pool_id: str = _POOL_ID,
-        observed_after_reads: int = 0,
-        gone_cell_id: str | None = None,
-        gone_after_reads: int = 0,
-    ) -> None:
+    def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID, observed_after_reads: int = 0) -> None:
         self.pool_id = pool_id
         self.expected_num_cells = num_cells
         self.cell_ids_reads = 0
         self._observed_after_reads = observed_after_reads
-        self._gone_cell_id = gone_cell_id
-        self._gone_after_reads = gone_after_reads
 
     @property
     def cell_ids(self) -> list[str]:
         self.cell_ids_reads += 1
         if self.cell_ids_reads <= self._observed_after_reads:
             return []
-        cell_ids = [f"{self.pool_id}-{index}" for index in range(self.expected_num_cells)]
-        if self._gone_cell_id is not None and self.cell_ids_reads > self._gone_after_reads:
-            cell_ids = [cell_id for cell_id in cell_ids if cell_id != self._gone_cell_id]
-        return cell_ids
+        return [f"{self.pool_id}-{index}" for index in range(self.expected_num_cells)]
 
 
 class FakeCellOperations:
@@ -187,9 +174,7 @@ class TestRunAfterStep:
         operations = FakeCellOperations()
         action = FTTestAction(at_rollout=5, action="stop_cell_at_end", cell_id="trainer-engine-actor-1")
         executor = FTTestActionControllerExecutor(
-            actions=[action],
-            controller=FakeController(num_cells=3, gone_cell_id="trainer-engine-actor-1"),
-            cell_operations=operations,
+            actions=[action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         await executor.run_after_step(5)
@@ -239,17 +224,17 @@ class TestRunAfterStep:
         assert controller.cell_ids_reads > 1, "the resume returned on the read that still lacked the cell"
 
     @pytest.mark.asyncio
-    async def test_stop_cell_does_not_return_while_the_controller_still_observes_the_cell(self):
-        """A resume issued against a view that has not seen the suspend yet passes its own wait on that stale view."""
+    async def test_stop_cell_does_not_wait_for_anything_to_be_observed(self):
+        """Only the resume has a cell to wait for; making suspend wait would hang on the cell it removed."""
         operations = FakeCellOperations()
-        controller = FakeController(num_cells=2, gone_cell_id="trainer-engine-actor-1", gone_after_reads=1)
+        controller = FakeController(num_cells=2)
         action = FTTestAction(at_rollout=3, action="stop_cell_at_end", cell_id="trainer-engine-actor-1")
         executor = FTTestActionControllerExecutor(actions=[action], controller=controller, cell_operations=operations)
 
         await executor.run_after_step(3)
 
         assert operations.stopped == ["trainer-engine-actor-1"]
-        assert controller.cell_ids_reads > 1, "the suspend returned on the read that still showed the cell"
+        assert controller.cell_ids_reads == 0
 
     @pytest.mark.asyncio
     async def test_start_cell_after_that_cell_was_dropped_still_targets_it(self):
@@ -272,9 +257,7 @@ class TestRunAfterStep:
         stop_action = FTTestAction(at_rollout=7, action="stop_cell_at_end", cell_id="trainer-engine-actor-0")
         start_action = FTTestAction(at_rollout=7, action="start_cell_at_end", cell_id="trainer-engine-actor-2")
         executor = FTTestActionControllerExecutor(
-            actions=[stop_action, start_action],
-            controller=FakeController(num_cells=3, gone_cell_id="trainer-engine-actor-0"),
-            cell_operations=operations,
+            actions=[stop_action, start_action], controller=FakeController(num_cells=3), cell_operations=operations
         )
 
         await executor.run_after_step(7)

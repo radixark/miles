@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.utils.async_utils import await_task_result_despite_cancel
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
 from miles.utils.http_utils import wrap_ipv6
@@ -52,13 +51,11 @@ if TYPE_CHECKING:
 _ACTOR_NAME = "ray_worker_manager"
 
 _LIVENESS_SCAN_INTERVAL_SECONDS = 10.0
-_FAULT_FINALIZATION_TIMEOUT_SECONDS = 4.0
 
 
 class RayWorkerManager:
     def __init__(self):
         self.port_allocator = PortAllocator()
-        self.port_allocator_lock = asyncio.Lock()
 
     @staticmethod
     def launch(
@@ -105,58 +102,16 @@ class RayWorkerManager:
         async with self._membership_lock:
             await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
 
-    async def inject_fault(
-        self, cell_id: str, *, mode: str, worker_in_cell_index: int, wait_until_applied: bool = False
-    ) -> None:
-        async with self._membership_lock:
-            cell = self._find_cell(cell_id)
-            if not cell.alive:
-                raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
-            if not 0 <= worker_in_cell_index < len(cell.actors):
-                raise IndexError(
-                    f"worker_in_cell_index {worker_in_cell_index} out of range for cell {cell_id} "
-                    f"(has {len(cell.actors)} workers)"
-                )
-            generation = cell.generation
-            fault = cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(
-                mode,
-                **({"keep_actor_alive_until_ack": True} if wait_until_applied else {}),
+    def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
+        cell = self._find_cell(cell_id)
+        if not cell.alive:
+            raise RuntimeError(f"Cell {cell_id} is not alive, cannot inject fault")
+        if not 0 <= worker_in_cell_index < len(cell.actors):
+            raise IndexError(
+                f"worker_in_cell_index {worker_in_cell_index} out of range for cell {cell_id} "
+                f"(has {len(cell.actors)} workers)"
             )
-        if not wait_until_applied:
-            return
-
-        finalization = asyncio.create_task(
-            self._finalize_applied_fault(cell=cell, cell_id=cell_id, generation=generation, fault=fault)
-        )
-        await await_task_result_despite_cancel(finalization)
-
-    async def _finalize_applied_fault(
-        self, *, cell: _CellManager, cell_id: str, generation: int, fault: ray.ObjectRef
-    ) -> None:
-        fault_task = asyncio.ensure_future(fault)
-        done, _ = await asyncio.wait({fault_task}, timeout=_FAULT_FINALIZATION_TIMEOUT_SECONDS)
-        if done:
-            fault_task.result()
-        else:
-            logger.warning(f"Timed out waiting for {cell_id} to acknowledge its injected fault")
-            fault_task.cancel()
-
-        async with self._membership_lock:
-            if cell.generation != generation or not cell.alive:
-                raise RuntimeError(f"Cell {cell_id} changed generation before its applied fault could be finalized")
-            actors = cell.actors
-            assert actors is not None
-            try:
-                await asyncio.wait_for(cell.stop(), timeout=_FAULT_FINALIZATION_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                logger.warning(f"Stopping {cell_id} after its applied fault timed out; killing its actors")
-                for actor in actors:
-                    try:
-                        ray.kill(actor.actor_handle)
-                    except Exception:
-                        logger.exception(f"Failed to kill {actor.name} while finalizing applied fault in {cell_id}")
-            finally:
-                cell.actors = None
+        cell.actors[worker_in_cell_index].actor_handle.inject_fault.remote(mode)
 
     def get_worker_addrs(self, worker_name: str) -> NamedHostAndPorts:
         addrs = self._find_actor(worker_name).self_addrs
@@ -381,22 +336,15 @@ class _BaseActorManager(Generic[SpecT]):
             if self.worker_in_cell_index != 0 and port_info.mode == "master":
                 continue
             if port_info.allow_dynamic:
-                port = await self._alloc_dynamic_port(node_ip=node_ip, consecutive=port_info.num_consecutive)
+                port = self.manager.port_allocator.alloc(
+                    self.actor_handle, node_ip=node_ip, consecutive=port_info.num_consecutive
+                )
             else:
                 port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
                 await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
             allocated[port_info.name] = HostAndPort(host=wrap_ipv6(node_ip), port=port)
 
         self.self_addrs = allocated
-
-    async def _alloc_dynamic_port(self, *, node_ip: str, consecutive: int) -> int:
-        async with self.manager.port_allocator_lock:
-            return await asyncio.to_thread(
-                self.manager.port_allocator.alloc,
-                self.actor_handle,
-                node_ip=node_ip,
-                consecutive=consecutive,
-            )
 
     async def _assert_static_port_is_free(self, *, port: int, port_name: str, node_ip: str) -> None:
         free = await self.actor_handle._is_port_available.remote(port=port)

@@ -14,7 +14,6 @@ class CommandActor(NodeProbeMixin):
     def __init__(self) -> None:
         self._process: subprocess.Popen | None = None
         self._shutting_down = False
-        self._debug_exit_when_subprocess_exits = True
 
     def run(self, cmd: str, envs: dict[str, str]) -> None:
         assert self._process is None, "CommandActor.run can only be called once"
@@ -35,7 +34,7 @@ class CommandActor(NodeProbeMixin):
         assert self._process is not None, "CommandActor has no subprocess to kill"
         process_utils.kill_process_tree(self._process)
 
-    def inject_fault(self, mode: str, *, keep_actor_alive_until_ack: bool = False) -> None:
+    def inject_fault(self, mode: str) -> None:
         assert self._process is not None, "CommandActor has no subprocess to inject a fault into"
         assert (failure_mode := fault_injector.FailureMode(mode)) is fault_injector.FailureMode.SIGKILL, (
             f"{failure_mode.value} is a fault a process inflicts on itself from the inside, and no signal reproduces "
@@ -43,8 +42,6 @@ class CommandActor(NodeProbeMixin):
         )
 
         logger.warning(f"CommandActor kills its subprocess group pid={self._process.pid}")
-        if keep_actor_alive_until_ack:
-            self._debug_exit_when_subprocess_exits = False
         process_utils.kill_process_tree(self._process)
 
     def _babysit(self, process: subprocess.Popen) -> None:
@@ -52,9 +49,6 @@ class CommandActor(NodeProbeMixin):
 
         if self._shutting_down:
             logger.info(f"CommandActor subprocess exited with returncode={returncode} during shutdown")
-            return
-        if not self._debug_exit_when_subprocess_exits:
-            logger.info(f"CommandActor keeps running after acknowledged subprocess exit with returncode={returncode}")
             return
 
         logger.info(f"CommandActor exits since its subprocess exited with returncode={returncode}")

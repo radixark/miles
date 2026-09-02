@@ -1,9 +1,6 @@
 import asyncio
 import logging
 import time
-from typing import Any
-
-import httpx
 
 from miles.ray.train.cell_monitor import compute_cell_status
 from miles.ray.train.cell_state import (
@@ -216,54 +213,6 @@ class TrainerCell:
 
     # ------------------------ API :: directly forward calls to actors ------------------------
 
-    async def _call_worker(
-        self,
-        handle: BaseWorkerHandle,
-        fn_name: str,
-        *,
-        worker_index: int,
-        kwargs: dict,
-        elapsed_s_of_worker: dict[int, float | None],
-    ) -> Any:
-        started = time.monotonic()
-        try:
-            result = await getattr(handle, fn_name)(**kwargs)
-        except BaseException:
-            elapsed_s_of_worker[worker_index] = round(time.monotonic() - started, 3)
-            raise
-        elapsed_s_of_worker[worker_index] = round(time.monotonic() - started, 3)
-        return result
-
-    async def probe_liveness(self) -> None:
-        """Answer as soon as any worker does; raise only when none of them can."""
-        handles = self._get_worker_handles()
-        started = time.monotonic()
-        probes = [asyncio.ensure_future(handle.get_heartbeat_status()) for handle in handles]
-        errors: list[BaseException] = []
-
-        try:
-            for probe in asyncio.as_completed(probes):
-                try:
-                    await probe
-                    return
-                except Exception as error:
-                    errors.append(error)
-        finally:
-            for probe in probes:
-                probe.cancel()
-
-        log_structured(
-            logger.error,
-            tag="ft",
-            op="probe",
-            phase="fail",
-            cell=self.cell_id,
-            n_actors=len(handles),
-            n_errors=len(errors),
-            elapsed_s=round(time.monotonic() - started, 3),
-        )
-        raise errors[0]
-
     async def execute(self, fn_name: str, *, kill_on_failure: bool = True, **kwargs) -> list:
         return await self._execute_raw(
             fn_name,
@@ -282,19 +231,9 @@ class TrainerCell:
             logger.info, tag="ft", op="execute", phase="start", cell=self.cell_id, fn=fn_name, n_actors=len(handles)
         )
         start = time.monotonic()
-        elapsed_s_of_worker: dict[int, float | None] = dict.fromkeys(range(len(handles)))
         try:
             result = await asyncio.gather(
-                *[
-                    self._call_worker(
-                        handle,
-                        fn_name,
-                        worker_index=i,
-                        kwargs=compute_kwargs(i),
-                        elapsed_s_of_worker=elapsed_s_of_worker,
-                    )
-                    for i, handle in enumerate(handles)
-                ]
+                *[getattr(handle, fn_name)(**compute_kwargs(i)) for i, handle in enumerate(handles)]
             )
             log_structured(
                 logger.info,
@@ -307,8 +246,7 @@ class TrainerCell:
                 elapsed_s=round(time.monotonic() - start, 1),
             )
             return result
-        except Exception as error:
-            blamed_on_an_engine = _is_inference_engine_unreachable(error)
+        except Exception:
             log_structured(
                 logger.error,
                 tag="ft",
@@ -317,11 +255,9 @@ class TrainerCell:
                 cell=self.cell_id,
                 fn=fn_name,
                 elapsed_s=round(time.monotonic() - start, 1),
-                elapsed_s_of_worker=elapsed_s_of_worker,
-                blamed_on_an_engine=blamed_on_an_engine,
                 exc_info=True,
             )
-            if kill_on_failure and not blamed_on_an_engine:
+            if kill_on_failure:
                 self._mark_as_errored()
                 await self._kill_workers_and_confirm_dead()
             raise
@@ -361,17 +297,6 @@ class TrainerCell:
             self._state, StateAllocatedBase
         ), f"Cell {self.cell_id} is not allocated (state={type(self._state).__name__})"
         return self._state.worker_handles
-
-
-def _is_inference_engine_unreachable(error: BaseException) -> bool:
-    seen: set[int] = set()
-    layer: BaseException | None = error
-    while layer is not None and id(layer) not in seen:
-        seen.add(id(layer))
-        if isinstance(layer, httpx.ConnectError) or type(layer).__name__ == "ConnectError":
-            return True
-        layer = layer.__cause__ or layer.__context__
-    return False
 
 
 async def _kill_worker(handle: BaseWorkerHandle) -> None:

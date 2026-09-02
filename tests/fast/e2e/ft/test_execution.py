@@ -1,8 +1,6 @@
 import dataclasses
 from pathlib import Path
 
-import pytest
-
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args
 from tests.e2e.ft.conftest_ft.modes import MODES
 
@@ -43,21 +41,14 @@ class TestGetCommonTrainArgs:
 
 
 class TestGetFtArgs:
-    def test_a_rollout_only_ft_mode_propagates_the_rollout_component(self) -> None:
+    def test_a_rollout_only_ft_mode_propagates_the_rollout_component_and_api_server_port(self) -> None:
         """Rollout-only fault tolerance must not silently enable trainer fault tolerance."""
         args = get_ft_args(MODES["kill_rollout__dp4__colocate"])
 
-        assert args == "--use-fault-tolerance --ft-components rollout "
+        assert args == "--use-fault-tolerance --ft-components rollout --api-server-port 0 "
 
     def test_a_trainer_mode_propagates_the_train_component(self) -> None:
         """The trainer-fault-tolerance modes keep sending the train component."""
         args = get_ft_args(MODES["kill_train__dp2_cp2__moe_5layer"])
 
-        assert args == "--use-fault-tolerance --ft-components train "
-
-
-class TestApiServerPortIsStatedOnce:
-    @pytest.mark.parametrize("mode_name", sorted(MODES))
-    def test_the_ft_args_leave_the_api_server_port_to_the_scenario(self, mode_name: str) -> None:
-        """A port baked into the shared ft args collides with the one a scenario asks for."""
-        assert "--api-server-port" not in get_ft_args(MODES[mode_name])
+        assert args == "--use-fault-tolerance --ft-components train --api-server-port 0 "

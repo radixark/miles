@@ -163,11 +163,8 @@ def get_debug_dump_args(*, dump_dir: str, enable_dumper: bool) -> str:
     return f"--save-debug-event-data {dump_dir}/{EVENTS_DIRNAME} {dumper_args}"
 
 
-DISABLED_API_SERVER_ARGS: str = "--api-server-port 0 "
-
-
 def get_ft_args(mode: FTTestMode) -> str:
-    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} "
+    return f"--use-fault-tolerance --ft-components {' '.join(mode.ft_components)} --api-server-port 0 "
 
 
 def get_api_server_args(config: command_utils.ExecuteTrainConfig | None = None) -> str:
@@ -203,8 +200,6 @@ _DETERMINISTIC_ENV_VARS: dict[str, str] = {
     # The default 4096 split overflows FlashInfer's fixed 2 GiB deterministic workspace
     # while capturing the 8192-token prefill graph for the 5-layer Qwen3 MoE model.
     "SGLANG_FLASHINFER_PREFILL_SPLIT_TILE_SIZE": "8192",
-    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_FALLBACK_VARIANT": "false",
-    "SGLANG_BATCH_INVARIANT_OPS_ENABLE_MM_DEEPGEMM": "false",
 }
 
 

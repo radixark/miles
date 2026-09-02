@@ -510,7 +510,6 @@ class _AbortingCell:
     def __init__(self, *, cell_id: str, failure: Exception | None = None) -> None:
         self.meta = SimpleNamespace(cell_id=cell_id, needs_offload=False, num_gpus_per_engine=1, gpu_offset=0)
         self.is_pending_weights_or_serving = True
-        self.is_faulted = False
         self.failure = failure
         self.aborted = False
 

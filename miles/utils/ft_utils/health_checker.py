@@ -3,9 +3,7 @@ from __future__ import annotations
 import abc
 import argparse
 import asyncio
-import enum
 import logging
-import time
 from collections.abc import Callable, Coroutine
 from typing import Any, NamedTuple
 
@@ -15,9 +13,6 @@ from miles.utils.test_utils.clock import Clock, RealClock
 from miles.utils.tracking_utils.structured_log import log_structured
 
 logger = logging.getLogger(__name__)
-
-PROBER_LAG_SAMPLE_SECONDS = 0.05
-PROBER_LAG_INVALIDATION_RATIO = 0.5
 
 
 class SimpleHealthCheckerConfig(StrictBaseModel):
@@ -77,12 +72,6 @@ class SimpleHealthCheckerConfig(StrictBaseModel):
             first_wait=getattr(args, f"{attr_prefix}_first_wait"),
             failure_threshold=getattr(args, f"{attr_prefix}_failure_threshold"),
         )
-
-
-class ProbeOutcome(enum.Enum):
-    ALIVE = "alive"
-    FAILED = "failed"
-    INCONCLUSIVE = "inconclusive"
 
 
 class ActiveAndEpoch(NamedTuple):
@@ -204,61 +193,25 @@ class SimpleHealthChecker(BaseHealthChecker):
                 continue
 
             if active:
-                outcome = await self._run_probe()
+                success = await self._run_probe()
                 active_and_epoch_now = self._get_activeness()
                 if not active_and_epoch_now.active or active_and_epoch_now.epoch != active_and_epoch.epoch:
                     log_structured(logger.info, tag="ft", op="health", phase="probe_discarded", name=self._name)
-                elif outcome is not ProbeOutcome.INCONCLUSIVE:
-                    self._publish_result(success=outcome is ProbeOutcome.ALIVE)
+                else:
+                    self._publish_result(success=success)
 
             await self._clock.sleep(self._config.interval)
 
-    async def _run_probe(self) -> ProbeOutcome:
+    async def _run_probe(self) -> bool:
         self._probe_task = asyncio.create_task(self._check_fn())
-        lag_meter = _EventLoopLagMeter(sample_seconds=PROBER_LAG_SAMPLE_SECONDS)
-        lag_meter.start()
 
         try:
             await asyncio.wait_for(self._probe_task, timeout=self._config.timeout)
-            return ProbeOutcome.ALIVE
-        except (TimeoutError, asyncio.TimeoutError):
-            if (lag := lag_meter.max_lag) >= self._config.timeout * PROBER_LAG_INVALIDATION_RATIO:
-                log_structured(
-                    logger.warning,
-                    tag="ft",
-                    op="health",
-                    phase="probe_discarded",
-                    name=self._name,
-                    reason="prober_starved",
-                    lag_s=round(lag, 2),
-                    timeout_s=self._config.timeout,
-                )
-                return ProbeOutcome.INCONCLUSIVE
-            log_structured(
-                logger.error,
-                tag="ft",
-                op="health",
-                phase="check_failed",
-                name=self._name,
-                reason="deadline",
-                timeout_s=self._config.timeout,
-                lag_s=round(lag, 2),
-                exc_info=True,
-            )
-            return ProbeOutcome.FAILED
+            return True
         except Exception:
-            log_structured(
-                logger.error,
-                tag="ft",
-                op="health",
-                phase="check_failed",
-                name=self._name,
-                reason="raised",
-                exc_info=True,
-            )
-            return ProbeOutcome.FAILED
+            log_structured(logger.error, tag="ft", op="health", phase="check_failed", name=self._name, exc_info=True)
+            return False
         finally:
-            lag_meter.stop()
             self._probe_task = None
 
     def _publish_result(self, *, success: bool) -> None:
@@ -306,33 +259,6 @@ class SimpleHealthChecker(BaseHealthChecker):
                     name=self._name,
                     exc_info=True,
                 )
-
-
-class _EventLoopLagMeter:
-    def __init__(self, *, sample_seconds: float) -> None:
-        self._sample_seconds = sample_seconds
-        self._max_lag: float = 0.0
-        self._task: asyncio.Task[None] | None = None
-
-    @property
-    def max_lag(self) -> float:
-        return self._max_lag
-
-    def start(self) -> None:
-        assert self._task is None, "the lag meter is already running"
-        self._task = asyncio.create_task(self._run())
-
-    def stop(self) -> None:
-        if (task := self._task) is None:
-            return
-        self._task = None
-        task.cancel()
-
-    async def _run(self) -> None:
-        while True:
-            before = time.monotonic()
-            await asyncio.sleep(self._sample_seconds)
-            self._max_lag = max(self._max_lag, time.monotonic() - before - self._sample_seconds)
 
 
 class NoopHealthChecker(BaseHealthChecker):

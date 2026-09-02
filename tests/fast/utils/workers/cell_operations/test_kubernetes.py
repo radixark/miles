@@ -4,7 +4,6 @@ import pytest
 
 from miles.utils.test_utils.fault_injector import FailureMode
 from miles.utils.workers.cell_operations import kubernetes as cell_operations_kubernetes
-from miles.utils.workers.cell_operations.base import ROLLOUT_CELL_TYPE
 from miles.utils.workers.cell_operations.kubernetes import KubernetesCellOperations
 from miles.utils.workers.worker_handle import WorkerUnreachableError
 from miles.utils.workers.worker_info import WorkerInfo
@@ -190,11 +189,7 @@ class TestInjectFault:
         """A multi-pod cell is crashed by crashing one named rank, not whichever rank came first."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
 
-        asyncio.run(
-            operations.inject_fault(
-                cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SIGKILL, sub_index=1
-            )
-        )
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
 
         assert operations._provider.injections == [("engine-0-1", "sigkill")]
 
@@ -202,11 +197,7 @@ class TestInjectFault:
         """The caller chose the failure mode, so the worker must not be crashed some other way."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
 
-        asyncio.run(
-            operations.inject_fault(
-                cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SEGFAULT, sub_index=0
-            )
-        )
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SEGFAULT, sub_index=0))
 
         assert operations._provider.injections == [("engine-0-0", "segfault")]
 
@@ -216,11 +207,7 @@ class TestInjectFault:
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="unreachable"
         )
 
-        asyncio.run(
-            operations.inject_fault(
-                cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SIGKILL, sub_index=0
-            )
-        )
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
 
         assert operations._provider.injections == [("engine-0-0", "sigkill")]
 
@@ -231,11 +218,7 @@ class TestInjectFault:
             {"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))}, handle_effect="never_answers"
         )
 
-        asyncio.run(
-            operations.inject_fault(
-                cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SIGKILL, sub_index=0
-            )
-        )
+        asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
 
         assert operations._provider.injections == [("engine-0-0", "sigkill")]
 
@@ -244,22 +227,14 @@ class TestInjectFault:
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0",))})
 
         with pytest.raises(AssertionError, match="out of range"):
-            asyncio.run(
-                operations.inject_fault(
-                    cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SIGKILL, sub_index=1
-                )
-            )
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=1))
 
     def test_a_negative_sub_index_is_rejected(self):
         """Negative indexing would silently select the last worker instead of failing."""
         operations = _operations({"engine-0": _info(cell_id="engine-0", workers=("engine-0-0", "engine-0-1"))})
 
         with pytest.raises(AssertionError, match="out of range"):
-            asyncio.run(
-                operations.inject_fault(
-                    cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SIGKILL, sub_index=-1
-                )
-            )
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=-1))
 
     def test_a_worker_that_is_not_served_over_rpc_is_rejected(self):
         """There is no call to make, and succeeding here would report a crash that never happened."""
@@ -268,11 +243,7 @@ class TestInjectFault:
         )
 
         with pytest.raises(AssertionError, match="not served over rpc"):
-            asyncio.run(
-                operations.inject_fault(
-                    cell_id="engine-0", cell_type=ROLLOUT_CELL_TYPE, mode=FailureMode.SIGKILL, sub_index=0
-                )
-            )
+            asyncio.run(operations.inject_fault(cell_id="engine-0", mode=FailureMode.SIGKILL, sub_index=0))
 
 
 async def _stop_watching() -> None:

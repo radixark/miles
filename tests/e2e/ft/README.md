@@ -104,7 +104,7 @@ PYTHONPATH=. python tests/e2e/ft/conftest_ft/scenario_trainer_no_failure.py run 
 - **`scenario_random_crash`**: only `run`, with `--mode` / `--seed` / `--num-steps` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds` / `--fully-async`.
 - **`scenario_realistic_gsm8k`**: only `run`, with `--seed` / `--num-rollout` / `--trainer-crash-interval-seconds` / `--rollout-crash-interval-seconds` / `--metric-threshold` / `--fully-async`; no `--mode`.
 - **`scenario_*_fully_async`**: only `run`, with the same options minus `--fully-async`, which they pin.
-- **Dumps**: `resolve_dump_dir` in `conftest_ft/app.py` puts them under `$MILES_TEST_DUMPS_ROOT/<run_id>/<test_name>/`, falling back to `/node_public/dumps` when the cluster sets no root; deleted at the end of `run`. The run id is what stops two agents running the same test from deleting each other's dumps. A root the caller names is trusted as given, but the `/node_public/dumps` fallback is refused when it turns out to sit on the same filesystem as `/`: nothing mounted it, so the dumps would be the container's writable layer, counted as ephemeral storage until the kubelet evicts the pod and takes the evidence with it. On a devbox, point the variable at the big disk (`/scratch/dumps`).
+- **Dumps**: `resolve_dump_dir` in `conftest_ft/app.py` puts them under `$MILES_TEST_DUMPS_ROOT/<run_id>/<test_name>/`, falling back to `/node_public/dumps` when the cluster sets no root; deleted at the end of `run`. The run id is what stops two agents running the same test from deleting each other's dumps.
 
 ### Cluster Backend
 
@@ -316,7 +316,6 @@ Regime (both sides):
     --sglang-attention-backend flashinfer and --deterministic-mode
   - --debug-deterministic-collective and scenario_trainer_deterministic's deterministic env vars
   - --sglang-disable-radix-cache
-  - --sglang-router-policy round_robin
   - --rollout-health-check-interval 1
 
 Injection (target side only):
@@ -337,7 +336,6 @@ Assertions:
 - **Why it exists**: an engine dying and being replaced mid-generation is supposed to be invisible to training, and "invisible" is a claim about bits; the rollout soak only ever asserted survival.
 - **Why the shared deterministic recipe**: the assertion is deterministic replay across fresh inference engines, not true-on-policy training. Reusing the same FlashInfer recipe as the main deterministic trainer-FT test avoids a second, incompatible attention-backend contract.
 - **Why `--sglang-disable-radix-cache`**: a replacement engine serves with a cold prefix cache where the baseline's was warm, and deterministic inference is nowhere documented as prefix-cache-length invariant.
-- **Why `--sglang-router-policy round_robin`**: the router's default cache-aware policy reacts to timing and cache state, so it adds another source of routing variation across fresh runs. Round-robin removes that cache-aware state dependency, but does not guarantee identical request-to-engine assignment or co-batching under concurrent request arrival and healing; only the unchanged bitwise comparison establishes the scenario's determinism.
 - **Why this recipe disables batch-variant MM fallback**: a rollout worker loss changes co-batching while the pool is healing; permitting an `einsum` fallback would make the same seeded request depend on that temporary batch shape. The scenario injects the environment override without changing the production default.
 - **Why `--rollout-health-check-interval 1`**: healthy generation can finish between two five-second polls; the short scenario needs at least one fresh Serving observation before its lock-protected injection attempt.
 - **Why this scenario polls the fault window every 0.2 seconds**: colocated generation windows are only a few seconds long, so the generic two-second scheduler cadence can miss every Serving observation in an eight-rollout run.
@@ -353,8 +351,8 @@ Assertions:
 ```
 Type: soak (no baseline, no compare); passes if training completes without hanging and the
       witnesses hold
-Steps: 100 (default), the last 6 of which are fault-free
-CLI: --mode, --seed (42), --num-steps (100), --trainer-crash-interval-seconds (120),
+Steps: 30 (default)
+CLI: --mode, --seed (42), --num-steps (30), --trainer-crash-interval-seconds (120),
      --rollout-crash-interval-seconds (240), --fully-async (off)
 
 Targeting and assertions follow the mode's ft_components:
@@ -374,9 +372,7 @@ Architecture (external fault injection, not inside the training loop):
         Healthy and (for rollout) Serving for 60 consecutive polls (~120s) - long enough to
         outlast the ~95s stale-status window - and at least one spare replica to survive
         the kill
-     e. Stop here once the run's completed-rollout watermark has reached the terminal
-        fault-free tail, the last 6 steps
-     f. Draw a ready kind, a cell of that kind and one of its fault forms - preferring a form
+     e. Draw a ready kind, a cell of that kind and one of its fault forms - preferring a form
         the log shows has never worked - apply it, record the attempt, reset that kind's
         quiescence streak, then draw its next injection time
   3. inject_fault() runs on the actor's own ray concurrency group thread and kills the process,
@@ -403,12 +399,10 @@ membership is asserted.
 - **Why rollout gets the longer interval**: the replacement pays a full sglang launch plus a weight sync before it can serve again.
 - **No per-kind quota**: when the trainer has no spare replica for a long stretch every injection lands on rollout, and the failure form is a loud "too few trainer injections" rather than a silent pass.
 - **Why injections wait for quiescence**: the api server reports a just-killed cell Healthy for ~95s, far longer than the poll interval, and indep_dp cannot heal from zero survivors, so a naive Healthy count would eventually kill the last replica. A 60-poll all-serving streak (~120s, the same bound the recovery witness uses) outlasts that window, so by the time a kind is ready again its readings are fresh and every replica really serves; the injector itself keeps no per-cell recovery state to corrupt. A failed injection attempt forfeits the streak too - the kill, not the response, may be what survived the failure.
-- **Why a kind whose every form takes the weight-update lock is exempt from that streak**: a rollout replica leaves `Healthy` for the whole of every weight update, so under a streak gate its count resets each training step and never reaches 60 - the gate makes a >= 2 rollout floor structurally unreachable, whatever the step count. A form that reaches `InferenceController.inject_fault_between_weight_updates` does not need the streak: it takes the lock the weight update holds, so it runs between two updates and reads the fleet as the controller sees it, and the controller refuses an injection that would leave the model with no addressable replica. The exemption is therefore a property of the form, declared as `BaseFaultForm.serialized_against_weight_updates` and granted only when *every* form of the kind declares it - the Ray rollout forms do, while the Ray trainer forms (which `RayCellOperations.inject_fault` sends straight to the worker manager) and both Kubernetes forms (`kubectl exec`, `kubectl delete pod`, neither of which reaches the controller) do not, and those keep the 60-poll gate.
 - **A form that leaves its cell running**: `BaseFaultForm.harms_the_cell` is false for it, so the draw is recorded without charging that cell a recovery; the reset quiescence streak alone paces the next injection.
 - **Why quiescence requires `Serving`, not just `Healthy`**: `Healthy` and even `Running` include a replacement that got weights but cannot answer requests yet, so a kind counting such a replica as recovered would be injected into mid-relaunch.
 - **Why quiescence counts replicas against the most ever seen**: a deleted pod vanishes from the listing instead of reading unhealthy, and the survivors all serve; only the missing replica says the kind is still recovering.
-- **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered.
-- **Why 100 steps and a fault-free tail**: the cadence that decides how many injections a soak lands is the quiescence gate, not the `--*-crash-interval-seconds` means — a kind only rejoins the quiescent set once every replica is back and has held the 60-poll (~120s) streak, so accepted injections arrive minutes apart however short the drawn interval is. At 30 steps that yielded one or two trainer injections, and the second landed so late that training ended before its healing. The rollout kind used to be slower still: while it was held to the same streak, a 50-step soak measured 27 attempts peaking at 54 of the 60 polls without once clearing it, so only the first, pristine-fleet injection landed; that kind now injects through the weight-update lock instead. 100 steps buys the rollout kind roughly three times the post-first-injection window, and the 6-step tail keeps the last accepted injection clear of the end. Both numbers are witness headroom, not assertion strength: no floor was lowered to reach them.
+- **Why the per-cell pairing**: a floor of ">= 2 healings" passes whenever the last crash never recovered. The default intervals are short enough that a soak reliably clears the floors.
 - **Why the rollout witness is one-sided**: the trainer witness reads the run's own CellReconfigureEvents, which miss nothing; the rollout witness reads sampled polls, which miss windows by construction. It therefore never demands seeing the down half of a recovery - it demands a Serving reading fresh enough (>= 120s after the cell's last injection, past the ~95s staleness) to prove the survivor really serves. Undercounting an intermediate recovery cannot fail the run; claiming one that never happened cannot pass it.
 - **Stopping the injector**: `stop_and_join` asserts the thread actually stopped, since a thread still mid-injection could crash a cell nothing will heal, and would race the witness being read.
 

@@ -5,7 +5,7 @@ from collections.abc import Callable
 import ray.actor
 
 from miles.utils.test_utils.fault_injector import FailureMode
-from miles.utils.workers.cell_operations.base import ROLLOUT_CELL_TYPE, BaseCellOperations
+from miles.utils.workers.cell_operations.base import BaseCellOperations
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 from miles.utils.workers.worker_provider.base import CellInfo
 
@@ -36,13 +36,7 @@ class RayCellOperations(BaseCellOperations):
     async def resume(self, *, cell_id: str) -> None:
         await self._worker_manager_handle.start_cells.remote([cell_id])
 
-    async def inject_fault(self, *, cell_id: str, cell_type: str, mode: FailureMode, sub_index: int) -> None:
-        if cell_type != ROLLOUT_CELL_TYPE:
-            await self._worker_manager_handle.inject_fault.remote(
-                cell_id, mode=mode.value, worker_in_cell_index=sub_index
-            )
-            return
-
+    async def inject_fault(self, *, cell_id: str, mode: FailureMode, sub_index: int) -> None:
         # TEMPORARY: taking the lock the weight update holds, reverted with that fault tolerance work
         if self._inference_controller is None:
             self._inference_controller = self._resolve_inference_controller()

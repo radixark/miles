@@ -215,11 +215,11 @@ class GeneralHttpClientProvider:
     _WRITE_TIMEOUT = 60.0
     _POOL_TIMEOUT = 60.0
     _TIMEOUT = httpx.Timeout(connect=_CONNECT_TIMEOUT, read=None, write=_WRITE_TIMEOUT, pool=_POOL_TIMEOUT)
-    _LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=0)
+    _LIMITS = httpx.Limits(max_connections=None, max_keepalive_connections=None)
 
     # TODO: entries are never evicted and the clients are never aclose()d, so a caller that keeps
-    # creating event loops (repeated asyncio.run) leaks one client per loop. Today's call sites use
-    # a bounded number of loops; add eviction before that stops holding.
+    # creating event loops (repeated asyncio.run) leaks one client and its keep-alive sockets per
+    # loop. Today's call sites use a bounded number of loops; add eviction before that stops holding.
     _clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
 
     @classmethod
