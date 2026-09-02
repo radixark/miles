@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import torch
 
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
@@ -43,13 +44,30 @@ def define_step_key_metric_group(prefix: str, step_key: str) -> None:
     _manager.define_step_key_metric_group(prefix, step_key)
 
 
+def jsonable_metrics(metrics: dict) -> dict:
+    """Unwrap metric values that pydantic cannot serialise.
+
+    Torch tensors were already unwrapped here. Numpy scalars were not, and
+    ``np.int64`` is not a Python ``int``: ``MetricEvent.model_dump_json()`` raised
+    ``PydanticSerializationError: Unable to serialize unknown type`` and took the
+    training step down with it.
+
+    The path is only reachable once the event logger is initialised (via
+    ``--dump-details`` / ``--save-debug-event-data``), which is why it went
+    unnoticed -- a metric hook that emits a numpy scalar, such as the multi-turn
+    rollout metrics under ``--log-multi-turn``, crashes only for runs that also
+    asked for event dumps. Both are unwrapped by ``.item()``; anything else is
+    handed to pydantic unchanged.
+    """
+    return {k: (v.item() if isinstance(v, (torch.Tensor, np.generic)) else v) for k, v in metrics.items()}
+
+
 def log(args, metrics, step_key: str):
     step = metrics.get(step_key)
     _manager.log(metrics, step=step, step_key=step_key)
 
     if is_event_logger_initialized():
-        serializable_metrics = {k: (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
-        get_event_logger().log(MetricEvent, {"metrics": serializable_metrics}, print_log=False)
+        get_event_logger().log(MetricEvent, {"metrics": jsonable_metrics(metrics)}, print_log=False)
 
 
 def finish_tracking():
