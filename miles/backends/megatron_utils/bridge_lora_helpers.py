@@ -57,10 +57,11 @@ def _make_value_model_hook(hidden_size: int):
             if not model_post_process[index]:
                 continue
             model_chunk.output_layer = LinearForLastLayer(
-                input_size=hidden_size,
+                input_size=model_chunk.config.hidden_size,
                 output_size=1,
                 config=model_chunk.config,
             )
+        return model
 
     return hook
 
@@ -109,7 +110,17 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
-def _setup_lora_model_via_bridge(args: Namespace) -> list:
+def _make_save_set_refresh_hook(lora):
+    """Re-snapshot the PEFT save set after a value head is attached."""
+
+    def hook(model):
+        lora.set_params_to_save(model)
+        return model
+
+    return hook
+
+
+def _setup_lora_model_via_bridge(args: Namespace, role: str = "actor") -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
     This handles:
@@ -184,12 +195,16 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
     provider.register_pre_wrap_hook(apply_lora_hook)
 
     is_value_model = (
-        "ForTokenClassification" in hf_config.architectures[0]
+        role == "critic"
+        or "ForTokenClassification" in hf_config.architectures[0]
         or "ForSequenceClassification" in hf_config.architectures[0]
     )
     if is_value_model:
         hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
+        # After the adapters, so the fresh head keeps requires_grad; then refresh
+        # the save set, which apply_lora_hook snapshotted before the head existed.
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
+        provider.register_pre_wrap_hook(_make_save_set_refresh_hook(lora))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
     if is_multi_lora_enabled(args):
