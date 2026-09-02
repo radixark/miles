@@ -128,6 +128,31 @@ def test_duplicate_sample_indices_keep_tito_leaves_distinct(tmp_path):
     assert duplicate_rows["sample_occurrence"].to_list() == [0, 1]
 
 
+def test_partial_train_coverage_degrades_to_null_rows(tmp_path):
+    """A sample can be missing from every train shard (e.g. dropped before
+    training dumped its rows). Its train columns must come back null -- the
+    step must keep loading, not 500."""
+    dump_dummy_run(tmp_path, steps=1, dp_size=2)
+    reader = DumpReader(tmp_path)
+    path = reader.train_dir / "0_0.pt"
+    pack = torch.load(path, weights_only=False)
+    columns = pack["rollout_data"]
+    n_rows = len(columns["sample_indices"])
+    victim = int(columns["sample_indices"][-1])
+    for name, value in columns.items():
+        # raw_reward stays batch-global (indexed by rollout position, not row)
+        if name != "raw_reward" and hasattr(value, "__len__") and len(value) == n_rows:
+            columns[name] = value[:-1]
+    torch.save(pack, path)
+
+    joined = reader.load_joined(0)
+    assert (victim, 0) not in joined.train_rows
+    assert 0 < joined.train_coverage < 1.0
+    summary = reader.summary(0)
+    assert summary.height == len(joined.samples)  # the uncovered sample is still listed
+    assert reader.groups(0).height > 0
+
+
 def test_train_index_absent_from_rollout_asserts(run):
     reader, _ = run
     path = reader.train_dir / "0_0.pt"

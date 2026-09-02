@@ -456,8 +456,8 @@ class DumpReader:
                     index.setdefault(int(sample_index), []).append((shard, row))
                 handles.append(rank_pack)
             for position, (sample, key) in enumerate(zip(samples, sample_keys, strict=True)):
-                locations = index[key[0]]
-                if sample_counts[key[0]] > 1:
+                locations = index.get(key[0], [])
+                if locations and sample_counts[key[0]] > 1:
                     locations = _matching_train_locations(
                         handles,
                         locations,
@@ -465,9 +465,12 @@ class DumpReader:
                         total_length=len(sample.tokens),
                         tokens=sample.tokens,
                     )
-                assert (
-                    locations
-                ), f"no train row matches sample_index {key[0]} occurrence {key[1]} ({sample.response_length=}, total_length={len(sample.tokens)})"
+                if not locations:
+                    # Partial train coverage: a sample the trainer never dumped
+                    # (or, for TITO leaves, an index whose shard rows all belong
+                    # to other leaves) keeps null train columns, as before this
+                    # file keyed rows by occurrence -- it must not fail the step.
+                    continue
                 train_rows[key] = _build_train_row(
                     handles,
                     locations,
