@@ -3,6 +3,7 @@ import os
 import platform
 import shlex
 import sys
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -482,6 +483,34 @@ class TestExtraManifests:
 
 
 class TestExecuteTrain:
+    @pytest.mark.parametrize("external_ray", [False, True])
+    def test_launcher_failure_stops_only_a_cluster_it_owns(
+        self,
+        commands: list[str],
+        monkeypatch: pytest.MonkeyPatch,
+        unavailable_ray_job_client: None,
+        external_ray: bool,
+    ) -> None:
+        """A failed launcher-owned job cleans up local Ray without stopping a borrowed cluster."""
+        monkeypatch.setenv("MILES_SCRIPT_EXTERNAL_RAY", str(int(external_ray)))
+
+        with pytest.raises(RuntimeError, match="Ray job service unavailable"):
+            _backend().execute_train(
+                train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B", job_lifetime="launcher"
+            )
+
+        assert ("ray stop --force" in commands) is not external_ray
+        assert not any("ray job submit" in command for command in commands)
+
+    def test_removed_router_env_is_checked_in_the_launch_override(self, commands: list[str]) -> None:
+        """A per-launch config cannot bypass rejection of an obsolete router address."""
+        config = command_utils.ExecuteTrainConfig(extra_env_vars="MILES_ROUTER_EXTERNAL_HOST=trainer.tailnet")
+
+        with pytest.raises(ValueError, match="--session-server-external-host"):
+            _backend().execute_train(train_args="", num_gpus_per_node=1, megatron_model_type="qwen3-4B", config=config)
+
+        assert commands == []
+
     def test_a_leftover_router_external_host_fails_before_launching(self, commands, monkeypatch):
         """Nothing reads the removed variable, so an old export would silently send agents to the placed address."""
         monkeypatch.setenv("MILES_ROUTER_EXTERNAL_HOST", "trainer.tailnet")
@@ -1017,3 +1046,36 @@ class TestDetectHardware:
             for machine in ("x86_64", "aarch64"):
                 _fake_torch(monkeypatch, capability=capability, machine=machine)
                 assert command_utils.detect_hardware() in command_utils.NUM_GPUS_OF_HARDWARE
+
+
+class TestFromEnv:
+    def test_the_environment_fills_the_launcher_fields(self, monkeypatch):
+        """A workbench exports MILES_SCRIPT_* and a config built from the environment reads them."""
+        monkeypatch.setenv("MILES_SCRIPT_CLUSTER_BACKEND", "kubernetes")
+        monkeypatch.setenv("MILES_SCRIPT_NAMESPACE", "miles-someones-namespace")
+
+        config = command_utils.ExecuteTrainConfig.from_env(output_dir="/tmp/out")
+
+        assert config.cluster_backend is base_backend.ClusterBackend.KUBERNETES
+        assert config.namespace == "miles-someones-namespace"
+        assert config.output_dir == "/tmp/out"
+
+    def test_keyword_arguments_override_the_environment(self, monkeypatch):
+        """A recipe that names a launcher field wins over the environment."""
+        monkeypatch.setenv("MILES_SCRIPT_NAMESPACE", "miles-someones-namespace")
+
+        assert command_utils.ExecuteTrainConfig.from_env(namespace="other").namespace == "other"
+
+    def test_keyword_arguments_reach_the_derivations_of_post_init(self):
+        """A recipe derives checkpoint paths from the model name it names, not from the field's default."""
+
+        @dataclass
+        class _Config(command_utils.ExecuteTrainConfig):
+            model_name: str = "Inkling"
+            hf_checkpoint: str | None = None
+
+            def __post_init__(self):
+                if self.hf_checkpoint is None:
+                    self.hf_checkpoint = f"/root/models/{self.model_name}"
+
+        assert _Config.from_env(model_name="Inkling-Small-4layer").hf_checkpoint == "/root/models/Inkling-Small-4layer"

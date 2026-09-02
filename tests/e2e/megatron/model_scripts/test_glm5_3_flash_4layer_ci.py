@@ -25,7 +25,7 @@ _MODEL_ORG = "CharyZeng"
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_name="GLM-5.3-Flash-4layer",
         num_nodes=1,
         num_gpus_per_node=8,
