@@ -12,6 +12,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_name: str = "Qwen3.5-35B-A3B"
     megatron_model_type: str = "qwen3.5-35B-A3B"
+    # miles: plugin GDN from a converted torch_dist; megatron: native GDN built by Megatron-Bridge
+    model_impl: Literal["miles", "megatron"] = "miles"
     num_gpus_per_node: int | None = None
     hardware: Literal["auto", "H200", "B300"] = "auto"
     enable_eval: bool = False
@@ -40,27 +42,36 @@ def prepare(args: ScriptArgs):
     U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
     U.hf_download_dataset("zhuzilin/aime-2024", data_dir=args.data_dir)
 
-    U.convert_checkpoint(
-        model_name=args.model_name,
-        megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
-        dir_dst=args.model_dir,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}",
-        megatron_path=args.megatron_path,
-    )
+    if args.model_impl == "miles":
+        U.convert_checkpoint(
+            model_name=args.model_name,
+            megatron_model_type=args.megatron_model_type,
+            num_gpus_per_node=args.num_gpus_per_node,
+            dir_dst=args.model_dir,
+            hf_checkpoint=f"{args.model_dir}/{args.model_name}",
+            megatron_path=args.megatron_path,
+        )
 
 
 def execute(args: ScriptArgs):
-    ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
     load_save_path = f"{args.output_dir}/{args.run_id}/checkpoints"
+    tp_size, cp_size = (1, 1) if args.parallelism == "tp1-ep8" else (2, 2)
 
     ckpt_args = (
         f"--hf-checkpoint {args.model_dir}/{args.model_name} "
-        f"--ref-load {ref_load_path} "
+        f"--model-impl {args.model_impl} "
         f"--load {load_save_path} "
         f"--save {load_save_path} "
         f"--save-interval {2 if args.mode == 'debug_minimal' else 20} "
     )
+    if args.model_impl == "miles":
+        ckpt_args += f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
+    else:
+        # the bridge loads the reference weights straight from the HF checkpoint
+        ckpt_args += f"--megatron-to-hf-mode bridge --ref-load {args.model_dir}/{args.model_name} "
+        # the bridge builds this as a Qwen3-VL model, which requires per-token loss under CP
+        if cp_size > 1:
+            ckpt_args += "--calculate-per-token-loss "
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
@@ -87,8 +98,6 @@ def execute(args: ScriptArgs):
             "--eval-max-response-len 16384 "
             "--eval-top-p 1 "
         )
-
-    tp_size, cp_size = (1, 1) if args.parallelism == "tp1-ep8" else (2, 2)
 
     perf_args = (
         f"--tensor-model-parallel-size {tp_size} "

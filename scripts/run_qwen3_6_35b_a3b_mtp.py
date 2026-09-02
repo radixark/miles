@@ -18,6 +18,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     run_id: str = U.create_run_id()
     model_name: str = "Qwen3.6-35B-A3B"
     megatron_model_type: str = "qwen3.6-35B-A3B"
+    # miles: plugin GDN from a converted torch_dist; megatron: native GDN built by Megatron-Bridge
+    model_impl: Literal["miles", "megatron"] = "miles"
     num_gpus_per_node: int | None = None
     hardware: Literal["auto", "H200"] = "auto"
     enable_eval: bool = False
@@ -68,24 +70,31 @@ def prepare(args: ScriptArgs):
         f"hf download --repo-type dataset zhuzilin/aime-2024 --local-dir {args.data_dir}/aime-2024"
     )
 
-    U.convert_checkpoint(
-        model_name=args.model_name,
-        megatron_model_type=args.megatron_model_type,
-        num_gpus_per_node=args.num_gpus_per_node,
-        dir_dst=args.model_dir,
-        hf_checkpoint=f"{args.model_dir}/{args.model_name}",
-        megatron_path=args.megatron_path,
-    )
+    if args.model_impl == "miles":
+        U.convert_checkpoint(
+            model_name=args.model_name,
+            megatron_model_type=args.megatron_model_type,
+            num_gpus_per_node=args.num_gpus_per_node,
+            dir_dst=args.model_dir,
+            hf_checkpoint=f"{args.model_dir}/{args.model_name}",
+            megatron_path=args.megatron_path,
+        )
 
 
 def execute(args: ScriptArgs):
-    ref_load_path = f"{args.model_dir}/{args.model_name}_torch_dist"
-
     # Smoke runs: no checkpoint save (Megatron's final save is forced on the
     # last rollout whenever --save-interval is set — miles/utils/misc.py:192 —
     # so we omit both --save and --save-interval to keep ~464G per-config off
     # disk). The ref-load is still required to initialise model weights.
-    ckpt_args = f"--hf-checkpoint {args.model_dir}/{args.model_name} " f"--ref-load {ref_load_path} "
+    ckpt_args = f"--hf-checkpoint {args.model_dir}/{args.model_name} " f"--model-impl {args.model_impl} "
+    if args.model_impl == "miles":
+        ckpt_args += f"--ref-load {args.model_dir}/{args.model_name}_torch_dist "
+    else:
+        # the bridge loads the reference weights straight from the HF checkpoint
+        ckpt_args += f"--megatron-to-hf-mode bridge --ref-load {args.model_dir}/{args.model_name} "
+        # the bridge builds this as a Qwen3-VL model, which requires per-token loss under CP
+        if args.cp > 1:
+            ckpt_args += "--calculate-per-token-loss "
 
     rollout_args = (
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
