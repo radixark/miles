@@ -14,7 +14,6 @@ MEGATRON_PATH=${MEGATRON_PATH:-/root/Megatron-LM}
 
 # Identical architecture spec to phase2_gb200.sh's MODEL_ARGS.
 MODEL_ARGS=(
-   --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
    --disable-bias-linear --qk-layernorm --group-query-attention
    --num-attention-heads 16 --num-query-groups 2 --kv-channels 256
    --num-layers 40 --hidden-size 2048 --ffn-hidden-size 512

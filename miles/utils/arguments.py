@@ -106,11 +106,12 @@ def add_model_impl_argument(parser):
         "--model-impl",
         type=str,
         choices=["miles", "megatron"],
-        default="megatron",
+        default=None,
         help=(
             "Which implementation trains the model's non-standard layers: 'megatron' "
-            "(native modules, default) or 'miles' (the miles_plugins path). Most models "
-            "ship only the megatron implementation."
+            "(native modules) or 'miles' (the miles_plugins path). Defaults to megatron, "
+            "except the Qwen3.5 family defaults to miles; most models ship only the "
+            "megatron implementation, and --megatron-to-hf-mode bridge is always megatron."
         ),
     )
 

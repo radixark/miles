@@ -8,8 +8,8 @@ description: Launch recipe for the dense Qwen3.8-27B, plus where the 2.4T-A95B M
 dense **Qwen3.8-27B** ships the same `config.json` as
 [Qwen3.5-27B](/models/qwen/qwen3-5) and [Qwen3.6-27B](/models/qwen/qwen3-6) —
 same hybrid GDN backbone, same gated attention, same tokenizer and vocabulary.
-It therefore reuses the Qwen3.5 Megatron spec
-(`miles_plugins.models.qwen3_5.get_qwen3_5_spec`), and
+It therefore reuses the Qwen3.5 implementation
+(`miles_plugins.models.qwen3_5`, the family's default `--model-impl miles`), and
 `scripts/models/qwen3.8-27B.py` is a one-line derivation of the Qwen3.5-27B
 model args; the three expand to byte-identical Megatron flags.
 
@@ -157,7 +157,7 @@ CPU Adam is enabled (`--optimizer-cpu-offload --overlap-cpu-optimizer-d2h-h2d --
 
 From `scripts/models/qwen3.8-27B.py`, which defers to `scripts/models/qwen3.5-27B.py`:
 
-- `--spec miles_plugins.models.qwen3_5 get_qwen3_5_spec` — Qwen3.8 reuses the Qwen3.5 spec (gated attention, FP32 `A_log`).
+- `--model-impl` defaults to `miles` — Qwen3.8 reuses the Qwen3.5 implementation (gated attention, FP32 `A_log`).
 - `--rotary-base 10000000`, `--rotary-percent 0.25`.
 - `--vocab-size 248320`.
 - `--apply-layernorm-1p`, `--qk-layernorm`, `--group-query-attention`.

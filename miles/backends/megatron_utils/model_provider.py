@@ -96,6 +96,11 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
 
+    # mtp_num_layers is model-defining and stays with the HF config
+    if getattr(args, "enable_mtp_training", False):
+        provider.mtp_detach_heads = True
+        provider.mtp_loss_scaling_factor = args.mtp_loss_scaling_factor
+
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
 class LinearForLastLayer(torch.nn.Linear):
@@ -168,6 +173,12 @@ def get_model_provider_func(
         provider = bridge.to_megatron_provider(load_weights=False)
         _apply_bridge_runtime_config(provider, args)
         provider.finalize()
+        # Qwen3-VL providers flip this in finalize(); miles scales the loss from args, so both desync
+        if provider.calculate_per_token_loss != args.calculate_per_token_loss:
+            raise ValueError(
+                f"the bridge provider requires calculate_per_token_loss={provider.calculate_per_token_loss}; "
+                "pass --calculate-per-token-loss so miles' loss scaling matches it"
+            )
 
         def wrapped_bridge_provider(
             pre_process: bool = True,

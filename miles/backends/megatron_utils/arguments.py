@@ -63,15 +63,27 @@ def set_default_megatron_args(args):
     return args
 
 
+QWEN3_5_FAMILIES = ("qwen3_5", "qwen3_5_moe")
+
+
 def apply_model_impl(args):
+    """Dispatch --model-impl to the family that owns it; each family resolves its own default."""
     # the conversion and replay tools parse without the serving flags
-    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge" and args.model_impl != "megatron":
+    is_bridge = getattr(args, "megatron_to_hf_mode", "raw") == "bridge"
+    if is_bridge and args.model_impl == "miles":
         raise ValueError(
             "--model-impl miles cannot run under --megatron-to-hf-mode bridge: "
             "Megatron-Bridge builds megatron-native modules"
         )
     if args.model_family == "deepseek_v4":
         apply_dsv4_model_impl(args)
+    elif args.model_family in QWEN3_5_FAMILIES:
+        # local import: the plugin holds model code, which argument parsing must not depend on
+        from miles_plugins.models.qwen3_5 import apply_qwen3_5_model_impl
+
+        apply_qwen3_5_model_impl(args, is_bridge=is_bridge)
+    elif args.model_impl is None:
+        args.model_impl = "megatron"
     elif args.model_impl != "megatron":
         raise ValueError(
             f"--model-impl miles: {args.model_family or 'this model'} has only the megatron implementation"

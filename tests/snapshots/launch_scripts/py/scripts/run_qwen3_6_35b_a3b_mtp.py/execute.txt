@@ -17,7 +17,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "SGLANG_ENABLE_SPEC_V2": "1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
   -- python3 <REPO_ROOT>/train.py
-  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
   --disable-bias-linear
   --qk-layernorm
   --group-query-attention
@@ -52,6 +51,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-shared-expert-gate
   --mtp-num-layers 1
   --hf-checkpoint /root/models/Qwen3.6-35B-A3B
+  --model-impl miles
   --ref-load /root/models/Qwen3.6-35B-A3B_torch_dist 
   --prompt-data /root/datasets/dapo-math-17k/dapo-math-17k.jsonl
   --input-key prompt
