@@ -70,6 +70,7 @@ def dump_dummy_run(
     with_eval: bool = True,
     with_tokenizer: bool = True,
     remove_sample_indices: tuple[int, ...] = (),
+    duplicate_first_sample_index: bool = False,
     seed: int = 0,
 ) -> DummyRunTruth:
     """``remove_sample_indices`` marks the given within-step positions as
@@ -95,6 +96,9 @@ def dump_dummy_run(
             )
             for i in range(n)
         ]
+        if duplicate_first_sample_index:
+            samples[1].index = samples[0].index
+            samples[1].reward = samples[0].reward
         for sample in samples[:2]:
             sample.metadata["messages"] = _dummy_messages(sample)
         save_debug_rollout_data(args, samples, rollout_id=rollout_id, evaluation=False)

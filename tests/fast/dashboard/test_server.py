@@ -129,7 +129,8 @@ def test_summary_and_groups_endpoints(client):
     body = client.get("/api/rollout/0/summary").json()
     assert body["rollout_id"] == 0 and body["evaluation"] is False
     assert len(body["rows"]) == 8
-    assert "sample_index" in body["columns"] and "mean_abs_lp_diff" in body["columns"]
+    assert "sample_index" in body["columns"] and "sample_occurrence" in body["columns"]
+    assert "mean_abs_lp_diff" in body["columns"]
 
     eval_body = client.get("/api/rollout/0/summary", params={"eval": "true"}).json()
     assert eval_body["evaluation"] is True
@@ -157,6 +158,24 @@ def test_tokens_endpoint(client):
     assert client.get("/api/rollout/0/sample/999999/tokens").status_code == 404
     assert client.get("/api/rollout/0/sample/0/tokens", params={"start": 5, "end": 5}).status_code == 400
     assert client.get("/api/rollout/42/sample/0/tokens").status_code == 404
+
+
+def test_duplicate_tito_leaves_are_independently_viewable(tmp_path):
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+
+    response = client.get("/api/rollout/0/summary")
+    assert response.status_code == 200
+    rows = [row for row in response.json()["rows"] if row["sample_index"] == 0]
+    assert [row["sample_occurrence"] for row in rows] == [0, 1]
+
+    for row in rows:
+        payload = client.get("/api/rollout/0/sample/0/tokens", params={"occurrence": row["sample_occurrence"]}).json()
+        assert payload["sample_occurrence"] == row["sample_occurrence"]
+        assert payload["total_len"] == row["total_length"]
+
+    assert client.get("/api/rollout/0/sample/0/messages", params={"occurrence": 1}).status_code == 200
+    assert client.get("/api/rollout/0/sample/0/tokens", params={"occurrence": 2}).status_code == 404
 
 
 def test_still_writing_maps_to_503(client, dump_dir):
