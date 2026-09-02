@@ -2,7 +2,7 @@ import dataclasses
 import functools
 import inspect
 import typing
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from enum import Enum
 from typing import Annotated, Any, TypeVar, overload
 
@@ -60,12 +60,14 @@ def _resolve_default(field: dataclasses.Field, param: inspect.Parameter) -> obje
     return param.default
 
 
-def dataclass_from_env(dataclass_cls: type, *, env_var_prefix: str = SCRIPT_ENV_VAR_PREFIX) -> Any:
+def dataclass_from_env(
+    dataclass_cls: type, *, env_var_prefix: str = SCRIPT_ENV_VAR_PREFIX, overrides: Mapping[str, object] | None = None
+) -> Any:
     """Build the dataclass from the environment alone, letting click read it exactly as it would on the cli."""
     built: list[Any] = []
 
     def build(**kwargs: object) -> None:
-        built.append(_build(dataclass_cls, kwargs))
+        built.append(_build(dataclass_cls, {**kwargs, **(overrides or {})}))
 
     build.__signature__ = inspect.Signature(_cli_parameters(dataclass_cls, env_var_prefix=env_var_prefix))
     build.__name__ = dataclass_cls.__name__
