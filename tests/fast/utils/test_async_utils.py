@@ -5,6 +5,7 @@ import concurrent.futures
 import logging
 import threading
 import time
+from functools import partial
 
 import pytest
 
@@ -12,9 +13,11 @@ from miles.utils import async_utils
 from miles.utils.async_utils import (
     AsyncioGatherUtils,
     AsyncLoopThread,
+    Disposer,
     eager_create_task,
     maybe_await,
     wait_cancelling_pending_on_first_completion,
+    with_disposer,
 )
 
 
@@ -704,6 +707,104 @@ class TestGetAsyncLoop:
         first = async_utils.get_async_loop()
 
         assert async_utils.get_async_loop() is first
+
+
+class TestDisposer:
+    async def test_everything_added_is_released_in_reverse(self):
+        """The later object was built on the earlier one, so releasing it first is the only safe order."""
+        events: list[str] = []
+
+        class Engine:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            async def dispose(self) -> None:
+                events.append(self.name)
+
+        def close_reader() -> None:
+            events.append("reader")
+
+        async def close_writer() -> None:
+            events.append("writer")
+
+        async with Disposer() as disposer:
+            disposer.add(Engine("first"), Engine("second"))
+            disposer.add(close_reader)
+            disposer.add(close_writer)
+
+        assert events == ["writer", "reader", "second", "first"]
+
+    async def test_a_partial_is_awaited_like_the_coroutine_function_it_wraps(self):
+        """A teardown that needs an argument arrives as a partial, and dropping its await would skip it."""
+        released: list[object] = []
+
+        async def shutdown(handle: object) -> None:
+            released.append(handle)
+
+        handle = object()
+
+        async with Disposer() as disposer:
+            disposer.add(partial(shutdown, handle))
+
+        assert released == [handle]
+
+    async def test_everything_added_is_released_when_the_body_raises(self):
+        """The exit path nobody wrote code for is the one that used to leave the whole run behind."""
+        events: list[str] = []
+
+        with pytest.raises(ValueError, match="training failed"):
+            async with Disposer() as disposer:
+                disposer.add(partial(events.append, "released"))
+                raise ValueError("training failed")
+
+        assert events == ["released"]
+
+    def test_a_value_that_can_neither_dispose_nor_be_called_is_refused(self):
+        """Registering one silently would leave the object it stands for released by nobody."""
+        with pytest.raises(AssertionError):
+            Disposer().add(object())
+
+    async def test_an_object_that_was_never_created_is_skipped(self):
+        """A driver whose critic is optional registers both models in one call instead of guarding one."""
+        events: list[str] = []
+
+        async def close_actor() -> None:
+            events.append("actor")
+
+        async with Disposer() as disposer:
+            disposer.add(None, close_actor)
+
+        assert events == ["actor"]
+
+
+class TestWithDisposer:
+    async def test_what_the_body_registered_is_released_once_it_returns(self):
+        """The entry point owns the disposer so no driver has to remember to close one."""
+        events: list[str] = []
+
+        async def body(label: str, *, disposer: Disposer, suffix: str) -> str:
+            async def release_engine() -> None:
+                events.append("engine")
+
+            disposer.add(partial(events.append, "tracking"), release_engine)
+            events.append("body")
+            return label + suffix
+
+        assert await with_disposer(body, "driver", suffix="!") == "driver!"
+        assert events == ["body", "engine", "tracking"]
+
+    async def test_what_the_body_registered_is_released_when_the_body_raises(self):
+        """The exit path nobody wrote code for is the one that used to leave the whole run behind."""
+        events: list[str] = []
+
+        async def body(*, disposer: Disposer) -> None:
+            disposer.add(partial(events.append, "released"))
+            raise ValueError("training failed")
+
+        with pytest.raises(ValueError, match="training failed"):
+            await with_disposer(body)
+
+        assert events == ["released"]
 
 
 class TestMaybeAwait:
