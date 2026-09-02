@@ -307,6 +307,41 @@ def test_empty_step_survives_the_parquet_cache(tmp_path):
     assert reloaded.columns == list(DumpReader.SUMMARY_COLUMNS)
 
 
+def test_trajectory_occurrences_follow_the_full_sample_order(tmp_path):
+    """The trajectory sidecar only holds samples that recorded a conversation,
+    so file positions cannot number occurrences: when the first of two TITO
+    leaves sharing an index has no conversation, the recorded one is
+    occurrence 1 in summary/tokens and must be occurrence 1 here too. The
+    writer persists that numbering in each row."""
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    sidecar = tmp_path / "trajectory" / "0.jsonl"
+    rows = [json.loads(line) for line in sidecar.read_text().splitlines()]
+    index0 = [row for row in rows if int(row["sample_index"]) == 0]
+    assert [row["sample_occurrence"] for row in index0] == [0, 1]  # full-list numbering, persisted
+    # leaf 0 recorded no conversation: only the occurrence-1 row remains
+    rows.remove(index0[0])
+    sidecar.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    reader = DumpReader(tmp_path)
+    assert int(reader.trajectory_messages(0, 0, sample_occurrence=1)["sample_index"]) == 0
+    with pytest.raises(KeyError):
+        reader.trajectory_messages(0, 0, sample_occurrence=0)  # the conversationless leaf
+
+
+def test_trajectory_legacy_sidecar_falls_back_to_file_positions(tmp_path):
+    """Sidecars written before the occurrence column keep working, numbered by
+    file position (the best available for them)."""
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    sidecar = tmp_path / "trajectory" / "0.jsonl"
+    rows = [json.loads(line) for line in sidecar.read_text().splitlines()]
+    for row in rows:
+        row.pop("sample_occurrence")
+    sidecar.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    reader = DumpReader(tmp_path)
+    assert int(reader.trajectory_messages(0, 0, sample_occurrence=1)["sample_index"]) == 0
+
+
 def test_pre_fix_columnless_cache_is_not_served(tmp_path):
     """A cache dir populated before the no-sample schema fix holds a columnless
     parquet for the aborted step, and its mtime stamps still match the dump.

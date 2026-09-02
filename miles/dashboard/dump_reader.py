@@ -599,13 +599,8 @@ class DumpReader:
         if cache_key not in self._trajectory_cache:
             name = f"eval_{rollout_id}.jsonl" if evaluation else f"{rollout_id}.jsonl"
             with open(self.dump_dir / "trajectory" / name) as f:
-                rows = {}
-                occurrences: defaultdict[int, int] = defaultdict(int)
-                for row in map(json.loads, f):
-                    index = int(row["sample_index"])
-                    sample_key = (index, occurrences[index])
-                    occurrences[index] += 1
-                    rows[sample_key] = row
+                file_rows = [json.loads(line) for line in f]
+            rows = self._keyed_trajectory_rows(file_rows)
             self._trajectory_cache[cache_key] = rows
             while len(self._trajectory_cache) > 4:
                 self._trajectory_cache.popitem(last=False)
@@ -617,6 +612,29 @@ class DumpReader:
                 f"sample {sample_index} occurrence {sample_occurrence} has no recorded conversation in rollout {rollout_id}"
             )
         return rows[sample_key]
+
+    @staticmethod
+    def _keyed_trajectory_rows(file_rows: list[dict]) -> dict:
+        """Key sidecar rows by the same (index, occurrence) numbering as summary().
+
+        The sidecar holds one row per sample that recorded a conversation
+        (``trajectory_rows`` skips the rest), so numbering by file position
+        disagrees with the full-sample-list numbering used everywhere else
+        whenever a conversationless TITO leaf precedes a recorded one at the
+        same index. The writer therefore persists ``sample_occurrence``; a
+        sidecar from before that column falls back to file-position numbering,
+        its best available.
+        """
+        occurrences: defaultdict[int, int] = defaultdict(int)
+        rows: dict[SampleKey, dict] = {}
+        for row in file_rows:
+            index = int(row["sample_index"])
+            occurrence = row.get("sample_occurrence")
+            if occurrence is None:
+                occurrence = occurrences[index]
+            occurrences[index] += 1
+            rows[(index, int(occurrence))] = row
+        return rows
 
     # -------------------------- token-view point reads ----------------------
 
