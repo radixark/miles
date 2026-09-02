@@ -158,29 +158,6 @@ def sandbox_labels(task_dir: Path) -> dict[str, str]:
     return labels
 
 
-def resolve_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
-    """A provider API key: *env_var*, else the key file.
-
-    The file indirection (*file_env_var*, default *default_path*) exists so
-    launchers can hand rollout workers a PATH instead of the secret itself:
-    anything a launcher forwards rides ray's runtime_env, which is echoed into
-    driver logs and persisted in job metadata in plaintext. Env vars the
-    worker already has (platform-injected, single-host inheritance) never pass
-    through ray, so *env_var* is checked first.
-    """
-    key = os.environ.get(env_var, "").strip()
-    if key:
-        return key
-    key_file = Path(os.environ.get(file_env_var, "").strip() or default_path).expanduser()
-    try:
-        key = key_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        key = ""
-    if not key:
-        raise RuntimeError(f"no API key: {env_var} is unset and {key_file} is missing or empty")
-    return key
-
-
 def start_keepalive(beat, thread_name: str, *, interval_s: float, max_consecutive_failures: int) -> None:
     """Run *beat* every *interval_s* for as long as THIS process lives.
 

@@ -52,9 +52,9 @@ import re
 import time
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse, urlunparse
 
 from openai import AsyncOpenAI
+from miles.rollout.agentic.session import resolve_session_url
 
 logger = logging.getLogger(__name__)
 
@@ -121,17 +121,6 @@ def _is_retryable_env_error(e: BaseException) -> bool:
     if "CAPACITY_REACHED" in str(e):
         return True
     return type(e).__name__ in {"ConnectionClosedOK", "ConnectionClosedError", "ConnectionClosed"}
-
-
-def _resolve_session_url(base_url: str) -> str:
-    """Build the OpenAI-compatible policy URL, rewriting host for off-cluster agents."""
-    session_url = f"{base_url}/v1"
-    external_host = os.getenv("MILES_ROUTER_EXTERNAL_HOST")
-    if external_host:
-        parsed = urlparse(session_url)
-        netloc = f"{external_host}:{parsed.port}" if parsed.port else external_host
-        session_url = urlunparse(parsed._replace(netloc=netloc))
-    return session_url
 
 
 def _extract_messages(prompt: Any) -> list[dict[str, str]]:
@@ -423,7 +412,7 @@ async def run_for_training(
     request_kwargs = request_kwargs or {}
     metadata = metadata or {}
 
-    session_url = _resolve_session_url(base_url)
+    session_url = resolve_session_url(base_url)
     model_name = os.getenv("AGENT_MODEL_NAME", os.getenv("SWE_AGENT_MODEL_NAME", "model"))
 
     policy = AsyncOpenAI(base_url=session_url, api_key="EMPTY")
