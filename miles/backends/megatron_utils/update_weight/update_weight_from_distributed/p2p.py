@@ -1,3 +1,6 @@
+import copy
+import dataclasses
+import fcntl
 import logging
 from argparse import Namespace
 from collections.abc import Callable, Mapping, Sequence
@@ -21,6 +24,8 @@ from tqdm import tqdm
 from miles.utils.distributed_utils import get_gloo_group
 
 from .mixin import DistBucketedWeightUpdateMixin
+
+
 from .p2p_transfer_utils import (
     P2PTransferManager,
     RemoteTransferPlan,
@@ -31,6 +36,22 @@ from .p2p_transfer_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class _DraftTransferState:
+    """Per-draft-worker transfer state, mirroring the target-model attributes
+    on UpdateWeightP2P. The draft (MTP/nextn) model registers separately on the
+    engine side; without updating it, speculative acceptance decays to zero as
+    the target trains away from the frozen draft."""
+
+    mapper: ParameterMapper
+    params_dict: dict[str, torch.Tensor]
+    meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]]
+    nextn_prefix: str
+    memory_registry: dict | None = None
+    staged: dict[str, list[tuple[str, torch.Tensor]]] = dataclasses.field(default_factory=dict)
+    pending: dict[str, int] = dataclasses.field(default_factory=dict)
 
 
 class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
@@ -71,6 +92,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._tensor_update_pending: dict[str, int] = {}
 
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
+        self._draft_state: _DraftTransferState | None = None
         self.transfer_manager = P2PTransferManager(
             num_workers=getattr(args, "p2p_transfer_num_workers", 4),
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
@@ -108,6 +130,11 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             f"Some tensors were not transferred during P2P weight update. "
             f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
         )
+        if self._draft_state is not None:
+            assert len(self._draft_state.pending) == 0 and len(self._draft_state.staged) == 0, (
+                f"Some draft tensors were not transferred during P2P weight update. "
+                f"Pending: {self._draft_state.pending}, Staged: {self._draft_state.staged}"
+            )
 
     def _pause_and_prepare_engines(self):
         """Register shared CPU pinned memory with P2P on first call."""
@@ -117,6 +144,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
         if not self._model_registered:
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
+            if self._draft_state is not None:
+                self._draft_state.memory_registry = register_cpu_memory(
+                    self._draft_state.params_dict, self._transfer_engine
+                )
         self._model_registered = True
 
     def _update_weight_implementation(
@@ -131,38 +162,87 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         """
         if not self._is_source or not converted_named_tensors:
             return
-        # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
-        transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
 
-        if transfer_ready_params and ready_hf_tensors:
-            last_idx = len(self._transfer_engine_meta_list) - 1
-            for i, (model_replica, remote_weight_infos) in enumerate(self._transfer_engine_meta_list):
-                model_replica.load_weights(ready_hf_tensors)
+        if self._draft_state is not None:
+            prefix = self._draft_state.nextn_prefix
+            draft_tensors = [(n, t) for n, t in converted_named_tensors if n.startswith(prefix)]
+            base_tensors = [(n, t) for n, t in converted_named_tensors if not n.startswith(prefix)]
+        else:
+            draft_tensors, base_tensors = [], converted_named_tensors
 
-                is_last = i == last_idx
-                if is_last:
-                    # Last engine rank: fire-and-forget all sessions to background,
-                    # as the weight will no longer be overwritten
-                    for remote_session in remote_weight_infos:
-                        self.transfer_manager.submit(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                else:
-                    # Non-last engine rank needs to be fully written to target before next update can happen.
-                    futures = [
-                        self.transfer_manager.submit_returning_future(
-                            self._do_p2p_write_one_session,
-                            remote_session,
-                            transfer_ready_params,
-                        )
-                        for remote_session in remote_weight_infos
-                    ]
-                    for f in futures:
-                        f.result()
+        transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(base_tensors)
+        self._stage_and_write(
+            transfer_ready_params,
+            ready_hf_tensors,
+            self._transfer_engine_meta_list,
+            self._weight_memory_registry,
+        )
+
+        if draft_tensors:
+            ready_params, ready_tensors = self._get_transfer_ready_params(
+                draft_tensors,
+                mapper=self._draft_state.mapper,
+                params_dict=self._draft_state.params_dict,
+                staged=self._draft_state.staged,
+                pending=self._draft_state.pending,
+            )
+            self._stage_and_write(
+                ready_params,
+                ready_tensors,
+                self._draft_state.meta_list,
+                self._draft_state.memory_registry,
+            )
 
         converted_named_tensors.clear()
+
+    def _stage_and_write(
+        self,
+        transfer_ready_params: list[str],
+        ready_hf_tensors: list[tuple[str, torch.Tensor]],
+        meta_list: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]],
+        memory_registry: dict,
+    ) -> None:
+        if not transfer_ready_params or not ready_hf_tensors:
+            return
+        last_idx = len(meta_list) - 1
+        for i, (model_replica, remote_weight_infos) in enumerate(meta_list):
+            # All shards of a stacked param must arrive in one call: the loader's
+            # fusion caches (e.g. cached_a_proj for fused_qkv_a_proj_with_mqa) are
+            # local to do_load_weights, so splitting the call drops the param.
+            try:
+                model_replica.load_weights(ready_hf_tensors)
+            except Exception as e:
+                raise RuntimeError(
+                    f"[P2P-Shared] staging failed for {ready_hf_tensors[0][0]} "
+                    f"(+{len(ready_hf_tensors) - 1} more). p2p needs a quant finalize that keeps "
+                    f"parameters loadable; fp8-block qualifies, an unquantized MoE under the "
+                    f"flashinfer trtllm runner does not (it swizzles experts to a 4D layout)."
+                ) from e
+
+            is_last = i == last_idx
+            if is_last:
+                # Last engine rank: fire-and-forget all sessions to background,
+                # as the weight will no longer be overwritten
+                for remote_session in remote_weight_infos:
+                    self.transfer_manager.submit(
+                        self._do_p2p_write_one_session,
+                        remote_session,
+                        transfer_ready_params,
+                        memory_registry,
+                    )
+            else:
+                # Non-last engine rank needs to be fully written to target before next update can happen.
+                futures = [
+                    self.transfer_manager.submit_returning_future(
+                        self._do_p2p_write_one_session,
+                        remote_session,
+                        transfer_ready_params,
+                        memory_registry,
+                    )
+                    for remote_session in remote_weight_infos
+                ]
+                for f in futures:
+                    f.result()
 
     # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
     def is_rollout_engines_fresh(self) -> bool:
@@ -245,12 +325,67 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
                 self._transfer_engine_meta_list.append((model_replica, remote_infos))
 
+            first_server_args = next(iter(self.session_id_to_server_args.values()))
+            # The draft consumes only model.layers.{num_hidden_layers}.* names (its
+            # embed_tokens and shared_head.head are shared with the target), and the
+            # converter emits those only when the MTP layer is trained. A serving-only
+            # MTP setup keeps that layer frozen, so building a draft replica there
+            # would register memory that never receives a byte.
+            if first_server_args.speculative_algorithm and self.args.enable_mtp_training:
+                self._connect_draft_sessions(rollout_engines, targets_grouped_by_engine_rank)
+
+    def _connect_draft_sessions(self, rollout_engines, targets_grouped_by_engine_rank) -> None:
+        """Mirror the target-model session setup for the speculative draft
+        (MTP/nextn) worker, which registers separately. The converter emits the
+        trained nextn layer under model.layers.{num_hidden_layers}; without
+        these sessions the draft would serve frozen initial weights and
+        speculative acceptance decays to zero as the target trains."""
+        targets = [t for rank_targets in targets_grouped_by_engine_rank.values() for t in rank_targets]
+        (
+            draft_infos_by_session,
+            draft_targets_to_session_id,
+            draft_session_to_server_args,
+        ) = query_remote_weight_infos(rollout_engines, targets, worker="draft")
+
+        draft_replica = None
+        draft_meta: list[tuple[torch.nn.Module, list[RemoteWeightInfo]]] = []
+        for rank_targets in targets_grouped_by_engine_rank.values():
+            first_target = rank_targets[0]
+            session_id = draft_targets_to_session_id[(first_target.engine_ind, first_target.engine_rank)]
+            if draft_replica is None:
+                parallelism_config = RankParallelismConfig.from_dict(draft_infos_by_session[session_id][1])
+                draft_replica = self._create_cpu_replica(
+                    parallelism_config,
+                    self.args.hf_checkpoint,
+                    draft_session_to_server_args[session_id],
+                    first_engine_rank=True,
+                    is_draft=True,
+                )
+                draft_params = dict(draft_replica.named_parameters())
+                draft_mapper = ParameterMapper.from_model(draft_replica)
+            remote_infos = [
+                RemoteWeightInfo(
+                    draft_targets_to_session_id[(t.engine_ind, t.engine_rank)],
+                    draft_infos_by_session[draft_targets_to_session_id[(t.engine_ind, t.engine_rank)]][0],
+                )
+                for t in rank_targets
+            ]
+            draft_meta.append((draft_replica, remote_infos))
+
+        self._draft_state = _DraftTransferState(
+            mapper=draft_mapper,
+            params_dict=draft_params,
+            meta_list=draft_meta,
+            nextn_prefix=f"model.layers.{draft_replica.config.num_hidden_layers}.",
+        )
+
     def _create_cpu_replica(
         self,
         parallelism_config: RankParallelismConfig,
         model_path: str,
         server_args: ServerArgs,
         first_engine_rank: bool = False,
+        is_draft: bool = False,
     ) -> torch.nn.Module:
         """Create a CPU model replica that loads the right shard and skips post_load_weights."""
         load_config = LoadConfig(
@@ -258,6 +393,8 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             model_loader_extra_config=None,
             rl_quant_profile=server_args.rl_quant_profile,
         )
+        server_args = copy.copy(server_args)
+        server_args.nnodes = 1
         server_args_module.set_global_server_args_for_scheduler(server_args)
         initialize_moe_config(server_args)
         initialize_fp8_gemm_config(server_args)
@@ -271,26 +408,61 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         from sglang.srt.model_loader import loader as model_loader_module
 
         original_post_load_weights = model_loader_module.post_load_weights
+        original_initialize_model = model_loader_module._initialize_model
+
+        def _initialize_model_defer_finalize(*args, **kwargs):
+            built = original_initialize_model(*args, **kwargs)
+            for _, module in built.named_modules():
+                quant_method = getattr(module, "quant_method", None)
+                if quant_method is not None:
+                    quant_method.process_weights_after_loading = lambda layer: None
+            return built
+
         model_loader_module.post_load_weights = lambda *args, **kwargs: None
+        model_loader_module._initialize_model = _initialize_model_defer_finalize
         try:
             with ParallelismContext(parallelism_config):
                 model = get_model(
-                    model_config=ModelConfig(model_path),
+                    model_config=ModelConfig(model_path, is_draft_model=is_draft),
                     load_config=load_config,
                     device_config=DeviceConfig(device="cpu"),
                 )
         finally:
             model_loader_module.post_load_weights = original_post_load_weights
+            model_loader_module._initialize_model = original_initialize_model
+
+        # Run the real quant finalize the loader skipped, module by module on the
+        # trainer GPU (the transforms are CUDA-only), mirroring the loader loop.
+        # This leaves the replica in the exact post-finalize layout the engine
+        # registers, for any quantization method. The node-local lock serializes
+        # this phase and the pinning below across co-located actors: their
+        # combined transient host-memory churn on top of the resident replicas
+        # OOM-kills the node when run concurrently.
+        with open("/dev/shm/miles_p2p_replica_finalize.lock", "w") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            for _, module in model.named_modules():
+                quant_method = getattr(module, "quant_method", None)
+                if quant_method is None:
+                    continue
+                if "process_weights_after_loading" in quant_method.__dict__:
+                    del quant_method.process_weights_after_loading
+                if hasattr(module, "is_weights_quantized") and module.is_weights_quantized():
+                    continue
+                module.to("cuda")
+                quant_method.process_weights_after_loading(module)
+                module.to("cpu")
+                torch.cuda.empty_cache()
+
+            if first_engine_rank:
+                for param in model.parameters():
+                    param.data = param.data.pin_memory()
 
         # Also patch the instance method for subsequent load_weights() calls
         # (deepseek_weight_loader.py:342 calls self.post_load_weights() at the end).
         if hasattr(model, "post_load_weights"):
             model.post_load_weights = lambda *args, **kwargs: None
 
-        if first_engine_rank:
-            for param in model.parameters():
-                param.data = param.data.pin_memory()
-        else:
+        if not first_engine_rank:
             for name, param in model.named_parameters():
                 assert name in self._shared_params_dict, f"[P2P-Shared] Parameter {name} not found in shared buffers"
                 param.data = self._shared_params_dict[name]
@@ -298,7 +470,13 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         return model
 
     def _get_transfer_ready_params(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]]
+        self,
+        converted_named_tensors: list[tuple[str, torch.Tensor]],
+        *,
+        mapper: ParameterMapper | None = None,
+        params_dict: dict[str, torch.Tensor] | None = None,
+        staged: dict[str, list[tuple[str, torch.Tensor]]] | None = None,
+        pending: dict[str, int] | None = None,
     ) -> tuple[list[str], list[tuple[str, torch.Tensor]]]:
         """Determine which sglang params have all shards present, returning their accumulated tensors.
 
@@ -314,11 +492,14 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             ready_hf_tensor: corresponding complete tensors ready to be transferred.
         """
         transfer_ready_params = []
-        params_dict = self._shared_params_dict
+        mapper = mapper if mapper is not None else self._shared_param_mapper
+        params_dict = params_dict if params_dict is not None else self._shared_params_dict
+        staged = staged if staged is not None else self._staged_tensors
+        pending = pending if pending is not None else self._tensor_update_pending
 
         for name, tensor in converted_named_tensors:
             # map the tensor name of huggingface to the one of sglang.
-            mapped_result = self._shared_param_mapper.map(name)
+            mapped_result = mapper.map(name)
             mapped, num_shards, num_experts = (
                 mapped_result.sglang_name,
                 mapped_result.num_shards,
@@ -333,27 +514,28 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             else:
                 total_expected = num_shards
 
-            self._staged_tensors.setdefault(mapped, []).append((name, tensor))
+            staged.setdefault(mapped, []).append((name, tensor))
 
             if total_expected == 1:
                 transfer_ready_params.append(mapped)
             else:
-                if mapped not in self._tensor_update_pending:
-                    self._tensor_update_pending[mapped] = total_expected - 1
+                if mapped not in pending:
+                    pending[mapped] = total_expected - 1
                 else:
-                    self._tensor_update_pending[mapped] -= 1
-                if self._tensor_update_pending[mapped] == 0:
+                    pending[mapped] -= 1
+                if pending[mapped] == 0:
                     transfer_ready_params.append(mapped)
 
         ready_hf_tensors: list[tuple[str, torch.Tensor]] = []
         for param_name in transfer_ready_params:
-            staged = self._staged_tensors.pop(param_name, [])
-            ready_hf_tensors.extend(staged)
-            self._tensor_update_pending.pop(param_name, None)
+            ready_hf_tensors.extend(staged.pop(param_name, []))
+            pending.pop(param_name, None)
 
         return transfer_ready_params, ready_hf_tensors
 
-    def _do_p2p_write_one_session(self, remote_session: RemoteWeightInfo, names: list[str]) -> None:
+    def _do_p2p_write_one_session(
+        self, remote_session: RemoteWeightInfo, names: list[str], memory_registry: dict | None = None
+    ) -> None:
         """P2P write from shared CPU pinned buffers to a single remote session.
 
         Used by the parallelized submission path where each session within an
@@ -363,7 +545,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         valid_names = []
 
         for name in names:
-            cpu_reg = self._weight_memory_registry.get(name)
+            cpu_reg = (memory_registry if memory_registry is not None else self._weight_memory_registry).get(name)
             assert cpu_reg, f"the _weight_memory_registry of {name} failed"
 
             data_ptr, numel, ele_size = cpu_reg
@@ -380,10 +562,17 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             if name in remote_session.weights_info:
                 target_ptrs.append(remote_session.weights_info[name][0])
 
+        missing = [n for n in valid_names if n not in remote_session.weights_info]
         assert len(target_ptrs) == len(source_ptrs), (
             f"[P2P-Shared] Pointer count mismatch for session {session_id}, "
-            f"source: {len(source_ptrs)}, target: {len(target_ptrs)}"
+            f"source: {len(source_ptrs)}, target: {len(target_ptrs)}, "
+            f"missing_on_remote[:8]: {missing[:8]}"
         )
+        for name, slen in zip(valid_names, source_lens, strict=True):
+            _, r_numel, r_ele = remote_session.weights_info[name]
+            assert (
+                r_numel * r_ele == slen
+            ), f"[P2P-Shared] Length mismatch for {name}: local {slen}, remote {r_numel * r_ele}"
 
         ret = self._transfer_engine.batch_transfer_sync_write(session_id, source_ptrs, target_ptrs, source_lens)
         if ret < 0:

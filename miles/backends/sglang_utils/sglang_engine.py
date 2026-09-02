@@ -395,20 +395,20 @@ class SGLangEngine(RayActor):
             payload,
         )
 
-    def get_remote_instance_transfer_engine_info(self, rank: int):
+    def get_remote_instance_transfer_engine_info(self, rank: int, worker: str = "target"):
         # TODO: will be changed to `remote_instance_transfer_engine_info` when the sglang side is ready.
         response = requests.get(
             f"http://{self.server_host}:{self.server_port}/get_remote_instance_transfer_engine_info",
-            params={"rank": rank},
+            params={"rank": rank, "worker": worker},
             timeout=5.0,
         )
         response.raise_for_status()
         return response.json()["remote_instance_transfer_engine_info"]
 
-    def get_parallelism_info(self, rank: int):
+    def get_parallelism_info(self, rank: int, worker: str = "target"):
         response = requests.get(
             f"http://{self.server_host}:{self.server_port}/parallelism_config",
-            params={"rank": rank},
+            params={"rank": rank, "worker": worker},
             timeout=5.0,
         )
         response.raise_for_status()
