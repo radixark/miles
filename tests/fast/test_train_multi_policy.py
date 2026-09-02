@@ -5,15 +5,20 @@ register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 import asyncio
 from argparse import Namespace
 from contextlib import asynccontextmanager
+from functools import partial
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import train_multi_policy as multi_policy_driver
 from tests.fast.fixtures.args_fixtures import parser_defaults
+from tests.fast.fixtures.driver_fakes import FakeWorkerManager
 from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 from train_multi_policy import train_multi_policy
 
+from miles.ray import placement_group, wiring
+from miles.utils.async_utils import with_disposer
 from miles.utils.multi_policy.checkpoint_state import MultiPolicyCheckpointState
 from miles.utils.multi_policy.parker import Parker
 from miles.utils.multi_policy.utils import TrainerInfo
@@ -49,13 +54,14 @@ def _make_trainers(model_ids, handles=None, start_rollout_ids=None) -> dict[str,
 
 
 async def _run(
-    args,
+    args: Namespace,
     *,
     model_ids: tuple[str, ...] = ("a", "b"),
     trainers: dict[str, AsyncMock] | None = None,
     start_rollout_ids: dict[str, int] | None = None,
     rollout_executor: AsyncMock | None = None,
-) -> dict:
+    lifecycle_events: list[str] | None = None,
+) -> dict[str, Any]:
     """Drive the whole driver with every out-of-process dependency stubbed out."""
     infos = _make_trainers(model_ids, handles=trainers, start_rollout_ids=start_rollout_ids)
     context = dict(
@@ -63,13 +69,16 @@ async def _run(
         inference_controller=AsyncMock(),
         rollout_executor=AsyncMock() if rollout_executor is None else rollout_executor,
     )
+    if lifecycle_events is not None:
+        context["rollout_executor"].dispose.side_effect = lambda: lifecycle_events.append("executor_dispose")
+        context["inference_controller"].dispose.side_effect = lambda: lifecycle_events.append("inference_dispose")
     multi_policy_driver.create_trainers.return_value = infos
     multi_policy_driver.create_rollout_components.return_value = (
         context["inference_controller"],
         context["rollout_executor"],
         None,
     )
-    await asyncio.wait_for(train_multi_policy(args), timeout=30)
+    await asyncio.wait_for(with_disposer(train_multi_policy, args), timeout=30)
     return context
 
 
@@ -79,7 +88,6 @@ def _stub_driver_environment(monkeypatch):
     for name in (
         "init_orchestration_script",
         "define_policy_metric_groups",
-        "maybe_start_api_server",
         "maybe_start_mini_ft_controller",
         "validate_multi_policy_args",
         "assert_consistent_restore",
@@ -116,6 +124,25 @@ def _let_follower_yield(handle) -> None:
 
 
 class TestInitialWeightPublication:
+    async def test_api_server_receives_every_configured_trainer_handle(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each configured trainer id must expose its model's live handle through the shared API server."""
+        start_api_server = Mock()
+        monkeypatch.setattr(placement_group, "start_api_server", start_api_server)
+        monkeypatch.setattr(
+            placement_group,
+            "get_backend_capability",
+            lambda _args: SimpleNamespace(cell_operations=lambda: object()),
+        )
+
+        context = await _run(_make_args(num_rollout=0, api_server_port=18080))
+
+        start_api_server.assert_called_once()
+        assert start_api_server.call_args.kwargs["trainer_models"] == {
+            "a-actor": context["trainers"]["a"],
+            "b-actor": context["trainers"]["b"],
+        }
+        assert start_api_server.call_args.kwargs["inference_controller"] is context["inference_controller"]
+
     async def test_every_policy_compares_its_engines_against_its_own_trainer(self):
         """--ci-test asks for this comparison, and running it for one policy would leave the others unchecked."""
         context = await _run(_make_args(num_rollout=0, check_weight_update_equal=True))
@@ -139,6 +166,30 @@ class TestInitialWeightPublication:
         context = await _run(_make_args(num_rollout=0))
 
         context["inference_controller"].check_weights.assert_not_awaited()
+
+
+class TestTerminalLifecycle:
+    async def test_multi_policy_run_releases_its_worker_manager_after_all_trainers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The multi-policy driver releases its own manager after shared and trainer cleanup."""
+        events: list[str] = []
+        manager = FakeWorkerManager(events)
+        trainers = {"a": AsyncMock(), "b": AsyncMock()}
+        for model_id, trainer in trainers.items():
+            trainer.dispose.side_effect = lambda model_id=model_id: events.append(f"{model_id}_dispose")
+
+        def init_orchestration_script(_args: Namespace, *, disposer: Any) -> FakeWorkerManager:
+            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            return manager
+
+        monkeypatch.setattr(multi_policy_driver, "init_orchestration_script", init_orchestration_script)
+        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+        await _run(_make_args(num_rollout=0), trainers=trainers, lifecycle_events=events)
+
+        assert manager.killed == [manager]
+        assert events[-2:] == ["manager_shutdown", "manager_kill"]
+        assert set(events[:-2]) == {"executor_dispose", "inference_dispose", "a_dispose", "b_dispose"}
 
 
 class TestRunPolicies:
