@@ -38,7 +38,7 @@ _CONFIGS = [
 
 
 def _args(dsa: str, shared_outer: bool, virtual_experts: bool) -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         model_name="GLM-5.1-6layer",
         num_nodes=1,
         num_gpus_per_node=8,

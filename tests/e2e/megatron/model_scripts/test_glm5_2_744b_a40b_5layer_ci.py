@@ -44,7 +44,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 
 def _args() -> ScriptArgs:
-    return ScriptArgs(
+    return ScriptArgs.from_env(
         hardware="H200",
         model_name="GLM-5.2_5layer",
         num_nodes=1,

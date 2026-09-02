@@ -3,6 +3,7 @@ import os
 import platform
 import shlex
 import sys
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -1020,3 +1021,36 @@ class TestDetectHardware:
             for machine in ("x86_64", "aarch64"):
                 _fake_torch(monkeypatch, capability=capability, machine=machine)
                 assert command_utils.detect_hardware() in command_utils.NUM_GPUS_OF_HARDWARE
+
+
+class TestFromEnv:
+    def test_the_environment_fills_the_launcher_fields(self, monkeypatch):
+        """A workbench exports MILES_SCRIPT_* and a config built from the environment reads them."""
+        monkeypatch.setenv("MILES_SCRIPT_CLUSTER_BACKEND", "kubernetes")
+        monkeypatch.setenv("MILES_SCRIPT_NAMESPACE", "miles-someones-namespace")
+
+        config = command_utils.ExecuteTrainConfig.from_env(output_dir="/tmp/out")
+
+        assert config.cluster_backend is base_backend.ClusterBackend.KUBERNETES
+        assert config.namespace == "miles-someones-namespace"
+        assert config.output_dir == "/tmp/out"
+
+    def test_keyword_arguments_override_the_environment(self, monkeypatch):
+        """A recipe that names a launcher field wins over the environment."""
+        monkeypatch.setenv("MILES_SCRIPT_NAMESPACE", "miles-someones-namespace")
+
+        assert command_utils.ExecuteTrainConfig.from_env(namespace="other").namespace == "other"
+
+    def test_keyword_arguments_reach_the_derivations_of_post_init(self):
+        """A recipe derives checkpoint paths from the model name it names, not from the field's default."""
+
+        @dataclass
+        class _Config(command_utils.ExecuteTrainConfig):
+            model_name: str = "Inkling"
+            hf_checkpoint: str | None = None
+
+            def __post_init__(self):
+                if self.hf_checkpoint is None:
+                    self.hf_checkpoint = f"/root/models/{self.model_name}"
+
+        assert _Config.from_env(model_name="Inkling-Small-4layer").hf_checkpoint == "/root/models/Inkling-Small-4layer"
