@@ -117,7 +117,9 @@ class RolloutManager:
         self._health_monitors = []
         self._rollout_ft_enabled = self.args.use_fault_tolerance and "rollout" in self.args.ft_components
         self._ci_fault_injection_pending = False
-        if not self.args.debug_train_only and self._rollout_ft_enabled:
+        # Monitor whatever server groups actually started: under --debug-train-only
+        # the dedicated snapshot-eval fleet is the only one, and it needs ft too.
+        if self.servers and self._rollout_ft_enabled:
             for srv in self.servers.values():
                 for group in srv.server_groups:
                     monitor = RolloutHealthMonitor(group, args)

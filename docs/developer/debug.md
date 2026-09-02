@@ -18,9 +18,10 @@ time. Once you know which side is wrong, it becomes an ordinary debugging sessio
 The two `--debug-*-only` flags are mutually exclusive and argument validation rejects
 setting both.
 
-When `--eval-uses-snapshots` is configured, `--debug-train-only` suppresses only the
-training rollout engines. Miles can still start dedicated evaluation engines and
-asynchronously evaluate exported training snapshots.
+When snapshot eval is configured (`--eval-num-gpus`, or a CheckpointEvalFn
+`--eval-function-path`), `--debug-train-only` suppresses only the training rollout
+engines. Miles can still start dedicated evaluation engines and asynchronously
+evaluate exported training snapshots.
 
 The pattern worth internalizing:
 

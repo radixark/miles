@@ -489,6 +489,32 @@ class TestSessionServerPauseGenerationMode:
         assert warned is expect_warning
 
 
+class TestSnapshotEvalValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_snapshot_eval_rejects_load_debug_rollout_data(self):
+        """--load-debug-rollout-data implies --debug-train-only AND loads no rollout
+        functions at all, so snapshot eval would crash on eval_generate_rollout=None;
+        it must be rejected up front, not at the first eval."""
+        args = self._parse(
+            [
+                "--load-debug-rollout-data",
+                "/tmp/rollout_{rollout_id}.pt",
+                "--eval-num-gpus",
+                "1",
+                "--eval-interval",
+                "5",
+                "--eval-hf-dir",
+                "/tmp/snapshots",
+            ]
+        )
+        with pytest.raises(AssertionError, match="load-debug-rollout-data"):
+            miles_validate_args(args)
+
+
 class TestTitoFixedTemplateConfiguration:
     def _parse(self, extra):
         parser = argparse.ArgumentParser()

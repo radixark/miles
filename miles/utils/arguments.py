@@ -3488,6 +3488,10 @@ def miles_validate_args(args):
         )
         assert not args.colocate, "Snapshot eval is not supported with --colocate."
         assert not args.debug_rollout_only, "Snapshot eval is not supported with debug_rollout_only."
+        assert args.load_debug_rollout_data is None, (
+            "Snapshot eval is not supported with --load-debug-rollout-data: the replay "
+            "path loads no rollout functions, so there is nothing to run the eval with."
+        )
         if args.debug_train_only:
             assert args.eval_function_path != args.rollout_function_path, (
                 "Snapshot eval during --debug-train-only requires an explicit "
