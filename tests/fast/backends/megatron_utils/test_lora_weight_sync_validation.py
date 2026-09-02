@@ -455,6 +455,39 @@ class TestDistLoraUpdateOrchestration:
         assert fake_self._lora_loaded is False
 
 
+@pytest.mark.parametrize("is_lora", [False, True])
+def test_distributed_lora_skips_base_weight_update_session(is_lora):
+    engine = MagicMock()
+    updater = SimpleNamespace(
+        args=SimpleNamespace(pause_generation_mode="retract"),
+        rollout_engines=[engine],
+        weight_version=7,
+        is_lora=is_lora,
+    )
+
+    with (
+        patch(f"{_MIXIN_MODULE}.dist") as dist_mock,
+        patch(f"{_MIXIN_MODULE}.ray") as ray_mock,
+        patch(f"{_MIXIN_MODULE}.begin_weight_update") as begin_mock,
+        patch(f"{_MIXIN_MODULE}.end_weight_update") as end_mock,
+    ):
+        dist_mock.get_rank.return_value = 0
+        ray_mock.get.side_effect = lambda refs: refs
+        DistBucketedWeightUpdateMixin._pause_and_prepare_engines(updater)
+        DistBucketedWeightUpdateMixin._finalize_and_resume_engines(updater)
+
+    if is_lora:
+        begin_mock.assert_not_called()
+        end_mock.assert_not_called()
+    else:
+        begin_mock.assert_called_once_with([engine], "all")
+        end_mock.assert_called_once_with([engine])
+    engine.pause_generation.remote.assert_called_once_with(mode="retract")
+    engine.flush_cache.remote.assert_called_once_with()
+    engine.update_weight_version.remote.assert_called_once_with(weight_version="7")
+    engine.continue_generation.remote.assert_called_once_with()
+
+
 class TestBroadcastLoraImplementation:
     """Broadcast transport ``UpdateWeightFromDistributed._update_lora_weight_implementation``:
     send metadata over Ray, then ``dist.broadcast`` each adapter tensor over the
