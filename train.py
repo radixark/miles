@@ -5,6 +5,7 @@ import os
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.ray.placement_group import create_placement_groups, create_rollout_manager, create_training_models
+from miles.ray.rollout.eval_dispatch import EvalDispatcher
 from miles.utils import object_store
 from miles.utils.arguments import parse_args
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
@@ -71,9 +72,14 @@ async def train(args):
     if args.offload_rollout:
         await rollout_manager.onload_kv.remote()
 
+    # Evals go through the dispatcher: for shared-engine eval it is a plain
+    # blocking call, and for snapshot eval it exports/resolves the snapshot the
+    # same way as train_async.py (a bare RolloutManager.eval has no exporter).
+    eval_dispatcher = EvalDispatcher(args, actor_model, rollout_manager)
+
     # special case for eval-only
     if args.num_rollout == 0 and args.eval_interval is not None:
-        await rollout_manager.eval.remote(rollout_id=0)
+        await eval_dispatcher.dispatch(0, hf_dir=args.hf_checkpoint)
 
     async def offload_train():
         if args.use_critic:
@@ -103,7 +109,9 @@ async def train(args):
     # note that for async training, one can change the position of the sync operation(ray.get).
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
         if args.eval_interval is not None and rollout_id == args.start_rollout_id and not args.skip_eval_before_train:
-            await rollout_manager.eval.remote(rollout_id)
+            # At a fresh start the base checkpoint IS the current model, so
+            # snapshot eval can reuse it; on resume, export the resumed weights.
+            await eval_dispatcher.dispatch(rollout_id, hf_dir=args.hf_checkpoint if rollout_id == 0 else None)
 
         rollout_data_pack = await rollout_manager.generate.remote(rollout_id)
 
@@ -153,7 +161,7 @@ async def train(args):
             await rollout_manager.onload_kv.remote()
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
-            await rollout_manager.eval.remote(rollout_id)
+            await eval_dispatcher.dispatch(rollout_id, force=rollout_id == args.num_rollout - 1)
 
         if (
             args.debug_exit_after_rollout is not None
@@ -166,6 +174,7 @@ async def train(args):
             )
             break
 
+    await eval_dispatcher.drain()
     await rollout_manager.dispose.remote()
 
 
