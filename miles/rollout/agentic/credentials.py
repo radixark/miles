@@ -166,7 +166,16 @@ def preflight_sdk(module: str, install_hint: str, min_version: str | None = None
         ) from e
     if min_version is None:
         return
-    installed = importlib.metadata.version(module)
+    try:
+        # Looking the distribution up by the module name assumes the two match,
+        # which holds for every backend that sets a floor today (e2b).
+        installed = importlib.metadata.version(module)
+    except importlib.metadata.PackageNotFoundError:
+        # Importable but no dist-info (a vendored copy): the version cannot be
+        # verified, and blocking a possibly-fine install is worse than leaving
+        # a too-old one to fail at the provider with its own error.
+        print(f"{module} has no package metadata; cannot verify {module}>={min_version}", flush=True)
+        return
     if _version_tuple(installed) < _version_tuple(min_version):
         raise RuntimeError(f"this sandbox mode needs {module}>={min_version} (installed: {installed}): {install_hint}")
 
