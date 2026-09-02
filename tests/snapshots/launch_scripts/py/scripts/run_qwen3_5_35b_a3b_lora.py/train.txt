@@ -17,7 +17,6 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --address="http://127.0.0.1:8265"
   --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/frozen/pythonpath"}}'
   -- python3 <REPO_ROOT>/train.py
-  --spec miles_plugins.models.qwen3_5 get_qwen3_5_spec
   --disable-bias-linear
   --qk-layernorm
   --group-query-attention
@@ -52,7 +51,8 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --moe-shared-expert-gate
   --mtp-num-layers 1
   --hf-checkpoint /root/models/Qwen3.5-35B-A3B
-  --megatron-to-hf-mode bridge 
+  --megatron-to-hf-mode bridge
+  --model-impl megatron 
   --lora-rank 16
   --lora-alpha 32
   --lora-dropout 0.0
@@ -96,8 +96,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --recompute-granularity full
   --recompute-method uniform
   --recompute-num-layers 1
-  --qkv-format bshd
-  --micro-batch-size 1
+  --use-dynamic-batch-size
   --max-tokens-per-gpu 4096 
   --rollout-num-gpus-per-engine 8
   --sglang-mem-fraction-static 0.4
