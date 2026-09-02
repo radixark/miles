@@ -321,7 +321,7 @@ class UpdateWeightFromRDT(WeightTransferProtocol):
             self._tensor_update_pending.pop(param_name, None)
         return ready
 
-    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
+    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Stage incoming tensors; once a param is complete, load it into each engine
         rank's bucket and pull via RDT.
 

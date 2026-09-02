@@ -112,11 +112,11 @@ class WeightUpdater:
         adapters = self._get_updated_adapters()
 
         driver = dist.get_rank() == 0
-        if driver:
-            for lora_name, lora_config in self._get_new_lora_registrations(adapters):
-                register_lora_adapter(protocol.rollout_engines, lora_name=lora_name, lora_config=lora_config)
         if protocol.use_weight_update_session and driver:
             pause_engines(self.args, protocol.rollout_engines)
+            # registering re-zeroes a resident adapter (a reconnect re-registers every
+            # adapter), so it happens inside the quiesced window, after the pause
+            self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(protocol.rollout_engines, weight_update_selector(self.args), sync_base=sync_base)
         dist.barrier(group=get_gloo_group())
 
@@ -132,7 +132,7 @@ class WeightUpdater:
                 if protocol.is_sender:
                     if driver and checksums is not None:
                         record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket, self.weight_version)
+                    protocol.send_bucket(bucket)
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
@@ -140,8 +140,10 @@ class WeightUpdater:
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
             if protocol.use_weight_update_session and driver:
-                set_weight_version(protocol.rollout_engines, self.weight_version)
+                # the version marks a committed update, so it is published only once
+                # end_weight_update has verified and applied everything staged
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+                set_weight_version(protocol.rollout_engines, self.weight_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 
@@ -159,16 +161,15 @@ class WeightUpdater:
             return [(slot_lora_name(adapters[name].slot), adapters[name]) for name in sorted(adapters)]
         return [(LORA_ADAPTER_NAME, None)]
 
-    def _get_new_lora_registrations(self, adapters: list[tuple[str, object]]) -> list[tuple[str, dict]]:
-        """Adapters not yet registered on the current engine set, with their
+    def _register_new_lora_adapters(self, rollout_engines, adapters: list[tuple[str, object]]) -> None:
+        """Register adapters the current engine set has not seen, with their
         per-adapter config; eager so the engine validates rank before any bytes move."""
-        new = []
         for lora_name, adapter in adapters:
             if lora_name in self._registered_adapters:
                 continue
             config = self._lora_sync_config
             if adapter is not None:
                 config = config | {"r": adapter.config.rank, "lora_alpha": adapter.config.alpha}
-            new.append((lora_name, config))
+            register_lora_adapter(rollout_engines, lora_name=lora_name, lora_config=config)
+            # cached only once every engine accepted it, so a failed RPC is retried next sync
             self._registered_adapters.add(lora_name)
-        return new

@@ -77,7 +77,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
             self._model_registered = True
         return True
 
-    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
+    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Stage incoming tensors; when all shards for a param are collected,
         load into shared buffer and P2P-write per engine rank.
 

@@ -75,7 +75,7 @@ def test_success_path_releases_lock_and_clears_tensors(mock_ray, mock_update):
     updater = _make_updater(lock_state)
     tensors = _named_tensors()
 
-    updater.send_bucket(tensors, weight_version=7)
+    updater.send_bucket(tensors)
 
     assert lock_state.locked is False
     assert lock_state.release_calls == 1
@@ -103,7 +103,7 @@ def test_lock_contention_is_polled_until_acquired(mock_ray, mock_update, mock_sl
 
     mock_sleep.side_effect = lambda _seconds: setattr(lock_state, "locked", False)
 
-    updater.send_bucket(_named_tensors(), weight_version=1)
+    updater.send_bucket(_named_tensors())
 
     mock_sleep.assert_called_once_with(0.1)
     assert lock_state.locked is False
@@ -120,7 +120,7 @@ def test_broadcast_failure_releases_lock_and_propagates(mock_ray, mock_update):
     tensors = _named_tensors()
 
     with pytest.raises(RuntimeError, match="NCCL broadcast failed"):
-        updater.send_bucket(tensors, weight_version=1)
+        updater.send_bucket(tensors)
 
     assert lock_state.locked is False
     assert lock_state.release_calls == 1
@@ -137,7 +137,7 @@ def test_engine_failure_on_refs_releases_lock_and_propagates(mock_ray, mock_upda
     updater = _make_updater(lock_state)
 
     with pytest.raises(RuntimeError, match="engine died during broadcast"):
-        updater.send_bucket(_named_tensors(), weight_version=1)
+        updater.send_bucket(_named_tensors())
 
     assert lock_state.locked is False
     assert lock_state.release_calls == 1
@@ -152,7 +152,7 @@ def test_weight_sync_succeeds_after_a_failed_one(mock_ray, mock_update):
     updater = _make_updater(lock_state)
 
     with pytest.raises(RuntimeError):
-        updater.send_bucket(_named_tensors(), weight_version=1)
+        updater.send_bucket(_named_tensors())
 
     # Guard before retrying: with a leaked lock the retry below would poll
     # acquire() forever instead of failing, so assert the release explicitly.
@@ -161,7 +161,7 @@ def test_weight_sync_succeeds_after_a_failed_one(mock_ray, mock_update):
     mock_update.side_effect = None
     mock_update.return_value = [MagicMock()]
     tensors = _named_tensors()
-    updater.send_bucket(tensors, weight_version=2)
+    updater.send_bucket(tensors)
 
     assert tensors == []
     assert lock_state.locked is False

@@ -125,7 +125,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         self._begin_encode(weight_version)
         return True
 
-    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         """Submit each tensor of the bucket to the diff/compress pool (pipelined with the gather)."""
         for name, tensor in bucket:
             flat = tensor.detach().contiguous().view(torch.uint8).reshape(-1)
