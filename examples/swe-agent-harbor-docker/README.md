@@ -1,26 +1,32 @@
 # SWE-Agent training with Harbor on Docker sandboxes
 
-This example trains GLM-4.7-Flash on agentic coding and terminal tasks. Miles
-runs synchronous GRPO and serves the policy through its session server; a
-separate [Harbor](https://github.com/harbor-framework/harbor) agent server
-creates the task sandboxes, runs the agents, and returns verifier rewards.
+This example trains agentic coding models with GRPO. Miles runs the training
+loop and serves the policy through its session server; a separate
+[Harbor](https://github.com/harbor-framework/harbor) agent server creates the
+task sandboxes, runs the agents, and returns verifier rewards.
 
-The same pipeline supports Terminal-Bench, SWE-bench, and custom Harbor tasks.
-Training records must contain a `prompt` and `metadata.instance_id` identifying
-the Harbor task.
+Two recipes share this pipeline: **GLM-4.7-Flash** (synchronous, on NVIDIA) and
+**Qwen3-Coder-30B-A3B** (colocate or async, tested on 8× AMD MI350X). Both support
+Terminal-Bench, SWE-bench, and custom Harbor tasks. Training records must
+contain a `prompt` and `metadata.instance_id` identifying the Harbor task.
 
 ## Files
 
 | File | Purpose |
 | --- | --- |
 | `run.py` | Validated synchronous GLM-4.7-Flash launcher. |
-| `run-glm47-flash-agentic-async.py` | Disaggregated fully asynchronous launcher. |
+| `run-glm47-flash-agentic-async.py` | Disaggregated fully asynchronous GLM launcher. |
+| `run-qwen3-swe.py` | Qwen3-Coder-30B-A3B launcher (colocate or async, tested on 8× AMD MI350X). |
 | `run_glm52_lora_tb2_daytona.py` | Multi-node GLM-5.2 744B-A40B LoRA launcher (bf16 trainer, fp8 rollout). |
 | `swe_agent_function.py` | Sends each rollout to the Harbor agent server. |
 | `generate.py` | Builds rewards, metrics, and training samples. |
 | `download_and_process_data.py` | Converts supported datasets to Miles JSONL. |
 
 ## 1. Start the Harbor agent server
+
+This step is shared by both recipes. After it, complete exactly one training
+recipe — **2(a)** (GLM-4.7-Flash) or **2(b)** (Qwen3-Coder-30B) — then follow
+the common **3. Networking** and **4. Verify progress** sections.
 
 Use the `harbor-miles-v0.20.0` branch of the `harbor-framework/harbor`
 repository, which carries the Miles integration:
@@ -62,12 +68,9 @@ launcher's generic env-var hook:
 python examples/swe-agent-harbor-docker/run.py ... --extra-env-vars 'AGENT_TRIAL_TIMEOUT=10800'
 ```
 
-If the trainer reaches the agent server through a proxy or an in-cluster service
-rather than directly, point `--agent-server-url` at that stable name rather than
-an ephemeral pod address. The rollout client enables TCP keepalive probes so
-long-running trials do not lose an idle connection while Harbor is working.
+## 2(a). GLM-4.7-Flash (synchronous)
 
-## 2. Prepare Terminal-Bench data
+### Prepare Terminal-Bench data
 
 Convert a local JSONL whose rows include a task instruction and instance name:
 
@@ -82,7 +85,7 @@ python examples/swe-agent-harbor-docker/download_and_process_data.py \
 The resulting `metadata.instance_id` values must match task directories known to
 the Harbor agent server.
 
-## 3. Launch synchronous GLM-4.7-Flash training
+### Launch
 
 The shape below is what a multi-day Terminal-Bench 2 run used on one node of 8
 H200 GPUs: 32 trajectories per GRPO step (4 prompts times 8 samples), each one a
@@ -110,16 +113,87 @@ python examples/swe-agent-harbor-docker/run.py \
     --save-traces-dir /path/to/traces
 ```
 
-For a smoke test, set `--num-rollout 1`. Expect roughly 10 minutes per step at
-this shape; because synchronous rollout waits for the slowest trajectory in the
-batch, a step that draws an unusually slow task can take several times that.
+Expect roughly 10 minutes per step at this shape; because synchronous rollout
+waits for the slowest trajectory in the batch, a step that draws an unusually
+slow task can take several times that. The synchronous launcher uses GLM-4.7
+tool-call and reasoning parsers, TITO, the Miles session server, and the
+Megatron backend.
+
+## 2(b). Qwen3-Coder-30B-A3B (tested on 8× AMD MI350X)
+
+Runs **colocate** (default: `train.py`, TP=1, EP=8, all 8 GPUs shared) or
+**async** (`--async-mode`: `train_async.py`, TP=2, EP=4, split 4 train + 4
+rollout via `--train-num-gpus`).
+
+### Prepare SWE-Gym data
+
+Build the Harbor task directories with the SWE-Gym adapter, then convert the same
+set to Miles JSONL. `--dataset lite` is SWE-Gym-Lite (230 tasks) and `--dataset
+full` is SWE-Gym (2438 tasks); both sides must reference the same set so the
+`instance_id`s line up.
+
+```bash
+# Harbor task directories (run in the harbor repo)
+cd ~/harbor/adapters/swegym
+uv run --frozen --no-dev --with 'swebench==4.1.0' run_adapter.py \
+    --dataset lite \
+    --task-dir /data/miles_ci/harbor_tasks \
+    --overwrite
+
+# Training JSONL (same SWE-Gym-Lite set)
+python examples/swe-agent-harbor-docker/download_and_process_data.py \
+    --input SWE-Gym/SWE-Gym-Lite \
+    --output /root/datasets/swe_gym_lite.jsonl \
+    --agent-name mini-swe-agent \
+    --prompt-key problem_statement
+```
+
+`--dataset lite` maps to the `SWE-Gym/SWE-Gym-Lite` HuggingFace dataset — the
+same id the JSONL step converts — so `metadata.instance_id` matches the task
+directories the agent server serves. Pair `--dataset full` with `--input
+SWE-Gym/SWE-Gym`.
+
+### Launch
+
+```bash
+python examples/swe-agent-harbor-docker/run-qwen3-swe.py \
+    --async-mode \
+    --skip-prepare \
+    --num-gpus-per-node 8 \
+    --train-num-gpus 4 \
+    --megatron-path /root/Megatron-LM \
+    --hf-checkpoint /path/to/Qwen3-Coder-30B-A3B-Instruct \
+    --ref-load /path/to/Qwen3-Coder-30B-A3B-Instruct_torch_dist \
+    --save-dir /path/to/checkpoints \
+    --prompt-data /root/datasets/swe_gym_lite.jsonl \
+    --harbor-tasks-dir /data/miles_ci/harbor_tasks \
+    --agent-server-url http://<agent-server>:30000 \
+    --router-external-host <trainer-host-reachable-from-agent-server> \
+    --miles-trials-dir /data/miles_ci/trials \
+    --num-rollout 15 --save-interval 15
+```
+
+Drop `--skip-prepare` on the first run to convert the HF checkpoint to
+torch_dist. `--ref-load`'s basename must be `<model>_torch_dist`, since `prepare`
+writes the conversion into its parent directory. The launcher uses Qwen3
+(`qwen25` / `qwen3`) tool-call and reasoning parsers, TITO, the Miles session
+server, and the Megatron backend, and on AMD ROCm the Triton MoE backend.
+
+## 3. Networking
+
+For a smoke test on either recipe, set `--num-rollout 1`.
 
 `--router-external-host` is the address Harbor sandboxes use to call the Miles
 session server and SGLang router. It must resolve and route from the agent-server
 machine. `--miles-host-ip 0.0.0.0` is useful when those services must accept
-connections forwarded from another host. Ensure ports 30000 and 31000 are
-reachable end to end; Tailscale is one option when the machines are on different
-networks.
+connections forwarded from another host. The launcher starts 32 session-server
+workers on ports 30000-30031 and the SGLang router on port 31000, so ensure that
+range and port are reachable end to end; Tailscale is one option when the
+machines are on different networks. If the trainer reaches the agent server
+through a proxy or an in-cluster service rather than directly, point
+`--agent-server-url` at that stable name rather than an ephemeral pod address.
+The rollout client enables TCP keepalive probes so long-running trials do not
+lose an idle connection while Harbor is working.
 
 ## 4. Verify progress
 
@@ -134,6 +208,3 @@ fail partway through a long run — dropping some metric rows while others keep
 arriving — which looks exactly like a frozen reward curve. The per-step
 `train_data/<step>` and `rollout_data/<step>.pt` dumps under `--save-traces-dir`
 are written by the trainer itself and are the authoritative progress signal.
-
-The synchronous launcher uses GLM-4.7 tool-call and reasoning parsers, TITO,
-the Miles session server, and the Megatron backend.
