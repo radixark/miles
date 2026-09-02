@@ -1,8 +1,15 @@
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from tests.e2e.ft.conftest_ft.fault_injection import entrypoint, fault_forms, state, views
-from tests.e2e.ft.conftest_ft.scenario_random_crash import _assert_every_drawn_fault_form_worked, assert_healing
+from tests.e2e.ft.conftest_ft.scenario_random_crash import (
+    DEFAULT_NUM_STEPS,
+    TERMINAL_FAULT_FREE_STEPS,
+    _assert_every_drawn_fault_form_worked,
+    _fault_injection_enabled,
+    assert_healing,
+)
 
 from miles.utils.audit_utils.event_logger.logger import EventLogger
 from miles.utils.audit_utils.event_logger.models import CellReconfigureEvent
@@ -258,3 +265,38 @@ class TestTrainerHealingPairing:
         _note_actor_injections(injector, 1, name="actor-1")
 
         assert_healing(("train",), injector=injector, event_dir=tmp_path / "events", context="soak")
+
+
+class TestTerminalFaultFreeTail:
+    def test_the_fault_window_closes_before_the_final_steps(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The soak's last steps admit no new fault, so the last accepted one still has steps to heal in."""
+        _stub_completed_rollouts(monkeypatch, [DEFAULT_NUM_STEPS - TERMINAL_FAULT_FREE_STEPS - 1])
+
+        assert not _fault_injection_enabled("/dump", num_steps=DEFAULT_NUM_STEPS)
+
+    def test_the_fault_window_is_open_one_step_earlier(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A tail that swallowed the whole soak would make the witnesses unreachable instead of reliable."""
+        _stub_completed_rollouts(monkeypatch, [DEFAULT_NUM_STEPS - TERMINAL_FAULT_FREE_STEPS - 2])
+
+        assert _fault_injection_enabled("/dump", num_steps=DEFAULT_NUM_STEPS)
+
+    def test_a_soak_that_has_finished_no_rollout_yet_may_be_injected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The very first fault must not wait for a completed rollout that a crash may be delaying."""
+        _stub_completed_rollouts(monkeypatch, [])
+
+        assert _fault_injection_enabled("/dump", num_steps=DEFAULT_NUM_STEPS)
+
+    def test_the_watermark_is_the_latest_rollout_id_not_the_event_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Retried rollouts emit several metric events, which must not close the window early."""
+        _stub_completed_rollouts(monkeypatch, [0, 0, 0, 1, 1])
+
+        assert _fault_injection_enabled("/dump", num_steps=DEFAULT_NUM_STEPS)
+
+
+def _stub_completed_rollouts(monkeypatch: pytest.MonkeyPatch, rollout_ids: list[int]) -> None:
+    base = datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc)
+    completions = [(rollout_id, base + timedelta(seconds=index)) for index, rollout_id in enumerate(rollout_ids)]
+    monkeypatch.setattr(
+        "tests.e2e.ft.conftest_ft.scenario_random_crash.read_rollout_completion_times",
+        lambda dump_dir: completions,
+    )

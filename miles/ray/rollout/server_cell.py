@@ -30,6 +30,7 @@ from miles.utils.ft_utils.health_checker import (
     SimpleHealthCheckerConfig,
 )
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.tracking_utils.structured_log import log_structured
 from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
 
@@ -63,6 +64,7 @@ class ServerCell:
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
     _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
+    _faulted: bool = False
 
     def __post_init__(self) -> None:
         self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
@@ -126,6 +128,10 @@ class ServerCell:
     @property
     def is_pending_weights_or_serving(self) -> bool:
         return isinstance(self._state, (StatePendingWeights, StateServing))
+
+    @property
+    def is_faulted(self) -> bool:
+        return self._faulted
 
     @property
     def is_pending_weights(self) -> bool:
@@ -207,6 +213,17 @@ class ServerCell:
         assert isinstance(self._state, StatePendingWeights), f"{self._state=}"
         await self._register_with_router(addr_info=self._state.addr_info)
         self._mark_serving()
+
+    def mark_faulted(self) -> None:
+        log_structured(
+            logger.info,
+            tag="ft",
+            op="rollout_cell",
+            phase="faulted",
+            cell=self.meta.cell_id,
+            state=type(self._state).__name__,
+        )
+        self._faulted = True
 
     async def _register_with_router(self, addr_info: CellAddrInfo) -> None:
         await self.router_api_client.add_worker(

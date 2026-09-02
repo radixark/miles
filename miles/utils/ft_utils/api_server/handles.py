@@ -92,7 +92,7 @@ class _CellHandler:
         await self._operations.resume(cell_id=cell_id)
 
     async def inject_fault(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        await self._operations.inject_fault(cell_id=cell_id, mode=mode, sub_index=sub_index)
+        await self._operations.inject_fault(cell_id=cell_id, cell_type=self._cell_type, mode=mode, sub_index=sub_index)
 
 
 def _compute_status_of_generation(status: CellStatus | None, *, workers_hash: str) -> CellStatus:

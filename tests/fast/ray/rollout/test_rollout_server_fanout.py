@@ -16,7 +16,12 @@ class _RecordingCell:
     def __init__(self, *, cell_id: str, needs_offload: bool, addressable: bool = True):
         self.meta = SimpleNamespace(needs_offload=needs_offload, cell_id=cell_id, num_gpus_per_engine=1, gpu_offset=0)
         self.is_pending_weights_or_serving = addressable
+        self.is_faulted = False
+        self.api_client = f"client-{cell_id}"
         self.calls: list[tuple[str, dict]] = []
+
+    def mark_faulted(self) -> None:
+        self.is_faulted = True
 
     async def offload(self, tags):
         self.calls.append(("offload", dict(tags=tags)))
@@ -156,3 +161,96 @@ class TestAbortFanOut:
         async with srv.context_lock:
             with pytest.raises(TimeoutError):
                 await srv.abort_all()
+
+
+class _DeadCell(_RecordingCell):
+    async def offload(self, tags):
+        self.calls.append(("offload", dict(tags=tags)))
+        raise TimeoutError(f"Timeout while flushing cache of {self.meta.cell_id}")
+
+    async def onload(self, tags):
+        self.calls.append(("onload", dict(tags=tags)))
+        raise TimeoutError(f"Timeout while waking {self.meta.cell_id}")
+
+
+class TestMemoryFanOutSurvivesADeadEngine:
+    async def test_a_killed_engine_does_not_fail_the_offload_of_the_cells_that_are_still_up(self):
+        """A cell that was just killed cannot release memory, and blaming the driver for that ends the whole run."""
+        dead = _DeadCell(cell_id="dead", needs_offload=True)
+        alive = _RecordingCell(cell_id="alive", needs_offload=True)
+        server = _make_server([dead, alive])
+
+        async with server.context_lock:
+            results = await server.offload(tags=["weights"])
+
+        assert results == ["offloaded-alive"]
+        assert alive.calls == [("offload", dict(tags=["weights"]))]
+
+    async def test_a_killed_engine_does_not_fail_the_onload_of_the_cells_that_are_still_up(self):
+        """The same holds on the way back: one dead engine must not stop the survivors from waking."""
+        dead = _DeadCell(cell_id="dead", needs_offload=True)
+        alive = _RecordingCell(cell_id="alive", needs_offload=True)
+        server = _make_server([dead, alive])
+
+        async with server.context_lock:
+            results = await server.onload(tags=["weights"])
+
+        assert results == ["onloaded-alive"]
+
+    async def test_an_offload_that_reaches_no_engine_at_all_still_raises(self):
+        """Silently swallowing a fleet-wide failure would leave the trainer without the GPUs it is owed."""
+        server = _make_server([_DeadCell(cell_id="dead", needs_offload=True)])
+
+        with pytest.raises(TimeoutError):
+            async with server.context_lock:
+                await server.offload(tags=["weights"])
+
+
+class _WedgedCell(_RecordingCell):
+    async def offload(self, tags):
+        self.calls.append(("offload", dict(tags=tags)))
+        await asyncio.get_running_loop().create_future()
+
+
+class TestMemoryFanOutBoundsAWedgedEngine:
+    async def test_an_engine_that_accepted_the_connection_and_never_answered_does_not_hold_the_fleet(
+        self, monkeypatch
+    ):
+        """The http client reads without a timeout, so a wedged engine would hold the lock and the health pause forever."""
+        monkeypatch.setattr(rollout_server_module, "MEMORY_MOVE_TIMEOUT_SECONDS", 0.05)
+        wedged = _WedgedCell(cell_id="wedged", needs_offload=True)
+        alive = _RecordingCell(cell_id="alive", needs_offload=True)
+        server = _make_server([wedged, alive])
+
+        async with server.context_lock:
+            results = await server.offload(tags=["weights"])
+
+        assert results == ["offloaded-alive"]
+
+
+class TestWeightUpdateSnapshotSkipsAFaultedCell:
+    def _server(self) -> tuple[RolloutServer, list[_RecordingCell]]:
+        cells = [_RecordingCell(cell_id=name, needs_offload=False) for name in ("a", "b", "c")]
+        for offset, cell in enumerate(cells):
+            cell.meta.gpu_offset = offset
+        return _make_server(cells), cells
+
+    async def test_a_faulted_cell_leaves_the_engine_lists_before_the_next_broadcast(self):
+        """A killed engine left in the snapshot makes the trainer open an NCCL group nobody completes."""
+        server, cells = self._server()
+
+        async with server.context_lock:
+            server.mark_cell_faulted("b")
+
+            assert server.api_clients == ["client-a", "client-c"]
+            assert server.engine_gpu_offsets == [0, 2]
+            assert server.engine_gpu_counts == [1, 1]
+
+    async def test_a_faulted_cell_is_no_longer_addressable(self):
+        """The last-replica guard and the memory fan-out read the same view, so one mark serves both."""
+        server, cells = self._server()
+
+        async with server.context_lock:
+            server.mark_cell_faulted("b")
+
+            assert server.addressable_cell_ids() == ["a", "c"]

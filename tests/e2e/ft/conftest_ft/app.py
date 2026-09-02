@@ -64,10 +64,32 @@ def run_one_release(request: RunSideRequest) -> None:
 
 
 def resolve_dump_dir(test_name: str, *, run_id: str) -> str:
-    root = os.environ.get(_DUMPS_ROOT_ENV) or _DEFAULT_DUMPS_ROOT
-    dump_dir = Path(root) / run_id / test_name
+    configured_root = os.environ.get(_DUMPS_ROOT_ENV)
+    root = Path(configured_root) if configured_root else _DEFAULT_DUMPS_ROOT
+    dump_dir = root / run_id / test_name
     os.makedirs(dump_dir, exist_ok=True)
+
+    if not configured_root:
+        _assert_default_root_is_its_own_filesystem(dump_dir)
+
     return str(dump_dir)
+
+
+def _assert_default_root_is_its_own_filesystem(dump_dir: Path) -> None:
+    if _device_id_of(dump_dir) != _device_id_of(Path("/")):
+        return
+
+    raise RuntimeError(
+        f"{_DUMPS_ROOT_ENV} names no dumps root, and the default {_DEFAULT_DUMPS_ROOT} is on the same "
+        f"filesystem as /, so {dump_dir} is the container's writable layer rather than a mounted volume. "
+        f"Every tensor dump written there counts as ephemeral storage until the kubelet evicts the pod, "
+        f"taking the run's evidence with it. Set {_DUMPS_ROOT_ENV} to a path on a real volume "
+        f"(/scratch/dumps on a devbox); a cluster does it through the mounts of its infra.yaml."
+    )
+
+
+def _device_id_of(path: Path) -> int:
+    return os.stat(path).st_dev
 
 
 def _dump_subdir(side: str, phase: str) -> str:

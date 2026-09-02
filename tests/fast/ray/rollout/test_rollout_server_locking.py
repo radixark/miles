@@ -83,6 +83,8 @@ class TestWaitExpectedNumCellsIsLockFree:
         await asyncio.sleep(0)
 
         async with srv.context_lock:
-            srv.server_cells["inference-engine-0-0-0"] = SimpleNamespace(meta=SimpleNamespace(needs_offload=True))
+            srv.server_cells["inference-engine-0-0-0"] = SimpleNamespace(
+                meta=SimpleNamespace(needs_offload=True), is_faulted=False
+            )
 
         await asyncio.wait_for(waiter, timeout=5)

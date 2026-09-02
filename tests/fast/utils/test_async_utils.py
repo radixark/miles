@@ -12,8 +12,10 @@ from miles.utils import async_utils
 from miles.utils.async_utils import (
     AsyncioGatherUtils,
     AsyncLoopThread,
+    await_task_result_despite_cancel,
     eager_create_task,
     wait_cancelling_pending_on_first_completion,
+    wait_task_until_done_despite_cancel,
 )
 
 
@@ -636,3 +638,170 @@ class TestGetAsyncLoop:
         first = async_utils.get_async_loop()
 
         assert async_utils.get_async_loop() is first
+
+
+async def _pump(times: int = 10) -> None:
+    for _ in range(times):
+        await asyncio.sleep(0)
+
+
+async def _collect(awaitable, sink: list) -> None:
+    sink.append(await awaitable)
+
+
+def _blocked_task(finish: asyncio.Event, log: list[str]) -> asyncio.Task[str]:
+    async def _work() -> str:
+        await finish.wait()
+        log.append("work finished")
+        return "value"
+
+    return asyncio.create_task(_work())
+
+
+@pytest.mark.asyncio
+class TestWaitTaskUntilDoneDespiteCancel:
+    async def test_a_cancelled_waiter_still_waits_for_the_task_to_reach_a_terminal_state(self):
+        """The callers use this to keep a detached cleanup RPC on the wire, so returning early would leak it."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        reported: list[bool] = []
+
+        waiter = asyncio.create_task(_collect(wait_task_until_done_despite_cancel(task), reported))
+        await _pump()
+        waiter.cancel()
+        await _pump()
+
+        assert not waiter.done() and log == []
+
+        finish.set()
+        await waiter
+
+        assert log == ["work finished"] and reported == [True]
+
+    async def test_a_second_cancellation_is_absorbed_the_same_way_as_the_first(self):
+        """A cancelling peer may retry, and one retry must not be the thing that abandons the task."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        reported: list[bool] = []
+
+        waiter = asyncio.create_task(_collect(wait_task_until_done_despite_cancel(task), reported))
+        await _pump()
+        waiter.cancel()
+        await _pump()
+        waiter.cancel()
+        await _pump()
+
+        assert not waiter.done() and log == []
+
+        finish.set()
+        await waiter
+
+        assert log == ["work finished"] and reported == [True]
+
+    async def test_an_uncancelled_wait_reports_no_cancellation(self):
+        """Without an outer cancellation the helper must not fabricate one for the caller to re-raise."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        finish.set()
+
+        assert await wait_task_until_done_despite_cancel(task) is False
+
+    @pytest.mark.skipif(not hasattr(asyncio.Task, "uncancel"), reason="Task.uncancel needs Python 3.11")
+    async def test_absorbed_cancellations_leave_exactly_one_outstanding(self):
+        """Under asyncio.timeout or a TaskGroup an unbalanced cancelling() count either hangs or fires twice."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        outstanding: list[int] = []
+
+        async def _wait() -> None:
+            await wait_task_until_done_despite_cancel(task)
+            outstanding.append(asyncio.current_task().cancelling())
+
+        waiter = asyncio.create_task(_wait())
+        await _pump()
+        waiter.cancel()
+        await _pump()
+        waiter.cancel()
+        await _pump()
+        finish.set()
+        await waiter
+
+        assert outstanding == [1]
+
+
+@pytest.mark.asyncio
+class TestWaitTaskUntilDoneDespiteCancelWithADeadline:
+    async def test_the_deadline_returns_while_the_task_is_still_running(self):
+        """A caller holding a lock nothing else can release needs the wait to end even if the task never does."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+
+        assert await wait_task_until_done_despite_cancel(task, timeout=0.05) is False
+        assert not task.done()
+
+        task.cancel()
+
+    async def test_a_task_finishing_inside_the_deadline_is_untouched(self):
+        """The deadline must not shorten a broadcast that is merely slow."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        finish.set()
+
+        assert await wait_task_until_done_despite_cancel(task, timeout=5.0) is False
+        assert task.result() == "value"
+
+    async def test_no_deadline_still_waits_out_a_cancellation(self):
+        """The default must keep the cancel-resistant behaviour every existing caller depends on."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        waiter = asyncio.create_task(wait_task_until_done_despite_cancel(task))
+        await _pump()
+
+        waiter.cancel()
+        await _pump()
+
+        assert not waiter.done()
+
+        finish.set()
+
+        assert await waiter is True
+
+
+@pytest.mark.asyncio
+class TestAwaitTaskResultDespiteCancel:
+    async def test_an_uninterrupted_wait_hands_back_the_task_result(self):
+        """The three call sites read the result through this helper, so it has to be the task's own value."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+        finish.set()
+
+        assert await await_task_result_despite_cancel(task) == "value"
+
+    async def test_a_cancelled_wait_re_raises_only_after_the_task_is_terminal(self):
+        """Re-raising before the task settles is exactly the half-closed window the callers must never leave."""
+        finish, log = asyncio.Event(), []
+        task = _blocked_task(finish, log)
+
+        waiter = asyncio.create_task(_collect(await_task_result_despite_cancel(task), []))
+        await _pump()
+        waiter.cancel()
+        await _pump()
+
+        assert not waiter.done()
+
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert log == ["work finished"]
+
+    async def test_the_task_failure_reaches_the_caller_instead_of_being_swallowed(self):
+        """The caller has to see why its RPC failed; the old loop broke out and reported a clean wait."""
+
+        async def _work() -> str:
+            raise RuntimeError("rpc died")
+
+        task = asyncio.create_task(_work())
+
+        with pytest.raises(RuntimeError, match="rpc died"):
+            await await_task_result_despite_cancel(task)

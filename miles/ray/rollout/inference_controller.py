@@ -91,23 +91,30 @@ class InferenceController:
     # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
     @with_lock
     async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        if (server := self._server_of_cell_or_none(cell_id)) is not None:
+            server.mark_cell_faulted(cell_id)
         await self._engine_provider.stop_cells(cell_ids=[cell_id])
 
     # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
     @with_lock
     async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
         # TEMPORARY: colocate cannot kill rollout workers while trainer ranks own the shared GPUs
-        server = next((srv for srv in self.servers.values() if cell_id in srv.server_cells), None)
-        if server is None:
-            raise KeyError(f"Unknown rollout cell {cell_id!r}")
+        server = self._server_of_cell(cell_id)
         if not server.health_checker_activeness.get().active:
             raise RuntimeError(f"Rollout cell {cell_id!r} is offloaded; refusing fault injection")
+        if len(addressable := server.addressable_cell_ids()) <= 1:
+            raise RuntimeError(
+                f"Rollout cell {cell_id!r} is the only addressable replica of {server.model_name} "
+                f"({addressable}); refusing fault injection because nothing would serve the next rollout"
+            )
 
         await self._engine_provider._worker_manager_handle.inject_fault.remote(
             cell_id,
             mode=mode.value,
             worker_in_cell_index=sub_index,
+            wait_until_applied=True,
         )
+        server.mark_cell_faulted(cell_id)
 
     # -------------------------- take over -----------------------------
 
@@ -174,8 +181,12 @@ class InferenceController:
     @with_lock
     async def offload(self, tags: list[str] | None = None) -> None:
         await self._health_monitoring_pause(None)
-        for srv in self.servers.values():
-            await srv.offload(tags=tags)
+        try:
+            for srv in self.servers.values():
+                await srv.offload(tags=tags)
+        except BaseException:
+            await self._health_monitoring_resume(None)
+            raise
 
     @with_lock
     async def onload(self, tags: list[str] | None = None) -> None:
@@ -249,6 +260,17 @@ class InferenceController:
             logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
             async with self.context_lock.with_released():
                 await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
+
+    @requires_lock
+    def _server_of_cell(self, cell_id: str) -> RolloutServer:
+        server = self._server_of_cell_or_none(cell_id)
+        if server is None:
+            raise KeyError(f"Unknown rollout cell {cell_id!r}")
+        return server
+
+    @requires_lock
+    def _server_of_cell_or_none(self, cell_id: str) -> RolloutServer | None:
+        return next((srv for srv in self.servers.values() if cell_id in srv.server_cells), None)
 
     @requires_lock
     def _get_servers_of_model_id(self, model_id: str | None) -> list[RolloutServer]:

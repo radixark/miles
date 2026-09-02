@@ -21,6 +21,7 @@ def fast_polling(monkeypatch):
 class _FakeCell:
     def __init__(self, *, ready: bool = False, needs_offload: bool = True):
         self.ready = ready
+        self.is_faulted = False
         self.meta = SimpleNamespace(needs_offload=needs_offload)
 
     @property

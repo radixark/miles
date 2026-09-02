@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
@@ -23,6 +24,7 @@ WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
 WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
 ABORT_ALL_TIMEOUT_SECONDS = 60.0
+MEMORY_MOVE_TIMEOUT_SECONDS = 180.0
 
 
 async def create_rollout_servers(
@@ -104,8 +106,15 @@ class RolloutServer:
         return [cell.meta.gpu_offset for cell in self._cells_by_gpu_offset()]
 
     @requires_lock
+    def mark_cell_faulted(self, cell_id: str) -> None:
+        self.server_cells[cell_id].mark_faulted()
+
+    @requires_lock
     def _cells_by_gpu_offset(self) -> list[ServerCell]:
-        return sorted(self.server_cells.values(), key=lambda cell: cell.meta.gpu_offset)
+        return sorted(
+            (cell for cell in self.server_cells.values() if not cell.is_faulted),
+            key=lambda cell: cell.meta.gpu_offset,
+        )
 
     @requires_lock
     async def add_cell(self, cell_meta: ServerCellMetadata):
@@ -140,15 +149,11 @@ class RolloutServer:
 
     @requires_lock
     async def offload(self, tags: list[str] | None = None):
-        return await asyncio.gather(
-            *[cell.offload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
-        )
+        return await self._move_memory_of_every_reachable_cell("offload", lambda cell: cell.offload(tags=tags))
 
     @requires_lock
     async def onload(self, tags: list[str] | None = None):
-        return await asyncio.gather(
-            *[cell.onload(tags=tags) for cell in self._addressable_cells() if cell.meta.needs_offload]
-        )
+        return await self._move_memory_of_every_reachable_cell("onload", lambda cell: cell.onload(tags=tags))
 
     @requires_lock
     async def abort_all(self) -> None:
@@ -175,8 +180,42 @@ class RolloutServer:
         )
 
     @requires_lock
+    def addressable_cell_ids(self) -> list[str]:
+        return [cell.meta.cell_id for cell in self._addressable_cells()]
+
+    @requires_lock
     def _addressable_cells(self) -> list[ServerCell]:
-        return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
+        return [
+            cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving and not cell.is_faulted
+        ]
+
+    @requires_lock
+    async def _move_memory_of_every_reachable_cell(
+        self, op_name: str, compute_coroutine: Callable[[ServerCell], Coroutine[Any, Any, Any]]
+    ) -> list[Any]:
+        cells = [cell for cell in self._addressable_cells() if cell.meta.needs_offload]
+        if not cells:
+            return []
+
+        outcomes = await asyncio.gather(
+            *[asyncio.wait_for(compute_coroutine(cell), timeout=MEMORY_MOVE_TIMEOUT_SECONDS) for cell in cells],
+            return_exceptions=True,
+        )
+        failures = [
+            (cell, outcome)
+            for cell, outcome in zip(cells, outcomes, strict=True)
+            if isinstance(outcome, BaseException)
+        ]
+        for cell, error in failures:
+            logger.error(
+                f"The {op_name} of cell {cell.meta.cell_id} of {self.model_name} failed, so its memory stays where "
+                f"it is and fault tolerance recycles the cell if the engine is really gone",
+                exc_info=error,
+            )
+        if len(failures) == len(cells):
+            raise failures[0][1]
+
+        return [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
 
     @lock_exempt
     async def wait_init_expected_num_cells(self, timeout: float = 3600):

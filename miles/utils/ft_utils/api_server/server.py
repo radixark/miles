@@ -14,7 +14,7 @@ from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.ft_utils.api_server.handles import _CellHandler
 from miles.utils.ft_utils.api_server.models import Cell, CellList, CellPatch, FaultInjection, K8sStatus, _OkResponse
 from miles.utils.ft_utils.api_server.registry import _CellRegistry
-from miles.utils.workers.cell_operations.base import BaseCellOperations
+from miles.utils.workers.cell_operations.base import ACTOR_CELL_TYPE, ROLLOUT_CELL_TYPE, BaseCellOperations
 from miles.utils.workers.worker_handle import BaseWorkerHandle
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def start_api_server(
     if "train" in ft_components:
         handlers.append(
             _CellHandler(
-                cell_type="actor",
+                cell_type=ACTOR_CELL_TYPE,
                 operations=cell_operations,
                 controllers=list(trainer_models.values()),
                 pool_ids=[compute_trainer_pool_id(trainer_id) for trainer_id in trainer_models],
@@ -55,7 +55,7 @@ def start_api_server(
         )
         handlers.append(
             _CellHandler(
-                cell_type="rollout",
+                cell_type=ROLLOUT_CELL_TYPE,
                 operations=cell_operations,
                 controllers=[inference_controller],
                 pool_ids=compute_engine_pool_ids(args),

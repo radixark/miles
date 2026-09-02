@@ -36,18 +36,29 @@ class BaseFaultForm(abc.ABC):
     def harms_the_cell(self) -> bool:
         return True
 
+    @property
+    def serialized_against_weight_updates(self) -> bool:
+        return False
+
     @abc.abstractmethod
     def inject(self, cell: dict, rng: random.Random) -> None: ...
 
 
 class InjectFaultForm(BaseFaultForm):
-    def __init__(self, *, base_url: str, failure_mode: FailureMode) -> None:
+    def __init__(
+        self, *, base_url: str, failure_mode: FailureMode, serialized_against_weight_updates: bool = False
+    ) -> None:
         self._base_url = base_url
         self._failure_mode = failure_mode
+        self._serialized_against_weight_updates = serialized_against_weight_updates
 
     @property
     def name(self) -> str:
         return f"inject_fault:{self._failure_mode.value}"
+
+    @property
+    def serialized_against_weight_updates(self) -> bool:
+        return self._serialized_against_weight_updates
 
     def inject(self, cell: dict, rng: random.Random) -> None:
         resp = requests.post(
@@ -118,7 +129,9 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
             return {
                 ACTOR_CELL_TYPE: actor_kill_forms,
                 ROLLOUT_CELL_TYPE: _inject_fault_forms(
-                    base_url=base_url, failure_modes=RAY_ROLLOUT_ENGINE_FAILURE_MODES
+                    base_url=base_url,
+                    failure_modes=RAY_ROLLOUT_ENGINE_FAILURE_MODES,
+                    serialized_against_weight_updates=True,
                 ),
             }
         case ClusterBackend.KUBERNETES:
@@ -135,8 +148,17 @@ def create_cell_fault_forms(*, base_url: str, config: command_utils.ExecuteTrain
             }
 
 
-def _inject_fault_forms(*, base_url: str, failure_modes: list[FailureMode]) -> list[BaseFaultForm]:
-    return [InjectFaultForm(base_url=base_url, failure_mode=failure_mode) for failure_mode in failure_modes]
+def _inject_fault_forms(
+    *, base_url: str, failure_modes: list[FailureMode], serialized_against_weight_updates: bool = False
+) -> list[BaseFaultForm]:
+    return [
+        InjectFaultForm(
+            base_url=base_url,
+            failure_mode=failure_mode,
+            serialized_against_weight_updates=serialized_against_weight_updates,
+        )
+        for failure_mode in failure_modes
+    ]
 
 
 CELL_TYPE_OF_FT_COMPONENT: dict[str, str] = {"train": ACTOR_CELL_TYPE, "rollout": ROLLOUT_CELL_TYPE}

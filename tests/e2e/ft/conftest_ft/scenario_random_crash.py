@@ -47,6 +47,7 @@ from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
 
 from miles.utils.audit_utils.event_logger.logger import EVENTS_DIRNAME
 from miles.utils.external_utils import command_utils
+from miles.utils.test_utils.comparisons.metrics import read_rollout_completion_times
 from miles.utils.test_utils.reconfigure_assertions import (
     assert_min_soak_injections,
     assert_soak_reconfigure_events,
@@ -59,9 +60,10 @@ app: typer.Typer = typer.Typer()
 TEST_NAME: str = "random_crash"
 
 DEFAULT_SEED: int = 42
-DEFAULT_NUM_STEPS: int = 30
+DEFAULT_NUM_STEPS: int = 100
 DEFAULT_TRAINER_CRASH_INTERVAL_SECONDS: float = 120.0
 DEFAULT_ROLLOUT_CRASH_INTERVAL_SECONDS: float = 240.0
+TERMINAL_FAULT_FREE_STEPS: int = 6
 
 
 @app.command(name="run")
@@ -118,6 +120,7 @@ def run_ci(
         seed=seed,
         mean_interval_seconds_of_cell_type=mean_interval_seconds_of_cell_type,
         cell_fault_forms=create_cell_fault_forms(base_url=base_url, config=config),
+        injection_enabled=lambda: _fault_injection_enabled(dump_dir, num_steps=num_steps),
     )
 
     try:
@@ -140,6 +143,12 @@ def run_ci(
     )
 
     print(f"Random failure soak test PASSED ({test_name}, mode={mode}, seed={seed}, steps={num_steps})")
+
+
+def _fault_injection_enabled(dump_dir: str, *, num_steps: int) -> bool:
+    completed_rollout_ids: set[int] = {rollout_id for rollout_id, _ in read_rollout_completion_times(dump_dir)}
+    next_rollout_id: int = max(completed_rollout_ids, default=-1) + 1
+    return next_rollout_id < num_steps - TERMINAL_FAULT_FREE_STEPS
 
 
 def assert_mode_supports_fully_async(ft_mode: FTTestMode, *, mode: str) -> None:

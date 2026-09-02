@@ -197,6 +197,39 @@ class TestKillSubprocess:
 
 
 class TestInjectFault:
+    def test_waiting_for_ack_keeps_the_actor_alive_after_killing_the_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An acknowledged SIGKILL keeps its supervisor alive until the manager tears down the cell."""
+        fake_exit = _FakeExit(monkeypatch)
+        actor = CommandActor()
+        actor.run(cmd="sleep 300", envs={})
+
+        actor.inject_fault("sigkill", keep_actor_alive_until_ack=True)
+
+        actor._process.wait(timeout=10)
+        assert not fake_exit.event.wait(timeout=0.5)
+
+    def test_acknowledged_sigkill_does_not_orphan_an_engine_child(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The acknowledged path kills the entire subprocess group while preserving the supervisor for its reply."""
+        fake_exit = _FakeExit(monkeypatch)
+        child_pid_path = tmp_path / "child-pid"
+        actor = CommandActor()
+        actor.run(cmd=f"sleep 300 & printf '%s' \"$!\" > {shlex.quote(str(child_pid_path))}; wait", envs={})
+        _wait_for_path(child_pid_path)
+        child_pid = int(child_pid_path.read_text())
+
+        try:
+            actor.inject_fault("sigkill", keep_actor_alive_until_ack=True)
+
+            actor._process.wait(timeout=10)
+            _wait_for_process_exit(child_pid)
+            assert not fake_exit.event.wait(timeout=0.5)
+        finally:
+            process_utils.kill_process_tree(actor._process)
+
     def test_a_sigkill_reaches_the_worker_process_group(self, monkeypatch: pytest.MonkeyPatch):
         """Crashing a worker must include every subprocess that belongs to that worker."""
         killed: list[int] = []

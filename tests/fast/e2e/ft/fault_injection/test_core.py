@@ -8,12 +8,15 @@ from tests.fast.e2e.ft.fault_injection.utils import (
     StubFaultForm,
     api_server_fault_forms,
     cell,
+    config_of,
     fixed_fault_forms,
     intervals,
     mock_response,
     patched_requests,
     typed_cell,
 )
+
+from miles.utils.workers.types import ClusterBackend
 
 
 def _run_injection_loop(
@@ -557,3 +560,83 @@ class TestRolloutQuiescence:
     def test_a_trainer_cell_is_judged_by_liveness_alone(self) -> None:
         """Trainer cells carry no Serving condition, so requiring one would stop every trainer soak."""
         assert core._cell_can_serve(typed_cell("actor-0", "actor"))
+
+
+def _flickering_rollout_fleet(stop_event: threading.Event, *, polls: dict) -> Callable[..., MagicMock]:
+    def fake_get(url: str, timeout: float) -> MagicMock:
+        polls["n"] += 1
+        if polls["n"] >= 40:
+            stop_event.set()
+        healthy = polls["n"] % 3 != 0
+        return mock_response(
+            {
+                "items": [
+                    cell("rollout-0", healthy=healthy, cell_type="rollout"),
+                    cell("rollout-1", healthy=healthy, cell_type="rollout"),
+                ]
+            }
+        )
+
+    return fake_get
+
+
+def _rollout_forms(*, serialized: bool) -> fault_forms.CellFaultForms:
+    if serialized:
+        return {fault_forms.ROLLOUT_CELL_TYPE: api_server_fault_forms()[fault_forms.ROLLOUT_CELL_TYPE]}
+    return {fault_forms.ROLLOUT_CELL_TYPE: [StubFaultForm("stub", lambda _cell, _rng: None)]}
+
+
+class TestQuiescenceGateOfAKindThatFlickers:
+    def _collect(self, *, cell_fault_forms: fault_forms.CellFaultForms) -> list[str]:
+        injected: list[str] = []
+        stop_event = threading.Event()
+
+        def fake_post(url: str, json: dict, timeout: float) -> MagicMock:
+            injected.append(url.rsplit("/cells/", 1)[1].split("/")[0])
+            return mock_response({})
+
+        _run_injection_loop(
+            fake_get=_flickering_rollout_fleet(stop_event, polls={"n": 0}),
+            fake_post=fake_post,
+            cell_types=("rollout",),
+            quiescent_polls_required=10,
+            cell_fault_forms=cell_fault_forms,
+            stop_event=stop_event,
+        )
+        return injected
+
+    def test_a_streak_gate_never_admits_a_kind_that_leaves_healthy_every_few_polls(self) -> None:
+        """Rollout replicas drop out of Healthy on every weight update, which resets the streak forever."""
+        assert self._collect(cell_fault_forms=_rollout_forms(serialized=False)) == []
+
+    def test_a_kind_whose_forms_take_the_weight_update_lock_is_injected_while_it_flickers(self) -> None:
+        """The api-server injection endpoint takes the lock itself, so its kind needs no streak gate."""
+        injected = self._collect(cell_fault_forms=_rollout_forms(serialized=True))
+
+        assert len(injected) >= 2
+
+
+class TestQuiescencePollsRequiredOfAKind:
+    def test_ray_rollout_injection_waives_the_streak_because_it_takes_the_weight_update_lock(self) -> None:
+        """Only the api-server endpoint reaches inject_fault_between_weight_updates."""
+        forms = fault_forms.create_cell_fault_forms(base_url="http://control", config=config_of(ClusterBackend.RAY))
+
+        assert core.compute_quiescent_polls_required(forms[fault_forms.ROLLOUT_CELL_TYPE], fleet_wide=60) == 1
+
+    def test_ray_trainer_injection_keeps_the_streak_because_it_bypasses_the_lock(self) -> None:
+        """RayCellOperations.inject_fault only takes the lock for rollout cells."""
+        forms = fault_forms.create_cell_fault_forms(base_url="http://control", config=config_of(ClusterBackend.RAY))
+
+        assert core.compute_quiescent_polls_required(forms[fault_forms.ACTOR_CELL_TYPE], fleet_wide=60) == 60
+
+    def test_kubernetes_rollout_injection_keeps_the_streak_because_kubectl_takes_no_lock(self) -> None:
+        """kubectl exec and kubectl delete pod never reach the inference controller, so staleness still bites."""
+        forms = fault_forms.create_cell_fault_forms(
+            base_url="http://control", config=config_of(ClusterBackend.KUBERNETES)
+        )
+
+        assert core.compute_quiescent_polls_required(forms[fault_forms.ROLLOUT_CELL_TYPE], fleet_wide=60) == 60
+
+    def test_a_kind_with_no_form_at_all_keeps_the_streak(self) -> None:
+        """An empty form list must not read as "every form is safe" and waive the gate."""
+        assert core.compute_quiescent_polls_required([], fleet_wide=60) == 60

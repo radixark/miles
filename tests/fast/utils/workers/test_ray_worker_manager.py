@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import ray
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.fake_ray import EVENT_CREATE, EVENT_KILL, FakeRayCluster
 
@@ -1841,18 +1844,216 @@ class TestInjectFault:
         """A multi-node engine is crashed by crashing one of its node ranks."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
 
         calls = fake_ray_cluster.calls_of("inject_fault")
         assert [call.args for call in calls] == [("sigkill",)]
         assert calls[0].handle is fake_ray_cluster.handles[1]
+        assert calls[0].kwargs == {}
 
-    async def test_injection_does_not_wait_for_the_worker_to_answer(self, fake_ray_cluster: FakeRayCluster):
-        """The worker is about to die, so waiting for its reply would hang the caller."""
+    async def test_injection_waits_until_the_worker_has_applied_the_fault(self, fake_ray_cluster: FakeRayCluster):
+        """Returning before the worker applies its fault lets a later weight-update window race with the kill."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["inject_fault"] = 0.05
+
+        injection = asyncio.create_task(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+        )
+        await asyncio.sleep(0)
+
+        assert not injection.done()
+        await injection
+
+        calls = fake_ray_cluster.calls_of("inject_fault")
+        assert calls[0].kwargs == {"keep_actor_alive_until_ack": True}
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_an_acknowledged_fault_cleans_up_every_worker_in_the_cell(self, fake_ray_cluster: FakeRayCluster):
+        """After the target acknowledges its kill, the whole multi-worker cell becomes terminal."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1, wait_until_applied=True)
+
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_cancellation_after_dispatch_waits_for_terminal_membership(self, fake_ray_cluster: FakeRayCluster):
+        """Caller cancellation cannot interrupt the acknowledged fault's terminal membership transition."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["inject_fault"] = 0.05
+        injection = asyncio.create_task(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+        )
+        await asyncio.sleep(0)
+
+        injection.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await injection
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_repeated_cancellation_still_waits_for_terminal_membership(self, fake_ray_cluster: FakeRayCluster):
+        """Repeated cancellation cannot pierce the shield around fault finalization."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["inject_fault"] = 0.05
+        injection = asyncio.create_task(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+        )
+        await asyncio.sleep(0)
+
+        injection.cancel()
+        await asyncio.sleep(0.01)
+        injection.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await injection
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_pre_ack_failure_takes_priority_over_pending_cancellation(self, fake_ray_cluster: FakeRayCluster):
+        """A known application failure is reported even when the caller cancelled while waiting for it."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["inject_fault"] = 0.05
+        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("injection refused")
+        injection = asyncio.create_task(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+        )
+        await asyncio.sleep(0)
+
+        injection.cancel()
+
+        with pytest.raises(RuntimeError, match="injection refused"):
+            await injection
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_an_acknowledged_fault_tears_the_cell_down_through_its_own_stop(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """A crashed cell is disposed by the same teardown every other stopped cell gets, siblings included."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+
+        assert len(fake_ray_cluster.calls_of("shutdown")) == 2
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
+
+    async def test_kill_request_failures_still_leave_acknowledged_cell_terminal(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """Control-plane kill errors cannot restore membership after the subprocess kill was acknowledged."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        fake_ray_cluster.kill_error = RuntimeError("control plane unavailable")
+
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+
+        assert fake_ray_cluster.events.count(EVENT_KILL) == 2
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_a_stop_that_hangs_is_bounded_and_still_kills_every_actor(
+        self, fake_ray_cluster: FakeRayCluster, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The graceful half of a stop waits 30s per actor and never reaches ray.kill, so the deadline has to."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
+        for handle in fake_ray_cluster.handles:
+            handle.hanging_methods["shutdown"] = 10
+        monkeypatch.setattr(ray_worker_manager, "_FAULT_FINALIZATION_TIMEOUT_SECONDS", 0.01)
+
+        await asyncio.wait_for(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True),
+            timeout=0.2,
+        )
+
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_an_acknowledgement_that_never_arrives_still_finalizes_the_cell(
+        self, fake_ray_cluster: FakeRayCluster, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The caller of an unbounded wait is holding the weight-update window while it waits."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["inject_fault"] = 10
+        monkeypatch.setattr(ray_worker_manager, "_FAULT_FINALIZATION_TIMEOUT_SECONDS", 0.01)
+
+        await asyncio.wait_for(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True),
+            timeout=0.2,
+        )
+
+        assert not manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_a_worker_reported_timeout_is_not_the_manager_deadline(self, fake_ray_cluster: FakeRayCluster):
+        """A worker-reported TimeoutError is a failed injection, not this manager's bounded teardown expiring."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = TimeoutError("worker timed out")
+
+        with pytest.raises(TimeoutError, match="worker timed out"):
+            await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_only_the_named_worker_is_told_to_crash(self, fake_ray_cluster: FakeRayCluster) -> None:
+        """The siblings are torn down, not crashed: a second injected kill would race the cell's own stop."""
+        manager = await _launch([_make_spec("engine", num_workers_per_cell=3)])
+
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+
+        calls = fake_ray_cluster.calls_of("inject_fault")
+        assert [call.handle for call in calls] == [fake_ray_cluster.handles[0]]
+        assert calls[0].kwargs == {"keep_actor_alive_until_ack": True}
+        assert all(handle.killed for handle in fake_ray_cluster.handles)
+
+    async def test_restart_after_acknowledged_fault_does_not_kill_the_new_generation(
+        self, fake_ray_cluster: FakeRayCluster
+    ) -> None:
+        """Finalizing the old generation cannot race with or kill its replacement actors."""
+        manager = await _launch([_make_spec("engine")])
+
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+        await manager.start_cells(["engine-00000"])
+
+        assert fake_ray_cluster.handles[0].killed
+        assert not fake_ray_cluster.handles[1].killed
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_actor_death_before_ack_is_propagated(self, fake_ray_cluster: FakeRayCluster):
+        """Actor death before the acknowledgement cannot prove that the fault was applied."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = ray.exceptions.ActorDiedError()
+
+        with pytest.raises(ray.exceptions.ActorDiedError):
+            await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_non_ray_failure_before_ack_is_propagated(self, fake_ray_cluster: FakeRayCluster):
+        """A command error before acknowledgement remains a failed injection."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("injection refused")
+
+        with pytest.raises(RuntimeError, match="injection refused"):
+            await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_generation_change_after_ack_is_rejected(self, fake_ray_cluster: FakeRayCluster):
+        """An acknowledgement from an obsolete cell generation cannot finalize its replacement."""
+        manager = await _launch([_make_spec("engine")])
+        fake_ray_cluster.handles[0].hanging_methods["inject_fault"] = 0.05
+        injection = asyncio.create_task(
+            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0, wait_until_applied=True)
+        )
+        await asyncio.sleep(0)
+        manager._find_cell("engine-00000").generation += 1
+
+        with pytest.raises(RuntimeError, match="changed generation"):
+            await injection
+
+        assert manager.get_cell_infos(pool_ids=["engine"])["engine-00000"].alive
+
+    async def test_injection_can_return_before_a_self_killing_worker_answers(self, fake_ray_cluster: FakeRayCluster):
+        """A worker that kills its own process cannot acknowledge the fault it successfully applied."""
         manager = await _launch([_make_spec("engine")])
         fake_ray_cluster.handles[0].failing_methods["inject_fault"] = RuntimeError("actor died")
 
-        manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+        await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
 
     async def test_injecting_into_a_suspended_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A suspended cell has no worker to crash."""
@@ -1860,25 +2061,79 @@ class TestInjectFault:
         await manager.stop_cells(["engine-00000"])
 
         with pytest.raises(RuntimeError, match="not alive"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
+            await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=0)
 
     async def test_a_worker_index_beyond_the_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Injecting into a neighbouring cell by accident would corrupt the test's premise."""
         manager = await _launch([_make_spec("engine", num_cells=2, num_workers_per_cell=1)])
 
         with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
+            await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=1)
 
     async def test_a_negative_worker_index_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """Negative indexing would silently select the last worker instead of failing."""
         manager = await _launch([_make_spec("engine", num_workers_per_cell=2)])
 
         with pytest.raises(IndexError, match="out of range"):
-            manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=-1)
+            await manager.inject_fault("engine-00000", mode="sigkill", worker_in_cell_index=-1)
 
     async def test_an_unknown_cell_is_rejected(self, fake_ray_cluster: FakeRayCluster):
         """A typo must not silently inject nothing."""
         manager = await _launch([_make_spec("engine")])
 
         with pytest.raises(AssertionError):
-            manager.inject_fault("engine-00007", mode="sigkill", worker_in_cell_index=0)
+            await manager.inject_fault("engine-00007", mode="sigkill", worker_in_cell_index=0)
+
+
+class TestDynamicPortAllocationKeepsTheManagerResponsive:
+    class _BlockingAllocator:
+        def __init__(self, *, block_seconds: float) -> None:
+            self._block_seconds = block_seconds
+            self.node_ips: list[str] = []
+
+        def alloc(self, actor, *, node_ip: str, consecutive: int = 1) -> int:
+            del actor, consecutive
+            time.sleep(self._block_seconds)
+            self.node_ips.append(node_ip)
+            return 20000 + len(self.node_ips)
+
+    def _actor_manager(self, allocator) -> SimpleNamespace:
+        return SimpleNamespace(
+            manager=SimpleNamespace(port_allocator=allocator, port_allocator_lock=asyncio.Lock()),
+            actor_handle=object(),
+        )
+
+    async def test_probing_a_node_for_a_free_port_does_not_freeze_the_event_loop(self):
+        """A frozen manager loop cannot answer the trainer controller, whose cell probes then time out."""
+        allocator = self._BlockingAllocator(block_seconds=0.3)
+        ticks = 0
+
+        async def tick_until_the_probe_returns() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        ticker = asyncio.create_task(tick_until_the_probe_returns())
+        port = await _BaseActorManager._alloc_dynamic_port(
+            self._actor_manager(allocator), node_ip="10.0.0.1", consecutive=1
+        )
+        ticker.cancel()
+
+        assert port == 20001
+        assert ticks >= 5
+
+    async def test_concurrent_probes_do_not_interleave_inside_the_allocator(self):
+        """The cursor of a node is read and written without a lock of its own, so callers must be serialized."""
+        allocator = self._BlockingAllocator(block_seconds=0.05)
+        actor_manager = self._actor_manager(allocator)
+
+        ports = await asyncio.gather(
+            *[
+                _BaseActorManager._alloc_dynamic_port(actor_manager, node_ip=f"10.0.0.{index}", consecutive=1)
+                for index in range(4)
+            ]
+        )
+
+        assert sorted(ports) == [20001, 20002, 20003, 20004]
+        assert allocator.node_ips == ["10.0.0.0", "10.0.0.1", "10.0.0.2", "10.0.0.3"]

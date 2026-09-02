@@ -3,7 +3,12 @@
 
 
 from tests.e2e.ft.conftest_ft.app import BASELINE_SIDE, TARGET_SIDE, create_comparison_app_and_run_ci
-from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
+from tests.e2e.ft.conftest_ft.execution import (
+    DISABLED_API_SERVER_ARGS,
+    get_common_train_args,
+    get_ft_args,
+    get_train_env_vars_arg,
+)
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
 from miles.utils.test_utils.comparisons.dumps import (
@@ -26,6 +31,7 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
     return (
         get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_STEPS, enable_dumper=enable_dumper)
         + get_ft_args(mode)
+        + DISABLED_API_SERVER_ARGS
         + get_train_env_vars_arg(mode, deterministic=False)
     )
 

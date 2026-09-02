@@ -33,7 +33,7 @@ def render_ft_test_actions(actions: Sequence[dict]) -> str:
     return json.dumps(list(actions))
 
 
-_CELL_RESUME_OBSERVED_TIMEOUT_SECONDS = 300.0
+_CELL_OBSERVED_TIMEOUT_SECONDS = 300.0
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
@@ -122,22 +122,23 @@ class FTTestActionControllerExecutor:
                 operations = self._cell_operations
                 if action.action == "stop_cell_at_end":
                     await operations.suspend(cell_id=action.cell_id)
+                    await self._wait_cell_observed(action.cell_id, observed=False)
                 elif action.action == "start_cell_at_end":
                     await operations.resume(cell_id=action.cell_id)
-                    await self._wait_cell_observed(action.cell_id)
+                    await self._wait_cell_observed(action.cell_id, observed=True)
 
-    async def _wait_cell_observed(self, cell_id: str) -> None:
+    async def _wait_cell_observed(self, cell_id: str, *, observed: bool) -> None:
         async def _check(_remaining: float) -> None:
-            if cell_id not in self._controller.cell_ids:
-                raise TimeoutError(f"{cell_id} was resumed but is not observed yet")
+            if (cell_id in self._controller.cell_ids) != observed:
+                raise TimeoutError(f"{cell_id} is not observed as {'present' if observed else 'gone'} yet")
 
         await retry_until_deadline(
             _check,
-            total_seconds=_CELL_RESUME_OBSERVED_TIMEOUT_SECONDS,
+            total_seconds=_CELL_OBSERVED_TIMEOUT_SECONDS,
             retry_on=TimeoutError,
             initial_delay=1.0,
             max_delay=5.0,
-            log_fields=dict(tag="ft", op="wait_cell_observed", cell=cell_id),
+            log_fields=dict(tag="ft", op="wait_cell_observed", cell=cell_id, observed=observed),
         )
 
     def _check_action_target(self, action: FTTestAction) -> None:

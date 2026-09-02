@@ -25,10 +25,14 @@ def create_trainer_cell_health_checker(
         # a dedicated concurrency group and returns even while the training thread is
         # blocked in a (legitimately waiting) cross-cell collective. A returned result
         # proves the process is alive; a WorkerUnreachableError or RPC timeout proves it is not.
+        #
+        # One answer is enough. Requiring every worker would let a single one blocked in a
+        # collective time the whole cell out, and a worker that really died is reported by the
+        # worker manager's own liveness scan, which asks ray rather than the application.
         if not cell.is_alive:
             return
 
-        await cell.execute("get_heartbeat_status", kill_on_failure=False)
+        await cell.probe_liveness()
 
     return SimpleHealthChecker(
         name=f"trainer-cell-{cell.cell_id}",

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import torch
 import torch.distributed as dist
 
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import print_memory
 
 logger = logging.getLogger(__name__)
@@ -155,6 +156,10 @@ class ReloadableProcessGroup(torch.distributed.ProcessGroup):
                 continue
             group = old_new_group(*reloadable_group.inner_args, **reloadable_group.inner_kwargs)
             reloadable_group.group = group
+
+        torch.cuda.synchronize()
+        dist.barrier(group=get_gloo_group())
+        logger.info(f"Process group reload complete and synchronized in pid {pid}")
 
     def rank(self) -> int:
         return self.group.rank()

@@ -148,6 +148,22 @@ class TestRealRayActorLifecycle:
         finally:
             ray.kill(actor)
 
+    def test_inject_fault_records_acknowledgement_lifetime_request(self, ray_local_mode) -> None:
+        """Fault injection preserves the request to keep the actor alive through acknowledgement."""
+        actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote()
+        try:
+            ray.get(actor.inject_fault.remote("sigkill", keep_actor_alive_until_ack=True))
+
+            assert ray.get(actor.get_calls.remote()) == [
+                (
+                    "inject_fault",
+                    (),
+                    {"mode": "sigkill", "keep_actor_alive_until_ack": True},
+                )
+            ]
+        finally:
+            ray.kill(actor)
+
 
 class TestPortProbe:
     def test_the_mock_reports_every_port_as_free_and_records_the_probe(self) -> None:

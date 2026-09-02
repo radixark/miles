@@ -196,6 +196,9 @@ class MockWorkerManager:
             self._summaries[cell_id] = previous.model_copy(update=dict(alive=not suspended))
 
 
+_TRAINER_CELL_PREFIX = "trainer-"
+
+
 class MockStopCellController:
     def __init__(self, worker_manager: MockWorkerManager) -> None:
         self._worker_manager = worker_manager
@@ -204,6 +207,8 @@ class MockStopCellController:
         await self._worker_manager.stop_cells.remote([cell_id])
 
     async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        if cell_id.startswith(_TRAINER_CELL_PREFIX):
+            raise KeyError(f"Unknown rollout cell {cell_id!r}")
         await self._worker_manager.inject_fault.remote(
             cell_id,
             mode=mode.value,
