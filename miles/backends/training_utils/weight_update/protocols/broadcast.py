@@ -12,11 +12,7 @@ from ray.actor import ActorHandle
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.session import (
-    check_weight_sync_results,
-    unload_lora_adapter,
-    weight_update_selector,
-)
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results, unload_lora_adapter
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils.distributed_utils import init_process_group
 
@@ -32,7 +28,6 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
         self._model_update_groups = None
-        self._selector = weight_update_selector(args)
         self._lora_loaded = False
 
     def connect(
@@ -43,12 +38,14 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
         """
         Create NCCL "miles-pp_{pp_rank}" if PP source (DP=TP=0). Lock prevents concurrent broadcasts.
         """
         self.rollout_engines = rollout_engines
         self._connection_stale = False
+        self._selector = selector
         self.rollout_engine_lock = rollout_engine_lock
         self._engine_gpu_counts = engine_gpu_counts
 

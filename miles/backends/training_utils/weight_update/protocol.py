@@ -41,6 +41,7 @@ class WeightTransferProtocol(ABC):
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None: ...
 
     def begin_sync(

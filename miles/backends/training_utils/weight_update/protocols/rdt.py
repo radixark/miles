@@ -117,6 +117,7 @@ class UpdateWeightFromRDT(WeightTransferProtocol):
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
         """Plan transfers, build a GPU replica + fixed bucket per engine rank.
 

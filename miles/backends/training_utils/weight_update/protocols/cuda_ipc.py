@@ -14,7 +14,7 @@ from sglang.srt.utils import MultiprocessingSerializer
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
-from miles.backends.training_utils.weight_update.session import check_weight_sync_results, weight_update_selector
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
 from miles.utils.lora import lora_base_cpu_backup_enabled
 
 try:
@@ -47,7 +47,6 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         Create IPC Gloo groups (rollout_num_gpus_per_engine ranks/group).
         """
         super().__init__(args)
-        self._selector = weight_update_selector(args)
         self._model_update_groups = None
         # Overwritten with "miles" when connect finds a distributed engine tail.
         self._group_name = "miles-colocate"
@@ -68,6 +67,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
         placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
         """
         Split colocated/distributed engines. Global source rank (DP=TP=PP=0) creates NCCL
@@ -75,6 +75,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         """
         self.rollout_engines = rollout_engines
         self._connection_stale = False
+        self._selector = selector
 
         if engine_gpu_counts is None:
             engine_gpu_counts = [self.args.rollout_num_gpus_per_engine] * len(rollout_engines)
