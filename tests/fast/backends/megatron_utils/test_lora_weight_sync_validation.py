@@ -353,7 +353,7 @@ class TestFlattenedTensorBucketRoundTrip:
 # ---------------------------------------------------------------------------
 # Distributed (disaggregate) LoRA sync. The base-weight split is mirrored:
 #   - DistBucketedWeightUpdateMixin._update_lora_weights  → shared orchestration
-#       (bridge iteration, guards, source gating, engine lock, unload-on-reload)
+#       (bridge iteration, guards, source gating, in-place refresh)
 #   - <subclass>._update_lora_weight_implementation       → transport (NCCL / p2p)
 # ---------------------------------------------------------------------------
 
@@ -378,18 +378,17 @@ class TestDistLoraUpdateOrchestration:
     """Shared ``_update_lora_weights``: transport-agnostic orchestration.
 
     It must enforce the silent-failure guards (zero chunks, no LoRA names), gate
-    on the source rank, unload a stale adapter before reload, and delegate the
-    actual transmit to ``_update_lora_weight_implementation`` (mocked here).
+    on the source rank, and delegate the actual transmit to
+    ``_update_lora_weight_implementation`` (mocked here).
     """
 
     @staticmethod
-    def _make_self(*, engines, chunks=None, is_source=True, lora_loaded=False):
+    def _make_self(*, engines, chunks=None, is_source=True):
         if chunks is None:
             chunks = [SAMPLE_LORA_WEIGHTS]
         return SimpleNamespace(
             _hf_weight_iterator=SimpleNamespace(get_hf_weight_chunks=lambda *a, **k: iter(chunks)),
             _is_lora_source=is_source,
-            _lora_loaded=lora_loaded,
             rollout_engines=engines,
             _update_lora_weight_implementation=MagicMock(name="impl"),
         )
@@ -407,7 +406,6 @@ class TestDistLoraUpdateOrchestration:
         fake_self._update_lora_weight_implementation.assert_called_once()
         (sent,) = fake_self._update_lora_weight_implementation.call_args.args
         assert sent == SAMPLE_LORA_WEIGHTS
-        assert fake_self._lora_loaded is True
 
     def test_non_source_rank_does_not_transmit(self):
         # Non-source ranks still iterate the bridge (TP collectives) but must not
@@ -432,27 +430,11 @@ class TestDistLoraUpdateOrchestration:
             self._run(fake_self)
         fake_self._update_lora_weight_implementation.assert_not_called()
 
-    def test_reload_unloads_existing_adapter_first(self):
-        # When an adapter is already loaded, the stale one must be unloaded before
-        # the new weights are pushed, else SGLang rejects the duplicate name.
+    def test_update_does_not_unload_adapter(self):
         engines = [_FakeEngine()]
-        fake_self = self._make_self(engines=engines, lora_loaded=True)
-        self._run(fake_self)
-        assert engines[0].unload_lora_adapter.calls == [{"lora_name": LORA_ADAPTER_NAME}]
-        fake_self._update_lora_weight_implementation.assert_called_once()
-
-    def test_first_load_does_not_unload(self):
-        engines = [_FakeEngine()]
-        fake_self = self._make_self(engines=engines, lora_loaded=False)
+        fake_self = self._make_self(engines=engines)
         self._run(fake_self)
         assert engines[0].unload_lora_adapter.calls == []
-
-    def test_lora_loaded_stays_false_when_implementation_raises(self):
-        fake_self = self._make_self(engines=[_FakeEngine()])
-        fake_self._update_lora_weight_implementation.side_effect = RuntimeError("boom")
-        with pytest.raises(RuntimeError, match="boom"):
-            self._run(fake_self)
-        assert fake_self._lora_loaded is False
 
 
 class TestBroadcastLoraImplementation:
@@ -495,6 +477,7 @@ class TestBroadcastLoraImplementation:
         assert kwargs["names"] == [n for n, _ in SAMPLE_LORA_WEIGHTS]
         assert kwargs["dtypes"] == [t.dtype for _, t in SAMPLE_LORA_WEIGHTS]
         assert kwargs["shapes"] == [list(t.shape) for _, t in SAMPLE_LORA_WEIGHTS]
+        assert kwargs["upsert"] is True
         # One NCCL broadcast (src=0, shared base group) per tensor.
         assert dist_mock.broadcast.call_count == len(SAMPLE_LORA_WEIGHTS)
         for call in dist_mock.broadcast.call_args_list:

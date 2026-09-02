@@ -147,6 +147,7 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 dtypes=dtypes,
                 shapes=shapes,
                 group_name=self._group_name,
+                upsert=True,
             )
             for engine in self.rollout_engines
         ]
