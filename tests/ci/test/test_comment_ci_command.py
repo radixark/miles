@@ -1478,6 +1478,35 @@ def test_label_mutation_api_failure_is_not_retried(monkeypatch, operation, excep
     assert attempts == [15]
 
 
+def test_http_error_names_the_request_and_accepted_permissions(monkeypatch):
+    def urlopen(_request, *, timeout):
+        raise urllib.error.HTTPError(
+            "url", 403, "forbidden", {"X-Accepted-GitHub-Permissions": "pull_requests=write"}, None
+        )
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError) as excinfo:
+        HANDLER.GitHubAPI("secret-token").add_label(123, "run-ci-short")
+    message = str(excinfo.value)
+    assert message == (
+        "GitHub API returned HTTP 403 for POST /repos/radixark/miles/issues/123/labels; "
+        "accepted permissions: pull_requests=write"
+    )
+    assert "secret-token" not in message
+
+
+def test_http_error_without_accepted_permissions_still_names_the_request(monkeypatch):
+    def urlopen(_request, *, timeout):
+        raise urllib.error.HTTPError("url", 404, "missing", {}, None)
+
+    monkeypatch.setattr(HANDLER.urllib.request, "urlopen", urlopen)
+    with pytest.raises(HANDLER.CommentCommandError) as excinfo:
+        HANDLER.GitHubAPI("secret-token").get_permission("actor")
+    assert str(excinfo.value) == (
+        "GitHub API returned HTTP 404 for GET /repos/radixark/miles/collaborators/actor/permission"
+    )
+
+
 def test_unconfirmed_mutation_response_fails_without_rollback():
     api = FakeAPI(pull())
     api.add_label = lambda _pull_number, _label: []
@@ -2456,7 +2485,10 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     issues_token = workflow.split("- name: Mint the issues-scoped App token", 1)[1].split(
         "- name: Authorize and run the issues command", 1
     )[0]
-    assert "permission-issues: write" in issues_token
+    # Exact indented lines, so a commented-out key cannot satisfy the check.
+    assert "\n          permission-issues: write\n" in issues_token
+    assert "\n          permission-pull-requests: write\n" in issues_token
+    assert "permission-pull-requests: read" not in issues_token
     assert "Require the command App for label commands" in handle_job
     assert handle_job.index("Require the command App for label commands") < handle_job.index(
         "Mint the issues-scoped App token"
