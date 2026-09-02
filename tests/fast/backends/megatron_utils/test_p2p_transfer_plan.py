@@ -1,4 +1,5 @@
 import sys
+from concurrent.futures import Future
 from types import ModuleType
 
 mooncake = ModuleType("mooncake")
@@ -8,6 +9,7 @@ sys.modules.setdefault("mooncake", mooncake)
 sys.modules.setdefault("mooncake.engine", mooncake_engine)
 
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.p2p_transfer_utils import (
+    P2PTransferManager,
     RemoteTransferPlan,
 )
 
@@ -60,6 +62,22 @@ def test_p2p_plan_rejects_empty_target_topology() -> None:
         assert "positive engine GPU counts" in str(error)
     else:
         raise AssertionError("empty target topology was accepted")
+
+
+def test_p2p_transfer_failure_is_not_silenced() -> None:
+    manager = P2PTransferManager()
+    failed = Future()
+    failed.set_exception(RuntimeError("transfer failed"))
+    manager.transfer_futures.append(failed)
+
+    try:
+        manager.wait_transfers()
+    except RuntimeError as error:
+        assert str(error) == "transfer failed"
+    else:
+        raise AssertionError("transfer failure was silenced")
+
+    assert manager.transfer_futures == []
 
 
 def _plan_for_source(plan: RemoteTransferPlan, source_rank: int):

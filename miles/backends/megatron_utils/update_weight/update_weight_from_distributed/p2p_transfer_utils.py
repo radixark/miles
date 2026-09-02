@@ -187,13 +187,16 @@ class P2PTransferManager:
 
     def wait_transfers(self) -> None:
         """Wait for all submitted tasks to complete."""
-        for future in self.transfer_futures:
+        futures, self.transfer_futures = self.transfer_futures, []
+        first_error: Exception | None = None
+        for future in futures:
             try:
                 future.result(timeout=self.transfer_timeout)
-            except Exception as e:
-                logger.error(f"[P2P] Transfer future failed: {e}")
-
-        self.transfer_futures.clear()
+            except Exception as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise first_error
 
 
 def create_server_args_from_dict(data_dict: dict) -> ServerArgs:
