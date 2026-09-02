@@ -47,9 +47,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     solver_output = await single_turn_generate(input, url=_compute_router_url(args, model_id=solver_model_id))
     solver_sample = solver_output.samples
     assert isinstance(solver_sample, Sample), f"{solver_sample=}"
-    if solver_sample.status == Sample.Status.ABORTED:
-        solver_sample.trainer_model_id = solver_model_id
-        return GenerateFnOutput(samples=[solver_sample])
+    assert solver_sample.status != Sample.Status.ABORTED
 
     verifier_sample = _build_verifier_sample(solver_sample)
     verifier_output = await single_turn_generate(
