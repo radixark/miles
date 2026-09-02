@@ -166,6 +166,7 @@ class FullyAsyncRolloutFn:
         data: list[Group] = []
         do_print = True
 
+        self.state.current_weight_version = input.weight_version
         while len(data) < target_data_size:
             entry = await self._next_group(input.weight_version)
             assert len(entry.group) == args.n_samples_per_prompt

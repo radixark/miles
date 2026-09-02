@@ -138,3 +138,23 @@ def get_indexer_topk_from_response(args, output, sample):
         "sglang-miles must include the layer count in meta_info."
     )
     return _decode_topk_buffer(info, len(sample.tokens) - 1, num_layers, -1)
+
+
+def stamp_start_weight_version(state, sample: Sample, payload: dict | None) -> None:
+    """Record the submit-time version on the sample and put it on the request.
+
+    Takes the state object rather than looking one up: the controller's
+    GenerateState is a plain class, so constructing one here would produce a
+    fresh instance whose version is always None.
+
+    Later turns keep the first turn's version rather than their own: the data
+    buffer judges the whole trajectory by where it started, so sending this
+    call's version would have the engine and the buffer select different requests.
+    """
+    if sample.start_weight_version is None:
+        current = getattr(state, "current_weight_version", None)
+        if current is None:
+            return
+        sample.start_weight_version = int(current)
+    if payload is not None:
+        payload["start_weight_version"] = sample.start_weight_version

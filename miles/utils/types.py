@@ -45,6 +45,10 @@ class Sample:
     reward: float | dict[str, Any] | None = None
     loss_mask: list[int] | None = None
     weight_versions: list[str] = field(default_factory=list)
+    # Version this trajectory started generating under, recorded by the rollout
+    # side at submit. weight_versions is stamped by the engine at emission
+    # instead, so it cannot be read before a response comes back.
+    start_weight_version: int | None = None
     rollout_log_probs: list[float] | None = None  # Log probabilities from rollout engine
     rollout_sampling_mask: RolloutSamplingMask | None = None
     rollout_routed_experts: numpy.ndarray | None = (
@@ -267,6 +271,7 @@ class Sample:
         self.reward = None
         self.loss_mask = None
         self.weight_versions = []
+        self.start_weight_version = None
         self.rollout_log_probs = None
         self.rollout_sampling_mask = None
         self.rollout_routed_experts = None

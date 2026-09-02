@@ -34,6 +34,12 @@ def _introduces_replay_gap(a: Sample, b: Sample) -> bool:
     return any(getattr(a, field) is not None and getattr(b, field) is None for field in _REPLAY_FIELDS)
 
 
+def _merge_start_weight_version(a: Sample, b: Sample) -> int | None:
+    """The earlier of the two starts: the merged trajectory is as old as its oldest turn."""
+    versions = [v for v in (a.start_weight_version, b.start_weight_version) if v is not None]
+    return min(versions) if versions else None
+
+
 def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     """Merge two samples generated from sibling inference engine calls."""
     a, b = deepcopy(a), deepcopy(b)
@@ -161,6 +167,7 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             reward=_merge_equal_value("reward"),
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
+            start_weight_version=_merge_start_weight_version(a, b),
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
             rollout_sampling_mask=sampling_mask,
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),

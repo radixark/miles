@@ -42,6 +42,7 @@ SAMPLES_VALUE_SPEC: dict[str, ValueSpec] = {
     "rollout_indexer_topk": ValueSpec("tensor", np.dtype(np.int32), strict=True),
     "status": ValueSpec("json"),
     "weight_versions": ValueSpec("json"),
+    "start_weight_version": ValueSpec("json"),
     "prefix_cache_info": ValueSpec("json"),
     "metadata": ValueSpec("json"),
 }

@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 class GenerateState:
     def __init__(self, args: Namespace) -> None:
+        # Version the controller last published; stamped on each request so the
+        # engine can drop what is already too stale. None until the first update.
+        self.current_weight_version: int | None = None
         # persistent state for the generation process
         self.args = args
         self.tokenizer = load_tokenizer(

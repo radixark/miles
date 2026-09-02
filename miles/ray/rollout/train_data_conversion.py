@@ -40,6 +40,7 @@ ROLLOUT_DATA_VALUE_SPEC: dict[str, ValueSpec] = {
     "prompt": ValueSpec(codec="msgpack_ragged"),
     "metadata": ValueSpec(codec="msgpack_ragged"),
     "weight_versions": ValueSpec(codec="msgpack_ragged"),
+    "start_weight_version": ValueSpec(codec="msgpack_ragged"),
     "raw_reward": ValueSpec(codec="auto"),
     "total_lengths": ValueSpec(codec="auto"),
     "dynamic_global_batch_size": ValueSpec(codec="auto"),

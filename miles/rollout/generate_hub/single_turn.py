@@ -4,6 +4,7 @@ Simple single-turn generation.
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import (
+    stamp_start_weight_version,
     compute_prompt_ids_from_sample,
     compute_request_payload,
     compute_routing_headers,
@@ -37,6 +38,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     payload, halt_status = compute_request_payload(
         args, input_ids=input_ids, sampling_params=sampling_params, multimodal_inputs=sample.multimodal_inputs
     )
+    stamp_start_weight_version(input.state, sample, payload)
     if payload is None:
         sample.status = halt_status
         return GenerateFnOutput(samples=sample)
