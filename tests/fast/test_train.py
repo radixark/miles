@@ -1,3 +1,4 @@
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,6 +15,7 @@ from tests.fast.fixtures.driver_fakes import (
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.ray import placement_group, wiring
 from miles.utils import object_store
+from miles.utils.async_utils import with_disposer
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -66,7 +68,7 @@ def _install_driver_fakes(
     ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _args: None)
+    monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _args, *, disposer: None)
     monkeypatch.setattr(train_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(train_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_driver, "maybe_start_mini_ft_controller", lambda _args: None)
@@ -82,7 +84,7 @@ class TestEvalOnlyRun:
         args = _make_args(num_rollout=0, eval_interval=2)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert events.count("prepare_eval") == 1
         assert events.count("eval:0") == 1
@@ -103,7 +105,7 @@ class TestWeightEqualityCheck:
         )
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert components.inference_controller.check_weights_calls == [
             dict(
@@ -120,7 +122,7 @@ class TestWeightEqualityCheck:
         args = _make_args(check_weight_update_equal=False)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert components.inference_controller.check_weights_calls == []
 
@@ -145,7 +147,7 @@ class TestCriticValuesHandoff:
 
         components.actor_model.consume_external_data = consume_critic_values
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert store.consumed == [ref]
         assert not store.contains(ref)
@@ -164,13 +166,13 @@ class TestApiServerWiring:
         disabled_events: list[str] = []
         disabled_args = _make_args(api_server_port=None)
         _install_driver_fakes(monkeypatch, disabled_args, disabled_events)
-        await train_driver.train(disabled_args)
+        await with_disposer(train_driver.train, disabled_args)
         assert started_with == []
 
         enabled_events: list[str] = []
         enabled_args = _make_args(api_server_port=8080)
         components = _install_driver_fakes(monkeypatch, enabled_args, enabled_events)
-        await train_driver.train(enabled_args)
+        await with_disposer(train_driver.train, enabled_args)
 
         assert len(started_with) == 1
         assert started_with[0]["trainer_models"] == {"actor": components.actor_model}
@@ -184,7 +186,7 @@ class TestTerminalLifecycle:
         args = _make_args(use_critic=True)
         _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert sorted(event for event in events if event.endswith("_dispose")) == [
             "actor_dispose",
@@ -202,10 +204,14 @@ class TestTerminalLifecycle:
         manager = FakeWorkerManager(events)
         _install_driver_fakes(monkeypatch, args, events)
 
-        monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _args: manager)
+        def init_orchestration_script(_args: SimpleNamespace, *, disposer: Any) -> FakeWorkerManager:
+            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            return manager
+
+        monkeypatch.setattr(train_driver, "init_orchestration_script", init_orchestration_script)
         monkeypatch.setattr(wiring.ray, "kill", manager.kill)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert manager.killed == [manager]
         assert all(
