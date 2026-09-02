@@ -15,9 +15,12 @@ growing a branch:
   forward        addresses/selectors, safe to forward by value
   target         (var, label, default description) echoed so a launch says
                  which endpoint/environment it will actually use
+  sdk_min_version  optional; the floor the extra in setup.py declares,
+                 enforced by preflight_sdk
 """
 
 import importlib
+import importlib.metadata
 import os
 from pathlib import Path
 
@@ -43,7 +46,10 @@ PROVIDER_CREDENTIALS = {
         "provision_hint": "mkdir -p ~/.config/e2b && echo <key> > ~/.config/e2b/api_key"
         "  # AgentENV accepts any non-empty key today",
         "sdk": "e2b",
-        "sdk_hint": "pip install e2b",
+        "sdk_hint": "pip install -e '<miles>[e2b]'",
+        # Older releases send the template name as `alias`, which self-hosted
+        # AgentENV does not read; the failure is a bare 400 at the first bake.
+        "sdk_min_version": "2.12",
         # E2B_API_URL unset means E2B Cloud; set, it usually points at a
         # self-hosted AgentENV deployment.
         "forward": ("E2B_API_URL", "E2B_SANDBOX_URL", "E2B_DOMAIN", "OPENENV_E2B_URL_SCHEME"),
@@ -143,17 +149,51 @@ def sandbox_key_supply(
         )
 
 
-def preflight_sdk(module: str, install_hint: str) -> None:
+def preflight_sdk(module: str, install_hint: str, min_version: str | None = None) -> None:
     """Preflight the lazily-imported provider SDK. Without this, a missing
     install only surfaces inside each episode's sandbox start, where the
     failed sample is aborted, the group dropped, and the rollout loop refills
-    forever — a silent GPU-burning churn instead of a launch-time error."""
+    forever — a silent GPU-burning churn instead of a launch-time error.
+    *min_version*, when given, is the floor the extra in setup.py declares;
+    checking it here catches an SDK installed by hand or preinstalled in an
+    image, whose failure mode would otherwise be a provider error with no hint
+    that the version is the cause."""
     try:
         importlib.import_module(module)
     except ImportError as e:
         raise RuntimeError(
             f"this sandbox mode needs the {module} SDK in the rollout process's environment: {install_hint}"
         ) from e
+    if min_version is None:
+        return
+    try:
+        # Looking the distribution up by the module name assumes the two match,
+        # which holds for every backend that sets a floor today (e2b).
+        installed = importlib.metadata.version(module)
+    except importlib.metadata.PackageNotFoundError:
+        # Importable but no dist-info (a vendored copy): the version cannot be
+        # verified, and blocking a possibly-fine install is worse than leaving
+        # a too-old one to fail at the provider with its own error.
+        print(f"{module} has no package metadata; cannot verify {module}>={min_version}", flush=True)
+        return
+    if _version_tuple(installed) < _version_tuple(min_version):
+        raise RuntimeError(f"this sandbox mode needs {module}>={min_version} (installed: {installed}): {install_hint}")
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """Numeric leading components of a version string, enough to compare
+    release floors like 2.12 against 2.46.0 or 2.12.0rc1."""
+    parts = []
+    for piece in version.split("."):
+        digits = ""
+        for ch in piece:
+            if not ch.isdigit():
+                break
+            digits += ch
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
 
 
 def resolve_provider_api_key(env_var: str, file_env_var: str, default_path: str) -> str:
