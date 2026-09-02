@@ -297,7 +297,6 @@ def named_params_and_buffers(
 
 
 def _tms_backup_or_live(tensor: torch.Tensor) -> torch.Tensor:
-    # lazy: the hosted CPU CI imports this module without torch_memory_saver installed
     from torch_memory_saver import torch_memory_saver
 
     if (cpu_tensor := torch_memory_saver.get_cpu_backup(tensor, zero_copy=True)) is not None:
