@@ -37,6 +37,7 @@ from tb2_sandbox_recipe import (
     task_env_resources,
     wait_server_ready,
 )
+from miles.rollout.agentic.credentials import resolve_provider_api_key
 
 
 # Every knob describing ONE Daytona sandbox lives here, next to the create
@@ -154,8 +155,8 @@ _DEFAULT_API_KEY_FILE = "~/.config/daytona/api_key"
 
 def resolve_api_key() -> str:
     """The Daytona API key: DAYTONA_API_KEY, else the key file (see
-    recipe.resolve_api_key for the file-indirection rationale)."""
-    return recipe.resolve_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
+    recipe.resolve_provider_api_key for the file-indirection rationale)."""
+    return resolve_provider_api_key("DAYTONA_API_KEY", "DAYTONA_API_KEY_FILE", _DEFAULT_API_KEY_FILE)
 
 
 _client_lock = threading.Lock()
