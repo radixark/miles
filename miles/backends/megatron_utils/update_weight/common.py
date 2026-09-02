@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 from megatron.core.transformer.transformer_layer import get_transformer_layer_offset
 from ray.actor import ActorHandle
+from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.misc_utils import strip_param_name_prefix
 from miles.backends.training_utils.parallel import get_parallel_state
@@ -297,10 +298,6 @@ def named_params_and_buffers(
 
 
 def _tms_backup_or_live(tensor: torch.Tensor) -> torch.Tensor:
-    """The memory-saver host backup while the tensor is paused, the live tensor otherwise."""
-    from torch_memory_saver import torch_memory_saver
-
-    # zero_copy aliases the pinned backup; the default clone() would build a second host copy per call
     if (cpu_tensor := torch_memory_saver.get_cpu_backup(tensor, zero_copy=True)) is not None:
         return cpu_tensor
     return tensor
