@@ -58,6 +58,11 @@ _PASS_PARAMS = [
     pytest.param(TITOTokenizerType.QWEN4_EXP, "Qwen/Qwen3.8-Flash-Next", id="qwen4exp"),
     pytest.param(TITOTokenizerType.QWENNEXT, "Qwen/Qwen3-4B-Thinking-2507", id="qwennext"),
     pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-4.7-Flash", id="glm47"),
+    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-5", id="glm5"),
+    pytest.param(TITOTokenizerType.GLM51, "zai-org/GLM-5.1", id="glm51"),
+    pytest.param(TITOTokenizerType.GLM47, "zai-org/GLM-5.2", id="glm52"),
+    pytest.param(TITOTokenizerType.GLM53, "zai-org/GLM-5.3", id="glm53"),
+    pytest.param(TITOTokenizerType.GLM53, "zai-org/GLM-5.3-Flash", id="glm53_flash"),
 ]
 
 

@@ -543,30 +543,38 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     return output
 
 
+def add_session_verify_arguments(parser):
+    """Add the verifier-specific arguments shared by both CLI parse passes."""
+    if "--session-verify-cycles" not in parser._option_string_actions:
+        parser.add_argument(
+            "--session-verify-cycles",
+            type=int,
+            default=DEFAULT_CYCLES,
+            help="Number of driver schedule cycles per sample for session-server "
+            "TITO verification.  Each cycle exercises recurrent role actions plus "
+            "a rollback; assistant input is exercised once as the terminal action. "
+            "More cycles stress the TITO accumulator longer but expand context "
+            "length.  Drop to 2 on tighter-context models (e.g. Qwen3 32K with 4K "
+            "response budget).",
+        )
+    if "--tool-call-failure-mode" not in parser._option_string_actions:
+        parser.add_argument(
+            "--tool-call-failure-mode",
+            type=str,
+            default=DEFAULT_TOOL_CALL_FAILURE_MODE.value,
+            choices=[m.value for m in ToolCallFailureMode],
+            help="Recovery mode when a TOOL_RESULT step sees no tool_calls on the "
+            "assistant.  'rollback' (default, universal) pops the assistant and "
+            "re-inferences.  'append_tool' splices a sentinel tool message (only "
+            "works on lenient templates).  'append_user' splices a user message "
+            "with the same failure text — requires the fixed template to support 'user'.",
+        )
+    return parser
+
+
 def _add_arguments(parser):
     _base_generate.add_arguments(parser)
-    parser.add_argument(
-        "--session-verify-cycles",
-        type=int,
-        default=DEFAULT_CYCLES,
-        help="Number of driver schedule cycles per sample for session-server "
-        "TITO verification.  Each cycle exercises recurrent role actions plus "
-        "a rollback; assistant input is exercised once as the terminal action. "
-        "More cycles stress the TITO accumulator longer but expand context "
-        "length.  Drop to 2 on tighter-context models (e.g. Qwen3 32K with 4K "
-        "response budget).",
-    )
-    parser.add_argument(
-        "--tool-call-failure-mode",
-        type=str,
-        default=DEFAULT_TOOL_CALL_FAILURE_MODE.value,
-        choices=[m.value for m in ToolCallFailureMode],
-        help="Recovery mode when a TOOL_RESULT step sees no tool_calls on the "
-        "assistant.  'rollback' (default, universal) pops the assistant and "
-        "re-inferences.  'append_tool' splices a sentinel tool message (only "
-        "works on lenient templates).  'append_user' splices a user message "
-        "with the same failure text — requires the fixed template to support 'user'.",
-    )
+    return add_session_verify_arguments(parser)
 
 
 generate.add_arguments = _add_arguments

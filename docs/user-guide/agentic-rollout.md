@@ -174,13 +174,16 @@ but treat it as best-effort until it passes the checks below.
 | Qwen3.8-27B | `qwen38small` |
 | Qwen3.8-Flash-Next | `qwen4exp` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
-| GLM-4.7 / 5 / 5.1 / 5.2 | `glm47` |
+| GLM-4.7 / 5 / 5.2 | `glm47` |
+| GLM-5.3 / GLM-5.3-Flash (text sessions) | `glm53` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |
 | Kimi K2.5 / K2.6 | `kimi25` / `kimi26` |
 | MiniMax M2.5 / M2.7 | `minimax_m25` / `minimax_m27` |
 | DeepSeek-V3.2 / V4 | `deepseekv32` / `deepseekv4` |
 | Inkling / Inkling-Small | `inkling` |
 | Unregistered model or custom template (best-effort) | `default` |
+
+`glm53` uses each checkpoint's native template and pins `enable_thinking=True` because neither GLM-5.3 native template implements thinking-off. GLM-5.3-Flash support covers its text tokenizer path, not multimodal processor inputs.
 
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
