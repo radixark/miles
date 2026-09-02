@@ -60,7 +60,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 self.args, self._group_name, rollout_engines
             )
 
-    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
         """Serialize NCCL broadcasts and always release the rollout lock."""
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
@@ -68,7 +68,6 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
             refs = update_weights_from_distributed(
                 self._group_name,
                 self._model_update_groups,
-                weight_version,
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
@@ -142,7 +141,6 @@ def disconnect_rollout_engines_from_distributed(args, group_name, model_update_g
 def update_weights_from_distributed(
     group_name: str,
     group: dist.ProcessGroup,
-    weight_version: int,
     rollout_engines: Sequence[ActorHandle],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     selector: str = "all",
@@ -157,7 +155,6 @@ def update_weights_from_distributed(
             shapes=[param.shape for _, param in converted_named_tensors],
             selector=selector,
             group_name=group_name,
-            weight_version=str(weight_version),
         )
         for engine in rollout_engines
     ]

@@ -132,7 +132,7 @@ class WeightUpdater:
                 if protocol.is_sender:
                     if driver and checksums is not None:
                         record_lora_checksums(bucket, checksums)
-                    protocol.send_bucket(bucket, self.weight_version)
+                    protocol.send_bucket(bucket)
                     pbar.update(1)
             protocol.after_base_weights()
             dist.barrier(group=get_gloo_group())
@@ -140,8 +140,10 @@ class WeightUpdater:
         with timer("finalize_and_resume_engines"):
             protocol.finalize(self.weight_version)
             if protocol.use_weight_update_session and driver:
-                set_weight_version(protocol.rollout_engines, self.weight_version)
+                # the version marks a committed update, so it is published only once
+                # end_weight_update has verified and applied everything staged
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
+                set_weight_version(protocol.rollout_engines, self.weight_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 

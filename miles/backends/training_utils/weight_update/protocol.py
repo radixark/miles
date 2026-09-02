@@ -53,7 +53,7 @@ class WeightTransferProtocol(ABC):
         return True
 
     @abstractmethod
-    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None: ...
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None: ...
 
     def after_base_weights(self) -> None:  # noqa: B027 — optional hook
         """Hook after the base-weight stream completes (e.g. await in-flight writes)."""
