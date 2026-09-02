@@ -2487,8 +2487,6 @@ def test_workflow_runs_only_trusted_code_with_minimal_permissions():
     )[0]
     # Exact indented lines, so a commented-out key cannot satisfy the check.
     assert "\n          permission-issues: write\n" in issues_token
-    # The label lands on a pull request, and GitHub gates issues-API calls whose
-    # target issue is a PR on pull-requests scope, so the App token needs write.
     assert "\n          permission-pull-requests: write\n" in issues_token
     assert "permission-pull-requests: read" not in issues_token
     assert "Require the command App for label commands" in handle_job

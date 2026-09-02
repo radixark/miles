@@ -71,11 +71,8 @@ jobs:
           client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
           permission-issues: write
-          # The label lands on an issue that is a pull request, and GitHub gates
-          # issues-API calls whose target issue is a PR on pull-requests scope,
-          # so issues: write with pull-requests: read fails the label POST with
-          # 403. The installation must already hold Pull requests: write; the
-          # token action errors when a request exceeds the installation.
+          # The label lands on a pull request, and GitHub gates issues-API writes
+          # on a PR on pull-requests scope, so read alone fails the label POST.
           permission-pull-requests: write
 
       - name: Authorize and run the issues command
