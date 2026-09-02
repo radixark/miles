@@ -308,6 +308,8 @@ def _compute_train_argv(
 
     if args.use_wandb and args.wandb_run_id is None:
         args.wandb_run_id = _generate_wandb_run_id()
+        # TODO: remove once the args refactor lets pods receive the parsed args
+        # instead of re-parsing an argv the launcher has to patch by hand.
         argv = ArgvManipulator.set(argv, _WANDB_RUN_ID_FLAG, args.wandb_run_id)
 
     pod_argv = MooncakeInfo.with_cluster_master(
