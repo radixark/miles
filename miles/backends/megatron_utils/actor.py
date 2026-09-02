@@ -272,7 +272,7 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.args,
                     self.model,
                     convert_to_global_name=args.megatron_to_hf_mode == "raw",
-                    read_tms_backup=True,
+                    translate_gpu_to_cpu=True,
                 )
             )
         else:

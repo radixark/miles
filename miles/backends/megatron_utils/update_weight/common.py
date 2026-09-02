@@ -285,23 +285,26 @@ def named_params_and_buffers(
     args: Namespace,
     model: Sequence[torch.nn.Module],
     convert_to_global_name: bool = True,
-    read_tms_backup: bool = False,
+    translate_gpu_to_cpu: bool = False,
 ) -> Iterator[tuple[str, torch.Tensor]]:
     if convert_to_global_name:
-        named_tensors = _named_params_and_buffers_global(args, model)
+        ans = _named_params_and_buffers_global(args, model)
     else:
-        named_tensors = _named_params_and_buffers_vanilla(model)
-    if read_tms_backup:
-        named_tensors = ((name, _tms_backup_or_live(tensor)) for name, tensor in named_tensors)
-    return named_tensors
+        ans = _named_params_and_buffers_vanilla(model)
+
+    if translate_gpu_to_cpu:
+        ans = ((name, _maybe_get_cpu_backup(tensor)) for name, tensor in ans)
+
+    return ans
 
 
-def _tms_backup_or_live(tensor: torch.Tensor) -> torch.Tensor:
+def _maybe_get_cpu_backup(x: torch.Tensor):
     from torch_memory_saver import torch_memory_saver
 
-    if (cpu_tensor := torch_memory_saver.get_cpu_backup(tensor, zero_copy=True)) is not None:
+    if (cpu_tensor := torch_memory_saver.get_cpu_backup(x, zero_copy=True)) is not None:
         return cpu_tensor
-    return tensor
+
+    return x
 
 
 def _named_params_and_buffers_vanilla(model: Sequence[torch.nn.Module]) -> Iterator[tuple[str, torch.Tensor]]:
