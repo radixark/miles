@@ -101,8 +101,11 @@ class RolloutManager:
 
         if not self.args.debug_train_only or self.args.eval_num_gpus > 0:
             self.servers = start_rollout_servers(args, pg)
-            if not self.args.debug_train_only:
-                start_session_server(args)
+            # Session-affine eval fns (agentic evals) need the session server
+            # too. Under --debug-train-only the eval fleet is the only model,
+            # so its router became args.sglang_router_ip/port above and the
+            # sessions proxy straight to the eval engines.
+            start_session_server(args)
             dashboard_hooks.register_router(args)
         else:
             self.servers: dict[str, RolloutServer] = {}
