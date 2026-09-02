@@ -81,13 +81,8 @@ def test_success_path_releases_lock_and_clears_tensors(mock_ray, mock_update):
     assert lock_state.release_calls == 1
     assert tensors == []
     call_args = mock_update.call_args.args
-    assert call_args[:4] == (
-        updater._group_name,
-        updater._model_update_groups,
-        7,
-        updater.rollout_engines,
-    )
-    assert call_args[4] is tensors
+    assert call_args[:3] == (updater._group_name, updater._model_update_groups, updater.rollout_engines)
+    assert call_args[3] is tensors
     assert mock_update.call_args.kwargs == {"selector": "all"}
 
 
