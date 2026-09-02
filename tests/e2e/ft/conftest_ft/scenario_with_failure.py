@@ -102,11 +102,11 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_WITH_FAILURE_ACTIONS)}' "
             if mode.has_real_rollout:
-                # Post-fault rollouts inject the baseline's recorded data (see README).
+                # Fault and post-fault rollouts inject the baseline's recorded data (see README).
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 2} "
+                    f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 1} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 
