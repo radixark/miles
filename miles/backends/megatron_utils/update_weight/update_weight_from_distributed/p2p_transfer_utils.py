@@ -1,5 +1,8 @@
+import base64
 import dataclasses
 import logging
+import os
+import uuid
 from argparse import Namespace
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -136,7 +139,11 @@ class RemoteWeightInfo:
     """
 
     session_id: str
-    weights_info: dict[str, tuple[int, int, int]]  # name -> (remote_address, numel, element_size)
+    # Mooncake: (remote_address, numel, element_size)
+    # NIXL:     (remote_address, numel, element_size, device_id)
+    weights_info: dict[str, tuple[int, ...]]
+    agent_name: str = ""
+    backend: str = "mooncake"
 
 
 class P2PTransferManager:
@@ -204,9 +211,31 @@ def register_cpu_memory(params_dict: dict, transfer_engine) -> dict:
     return weight_dict
 
 
+def register_cpu_memory_nixl(nixl_agent, params_dict: dict) -> dict:
+    """Register CPU pinned memory with the NIXL agent as DRAM regions."""
+    weight_dict = {}
+
+    for name, cpu_tensor in params_dict.items():
+        assert cpu_tensor.is_pinned(), (
+            f"NIXL DRAM registration requires pinned CPU memory, but weight {name} is not pinned."
+        )
+        addr = cpu_tensor.data_ptr()
+        size = cpu_tensor.numel() * cpu_tensor.element_size()
+        # device_id is 0 for every DRAM region.
+        nixl_agent.register_memory([(addr, size, 0, "")], "DRAM")
+        weight_dict[name] = (addr, cpu_tensor.numel(), cpu_tensor.element_size())
+
+    return weight_dict
+
+
 def create_transfer_engine():
-    # Lazy: the RDT path imports this module but does not need mooncake.
-    from mooncake.engine import TransferEngine
+    # Lazy: the RDT and NIXL paths import this module but do not need Mooncake.
+    try:
+        from mooncake.engine import TransferEngine
+    except ImportError as e:
+        raise ImportError(
+            "Please install Mooncake to use the Mooncake weight-transfer backend."
+        ) from e
 
     transfer_engine = TransferEngine()
     local_ip = ray._private.services.get_node_ip_address()
@@ -214,27 +243,153 @@ def create_transfer_engine():
     return transfer_engine
 
 
+def create_nixl_agent():
+    """Create the local NIXL agent used for all rollout peers on this rank."""
+    try:
+        from nixl._api import nixl_agent, nixl_agent_config
+    except ImportError as e:
+        raise ImportError(
+            "Please install NIXL to use the NIXL weight-transfer backend. "
+            "See https://github.com/ai-dynamo/nixl/blob/main/README.md"
+        ) from e
+
+    backend = os.environ.get("SGLANG_REMOTE_INSTANCE_NIXL_BACKEND", "UCX")
+    # One agent is shared by P2PTransferManager worker threads. Default
+    # NIXL_THREAD_SYNC_NONE does not lock; STRICT serializes agent API calls.
+    try:
+        from nixl._api import nixl_thread_sync_t
+
+        config = nixl_agent_config(
+            backends=[backend],
+            sync_mode=nixl_thread_sync_t.NIXL_THREAD_SYNC_STRICT,
+        )
+    except (ImportError, TypeError):
+        config = nixl_agent_config(backends=[backend])
+    agent = nixl_agent(str(uuid.uuid4()), config)
+    available_plugins = agent.get_plugin_list()
+    if backend not in available_plugins:
+        raise ValueError(
+            f"NIXL backend {backend!r} not found. Available plugins: {available_plugins}. "
+            "Configure SGLANG_REMOTE_INSTANCE_NIXL_BACKEND with an installed plugin."
+        )
+    return agent
+
+
+def add_nixl_remote_agent(nixl_agent, agent_metadata_b64: str):
+    """Decode SGLang's base64 agent metadata and register it with the local NIXL agent."""
+    raw = base64.b64decode(agent_metadata_b64)
+    return nixl_agent.add_remote_agent(raw)
+
+
+def _normalize_weights_info(weights_info_dict: dict) -> dict[str, tuple[int, ...]]:
+    """Convert JSON list entries to tuples; leave tuples unchanged."""
+    return {name: tuple(meta) for name, meta in weights_info_dict.items()}
+
+
+def _parse_remote_transfer_engine_info(info) -> tuple[str, dict[str, tuple[int, ...]], str, str | None]:
+    """Parse Mooncake/NIXL transfer-engine metadata from the tagged dict schema.
+
+    Returns ``(remote_id, weights_info, backend, agent_metadata_b64)``.
+    ``agent_metadata_b64`` is set only for the NIXL schema.
+    """
+    if not isinstance(info, dict):
+        raise TypeError(
+            f"Expected tagged transfer-engine info dict, got {type(info)!r}. "
+            "SGLang publishes backend-tagged dicts with weights_info_dict."
+        )
+    if "weights_info_dict" not in info:
+        raise ValueError(f"Unrecognized remote transfer engine info keys: {sorted(info)}")
+
+    backend = info.get("backend", "mooncake")
+    if backend not in ("mooncake", "nixl"):
+        raise ValueError(f"Unsupported transfer backend {backend!r}; expected 'mooncake' or 'nixl'")
+
+    weights_info = _normalize_weights_info(info["weights_info_dict"])
+    if backend == "nixl":
+        remote_id = info["agent_name"]
+        return remote_id, weights_info, backend, info.get("agent_metadata")
+    remote_id = info["session_id"]
+    return remote_id, weights_info, backend, None
+
+
 def query_remote_weight_infos(
     rollout_engines: Sequence[ActorHandle],
     targets,
 ) -> tuple[dict, dict, dict]:
-    """Query remote rollout engines for weight info, session IDs, and server args."""
+    """Query remote rollout engines for Mooncake weight info, session IDs, and server args.
+
+    Returns ``(remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args)``.
+    """
     remote_weight_infos_by_session_id = {}
     targets_to_session_id = {}
     session_id_to_server_args = {}
     targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
 
     for engine_ind, engine_rank in targets_to_query:
-        session_id, weights_info = ray.get(
-            rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank)
-        )
+        info = ray.get(rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank))
         parallelism_info = ray.get(rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank))
+        remote_id, weights_info, backend, _agent_metadata_b64 = _parse_remote_transfer_engine_info(info)
+        if backend != "mooncake":
+            raise ValueError(
+                f"Expected Mooncake metadata from rollout engine {engine_ind} rank {engine_rank}, "
+                f"got backend {backend!r}"
+            )
+        assert remote_id is not None, f"Failed to get remote id from rollout engine {engine_ind} rank {engine_rank}"
 
-        session_id_to_server_args[session_id] = create_server_args_from_dict(
+        session_id_to_server_args[remote_id] = create_server_args_from_dict(
             ray.get(rollout_engines[engine_ind].get_server_info.remote())
         )
-        assert session_id is not None, f"Failed to get session id from rollout engine {engine_ind} rank {engine_rank}"
-        remote_weight_infos_by_session_id[session_id] = (weights_info, parallelism_info)
-        targets_to_session_id[(engine_ind, engine_rank)] = session_id
+        remote_weight_infos_by_session_id[remote_id] = (weights_info, parallelism_info)
+        targets_to_session_id[(engine_ind, engine_rank)] = remote_id
 
     return remote_weight_infos_by_session_id, targets_to_session_id, session_id_to_server_args
+
+
+def query_remote_weight_infos_nixl(
+    rollout_engines: Sequence[ActorHandle],
+    targets,
+    nixl_agent,
+) -> tuple[dict, dict, dict]:
+    """Query remote rollout engines for NIXL weight info and complete peer handshake.
+
+    Parallel to ``query_remote_weight_infos``: loops over each planned target, parses NIXL
+    metadata, calls ``add_nixl_remote_agent``, and builds the same three map shapes with
+    ``agent_name`` as the remote identity (parallel to Mooncake ``session_id``).
+
+    Returns ``(remote_weight_infos_by_agent_name, targets_to_agent_name, agent_name_to_server_args)``.
+    """
+    remote_weight_infos_by_agent_name = {}
+    targets_to_agent_name = {}
+    agent_name_to_server_args = {}
+    targets_to_query = set((target.engine_ind, target.engine_rank) for target in targets)
+
+    for engine_ind, engine_rank in targets_to_query:
+        info = ray.get(rollout_engines[engine_ind].get_remote_instance_transfer_engine_info.remote(rank=engine_rank))
+        parallelism_info = ray.get(rollout_engines[engine_ind].get_parallelism_info.remote(rank=engine_rank))
+        agent_name, weights_info, backend, agent_metadata_b64 = _parse_remote_transfer_engine_info(info)
+        if backend != "nixl":
+            raise ValueError(
+                f"Expected NIXL metadata from rollout engine {engine_ind} rank {engine_rank}, "
+                f"got backend {backend!r}"
+            )
+        if not agent_metadata_b64:
+            raise ValueError(
+                f"Missing NIXL agent metadata from rollout engine {engine_ind} rank {engine_rank}"
+            )
+        assert agent_name is not None, f"Failed to get agent_name from rollout engine {engine_ind} rank {engine_rank}"
+
+        add_nixl_remote_agent(nixl_agent, agent_metadata_b64)
+        logger.info(
+            "NIXL add_remote_agent succeeded for rollout engine %s rank %s (agent_name=%s)",
+            engine_ind,
+            engine_rank,
+            agent_name,
+        )
+
+        agent_name_to_server_args[agent_name] = create_server_args_from_dict(
+            ray.get(rollout_engines[engine_ind].get_server_info.remote())
+        )
+        remote_weight_infos_by_agent_name[agent_name] = (weights_info, parallelism_info)
+        targets_to_agent_name[(engine_ind, engine_rank)] = agent_name
+
+    return remote_weight_infos_by_agent_name, targets_to_agent_name, agent_name_to_server_args

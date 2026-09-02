@@ -684,12 +684,13 @@ def cmd_run(
     node_rank: int = 0,
     head_ip: str = "",
 ):
-    """Launch training with P2P or broadcast weight transfer."""
+    """Launch training with Mooncake P2P, NIXL P2P, or broadcast weight transfer."""
     if model_name not in RUN_CONFIGS:
         print(f"ERROR: Unknown model '{model_name}'.")
         list_models()
         sys.exit(1)
 
+    transfer_mode = "p2p" if mode == "nixl" else mode
     cfg = RUN_CONFIGS[model_name]
     is_single_node = cfg.nnodes == 1
     num_train_nodes = max(1, cfg.num_train_gpus // cfg.gpus_per_node)
@@ -978,6 +979,8 @@ def cmd_run(
     # P2P-specific SGLang args
     if mode == "p2p":
         args.append("--sglang-remote-instance-weight-loader-start-seed-via-transfer-engine")
+    elif mode == "nixl":
+        args.append("--sglang-remote-instance-weight-loader-start-seed-via-nixl")
 
     # Skip validation / model loader
     if skip_validation:
@@ -1014,7 +1017,7 @@ def cmd_run(
     args.extend(["--actor-num-gpus-per-node", str(cfg.num_train_gpus // num_train_nodes)])
 
     # Buffer size
-    if mode == "p2p":
+    if transfer_mode == "p2p":
         buffer_size = int(bucket_size_gb * 1024 * 1024 * 1024)
     elif cfg.buffer_size_broadcast_gb is not None:
         buffer_size = int(cfg.buffer_size_broadcast_gb * 1024 * 1024 * 1024)
@@ -1026,7 +1029,9 @@ def cmd_run(
     if not skip_validation:
         args.append("--check-weight-update-equal")
 
-    args.extend(["--update-weight-transfer-mode", mode])
+    args.extend(["--update-weight-transfer-mode", transfer_mode])
+    if mode == "nixl":
+        args.extend(["--update-weight-transfer-backend", "nixl"])
 
     # --- Submit Ray job (head node only, or single-node) ---
     if is_single_node or node_rank == 0:
@@ -1113,7 +1118,10 @@ def main():
         parser = argparse.ArgumentParser(description="Run training with weight transfer")
         parser.add_argument("model", help="Model name (see `python run.py list`)")
         parser.add_argument(
-            "--mode", default="p2p", choices=["p2p", "broadcast"], help="Weight transfer mode (default: p2p)"
+            "--mode",
+            default="p2p",
+            choices=["p2p", "nixl", "broadcast"],
+            help="Weight transfer mode (default: p2p)",
         )
         parser.add_argument("--node-rank", type=int, default=0, help="Node rank (0=head, default: 0)")
         parser.add_argument("--head-ip", default="", help="Head node IP (auto-detect for single-node)")

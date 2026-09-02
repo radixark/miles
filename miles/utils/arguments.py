@@ -932,6 +932,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--update-weight-transfer-backend",
+                choices=["mooncake", "nixl"],
+                default="mooncake",
+                help="The backend used for P2P weight transfer.",
+            )
+            parser.add_argument(
                 "--p2p-transfer-num-workers",
                 type=int,
                 default=4,
