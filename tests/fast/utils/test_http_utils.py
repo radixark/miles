@@ -21,14 +21,17 @@ delays (5s / 10s / 20s) without actually waiting.  The trick:
 This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
+import asyncio
 import multiprocessing
 import socket
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+import miles.utils.http_utils as http_utils_mod
 from miles.utils.http_utils import wait_for_server_ready
 
 
@@ -194,3 +197,44 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class TestInitHttpClientConcurrency:
+    def _args(self, **overrides):
+        defaults = dict(
+            rollout_num_gpus=0,
+            rollout_num_gpus_per_engine=1,
+            eval_num_gpus=0,
+            eval_num_gpus_per_engine=1,
+            eval_uses_snapshots=True,
+            sglang_server_concurrency=512,
+            use_distributed_post=False,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def _init(self, monkeypatch, args):
+        monkeypatch.setattr(http_utils_mod, "_http_client", None)
+        monkeypatch.setattr(http_utils_mod, "_client_concurrency", 0)
+        http_utils_mod.init_http_client(args)
+        if http_utils_mod._http_client is not None:
+            asyncio.run(http_utils_mod._http_client.aclose())
+        return http_utils_mod._client_concurrency, http_utils_mod._http_client
+
+    def test_external_eval_without_in_job_gpus_gets_engine_concurrency(self, monkeypatch):
+        """An external CheckpointEvalFn reserves no in-job GPUs, but its eval
+        traffic still flows through the shared client: a pool of 1 would
+        serialize every concurrent generate() call."""
+        concurrency, client = self._init(monkeypatch, self._args())
+        assert client is not None
+        assert concurrency == 512  # one engine's worth, not 1
+
+    def test_in_job_gpu_sizing_is_unchanged(self, monkeypatch):
+        args = self._args(rollout_num_gpus=8, rollout_num_gpus_per_engine=2, eval_uses_snapshots=False)
+        concurrency, _ = self._init(monkeypatch, args)
+        assert concurrency == 512 * 8 // 2
+
+    def test_no_client_without_gpus_or_snapshot_eval(self, monkeypatch):
+        args = self._args(eval_uses_snapshots=False)
+        _, client = self._init(monkeypatch, args)
+        assert client is None

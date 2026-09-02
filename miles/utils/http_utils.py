@@ -282,8 +282,10 @@ def init_http_client(args):
     if args.eval_num_gpus > 0:
         _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     # An external CheckpointEvalFn may attach to an endpoint without reserving
-    # any in-job GPUs. It still needs the shared HTTP client.
-    _client_concurrency = max(_client_concurrency, 1)
+    # any in-job GPUs. It still needs the shared client, and its throughput is
+    # governed by the eval fn's own semaphore -- so give it at least one
+    # engine's worth of connections rather than a serializing pool of 1.
+    _client_concurrency = max(_client_concurrency, args.sglang_server_concurrency)
     if _http_client is None:
         _http_client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=_client_concurrency),
