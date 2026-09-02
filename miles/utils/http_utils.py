@@ -278,9 +278,7 @@ def init_http_client(args):
     if rollout_num_gpus == 0 and args.eval_num_gpus == 0 and not args.eval_uses_snapshots:
         return
 
-    _client_concurrency = (
-        args.sglang_server_concurrency * rollout_num_gpus // args.rollout_num_gpus_per_engine
-    )
+    _client_concurrency = args.sglang_server_concurrency * rollout_num_gpus // args.rollout_num_gpus_per_engine
     if args.eval_num_gpus > 0:
         _client_concurrency += args.sglang_server_concurrency * args.eval_num_gpus // args.eval_num_gpus_per_engine
     # An external CheckpointEvalFn may attach to an endpoint without reserving

@@ -66,9 +66,7 @@ class ServerGroup:
         of Ray ObjectRefs (one per newly created engine) and *new_engine_indices* is
         the list of indices into ``self.all_engines`` that were just allocated.
         """
-        if (
-            self.args.debug_train_only and not self.run_in_debug_train_only
-        ) or self.worker_type == "placeholder":
+        if (self.args.debug_train_only and not self.run_in_debug_train_only) or self.worker_type == "placeholder":
             self.has_new_engines = False
             return [], []
 
