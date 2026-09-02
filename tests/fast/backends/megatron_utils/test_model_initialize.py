@@ -196,3 +196,23 @@ def test_initialize_steps_scheduler_when_checkpoint_did_not_restore_it():
 
     assert result == (model, optimizer, opt_param_scheduler, 100)
     opt_param_scheduler.step.assert_called_once_with(increment=800)
+def test_sft_training_keeps_model_output_precision() -> None:
+    from miles.backends.megatron_utils.model import _training_model_output_kwargs
+
+    assert _training_model_output_kwargs(loss_type="sft_loss", use_mixed_precision=True) == {"fp32_output": False}
+    assert _training_model_output_kwargs(loss_type="sft_loss", use_mixed_precision=False) == {}
+    assert _training_model_output_kwargs(loss_type="value_loss", use_mixed_precision=True) == {}
+
+
+@pytest.mark.parametrize(
+    ("configured_level", "requested_level", "expected_calls"),
+    [(0, 1, 0), (1, 1, 1), (1, 2, 0), (2, 2, 1)],
+)
+def test_empty_unused_cuda_memory_levels(configured_level: int, requested_level: int, expected_calls: int) -> None:
+    from miles.backends.megatron_utils.model import _empty_unused_cuda_memory
+
+    args = Namespace(empty_unused_memory_level=configured_level)
+    with patch("miles.backends.megatron_utils.model.torch.cuda.empty_cache") as empty_cache:
+        _empty_unused_cuda_memory(args, level=requested_level)
+
+    assert empty_cache.call_count == expected_calls
