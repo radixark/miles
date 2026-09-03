@@ -479,7 +479,7 @@ def sft_loss_function(
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
 
-    if args.sft_checkpointed_output_projection:
+    if getattr(args, "sft_checkpointed_output_projection", False):
         # The model output processor has already projected response-only hidden
         # states and computed their TP log-probabilities in checkpointed chunks.
         log_probs = logits
