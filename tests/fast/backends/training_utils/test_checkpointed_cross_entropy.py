@@ -51,7 +51,7 @@ def test_checkpointed_cross_entropy_matches_dense_forward_and_backward() -> None
 
     dense_hidden = hidden.detach().clone().requires_grad_(True)
     dense_weight = layer.weight.detach().clone().requires_grad_(True)
-    dense_logits = F.linear(dense_hidden, dense_weight)
+    dense_logits = F.linear(dense_hidden, dense_weight).float()
     safe_labels = labels.transpose(0, 1).masked_fill(labels.transpose(0, 1) == -100, 0)
     expected = F.cross_entropy(
         dense_logits.flatten(0, 1),
@@ -98,7 +98,7 @@ def test_sft_output_processor_selects_shifted_response_positions(monkeypatch) ->
         scale_logits=lambda logits: logits,
         runtime_gather_output=None,
     )
-    expected = F.log_softmax(F.linear(hidden[2:5, 0], layer.weight), dim=-1).gather(
+    expected = F.log_softmax(F.linear(hidden[2:5, 0], layer.weight).float(), dim=-1).gather(
         -1,
         tokens[3:6, None],
     )
