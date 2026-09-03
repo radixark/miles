@@ -5,8 +5,12 @@ from typing import Any
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
+from miles.utils.http_utils import find_available_port, private_port_range
+
 
 def find_free_port() -> int:
+    if private_port_range() is not None:
+        return find_available_port(0)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
         return s.getsockname()[1]

@@ -5,6 +5,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
+
+from tests.fast.fixtures.timeouts import scaled_timeout
 from tests.fast.utils.workers.e2e.env_var_hooks import ENV_VAR_FN_FAILURE_MESSAGE, IMPORTED_MODULES_ENV_VAR
 from tests.fast.utils.workers.e2e.harness import (
     POOL_ID,
@@ -126,7 +128,7 @@ class TestStartupFailures:
     async def test_port_conflict_fails_fast(self, spawn, server):
         """A second server on a taken port exits without disturbing the first."""
         conflicting = spawn(port=server.port, wait=False)
-        assert conflicting.wait(timeout=30.0) not in (None, 0)
+        assert conflicting.wait(timeout=scaled_timeout(30.0)) not in (None, 0)
         assert server.is_running()
 
     @pytest.mark.parametrize("bad_path", ["no_colon_module", "miles.utils.workers.serving.serve.no_such_attr"])

@@ -21,8 +21,15 @@ _CONNECT_ATTEMPT_TIMEOUT_SECONDS = 1.0
 _CONNECT_RETRY_INTERVAL_SECONDS = 0.5
 
 
+PORT_RANGE_ENV = "MILES_PORT_RANGE"
+
+
 def find_available_port(base_port: int):
-    port = base_port + random.randint(100, 1000)
+    if (port_range := private_port_range()) is not None:
+        low, high = port_range
+        port = random.randint(low, high - 1)
+    else:
+        port = base_port + random.randint(100, 1000)
     while True:
         if is_port_available(port):
             return port
@@ -30,6 +37,13 @@ def find_available_port(base_port: int):
             port += 42
         else:
             port -= 43
+
+
+def private_port_range() -> tuple[int, int] | None:
+    if (spec := os.environ.get(PORT_RANGE_ENV)) is None:
+        return None
+    low, high = (int(x) for x in spec.split(":"))
+    return low, high
 
 
 def is_port_available(port):

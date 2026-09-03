@@ -13,6 +13,7 @@ from tests.fast.utils.workers.e2e.harness import (
     FlakyProxy,
     ServerProcess,
     spawn_server,
+    spawn_serving_server,
     wait_until_serving,
 )
 
@@ -37,10 +38,13 @@ def spawn(state_dir, tmp_path, request) -> Iterator[Callable[..., ServerProcess]
 
     def start(*, wait: bool = True, **kwargs) -> ServerProcess:
         log_path = tmp_path / f"server-{len(started)}.log"
-        server = spawn_server(state_dir=state_dir, log_path=log_path, **kwargs)
+        if wait and kwargs.get("port") is None:
+            server = spawn_serving_server(state_dir=state_dir, log_path=log_path, **kwargs)
+        else:
+            server = spawn_server(state_dir=state_dir, log_path=log_path, **kwargs)
+            if wait:
+                wait_until_serving(server)
         started.append(server)
-        if wait:
-            wait_until_serving(server)
         return server
 
     yield start
@@ -71,8 +75,7 @@ def shared_server(tmp_path_factory) -> Iterator[ServerProcess]:
     state_dir = directory / "state"
     state_dir.mkdir()
 
-    server = spawn_server(state_dir=state_dir, log_path=directory / "server.log")
-    wait_until_serving(server)
+    server = spawn_serving_server(state_dir=state_dir, log_path=directory / "server.log")
     yield server
 
     server.stop()

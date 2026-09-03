@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import ray
+from tests.fast.fixtures.timeouts import scaled_timeout
 from tests.fast.ray.train import conftest as train_conftest
 from tests.fast.ray.train.conftest import get_raw_actor_handles, make_deployment_identity, make_provider
 
@@ -617,14 +618,14 @@ class TestTrain:
         with patch.object(
             group_module.event_analyzer,
             "run_analysis_from_args",
-            side_effect=lambda _args: time.sleep(0.2),
+            side_effect=lambda _args: time.sleep(2.0),
         ):
             train_task = asyncio.create_task(group.train(rollout_id=0, rollout_data_pack=_DUMMY_DATA_PACK))
             await asyncio.sleep(0)
 
             statuses = await group.get_cell_statuses()
 
-            assert time.monotonic() - started_at < 0.1
+            assert time.monotonic() - started_at < scaled_timeout(0.1)
             assert set(statuses) == {"trainer-engine-actor-00000"}
             assert await train_task == []
 

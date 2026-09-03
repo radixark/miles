@@ -75,6 +75,7 @@ class TestWithObservability:
         with caplog.at_level(logging.INFO):
             with observability.with_observability(namespace="rl", selector="app=x"):
                 wait_for(lambda: "1 pods: 1 running" in caplog.text and "[trainer-0/app] training" in caplog.text)
+                followed = list(processes)
 
         pod_calls = [kwargs for kind, kwargs in calls if kind == "pods"]
         assert pod_calls == [
@@ -89,7 +90,7 @@ class TestWithObservability:
                 "field_selector": "involvedObject.kind=Pod,type=Warning",
             },
         ) in calls
-        assert processes and all(process.killed for process in processes)
+        assert followed and all(process.killed for process in followed)
 
 
 class TestFarewell:

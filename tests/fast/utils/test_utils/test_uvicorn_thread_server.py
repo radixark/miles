@@ -7,6 +7,7 @@ import pytest
 import requests
 from fastapi import FastAPI
 
+from miles.utils.http_utils import private_port_range
 from miles.utils.misc import get_current_node_ip, get_free_port
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -32,7 +33,7 @@ def start_server() -> Iterator[Callable[..., UvicornThreadServer]]:
     servers: list[UvicornThreadServer] = []
 
     def _start(**kwargs) -> UvicornThreadServer:
-        server = UvicornThreadServer(_make_app(), port=get_free_port(start_port=21000), **kwargs)
+        server = UvicornThreadServer(_make_app(), port=get_free_port(start_port=_test_port_base(21000)), **kwargs)
         servers.append(server)
         server.start()
         return server
@@ -72,3 +73,7 @@ class TestBindHost:
         assert server.host == node_ip
         assert server.url == f"http://{node_ip}:{server.port}"
         assert requests.get(f"{server.url}/health", timeout=5).status_code == 200
+
+
+def _test_port_base(default: int) -> int:
+    return default if (port_range := private_port_range()) is None else port_range[0]

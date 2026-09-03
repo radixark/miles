@@ -3,6 +3,8 @@ import time
 from typing import Any
 
 import pytest
+
+from tests.fast.fixtures.timeouts import scaled_timeout
 from tests.fast.utils.workers.e2e.harness import wait_until_serving
 
 from miles.utils.workers.rpc.client import call as client_module
@@ -109,7 +111,7 @@ class TestNeverReachedRetry:
 
         elapsed = time.monotonic() - started
         assert elapsed >= 0.1
-        assert elapsed < 1.0
+        assert elapsed < scaled_timeout(1.0)
 
     async def test_late_server_start_is_tolerated(
         self,
@@ -121,7 +123,7 @@ class TestNeverReachedRetry:
         """A submit succeeds when a server appears within its retry window."""
         from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS, reserve_port
 
-        monkeypatch.setattr(client_module, "SUBMIT_RETRY_WINDOW_SECONDS", READY_TIMEOUT_SECONDS)
+        monkeypatch.setattr(client_module, "SUBMIT_RETRY_WINDOW_SECONDS", scaled_timeout(READY_TIMEOUT_SECONDS))
         monkeypatch.setattr(client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.01)
         monkeypatch.setattr(client_module, "RETRY_MAX_DELAY_SECONDS", 0.05)
         port = reserve_port()

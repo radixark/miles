@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.fast.fixtures.timeouts import scaled_timeout
+
 from miles.utils import logging_utils
 from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.logging_utils import configure_logger, configure_strict_async_warnings
@@ -185,7 +187,7 @@ def _run_snippet(code: str) -> subprocess.CompletedProcess:
         [sys.executable, "-c", textwrap.dedent(code)],
         capture_output=True,
         text=True,
-        timeout=60,
+        timeout=scaled_timeout(60),
     )
 
 

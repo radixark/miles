@@ -1,4 +1,3 @@
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,18 +7,17 @@ LAUNCHER_DIRS = ("examples", "scripts", "tools", "miles/utils/external_utils")
 RAY_RUNTIME_ENV_MARKERS = ("runtime-env-json", "runtime_env=", "runtime_env_json")
 
 
-def tracked_files() -> list[Path]:
-    listing = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "ls-files", "-z", *LAUNCHER_DIRS],
-        capture_output=True,
-        text=True,
-        check=True,
+def launcher_files() -> list[Path]:
+    return sorted(
+        path
+        for launcher_dir in LAUNCHER_DIRS
+        for path in (REPO_ROOT / launcher_dir).rglob("*")
+        if path.suffix in {".py", ".sh"} and "__pycache__" not in path.parts
     )
-    return [REPO_ROOT / name for name in listing.stdout.split("\0") if name.endswith((".py", ".sh"))]
 
 
 def ray_launchers() -> list[Path]:
-    return [path for path in tracked_files() if any(marker in path.read_text() for marker in RAY_RUNTIME_ENV_MARKERS)]
+    return [path for path in launcher_files() if any(marker in path.read_text() for marker in RAY_RUNTIME_ENV_MARKERS)]
 
 
 def test_the_repo_has_ray_launchers_to_check() -> None:

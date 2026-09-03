@@ -5,7 +5,7 @@ import inspect
 import pytest
 import ray
 
-from miles.utils.http_utils import MILES_HOST_IP_ENV
+from miles.utils.http_utils import MILES_HOST_IP_ENV, private_port_range
 from miles.utils.misc import NodeProbeMixin, get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 from miles.utils.workers.command_actor import CommandActor
@@ -114,7 +114,7 @@ class TestRealRayActorLifecycle:
         Ray with the right args, and the call log preserves ordering."""
         actor = MockSGLangEngine.options(num_cpus=0.1, num_gpus=0).remote()
         try:
-            port = get_free_port(start_port=20000)
+            port = get_free_port(start_port=_test_port_base(20000))
             cmd = f"python -m sglang.launch_server --model-path /fake/model --host 127.0.0.1 --port {port}"
             ray.get(actor.run.remote(cmd=cmd, envs={}))
             ray.get(actor._get_free_port_block.remote(start_port=20100, count=1))
@@ -189,3 +189,7 @@ class TestNodeIpReporting:
         monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
 
         assert MockSGLangEngine.__ray_actor_class__()._get_node_ip() == CommandActor()._get_node_ip()
+
+
+def _test_port_base(default: int) -> int:
+    return default if (port_range := private_port_range()) is None else port_range[0]

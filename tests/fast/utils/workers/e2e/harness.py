@@ -12,7 +12,9 @@ import time
 from pathlib import Path
 
 import httpx
+from tests.fast.fixtures.timeouts import scaled_timeout
 
+from miles.utils.http_utils import find_available_port, private_port_range
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -21,11 +23,14 @@ POOL_ID = "e2e-pool"
 RPC_PORT_FLAG = "--rpc-port"
 
 READY_TIMEOUT_SECONDS = 60.0
+BIND_CONFLICT_ATTEMPTS = 5
 STOP_TIMEOUT_SECONDS = 15.0
 KILL_TIMEOUT_SECONDS = 10.0
 
 
 def reserve_port() -> int:
+    if private_port_range() is not None:
+        return find_available_port(0)
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
@@ -103,7 +108,22 @@ def spawn_server(
     return ServerProcess(port=port, process=process, log_path=log_path)
 
 
-def wait_until_serving(server: ServerProcess, timeout: float = READY_TIMEOUT_SECONDS) -> None:
+def spawn_serving_server(**kwargs) -> ServerProcess:
+    for _ in range(BIND_CONFLICT_ATTEMPTS):
+        server = spawn_server(**kwargs)
+        try:
+            wait_until_serving(server)
+        except AssertionError:
+            if "address already in use" not in server.logs():
+                raise
+            server.kill()
+            continue
+        return server
+    raise AssertionError(f"the reserved port was taken {BIND_CONFLICT_ATTEMPTS} times in a row:\n{server.logs()}")
+
+
+def wait_until_serving(server: ServerProcess, timeout: float | None = None) -> None:
+    timeout = scaled_timeout(READY_TIMEOUT_SECONDS) if timeout is None else timeout
     deadline = time.monotonic() + timeout
 
     while time.monotonic() < deadline:
@@ -137,6 +157,7 @@ class FlakyProxy:
     def __init__(self, upstream_port: int | None) -> None:
         self._upstream_port = upstream_port
         self._server: asyncio.Server | None = None
+        self._connections: set[asyncio.StreamWriter] = set()
         self.requests: list[ProxyRequest] = []
         self.reject_status: int | None = None
         self.reject_remaining = 0
@@ -168,11 +189,15 @@ class FlakyProxy:
         self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
 
     async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        if self._server is None:
+            return
+        self._server.close()
+        for writer in list(self._connections):
+            writer.close()
+        await self._server.wait_closed()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._connections.add(writer)
         try:
             request = await _read_http_message(reader)
             if request is None:
@@ -204,6 +229,7 @@ class FlakyProxy:
         except (ConnectionResetError, BrokenPipeError, asyncio.IncompleteReadError):
             pass
         finally:
+            self._connections.discard(writer)
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
@@ -282,6 +308,7 @@ class ConnectionCountingRelay:
     def __init__(self, upstream_port: int) -> None:
         self._upstream_port = upstream_port
         self._server: asyncio.Server | None = None
+        self._connections: set[asyncio.StreamWriter] = set()
         self.accepted = 0
 
     @property
@@ -297,17 +324,22 @@ class ConnectionCountingRelay:
         self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
 
     async def stop(self) -> None:
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
+        if self._server is None:
+            return
+        self._server.close()
+        for writer in list(self._connections):
+            writer.close()
+        await self._server.wait_closed()
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         self.accepted += 1
+        self._connections.add(writer)
         upstream_reader, upstream_writer = await asyncio.open_connection("127.0.0.1", self._upstream_port)
 
         try:
             await asyncio.gather(_pump(reader, upstream_writer), _pump(upstream_reader, writer))
         finally:
+            self._connections.discard(writer)
             for stream in (upstream_writer, writer):
                 with contextlib.suppress(Exception):
                     stream.close()

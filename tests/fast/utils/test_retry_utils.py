@@ -632,9 +632,9 @@ class TestRetryUntilDeadline:
         async def attempt(remaining: float) -> None:
             await asyncio.sleep(30.0)
 
-        with pytest.raises(AttemptTimeoutError, match="did not answer within 0.02s"):
+        with pytest.raises(AttemptTimeoutError, match="did not answer within 0.20s"):
             await retry_until_deadline(
-                attempt, total_seconds=0.05, retry_on=ValueError, attempt_seconds=0.02, initial_delay=0.01
+                attempt, total_seconds=5.0, retry_on=ValueError, attempt_seconds=0.2, initial_delay=0.1
             )
 
 

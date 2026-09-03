@@ -10,7 +10,7 @@ Stdlib only: CI computes the hash on a plain hosted runner before any dependency
 is installed.
 
 Usage:
-    python docker/image_inputs.py                 # hash the working tree
+    python docker/image_inputs.py                 # hash the working tree (no git needed)
     python docker/image_inputs.py --rev HEAD^1    # hash a git revision
 """
 
@@ -49,9 +49,12 @@ def _git(*args: str) -> bytes:
 
 def _paths_at(rev: str | None) -> list[str]:
     if rev is None:
-        listing = _git("ls-files").decode()
-    else:
-        listing = _git("ls-tree", "-r", "--name-only", rev).decode()
+        return sorted(
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in REPO_ROOT.rglob("*")
+            if path.is_file() and ".git" not in path.parts and _matches(path.relative_to(REPO_ROOT).as_posix())
+        )
+    listing = _git("ls-tree", "-r", "--name-only", rev).decode()
     return sorted(p for p in listing.splitlines() if _matches(p))
 
 

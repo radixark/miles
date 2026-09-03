@@ -6,7 +6,7 @@ import pytest
 from tests.fast.utils.workers import conformance
 from tests.fast.utils.workers.conformance import CHECK_IDS, CHECKS, ConformanceWorker, HandleCheck
 
-from tests.fast.utils.workers.e2e.harness import ServerProcess, spawn_server, wait_until_serving
+from tests.fast.utils.workers.e2e.harness import ServerProcess, spawn_serving_server
 
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.worker_handle import BaseWorkerHandle
@@ -19,12 +19,11 @@ def conformance_server(tmp_path_factory) -> Iterator[ServerProcess]:
     root = tmp_path_factory.mktemp("conformance")
     state_dir = root / "state"
     state_dir.mkdir()
-    server = spawn_server(
+    server = spawn_serving_server(
         state_dir=state_dir,
         log_path=root / "server.log",
         specs_path=f"{conformance.__name__}.compute_specs",
     )
-    wait_until_serving(server)
     yield server
     server.stop()
     server.kill()

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.training_utils import log_utils
+from miles.backends.training_utils import log_utils, parallel
 from miles.utils.metric_utils import strip_metrics_namespace
 
 
@@ -17,7 +17,7 @@ def _capture(monkeypatch) -> list[tuple[dict, str]]:
 @pytest.fixture()
 def source_rank(monkeypatch) -> None:
     parallel_state = SimpleNamespace(effective_dp_cp=SimpleNamespace(rank=0, size=1, gloo_groups_inner_to_outer=[]))
-    monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(parallel, "_parallel_state", parallel_state)
     monkeypatch.setattr(log_utils.MultiPGUtil, "gather_object", staticmethod(lambda obj, groups_inner_to_outer: [obj]))
 
 
@@ -119,7 +119,7 @@ class TestLogRolloutData:
             effective_dp_cp=SimpleNamespace(rank=0, size=1, gloo_groups_inner_to_outer=[]),
             is_pp_last_stage=True,
         )
-        monkeypatch.setattr(log_utils, "get_parallel_state", lambda: parallel_state)
+        monkeypatch.setattr(parallel, "_parallel_state", parallel_state)
         monkeypatch.setattr(
             log_utils.MultiPGUtil, "gather_object", staticmethod(lambda obj, groups_inner_to_outer: [obj])
         )

@@ -37,6 +37,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 import ray
+from tests.fast.fixtures.timeouts import scaled_timeout
 from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
 from miles.utils import http_utils
@@ -455,7 +456,7 @@ class TestGeneralHttpClientProvider:
             client = GeneralHttpClientProvider.client()
             requests = [asyncio.create_task(client.get(server.url)) for _ in range(num_requests)]
 
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + scaled_timeout(60)
             while arrived.count < num_requests:
                 assert time.monotonic() < deadline, (
                     f"only {arrived.count}/{num_requests} requests reached the server; the rest are "

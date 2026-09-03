@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
 import pytest
 import ray
+from tests.fast.fixtures.timeouts import scaled_timeout
 from tests.fast.utils.workers.conformance import (
     CHECK_IDS,
     CHECKS,
@@ -13,7 +16,6 @@ from tests.fast.utils.workers.conformance import (
     HandleCheck,
     compute_spec,
 )
-
 from tests.fast.utils.workers.conftest import worker_manager_args
 from tests.fast.utils.workers.real_ray.conftest import (
     kill_named_worker_manager,
@@ -32,6 +34,7 @@ from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 CELL_ID = compute_cell_id(pool_id=POOL_ID, cell_index=0)
 
 CONFIRM_DEAD_TIMEOUT_SECONDS = 60.0
+PROBE_SETTLE_SECONDS = 5.0
 
 
 @dataclass
@@ -134,4 +137,7 @@ class TestWhenTheLauncherStopsTheCell:
         await rpc_pool.manager.stop_cells.remote([CELL_ID])
         await rpc_handle.wait_dead(timeout=CONFIRM_DEAD_TIMEOUT_SECONDS)
 
-        assert await rpc_handle.probe_is_dead() is True
+        deadline = time.monotonic() + scaled_timeout(PROBE_SETTLE_SECONDS)
+        while not await rpc_handle.probe_is_dead():
+            assert time.monotonic() < deadline, "the server socket outlived the dead worker"
+            await asyncio.sleep(0.1)

@@ -1,8 +1,10 @@
+import atexit
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,23 @@ CHARTS_DIR = REPO_ROOT / "charts"
 CHART_DIR = CHARTS_DIR / "miles-workbench"
 RUN_CHART_DIR = CHARTS_DIR / "miles-run"
 SHARED_INFRA_SCHEMA_PATH = CHARTS_DIR / "shared-infra.schema.json"
+
+_private_charts_dir: Path | None = None
+
+
+def helm_chart_dir(chart_dir: Path) -> Path:
+    """helm template writes tmpcharts-<pid> into the chart directory while it resolves file:// dependencies, so
+    every xdist worker renders from its own copy of charts/."""
+    global _private_charts_dir
+    if os.environ.get("PYTEST_XDIST_WORKER") is None:
+        return chart_dir
+    if _private_charts_dir is None:
+        _private_charts_dir = Path(tempfile.mkdtemp(prefix="miles-charts-")) / "charts"
+        shutil.copytree(CHARTS_DIR, _private_charts_dir)
+        atexit.register(shutil.rmtree, _private_charts_dir.parent, True)
+    return _private_charts_dir / chart_dir.relative_to(CHARTS_DIR)
+
+
 WORKBENCH_PACKAGE = "miles.utils.external_utils.miles_workbench"
 
 RELEASE_NAME = "miles-workbench-myuser"
@@ -48,7 +67,7 @@ def run_helm_template(*args: str) -> subprocess.CompletedProcess:
             "helm",
             "template",
             RELEASE_NAME,
-            str(CHART_DIR),
+            str(helm_chart_dir(CHART_DIR)),
             "-n",
             NAMESPACE,
             "--set",
@@ -62,7 +81,9 @@ def run_helm_template(*args: str) -> subprocess.CompletedProcess:
 
 def run_helm_lint(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["helm", "lint", str(CHART_DIR), "--set", f"objectName={OBJECT_NAME}", *args], capture_output=True, text=True
+        ["helm", "lint", str(helm_chart_dir(CHART_DIR)), "--set", f"objectName={OBJECT_NAME}", *args],
+        capture_output=True,
+        text=True,
     )
 
 
@@ -92,7 +113,7 @@ def run_helm_template_run(*args: str) -> subprocess.CompletedProcess:
             "helm",
             "template",
             RUN_RELEASE_NAME,
-            str(RUN_CHART_DIR),
+            str(helm_chart_dir(RUN_CHART_DIR)),
             "-n",
             NAMESPACE,
             "--set",

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+
+from tests.fast.fixtures.timeouts import scaled_timeout
 from tests.fast.utils.workers.import_probe import unexpected_light_entrypoint_imports
 from tests.fast.utils.workers.serving.serve_smoke_worker import (
     IMPORTED_MODULES_ENV_VAR,
@@ -190,7 +192,7 @@ def _spawn_serve(port: int) -> subprocess.Popen:
 
 
 async def _wait_ready_or_die(handle, process: subprocess.Popen, timeout: float = 60.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + scaled_timeout(timeout)
     while time.monotonic() < deadline:
         assert process.poll() is None, f"serve subprocess exited early with code {process.returncode}"
         with contextlib.suppress(WorkerUnreachableError):

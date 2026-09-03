@@ -14,6 +14,7 @@ import pytest
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from tests.fast.dist_utils import find_free_port, init_gloo
+from tests.fast.fixtures.timeouts import scaled_timeout
 from torch.distributed import HashStore, Store, TCPStore
 
 from miles.utils.distributed_lock import StoreTicketLock, create_world_ticket_lock
@@ -68,7 +69,7 @@ class _FakeClock:
 
 
 def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline = time.monotonic() + scaled_timeout(timeout)
     while not predicate():
         assert time.monotonic() < deadline, "timed out waiting for the condition"
         time.sleep(0.005)

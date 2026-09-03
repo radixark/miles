@@ -47,6 +47,7 @@ pip install -e . --no-deps       # editable install, deps come from the image
 pre-commit install               # optional, runs the hooks on every commit
 
 pytest tests/fast                # CPU suite, no GPU needed
+pytest tests/fast -n auto --dist worksteal   # the same suite in parallel (pip install pytest-xdist)
 pre-commit run --all-files       # what the pre-commit CI job runs
 
 git commit -m "feat(rollout): add partial-rollout buffer"
