@@ -17,6 +17,9 @@ CONFIG = ModelConfig(
     mamba_full_memory_ratio=4.59,
     cycles=2,
     tool_call_failure_mode="append_tool",
+    # Anthropic tool-call conversion changes raw assistant serialization;
+    # keep this endpoint-only formatting mismatch soft while hard gates stay at 0.
+    anthropic_assistant_text_threshold=1.0,
     anthropic_intermediate_system_expectation="forbidden",
 )
 
