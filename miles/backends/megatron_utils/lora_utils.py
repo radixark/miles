@@ -203,16 +203,15 @@ _param_grad_buffer_patched = False
 
 
 def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
-    """Patch _ParamAndGradBuffer to disable CPU backup for gradient buffers.
+    """Patch _ParamAndGradBuffer to use disable_param_buffers_cpu_backup=True.
 
     In colocate mode with offload_train, torch_memory_saver.pause(tag="default")
     offloads default-region GPU memory.  During LoRA training, base weights are
     frozen (requires_grad=False) so DDP only creates buffers for adapter params.
 
-    Adapter parameter buffers must remain in the default region so their CPU
-    backups are available to update_weights while the trainer sleeps. Gradient
-    buffers can be discarded and rebuilt, so they use a separate no-backup
-    region that sleep()/wake_up() pauses and resumes explicitly.
+    This patch ensures those buffers are allocated in the "param_buffer" region
+    (enable_cpu_backup=False), making them invisible to pause(tag="default") —
+    eliminating the need for resume()/pause() around update_weights.
 
     The patch is idempotent and only takes effect once.
     """
@@ -233,7 +232,7 @@ def patch_param_grad_buffer_for_colocate_mode_lora() -> None:
         _original_init(self, *args, **kwargs)
 
     _ParamAndGradBuffer.__init__ = _patched_init
-    logger.info("Patched _ParamAndGradBuffer.__init__ for LoRA colocate mode (discard gradient buffers on sleep)")
+    logger.info("Patched _ParamAndGradBuffer.__init__ for LoRA colocate mode (disable cpu backup)")
 
 
 # ---------------------------------------------------------------------------
