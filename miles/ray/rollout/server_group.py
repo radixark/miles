@@ -45,6 +45,8 @@ class ServerGroup:
     router_ip: str | None = None
     router_port: int | None = None
     update_weights: bool = True
+    # NOTE: Only consulted when `needs_offload` is True; otherwise weights are never released.
+    weights_backup_mode: str = "actor_sync"
 
     @property
     def nodes_per_engine(self):
@@ -241,6 +243,9 @@ class ServerGroup:
                         for engine in all_resume_engines
                     ]
                 )
+                await self._restore_weights_if_owned(
+                    tags=[GPU_MEMORY_TYPE_WEIGHTS], engines=all_resume_engines
+                )
 
         self.mark_alive(engine_indices=new_engine_indices)
 
@@ -257,22 +262,46 @@ class ServerGroup:
             if engine.is_allocated
         ]
 
-    def onload(self, tags: list[str] | None = None):
-        if not self.needs_offload:
-            return []
-        return [
-            engine.actor_handle.resume_memory_occupation.remote(tags=tags)
-            for engine in self.engines
-            if engine.is_allocated
-        ]
+    async def onload(self, tags: list[str] | None = None):
+        """Resume memory occupation, then restore weight *content* if this group owns that.
 
-    def onload_weights_from_disk(self):
+        `resume_memory_occupation` only hands back the allocation. For `cpu` modes
+        torch_memory_saver refills it transparently; for `actor_sync` the caller's weight
+        sync refills it; for `reload` this group must re-read `model_path` itself.
+        """
+        if not self.needs_offload:
+            return
+        await asyncio.gather(
+            *[
+                engine.actor_handle.resume_memory_occupation.remote(tags=tags)
+                for engine in self.engines
+                if engine.is_allocated
+            ]
+        )
+        await self._restore_weights_if_owned(tags=tags)
+
+    def _owns_weight_restore(self, tags: list[str] | None) -> bool:
+        """True when this group must reload weights itself for the given tags."""
+        if self.weights_backup_mode != "reload":
+            return False
+        return tags is None or GPU_MEMORY_TYPE_WEIGHTS in tags
+
+    async def _restore_weights_if_owned(
+        self, tags: list[str] | None, engines: list[ServerEngine] | None = None
+    ) -> None:
+        if not self._owns_weight_restore(tags):
+            return
+        logger.info(f"Reloading weights for frozen group '{self.worker_type}' ({self.model_path})")
+        await asyncio.gather(*self.onload_weights_from_disk(engines=engines))
+
+
+    def onload_weights_from_disk(self, engines: list[ServerEngine] | None = None) -> list:
         """Reload weights from ``model_path`` for non-updatable groups."""
         if not self.needs_offload or not self.model_path:
             return []
         return [
             engine.actor_handle.update_weights_from_disk.remote(self.model_path)
-            for engine in self.engines
+            for engine in (engines if engines is not None else self.engines)
             if engine.is_allocated
         ]
 

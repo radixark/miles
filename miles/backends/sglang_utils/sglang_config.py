@@ -35,6 +35,7 @@ class ServerGroupConfig:
         ), f"Invalid worker_type '{self.worker_type}', must be one of {valid_types}"
         assert self.num_gpus > 0, f"num_gpus must be > 0, got {self.num_gpus}"
 
+WEIGHTS_BACKUP_MODES = ("actor_sync", "cpu", "reload")
 
 @dataclasses.dataclass
 class ModelConfig:
@@ -52,6 +53,12 @@ class ModelConfig:
                         automatically inferred in ``resolve()``: ``True`` if
                         model_path matches ``args.hf_checkpoint``, ``False``
                         otherwise.
+        weights_backup_mode: How this model's weights are restored after a
+                        colocated offload/onload cycle.  ``actor_sync`` (weights
+                        pushed by training) is only valid for updatable models.
+                        Frozen colocated models must pick ``cpu`` (host RAM
+                        backup), or ``reload``
+                        (re-read ``model_path``).
     """
 
     name: str
@@ -59,6 +66,7 @@ class ModelConfig:
     num_gpus_per_engine: int | None = None
     server_groups: list[ServerGroupConfig] = dataclasses.field(default_factory=list)
     update_weights: bool | None = None
+    weights_backup_mode: str | None = None
 
     def resolve(self, args) -> None:
         """Resolve per-group defaults from model-level then args-level values."""
@@ -90,6 +98,16 @@ class ModelConfig:
                 self.update_weights = False
             else:
                 self.update_weights = True
+        if self.weights_backup_mode is not None and self.weights_backup_mode not in WEIGHTS_BACKUP_MODES:
+            raise ValueError(
+                f"Model '{self.name}': invalid weights_backup_mode="
+                f"{self.weights_backup_mode!r}; expected one of {WEIGHTS_BACKUP_MODES}."
+            )
+        if self.update_weights and self.weights_backup_mode not in (None, "actor_sync"):
+            raise ValueError(
+                f"Model '{self.name}': weights_backup_mode={self.weights_backup_mode!r} conflicts with "
+                f"update_weights=True; updatable models are restored by actor weight sync."
+            )
 
     @property
     def has_pd_disaggregation(self) -> bool:
@@ -162,6 +180,7 @@ class SglangConfig:
                     num_gpus_per_engine=m.get("num_gpus_per_engine"),
                     server_groups=groups,
                     update_weights=m.get("update_weights"),
+                    weights_backup_mode=m.get("weights_backup_mode"),
                 )
             )
         return SglangConfig(models=models)
