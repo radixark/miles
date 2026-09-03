@@ -157,14 +157,11 @@ The JSON `at_rollout` field specifies which rollout_id triggers the action.
 The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
 ```
 
-Baseline remains normal DP and target remains indep_dp. Both sides enable deterministic
-kernels and the fixed-tree debug collective so topology-dependent SUM ordering cannot
-contaminate the crash-recovery comparison.
-
 #### `dp2_cp2_real_rollout_dense` mode
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
+- Baseline remains normal DP and target remains indep_dp. Both sides enable deterministic kernels and the fixed-tree debug collective so topology-dependent SUM ordering cannot contaminate the crash-recovery comparison.
 - The fault and post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout).
 - Why inject: the fault rollout is retried with a degraded quorum, so baseline and target otherwise train that commit from separately sampled responses. The degraded-quorum commit also accumulates microbatches in a different fp bracketing than the fault-free side — a fault-inherent ulp diff no collective ordering removes. Under live sampling either source of drift can flip sampled tokens, after which the two runs' rollout data diverges wholesale, so a strict vs-baseline comparison is ill-posed. Injection makes training inputs identical by construction → full strict comparison, zero relaxation.
 - Stays real on the target: engines + generation (samples discarded), `update_weights` after the degraded commit and after healing, health-monitor pause/resume — the whole crash→retry→heal→weight-sync path.

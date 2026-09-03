@@ -63,4 +63,7 @@ def test_fake_rollout_does_not_inject_recorded_data() -> None:
         enable_dumper=False,
     )
 
-    assert "--ci-inject-rollout-data-start-rollout-id" not in shlex.split(args)
+    tokens = shlex.split(args)
+
+    assert "--ci-inject-rollout-data-start-rollout-id" not in tokens
+    assert "--debug-deterministic-collective" not in tokens
