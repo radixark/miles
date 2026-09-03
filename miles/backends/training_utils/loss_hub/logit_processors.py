@@ -10,7 +10,7 @@ from miles.backends.training_utils.sampling_mask import build_local_sampling_mas
 from miles.utils.sampling_mask import RolloutSamplingMask
 
 
-def _iter_response_chunks(
+def _iter_response_chunk_parts(
     logits: torch.Tensor,
     *,
     args: Namespace,
@@ -19,8 +19,8 @@ def _iter_response_chunks(
     response_lengths: list[int],
     max_seq_lens: list[int] | None = None,
     include_response_indices: bool,
-) -> Iterator[tuple[torch.Tensor, torch.Tensor, Sequence[int]]]:
-    """Yield response logits, tokens, and original response indices per sample.
+) -> Iterator[tuple[tuple[torch.Tensor, torch.Tensor, Sequence[int]], ...]]:
+    """Yield contiguous response-logit parts for each sample.
 
     After squeezing batch dimension and applying temperature scaling, this
     function extracts the logits and tokens corresponding to response segments
@@ -37,11 +37,10 @@ def _iter_response_chunks(
         response_lengths: Response segment lengths per sample.
 
     Yields:
-        Tuple of `(logits_chunk, tokens_chunk, response_indices)`, where
-        `logits_chunk` is shape `[R, V]` (policy) or `[R, 1]` (value), and
-        `tokens_chunk` is shape `[R]` (1D int64). `response_indices` maps every
-        local row back to the full response. The mapping is empty when
-        `include_response_indices` is false.
+        A tuple of contiguous `(logits_chunk, tokens_chunk, response_indices)`
+        parts for one sample. Zigzag context parallelism yields its two local
+        sequence parts separately so callers can process them without
+        materializing a full-response logits concatenation.
     """
     qkv_format = args.qkv_format
 
@@ -85,6 +84,7 @@ def _iter_response_chunks(
                 logits_chunk = logits[start - 1 : end - 1]
             tokens_chunk = tokens[-response_length:] if response_length else tokens[0:0]
             response_indices = range(response_length) if include_response_indices else ()
+            response_chunks = ((logits_chunk, tokens_chunk, response_indices),)
         elif args.allgather_cp:
             # DSA: global concat then contiguous CP split. Each rank owns logits for
             # global positions [chunk_start, chunk_end).
@@ -117,6 +117,7 @@ def _iter_response_chunks(
                     else ()
                 )
             assert logits_chunk.size(0) == tokens_chunk.size(0), f"{logits_chunk.size(0)} vs {tokens_chunk.size(0)}"
+            response_chunks = ((logits_chunk, tokens_chunk, response_indices),)
         else:
             # TODO: this is super ugly... do better abstraction.
             chunk_size, chunks_offset, logits_offset, tokens_offset = get_logits_and_tokens_offset_with_cp(
@@ -135,28 +136,60 @@ def _iter_response_chunks(
             assert logits_0.size(0) == tokens_0.size(0), f"{logits_0.size(0)} vs {tokens_0.size(0)}"
             assert logits_1.size(0) == tokens_1.size(0), f"{logits_1.size(0)} vs {tokens_1.size(0)}"
 
-            logits_chunk = torch.cat([logits_0, logits_1], dim=0)
-            tokens_chunk = torch.cat([tokens_0, tokens_1], dim=0)
             if include_response_indices:
                 prompt_length = total_length - response_length
-                response_indices = [
-                    *range(
-                        tokens_offset[0][0] - prompt_length,
-                        tokens_offset[0][1] - prompt_length,
-                    ),
-                    *range(
-                        tokens_offset[1][0] - prompt_length,
-                        tokens_offset[1][1] - prompt_length,
-                    ),
-                ]
+                response_indices_0: Sequence[int] = range(
+                    tokens_offset[0][0] - prompt_length,
+                    tokens_offset[0][1] - prompt_length,
+                )
+                response_indices_1: Sequence[int] = range(
+                    tokens_offset[1][0] - prompt_length,
+                    tokens_offset[1][1] - prompt_length,
+                )
             else:
-                response_indices = ()
+                response_indices_0 = ()
+                response_indices_1 = ()
+            response_chunks = (
+                (logits_0, tokens_0, response_indices_0),
+                (logits_1, tokens_1, response_indices_1),
+            )
 
         seq_start += total_length
 
         if include_response_indices:
-            assert len(response_indices) == tokens_chunk.size(0)
-        yield logits_chunk, tokens_chunk, response_indices
+            for _logits_chunk, tokens_chunk, response_indices in response_chunks:
+                assert len(response_indices) == tokens_chunk.size(0)
+        yield response_chunks
+
+
+def _iter_response_chunks(
+    logits: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None = None,
+    include_response_indices: bool,
+) -> Iterator[tuple[torch.Tensor, torch.Tensor, Sequence[int]]]:
+    """Yield one response-aligned tensor per sample for legacy consumers."""
+    response_chunk_parts = _iter_response_chunk_parts(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=include_response_indices,
+    )
+    for chunks in response_chunk_parts:
+        if len(chunks) == 1:
+            yield chunks[0]
+            continue
+
+        logits_chunks, tokens_chunks, index_chunks = zip(*chunks, strict=True)
+        response_indices = tuple(index for indices in index_chunks for index in indices)
+        yield torch.cat(logits_chunks, dim=0), torch.cat(tokens_chunks, dim=0), response_indices
 
 
 def get_responses(
@@ -232,7 +265,7 @@ def get_log_probs_and_entropy(
     parallel_state = get_parallel_state()
     log_probs_list = []
     entropy_list = []
-    response_chunks = _iter_response_chunks(
+    response_chunk_parts = _iter_response_chunk_parts(
         logits,
         args=args,
         unconcat_tokens=unconcat_tokens,
@@ -241,30 +274,37 @@ def get_log_probs_and_entropy(
         max_seq_lens=max_seq_lens,
         include_response_indices=rollout_sampling_mask is not None,
     )
-    for sample_index, (logits_chunk, tokens_chunk, response_indices) in enumerate(response_chunks):
-        sampling_mask = None
-        if rollout_sampling_mask is not None:
-            sampling_mask = build_local_sampling_mask(
+    for sample_index, response_chunks in enumerate(response_chunk_parts):
+        sample_log_probs = []
+        sample_entropies = []
+        for logits_chunk, tokens_chunk, response_indices in response_chunks:
+            sampling_mask = None
+            if rollout_sampling_mask is not None:
+                sampling_mask = build_local_sampling_mask(
+                    logits_chunk,
+                    rollout_sampling_mask[sample_index],
+                    response_indices,
+                    tp_rank=parallel_state.tp.rank,
+                )
+            log_prob, entropy = calculate_log_probs_and_entropy(
                 logits_chunk,
-                rollout_sampling_mask[sample_index],
-                response_indices,
-                tp_rank=parallel_state.tp.rank,
+                tokens_chunk,
+                parallel_state.tp.group,
+                with_entropy=with_entropy,
+                entropy_requires_grad=entropy_requires_grad,
+                chunk_size=args.log_probs_chunk_size,
+                true_on_policy=args.true_on_policy_mode,
+                vocab_size=getattr(args, "vocab_size", None),
+                sampling_mask=sampling_mask,
             )
-        log_prob, entropy = calculate_log_probs_and_entropy(
-            logits_chunk,
-            tokens_chunk,
-            parallel_state.tp.group,
-            with_entropy=with_entropy,
-            entropy_requires_grad=entropy_requires_grad,
-            chunk_size=args.log_probs_chunk_size,
-            true_on_policy=args.true_on_policy_mode,
-            vocab_size=getattr(args, "vocab_size", None),
-            sampling_mask=sampling_mask,
-        )
+            sample_log_probs.append(log_prob.squeeze(-1))
+            if with_entropy:
+                assert entropy is not None
+                sample_entropies.append(entropy)
 
-        log_probs_list.append(log_prob.squeeze(-1))
+        log_probs_list.append(sample_log_probs[0] if len(sample_log_probs) == 1 else torch.cat(sample_log_probs))
         if with_entropy:
-            entropy_list.append(entropy)
+            entropy_list.append(sample_entropies[0] if len(sample_entropies) == 1 else torch.cat(sample_entropies))
 
     res = {
         "log_probs": log_probs_list,
