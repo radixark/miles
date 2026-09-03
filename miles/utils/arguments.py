@@ -7,6 +7,7 @@ from typing import Any
 import yaml
 from sglang_router.launch_router import RouterArgs
 
+from miles.backends.dynamo_utils.arguments import add_dynamo_arguments
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as sglang_validate_args
 from miles.dashboard.args import add_dashboard_arguments, validate_dashboard_args
@@ -2672,6 +2673,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             help="Serve MoE-expert LoRA through sglang's fused_moe_lora alignment path instead "
             "of the virtual-experts path.",
         )
+        parser = add_dynamo_arguments(parser)
         parser = add_session_arguments(parser)
         parser = add_network_arguments(parser)
         parser = add_reward_model_arguments(parser)
