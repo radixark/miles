@@ -70,6 +70,7 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Bridge | Qwen2.5 0.5B / 3B | Dense | [0.5B CUDA and ROCm E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora/test_lora_qwen2.5_0.5B.py), [3B disaggregated recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen2.5-3B-megatron-lora-disaggregated.sh) | The simplest starting point; `all-linear` works. |
 | Bridge | Qwen3 4B | Dense | [Single-LoRA recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-qwen3-4B-megatron-lora.sh), [multi-LoRA recipe](https://github.com/radixark/miles/tree/main/examples/multi_lora) | Used by the current multi-adapter example. |
 | Bridge | GPT-OSS 20B | MoE | [Recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh), [MoE LoRA E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_gpt_oss_20b_moe_lora_ci.py) | Uses the SGLang `triton` LoRA backend. |
+| Bridge | Qwen3-30B-A3B | MoE | [MI350X/MI355X launcher](https://github.com/radixark/miles/blob/main/scripts/amd/run_qwen3_30b_a3b_lora.py) | Per-expert adapters colocated with training, on the attention backend SGLang picks itself. |
 | Bridge | Kimi K2.5 | Multimodal MoE + MLA | [16-node recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-kimi-k25-megatron-lora.sh) | Demonstrates shared-outer expert LoRA and an INT4 rollout / fake-QAT setup. |
 | Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
 | Bridge | Qwen3.5 / Qwen3.6 35B-A3B | Hybrid GDN + MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_5_35b_a3b_lora.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_5_35b_a3b_lora_ci.py) | Uses explicit wildcard targets to exclude MTP and vision modules. |
@@ -382,6 +383,12 @@ dataset-driven driver.
 - **Memory optimizations:** `--rematerialize-param-from-master-weight` and
   streamed optimizer state on NVMe reject LoRA. Ordinary actor disk offload is a
   different feature and is used by the draft agentic recipe.
+- **ROCm serving:** with a MoE adapter active, a heavily throttled rollout engine
+  has been seen to make SGLang's default ROCm attention backend raise an illegal
+  memory access inside its paged batch-prefill kernel, killing the engine's
+  scheduler process mid-rollout. An unthrottled engine ran the same recipe to
+  completion on that backend; `--sglang-attention-backend triton` also avoids it,
+  at roughly 20% more wall time.
 - **Multi-LoRA:** the current and proposed Tinker operation paths both require
   Bridge; native multi-LoRA remains roadmap work. Evaluation, colocate, PP,
   train offload, shared-outer experts, and FP8/FP4 MoE expert adapters are not
