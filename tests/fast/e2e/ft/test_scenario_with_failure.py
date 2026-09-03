@@ -42,20 +42,29 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
 
 
-def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
-    """The baseline must isolate fault execution while retaining the target topology."""
+def test_checkpoint_seed_phase_uses_shared_normal_topology() -> None:
+    """The unobserved seed phase must not introduce topology drift before comparison."""
+    mode = MODES["dp2_cp2_real_rollout_dense"]
+    baseline_args = shlex.split(_build_baseline_args(mode, "/tmp/baseline/phase_a", enable_dumper=False))
+    target_args = shlex.split(_build_target_args(mode, "/tmp/target/phase_a", enable_dumper=False))
+
+    assert "--use-fault-tolerance" not in baseline_args
+    assert "--use-fault-tolerance" not in target_args
+
+
+def test_compared_target_phase_uses_fault_tolerance() -> None:
+    """The compared target phase must retain FT and every configured fault action."""
     args = shlex.split(
-        _build_baseline_args(
+        _build_target_args(
             MODES["dp2_cp2_real_rollout_dense"],
-            "/tmp/baseline/phase_b",
+            "/tmp/target/phase_b",
             enable_dumper=False,
         )
     )
 
     assert "--use-fault-tolerance" in args
     assert "--ft-components" in args
-    assert "--ci-ft-test-actions" not in args
-    assert "--ci-inject-rollout-data-path" not in args
+    assert "--ci-ft-test-actions" in args
 
 
 def test_fake_rollout_does_not_inject_recorded_data() -> None:
