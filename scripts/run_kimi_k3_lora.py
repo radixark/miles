@@ -44,8 +44,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     sglang_path: str = "/root/sglang/python"
     pipeline_parallel_size: int = 1
     context_parallel_size: int = 1
-    # Explicit TP/EP overrides for layouts the PP-only derivation cannot express,
-    # e.g. TP4/CP2/PP4/EP8 (DP=2). None keeps the derived defaults unchanged.
+    # for layouts the PP-only derivation cannot express, e.g. TP4/CP2/PP4/EP8 (DP=2)
     tp_size_override: int | None = None
     ep_size_override: int | None = None
     rollout_tp_size: int = 8
@@ -200,8 +199,7 @@ def _execute_train(args: ScriptArgs) -> None:
         f"--lora-dropout {args.lora_dropout} "
         f'--target-modules "{args.target_modules}" '
         "--no-gradient-accumulation-fusion "
-        # Host mirror of the rollout base weights, so releasing them does not
-        # require the trainer to re-ship the base every step.
+        # host mirror of the rollout base, so releasing it does not re-ship the base every step
         "--lora-base-cpu-backup "
     )
     if args.experts_shared_outer_loras:
@@ -240,11 +238,7 @@ def _execute_train(args: ScriptArgs) -> None:
         "--use-dynamic-global-batch-size "
     )
     if args.eval_interval is not None:
-        # Eval on a held-out benchmark that MATCHES the training task, scored by
-        # the task's own reward (--rm-type): gsm8k -> gsm8k test set; math/dapo
-        # -> AIME-2024. Pin the eval input key to the eval dataset's own column
-        # (gsm8k uses "messages", aime/dapo use "prompt") rather than inheriting
-        # the training --input-key.
+        # eval on the training task's held-out set, keyed by the eval dataset's own column
         if args.task == "gsm8k":
             eval_name, eval_rel, eval_input_key = "gsm8k", "gsm8k/test.parquet", "messages"
         else:
@@ -311,8 +305,7 @@ def _execute_train(args: ScriptArgs) -> None:
     update_weight_buffer_size = args.update_weight_buffer_size
     if update_weight_buffer_size is None:
         update_weight_buffer_size = 256 * 1024**2 if args.model_variant == "full" else 2 * 1024**3
-    # K3's radix extra-buffer strategy needs five KDA cache slots per
-    # running request.
+    # the radix extra-buffer strategy needs five KDA cache slots per running request
     sglang_request_capacity = args.rollout_max_concurrency if args.model_variant == "full" else 16
     sglang_mamba_capacity = 5 * args.rollout_max_concurrency if args.model_variant == "full" else 16
 
@@ -328,15 +321,11 @@ def _execute_train(args: ScriptArgs) -> None:
         "--sglang-lora-strict-loading "
         f"--sglang-max-lora-rank {args.lora_rank} "
         "--use-miles-router "
-        # Tolerate colocate engines that are briefly slow to answer /health under
-        # long generations / weight-sync sleeps (default 3 falsely quarantined all
-        # engines at rollout 6 of the dapo 4096-response run -> "no healthy workers").
+        # /health is slow under long generations and weight-sync sleeps; 3 failures quarantined live engines
         "--miles-router-health-check-failure-threshold 10 "
     )
     if args.model_variant == "full" and args.rollout_tp_size > 8:
-        # Above TP8 the per-rank Marlin MoE intermediate (3072 / moe_tp) gets
-        # tile-padded, which the virtual-experts LoRA kernel rejects; the
-        # fused_moe_lora alignment path handles the padded stride.
+        # above TP8 the Marlin MoE intermediate is tile-padded, which the virtual-experts LoRA kernel rejects
         sglang_args += "--no-sglang-lora-use-virtual-experts "
     if args.model_variant == "full":
         sglang_args += (
@@ -403,8 +392,7 @@ def _execute_train(args: ScriptArgs) -> None:
         "NCCL_TIMEOUT": "3600",
         "PYTHONPATH": os.pathsep.join((str(Path(__file__).resolve().parents[1]), args.sglang_path)),
         "SGLANG_JIT_ROUTE_RADIX": "1",
-        # sglang's default membind forces the whole TMS weights CPU backup onto
-        # one NUMA node, which cannot hold it; keep the bind off by default.
+        # sglang's membind pins the whole TMS host backup to one NUMA node, which cannot hold it
         "SGLANG_NUMA_BIND_V2": os.environ.get("SGLANG_NUMA_BIND_V2", "0"),
     }
     # Ray's runtime_env replaces the actor environment, so the persistent

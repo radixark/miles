@@ -20,9 +20,7 @@ _SUPPORTED_TARGET_SUFFIXES = {
     "mlp.experts.linear_fc2",
 }
 
-# Targets that may be omitted: the routed-expert down-proj carries the
-# EP-shared w2_lora_B whose cross-expert gradient aggregation dominates
-# adapter growth (cf. miles PR 1559); dropping it must not trip validation.
+# the routed-expert down-proj may be omitted: its EP-shared w2_lora_B dominates adapter growth (#1559)
 _OPTIONAL_TARGET_SUFFIXES = {"mlp.experts.linear_fc2"}
 
 
@@ -66,14 +64,10 @@ def _new_param(
     if expert:
         param.allreduce = False
     if grad_sum_group == "tp":
-        # Megatron already reduces TP-replicated partial gradients in
-        # finalize_model_grads (_allreduce_non_tensor_model_parallel_grads) —
-        # the same path its own sequence-parallel LayerNorm grads take.
+        # Megatron sums TP-replicated partial grads itself in finalize_model_grads
         param.sum_gradients_across_tp_domain = True
     elif grad_sum_group is not None:
-        # EP has no upstream equivalent: Megatron assumes expert parameters are
-        # partitioned across EP and only ever reduces them over expert-DP, so
-        # reduce_marked_lora_grads supplies this sum.
+        # Megatron never reduces over EP (experts are assumed partitioned); reduce_marked_lora_grads does
         assert grad_sum_group == "ep", f"unsupported LoRA gradient sum group {grad_sum_group!r}"
         param._lora_grad_sum_group = grad_sum_group
     return param
@@ -218,8 +212,7 @@ def _apply_attention_lora(attention, args, layer_idx: int, scale: float, dropout
             ):
                 output, bias = _original(inputs, *forward_args, **forward_kwargs)
                 delta = F.linear(F.linear(_dropout(inputs, dropout, _module.training), _a), _b)
-                # q_b/kv_b TE column backward reduces latent dgrad over TP;
-                # the key-extra slice is reduced by KimiK3Attention itself.
+                # the TE column backward reduces the latent dgrad over TP; KimiK3Attention reduces the key-extra slice
                 return torch.add(output, delta, alpha=scale), bias
 
             module.forward = duplicated_forward

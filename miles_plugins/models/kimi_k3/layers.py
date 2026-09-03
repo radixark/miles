@@ -228,11 +228,7 @@ class KimiK3Attention(MegatronModule):
         self.g_proj = self._column_linear(hidden_size, self.num_heads * self.v_head_dim)
         self.o_proj = self._row_linear(self.num_heads * self.v_head_dim, hidden_size)
 
-        # K3 does not rotate the 64-wide field, so only Megatron's MLA *module* is
-        # unusable -- its attention *core* is not, and it is what carries CP
-        # (ring/a2a) and the varlen kernels. k_channels/v_channels express the
-        # unequal qk (128 nope + 64 extra) and v (128) widths; softmax_scale must be
-        # given explicitly because K3 has no YaRN mscale.
+        # Megatron's MLA core carries CP and varlen; only its module assumes the rotated 64-wide field K3 lacks
         self.core_attention = TEDotProductAttention(
             config=self.config,
             layer_number=self.layer_idx + 1,
@@ -311,12 +307,9 @@ class KimiK3Attention(MegatronModule):
         x = hidden_states.transpose(0, 1)
         cu_seqlens = packed_seq_params.cu_seqlens_q if packed_seq_params is not None else None
         if cp_context is not None:
-            # The context carries rank-local boundaries; the global ones only
-            # described where this shard sits in the full stream.
+            # the context carries the rank-local boundaries; the global ones only located this shard
             cu_seqlens = cp_context.cu_seqlens
-        # Packed input carrying neither channel would make the conv and the
-        # recurrence treat the whole microbatch as one sequence, silently
-        # leaking state across samples rather than failing.
+        # packed input with neither channel would silently leak recurrent state across samples
         assert (
             packed_seq_params is None or cu_seqlens is not None or cp_context is not None
         ), "packed (THD) input reached the KDA core without sequence boundaries"
@@ -354,10 +347,7 @@ class KimiK3Attention(MegatronModule):
         hidden_states: torch.Tensor,
         packed_seq_params: PackedSeqParams | None,
     ) -> torch.Tensor:
-        # Stay in [s, b, ...] the whole way: that is TE's sbhd layout, so q/k/v need
-        # neither a transpose nor a copy to reach it. (KDA is the opposite -- its
-        # kernels want [b, s, ...] -- which is why _kda_core transposes and this does
-        # not.)
+        # stay in TE's sbhd [s, b, ...] layout so q/k/v need no transpose; the KDA kernels want [b, s, ...]
         x = hidden_states
         query = _linear(
             self.q_b_proj,
@@ -382,19 +372,13 @@ class KimiK3Attention(MegatronModule):
             [self.qk_nope_head_dim, self.v_head_dim],
             dim=-1,
         )
-        # value is a slice, so it needs the copy; query is a view of a canonical
-        # linear output and key comes fresh out of the cat below. TE classifies the
-        # qkv layout from strides normalised by the last dim, so all three must have
-        # canonical ones or it rejects the layout outright.
+        # TE classifies the qkv layout from strides, so the sliced value needs canonical ones too
         value = value.contiguous()
         key_extra = copy_to_tensor_model_parallel_region(key_extra, group=self.tp_group)
         key_extra = key_extra.unsqueeze(-2).expand(*key_nope.shape[:-1], -1)
         key = torch.cat((key_nope, key_extra), dim=-1)
 
-        # TE requires 3D [t, h, d] tensors under packed sequences (qkv_format
-        # "thd"), with the batch dim dropped; mirror Megatron's Attention.forward
-        # (attention.py: squeeze(1) before core_attention, reshape (t, 1, -1)
-        # after). The fixed-length run_megatron harness never takes this branch.
+        # thd packing wants 3D [t, h, d]; mirror Megatron's Attention.forward squeeze/reshape
         is_thd = packed_seq_params is not None and packed_seq_params.qkv_format == "thd"
         if is_thd:
             query = query.squeeze(1)
@@ -447,10 +431,7 @@ class KimiK3Attention(MegatronModule):
                 tensor_parallel_output_grad=False,
                 group=self.tp_group,
             )
-        # Megatron CP stores each rank's tokens in the zigzag load-balanced order that
-        # ring attention wants; fla's CP operators want a contiguous rank-local chunk.
-        # Relayout only around KDA -- MLA's TE kernel consumes zigzag directly, which
-        # is the whole reason the global layout stays zigzag.
+        # CP tokens sit in ring attention's zigzag order; fla's CP kernels want a contiguous rank-local chunk
         relayout = self.is_kda and self.cp_size > 1
         if relayout:
             cp_cu_seqlens = self._cp_global_cu_seqlens(hidden_states, packed_seq_params)
@@ -494,12 +475,7 @@ class KimiK3TransformerLayer(TransformerLayer):
             _mark_tp_replicated(self.output_attn_res_norm, reduction="sum")
             _mark_tp_replicated(self.output_attn_res_proj, reduction="sum")
 
-        # Global layer indices where a pipeline stage begins. Derived from
-        # per-rank offsets (VPP is rejected in build_kimi_k3_spec, so vp_stage
-        # is always None); this handles uneven splits and avoids relying on a
-        # per-stage layer count. A layer is a stage entry if it starts a
-        # non-first stage, and a stage exit if the next layer starts a new
-        # stage (i.e. this is the last layer of a non-final stage).
+        # stage entry/exit layers from the per-rank offsets; VPP is rejected, so vp_stage is None
         pp_size = self.config.pipeline_model_parallel_size
         stage_starts = {get_transformer_layer_offset(self.config, None, r) for r in range(pp_size)}
         layer_idx = self.layer_number - 1

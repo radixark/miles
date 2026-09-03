@@ -76,10 +76,7 @@ class MilesRouter:
     async def _check_worker_health(self, url):
         """Encapsulated health check logic for better maintainability."""
         try:
-            # Colocate engines under long (multi-thousand-token) generations, or
-            # briefly paused during a weight-sync sleep, can be slow to answer
-            # /health while still alive. A 5s timeout falsely marks them dead; use
-            # a generous timeout so only truly-hung engines are quarantined.
+            # an engine mid long generation or weight-sync sleep answers /health slowly; 5s quarantined live ones
             response = await self.client.get(f"{url}/health", timeout=30.0)
             if response.status_code == 200:
                 return url, True

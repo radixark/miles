@@ -40,8 +40,7 @@ def build_kimi_k3_spec(config, vp_stage=None):
         use_transformer_engine=True,
         vp_stage=vp_stage,
     )
-    # block_spec.layer_specs only holds this PP stage's layers, so index
-    # moe_layer_freq with the global layer offset of the stage.
+    # layer_specs holds only this stage's layers; moe_layer_freq is indexed globally
     layer_offset = get_transformer_layer_offset(config, vp_stage)
     layer_specs = []
     for layer_spec in block_spec.layer_specs:

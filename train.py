@@ -134,8 +134,7 @@ async def train(args):
             if external_save:
                 os.remove(args.save_trigger_sentinel)
 
-        # The engines never generate again after the last rollout; skip the
-        # final offload/reload/update unless a final eval consumes it.
+        # nothing generates after the last rollout, so its offload/reload/update only serves a final eval
         if rollout_id + 1 < args.num_rollout or should_run_periodic_action(
             rollout_id, args.eval_interval, num_rollout_per_epoch
         ):
