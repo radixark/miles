@@ -21,6 +21,7 @@ NUM_PHASE_B_STEPS: int = 4
 _FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
 _FIRST_INJECTED_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID
 _FIRST_POST_FAULT_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID + 1
+_FAULT_ROLLOUT_ALLOW_FAILED_PATTERN: str = f"{INPUT_TENSORS_ALLOW_FAILED_PATTERN}|grad__.*witness.*"
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -156,7 +157,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
             target_dir=f"{dump_dir}/target/phase_b",
             diff_thresholds=_diff_thresholds_for_rollout(mode, rollout_id),
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
-            allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
+            allow_failed_pattern=_allow_failed_pattern_for_rollout(rollout_id),
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
         )
     print("With-failure comparison test PASSED")
@@ -166,6 +167,12 @@ def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tupl
     if mode.has_real_rollout and rollout_id >= _FIRST_POST_FAULT_ROLLOUT_ID:
         return _POST_FAULT_DIFF_THRESHOLDS
     return _DIFF_THRESHOLDS
+
+
+def _allow_failed_pattern_for_rollout(rollout_id: int) -> str:
+    if rollout_id == _FAULT_ROLLOUT_ID:
+        return _FAULT_ROLLOUT_ALLOW_FAILED_PATTERN
+    return INPUT_TENSORS_ALLOW_FAILED_PATTERN
 
 
 TEST_NAME: str = "trainer_ft_with_failure"

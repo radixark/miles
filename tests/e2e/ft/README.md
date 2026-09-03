@@ -145,6 +145,9 @@ Phase B — target:
 Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
 also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault/injected rollouts'
 grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
+The fault rollout allows only `grad__.*witness.*` to differ: those sparse diagnostic
+gradients encode attempt-local witness IDs, whose coordinates change after retry. Their
+parameters remain strict, and all model weights, activations, and gradients remain strict.
 
 Healing witness: the target phase_b event dir must contain exactly two
 CellReconfigureEvents, in order — a shrink at rollout 2 (alive N -> N-1, positive proof

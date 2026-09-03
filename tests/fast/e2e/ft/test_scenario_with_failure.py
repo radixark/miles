@@ -4,14 +4,18 @@ import shlex
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     _DIFF_THRESHOLDS,
+    _FAULT_ROLLOUT_ALLOW_FAILED_PATTERN,
     _FAULT_ROLLOUT_ID,
     _FIRST_INJECTED_ROLLOUT_ID,
     _FIRST_POST_FAULT_ROLLOUT_ID,
     _POST_FAULT_DIFF_THRESHOLDS,
+    _allow_failed_pattern_for_rollout,
     _build_baseline_args,
     _build_target_args,
     _diff_thresholds_for_rollout,
 )
+
+from miles.utils.test_utils.comparisons.dumps import INPUT_TENSORS_ALLOW_FAILED_PATTERN
 
 
 def _option_value(args: str, option: str) -> str:
@@ -56,6 +60,13 @@ def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
     assert "--ft-components" in args
     assert "--ci-ft-test-actions" not in args
     assert "--ci-inject-rollout-data-path" not in args
+
+
+def test_only_fault_rollout_allows_attempt_local_witness_gradients_to_differ() -> None:
+    """Only the retried rollout may differ in sparse attempt-local witness gradients."""
+    assert "grad__.*witness.*" in _FAULT_ROLLOUT_ALLOW_FAILED_PATTERN
+    assert _allow_failed_pattern_for_rollout(_FAULT_ROLLOUT_ID) == _FAULT_ROLLOUT_ALLOW_FAILED_PATTERN
+    assert _allow_failed_pattern_for_rollout(_FIRST_POST_FAULT_ROLLOUT_ID) == INPUT_TENSORS_ALLOW_FAILED_PATTERN
 
 
 def test_fake_rollout_does_not_inject_recorded_data() -> None:
