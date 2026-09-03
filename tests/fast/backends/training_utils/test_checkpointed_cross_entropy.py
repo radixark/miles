@@ -1,7 +1,11 @@
+import os
 from types import SimpleNamespace
 
+import pytest
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
+from megatron.core import tensor_parallel
 
 from miles.backends.training_utils.loss_hub import logit_processors
 from miles.backends.training_utils.loss_hub.checkpointed_cross_entropy import (
@@ -29,6 +33,20 @@ class _OutputLayer(torch.nn.Module):
         assert runtime_gather_output is False
         self.seen_sequence_lengths.append(input_.size(0))
         return F.linear(input_, self.weight if weight is None else weight), None
+
+
+class _TensorParallelOutputLayer(_OutputLayer):
+    def forward(
+        self,
+        input_: torch.Tensor,
+        weight: torch.Tensor | None = None,
+        runtime_gather_output: bool | None = None,
+    ) -> tuple[torch.Tensor, None]:
+        assert runtime_gather_output is False
+        assert self.sequence_parallel is False
+        self.seen_sequence_lengths.append(input_.size(0))
+        input_parallel = tensor_parallel.copy_to_tensor_model_parallel_region(input_, group=self.tp_group)
+        return F.linear(input_parallel, self.weight if weight is None else weight), None
 
 
 def test_checkpointed_cross_entropy_matches_dense_forward_and_backward() -> None:
@@ -121,3 +139,58 @@ def test_install_routes_megatron_linear_cross_entropy_method() -> None:
     assert model.config.cross_entropy_loss_fusion is True
     assert model.config.cross_entropy_fusion_impl == "linear"
     assert model.fuse_linear_cross_entropy is True
+
+
+@pytest.mark.skipif(int(os.environ.get("WORLD_SIZE", "1")) != 2, reason="requires torchrun with two GPUs")
+def test_sequence_and_tensor_parallel_checkpointed_cross_entropy() -> None:
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    initialized_here = not dist.is_initialized()
+    if initialized_here:
+        dist.init_process_group(backend="nccl", init_method="env://")
+    rank = dist.get_rank()
+    device = torch.device("cuda", local_rank)
+
+    torch.manual_seed(19)
+    global_hidden = torch.randn(8, 1, 6, device=device, dtype=torch.bfloat16)
+    global_weight = torch.randn(14, 6, device=device, dtype=torch.bfloat16)
+    labels = torch.tensor([[1, 5, 8, 2, 11, 7, 3, 12]], device=device)
+
+    local_hidden = global_hidden.chunk(2, dim=0)[rank].detach().clone().requires_grad_(True)
+    local_weight = global_weight.chunk(2, dim=0)[rank].detach().clone()
+    layer = _TensorParallelOutputLayer(hidden_size=6, vocab_size=7).to(device=device, dtype=torch.bfloat16)
+    layer.weight = torch.nn.Parameter(local_weight)
+    layer.sequence_parallel = True
+    layer.tp_group = dist.group.WORLD
+
+    actual = checkpointed_vocab_parallel_cross_entropy(
+        local_hidden,
+        labels,
+        output_layer=layer,
+        output_weight=None,
+        chunk_size=3,
+        sequence_parallel_input=True,
+    )
+    actual.sum().backward()
+
+    dense_hidden = global_hidden.detach().clone().requires_grad_(True)
+    dense_weight = global_weight.detach().clone().requires_grad_(True)
+    dense_logits = F.linear(dense_hidden, dense_weight).float()
+    expected = (
+        F.cross_entropy(
+            dense_logits.flatten(0, 1),
+            labels.transpose(0, 1).flatten(),
+            reduction="none",
+        )
+        .view_as(labels.transpose(0, 1))
+        .transpose(0, 1)
+    )
+    expected.sum().backward()
+
+    torch.testing.assert_close(actual, expected, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(local_hidden.grad, dense_hidden.grad.chunk(2, dim=0)[rank], atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(layer.weight.grad, dense_weight.grad.chunk(2, dim=0)[rank], atol=2e-2, rtol=2e-2)
+    assert max(layer.seen_sequence_lengths) <= 3
+
+    if initialized_here:
+        dist.destroy_process_group()
