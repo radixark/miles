@@ -39,6 +39,11 @@ class TensorBackuper(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def has_backup(self, tag: str) -> bool:
+        """Whether ``tag`` currently owns the tensors needed by ``get``/``restore``."""
+        raise NotImplementedError
+
+    @abstractmethod
     def backup(self, tag: str):
         raise NotImplementedError
 
@@ -47,6 +52,11 @@ class TensorBackuper(ABC):
 
     @abstractmethod
     def restore(self, tag: str):
+        raise NotImplementedError
+
+    @abstractmethod
+    def release(self, tag: str) -> None:
+        """Drop the pinned tensors owned by ``tag`` after they have been restored."""
         raise NotImplementedError
 
 
@@ -60,7 +70,11 @@ class _TensorBackuperNormal(TensorBackuper):
         return list(self._backups)
 
     def get(self, tag: str):
+        assert tag in self._backups, f"tag {tag!r} was never backed up"
         return self._backups[tag]
+
+    def has_backup(self, tag: str) -> bool:
+        return tag in self._backups
 
     @torch.no_grad()
     def backup(self, tag: str) -> None:
@@ -78,11 +92,14 @@ class _TensorBackuperNormal(TensorBackuper):
 
     @torch.no_grad()
     def restore(self, tag: str) -> None:
-        backup_dict = self._backups[tag]
+        backup_dict = self.get(tag)
         for name, param in self._source_getter():
             assert name in backup_dict
             param.copy_(backup_dict[name], non_blocking=True)
         torch.cuda.synchronize()
+
+    def release(self, tag: str) -> None:
+        self._backups.pop(tag, None)
 
 
 class _TensorBackuperMainCast(TensorBackuper):
@@ -102,6 +119,7 @@ class _TensorBackuperMainCast(TensorBackuper):
         self._others = _TensorBackuperNormal(source_getter=source_getter)
         self._extras_backup: dict[str, torch.Tensor] = {}
         self._extras_backup_by_id: dict[int, torch.Tensor] = {}
+        self._actor_is_backed_up = False
         self._backup_count = 0
         self._expected_hashes: dict[str, str] | None = None
 
@@ -119,6 +137,7 @@ class _TensorBackuperMainCast(TensorBackuper):
             self._extras_backup[name].copy_(tensor.detach(), non_blocking=True)
             self._extras_backup_by_id[id(tensor)] = self._extras_backup[name]
         torch.cuda.synchronize()
+        self._actor_is_backed_up = True
         self._backup_count += 1
         if self._ctx.check and self._backup_count <= self._check_num_cycles:
             self._expected_hashes = self._compute_hashes()
@@ -129,6 +148,7 @@ class _TensorBackuperMainCast(TensorBackuper):
     def restore(self, tag: str) -> None:
         if tag != "actor":
             return self._others.restore(tag)
+        assert self._actor_is_backed_up, "tag 'actor' was never backed up"
         self._ctx.cast_main_to_params()
         for model_chunk in self._ctx.model_chunks:
             model_chunk.start_param_sync(force_sync=True)
@@ -141,6 +161,7 @@ class _TensorBackuperMainCast(TensorBackuper):
     def get(self, tag: str):
         if tag != "actor":
             return self._others.get(tag)
+        assert self._actor_is_backed_up, "tag 'actor' was never backed up"
         # Extras are paused during update_weights. Read them from the pinned backup.
         out = {}
         for name, tensor in self._source_getter():
@@ -152,6 +173,20 @@ class _TensorBackuperMainCast(TensorBackuper):
                 backup = tensor.detach()
             out[name] = backup
         return out
+
+    def has_backup(self, tag: str) -> bool:
+        if tag == "actor":
+            return self._actor_is_backed_up
+        return self._others.has_backup(tag)
+
+    def release(self, tag: str) -> None:
+        if tag != "actor":
+            self._others.release(tag)
+            return
+        self._extras_backup.clear()
+        self._extras_backup_by_id.clear()
+        self._expected_hashes = None
+        self._actor_is_backed_up = False
 
     def _compute_hashes(self) -> dict[str, str]:
         return {name: _hash_tensor_sha256(tensor) for name, tensor in self._source_getter()}

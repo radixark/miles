@@ -15,6 +15,9 @@ from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
+LORA_FROZEN_BASE_NO_BACKUP_TAG = "lora_frozen_base_no_backup"
+_LORA_RELOCATION_CACHE_FLUSH_BYTES = 1024**3
+
 # ---------------------------------------------------------------------------
 # Unified HF <-> Megatron module name mappings
 # ---------------------------------------------------------------------------
@@ -113,6 +116,60 @@ _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     """LoRA + --colocate + --lora-base-cpu-backup all set."""
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
+
+
+@torch.no_grad()
+def relocate_lora_frozen_base_to_no_backup_region(
+    args: Namespace,
+    model: Sequence[torch.nn.Module],
+    role: str,
+) -> None:
+    """Move only frozen LoRA parameters into a drop-only TMS allocation region."""
+    if not (
+        role == "actor"
+        and getattr(args, "offload_train", False)
+        and getattr(args, "colocate", False)
+        and is_lora_enabled(args)
+    ):
+        return
+
+    from torch_memory_saver import torch_memory_saver
+
+    frozen_parameters = []
+    seen_parameter_ids = set()
+    for model_chunk in model:
+        for parameter in model_chunk.parameters():
+            if parameter.requires_grad or id(parameter) in seen_parameter_ids:
+                continue
+            seen_parameter_ids.add(id(parameter))
+            frozen_parameters.append(parameter)
+
+    with torch_memory_saver.region(
+        tag=LORA_FROZEN_BASE_NO_BACKUP_TAG,
+        enable_cpu_backup=False,
+        enable_disk_backup=False,
+    ):
+        relocated_since_flush = 0
+        for parameter in frozen_parameters:
+            parameter.data = parameter.detach().clone(memory_format=torch.preserve_format)
+            relocated_since_flush += parameter.numel() * parameter.element_size()
+            if relocated_since_flush >= _LORA_RELOCATION_CACHE_FLUSH_BYTES:
+                # Old storage belongs to the default TMS MemPool and cannot be
+                # reused by this region. Flush it incrementally to bound the
+                # temporary relocation peak for large models.
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                relocated_since_flush = 0
+    if relocated_since_flush:
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+
+    frozen_bytes = sum(parameter.numel() * parameter.element_size() for parameter in frozen_parameters)
+    logger.info(
+        "Relocated %d frozen LoRA parameters (%.2f GiB) to drop-only TMS storage",
+        len(frozen_parameters),
+        frozen_bytes / 1024**3,
+    )
 
 
 def sglang_lora_target_all_sentinel(args) -> bool:

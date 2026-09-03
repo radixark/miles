@@ -53,7 +53,7 @@ from .ft.checkpoint_transfer import send_ckpt as _send_ckpt
 from .ft.in_memory_checkpoint import InMemoryCheckpointManager
 from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
-from .lora_utils import is_lora_enabled, lora_rollout_enabled
+from .lora_utils import LORA_FROZEN_BASE_NO_BACKUP_TAG, is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
@@ -101,6 +101,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        self._has_model_snapshots = with_ref or with_opd_teacher or args.keep_old_actor
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -266,21 +267,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 update_weight_cls = UpdateWeightFromDiskDelta
             else:
                 update_weight_cls = UpdateWeightP2P
-        if self._weight_sync_reads_tms_backup:
-            weights_getter = lambda: dict(  # noqa: E731
-                named_params_and_buffers(
-                    self.args,
-                    self.model,
-                    convert_to_global_name=args.megatron_to_hf_mode == "raw",
-                    translate_gpu_to_cpu=True,
-                )
-            )
-        else:
-            weights_getter = lambda: self.weights_backuper.get("actor")  # noqa: E731
         self.weight_updater = update_weight_cls(
             self.args,
             self.model,
-            weights_getter=weights_getter,
+            weights_getter=lambda: self.weights_backuper.get("actor"),
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
             is_lora=lora_rollout_enabled(args),
@@ -343,9 +333,11 @@ class MegatronTrainRayActor(TrainRayActor):
             # Params stay resident for update_weights, which pauses them afterwards.
             torch_memory_saver.pause(tag="grad_buffer")
             torch_memory_saver.pause(tag="default")
+        elif lora_rollout_enabled(self.args):
+            torch_memory_saver.pause(tag=LORA_FROZEN_BASE_NO_BACKUP_TAG)
+            torch_memory_saver.pause(tag="default")
         else:
-            tag = "default" if lora_rollout_enabled(self.args) else None
-            torch_memory_saver.pause(tag=tag)
+            torch_memory_saver.pause(tag=None)
 
         self._asleep = True
         print_memory("after offload model")
@@ -363,40 +355,56 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         print_memory("before wake_up model")
 
-        tag = "default" if lora_rollout_enabled(self.args) else None
-        torch_memory_saver.resume(tag=tag)
+        if lora_rollout_enabled(self.args):
+            torch_memory_saver.resume(tag="default")
+            torch_memory_saver.resume(tag=LORA_FROZEN_BASE_NO_BACKUP_TAG)
+        else:
+            torch_memory_saver.resume(tag=None)
 
         clear_memory()
+        # MainCast restore performs a DP synchronization, so reload every
+        # process group before restoring rematerialized parameters.
         reload_process_groups()
+        self._restore_actor_after_onload()
         self._asleep = False
         print_memory("after wake_up model")
 
     @property
-    def _weight_sync_reads_tms_backup(self) -> bool:
-        """Under colocated LoRA the frozen base already has a memory-saver host backup; a
-        pinned "actor" copy of it would duplicate the whole base per rank. Model switching
-        still needs the real backups, and a disk offload target leaves no host backup to read."""
-        return (
-            self.args.colocate
-            and is_lora_enabled(self.args)
-            and self.args.offload_train_target == "cpu"
-            and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
-        )
-
-    @property
     def _enable_weight_backup(self) -> bool:
         """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
-        if self._weight_sync_reads_tms_backup:
-            return False
-        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
+        return getattr(self, "_has_model_snapshots", False) or self.args.colocate
 
     def _switch_model(self, target_tag: str) -> None:
+        if target_tag == self._active_model_tag and not self.weights_backuper.has_backup(target_tag):
+            return
         if not self._enable_weight_backup:
             return
-        if target_tag not in self.weights_backuper.backup_tags:
+        if not self.weights_backuper.has_backup(target_tag):
             raise ValueError(f"Cannot switch to unknown model tag: {target_tag}")
         self.weights_backuper.restore(target_tag)
         self._active_model_tag = target_tag
+
+    def _restore_actor_after_onload(self) -> None:
+        if getattr(self, "role", None) != "actor" or not self._enable_weight_backup:
+            return
+        if not self.weights_backuper.has_backup("actor"):
+            return
+        self._switch_model("actor")
+        if not getattr(self, "_has_model_snapshots", False):
+            self._release_actor_pinned_backup()
+
+    def _ensure_actor_backup_for_model_switching(self) -> None:
+        if not getattr(self, "_has_model_snapshots", False) or self.weights_backuper.has_backup("actor"):
+            return
+        assert self._active_model_tag == "actor"
+        self.weights_backuper.backup("actor")
+
+    def _release_actor_pinned_backup(self) -> None:
+        if not self.args.offload_train or not self.weights_backuper.has_backup("actor"):
+            return
+        assert self._active_model_tag == "actor"
+        self.weights_backuper.release("actor")
+        clear_memory(clear_host_memory=True)
 
     def _set_replay_stage(self, stage: str) -> None:
         for m in all_replay_managers:
@@ -542,6 +550,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         with inverse_timer("train_wait"), timer("train"):
             if self.args.compute_advantages_and_returns:
+                self._ensure_actor_backup_for_model_switching()
                 if "ref" in self.weights_backuper.backup_tags:
                     self._set_replay_stage("fallthrough")
                     self._switch_model("ref")
@@ -605,6 +614,10 @@ class MegatronTrainRayActor(TrainRayActor):
                 # because we may need normalize the whole rollout.
                 compute_advantages_and_returns(self.args, rollout_data)
                 log_train_advantage_computation_event(rollout_data)
+
+            # The current actor now lives on GPU and all model-switching forwards
+            # are complete. Return its pinned host snapshot before training.
+            self._release_actor_pinned_backup()
 
             if self.rollout_data_postprocess is not None:
                 self.rollout_data_postprocess(self.args)

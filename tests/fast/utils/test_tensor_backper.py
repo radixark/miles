@@ -207,3 +207,43 @@ def test_actor_restore_wins_after_ref_switch():
     setup.backuper.restore("actor")
     for name, tensor in {**setup.params, **setup.extras}.items():
         assert torch.equal(tensor, actor_values[name]), name
+
+
+def test_normal_release_drops_pinned_snapshot_and_allows_rebackup():
+    source = {"weight": torch.arange(4, dtype=torch.float32)}
+    backuper = TensorBackuper.create(source_getter=lambda: iter(source.items()))
+
+    backuper.backup("actor")
+    backuper.release("actor")
+
+    assert "actor" not in backuper.backup_tags
+    assert not backuper.has_backup("actor")
+    with pytest.raises(AssertionError, match="never backed up"):
+        backuper.get("actor")
+
+    source["weight"].add_(10)
+    backuper.backup("actor")
+    source["weight"].zero_()
+    backuper.restore("actor")
+    torch.testing.assert_close(source["weight"], torch.arange(4, dtype=torch.float32) + 10)
+
+
+def test_main_cast_release_drops_only_actor_extras_and_allows_rebackup():
+    setup = _Setup()
+    setup.backuper.backup("actor")
+    setup.backuper.backup("ref")
+
+    setup.backuper.release("actor")
+
+    assert setup.backuper.backup_tags == ["actor", "ref"]
+    assert not setup.backuper.has_backup("actor")
+    with pytest.raises(AssertionError, match="never backed up"):
+        setup.backuper.get("actor")
+    assert setup.backuper.get("ref")
+
+    expected = {name: tensor.clone() for name, tensor in {**setup.params, **setup.extras}.items()}
+    setup.backuper.backup("actor")
+    setup.corrupt_live_tensors()
+    setup.backuper.restore("actor")
+    for name, tensor in {**setup.params, **setup.extras}.items():
+        assert torch.equal(tensor, expected[name]), name

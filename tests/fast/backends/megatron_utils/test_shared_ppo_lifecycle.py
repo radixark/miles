@@ -3,7 +3,7 @@ import sys
 from argparse import Namespace
 from contextlib import contextmanager, nullcontext
 from types import ModuleType
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 import torch
@@ -258,6 +258,84 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
     assert worker._asleep is False
 
 
+def _actor_pinned_lifecycle_worker(actor_module, monkeypatch, *, has_model_snapshots=False):
+    worker, saver, reload_groups = _lifecycle_worker(actor_module, monkeypatch, asleep=True)
+    worker.role = "actor"
+    worker.args.colocate = True
+    worker.args.keep_old_actor = has_model_snapshots
+    worker._has_model_snapshots = has_model_snapshots
+    worker._active_model_tag = "actor"
+    worker.weights_backuper = Mock(backup_tags={"actor"})
+    worker.weights_backuper.has_backup.return_value = True
+    return worker, saver, reload_groups
+
+
+@pytest.mark.parametrize(
+    ("is_lora", "lora_base_cpu_backup"),
+    [(False, False), (True, False), (True, True)],
+)
+def test_wake_up_restores_then_releases_actor_pinned_backup(actor_module, monkeypatch, is_lora, lora_base_cpu_backup):
+    worker, saver, reload_groups = _actor_pinned_lifecycle_worker(actor_module, monkeypatch)
+    worker.args.lora_base_cpu_backup = lora_base_cpu_backup
+    if is_lora:
+        monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.wake_up()
+
+    if is_lora:
+        assert saver.resume.call_args_list == [
+            call(tag="default"),
+            call(tag=actor_module.LORA_FROZEN_BASE_NO_BACKUP_TAG),
+        ]
+    else:
+        saver.resume.assert_called_once_with(tag=None)
+    reload_groups.assert_called_once_with()
+    worker.weights_backuper.restore.assert_called_once_with("actor")
+    worker.weights_backuper.release.assert_called_once_with("actor")
+    actor_module.clear_memory.assert_has_calls([call(), call(clear_host_memory=True)])
+
+
+def test_model_snapshots_defer_actor_pinned_release_until_switching_finishes(actor_module, monkeypatch):
+    worker, _, _ = _actor_pinned_lifecycle_worker(actor_module, monkeypatch, has_model_snapshots=True)
+
+    worker.wake_up()
+
+    worker.weights_backuper.restore.assert_called_once_with("actor")
+    worker.weights_backuper.release.assert_not_called()
+
+    worker._release_actor_pinned_backup()
+
+    worker.weights_backuper.release.assert_called_once_with("actor")
+    actor_module.clear_memory.assert_called_with(clear_host_memory=True)
+
+
+def test_retry_recreates_actor_snapshot_before_model_switching(actor_module, monkeypatch):
+    worker, _, _ = _actor_pinned_lifecycle_worker(actor_module, monkeypatch, has_model_snapshots=True)
+    worker.weights_backuper.backup_tags = {"ref"}
+    worker.weights_backuper.has_backup.return_value = False
+
+    worker._ensure_actor_backup_for_model_switching()
+
+    worker.weights_backuper.backup.assert_called_once_with("actor")
+
+
+def test_lora_sleep_and_wake_manage_drop_only_frozen_base_region(actor_module, monkeypatch):
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.sleep()
+    worker.wake_up()
+
+    assert saver.pause.call_args_list == [
+        call(tag=actor_module.LORA_FROZEN_BASE_NO_BACKUP_TAG),
+        call(tag="default"),
+    ]
+    assert saver.resume.call_args_list == [
+        call(tag="default"),
+        call(tag=actor_module.LORA_FROZEN_BASE_NO_BACKUP_TAG),
+    ]
+
+
 def _actor_train_args(**overrides):
     defaults = dict(
         compute_advantages_and_returns=True,
@@ -265,6 +343,7 @@ def _actor_train_args(**overrides):
         keep_old_actor=False,
         get_mismatch_metrics=False,
         skip_actor_forward_only=False,
+        offload_train=False,
     )
     return Namespace(**(defaults | overrides))
 

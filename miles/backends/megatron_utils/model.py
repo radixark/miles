@@ -50,7 +50,7 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora_utils import is_lora_enabled, is_lora_model
+from .lora_utils import is_lora_enabled, is_lora_model, relocate_lora_frozen_base_to_no_backup_region
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
@@ -160,6 +160,10 @@ def setup_model_and_optimizer(
 
             provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
         model = get_model(provider_func, ModelType.encoder_or_decoder)
+
+    # Do this before optimizer/master-state construction to keep the temporary
+    # storage relocation peak out of the trainer's steady initialization peak.
+    relocate_lora_frozen_base_to_no_backup_region(args, model, role)
 
     if args.debug_disable_optimizer:
         if is_first_replica_megatron_main_rank():

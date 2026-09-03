@@ -4,12 +4,15 @@ Tests cover module name conversion, LoRA detection helpers, parameter identifica
 exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
+import sys
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from miles.backends.megatron_utils.lora_utils import (
+    LORA_FROZEN_BASE_NO_BACKUP_TAG,
     _get_lora_class_name,
     _is_adapter_param_name,
     build_lora_sync_config,
@@ -18,6 +21,7 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_enabled,
     is_lora_weight_name,
     parse_exclude_modules,
+    relocate_lora_frozen_base_to_no_backup_region,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
 
@@ -214,6 +218,62 @@ class TestIsLoraEnabled:
     def test_disabled_missing_attrs(self):
         args = Namespace()
         assert is_lora_enabled(args) is False
+
+
+class TestRelocateLoraFrozenBase:
+    def test_colocated_offloaded_actor_moves_only_frozen_parameters(self, monkeypatch):
+        import torch
+
+        saver = MagicMock()
+        saver.region.return_value = MagicMock()
+        monkeypatch.setitem(sys.modules, "torch_memory_saver", SimpleNamespace(torch_memory_saver=saver))
+        monkeypatch.setattr(torch.cuda, "synchronize", MagicMock())
+        monkeypatch.setattr(torch.cuda, "empty_cache", MagicMock())
+        args = Namespace(lora_rank=32, lora_adapter_path=None, offload_train=True, colocate=True)
+        model = torch.nn.Linear(4, 3)
+        model.weight.requires_grad_(False)
+        expected_weight = model.weight.detach().clone()
+        frozen_pointer = model.weight.data_ptr()
+        trainable_pointer = model.bias.data_ptr()
+
+        relocate_lora_frozen_base_to_no_backup_region(args, [model], role="actor")
+
+        assert model.weight.data_ptr() != frozen_pointer
+        assert model.bias.data_ptr() == trainable_pointer
+        torch.testing.assert_close(model.weight, expected_weight)
+        saver.region.assert_called_once_with(
+            tag=LORA_FROZEN_BASE_NO_BACKUP_TAG,
+            enable_cpu_backup=False,
+            enable_disk_backup=False,
+        )
+        torch.cuda.synchronize.assert_called_once_with()
+        torch.cuda.empty_cache.assert_called_once_with()
+
+    @pytest.mark.parametrize(
+        "role,offload_train,colocate,lora_rank",
+        [
+            ("critic", True, True, 32),
+            ("actor", False, True, 32),
+            ("actor", True, False, 32),
+            ("actor", True, True, 0),
+        ],
+    )
+    def test_inactive_modes_do_not_move_parameters(self, role, offload_train, colocate, lora_rank):
+        import torch
+
+        args = Namespace(
+            lora_rank=lora_rank,
+            lora_adapter_path=None,
+            offload_train=offload_train,
+            colocate=colocate,
+        )
+        model = torch.nn.Linear(2, 2)
+        model.weight.requires_grad_(False)
+        pointer = model.weight.data_ptr()
+
+        relocate_lora_frozen_base_to_no_backup_region(args, [model], role=role)
+
+        assert model.weight.data_ptr() == pointer
 
 
 # ---------------------------------------------------------------------------
