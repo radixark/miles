@@ -129,7 +129,7 @@ async def recompute_rollout_logprobs_via_prefill(
         return
 
     payload = _build_prefill_scoring_payload(args, sample, sampling_params)
-    output = await post(url, payload, headers=headers)
+    output = await post(url, payload, headers=headers, idempotent=False)
     sample.rollout_log_probs = _extract_response_logprobs(sample, output["meta_info"])
     sample.metadata["rollout_log_probs_source"] = "sglang_prefill_recompute"
 
@@ -164,7 +164,7 @@ async def recompute_samples_rollout_logprobs_via_prefill(
             # each scoring group so every group uses the same clean-prefill path.
             await post(flush_url, {})
             payload = _build_batch_prefill_scoring_payload(args, batch_samples, sampling_params)
-            outputs = await post(url, payload)
+            outputs = await post(url, payload, idempotent=False)
             if not isinstance(outputs, list):
                 raise ValueError(f"SGLang batch prefill scoring returned {type(outputs).__name__}, expected list")
             if len(outputs) != len(batch_samples):

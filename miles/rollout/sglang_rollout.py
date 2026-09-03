@@ -55,7 +55,7 @@ def get_model_url(args: Namespace, model_name: str, endpoint: str = "/generate")
     model when multiple models are deployed via ``--sglang-config``::
 
         url = get_model_url(args, "ref", "/generate")
-        resp = await post(url, json=payload)
+        resp = await post(url, payload, idempotent=False)
 
     Falls back to the default router if *model_name* is not found or
     ``sglang_model_routers`` is not set.
@@ -225,7 +225,9 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     headers = compute_routing_headers(args, sample)
 
-    output = await post(url, payload, headers=headers)
+    # /generate is non-idempotent: a retry after the request reached the server
+    # would re-issue generation. Only pre-send connection errors are retried.
+    output = await post(url, payload, headers=headers, idempotent=False)
     if getattr(args, "use_opd", False) and opd_top_k > 0 and opd_top_k_strategy != "only-teacher":
         output_top_logprobs = output.get("meta_info", {}).get("output_top_logprobs")
         if output_top_logprobs is not None:
