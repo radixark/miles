@@ -42,15 +42,16 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
 # bitwise-identical, but the target's weights carry the fault-inherent ulp drift of the
 # degraded-quorum commit. On the converged dense model that drift lands in the
 # cancellation-dominated near-zero grads of the decoder-layer norms and attention/MLP
-# matrices as absolute noise measured <= 4.8e-3 (2026-09-03) while real grads sit at
-# ~1e-2 — only those measured families get a 5e-3 floor. Everything else (embeddings,
-# output layer, final norm, all activations/values) stays strict.
+# matrices as absolute noise measured <= 2.8e-3 (40 tensors, 2026-06-12; q_layernorm up to
+# rel 20% at max_abs 2.6e-3) while real grads sit at ~1e-2 — only those measured families
+# get a 3e-3 floor. Everything else (embeddings, output layer, final norm, all
+# activations/values) stays strict, and all passed at rel <= 0.85% in the same run.
 _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
-    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 5e-3"),
-    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 5e-3"),
-    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 5e-3"),
-    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 5e-3"),
-    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 5e-3"),
+    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
+    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
     (".*", "rel <= 0.0085"),
 ]
 
@@ -91,8 +92,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
     base += get_train_env_vars_arg(mode, deterministic=False)
-    if is_target:
-        base += get_ft_args(mode)
+    base += get_ft_args(mode)
 
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
