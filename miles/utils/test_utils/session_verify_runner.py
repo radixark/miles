@@ -87,12 +87,6 @@ def session_verify_extras(parser: argparse.ArgumentParser) -> argparse.ArgumentP
     session-verify invariants as parser defaults — user CLI still overrides
     these via the canonical miles flags.
     """
-    # The wrapper performs the first parse before execute_train discovers the
-    # custom generate function. Register its two generate-owned options here as
-    # well so the documented CLI can carry them into the second parse.
-    from miles.utils.test_utils.session_verify_agent import add_session_verify_arguments
-
-    add_session_verify_arguments(parser)
     parser.add_argument(
         "--assistant-text-threshold",
         type=float,

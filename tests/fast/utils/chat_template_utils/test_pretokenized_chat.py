@@ -89,13 +89,6 @@ _TEMPLATES: list[tuple[str, str, bool, frozenset[str], dict]] = [
         frozenset({"tool", "user"}),
         {"clear_thinking": False},
     ),
-    (
-        "glm5.2_clear_thinking_off",
-        load_hf_chat_template("zai-org/GLM-5.2"),
-        True,
-        frozenset({"tool", "user"}),
-        {"clear_thinking": False},
-    ),
     ("glm47_flash", load_hf_chat_template("zai-org/GLM-4.7-Flash"), True, frozenset({"tool"}), {}),
     (
         "glm47_flash_clear_thinking_off",

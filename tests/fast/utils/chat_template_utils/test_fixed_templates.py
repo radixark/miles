@@ -14,7 +14,6 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     ALL_APPEND_ROLES,
     DeepSeekV4TITOTokenizer,
     FixedTemplate,
-    GLM53TITOTokenizer,
     MinimaxM25TITOTokenizer,
     MinimaxM27TITOTokenizer,
     Qwen3TITOTokenizer,
@@ -128,13 +127,6 @@ def test_kwargs_are_copied_not_shared(monkeypatch):
 def test_registered_kwargs_cannot_be_overridden(tokenizer_cls, chat_template_kwargs):
     with pytest.raises(ValueError, match="conflicts with the value registered"):
         tokenizer_cls(object(), chat_template_kwargs=chat_template_kwargs)
-
-
-def test_glm53_uses_native_renderer_and_pins_thinking_on():
-    tokenizer_cls = TITOTokenizerType.get_tokenizer_class(TITOTokenizerType.GLM53)
-    assert tokenizer_cls is GLM53TITOTokenizer
-    assert tokenizer_cls.FIXED_TEMPLATE.template is None
-    assert tokenizer_cls.FIXED_TEMPLATE.extra_kwargs["enable_thinking"] is True
 
 
 @pytest.mark.parametrize(

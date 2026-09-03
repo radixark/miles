@@ -10,12 +10,10 @@ from tests.e2e.sglang.test_session_server_multi_role import _common
 
 from miles.utils.test_utils import session_verify_runner
 from miles.utils.arguments import parse_args_train_backend
-from miles.utils.test_utils.session_verify_agent import add_session_verify_arguments
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
     assert_session_verify_metrics,
     namespace_to_train_args,
-    session_verify_extras,
 )
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
@@ -48,25 +46,6 @@ def _build_args(**overrides) -> str:
     }
     values.update(overrides)
     return namespace_to_train_args(argparse.Namespace(**values))
-
-
-def test_session_verify_extras_accepts_generate_owned_cli_options():
-    parser = session_verify_extras(argparse.ArgumentParser())
-
-    args = parser.parse_args(["--session-verify-cycles", "2", "--tool-call-failure-mode", "append_tool"])
-
-    assert args.session_verify_cycles == 2
-    assert args.tool_call_failure_mode == "append_tool"
-
-
-def test_session_verify_generate_arguments_can_be_registered_twice():
-    parser = session_verify_extras(argparse.ArgumentParser())
-
-    add_session_verify_arguments(parser)
-    args = parser.parse_args(["--session-verify-cycles", "2", "--tool-call-failure-mode", "append_tool"])
-
-    assert args.session_verify_cycles == 2
-    assert args.tool_call_failure_mode == "append_tool"
 
 
 def test_namespace_to_train_args_uses_default_rollout_max_response_len():

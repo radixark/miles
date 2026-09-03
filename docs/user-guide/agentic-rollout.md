@@ -183,7 +183,7 @@ but treat it as best-effort until it passes the checks below.
 | Inkling / Inkling-Small | `inkling` |
 | Unregistered model or custom template (best-effort) | `default` |
 
-`glm53` uses each checkpoint's native template and pins `enable_thinking=True` because neither GLM-5.3 native template implements thinking-off. GLM-5.3-Flash support covers its text tokenizer path, not multimodal processor inputs.
+`glm53` uses each checkpoint's native template. Both templates start generation with `<think>` even when `enable_thinking=False`, so Miles pins `enable_thinking=True` and rejects a conflicting override. GLM-5.3-Flash support covers text tokenizer inputs, not multimodal processor inputs.
 
 More model families and verification history live in
 [issue #712](https://github.com/radixark/miles/issues/712).
