@@ -29,6 +29,8 @@ class WeightTransferProtocol(ABC):
         self.rollout_engines: Sequence[ActorHandle] | None = None
         self._connection_stale = False
         self.is_sender: bool | None = None
+        self.group_name = "miles"
+        self.update_weight_metrics: dict[str, float] = {}
         self.is_lora_sender = False
 
     @abstractmethod
@@ -70,7 +72,8 @@ class WeightTransferProtocol(ABC):
         self._connection_stale = True
 
     def pop_metrics(self) -> dict[str, float]:
-        return self.__dict__.pop("update_weight_metrics", {})
+        metrics, self.update_weight_metrics = self.update_weight_metrics, {}
+        return metrics
 
 
 def get_weight_transfer_protocol(args: Namespace) -> WeightTransferProtocol:

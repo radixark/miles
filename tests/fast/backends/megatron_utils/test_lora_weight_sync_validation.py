@@ -404,7 +404,7 @@ class TestBroadcastLoraImplementation:
     def _make_self(*, engines):
         return SimpleNamespace(
             rollout_engines=engines,
-            _group_name="miles-pp_0",
+            group_name="miles-pp_0",
             _model_update_groups=MagicMock(name="base_nccl_group"),
         )
 

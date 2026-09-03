@@ -147,7 +147,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
         self.is_lora_sender = False
 
         if self.is_sender:
-            self._group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
+            self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
             targets = self.transfer_plan.plan_p2p()
             (
                 self.remote_weight_infos_by_session_id,

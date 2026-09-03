@@ -46,7 +46,7 @@ def _make_updater(lock_state: _LockState) -> UpdateWeightFromDistributed:
     lock_handle.acquire.remote.side_effect = lock_state.acquire
     lock_handle.release.remote.side_effect = lock_state.release
     updater.rollout_engine_lock = lock_handle
-    updater._group_name = "miles-pp_0"
+    updater.group_name = "miles-pp_0"
     updater._model_update_groups = MagicMock()
     updater.rollout_engines = [MagicMock()]
     updater._selector = "all"
@@ -84,7 +84,7 @@ def test_success_path_releases_lock_and_clears_tensors(mock_ray, mock_update):
     assert tensors == []
     call_args = mock_update.call_args.args
     assert call_args[:4] == (
-        updater._group_name,
+        updater.group_name,
         updater._model_update_groups,
         7,
         updater.rollout_engines,

@@ -133,16 +133,16 @@ class UpdateWeightFromTensor:
                 and get_parallel_state().tp.rank == 0
                 and get_parallel_state().pp.rank == 0
             )
-            self._group_name = "miles"
+            self.group_name = "miles"
             if self._is_distributed_src_rank:
                 if (g := self._model_update_groups) is not None:
                     disconnect_rollout_engines_from_distributed(
-                        self.args, self._group_name, g, self.distributed_rollout_engines
+                        self.args, self.group_name, g, self.distributed_rollout_engines
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
                     self.args,
-                    self._group_name,
+                    self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
                 )
@@ -310,7 +310,7 @@ class UpdateWeightFromTensor:
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
-                self._group_name,
+                self.group_name,
                 self._model_update_groups,
                 self.weight_version,
                 self.distributed_rollout_engines,

@@ -98,7 +98,7 @@ class UpdateWeightFromRDT(WeightTransferProtocol):
         super().__init__(args)
         self.transfer_plan = RemoteTransferPlan(args)
         self.global_rank = dist.get_rank(group=get_gloo_group())
-        self._group_name = "miles-rdt"
+        self.group_name = "miles-rdt"
 
         self._staged_tensors: dict[str, list[tuple[str, torch.Tensor]]] = {}
         self._tensor_update_pending: dict[str, int] = {}
@@ -147,7 +147,7 @@ class UpdateWeightFromRDT(WeightTransferProtocol):
         if not self.is_sender:
             return
 
-        self._group_name = f"miles-rdt_{self.transfer_plan._gathered_dp_rank}"
+        self.group_name = f"miles-rdt_{self.transfer_plan._gathered_dp_rank}"
         targets = self.transfer_plan.plan_p2p()
 
         # Same engine_rank => same TP shard => same parallelism config + shapes.
