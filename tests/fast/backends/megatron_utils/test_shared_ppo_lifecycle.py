@@ -210,10 +210,12 @@ def _lifecycle_worker(actor_module, monkeypatch, asleep):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
         offload_train=True,
+        offload_train_target="cpu",
         rematerialize_param_from_master_weight=False,
         clear_quantized_weight_workspaces_on_offload=False,
         colocate=False,
         keep_old_actor=False,
+        lora_base_cpu_backup=False,
     )
     worker.role = "critic"
     worker.with_ref = False
@@ -241,6 +243,18 @@ def test_sleep_is_idempotent(actor_module, monkeypatch):
     assert worker._asleep is True
 
 
+def test_actor_sleep_rejects_offloading_reference_as_tms_actor_backup(actor_module, monkeypatch):
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    worker.role = "actor"
+    worker._active_model_tag = "ref"
+
+    with pytest.raises(AssertionError, match="offload must capture actor weights"):
+        worker.sleep()
+
+    saver.pause.assert_not_called()
+    assert worker._asleep is False
+
+
 def test_wake_up_when_resident_skips_resume_but_restores_groups(actor_module, monkeypatch):
     # A retried attempt can die between wake and sleep: memory stays resident but the
     # process groups may already be gone, so wake_up must restore groups without resuming.
@@ -263,47 +277,84 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
     assert worker._asleep is False
 
 
-def _actor_pinned_lifecycle_worker(actor_module, monkeypatch, *, has_model_snapshots=False):
+def _actor_lifecycle_worker(actor_module, monkeypatch, *, snapshot=None):
     worker, saver, reload_groups = _lifecycle_worker(actor_module, monkeypatch, asleep=True)
     worker.role = "actor"
     worker.args.colocate = True
-    worker.args.keep_old_actor = has_model_snapshots
+    worker.args.keep_old_actor = snapshot == "old_actor"
+    worker.with_ref = snapshot == "ref"
+    worker.with_opd_teacher = snapshot == "teacher"
     worker._active_model_tag = "actor"
     worker.weights_backuper = Mock(backup_tags={"actor"})
     worker.weights_backuper.has_backup.return_value = True
     return worker, saver, reload_groups
 
 
-@pytest.mark.parametrize(
-    ("is_lora", "lora_base_cpu_backup"),
-    [(False, False), (True, False), (True, True)],
-)
-def test_wake_up_restores_then_releases_actor_pinned_backup(actor_module, monkeypatch, is_lora, lora_base_cpu_backup):
-    worker, saver, reload_groups = _actor_pinned_lifecycle_worker(actor_module, monkeypatch)
-    worker.args.lora_base_cpu_backup = lora_base_cpu_backup
-    if is_lora:
-        monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+def test_wake_up_restores_then_releases_full_parameter_pinned_backup(actor_module, monkeypatch):
+    worker, saver, reload_groups = _actor_lifecycle_worker(actor_module, monkeypatch)
 
     worker.wake_up()
 
-    if is_lora:
-        assert saver.resume.call_args_list == [
-            call(tag="default"),
-            call(tag=actor_module.LORA_FROZEN_BASE_NO_BACKUP_TAG),
-        ]
-    else:
-        saver.resume.assert_called_once_with(tag=None)
+    saver.resume.assert_called_once_with(tag=None)
     reload_groups.assert_called_once_with()
     worker.weights_backuper.restore.assert_called_once_with("actor")
     worker.weights_backuper.release.assert_called_once_with("actor")
     actor_module.clear_memory.assert_has_calls([call(), call(clear_host_memory=True)])
 
 
-def test_model_snapshots_defer_actor_pinned_release_until_switching_finishes(actor_module, monkeypatch):
-    worker, _, _ = _actor_pinned_lifecycle_worker(actor_module, monkeypatch, has_model_snapshots=True)
+@pytest.mark.parametrize("lora_base_cpu_backup", [False, True])
+def test_lora_wake_up_uses_tms_restore_and_release(actor_module, monkeypatch, lora_base_cpu_backup):
+    worker, saver, reload_groups = _actor_lifecycle_worker(actor_module, monkeypatch)
+    worker.args.lora_base_cpu_backup = lora_base_cpu_backup
+    worker.weights_backuper.has_backup.return_value = False
+    monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: True)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    assert worker._weight_sync_reads_tms_backup
+    assert not worker._enable_weight_backup
 
     worker.wake_up()
 
+    saver.resume.assert_called_once_with(tag="default")
+    reload_groups.assert_called_once_with()
+    worker.weights_backuper.restore.assert_not_called()
+    worker.weights_backuper.release.assert_not_called()
+    actor_module.clear_memory.assert_called_once_with()
+
+
+def test_lora_weight_update_reads_streaming_views_from_tms_cpu_backup(actor_module, monkeypatch):
+    worker, _, _ = _actor_lifecycle_worker(actor_module, monkeypatch)
+    worker.args.megatron_to_hf_mode = "raw"
+    worker.model = [object()]
+    worker.weights_backuper.has_backup.return_value = False
+    monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: True)
+    expected = {"weight": object()}
+    named_params_and_buffers = Mock(return_value=expected.items())
+    monkeypatch.setattr(actor_module, "named_params_and_buffers", named_params_and_buffers)
+
+    assert worker._get_actor_weights_for_update() == expected
+
+    named_params_and_buffers.assert_called_once_with(
+        worker.args,
+        worker.model,
+        convert_to_global_name=True,
+        translate_gpu_to_cpu=True,
+    )
+    worker.weights_backuper.get.assert_not_called()
+
+
+@pytest.mark.parametrize("snapshot", ["ref", "teacher", "old_actor"])
+def test_lora_model_snapshots_defer_actor_pinned_release_until_switching_finishes(actor_module, monkeypatch, snapshot):
+    worker, saver, _ = _actor_lifecycle_worker(actor_module, monkeypatch, snapshot=snapshot)
+    monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: True)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    assert not worker._weight_sync_reads_tms_backup
+    assert worker._enable_weight_backup
+
+    worker.wake_up()
+
+    saver.resume.assert_called_once_with(tag="default")
     worker.weights_backuper.restore.assert_called_once_with("actor")
     worker.weights_backuper.release.assert_not_called()
 
@@ -313,8 +364,22 @@ def test_model_snapshots_defer_actor_pinned_release_until_switching_finishes(act
     actor_module.clear_memory.assert_called_with(clear_host_memory=True)
 
 
+def test_lora_model_snapshots_use_explicit_actor_backup_for_weight_update(actor_module, monkeypatch):
+    worker, _, _ = _actor_lifecycle_worker(actor_module, monkeypatch, snapshot="teacher")
+    monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: True)
+    expected = {"weight": object()}
+    worker.weights_backuper.get.return_value = expected
+    named_params_and_buffers = Mock()
+    monkeypatch.setattr(actor_module, "named_params_and_buffers", named_params_and_buffers)
+
+    assert worker._get_actor_weights_for_update() is expected
+
+    worker.weights_backuper.get.assert_called_once_with("actor")
+    named_params_and_buffers.assert_not_called()
+
+
 def test_retry_recreates_actor_snapshot_before_model_switching(actor_module, monkeypatch):
-    worker, _, _ = _actor_pinned_lifecycle_worker(actor_module, monkeypatch, has_model_snapshots=True)
+    worker, _, _ = _actor_lifecycle_worker(actor_module, monkeypatch, snapshot="ref")
     worker.weights_backuper.backup_tags = {"ref"}
     worker.weights_backuper.has_backup.return_value = False
 
@@ -323,21 +388,32 @@ def test_retry_recreates_actor_snapshot_before_model_switching(actor_module, mon
     worker.weights_backuper.backup.assert_called_once_with("actor")
 
 
-def test_lora_sleep_and_wake_manage_drop_only_frozen_base_region(actor_module, monkeypatch):
+def test_lora_sleep_and_wake_use_default_tms_cpu_backup_region(actor_module, monkeypatch):
     worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: True)
     monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
 
     worker.sleep()
     worker.wake_up()
 
-    assert saver.pause.call_args_list == [
-        call(tag=actor_module.LORA_FROZEN_BASE_NO_BACKUP_TAG),
-        call(tag="default"),
-    ]
-    assert saver.resume.call_args_list == [
-        call(tag="default"),
-        call(tag=actor_module.LORA_FROZEN_BASE_NO_BACKUP_TAG),
-    ]
+    saver.pause.assert_called_once_with(tag="default")
+    saver.resume.assert_called_once_with(tag="default")
+
+
+def test_lora_disk_offload_falls_back_to_explicit_actor_backup(actor_module, monkeypatch):
+    worker, saver, _ = _actor_lifecycle_worker(actor_module, monkeypatch)
+    worker.args.offload_train_target = "disk"
+    monkeypatch.setattr(actor_module, "is_lora_enabled", lambda _args: True)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    assert not worker._weight_sync_reads_tms_backup
+    assert worker._enable_weight_backup
+
+    worker.wake_up()
+
+    saver.resume.assert_called_once_with(tag="default")
+    worker.weights_backuper.restore.assert_called_once_with("actor")
+    worker.weights_backuper.release.assert_called_once_with("actor")
 
 
 def _actor_train_args(**overrides):
@@ -448,6 +524,43 @@ def test_skip_actor_forward_only_preserves_reference_teacher_and_training_forwar
 
     assert [call.kwargs["store_prefix"] for call in worker.compute_log_prob.call_args_list] == ["ref_", "teacher_"]
     actor_module.train.assert_called_once()
+
+
+def test_teacher_ref_release_actor_snapshot_only_after_switching_back(actor_module, monkeypatch):
+    worker = _actor_reuse_worker(actor_module, offload_train=True)
+    worker.with_ref = True
+    worker.with_opd_teacher = True
+    worker.weights_backuper.backup_tags = {"actor", "ref", "teacher"}
+    worker.weights_backuper.has_backup.return_value = True
+    events = []
+
+    def switch_model(tag):
+        events.append(f"switch:{tag}")
+        worker._active_model_tag = tag
+
+    worker._switch_model.side_effect = switch_model
+    worker.compute_log_prob.side_effect = lambda *_args, store_prefix, **_kwargs: (
+        events.append(f"forward:{store_prefix or 'actor'}") or {f"{store_prefix}log_probs": [object()]}
+    )
+    worker.weights_backuper.release.side_effect = lambda tag: events.append(f"release:{tag}")
+    _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    actor_module.train.side_effect = (
+        lambda *_args, **_kwargs: events.append("train") or actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
+    )
+    rollout_data = {"num_rollouts": [1], "total_lengths": [1]}
+
+    worker.train_actor(7, rollout_data, witness_info=None, attempt=0)
+
+    assert events == [
+        "switch:ref",
+        "forward:ref_",
+        "switch:teacher",
+        "forward:teacher_",
+        "switch:actor",
+        "forward:actor",
+        "release:actor",
+        "train",
+    ]
 
 
 @pytest.mark.parametrize(
