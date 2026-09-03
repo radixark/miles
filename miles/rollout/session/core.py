@@ -405,7 +405,12 @@ class SessionCore:
         if result["status_code"] != 200:
             return proxy_result_to_response(result)
 
-        response, _, assistant_message, completion_token_ids = extract_completion(result)
+        response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        assistant_message = tito_tokenizer.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=completion_token_ids,
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:
@@ -421,8 +426,12 @@ class SessionCore:
                 )
                 return _chat_client_response(result, response, client_stream)
 
-            session.update_pretokenized_state(
+            stored_request_messages = tito_tokenizer.preserve_server_message_state(
+                session.messages,
                 request_messages,
+            )
+            session.update_pretokenized_state(
+                stored_request_messages,
                 assistant_message,
                 prompt_token_ids=prompt_token_ids,
                 completion_token_ids=completion_token_ids,
