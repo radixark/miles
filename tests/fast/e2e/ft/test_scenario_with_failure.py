@@ -42,17 +42,20 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
 
 
-def test_comparison_uses_deterministic_collectives_without_changing_baseline_topology() -> None:
-    """Both sides must share deterministic collectives while baseline remains normal DP."""
-    mode = MODES["dp2_cp2_real_rollout_dense"]
-    baseline_args = shlex.split(_build_baseline_args(mode, "/tmp/baseline/phase_b", enable_dumper=False))
-    target_args = shlex.split(_build_target_args(mode, "/tmp/target/phase_b", enable_dumper=False))
+def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
+    """The baseline must isolate fault execution while retaining the target topology."""
+    args = shlex.split(
+        _build_baseline_args(
+            MODES["dp2_cp2_real_rollout_dense"],
+            "/tmp/baseline/phase_b",
+            enable_dumper=False,
+        )
+    )
 
-    for args in (baseline_args, target_args):
-        assert "--deterministic-mode" in args
-        assert "--debug-deterministic-collective" in args
-    assert "--use-fault-tolerance" not in baseline_args
-    assert "--use-fault-tolerance" in target_args
+    assert "--use-fault-tolerance" in args
+    assert "--ft-components" in args
+    assert "--ci-ft-test-actions" not in args
+    assert "--ci-inject-rollout-data-path" not in args
 
 
 def test_fake_rollout_does_not_inject_recorded_data() -> None:
@@ -63,7 +66,4 @@ def test_fake_rollout_does_not_inject_recorded_data() -> None:
         enable_dumper=False,
     )
 
-    tokens = shlex.split(args)
-
-    assert "--ci-inject-rollout-data-start-rollout-id" not in tokens
-    assert "--debug-deterministic-collective" not in tokens
+    assert "--ci-inject-rollout-data-start-rollout-id" not in shlex.split(args)

@@ -9,7 +9,7 @@
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
 |------|------|-----------------|
 | `scenario_no_failure` | Comparison | indep_dp matches normal DP when no faults |
-| `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
+| `scenario_with_failure` | Comparison, multi-phase | faulted indep_dp matches no-fault indep_dp after ckpt resume |
 | `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start), on cold start and on resume from a post-healing ckpt |
 | `scenario_ft_random` | Non-comparison | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | Non-comparison | model still reaches gsm8k accuracy under random crashes |
@@ -120,7 +120,8 @@ Roughly equal, not bitwise — allreduce kernel ordering differs across topologi
 ### `scenario_with_failure`
 
 ```
-Type: comparison, multi-phase (phase_a + phase_b)
+Type: comparison, multi-phase (baseline=indep_dp without faults, target=indep_dp with faults;
+phase_a + phase_b)
 Phase A steps: 1, Phase B steps: 3 (rollouts 1..3; --num-rollout 4 resumed from the
 rollout-0 checkpoint), metrics rtol: 5e-2
 
@@ -130,7 +131,7 @@ Phase A (both baseline and target):
 
 Phase B — baseline:
   1. Resume from phase_a checkpoint
-  2. Run 3 normal steps (rollouts 1..3)
+  2. Run 3 indep_dp steps without fault actions (rollouts 1..3)
 
 Phase B — target:
   1. Resume from phase_a checkpoint
@@ -161,7 +162,7 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
-- Baseline remains normal DP and target remains indep_dp. Both sides enable deterministic kernels and the fixed-tree debug collective so topology-dependent SUM ordering cannot contaminate the crash-recovery comparison.
+- Baseline and target both use indep_dp. The baseline has no fault actions; the target alone executes crash→retry→heal. Matching topologies prevent pre-fault optimizer drift from contaminating the recovery comparison.
 - The fault and post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout).
 - Why inject: the fault rollout is retried with a degraded quorum, so baseline and target otherwise train that commit from separately sampled responses. The degraded-quorum commit also accumulates microbatches in a different fp bracketing than the fault-free side — a fault-inherent ulp diff no collective ordering removes. Under live sampling either source of drift can flip sampled tokens, after which the two runs' rollout data diverges wholesale, so a strict vs-baseline comparison is ill-posed. Injection makes training inputs identical by construction → full strict comparison, zero relaxation.
 - Stays real on the target: engines + generation (samples discarded), `update_weights` after the degraded commit and after healing, health-monitor pause/resume — the whole crash→retry→heal→weight-sync path.
