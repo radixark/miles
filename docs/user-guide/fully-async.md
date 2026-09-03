@@ -182,6 +182,16 @@ this section apply only if your class reads them. The one decision that stays ou
 `--rollout-sample-filter-path`, which runs on the assembled batch rather than on
 individual groups.
 
+### Checkpointing source reservations
+
+Durable source reservations are checkpointed with the source. Persisting them needs
+`--save-interval`. Setting `--save-trigger-sentinel` without `--save-interval` makes the
+data source report no reservation support. Owned scheduling is off in that case, and the
+run keeps the buffered legacy path. Loading a checkpoint that holds reservations into a
+data source that cannot own reservations fails at load. When neither flag is set,
+reservations still run and nothing is ever checkpointed, so there is no reservation state
+to lose.
+
 ## Evaluation
 
 Fully async rollout changes one thing about eval: generation is always in flight, so an
