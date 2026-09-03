@@ -212,7 +212,12 @@ def _lifecycle_worker(actor_module, monkeypatch, asleep):
         offload_train=True,
         rematerialize_param_from_master_weight=False,
         clear_quantized_weight_workspaces_on_offload=False,
+        colocate=False,
+        keep_old_actor=False,
     )
+    worker.role = "critic"
+    worker.with_ref = False
+    worker.with_opd_teacher = False
     worker._asleep = asleep
     saver = Mock()
     reload_groups = Mock()
@@ -263,7 +268,6 @@ def _actor_pinned_lifecycle_worker(actor_module, monkeypatch, *, has_model_snaps
     worker.role = "actor"
     worker.args.colocate = True
     worker.args.keep_old_actor = has_model_snapshots
-    worker._has_model_snapshots = has_model_snapshots
     worker._active_model_tag = "actor"
     worker.weights_backuper = Mock(backup_tags={"actor"})
     worker.weights_backuper.has_backup.return_value = True
@@ -351,6 +355,8 @@ def _actor_train_args(**overrides):
 def _actor_reuse_worker(actor_module, **args_overrides):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = _actor_train_args(use_critic=False, **args_overrides)
+    worker.with_ref = False
+    worker.with_opd_teacher = False
     worker.model = [object()]
     worker.optimizer = object()
     worker.opt_param_scheduler = object()

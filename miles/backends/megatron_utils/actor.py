@@ -101,7 +101,6 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
-        self._has_model_snapshots = with_ref or with_opd_teacher or args.keep_old_actor
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -370,9 +369,13 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("after wake_up model")
 
     @property
+    def _has_model_snapshots(self) -> bool:
+        return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor
+
+    @property
     def _enable_weight_backup(self) -> bool:
         """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
-        return getattr(self, "_has_model_snapshots", False) or self.args.colocate
+        return self._has_model_snapshots or self.args.colocate
 
     def _switch_model(self, target_tag: str) -> None:
         if target_tag == self._active_model_tag and not self.weights_backuper.has_backup(target_tag):
@@ -385,16 +388,16 @@ class MegatronTrainRayActor(TrainRayActor):
         self._active_model_tag = target_tag
 
     def _restore_actor_after_onload(self) -> None:
-        if getattr(self, "role", None) != "actor" or not self._enable_weight_backup:
+        if self.role != "actor" or not self._enable_weight_backup:
             return
         if not self.weights_backuper.has_backup("actor"):
             return
         self._switch_model("actor")
-        if not getattr(self, "_has_model_snapshots", False):
+        if not self._has_model_snapshots:
             self._release_actor_pinned_backup()
 
     def _ensure_actor_backup_for_model_switching(self) -> None:
-        if not getattr(self, "_has_model_snapshots", False) or self.weights_backuper.has_backup("actor"):
+        if not self._has_model_snapshots or self.weights_backuper.has_backup("actor"):
             return
         assert self._active_model_tag == "actor"
         self.weights_backuper.backup("actor")

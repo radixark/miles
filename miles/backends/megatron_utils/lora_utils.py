@@ -127,8 +127,8 @@ def relocate_lora_frozen_base_to_no_backup_region(
     """Move only frozen LoRA parameters into a drop-only TMS allocation region."""
     if not (
         role == "actor"
-        and getattr(args, "offload_train", False)
-        and getattr(args, "colocate", False)
+        and args.offload_train
+        and args.colocate
         and is_lora_enabled(args)
     ):
         return
