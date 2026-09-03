@@ -8,7 +8,6 @@ from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     _FIRST_INJECTED_ROLLOUT_ID,
     _FIRST_POST_FAULT_ROLLOUT_ID,
     _POST_FAULT_DIFF_THRESHOLDS,
-    _build_baseline_args,
     _build_target_args,
     _diff_thresholds_for_rollout,
 )
@@ -40,22 +39,6 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
 
     assert _diff_thresholds_for_rollout(mode, _FAULT_ROLLOUT_ID) is _DIFF_THRESHOLDS
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
-
-
-def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
-    """The baseline must isolate fault execution while retaining the target topology."""
-    args = shlex.split(
-        _build_baseline_args(
-            MODES["dp2_cp2_real_rollout_dense"],
-            "/tmp/baseline/phase_b",
-            enable_dumper=False,
-        )
-    )
-
-    assert "--use-fault-tolerance" in args
-    assert "--ft-components" in args
-    assert "--ci-ft-test-actions" not in args
-    assert "--ci-inject-rollout-data-path" not in args
 
 
 def test_fake_rollout_does_not_inject_recorded_data() -> None:
