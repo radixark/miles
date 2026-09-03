@@ -49,7 +49,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         self._ipc_gather_src = None
         self._ipc_layout = None
         # Overwritten with "miles" when connect finds a distributed engine tail.
-        self._group_name = "miles-colocate"
+        self.group_name = "miles-colocate"
 
     def connect(
         self,
@@ -98,16 +98,16 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             self._is_distributed_src_rank = (
                 parallel_state.intra_dp_cp.rank == 0 and parallel_state.tp.rank == 0 and parallel_state.pp.rank == 0
             )
-            self._group_name = "miles"
+            self.group_name = "miles"
             if self._is_distributed_src_rank:
                 if (g := self._model_update_groups) is not None:
                     disconnect_rollout_engines_from_distributed(
-                        self.args, self._group_name, g, self.distributed_rollout_engines
+                        self.args, self.group_name, g, self.distributed_rollout_engines
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
                     self.args,
-                    self._group_name,
+                    self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
                 )
@@ -164,7 +164,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
-                self._group_name,
+                self.group_name,
                 self._model_update_groups,
                 self.distributed_rollout_engines,
                 bucket,

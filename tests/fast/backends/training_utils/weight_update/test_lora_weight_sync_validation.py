@@ -108,7 +108,7 @@ class TestUpdateWeightsEmptyBaseIteration:
         protocol.use_weight_update_session = True
         protocol.needs_base_resync_for_lora = False
         protocol.is_sender = True
-        protocol._group_name = "test"
+        protocol.group_name = "test"
         protocol.begin_sync.return_value = True
         protocol.rollout_engines = [MagicMock()]
 
