@@ -103,6 +103,12 @@ class CustomDataSource(DataSource):
     def load(self, rollout_id=None) -> None: ...
 ```
 
+A source may additionally implement `reserve_samples`, `acknowledge_reservations`, and
+`requeue_reservations`, and declare `supports_source_reservations = True`, to opt into
+owned scheduling under `--fully-async`: rollout then hands out durable reservations that
+survive a restart and settles each attempt exactly once. A source that does not declare
+support keeps the buffered legacy path.
+
 **Default:** `miles.rollout.data_source.RolloutDataSourceWithBuffer`.
 
 ### `--eval-function-path`
