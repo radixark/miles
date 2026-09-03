@@ -3249,9 +3249,6 @@ def miles_validate_args(args):
     if args.use_critic:
         if args.train_backend != "megatron":
             raise ValueError("Shared Actor/Critic PPO requires the Megatron backend")
-        assert (
-            args.megatron_to_hf_mode != "bridge"
-        ), "Critic models are not supported with --megatron-to-hf-mode bridge"
         assert not enable_experimental_ft_trainer(), (
             "Shared Actor/Critic PPO is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
             "fault-tolerant train group cannot route critic values or lifecycle options yet. "
