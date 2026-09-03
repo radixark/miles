@@ -9,6 +9,10 @@ telemetry, and session cleanup.
 The recipe uses Miles' native `qwen36` TITO family so the fixed Qwen 3.6
 template retains reasoning and applies the correct message-boundary semantics.
 
+Set `--system-prompt-variant random` to select one of the chess harness's five
+UCI-only system prompts independently for every rollout. The selected prompt
+stays fixed for the complete game, including retries and context compaction.
+
 ## Default smoke configuration
 
 - One node with eight H200 GPUs.

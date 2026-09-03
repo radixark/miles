@@ -18,6 +18,8 @@ Args:
     load_checkpoint_path: Optional full training checkpoint to resume.
     override_opt_param_scheduler: Use current scheduler settings when resuming.
     max_model_turns: Maximum policy moves in each game.
+    system_prompt_variant: Chess system prompt name, or ``random`` to sample one
+        prompt variant independently for each rollout.
     save_checkpoint: Save the large full-parameter checkpoint at the final step.
     skip_prepare: Reuse an already prepared model and chess environment.
 
@@ -47,7 +49,7 @@ import miles.utils.external_utils.command_utils as U
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _RADIX_RAFT_REPOSITORY = "https://github.com/radixark/radix_raft.git"
-_RADIX_RAFT_REVISION = "79cf2592e9daa2f738121b573c2d20f718890045"
+_RADIX_RAFT_REVISION = "5565bc775235bc328327e999160cb3ed584972a5"
 
 
 @dataclass
@@ -83,6 +85,14 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     stockfish_elo: int = 1320
     max_model_turns: int = 8
+    system_prompt_variant: Literal[
+        "grandmaster",
+        "position_analyst",
+        "tournament_player",
+        "decision_engine",
+        "strategic_player",
+        "random",
+    ] = "grandmaster"
     max_plies: int = 200
     stockfish_startup_timeout_seconds: float = 20.0
     stockfish_max_concurrent_games: int = 16
@@ -226,6 +236,7 @@ def _prompt_rows(args: ScriptArgs) -> list[dict[str, object]]:
                     "chess": {
                         "llm_side": llm_side,
                         "max_model_turns": args.max_model_turns,
+                        "system_prompt_variant": args.system_prompt_variant,
                         "max_plies": args.max_plies,
                         "stockfish_elo": args.stockfish_elo,
                         "stockfish_path": args.stockfish_path,

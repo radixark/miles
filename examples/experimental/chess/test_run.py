@@ -1,6 +1,30 @@
 import pytest
 
-from run import ScriptArgs, _checkpoint_args, _grpo_args, _misc_args, _optimizer_args, _rollout_args
+from run import (
+    ScriptArgs,
+    _checkpoint_args,
+    _grpo_args,
+    _misc_args,
+    _optimizer_args,
+    _prompt_rows,
+    _rollout_args,
+)
+
+
+def test_prompt_rows_pass_system_prompt_selection_to_chess_harness() -> None:
+    args = ScriptArgs(
+        hardware="H200",
+        num_gpus_per_node=8,
+        rollout_batch_size=2,
+        system_prompt_variant="random",
+    )
+
+    rows = _prompt_rows(args)
+
+    assert [row["metadata"]["chess"]["system_prompt_variant"] for row in rows] == [
+        "random",
+        "random",
+    ]
 
 
 def test_grpo_args_uses_configured_kl_loss_coefficient() -> None:
