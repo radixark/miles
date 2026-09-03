@@ -2,7 +2,7 @@ import argparse
 import json
 import logging
 import os
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 from sglang_router.launch_router import RouterArgs
@@ -3674,6 +3674,55 @@ def validate_async_off_policy_correction(args) -> None:
         "as the ratio denominator), --use-tis (truncated importance sampling correction), or "
         "--keep-old-actor (recompute the denominator with the weights the rollout engines used)."
     )
+
+def _effective_num_steps_per_rollout(args) -> Optional[int]:
+    """Steps the drained batch will be split into by the shared consume path.
+
+    ``--num-steps-per-rollout`` is the explicit knob, but it is optional: when it
+    is unset the same quantity is derived from ``global_batch_size`` (see
+    ``data.py``), so both spellings have to be resolved here.
+    """
+    num_steps = getattr(args, "num_steps_per_rollout", None)
+    if num_steps is not None:
+        return num_steps
+
+    global_batch_size = getattr(args, "global_batch_size", None)
+    if not global_batch_size:
+        return None
+    num_samples = args.rollout_batch_size * args.n_samples_per_prompt
+    return num_samples // global_batch_size
+
+
+def warn_async_multi_step_off_policyness(args) -> None:
+    """Warn when async staleness and multi-step consumption compound.
+
+    ``--num-steps-per-rollout`` and ``--use-dynamic-global-batch-size`` take full
+    effect in async and fully-async training through the shared training path,
+    but nothing today points out how they interact with off-policyness. This is a
+    warning rather than an error: multi-step is legitimate in overlapped async,
+    and there is no first-class ``--fully-async`` flag to gate a hard failure on.
+    """
+    num_steps = _effective_num_steps_per_rollout(args)
+    max_weight_staleness = getattr(args, "max_weight_staleness", None)
+
+    if num_steps is not None and num_steps > 1 and max_weight_staleness is not None:
+        logger.warning(
+            f"num_steps_per_rollout={num_steps} (> 1) is combined with "
+            f"--max-weight-staleness={max_weight_staleness}. The drained batch already carries an "
+            "inter-batch staleness gap, and splitting it across multiple optimizer steps applies "
+            "steps 2..N to weights that moved after the data was generated, adding per-batch "
+            "off-policyness on top of that gap. This is supported in overlapped async, but if you "
+            "intended one optimizer step per drain, set --num-steps-per-rollout 1 or pass "
+            "--use-dynamic-global-batch-size."
+        )
+
+    is_fully_async = "fully_async" in (getattr(args, "rollout_function_path", None) or "")
+    if is_fully_async and getattr(args, "use_dynamic_global_batch_size", False):
+        logger.info(
+            "--use-dynamic-global-batch-size has no sample-trim work to do in fully-async training: "
+            "the drain count is already fixed at rollout_batch_size. Its remaining effect here is to "
+            "resize global_batch_size so that num_steps_per_rollout == 1."
+        )
 
 
 def _maybe_apply_dumper_overrides(args) -> None:
