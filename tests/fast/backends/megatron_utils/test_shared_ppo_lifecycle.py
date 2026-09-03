@@ -544,6 +544,7 @@ def test_teacher_ref_release_actor_snapshot_only_after_switching_back(actor_modu
     )
     worker.weights_backuper.release.side_effect = lambda tag: events.append(f"release:{tag}")
     _patch_actor_reuse_dependencies(actor_module, monkeypatch, num_microbatches=[1])
+    monkeypatch.setattr(actor_module, "clear_memory", Mock())
     actor_module.train.side_effect = (
         lambda *_args, **_kwargs: events.append("train") or actor_module.TrainStepOutcome.DISCARDED_SHOULD_RETRY
     )
