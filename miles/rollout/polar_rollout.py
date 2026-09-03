@@ -160,6 +160,16 @@ def _load_httpx() -> Any:
     return httpx
 
 
+# FastAPI resolves the string annotation against this module's globals. The
+# import cannot live only inside the listener function: under postponed
+# annotations FastAPI would instead treat ``Request`` as a required query
+# parameter and reject JSON callback bodies with HTTP 422.
+try:
+    from fastapi import Request as _FastAPIRequest
+except ImportError:  # pragma: no cover - fastapi is optional at import time
+    _FastAPIRequest = Any
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -347,6 +357,12 @@ def _low_complete_accept_fraction_rejection_reason(
 
 
 def _completed_trainable_session_count(task_result: TaskResult, samples: list[Any]) -> int:
+    """Count sessions with trainable content, regardless of task-level labels.
+
+    Polar may mark a task failed when one member session fails while other
+    sessions in the prompt group completed. Admission should be based on usable
+    per-session training content, not the aggregate task label.
+    """
     trainable_session_ids: set[str] = set()
     for sample in samples:
         if _trainable_token_count(sample) <= 0:
@@ -355,14 +371,10 @@ def _completed_trainable_session_count(task_result: TaskResult, samples: list[An
         if session_id:
             trainable_session_ids.add(session_id)
 
-    count = 0
-    for result in task_result.results:
-        if (
-            _status_value(result.status) == "COMPLETED"
-            and result.session_id in trainable_session_ids
-        ):
-            count += 1
-    return count
+    result_session_ids = {
+        str(result.session_id) for result in task_result.results if result.session_id
+    }
+    return len(trainable_session_ids & result_session_ids)
 
 
 def _sample_session_id(sample: Any) -> str | None:
@@ -371,12 +383,21 @@ def _sample_session_id(sample: Any) -> str | None:
     return str(session_id) if session_id else None
 
 
-def _status_value(status: Any) -> str:
-    return str(getattr(status, "value", status))
-
-
 def _is_zero_trainable_error(exc: BaseException) -> bool:
     return "zero trainable tokens" in str(exc)
+
+
+def _is_retriable_polar_task_error(exc: BaseException) -> bool:
+    """Identify Polar task-store misses that are safe to resubmit."""
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 404:
+        return True
+    message = str(exc).lower()
+    return (
+        "404" in message
+        or "retriable after restart" in message
+        or ("task" in message and "not found" in message)
+    )
 
 
 def _annotate_accepted_samples(
@@ -651,13 +672,13 @@ class AsyncPolarRolloutWorker:
 
     async def _start_callback_listener(self) -> tuple[Any, Any]:
         """Bind a FastAPI listener for TaskResult callbacks."""
-        from fastapi import FastAPI, Request
+        from fastapi import FastAPI
         import uvicorn
 
         app = FastAPI()
 
         @app.post("/callback/task_result")
-        async def on_task_result(request: Request) -> dict[str, Any]:
+        async def on_task_result(request: _FastAPIRequest) -> dict[str, Any]:
             payload = await request.json()
             task_id = payload.get("task_id") if isinstance(payload, dict) else None
             if not task_id:
@@ -679,7 +700,24 @@ class AsyncPolarRolloutWorker:
         )
         server = uvicorn.Server(config)
         task = asyncio.create_task(server.serve(), name="polar-callback-listener")
+        deadline = time.monotonic() + 10.0
         while not server.started:
+            if task.done():
+                exc = task.exception()
+                raise RuntimeError(
+                    f"Polar callback listener failed to bind "
+                    f"{self.config.callback_host}:0: {exc}"
+                ) from (exc if isinstance(exc, BaseException) else None)
+            if time.monotonic() > deadline:
+                server.should_exit = True
+                try:
+                    await asyncio.wait_for(task, timeout=5.0)
+                except TimeoutError:
+                    logger.warning("Polar callback listener did not stop within 5s")
+                raise RuntimeError(
+                    f"Polar callback listener timed out binding "
+                    f"{self.config.callback_host}:0"
+                )
             await asyncio.sleep(0.01)
         port = server.servers[0].sockets[0].getsockname()[1]
         self._callback_url = f"http://{self.config.callback_host}:{port}/callback/task_result"
@@ -688,14 +726,27 @@ class AsyncPolarRolloutWorker:
 
     async def _submit_and_collect(self, client: Any, pending: _PendingGroup) -> None:
         last_error: BaseException | None = None
-
-        if self._running:
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            if not self._running:
+                break
             try:
                 completed = await self._submit_attempt(client, pending)
                 await self._emit_completed(completed)
                 return
             except Exception as exc:
                 last_error = exc
+                if attempt < max_attempts and _is_retriable_polar_task_error(exc):
+                    logger.warning(
+                        "Polar group %s attempt %d/%d failed (%s); retrying submit",
+                        pending.group_id,
+                        attempt,
+                        max_attempts,
+                        exc,
+                    )
+                    await asyncio.sleep(min(2.0 * attempt, 5.0))
+                    continue
+                break
 
         if last_error is None:
             return
@@ -827,8 +878,6 @@ class AsyncPolarRolloutWorker:
         return owned_groups < admission_window
 
     def _task_rejection_reason(self, task_result: TaskResult, group: list[Any]) -> str | None:
-        if task_result.status != "completed":
-            return f"task status={task_result.status}"
         if not task_result.results:
             return "empty task results"
         if len(task_result.results) != len(group):
@@ -925,14 +974,17 @@ class AsyncPolarRolloutWorker:
             result = self._task_results.get(task_id)
             if result is not None:
                 return result
-            # Race: event set but result missing — re-poll once.
+            # Race: event set but result missing. Poll until Polar reports a
+            # terminal state rather than constructing a TaskResult from a
+            # nonterminal status.
             status_resp = await client.get(f"{base_url}/rollout/task/{task_id}")
             status_resp.raise_for_status()
             status = _load_task_status_type().model_validate(status_resp.json())
-            return _load_task_result_type()(
-                task_id=task_id, status=status.status,
-                results=status.results, result_paths=status.result_paths,
-            )
+            if status.status in ("completed", "failed"):
+                return _load_task_result_type()(
+                    task_id=task_id, status=status.status,
+                    results=status.results, result_paths=status.result_paths,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -1656,7 +1708,6 @@ __all__ = [
     "_low_complete_accept_fraction_rejection_reason",
     "_completed_trainable_session_count",
     "_sample_session_id",
-    "_status_value",
     "_is_zero_trainable_error",
     "_annotate_accepted_samples",
     "_run_eval_rollout",

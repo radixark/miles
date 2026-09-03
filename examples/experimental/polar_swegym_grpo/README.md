@@ -149,6 +149,7 @@ parallelism flags are delegated to the Megatron backend
 | `--custom-config-path <yaml>` | `--custom-config-path <yaml>` (same) | `miles/utils/arguments.py` (reset to load YAML into `args`) |
 | `--data-source-path slime_bridge.data_source.CeilEpochRolloutDataSourceWithBuffer` | `--data-source-path miles.rollout.polar_data_source:CeilEpochRolloutDataSourceWithBuffer` | `miles/utils/arguments.py` (`add_data_arguments`) |
 | `--ref-num-nodes 0` | *(dropped)* — Miles colocates the ref on actor ranks; enabled by `--use-kl-loss`, loaded from `--ref-load` | `miles/ray/placement_group.py` `with_ref=` |
+| Polar task IDs | The rendered ID automatically receives a per-process run salt; override it with `polar_task_id_salt` or `POLAR_TASK_ID_SALT` | `miles/rollout/polar_config.py` |
 | `--sglang-lora-backend triton` | `--sglang-lora-backend triton` (same) | SGLang `ServerArgs.lora_backend` via `--sglang-` prefix |
 | `--lora-rank 16` | `--lora-rank 16` (same) | `miles/utils/arguments.py` (`add_lora_arguments`, default 0) |
 | `--kl-loss-type low_var_kl` | `--kl-loss-type low_var_kl` (same) | `miles/utils/arguments.py` |

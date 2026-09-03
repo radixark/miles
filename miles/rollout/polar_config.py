@@ -19,12 +19,17 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
+import os
 import re
 from types import SimpleNamespace
+import time
 from typing import Any
-from urllib.parse import urlparse
 
 _PLACEHOLDER_RE = re.compile(r"{([^{}]+)}")
+
+# Task IDs must be unique across trainer processes. A restart against the same
+# Polar daemon otherwise collides with stale tasks in its registry.
+_RUN_TASK_SALT = f"{time.time_ns():x}"
 
 
 def _get_topology_config() -> Any:
@@ -117,14 +122,6 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
             "polar_callback_host must be reachable by the rollout server, "
             "not a wildcard bind address"
         )
-    rollout_host = urlparse(str(rollout_server_url)).hostname
-    loopback_hosts = {"127.0.0.1", "localhost", "::1"}
-    if callback_host in loopback_hosts and rollout_host not in loopback_hosts:
-        raise ValueError(
-            "polar_callback_host resolves to loopback but polar_rollout_url is "
-            f"remote ({rollout_host!r}); set polar_callback_host to an address "
-            "reachable from the Polar rollout server"
-        )
 
     scoring_mode = str(getattr(args, "polar_scoring_mode", "group")).strip().lower()
     if scoring_mode not in {"group", "individual"}:
@@ -139,13 +136,7 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
     return PolarSlimeConfig(
         rollout_server_url=str(rollout_server_url).rstrip("/"),
         task_template=task_template,
-        task_id_template=str(
-            getattr(
-                args,
-                "polar_task_id_template",
-                "polar-slime-{rollout_id}-{sample.group_index}",
-            )
-        ),
+        task_id_template=_run_unique_task_id_template(args),
         instruction_template=getattr(args, "polar_instruction_template", None),
         reward_key=str(
             getattr(args, "polar_reward_key", None)
@@ -164,6 +155,25 @@ def resolve_polar_slime_config(args: Any) -> PolarSlimeConfig:
         add_generation_prompt=bool(getattr(args, "polar_add_generation_prompt", True)),
         eval_dataset_name=str(getattr(args, "polar_eval_dataset_name", "polar_eval")),
     )
+
+
+def _run_unique_task_id_template(args: Any) -> str:
+    """Append a process/run salt so restarts cannot reuse stale Polar task IDs."""
+    template = str(
+        getattr(
+            args,
+            "polar_task_id_template",
+            "polar-slime-{rollout_id}-{sample.group_index}",
+        )
+    )
+    salt = str(
+        getattr(args, "polar_task_id_salt", None)
+        or os.environ.get("POLAR_TASK_ID_SALT")
+        or _RUN_TASK_SALT
+    ).strip()
+    if not salt:
+        salt = _RUN_TASK_SALT
+    return f"{template}-{salt}"
 
 
 def resolve_sglang_router_base_url(args: Any) -> str | None:

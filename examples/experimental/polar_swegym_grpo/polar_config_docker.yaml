@@ -38,8 +38,8 @@ polar_max_async_level: 2
 # keep this generous — a short timeout aborts entire task groups.
 polar_request_timeout: 2400
 # The callback host the Polar rollout server uses to reach Miles with results.
-# Must be reachable from the Polar server (a wildcard bind address is rejected
-# by resolve_polar_slime_config).
+# Must be reachable from the Polar server. Loopback works when both services
+# share a host/network namespace; wildcard bind addresses are rejected.
 polar_callback_host: "127.0.0.1"
 # Minimum fraction of a task group that must finish with a usable (non-aborted)
 # sample before the group is accepted for training. 0.6 tolerates a couple of
@@ -133,6 +133,7 @@ polar_task_template:
         - "$HOME/**"
         - "**/$HOME/**"
 
-# Rendered task id — unique per (rollout, group) pair so re-submitted groups are
-# distinguishable in the Polar dashboard.
+# Rendered task id. Miles appends a per-process run salt so trainer restarts do
+# not collide with stale tasks in the Polar daemon. Set polar_task_id_salt (or
+# POLAR_TASK_ID_SALT) when a reproducible task-id prefix is required.
 polar_task_id_template: "polar-swegym-grpo-{rollout_id}-{sample.group_index}"
