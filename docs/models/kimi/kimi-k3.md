@@ -44,10 +44,9 @@ Architecture, from `scripts/models/kimi-k3.py`: hidden 7168, FFN 33792, 96 atten
 
 ## 3. Environment Setup
 
-Use the `docker.io/radixark/miles:kimi-k3` image, which pins miles, SGLang (the
-[`sglang-miles-k3`](https://github.com/sgl-project/sglang/tree/sglang-miles-k3) branch) and
-flashinfer `0.6.15.post1` at the validated versions. On Hopper set
-`SGLANG_K3_ATTN_RES_MODE=jit`.
+Use the `radixark/miles:dev` image with the Megatron and SGLang changes from
+[radixark/Megatron-LM#94](https://github.com/radixark/Megatron-LM/pull/94) and
+[sgl-project/sglang#37704](https://github.com/sgl-project/sglang/pull/37704) until they merge.
 
 The only external asset is the Kimi-K3 MXFP4 HF checkpoint. Everything else derives in-repo.
 
