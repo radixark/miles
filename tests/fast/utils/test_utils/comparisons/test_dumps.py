@@ -1,6 +1,10 @@
+import subprocess
 from pathlib import Path
 
-from miles.utils.test_utils.comparisons.dumps import _find_leaf_dump_dirs
+import pytest
+
+from miles.utils.test_utils.comparisons import dumps
+from miles.utils.test_utils.comparisons.dumps import _find_leaf_dump_dirs, compare_dumps
 
 
 class TestFindLeafDumpDirs:
@@ -36,6 +40,46 @@ class TestFindLeafDumpDirs:
 
         assert _find_leaf_dump_dirs(tmp_path) == []
 
+
+def test_excluded_tensors_are_replaced_by_a_separate_semantic_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Excluded tensor files must not reach the generic comparator while its report remains auditable."""
+    baseline_leaf = tmp_path / "baseline" / "dumps" / "rollout_2"
+    target_leaf = tmp_path / "target" / "dumps" / "rollout_2"
+    baseline_leaf.mkdir(parents=True)
+    target_leaf.mkdir(parents=True)
+    for leaf in (baseline_leaf, target_leaf):
+        (leaf / "step=0___name=grad__model.weight.pt").touch()
+        (leaf / "step=0___name=grad__local_head_witness.weight.pt").touch()
+
+    def fake_run_comparator(**kwargs: object) -> subprocess.CompletedProcess[str]:
+        baseline_path = kwargs["baseline_path"]
+        target_path = kwargs["target_path"]
+        assert isinstance(baseline_path, Path)
+        assert isinstance(target_path, Path)
+        baseline_names = {path.name for path in baseline_path.glob("*.pt")}
+        target_names = {path.name for path in target_path.glob("*.pt")}
+        assert baseline_names == {"step=0___name=grad__model.weight.pt"}
+        assert target_names == baseline_names
+        (target_path / "comparator_report.jsonl").write_text("report\n")
+        return subprocess.CompletedProcess(args=[], returncode=0)
+
+    monkeypatch.setattr(dumps, "run_comparator", fake_run_comparator)
+
+    compare_dumps(
+        baseline_dir=str(tmp_path / "baseline"),
+        target_dir=str(tmp_path / "target"),
+        diff_thresholds=[(".*", "rel <= 0")],
+        allow_skipped_pattern="^$",
+        allow_failed_pattern="^$",
+        excluded_tensor_pattern=r".*witness.*",
+    )
+
+    assert (target_leaf / "comparator_report.jsonl").read_text() == "report\n"
+
+
+class TestIgnoredFiles:
     def test_non_pt_files_are_ignored(self, tmp_path: Path) -> None:
         """Files not matching *.pt (including *.pth) are ignored by the glob."""
         (tmp_path / "notes.txt").touch()

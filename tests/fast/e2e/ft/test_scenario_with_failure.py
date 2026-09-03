@@ -1,6 +1,9 @@
 import json
 import shlex
+from pathlib import Path
 
+import pytest
+from tests.e2e.ft.conftest_ft import scenario_with_failure
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     _DIFF_THRESHOLDS,
@@ -8,6 +11,7 @@ from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     _FIRST_INJECTED_ROLLOUT_ID,
     _FIRST_POST_FAULT_ROLLOUT_ID,
     _POST_FAULT_DIFF_THRESHOLDS,
+    _assert_event_analysis,
     _build_baseline_args,
     _build_target_args,
     _diff_thresholds_for_rollout,
@@ -56,6 +60,27 @@ def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
     assert "--ft-components" in args
     assert "--ci-ft-test-actions" not in args
     assert "--ci-inject-rollout-data-path" not in args
+
+
+def test_final_event_analysis_failure_fails_the_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A witness issue from the final rollout must fail the post-run semantic check."""
+    calls: list[Path] = []
+
+    def fake_run_analysis(event_dir: Path) -> list[object]:
+        calls.append(event_dir)
+        return ["witness mismatch"] if event_dir.parts[-3:-1] == ("target", "phase_b") else []
+
+    monkeypatch.setattr(scenario_with_failure, "run_analysis", fake_run_analysis)
+
+    with pytest.raises(AssertionError, match="target/phase_b.*witness mismatch"):
+        _assert_event_analysis(str(tmp_path))
+
+    assert calls == [
+        tmp_path / "baseline" / "phase_a" / "events",
+        tmp_path / "baseline" / "phase_b" / "events",
+        tmp_path / "target" / "phase_a" / "events",
+        tmp_path / "target" / "phase_b" / "events",
+    ]
 
 
 def test_fake_rollout_does_not_inject_recorded_data() -> None:
