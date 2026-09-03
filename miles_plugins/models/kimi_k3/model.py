@@ -52,7 +52,8 @@ def build_kimi_k3_spec(config, vp_stage=None):
         layer_spec.submodules.pre_mlp_layernorm = TENorm
 
         if not config.moe_layer_freq[layer_offset + len(layer_specs)]:
-            layer_spec.submodules.mlp.submodules.linear_fc1 = TEColumnParallelLinear
+            # The dense MLP spec is partial(MLP.as_mlp_submodule, submodules=...).
+            layer_spec.submodules.mlp.keywords["submodules"].linear_fc1 = TEColumnParallelLinear
 
         layer_specs.append(layer_spec)
 

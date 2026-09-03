@@ -74,8 +74,10 @@ class KimiK3Attention(MegatronModule):
         layer_number: int,
         cp_comm_type: str | None = None,
         pg_collection=None,
+        name: str | None = None,
     ) -> None:
         super().__init__(config=config)
+        del name  # build_module forwards the module path; K3 constructs its submodules directly
         self.cp_comm_type = cp_comm_type
 
         if pg_collection is None:
