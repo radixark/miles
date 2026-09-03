@@ -108,25 +108,29 @@ class TestSetupModelAndOptimizerLoraBranch:
         args = self._make_args(lora_rank=32, role="actor", mode="bridge")
         model, _, _ = setup_model_and_optimizer(args, role="actor")
 
-        mock_lora_setup.assert_called_once_with(args)
+        mock_lora_setup.assert_called_once_with(args, role="actor")
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")
     @patch(f"{_MODEL_MODULE}.get_model")
     @patch(f"{_MODEL_MODULE}.get_model_provider_func")
     @patch(f"{_MODEL_MODULE}._setup_lora_model_via_bridge")
-    def test_lora_critic_skips_lora_setup(self, mock_lora_setup, mock_provider, mock_get_model, mock_opt, mock_sched):
+    def test_lora_critic_bridge_routes_to_lora_setup(
+        self, mock_lora_setup, mock_provider, mock_get_model, mock_opt, mock_sched
+    ):
         from miles.backends.megatron_utils.model import setup_model_and_optimizer
 
-        mock_get_model.return_value = [MagicMock()]
+        mock_lora_setup.return_value = [MagicMock()]
         mock_opt.return_value = MagicMock(param_groups=[])
         mock_sched.return_value = MagicMock()
 
         args = self._make_args(lora_rank=32, role="critic", mode="bridge")
         setup_model_and_optimizer(args, role="critic")
 
-        mock_lora_setup.assert_not_called()
-        mock_get_model.assert_called_once()
+        # A bridge critic is LoRA-shaped too; a full-parameter critic would need
+        # full optimizer state on top of the colocated actor.
+        mock_lora_setup.assert_called_once_with(args, role="critic")
+        mock_get_model.assert_not_called()
 
     @patch(f"{_MODEL_MODULE}.get_optimizer_param_scheduler")
     @patch(f"{_MODEL_MODULE}.get_megatron_optimizer")

@@ -110,16 +110,6 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
-def _make_save_set_refresh_hook(lora):
-    """Re-snapshot the PEFT save set after a value head is attached."""
-
-    def hook(model):
-        lora.set_params_to_save(model)
-        return model
-
-    return hook
-
-
 def _setup_lora_model_via_bridge(args: Namespace, role: str = "actor") -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
@@ -201,10 +191,9 @@ def _setup_lora_model_via_bridge(args: Namespace, role: str = "actor") -> list:
     )
     if is_value_model:
         hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
-        # After the adapters, so the fresh head keeps requires_grad; then refresh
-        # the save set, which apply_lora_hook snapshotted before the head existed.
+        # After the adapters, so PEFT's freeze does not touch the fresh head: it keeps
+        # requires_grad and save_lora_checkpoint persists it with the adapters.
         provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
-        provider.register_pre_wrap_hook(_make_save_set_refresh_hook(lora))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
     if is_multi_lora_enabled(args):

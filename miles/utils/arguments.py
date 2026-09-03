@@ -1400,6 +1400,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Where to save critic checkpoints. If not set, it defaults to the --save path with a "
                 "'_critic' suffix appended, e.g. --save /ckpts/run1 saves the critic to /ckpts/run1_critic.",
             )
+            parser.add_argument(
+                "--critic-lora-adapter-path",
+                type=str,
+                default=None,
+                help="LoRA adapter checkpoint to resume the critic from: an iter_*/adapter directory under "
+                "--critic-save, holding the adapters and the value head. The critic never inherits "
+                "--lora-adapter-path, because the two models share parameter names and the actor's "
+                "adapter would load into the critic silently. Requires --lora-rank > 0.",
+            )
             parser.add_argument("--critic-lr", type=float, default=None, help="The lr for critic model")
             parser.add_argument(
                 "--critic-lr-warmup-iters",
@@ -3269,6 +3278,13 @@ def miles_validate_args(args):
     if args.critic_save is None and args.save is not None:
         # a sibling dir, not args.save itself: sharing a dir would clobber the actor's iteration tracker
         args.critic_save = args.save.rstrip("/") + "_critic"
+    if args.critic_lora_adapter_path is not None:
+        assert args.use_critic, "--critic-lora-adapter-path requires --advantage-estimator ppo."
+        assert args.lora_rank > 0, "--critic-lora-adapter-path requires a LoRA critic (--lora-rank > 0)."
+        assert args.critic_lora_adapter_path != args.lora_adapter_path, (
+            "--critic-lora-adapter-path must differ from --lora-adapter-path: the actor and critic "
+            "share parameter names, so one adapter shard would load into both models."
+        )
 
     if args.offload:
         args.offload_train = True

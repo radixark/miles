@@ -175,6 +175,9 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.save = self.args.critic_save
             self.args.lr = self.args.critic_lr
             self.args.lr_warmup_iters = self.args.critic_lr_warmup_iters
+            # Never inherit the actor's adapter: a LoRA critic has the same parameter
+            # names, so the actor's shard would load into it without any error.
+            self.args.lora_adapter_path = self.args.critic_lora_adapter_path
         else:
             for m in all_replay_managers:
                 m.enabled = getattr(self.args, f"use_{m.name}_replay", False)
