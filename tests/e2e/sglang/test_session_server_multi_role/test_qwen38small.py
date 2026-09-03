@@ -17,6 +17,7 @@ CONFIG = ModelConfig(
     mamba_full_memory_ratio=4.59,
     cycles=2,
     tool_call_failure_mode="append_tool",
+    anthropic_intermediate_system_expectation="forbidden",
 )
 
 

@@ -1,7 +1,9 @@
 import argparse
+import ast
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 from tests.e2e.sglang.test_session_server_multi_role import _common
@@ -201,6 +203,39 @@ def test_run_one_requires_explicit_anthropic_intermediate_system_expectation():
 
     with pytest.raises(ValueError, match="requires an intermediate-system expectation"):
         _common.run_one(config, endpoint="anthropic")
+
+
+def _config_keywords(config_path: Path) -> dict[str, ast.expr]:
+    for node in ast.walk(ast.parse(config_path.read_text())):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and any(isinstance(target, ast.Name) and target.id == "CONFIG" for target in node.targets)
+        ):
+            return {keyword.arg: keyword.value for keyword in node.value.keywords if keyword.arg is not None}
+    raise AssertionError(f"{config_path} has no CONFIG = ModelConfig(...) assignment")
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    sorted(Path(_common.__file__).parent.glob("test_*.py")),
+    ids=lambda config_path: config_path.stem,
+)
+def test_every_anthropic_verified_model_declares_its_intermediate_system_contract(config_path: Path):
+    """Each multi-role model config that runs the Anthropic endpoint must state its intermediate-system contract."""
+    keywords = _config_keywords(config_path)
+
+    flag = keywords.get("verify_anthropic")
+    if isinstance(flag, ast.Constant) and flag.value is False:
+        return
+
+    expectation = keywords.get("anthropic_intermediate_system_expectation")
+    assert expectation is not None, (
+        f"{config_path.name} runs the Anthropic endpoint but declares no "
+        "anthropic_intermediate_system_expectation, so run_one() raises before the lane does any work"
+    )
+    assert isinstance(expectation, ast.Constant)
+    assert expectation.value in _common.AnthropicIntermediateSystemExpectation.__args__
 
 
 @pytest.mark.parametrize(("n_samples_per_prompt", "expected_global_batch_size"), [(1, 8), (4, 32)])
