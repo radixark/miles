@@ -49,19 +49,18 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
 
 def test_baseline_matches_the_successful_retry_topology_without_crashing() -> None:
     """The baseline must use one cell for the fault commit without crashing."""
-    args = shlex.split(
-        _build_baseline_args(
-            MODES["dp2_cp2_real_rollout_dense"],
-            "/tmp/baseline/phase_b",
-            enable_dumper=False,
-        )
+    args = _build_baseline_args(
+        MODES["dp2_cp2_real_rollout_dense"],
+        "/tmp/baseline/phase_b",
+        enable_dumper=False,
     )
 
-    assert "--use-fault-tolerance" in args
-    assert "--ft-components" in args
+    tokens = shlex.split(args)
+    assert "--use-fault-tolerance" in tokens
+    assert "--ft-components" in tokens
     assert json.loads(_option_value(args, "--ci-ft-test-actions")) == _BASELINE_ACTIONS
     assert all(action["action"] != "crash_before_allreduce" for action in _BASELINE_ACTIONS)
-    assert "--ci-inject-rollout-data-path" not in args
+    assert "--ci-inject-rollout-data-path" not in tokens
 
 
 def test_final_event_analysis_failure_fails_the_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
