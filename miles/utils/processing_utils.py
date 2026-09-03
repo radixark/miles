@@ -102,6 +102,7 @@ def build_processor_kwargs(multimodal_inputs: dict | None = None) -> dict:
     modality_forced = {"return_tensors": "pt"}
 
     result = dict(multimodal_inputs) if multimodal_inputs else {}
+    video_metadata = result.pop("video_metadata", None)
 
     # return_tensors=None for text (input_ids), "pt" for modality-specific outputs.
     # Use per-modality dicts to avoid transformers >=5.0 duplicate kwarg error.
@@ -111,6 +112,16 @@ def build_processor_kwargs(multimodal_inputs: dict | None = None) -> dict:
             result[key] = {**result[key], **modality_forced}
         else:
             result[key] = modality_forced.copy()
+
+    if video_metadata is not None:
+        # Frames were already decoded and sampled (process_vision_info); hand the
+        # processor the metadata so timestamp tokens match the rollout engine's
+        # server-side expansion, and stop it from re-sampling.
+        result["videos_kwargs"] = {
+            **result["videos_kwargs"],
+            "video_metadata": list(video_metadata),
+            "do_sample_frames": False,
+        }
 
     return result
 
@@ -165,6 +176,66 @@ def load_processor(name_or_path: str, **kwargs):
     return proc
 
 
+ROLLOUT_VIDEO_PROCESSING_OPTIONS = frozenset({"fps", "min_frames", "max_frames"})
+
+
+def validate_rollout_video_process_config(video_process_config: dict | None) -> None:
+    """Reject config that the rollout engine and trainer cannot both consume."""
+    unsupported_config = set(video_process_config or {}) - ROLLOUT_VIDEO_PROCESSING_OPTIONS
+    if unsupported_config:
+        raise ValueError(
+            "Unsupported rollout video processing options: "
+            f"{sorted(unsupported_config)}. Supported options are "
+            f"{sorted(ROLLOUT_VIDEO_PROCESSING_OPTIONS)}"
+        )
+
+
+def prepare_rollout_video_sources(prompt: list[dict], video_process_config: dict | None = None) -> list[str] | None:
+    video_process_config = video_process_config or {}
+    validate_rollout_video_process_config(video_process_config)
+
+    video_sources = []
+    for message in prompt:
+        if not isinstance(message, dict):
+            raise ValueError(f"Multimodal prompt messages must be dicts, got {type(message).__name__}")
+
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+
+        for item in content:
+            if not isinstance(item, dict):
+                raise ValueError(f"Multimodal content items must be dicts, got {type(item).__name__}")
+            if item.get("type") != "video":
+                continue
+
+            video_source = item.get("video")
+            if not isinstance(video_source, str) or not video_source:
+                raise NotImplementedError("Rollout video sources must be non-empty paths or URLs")
+
+            item_options = item.keys() - {"type", "video"}
+            unsupported_options = item_options - ROLLOUT_VIDEO_PROCESSING_OPTIONS
+            if unsupported_options:
+                raise NotImplementedError(f"Unsupported per-video processing options: {sorted(unsupported_options)}")
+
+            # TODO: Extend SGLang /generate to accept per-video processing options.
+            mismatched_options = {
+                key
+                for key in item_options
+                if key not in video_process_config or item[key] != video_process_config[key]
+            }
+            if mismatched_options:
+                raise NotImplementedError(
+                    "Per-video processing options must match --sglang-mm-process-config: "
+                    f"{sorted(mismatched_options)}"
+                )
+
+            item.update(video_process_config)
+            video_sources.append(video_source)
+
+    return video_sources or None
+
+
 def process_vision_info(prompt, processor):
     if hasattr(processor, "extract_media"):
         return processor.extract_media(prompt)
@@ -177,8 +248,21 @@ def process_vision_info(prompt, processor):
     else:
         logger.info(f"Using default patch size: {DEFAULT_PATCH_SIZE}")
         image_patch_size = DEFAULT_PATCH_SIZE
-    images, videos = qwen_process_vision_info(prompt, image_patch_size=image_patch_size)
+    # return_video_metadata: qwen3-family processors derive per-frame timestamp
+    # tokens from the decode metadata. The rollout engine decodes server-side and
+    # feeds ITS processor pre-sampled frames + metadata (do_sample_frames done),
+    # so the local expansion must do the same or the two expansions diverge.
+    images, videos, _ = qwen_process_vision_info(
+        prompt,
+        image_patch_size=image_patch_size,
+        return_video_kwargs=True,
+        return_video_metadata=True,
+    )
     multimodal_inputs = {"images": images, "videos": videos}
+    if videos:
+        tensors, metadata = zip(*videos, strict=False)
+        multimodal_inputs["videos"] = list(tensors)
+        multimodal_inputs["video_metadata"] = list(metadata)
     return multimodal_inputs
 
 

@@ -4,12 +4,17 @@ from collections import defaultdict
 from collections.abc import Mapping
 from typing import Any
 
-from miles.rollout.generate_utils.generate_endpoint_utils import compute_routing_headers, policy_uses_routing_key
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    compute_routing_headers,
+    policy_uses_routing_key,
+    validate_video_prompt_expansion,
+)
 from miles.utils.http_utils import post
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
 from miles.utils.multi_lora import slot_lora_name
-from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
+
+from .generate_endpoint_utils import build_rollout_media_payload
 
 
 def _lora_path_for_sample(args: Any, sample: Sample) -> str | None:
@@ -33,8 +38,13 @@ def _build_prefill_scoring_payload(
             f"tokens={len(sample.tokens)}, response_length={sample.response_length}"
         )
 
+    rollout_input_ids = (
+        sample.rollout_prompt_ids + sample.tokens[prompt_len:]
+        if sample.rollout_prompt_ids is not None
+        else sample.tokens
+    )
     payload = {
-        "input_ids": sample.tokens,
+        "input_ids": rollout_input_ids,
         "sampling_params": {
             **dict(sampling_params),
             "max_new_tokens": 0,
@@ -44,16 +54,17 @@ def _build_prefill_scoring_payload(
         "return_logprob": True,
         # SGLang returns input_token_logprobs aligned to tokens from logprob_start_len,
         # with the first value None. Start one token before the response so the
-        # returned tail contains every response-token logprob.
+        # returned tail contains every response-token logprob. For video samples the
+        # wire input_ids are the COMPACT rollout ids, but the server expands them
+        # before applying logprob_start_len, so the offset stays in EXPANDED
+        # (sample.tokens) space.
         "logprob_start_len": prompt_len - 1,
     }
 
     if (lora_path := _lora_path_for_sample(args, sample)) is not None:
         payload["lora_path"] = lora_path
 
-    if sample.multimodal_inputs and sample.multimodal_inputs.get("images"):
-        image_data = sample.multimodal_inputs["images"]
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    payload.update(build_rollout_media_payload(sample.multimodal_inputs, sample.rollout_video_sources))
 
     return payload
 
@@ -61,7 +72,13 @@ def _build_prefill_scoring_payload(
 def _can_batch_prefill_score(args: Any, samples: list[Sample]) -> bool:
     if policy_uses_routing_key(args):
         return False
-    return not any(sample.multimodal_inputs and sample.multimodal_inputs.get("images") for sample in samples)
+
+    for sample in samples:
+        multimodal_inputs = sample.multimodal_inputs or {}
+        if multimodal_inputs.get("images") or multimodal_inputs.get("videos") or sample.rollout_video_sources:
+            return False
+
+    return True
 
 
 def _build_batch_prefill_scoring_payload(
@@ -130,6 +147,7 @@ async def recompute_rollout_logprobs_via_prefill(
 
     payload = _build_prefill_scoring_payload(args, sample, sampling_params)
     output = await post(url, payload, headers=headers)
+    validate_video_prompt_expansion(sample, output["meta_info"])
     sample.rollout_log_probs = _extract_response_logprobs(sample, output["meta_info"])
     sample.metadata["rollout_log_probs_source"] = "sglang_prefill_recompute"
 

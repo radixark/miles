@@ -27,7 +27,6 @@ from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
 from miles.utils.multi_lora import make_rid, slot_lora_name
 from miles.utils.processing_utils import (
     call_processor,
-    encode_image_for_rollout_engine,
     extract_multimodal_train_inputs,
     load_processor,
     load_tokenizer,
@@ -35,9 +34,12 @@ from miles.utils.processing_utils import (
 from miles.utils.types import Sample
 
 from .generate_utils.generate_endpoint_utils import (
+    build_rollout_media_payload,
+    compute_rollout_input_ids,
     compute_routing_headers,
     get_indexer_topk_from_response,
     policy_uses_routing_key,
+    validate_video_prompt_expansion,
 )
 from .generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
 from .generate_utils.sample_utils import reward_log_summary, sample_text_preview
@@ -154,11 +156,22 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         isinstance(sample.prompt, (list, tuple))
         or (sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()))
     ):
-        processor_output = call_processor(state.processor, sample.prompt, sample.multimodal_inputs)
+        prompt = sample.prompt
+        if sample.rollout_video_sources:
+            # Videos go to the engine as raw sources plus COMPACT tokenizer ids
+            # (one video_pad per video); the engine expands them server-side.
+            # The processor-expanded ids below stay the training tokens.
+            if not isinstance(prompt, str):
+                prompt = state.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            sample.rollout_prompt_ids = state.tokenizer.encode(prompt, add_special_tokens=False)
+        else:
+            sample.rollout_prompt_ids = None
+        processor_output = call_processor(state.processor, prompt, sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
         prompt_ids = prompt_ids.tolist() if hasattr(prompt_ids, "tolist") else list(prompt_ids)
         sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
     else:
+        sample.rollout_prompt_ids = None
         prompt_ids = state.tokenizer.encode(sample.prompt, add_special_tokens=False)
 
     if len(sample.response) > 0:
@@ -204,9 +217,7 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
     if getattr(args, "use_rollout_indexer_replay", False):
         payload["return_indexer_topk"] = True
 
-    if sample.multimodal_inputs and sample.multimodal_inputs["images"]:
-        image_data = sample.multimodal_inputs["images"]
-        payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
+    payload.update(build_rollout_media_payload(sample.multimodal_inputs, sample.rollout_video_sources))
 
     if sample.multimodal_inputs and sample.multimodal_inputs.get("audios"):
         import base64 as _b64
@@ -217,11 +228,12 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
 
     # Use existing tokens for multi-turn or tokenize the new prompt
     if len(sample.response) > 0:
-        payload["input_ids"] = sample.tokens
+        input_ids = sample.tokens
     else:
-        payload["input_ids"] = prompt_ids
+        input_ids = prompt_ids
         if not sample.tokens:  # Initialize sample.tokens for the first turn
-            sample.tokens = prompt_ids
+            sample.tokens = prompt_ids.copy()
+    payload["input_ids"] = compute_rollout_input_ids(sample, input_ids, prompt_ids)
 
     headers = compute_routing_headers(args, sample)
 
@@ -237,6 +249,8 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
         new_response_log_probs = [item[0] for item in output["meta_info"]["output_token_logprobs"]]
     else:
         new_response_tokens, new_response_log_probs = [], []
+
+    validate_video_prompt_expansion(sample, output["meta_info"])
 
     # Update sample with tokens directly - avoiding re-tokenization
     sample.tokens = sample.tokens + new_response_tokens
@@ -595,6 +609,7 @@ async def eval_rollout_single_dataset(
             tool_key=dataset_cfg.tool_key,
             apply_chat_template=args.apply_chat_template,
             apply_chat_template_kwargs=args.apply_chat_template_kwargs,
+            video_process_config=(args.sglang_mm_process_config or {}).get("video"),
         )
     dataset = EVAL_PROMPT_DATASET[cache_key]
 
