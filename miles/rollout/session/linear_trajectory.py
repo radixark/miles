@@ -1,10 +1,17 @@
 import asyncio
 import logging
+import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 
-from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    TokenizationError,
+    reclaimed_error,
+)
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.message_matcher_hub import (
     SessionMessageMatcher,
@@ -19,6 +26,13 @@ logger = logging.getLogger(__name__)
 # TODO: hardcoded to 1 for now; if multi-step rollback is actually needed,
 #  raise this limit or make it configurable and remove the restriction.
 MAX_ASSISTANT_ROLLBACK_STEPS = 1
+
+# How long a deleted session ID keeps answering 410 instead of 404, and how many
+# such IDs are retained. An abandoned agent only needs to survive long enough to
+# make one more request and read the reason, so this is deliberately short and
+# bounded -- it is a diagnostic breadcrumb, not a record of the run.
+RECLAIMED_TOMBSTONE_TTL_S = 3600.0
+RECLAIMED_TOMBSTONE_MAX = 4096
 
 
 def assert_pretokenized_prefix(
@@ -303,6 +317,8 @@ class SessionRegistry:
         message_matcher: SessionMessageMatcher | None = None,
     ):
         self.sessions: dict[str, LinearTrajectory] = {}
+        # session_id -> monotonic timestamp of the delete that reclaimed it.
+        self._reclaimed: OrderedDict[str, float] = OrderedDict()
         self.args = args
         self.tokenizer = tokenizer
         self.tito_tokenizer = tito_tokenizer
@@ -319,12 +335,45 @@ class SessionRegistry:
     def get_session(self, session_id: str) -> LinearTrajectory:
         session = self.sessions.get(session_id)
         if session is None:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            self.raise_for_missing(session_id)
         return session
 
     def remove_session(self, session_id: str) -> None:
         if self.sessions.pop(session_id, None) is None:
-            raise SessionNotFoundError(f"session not found: session_id={session_id}")
+            self.raise_for_missing(session_id)
+        self._note_reclaimed(session_id)
+
+    def raise_for_missing(self, session_id: str) -> NoReturn:
+        """Raise the error that explains why ``session_id`` is not serviceable.
+
+        A session the trainer deleted gets 410 rather than 404 so an agent that
+        outlived its trainer-side deadline can tell it was abandoned, instead of
+        seeing the same NotFoundError a bogus ID would produce.
+        """
+        if self._was_reclaimed(session_id):
+            raise reclaimed_error(session_id)
+        raise SessionNotFoundError(f"session not found: session_id={session_id}")
+
+    def _note_reclaimed(self, session_id: str) -> None:
+        now = time.monotonic()
+        self._reclaimed[session_id] = now
+        self._reclaimed.move_to_end(session_id)
+        # Timestamps only increase, so the oldest entry is always leftmost.
+        cutoff = now - RECLAIMED_TOMBSTONE_TTL_S
+        while self._reclaimed:
+            _, stamp = next(iter(self._reclaimed.items()))
+            if stamp >= cutoff and len(self._reclaimed) <= RECLAIMED_TOMBSTONE_MAX:
+                break
+            self._reclaimed.popitem(last=False)
+
+    def _was_reclaimed(self, session_id: str) -> bool:
+        stamp = self._reclaimed.get(session_id)
+        if stamp is None:
+            return False
+        if time.monotonic() - stamp > RECLAIMED_TOMBSTONE_TTL_S:
+            del self._reclaimed[session_id]
+            return False
+        return True
 
     def compute_session_mismatch(self, session: LinearTrajectory) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template output.

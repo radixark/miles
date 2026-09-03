@@ -132,7 +132,37 @@ class TestSessionRoutes:
         assert delete_resp.status_code == 204
         assert delete_resp.text == ""
 
-        assert requests.delete(f"{router_env.url}/sessions/{session_id}", timeout=5.0).status_code == 404
+        # Deleted, not unknown: 410 Gone so an agent still running against this
+        # session can tell it was abandoned rather than mistyped.
+        second = requests.delete(f"{router_env.url}/sessions/{session_id}", timeout=5.0)
+        assert second.status_code == 410
+        assert "session reclaimed" in second.json()["error"]
+
+    def test_chat_after_delete_reports_reclaimed(self, router_env):
+        """The bug this guards: a trial outliving its trainer-side deadline used
+        to get a bare 404, indistinguishable from a bad ID or a model fault."""
+        session_id = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        assert requests.delete(f"{router_env.url}/sessions/{session_id}", timeout=5.0).status_code == 204
+
+        response = requests.post(
+            f"{router_env.url}/sessions/{session_id}/v1/chat/completions",
+            json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+            timeout=5.0,
+        )
+        assert response.status_code == 410
+        assert response.json()["error"] == (
+            f"session reclaimed: session_id={session_id} "
+            "(the trainer released this session and is no longer waiting for the agent)"
+        )
+
+    def test_chat_on_unknown_session_still_404(self, router_env):
+        """Never-existed IDs keep 404; only reclaimed ones become 410."""
+        response = requests.post(
+            f"{router_env.url}/sessions/nonexistent/v1/chat/completions",
+            json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
+            timeout=5.0,
+        )
+        assert response.status_code == 404
 
     def test_delete_session_not_found(self, router_env):
         response = requests.delete(f"{router_env.url}/sessions/nonexistent", timeout=5.0)

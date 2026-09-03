@@ -4,6 +4,7 @@ Tests the session registry CRUD and the trajectory pretokenized state management
 logic in isolation (no HTTP server, no real tokenizer).
 """
 
+import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -11,7 +12,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.rollout.session.errors import MessageValidationError, SessionNotFoundError, TokenizationError
+from miles.rollout.session import linear_trajectory
+from miles.rollout.session.errors import (
+    MessageValidationError,
+    SessionNotFoundError,
+    SessionReclaimedError,
+    TokenizationError,
+)
 from miles.rollout.session.linear_trajectory import SessionRegistry
 from miles.rollout.session.types import SessionRecord
 from miles.utils.chat_template_utils.tito_tokenizer import ALL_APPEND_ROLES, FixedTemplate, TITOTokenizer
@@ -117,7 +124,8 @@ class TestSessionCRUD:
         session_id = registry.create_session()
         registry.remove_session(session_id)  # no raise = success
         assert session_id not in registry.sessions
-        with pytest.raises(SessionNotFoundError):
+        # Reclaimed, not unknown: the ID did exist, so it gets 410 not 404.
+        with pytest.raises(SessionReclaimedError):
             registry.remove_session(session_id)
 
     def test_append_record(self, registry: SessionRegistry):
@@ -140,6 +148,59 @@ class TestSessionCRUD:
     def test_append_record_missing_session(self, registry: SessionRegistry):
         with pytest.raises(SessionNotFoundError):
             registry.get_session("missing")
+
+
+class TestReclaimedSessions:
+    """A deleted session answers 410 for a while, so an agent that outlived its
+    trainer-side deadline learns it was abandoned instead of getting the same
+    404 a bogus ID produces."""
+
+    def test_get_after_remove_is_reclaimed(self, registry: SessionRegistry):
+        session_id = registry.create_session()
+        registry.remove_session(session_id)
+        with pytest.raises(SessionReclaimedError, match="session reclaimed"):
+            registry.get_session(session_id)
+
+    def test_unknown_id_is_still_not_found(self, registry: SessionRegistry):
+        with pytest.raises(SessionNotFoundError, match="session not found"):
+            registry.get_session("never-existed")
+
+    def test_status_codes_are_distinguishable(self, registry: SessionRegistry):
+        assert SessionNotFoundError.status_code == 404
+        assert SessionReclaimedError.status_code == 410
+        # Siblings, not parent/child: catching one must not swallow the other.
+        assert not issubclass(SessionReclaimedError, SessionNotFoundError)
+        assert not issubclass(SessionNotFoundError, SessionReclaimedError)
+
+    def test_tombstone_expires_back_to_not_found(self, registry: SessionRegistry, monkeypatch):
+        session_id = registry.create_session()
+        registry.remove_session(session_id)
+
+        now = time.monotonic() + linear_trajectory.RECLAIMED_TOMBSTONE_TTL_S + 1.0
+        monkeypatch.setattr(linear_trajectory.time, "monotonic", lambda: now)
+
+        with pytest.raises(SessionNotFoundError):
+            registry.get_session(session_id)
+        # The expired entry is dropped rather than left to accumulate.
+        assert session_id not in registry._reclaimed
+
+    def test_tombstones_are_bounded(self, registry: SessionRegistry, monkeypatch):
+        monkeypatch.setattr(linear_trajectory, "RECLAIMED_TOMBSTONE_MAX", 4)
+
+        removed = []
+        for _ in range(10):
+            session_id = registry.create_session()
+            registry.remove_session(session_id)
+            removed.append(session_id)
+
+        assert len(registry._reclaimed) == 4
+        # Newest survive as 410; the evicted oldest degrade to 404, never leak.
+        for session_id in removed[-4:]:
+            with pytest.raises(SessionReclaimedError):
+                registry.get_session(session_id)
+        for session_id in removed[:-4]:
+            with pytest.raises(SessionNotFoundError):
+                registry.get_session(session_id)
 
 
 # ---------------------------------------------------------------------------
