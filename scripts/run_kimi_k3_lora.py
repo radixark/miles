@@ -395,14 +395,8 @@ def _execute_train(args: ScriptArgs) -> None:
         # sglang's membind pins the whole TMS host backup to one NUMA node, which cannot hold it
         "SGLANG_NUMA_BIND_V2": os.environ.get("SGLANG_NUMA_BIND_V2", "0"),
     }
-    # Ray's runtime_env replaces the actor environment, so the persistent
-    # Triton/Inductor JIT caches exported by the launch script are lost unless
-    # forwarded explicitly. Without them the trainer recompiles the KDA backward
-    # kernels every run (the ~30 min first-backward warmup).
-    # SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK is forwarded the same way: sglang bases
-    # newer than the container's sgl-kernel (e.g. the DarkSharpness dark base)
-    # abort at import on the version check unless it is set.
-    for cache_var in ("TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR", "SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK"):
+    # Ray's runtime_env replaces the actor env; without the JIT cache dirs the KDA kernels recompile every run
+    for cache_var in ("TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"):
         cache_dir = os.environ.get(cache_var)
         if cache_dir:
             extra_env_vars[cache_var] = cache_dir

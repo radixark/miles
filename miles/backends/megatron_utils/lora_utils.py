@@ -191,9 +191,6 @@ def is_lora_weight_name(name: str) -> bool:
     return ".lora_A." in name or ".lora_B." in name
 
 
-_marked_lora_grad_params_cache: dict[int, list[torch.nn.Parameter]] = {}
-
-
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))
@@ -623,7 +620,7 @@ def load_lora_adapter(
             for name, param in model_chunk.named_parameters():
                 if name in state_dict:
                     param.data.copy_(state_dict[name].to(device=param.device))
-        logger.info(f"Loaded {len(adapter_params)} adapter tensors from " f"Megatron-native checkpoint: {native_path}")
+        logger.info(f"Loaded {len(adapter_params)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration
