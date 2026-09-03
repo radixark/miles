@@ -25,6 +25,7 @@ from miles.rollout.base_types import (
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnTrainInput,
+    RolloutPostprocessOptions,
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
@@ -256,9 +257,13 @@ class RolloutManager:
                     call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
                 )
             metrics = data.metrics
+            postprocess = getattr(data, "postprocess", None) or RolloutPostprocessOptions()
             data = data.samples
             data, metadata = postprocess_rollout_data(
-                self.args, data, train_parallel_config=self.train_parallel_config
+                self.args,
+                data,
+                train_parallel_config=self.train_parallel_config,
+                pad_to_dp=postprocess.pad_to_dp,
             )
             if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
                 generated_data = data
