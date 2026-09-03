@@ -353,8 +353,22 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("after wake_up model")
 
     @property
+    def _weight_sync_reads_tms_backup(self) -> bool:
+        """Under colocated LoRA the frozen base already has a memory-saver host backup; a
+        pinned "actor" copy of it would duplicate the whole base per rank. Model switching
+        still needs the real backups, and a disk offload target leaves no host backup to read."""
+        return (
+            self.args.colocate
+            and is_lora_enabled(self.args)
+            and self.args.offload_train_target == "cpu"
+            and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
+        )
+
+    @property
     def _enable_weight_backup(self) -> bool:
         """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
+        if self._weight_sync_reads_tms_backup:
+            return False
         return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
 
     def _switch_model(self, target_tag: str) -> None:
@@ -668,13 +682,15 @@ class MegatronTrainRayActor(TrainRayActor):
             for adapter in adapters_to_load:
                 self.loaded_adapters[adapter.name] = adapter
                 self._multi_lora_pending_push.add(adapter.name)
-            self.weights_backuper.backup("actor")
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
         if adapters_to_clean_up:
             _cleanup_adapters(self.args, self.model, self.optimizer, adapters_to_clean_up)
             for adapter in adapters_to_clean_up:
                 self.loaded_adapters.pop(adapter.name, None)
                 self._multi_lora_pending_push.discard(adapter.name)
-            self.weights_backuper.backup("actor")
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
 
         # Deregistered before ever being loaded: nothing to save or clear.
         if is_first_replica_megatron_main_rank():
@@ -740,12 +756,17 @@ class MegatronTrainRayActor(TrainRayActor):
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
-    def _named_actor_weights(self):
+    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
         return named_params_and_buffers(
-            self.args, self.model, convert_to_global_name=self.args.megatron_to_hf_mode == "raw"
+            self.args,
+            self.model,
+            convert_to_global_name=self.args.megatron_to_hf_mode == "raw",
+            translate_gpu_to_cpu=translate_gpu_to_cpu,
         )
 
     def _get_actor_weights(self):
+        if self._weight_sync_reads_tms_backup:
+            return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
         # use cpu backup only when weight is not live on gpu
         if self.args.colocate or self._active_model_tag != "actor":
             return self.weights_backuper.get("actor")
