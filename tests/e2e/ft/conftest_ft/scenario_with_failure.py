@@ -91,7 +91,8 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
-    base += get_train_env_vars_arg(mode, deterministic=False)
+    base += "--deterministic-mode " + get_train_env_vars_arg(mode, deterministic=True)
+    base += "--debug-deterministic-collective "
     if is_target:
         base += get_ft_args(mode)
 

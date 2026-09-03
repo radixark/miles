@@ -157,6 +157,10 @@ The JSON `at_rollout` field specifies which rollout_id triggers the action.
 The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
 ```
 
+Baseline remains normal DP and target remains indep_dp. Both sides enable deterministic
+kernels and the fixed-tree debug collective so topology-dependent SUM ordering cannot
+contaminate the crash-recovery comparison.
+
 #### `dp2_cp2_real_rollout_dense` mode
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
