@@ -329,7 +329,6 @@ def _execute_train(args: ScriptArgs) -> None:
         sglang_args += "--no-sglang-lora-use-virtual-experts "
     if args.model_variant == "full":
         sglang_args += (
-            "--sglang-lora-no-cpu-backup "
             "--sglang-moe-runner-backend marlin "
             "--sglang-decode-attention-backend trtllm_mla "
             "--sglang-mamba-radix-cache-strategy extra_buffer "
