@@ -271,6 +271,21 @@ def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_modul
     assert saver.resume.call_args_list == [call(tag="default"), call(tag="grad_buffer")]
 
 
+def test_offload_grad_buffer_frees_them_once_and_sleep_does_not_pause_them_again(actor_module, monkeypatch):
+    """offload_grad_buffer() and sleep() must pause the grad buffers exactly once between them."""
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.offload_grad_buffer()
+    worker.offload_grad_buffer()
+    worker.sleep()
+    worker.wake_up()
+
+    assert saver.pause.call_args_list == [call(tag="grad_buffer"), call(tag="default")]
+    assert saver.resume.call_args_list == [call(tag="default"), call(tag="grad_buffer")]
+    assert worker._grad_buffer_paused is False
+
+
 def _actor_train_args(**overrides):
     defaults = dict(
         compute_advantages_and_returns=True,

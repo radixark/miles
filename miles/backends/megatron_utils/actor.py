@@ -342,6 +342,19 @@ class MegatronTrainRayActor(TrainRayActor):
 
     @with_logs
     @timer
+    def offload_grad_buffer(self) -> None:
+        """Free the LoRA grad buffers ahead of sleep(), so the engine can resume its weights first."""
+        assert self.args.offload_train
+        assert lora_rollout_enabled(self.args), "only LoRA keeps its grad buffers in a no-backup region"
+        if self._asleep or self._grad_buffer_paused:
+            return
+        print_memory("before offload grad buffer")
+        torch_memory_saver.pause(tag="grad_buffer")
+        self._grad_buffer_paused = True
+        print_memory("after offload grad buffer")
+
+    @with_logs
+    @timer
     def wake_up(self) -> None:
         assert self.args.offload_train
         if not self._asleep:

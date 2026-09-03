@@ -12,7 +12,7 @@ from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_d
 from miles.utils.ft_utils.control_server.server import start_control_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.logging_utils import configure_logger
-from miles.utils.lora import is_lora_enabled
+from miles.utils.lora import lora_rollout_enabled
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils.tracking import finish_tracking, init_tracking
 
@@ -33,8 +33,6 @@ async def train(args):
             args.offload_train and args.offload_rollout
         ), "--colocate-memory-peak-device gpu requires --offload-train and --offload-rollout"
         assert not args.use_critic, "--colocate-memory-peak-device gpu is not wired for the critic path"
-        if is_lora_enabled(args):
-            raise NotImplementedError("--colocate-memory-peak-device gpu only supports full-parameter training")
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
@@ -140,6 +138,8 @@ async def train(args):
         ):
             if args.colocate_memory_peak_device == "gpu":
                 await actor_model.clear_memory()
+                if lora_rollout_enabled(args):
+                    await actor_model.offload_grad_buffer()
                 await rollout_manager.onload_weights.remote()
                 await offload_train()
             else:

@@ -61,6 +61,9 @@ class DummyTrainActor:
     def clear_memory(self) -> None:
         self._record("clear_memory", (), {})
 
+    def offload_grad_buffer(self) -> None:
+        self._record("offload_grad_buffer", (), {})
+
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
 

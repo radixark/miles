@@ -145,6 +145,9 @@ class RayTrainGroup:
     async def clear_memory(self):
         await self._broadcast("clear_memory")
 
+    async def offload_grad_buffer(self):
+        await self._broadcast("offload_grad_buffer")
+
     async def set_rollout_manager(self):
         self.rollout_manager = self._rollout_manager
         await self._broadcast("set_rollout_manager", self._rollout_manager)
