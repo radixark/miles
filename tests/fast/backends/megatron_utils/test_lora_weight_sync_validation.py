@@ -161,7 +161,7 @@ class TestUpdateWeightsEmptyBaseIteration:
         protocol.uses_session_frame = True
         protocol.needs_base_resync_for_lora = False
         protocol.is_sender = True
-        protocol._group_name = "test"
+        protocol.group_name = "test"
         protocol.begin_sync.return_value = True
         protocol.rollout_engines = [MagicMock()]
 
@@ -386,7 +386,7 @@ class TestBroadcastLoraImplementation:
     def _make_self(*, engines, lora_loaded=False):
         return SimpleNamespace(
             rollout_engines=engines,
-            _group_name="miles-pp_0",
+            group_name="miles-pp_0",
             _model_update_groups=MagicMock(name="base_nccl_group"),
             _lora_loaded=lora_loaded,
         )
