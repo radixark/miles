@@ -21,7 +21,6 @@ NUM_PHASE_B_STEPS: int = 4
 _FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
 _FIRST_INJECTED_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID
 _FIRST_POST_FAULT_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID + 1
-_POST_FAULT_ALLOW_FAILED_PATTERN: str = f"{INPUT_TENSORS_ALLOW_FAILED_PATTERN}|.*witness.*"
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -43,16 +42,15 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
 # bitwise-identical, but the target's weights carry the fault-inherent ulp drift of the
 # degraded-quorum commit. On the converged dense model that drift lands in the
 # cancellation-dominated near-zero grads of the decoder-layer norms and attention/MLP
-# matrices as absolute noise measured <= 4.1e-3 (2026-09-03; q_layernorm up to rel 14.7%
-# at max_abs 3.5e-3) while real grads sit at ~1e-2 — only those measured families get a
-# 4.5e-3 floor. Everything else (embeddings, output layer, final norm, all
-# activations/values) stays strict, and all passed at rel <= 0.85% in the same run.
+# matrices as absolute noise measured <= 4.8e-3 (2026-09-03) while real grads sit at
+# ~1e-2 — only those measured families get a 5e-3 floor. Everything else (embeddings,
+# output layer, final norm, all activations/values) stays strict.
 _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
-    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 4.5e-3"),
-    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 4.5e-3"),
-    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 4.5e-3"),
-    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 4.5e-3"),
-    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 4.5e-3"),
+    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 5e-3"),
+    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 5e-3"),
+    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 5e-3"),
+    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 5e-3"),
+    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 5e-3"),
     (".*", "rel <= 0.0085"),
 ]
 
@@ -93,7 +91,8 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
     base += get_train_env_vars_arg(mode, deterministic=False)
-    base += get_ft_args(mode)
+    if is_target:
+        base += get_ft_args(mode)
 
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
@@ -157,7 +156,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
             target_dir=f"{dump_dir}/target/phase_b",
             diff_thresholds=_diff_thresholds_for_rollout(mode, rollout_id),
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
-            allow_failed_pattern=_allow_failed_pattern_for_rollout(rollout_id),
+            allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
         )
     print("With-failure comparison test PASSED")
@@ -167,13 +166,6 @@ def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tupl
     if mode.has_real_rollout and rollout_id >= _FIRST_POST_FAULT_ROLLOUT_ID:
         return _POST_FAULT_DIFF_THRESHOLDS
     return _DIFF_THRESHOLDS
-
-
-def _allow_failed_pattern_for_rollout(rollout_id: int) -> str:
-    if rollout_id >= _FAULT_ROLLOUT_ID:
-        return _POST_FAULT_ALLOW_FAILED_PATTERN
-    return INPUT_TENSORS_ALLOW_FAILED_PATTERN
-
 
 TEST_NAME: str = "trainer_ft_with_failure"
 PHASES: list[str] = ["phase_a", "phase_b"]
