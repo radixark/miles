@@ -2,25 +2,6 @@ import torch
 import torch.nn as nn
 
 
-def _patch_fla_kda_hopper_autotune() -> None:
-    from fla.ops.kda.chunk_bwd import chunk_kda_bwd_kernel_wy_dqkg_fused
-    from fla.utils import IS_NVIDIA_HOPPER
-
-    if not IS_NVIDIA_HOPPER:
-        return
-
-    autotuner = chunk_kda_bwd_kernel_wy_dqkg_fused.fn
-    if getattr(autotuner, "_kimi_k3_hopper_configs_patched", False):
-        return
-
-    assert len(autotuner.configs) == 24
-    autotuner.configs = [
-        config for config in autotuner.configs if not (config.kwargs["BK"] == 32 and config.num_warps == 4)
-    ]
-    assert len(autotuner.configs) == 18
-    autotuner._kimi_k3_hopper_configs_patched = True
-
-
 def kda(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -48,7 +29,6 @@ def kda(
     """
     from fla.ops.kda import chunk_kda
 
-    _patch_fla_kda_hopper_autotune()
     boundaries = {"cp_context": cp_context} if cp_context is not None else {"cu_seqlens": cu_seqlens}
     output, _ = chunk_kda(
         q=q,
