@@ -29,14 +29,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
             raise NotImplementedError("The verified Kimi K3 training configuration is one 8-GPU node")
 
 
-def _validate_paths(args: ScriptArgs) -> None:
-    for name, path in (("hf_checkpoint", args.hf_checkpoint), ("ref_load", args.ref_load)):
-        if not Path(path).exists():
-            raise FileNotFoundError(f"{name} does not exist: {path}")
-    if not Path(args.sglang_path, "sglang").is_dir():
-        raise FileNotFoundError(f"sglang package does not exist under sglang_path: {args.sglang_path}")
-
-
 @app.command()
 @U.dataclass_cli
 def prepare_data(args: ScriptArgs) -> None:
@@ -45,10 +37,7 @@ def prepare_data(args: ScriptArgs) -> None:
 
 
 def _execute_train(args: ScriptArgs) -> None:
-    _validate_paths(args)
     dataset = Path(args.data_dir) / "dapo-math-17k" / "dapo-math-17k.jsonl"
-    if not dataset.is_file():
-        raise FileNotFoundError(f"Dataset does not exist: {dataset}; run prepare-data first")
 
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "

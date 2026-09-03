@@ -169,14 +169,6 @@ class ScriptArgs(U.ExecuteTrainConfig):
         return 8 if self.model_variant == "4layer" else self.rollout_ep_size
 
 
-def _validate_paths(args: ScriptArgs) -> None:
-    for name, path in (("hf_checkpoint", args.hf_checkpoint), ("ref_load", args.ref_load)):
-        if not Path(path).exists():
-            raise FileNotFoundError(f"{name} does not exist: {path}")
-    if not Path(args.sglang_path, "sglang").is_dir():
-        raise FileNotFoundError(f"sglang package does not exist under sglang_path: {args.sglang_path}")
-
-
 @app.command()
 @U.dataclass_cli
 def prepare_data(args: ScriptArgs) -> None:
@@ -188,15 +180,12 @@ def prepare_data(args: ScriptArgs) -> None:
 
 
 def _execute_train(args: ScriptArgs) -> None:
-    _validate_paths(args)
     if args.task == "gsm8k":
         dataset = Path(args.data_dir) / "gsm8k" / "train.parquet"
         input_key = "messages"
     else:
         dataset = Path(args.data_dir) / "dapo-math-17k" / "dapo-math-17k.jsonl"
         input_key = "prompt"
-    if not dataset.is_file():
-        raise FileNotFoundError(f"Dataset does not exist: {dataset}; run prepare-data first")
 
     ckpt_args = (
         f"--hf-checkpoint {args.hf_checkpoint} "
@@ -261,8 +250,6 @@ def _execute_train(args: ScriptArgs) -> None:
         else:
             eval_name, eval_rel, eval_input_key = "aime", "aime-2024/aime-2024.jsonl", "prompt"
         eval_dataset = Path(args.data_dir) / eval_rel
-        if not eval_dataset.is_file():
-            raise FileNotFoundError(f"Eval dataset does not exist: {eval_dataset}")
         rollout_args += (
             f"--eval-interval {args.eval_interval} "
             f"--eval-prompt-data {eval_name} {eval_dataset} "

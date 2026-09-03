@@ -1,0 +1,147 @@
+### 0
+pkill -9 sglang; sleep 3; ray stop
+  --force; pkill -9 ray; pkill -9 miles; sleep 3; pkill -9 ray; pkill -9 miles; pkill -9 redis; true; 
+
+### 1
+export PYTHONUNBUFFERED=1 && ray start
+  --head
+  --node-ip-address 127.0.0.1
+  --num-gpus 8
+  --disable-usage-stats
+
+### 2
+nvidia-smi topo -m 2>/dev/null | grep -o 'NV[0-9][0-9]*' | wc -l
+
+### 3
+export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
+  --address="http://127.0.0.1:8265"
+  --runtime-env-json='{"env_vars": {"PYTHONUNBUFFERED": "1", "CUDA_DEVICE_MAX_CONNECTIONS": "1", "NCCL_NVLS_ENABLE": "0", "no_proxy": "127.0.0.1,127.0.0.1", "MASTER_ADDR": "127.0.0.1", "NCCL_TIMEOUT": "3600", "PYTHONPATH": "<REPO_ROOT>:/root/Megatron-LM:/root/sglang/python:/frozen/pythonpath", "SGLANG_JIT_ROUTE_RADIX": "1", "SGLANG_NUMA_BIND_V2": "0", "TRITON_CACHE_DIR": "/root/.cache/sglang/triton", "TORCHINDUCTOR_CACHE_DIR": "/tmp/torchinductor_root"}}'
+  -- python3 <REPO_ROOT>/train.py
+  --spec miles_plugins.models.kimi_k3 get_kimi_k3_spec
+  --disable-bias-linear
+  --num-layers 4
+  --hidden-size 7168
+  --ffn-hidden-size 33792
+  --num-attention-heads 96
+  --num-query-groups 96
+  --kv-channels 256
+  --normalization RMSNorm
+  --position-embedding-type none
+  --rotary-base 50000
+  --norm-epsilon 1e-5
+  --hidden-dropout 0
+  --attention-dropout 0
+  --disable-bf16-reduced-precision-matmul
+  --swiglu
+  --untie-embeddings-and-output-weights
+  --vocab-size 163840
+  --make-vocab-size-divisible-by 128
+  --multi-latent-attention
+  --q-lora-rank 1536
+  --kv-lora-rank 512
+  --qk-head-dim 128
+  --qk-pos-emb-head-dim 64
+  --v-head-dim 128
+  --qk-layernorm
+  --attention-softmax-in-fp32
+  --num-experts 896
+  --moe-layer-freq '[0,1,1,1]'
+  --moe-ffn-hidden-size 3072
+  --moe-latent-size 3584
+  --moe-shared-expert-intermediate-size 6144
+  --moe-router-topk 16
+  --moe-router-score-function sigmoid
+  --moe-router-pre-softmax
+  --moe-router-enable-expert-bias
+  --moe-router-load-balancing-type none
+  --moe-token-dispatcher-type alltoall
+  --moe-router-bias-update-rate 0
+  --moe-aux-loss-coeff 0
+  --moe-router-topk-scaling-factor 1.0
+  --moe-router-dtype fp32
+  --moe-grouped-gemm
+  --moe-permute-fusion
+  --hf-checkpoint /root/models/Kimi-K3-4layer-bf16
+  --ref-load /root/models/Kimi-K3-4layer-torch-dist
+  --megatron-to-hf-mode raw
+  --model-name kimi_k3 
+  --lora-rank 16
+  --lora-alpha 32
+  --lora-dropout 0.0
+  --target-modules "decoder.layers.*.self_attention.o_proj,decoder.layers.*.self_attention.q_a_proj,decoder.layers.*.self_attention.kv_a_proj_with_mqa,decoder.layers.*.mlp.linear_fc1,decoder.layers.*.mlp.linear_fc2,decoder.layers.*.mlp.experts.linear_fc1,decoder.layers.*.mlp.experts.linear_fc2"
+  --no-gradient-accumulation-fusion
+  --lora-base-cpu-backup
+  --experts-shared-outer-loras 
+  --prompt-data /root/datasets/gsm8k/train.parquet
+  --input-key messages
+  --label-key label
+  --apply-chat-template
+  --rollout-shuffle
+  --balance-data
+  --rm-type math
+  --num-rollout 2
+  --rollout-batch-size 8
+  --n-samples-per-prompt 2
+  --rollout-max-response-len 256
+  --rollout-temperature 1
+  --global-batch-size 16
+  --use-dynamic-global-batch-size 
+  --optimizer sgd
+  --sgd-momentum 0
+  --lr 1e-6
+  --lr-decay-style constant
+  --weight-decay 0
+  --use-distributed-optimizer 
+  --advantage-estimator grpo
+  --kl-loss-coef 0.0
+  --kl-loss-type low_var_kl
+  --entropy-coef 0.0
+  --eps-clip 0.2
+  --eps-clip-high 0.28 
+  --use-wandb
+  --wandb-project miles-run_kimi_k3_lora
+  --wandb-group 260101-000000-000
+  --wandb-key 'frozen-wandb-api-key'
+  --disable-wandb-random-suffix 
+  --tensor-model-parallel-size 8
+  --sequence-parallel
+  --pipeline-model-parallel-size 1
+  --context-parallel-size 1
+  --expert-model-parallel-size 8
+  --expert-tensor-parallel-size 1
+  --recompute-granularity full
+  --recompute-method uniform
+  --recompute-num-layers 1
+  --use-dynamic-batch-size
+  --max-tokens-per-gpu 512
+  --log-probs-chunk-size 512
+  --distributed-timeout-minutes 10 
+  --rollout-num-gpus-per-engine 8
+  --sglang-tp-size 8
+  --sglang-ep-size 8
+  --sglang-server-concurrency 16
+  --sglang-max-running-requests 16
+  --sglang-max-mamba-cache-size 16
+  --sglang-lora-backend triton
+  --sglang-lora-strict-loading
+  --sglang-max-lora-rank 16
+  --use-miles-router
+  --miles-router-health-check-failure-threshold 10
+  --sglang-cuda-graph-bs 1 2 4 8 16
+  --sglang-mem-fraction-static 0.7
+  --sglang-moe-runner-backend triton
+  --sglang-disable-shared-experts-fusion
+  --sglang-context-length 8192 
+  --attention-dropout 0.0
+  --hidden-dropout 0.0
+  --accumulate-allreduce-grads-in-fp32
+  --colocate
+  --offload-train
+  --update-weight-buffer-size 2147483648
+  --train-memory-margin-bytes 2147483648
+  --actor-num-nodes 1
+  --actor-num-gpus-per-node 8
+  --num-gpus-per-node 8
+  --no-check-for-nan-in-loss-and-grad 
+  --save /personal/checkpoints/260101-000000-000
+  --save-interval 50  
