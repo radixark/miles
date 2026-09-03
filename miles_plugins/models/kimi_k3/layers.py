@@ -269,14 +269,7 @@ class KimiK3Attention(MegatronModule):
         hidden_states: torch.Tensor,
         packed_seq_params: PackedSeqParams | None,
     ) -> torch.Tensor:
-        """Global packed-sequence boundaries, which both the zigzag relayout and
-        fla's CP context are defined against.
-
-        Under THD they come straight from packed_seq_params. Under BSHD the tokens
-        are not packed -- dim 0 is the sequence and dim 1 the batch -- so the whole
-        sequence is a single segment whose global length is the local shard times
-        cp_size.
-        """
+        """Global packed-sequence boundaries; under BSHD the whole sequence is one segment."""
         if packed_seq_params is not None and packed_seq_params.cu_seqlens_q is not None:
             return packed_seq_params.cu_seqlens_q
         total = hidden_states.shape[0] * self.cp_size

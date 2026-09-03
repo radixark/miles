@@ -1,8 +1,6 @@
 """MXFP4 (E2M1 elements + E8M0 block scales) pack/unpack.
 
-Kept as a torch-only leaf module so checkpoint tooling can convert an
-``mxfp4-pack-quantized`` compressed-tensors checkpoint without importing
-Megatron, which ``megatron_to_hf.processors`` pulls in.
+Torch-only, so checkpoint tooling can use it without importing Megatron.
 """
 
 import torch

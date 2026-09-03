@@ -22,10 +22,6 @@ def kda(
     derives the rank-local boundaries itself and the caller's ``cu_seqlens`` is
     already a copy of the context's own. Passing both is a combination fla has
     never been run with here, so the selection stays exclusive.
-
-    ``initial_state`` / ``output_final_state`` are unavailable under CP (fla
-    forbids them): the recurrent state crosses ranks through ``cp_context``,
-    not through an explicitly threaded tensor.
     """
     from fla.ops.kda import chunk_kda
 

@@ -1,31 +1,8 @@
-"""
-python tools/convert_mxfp4_to_bf16.py [-h] --model-dir MODEL_DIR --save-dir SAVE_DIR
-                                      [--device {cpu,cuda}] [--files FILE [FILE ...]]
-                                      [--shard-rank SHARD_RANK] [--num-shards NUM_SHARDS]
-                                      [--finalize-only] [--overwrite]
+"""Convert an ``mxfp4-pack-quantized`` compressed-tensors checkpoint to BF16.
 
-Convert an ``mxfp4-pack-quantized`` compressed-tensors safetensors checkpoint to
-BF16, replacing every ``<name>.weight_packed`` / ``<name>.weight_scale`` pair with
-a dequantized ``<name>.weight`` and dropping ``quantization_config`` from the
-copied config.
-
-options:
-  --model-dir MODEL_DIR Directory of the HF safetensors quantized model.
-  --save-dir SAVE_DIR   Directory to save the converted BF16 model.
-  --device {cpu,cuda}   Device used to dequantize (default: cpu).
-  --files FILE [FILE ...]
-                        Specific safetensors filenames to convert (relative to
-                        model-dir). Convert all if omitted.
-  --shard-rank SHARD_RANK, --num-shards NUM_SHARDS
-                        Convert only this shard of the file list, so the run can
-                        be spread over many processes. Both or neither.
-  --finalize-only       Skip conversion; only copy metadata and rebuild the
-                        safetensors index. Run once after all shards finish.
-  --overwrite           Reconvert files that already exist in save-dir.
-
-Example:
---------
-python tools/convert_mxfp4_to_bf16.py --model-dir /Kimi-K3/native --save-dir /Kimi-K3/bf16
+Every ``<name>.weight_packed`` / ``<name>.weight_scale`` pair becomes a dequantized
+``<name>.weight`` and ``quantization_config`` is dropped from the copied config; shard the
+file list over processes with ``--shard-rank/--num-shards`` and run ``--finalize-only`` once.
 """
 
 import argparse
@@ -54,8 +31,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def quantization_section(config: dict) -> dict:
-    """The config level holding ``quantization_config``: nested under
-    ``text_config`` for multimodal checkpoints, top level otherwise."""
+    """Multimodal checkpoints nest ``quantization_config`` under ``text_config``."""
     return config.get("text_config", config)
 
 

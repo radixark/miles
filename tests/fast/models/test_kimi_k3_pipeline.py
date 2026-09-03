@@ -5,14 +5,7 @@ from miles_plugins.models.kimi_k3.pipeline import bank_num_rows, pack_stage_boun
 
 
 def test_pack_unpack_is_exact_in_both_directions() -> None:
-    """Megatron's p2p carries one hidden-states tensor, so the attention-residual
-    bank rides across the stage boundary flattened into the hidden dim. Values
-    have to survive the round trip and gradients have to route back to the right
-    side of the split -- a transposed unflatten would mix bank rows into
-    prefix_sum with no shape error. The width assertion is the only thing
-    standing between a sender/receiver row-count disagreement and silently
-    reinterpreted activations.
-    """
+    """A transposed unflatten mixes bank rows into prefix_sum with no shape error."""
     torch.manual_seed(0)
     prefix_sum = torch.randn(5, 2, 16, dtype=torch.bfloat16)
     block_residual = torch.randn(5, 2, 3, 16, dtype=torch.bfloat16)
@@ -39,12 +32,7 @@ def test_pack_unpack_is_exact_in_both_directions() -> None:
 
 
 def test_bank_num_rows_matches_write_schedule() -> None:
-    """The receiver sizes its unpack from ``bank_num_rows`` while the sender's
-    row count comes from the write schedule (``layer_idx % block_size == 0``).
-    The ceil-div has to agree with that schedule at every one of the 93 layers,
-    from both sides of a stage boundary -- one row off and the payload is
-    reinterpreted, not rejected.
-    """
+    """One row off between the write schedule and the receiver reinterprets the payload."""
     block_size = 12
     for layer_idx in range(1, 93):
         rows_written_before = sum(1 for w in range(layer_idx) if w % block_size == 0)

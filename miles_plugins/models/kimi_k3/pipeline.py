@@ -1,12 +1,7 @@
 """Stage-boundary packing for pipeline-parallel Kimi K3.
 
-The attention-residual state (prefix_sum plus the snapshot bank) must cross
-pipeline stage boundaries, but Megatron's p2p carries a single hidden-states
-tensor. The stage-exit layer packs [prefix_sum, bank] along the hidden
-dimension into one 3-D tensor and the stage-entry layer unpacks it. Miles
-always runs the Megatron backend with variable_seq_lengths, so the receiver
-allocates its buffer from the sender's actual shape and any row-count
-disagreement fails loudly at unpack instead of corrupting silently.
+Megatron's p2p carries one hidden-states tensor, so the stage-exit layer packs
+`[prefix_sum, snapshot bank]` along the hidden dim and the stage-entry layer unpacks it.
 """
 
 import torch

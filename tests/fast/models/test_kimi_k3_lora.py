@@ -109,16 +109,7 @@ def _model_with_adapters(*, include_shared_experts=True):
 
 
 def test_native_export_is_chunked_by_adapter(monkeypatch):
-    """The exported names and shapes are the serving contract with SGLang's
-    ``experts_shared_outer_loras=True``: the shared expert factors carry a
-    leading expert_dim of 1 (w1.lora_A, w2.lora_B) while the per-expert ones
-    carry the real local expert count. Getting the expert dim wrong is a shape
-    mismatch inside the LoRA memory pool, and a wrong HF name is silently
-    dropped by strict loading.
-
-    Also covers the ``materialize_parameter`` hook, which is how the export
-    reads CPU backups while TorchMemorySaver has the parameters paused.
-    """
+    """A wrong expert dim is a shape mismatch in SGLang's LoRA pool; a wrong HF name is silently dropped."""
     from megatron.core import parallel_state
 
     monkeypatch.setattr(parallel_state, "get_tensor_model_parallel_world_size", lambda: 1)
@@ -161,12 +152,7 @@ def test_native_export_is_chunked_by_adapter(monkeypatch):
 
 
 def test_native_export_rejects_missing_shared_expert_adapter(monkeypatch):
-    """Completeness contract: the export enumerates the model's layers and
-    requires an adapter for each expected (kind, hf_prefix). A layer whose
-    adapter was never attached -- a new MLP type, or a PP stage built from a
-    different spec -- must fail loudly instead of exporting a partial adapter
-    that SGLang would load without complaint.
-    """
+    """A layer without its adapter must fail the export, not ship a partial adapter SGLang accepts."""
     from megatron.core import parallel_state
 
     monkeypatch.setattr(parallel_state, "get_tensor_model_parallel_world_size", lambda: 1)
@@ -179,11 +165,7 @@ def test_native_export_rejects_missing_shared_expert_adapter(monkeypatch):
 
 
 def test_grouped_linear_uses_expert_token_boundaries():
-    """The CPU fallback splits by ``tokens_per_expert`` and the CUDA path turns
-    the same list into cumulative offsets for ``grouped_mm``. Wrong boundaries
-    apply expert i's adapter to expert j's tokens -- no error, just a wrong
-    delta on every MoE layer.
-    """
+    """Wrong boundaries apply expert i's adapter to expert j's tokens without any error."""
     inputs = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
     weights = torch.tensor([[[1.0, 0.0]], [[0.0, 1.0]]])
 
@@ -193,13 +175,8 @@ def test_grouped_linear_uses_expert_token_boundaries():
 
 
 def test_full_recompute_keeps_native_lora_in_autograd_graph():
-    """With ``--recompute-granularity full`` and a frozen base, nothing entering
-    the checkpointed segment requires grad, so the recomputed segment is built
-    without a graph and every native LoRA gradient comes out zero -- training
-    runs, loss moves, adapters never change. The embedding hook forces the
-    segment input to require grad without unfreezing the embedding itself, and
-    must not do so under eval.
-    """
+    """Under full recompute with a frozen base the segment input carries no grad, so every LoRA
+    gradient is zero; the embedding hook must fix that in training and stay out of eval."""
     model = nn.Module()
     model.embedding = nn.Embedding.from_pretrained(torch.ones(8, 4), freeze=True)
     model.adapter = nn.Parameter(torch.ones(4, 4))

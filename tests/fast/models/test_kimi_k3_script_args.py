@@ -24,11 +24,7 @@ def test_full_model_parallel_derivation(pipeline_parallel_size, context_parallel
 
 
 def test_derived_ep_saturates_the_bound_post_init_validates():
-    """EP must equal the non-PP rank count of one pipeline stage, not TP.
-
-    Returning TP alone silently under-uses the bound whenever CP > 1, which is
-    why every CP run before this had to pass --ep-size-override.
-    """
+    """EP must fill the non-PP ranks of one stage; TP alone under-uses it whenever CP > 1."""
     args = _full(pipeline_parallel_size=8, context_parallel_size=2)
     model_parallel = args.tensor_parallel_size * args.context_parallel_size * args.pipeline_parallel_size
     data_parallel = 64 // model_parallel
