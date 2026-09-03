@@ -175,6 +175,8 @@ def setup_model_and_optimizer(
         if hasattr(args, f.name):
             kwargs[f.name] = getattr(args, f.name)
     config = OptimizerConfig(**kwargs)
+    if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
+        config.defer_main_param_initialization = True
     config.timers = None
 
     if _is_muon_optimizer(config.optimizer):

@@ -146,8 +146,10 @@ Whether a replayed message counts as "the same" as the stored one is decided by
 [Choose replay matching](#choose-replay-matching).
 
 The v1 wrapper returns one `Sample`. The v2 wrapper returns a `list[Sample]`, one
-for each selected tree leaf. Both versions reject `--pause-generation-mode=abort`
-and `--partial-rollout`, and use in-place weight update as instead to avoid harness pause.
+for each selected tree leaf. Both versions reject `--partial-rollout`. With R3
+replay, every pause mode except `retract` requests only additional R3 rows.
+`retract` returns full R3 data on every turn and emits a warning because the
+payloads can become very large.
 
 Set `--max-seq-len` to cap the context length. Miles also includes this value in the
 metadata passed to your agent so an external environment can stop early.
@@ -169,6 +171,8 @@ but treat it as best-effort until it passes the checks below.
 | Qwen3 | `qwen3` |
 | Qwen3.5 | `qwen35` |
 | Qwen3.6 | `qwen36` |
+| Qwen3.8-27B | `qwen38small` |
+| Qwen3.8-Flash-Next | `qwen4exp` |
 | Qwen3-Thinking-2507 / Qwen3-Next | `qwennext` |
 | GLM-4.7 / 5 / 5.1 / 5.2 | `glm47` |
 | NVIDIA Nemotron 3 Nano / Super / Ultra | `nemotron3` |

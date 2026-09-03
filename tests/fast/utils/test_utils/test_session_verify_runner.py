@@ -29,6 +29,8 @@ def _build_args(**overrides) -> str:
         "sglang_reasoning_parser": "qwen3",
         "sglang_tool_call_parser": "qwen25",
         "sglang_context_length": None,
+        "sglang_kv_cache_dtype": None,
+        "sglang_mamba_full_memory_ratio": None,
         "sglang_cuda_graph_backend_prefill": None,
         "anthropic_intermediate_system_expectation": None,
     }
@@ -97,6 +99,20 @@ def test_namespace_to_train_args_emits_model_context_length():
     assert "--sglang-context-length 32768" in train_args
 
 
+def test_namespace_to_train_args_omits_model_mamba_cache_config_by_default():
+    train_args = _build_args()
+
+    assert "--sglang-kv-cache-dtype" not in train_args
+    assert "--sglang-mamba-full-memory-ratio" not in train_args
+
+
+def test_namespace_to_train_args_emits_model_mamba_cache_config():
+    train_args = _build_args(sglang_kv_cache_dtype="fp8_e4m3", sglang_mamba_full_memory_ratio=4.59)
+
+    assert "--sglang-kv-cache-dtype fp8_e4m3" in train_args
+    assert "--sglang-mamba-full-memory-ratio 4.59" in train_args
+
+
 def test_namespace_to_train_args_omits_prefill_cuda_graph_backend_by_default():
     train_args = _build_args()
 
@@ -126,6 +142,8 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
         tito_model="qwen3",
         n_samples_per_prompt=n_samples_per_prompt,
         rollout_max_response_len=4096,
+        kv_cache_dtype="fp8_e4m3",
+        mamba_full_memory_ratio=4.59,
         cuda_graph_backend_prefill="disabled",
     )
 
@@ -134,6 +152,8 @@ def test_run_one_aligns_global_batch_size_with_sample_count(
     assert captured["args"].global_batch_size == expected_global_batch_size
     assert captured["args"].rollout_batch_size == 16
     assert captured["args"].rollout_max_response_len == 4096
+    assert captured["args"].sglang_kv_cache_dtype == "fp8_e4m3"
+    assert captured["args"].sglang_mamba_full_memory_ratio == 4.59
     assert captured["args"].sglang_cuda_graph_backend_prefill == "disabled"
     assert captured["wire_format"] == "openai"
 

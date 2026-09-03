@@ -7,10 +7,11 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import ray
 import torch
-import torch.distributed as dist
 from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class RemoteTransferPlan:
     assuming static training and rollout placements.
     """
 
-    def __init__(self, args: Namespace, model: Sequence[torch.nn.Module]) -> None:
+    def __init__(self, args: Namespace) -> None:
         self._get_parallelism(args)
 
     def _get_parallelism(self, args: Namespace) -> None:
@@ -47,15 +48,9 @@ class RemoteTransferPlan:
         self._pp_rank = get_parallel_state().pp.rank
         self._pp_size = get_parallel_state().pp.size
 
-        world_size = dist.get_world_size()
-        self._gathered_dp_size = world_size // self._pp_size
-
-        my_pp_group = dist.get_process_group_ranks(get_parallel_state().pp.group)
-        my_column_id = min(my_pp_group)
-        all_column_ids = [None] * world_size
-        dist.all_gather_object(all_column_ids, my_column_id)
-        sorted_columns = sorted(set(all_column_ids))
-        self._gathered_dp_rank = sorted_columns.index(my_column_id)
+        self._gathered_dp_rank, self._gathered_dp_size = get_data_replica_rank_and_size(
+            get_parallel_state(), WeightUpdatePlacement(gather_pp=False)
+        )
 
         self._rollout_pp_size = args.sglang_pp_size
         if self._rollout_pp_size != 1:
