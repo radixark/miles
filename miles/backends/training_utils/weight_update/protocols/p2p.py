@@ -1,6 +1,6 @@
 import logging
 from argparse import Namespace
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
@@ -16,11 +16,12 @@ from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
 from sglang.srt.server_args import ServerArgs
-from tqdm import tqdm
 
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.utils.distributed_utils import get_gloo_group
 
-from .mixin import DistBucketedWeightUpdateMixin
 from .p2p_transfer_utils import (
     P2PTransferManager,
     RemoteTransferPlan,
@@ -33,8 +34,8 @@ from .p2p_transfer_utils import (
 logger = logging.getLogger(__name__)
 
 
-class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
-    """P2P weight transfer using DistBucketedWeightUpdateMixin for bucketed all-gather + HF conversion,
+class UpdateWeightP2P(WeightTransferProtocol):
+    """P2P weight transfer over the updater's bucketed all-gather + HF conversion,
     and a single set of shared CPU pinned buffers for P2P writes.
 
     Compute transfer_ready_params once (same for all engine ranks)
@@ -44,28 +45,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
     wait_transfers() at finish to collect all background writes
     """
 
-    def __init__(
-        self,
-        args: Namespace,
-        model: Sequence[torch.nn.Module],
-        weights_getter: Callable[[], Mapping[str, torch.Tensor]],
-        *,
-        model_name: str,
-        quantization_config: dict[str, int | str | list[str]] | None,
-        is_lora: bool = False,
-    ) -> None:
-        self.args = args
-        self.model = model
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-        self.weight_version = 0
-        self._model_update_groups = None
-        self.rollout_engines: Sequence[ActorHandle] | None = None
-        self._connection_stale: bool = False
-        assert not is_lora, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
-        self.is_lora = False
-
-        self.transfer_plan = RemoteTransferPlan(args, model)
+    def __init__(self, args: Namespace) -> None:
+        super().__init__(args)
+        self.transfer_plan = RemoteTransferPlan(args)
         self.global_rank = dist.get_rank(group=get_gloo_group())
         self._model_registered = False
         self._tensor_update_pending: dict[str, int] = {}
@@ -76,32 +58,9 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             transfer_timeout=getattr(args, "p2p_transfer_timeout", 30.0),
         )
 
-    @property
-    def _is_source(self):
-        """Whether this training rank is a source that sends weights to rollout.
-
-        In P2P mode, all training GPUs sharing the same PP rank hold a complete
-        weight replica after TP/EP all-gather. Each source rank transfers its
-        weights to exactly one rollout rank in a 1-to-1 fashion.
-
-        Key quantities:
-          - senders:   _gathered_dp_size  = world_size // pp_size
-          - receivers: _rollout_num_gpus
-
-        Case 1: senders <= receivers
-          Every training rank is a source (all are needed to cover the rollout ranks).
-
-        Case 2: senders > receivers
-          Only the first `_rollout_num_gpus` training ranks (by gathered_dp_rank)
-          are sources; the rest are idle during transfer.
-
-        """
-        return self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
-
-    def _gather_and_update_expert_weights(self, update_bucket_weight_func, pbar=None):
-        """Wait for all background P2P writes to complete here."""
-        super()._gather_and_update_expert_weights(update_bucket_weight_func, pbar)
-        if not self._is_source:
+    def after_base_weights(self) -> None:
+        """Wait for all background P2P writes to complete."""
+        if not self.is_sender:
             return
         self.transfer_manager.wait_transfers()
         assert len(self._tensor_update_pending) == 0 and len(self._staged_tensors) == 0, (
@@ -109,19 +68,16 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
             f"Pending: {self._tensor_update_pending}, Staged: {self._staged_tensors}"
         )
 
-    def _pause_and_prepare_engines(self):
-        """Register shared CPU pinned memory with P2P on first call."""
-        super()._pause_and_prepare_engines()
-        if not self._is_source:
-            return
-
-        if not self._model_registered:
+    def begin_sync(
+        self, weight_version: int, iter_buckets: Callable[..., Iterator[list[tuple[str, torch.Tensor]]]]
+    ) -> bool:
+        """Register shared CPU pinned memory with P2P on the first sync."""
+        if self.is_sender and not self._model_registered:
             self._weight_memory_registry = register_cpu_memory(self._shared_params_dict, self._transfer_engine)
-        self._model_registered = True
+            self._model_registered = True
+        return True
 
-    def _update_weight_implementation(
-        self, converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None
-    ) -> None:
+    def send_bucket(self, converted_named_tensors: list[tuple[str, torch.Tensor]]) -> None:
         """Stage incoming tensors; when all shards for a param are collected,
         load into shared buffer and P2P-write per engine rank.
 
@@ -129,7 +85,7 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         partial writes that would corrupt the shared buffer when different engine
         ranks have different EP expert-to-local mappings.
         """
-        if not self._is_source or not converted_named_tensors:
+        if not self.is_sender or not converted_named_tensors:
             return
         # `ready_hf_tensors`` here are the complete tensors ready to be transferred.
         transfer_ready_params, ready_hf_tensors = self._get_transfer_ready_params(converted_named_tensors)
@@ -164,21 +120,17 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
 
         converted_named_tensors.clear()
 
-    # TODO: avoid dup code during yueming's refactor (temp write this to avoid introducing potentially conflicting base class)
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
-
-    def connect_rollout_engines(
+    def connect(
         self,
         rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
-        """The ``connect_rollout_engines`` here will:
+        """``connect`` here will:
 
         - Create a transfer plan that maps each training rank to its target
           rollout rank(s) based on GPU counts and parallelism configuration.
@@ -192,8 +144,10 @@ class UpdateWeightP2P(DistBucketedWeightUpdateMixin):
         self._connection_stale = False
         self.rollout_engine_lock = rollout_engine_lock
 
-        if self._is_source:
-            self._group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
+        self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
+
+        if self.is_sender:
+            self.group_name = f"miles-p2p_{self.transfer_plan._gathered_dp_rank}"
             targets = self.transfer_plan.plan_p2p()
             (
                 self.remote_weight_infos_by_session_id,

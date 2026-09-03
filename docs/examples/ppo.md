@@ -69,8 +69,9 @@ These are enforced at argument validation, so you get an error rather than a sil
   (`--no-offload-train` is accepted but warns, and is meant for offload debugging only); and when
   you scale, you only ever change the actor's placement — the actor world size is
   `--actor-num-nodes` × `--actor-num-gpus-per-node`, and `TP × PP × CP` must divide it.
-* **Megatron only.** PPO raises with any other train backend, and is unsupported with
-  `--megatron-to-hf-mode bridge`.
+* **Megatron only.** PPO raises with any other train backend. Both `--megatron-to-hf-mode raw`
+  and `bridge` are supported; in bridge mode the critic's value head is freshly initialized rather
+  than loaded from the HF checkpoint, since it has no HF counterpart.
 * **`--kl-coef` must be 0.** Reward-level KL is rejected because the critic trains *before* the
   actor and never sees ref log probs, so its value targets would silently exclude the KL penalty
   applied to the actor's rewards. Use loss-level `--use-kl-loss` / `--kl-loss-coef` instead.

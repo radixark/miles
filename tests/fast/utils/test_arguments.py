@@ -591,7 +591,7 @@ class TestTitoFixedTemplateConfiguration:
         }
 
 
-def test_bridge_mode_rejects_critic(tmp_path):
+def test_bridge_mode_accepts_critic(tmp_path):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
@@ -608,11 +608,8 @@ def test_bridge_mode_rejects_critic(tmp_path):
         + REQUIRED_ARGS
     )
 
-    with pytest.raises(
-        AssertionError,
-        match="Critic models are not supported with --megatron-to-hf-mode bridge",
-    ):
-        miles_validate_args(args)
+    miles_validate_args(args)
+    assert args.use_critic is True
 
 
 def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):

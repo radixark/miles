@@ -14,9 +14,9 @@ from miles.utils.replay_base import IndexerReplayManager, RoutingReplayManager
 @pytest.fixture(scope="module")
 def actor_module():
     actor_module_name = "miles.backends.megatron_utils.actor"
-    p2p_module_name = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.p2p"
+    p2p_module_name = "miles.backends.training_utils.weight_update.protocols.p2p"
     actor_package = importlib.import_module("miles.backends.megatron_utils")
-    p2p_package = importlib.import_module("miles.backends.megatron_utils.update_weight.update_weight_from_distributed")
+    p2p_package = importlib.import_module("miles.backends.training_utils.weight_update.protocols")
     missing = object()
     saved_actor_module = sys.modules.get(actor_module_name, missing)
     saved_p2p_module = sys.modules.get(p2p_module_name, missing)

@@ -1,5 +1,5 @@
 """Mock-based tests for the rollout-engine lock lifecycle in
-update_weight_from_distributed/broadcast.py.
+training_utils/weight_update/protocols/broadcast.py.
 
 Lock.acquire (miles/ray/utils.py) is polled until it returns True, so a
 broadcast failure that skips the release makes every later weight sync spin
@@ -13,11 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import torch
 
-from miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast import (
-    UpdateWeightFromDistributed,
-)
+from miles.backends.training_utils.weight_update.protocols.broadcast import UpdateWeightFromDistributed
 
-_MODULE = "miles.backends.megatron_utils.update_weight.update_weight_from_distributed.broadcast"
+_MODULE = "miles.backends.training_utils.weight_update.protocols.broadcast"
 
 
 class _LockState:
@@ -46,11 +44,10 @@ def _make_updater(lock_state: _LockState) -> UpdateWeightFromDistributed:
     lock_handle.acquire.remote.side_effect = lock_state.acquire
     lock_handle.release.remote.side_effect = lock_state.release
     updater.rollout_engine_lock = lock_handle
-    updater._group_name = "miles-pp_0"
+    updater.group_name = "miles-pp_0"
     updater._model_update_groups = MagicMock()
-    updater.weight_version = 0
     updater.rollout_engines = [MagicMock()]
-    updater._weight_update_selector = "all"
+    updater._selector = "all"
     return updater
 
 
@@ -77,22 +74,15 @@ def test_success_path_releases_lock_and_clears_tensors(mock_ray, mock_update):
     mock_update.return_value = [MagicMock()]
     updater = _make_updater(lock_state)
     tensors = _named_tensors()
-    pbar = MagicMock()
 
-    updater._update_weight_implementation(tensors, pbar)
+    updater.send_bucket(tensors)
 
     assert lock_state.locked is False
     assert lock_state.release_calls == 1
     assert tensors == []
-    pbar.update.assert_called_once_with(1)
     call_args = mock_update.call_args.args
-    assert call_args[:4] == (
-        updater._group_name,
-        updater._model_update_groups,
-        updater.weight_version,
-        updater.rollout_engines,
-    )
-    assert call_args[4] is tensors
+    assert call_args[:3] == (updater.group_name, updater._model_update_groups, updater.rollout_engines)
+    assert call_args[3] is tensors
     assert mock_update.call_args.kwargs == {"selector": "all"}
 
 
@@ -108,7 +98,7 @@ def test_lock_contention_is_polled_until_acquired(mock_ray, mock_update, mock_sl
 
     mock_sleep.side_effect = lambda _seconds: setattr(lock_state, "locked", False)
 
-    updater._update_weight_implementation(_named_tensors(), pbar=None)
+    updater.send_bucket(_named_tensors())
 
     mock_sleep.assert_called_once_with(0.1)
     assert lock_state.locked is False
@@ -123,15 +113,13 @@ def test_broadcast_failure_releases_lock_and_propagates(mock_ray, mock_update):
     mock_update.side_effect = RuntimeError("NCCL broadcast failed")
     updater = _make_updater(lock_state)
     tensors = _named_tensors()
-    pbar = MagicMock()
 
     with pytest.raises(RuntimeError, match="NCCL broadcast failed"):
-        updater._update_weight_implementation(tensors, pbar)
+        updater.send_bucket(tensors)
 
     assert lock_state.locked is False
     assert lock_state.release_calls == 1
     assert len(tensors) == 1  # nothing was cleared on the failure path
-    pbar.update.assert_not_called()
 
 
 @patch(f"{_MODULE}.update_weights_from_distributed")
@@ -144,7 +132,7 @@ def test_engine_failure_on_refs_releases_lock_and_propagates(mock_ray, mock_upda
     updater = _make_updater(lock_state)
 
     with pytest.raises(RuntimeError, match="engine died during broadcast"):
-        updater._update_weight_implementation(_named_tensors(), pbar=None)
+        updater.send_bucket(_named_tensors())
 
     assert lock_state.locked is False
     assert lock_state.release_calls == 1
@@ -159,7 +147,7 @@ def test_weight_sync_succeeds_after_a_failed_one(mock_ray, mock_update):
     updater = _make_updater(lock_state)
 
     with pytest.raises(RuntimeError):
-        updater._update_weight_implementation(_named_tensors(), pbar=None)
+        updater.send_bucket(_named_tensors())
 
     # Guard before retrying: with a leaked lock the retry below would poll
     # acquire() forever instead of failing, so assert the release explicitly.
@@ -168,7 +156,7 @@ def test_weight_sync_succeeds_after_a_failed_one(mock_ray, mock_update):
     mock_update.side_effect = None
     mock_update.return_value = [MagicMock()]
     tensors = _named_tensors()
-    updater._update_weight_implementation(tensors, pbar=None)
+    updater.send_bucket(tensors)
 
     assert tensors == []
     assert lock_state.locked is False
