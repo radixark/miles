@@ -4,7 +4,11 @@ Tests cover module name conversion, LoRA detection helpers, parameter identifica
 exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
+import sys
+import types
 from argparse import Namespace
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -345,6 +349,162 @@ class TestBuildLoraSyncConfig:
         config = build_lora_sync_config(args)
         assert config["target_modules"] == ["q_proj", "k_proj"]
         assert config["r"] == 8
+
+
+# ---------------------------------------------------------------------------
+# HF PEFT export
+# ---------------------------------------------------------------------------
+
+
+class TestHfPeftExport:
+    """Single-adapter export should delegate the PEFT format to Bridge."""
+
+    @staticmethod
+    def _install_bridge_stub(monkeypatch, bridge):
+        class LoRA:
+            def __init__(self, *, dim, alpha, dropout, **_kwargs):
+                self.dim = dim
+                self.alpha = alpha
+                self.dropout = dropout
+
+        class CanonicalLoRA(LoRA):
+            pass
+
+        bridge_module = types.ModuleType("megatron.bridge")
+        bridge_module.__path__ = []
+        bridge_module.AutoBridge = SimpleNamespace(from_hf_pretrained=lambda *args, **kwargs: bridge)
+        peft_module = types.ModuleType("megatron.bridge.peft")
+        peft_module.__path__ = []
+        lora_module = types.ModuleType("megatron.bridge.peft.lora")
+        lora_module.LoRA = LoRA
+        canonical_module = types.ModuleType("megatron.bridge.peft.canonical_lora")
+        canonical_module.CanonicalLoRA = CanonicalLoRA
+        for module in (bridge_module, peft_module, lora_module, canonical_module):
+            monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    def test_save_delegates_to_bridge(self, tmp_path, monkeypatch):
+        import miles.backends.megatron_utils.lora_utils as lora_utils
+
+        bridge = MagicMock()
+        self._install_bridge_stub(monkeypatch, bridge)
+        monkeypatch.setattr("miles.utils.megatron_bridge_utils.patch_megatron_model", lambda _: nullcontext())
+        model = MagicMock()
+        model.named_parameters.return_value = []
+
+        def save_hf_adapter(*_args, **kwargs):
+            path = kwargs["path"]
+            (path / "adapter_config.json").write_text("{}")
+            (path / "adapter_model.safetensors").write_bytes(b"weights")
+
+        bridge.save_hf_adapter.side_effect = save_hf_adapter
+        lora_utils.save_lora_checkpoint(
+            [model],
+            Namespace(
+                hf_checkpoint="/models/Qwen2.5-0.5B-Instruct",
+                target_modules=["linear_q", "linear_fc2"],
+                lora_rank=4,
+                lora_alpha=4,
+                lora_dropout=0.0,
+            ),
+            str(tmp_path),
+        )
+
+        bridge.save_hf_adapter.assert_called_once()
+        call = bridge.save_hf_adapter.call_args
+        assert call.args[0] == [model]
+        assert call.kwargs["path"].parent == tmp_path
+        assert call.kwargs["base_model_name_or_path"] == "/models/Qwen2.5-0.5B-Instruct"
+        assert call.kwargs["show_progress"] is False
+        assert call.kwargs["peft_config"].dim == 4
+        assert call.kwargs["peft_config"].alpha == 4
+        assert (tmp_path / "adapter_config.json").read_text() == "{}"
+        assert (tmp_path / "adapter_model.safetensors").read_bytes() == b"weights"
+        assert not list(tmp_path.glob(".peft-export-*"))
+
+    def test_failure_inside_collective_save_propagates(self, tmp_path, monkeypatch):
+        """Bridge runs all-gathers between its own barriers, so a rank that drops out of the
+        collective save cannot be rejoined. Raise instead of reporting a recovery that did
+        not happen, and leave nothing half-promoted behind."""
+        import miles.backends.megatron_utils.lora_utils as lora_utils
+
+        bridge = MagicMock()
+        self._install_bridge_stub(monkeypatch, bridge)
+        monkeypatch.setattr("miles.utils.megatron_bridge_utils.patch_megatron_model", lambda _: nullcontext())
+        monkeypatch.setattr(lora_utils.dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(lora_utils.dist, "get_rank", lambda: 0)
+        monkeypatch.setattr(lora_utils.dist, "get_world_size", lambda group=None: 2)
+        monkeypatch.setattr(lora_utils, "get_gloo_group", lambda: None)
+        monkeypatch.setattr(lora_utils.dist, "barrier", lambda: None)
+        monkeypatch.setattr(
+            lora_utils.dist,
+            "all_gather_object",
+            lambda output, value, group=None: output.__setitem__(slice(None), [None, None]),
+        )
+
+        def save_hf_adapter(*_args, **kwargs):
+            (kwargs["path"] / "adapter_config.json").write_text("{}")
+            raise OSError("disk full")
+
+        bridge.save_hf_adapter.side_effect = save_hf_adapter
+        model = MagicMock()
+        model.named_parameters.return_value = []
+
+        args = Namespace(
+            hf_checkpoint="/models/Qwen2.5-0.5B-Instruct",
+            target_modules=["linear_q"],
+            lora_rank=4,
+            lora_alpha=4,
+            lora_dropout=0.0,
+        )
+        with pytest.raises(OSError, match="disk full"):
+            lora_utils.save_lora_checkpoint([model], args, str(tmp_path))
+
+        assert not (tmp_path / "adapter_config.json").exists()
+        assert not (tmp_path / "adapter_model.safetensors").exists()
+        assert not list(tmp_path.glob(".peft-export-*"))
+
+    def test_setup_failure_is_shared_before_collective_save(self, tmp_path, monkeypatch):
+        import miles.backends.megatron_utils.lora_utils as lora_utils
+
+        args = Namespace(
+            hf_checkpoint="/models/Qwen2.5-0.5B-Instruct",
+            target_modules=["linear_q"],
+            lora_rank=4,
+            lora_alpha=4,
+            lora_dropout=0.0,
+        )
+        rank0_error = "OSError('rank 0 setup failed')"
+
+        def run_rank(rank):
+            bridge = MagicMock()
+            self._install_bridge_stub(monkeypatch, bridge)
+            if rank == 0:
+                sys.modules["megatron.bridge"].AutoBridge.from_hf_pretrained = MagicMock(
+                    side_effect=OSError("rank 0 setup failed")
+                )
+            monkeypatch.setattr("miles.utils.megatron_bridge_utils.patch_megatron_model", lambda _: nullcontext())
+
+            collectives = []
+            monkeypatch.setattr(lora_utils.dist, "is_initialized", lambda: True)
+            monkeypatch.setattr(lora_utils.dist, "get_rank", lambda: rank)
+            monkeypatch.setattr(lora_utils.dist, "get_world_size", lambda group=None: 2)
+            monkeypatch.setattr(lora_utils, "get_gloo_group", lambda: None)
+            monkeypatch.setattr(lora_utils.dist, "barrier", lambda: collectives.append("barrier"))
+
+            def all_gather_object(output, value, group=None):
+                assert (value == rank0_error) is (rank == 0)
+                collectives.append("all_gather_object")
+                output[:] = [rank0_error, None]
+
+            monkeypatch.setattr(lora_utils.dist, "all_gather_object", all_gather_object)
+            model = MagicMock()
+            model.named_parameters.return_value = []
+
+            lora_utils.save_lora_checkpoint([model], args, str(tmp_path / f"setup-rank{rank}"))
+            bridge.save_hf_adapter.assert_not_called()
+            return collectives
+
+        assert run_rank(0) == run_rank(1) == ["barrier", "all_gather_object", "barrier"]
 
 
 # ---------------------------------------------------------------------------

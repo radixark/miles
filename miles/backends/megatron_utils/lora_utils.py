@@ -4,13 +4,16 @@ import logging
 import os
 from argparse import Namespace
 from collections.abc import Sequence
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -396,6 +399,20 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
+def _first_error_across_ranks(local_error: Exception | None, operation: str) -> Exception | None:
+    """Agree on a failure before a collective, so no rank enters one its peers cannot."""
+    if not dist.is_initialized():
+        return local_error
+    # Gloo, not the default group: the failure may be a poisoned GPU communicator.
+    group = get_gloo_group()
+    errors: list[str | None] = [None] * dist.get_world_size(group=group)
+    dist.all_gather_object(errors, repr(local_error) if local_error is not None else None, group=group)
+    if local_error is not None:
+        return local_error
+    remote = next((error for error in errors if error is not None), None)
+    return RuntimeError(f"{operation} failed on another rank: {remote}") if remote else None
+
+
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -408,9 +425,8 @@ def save_lora_checkpoint(
     """Save LoRA adapter checkpoint to disk.
 
     Saves in two formats:
-    1. **HF PEFT format** (``adapter_model.bin`` + ``adapter_config.json``) for
-       external tool compatibility. Uses Megatron-Bridge's ``export_adapter_weights``
-       which correctly handles fused QKV / gate-up weight splitting and TP gathering.
+    1. **HF PEFT format** (``adapter_model.safetensors`` + ``adapter_config.json``)
+       through Megatron-Bridge.
     2. **Megatron-native format** (``adapter_megatron_rank{global_rank}.pt``) for fast
        checkpoint resume without name/weight conversion. Each TP/PP rank saves its
        own shard with original parameter names.
@@ -419,20 +435,14 @@ def save_lora_checkpoint(
     also saved per-rank for checkpoint resume. Base model weights are frozen and
     never change, so they are not saved.
 
-    This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    This function is collective: every rank writes its native shard and participates
+    in the Bridge export; Bridge rank 0 writes the HF files.
     """
-    import json
-
     from megatron.bridge import AutoBridge
 
     from miles.utils import megatron_bridge_utils
 
     save_path = Path(save_dir)
-    parallel_state = get_parallel_state()
-    is_dp_cp_rank_0 = parallel_state.effective_dp.rank == 0 and parallel_state.cp.rank == 0
-    tp_rank = parallel_state.tp.rank
-    pp_rank = parallel_state.pp.rank
 
     save_path.mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
@@ -449,48 +459,56 @@ def save_lora_checkpoint(
     torch.save(adapter_state, native_path)
     logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
 
-    # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
-    # Bridge export is collective: all TP ranks participate in the all-gather,
-    # so every rank must call export_adapter_weights.
-    try:
-        bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+    # ---- HF PEFT format ----
+    with ExitStack() as stack:
+        setup_err: Exception | None = None
+        peft_export_path = None
+        try:
+            # Staging must be set up inside the guarded block: a rank that fails here
+            # would otherwise skip the consensus below and hang its peers.
+            peft_export_path = Path(stack.enter_context(TemporaryDirectory(prefix=".peft-export-", dir=save_path)))
+            bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+            peft_config = create_lora_instance(args)
+            stack.enter_context(megatron_bridge_utils.patch_megatron_model(model))
+        except Exception as error:
+            setup_err = error
+        setup_err = _first_error_across_ranks(setup_err, "HF PEFT export setup")
 
-        lora_state_dict: dict[str, torch.Tensor] = {}
-        with megatron_bridge_utils.patch_megatron_model(model):
-            for hf_name, weight, _megatron_name in bridge.export_adapter_weights(
-                model,
-                cpu=True,
-                show_progress=False,
-            ):
-                lora_state_dict[hf_name] = weight
-
-        if is_dp_cp_rank_0 and tp_rank == 0 and pp_rank == 0:
-            torch.save(lora_state_dict, save_path / "adapter_model.bin")
-
-            target_modules_hf = (
-                convert_target_modules_to_hf(list(args.target_modules))
-                if args.target_modules
-                else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        if setup_err is not None:
+            logger.warning(
+                f"HF PEFT adapter export skipped ({setup_err}); the native shards + "
+                f"training state are sufficient for training resume."
             )
-            config = {
-                "peft_type": "LORA",
-                "r": args.lora_rank,
-                "lora_alpha": args.lora_alpha,
-                "target_modules": target_modules_hf,
-                "lora_dropout": args.lora_dropout,
-                "bias": "none",
-                "task_type": "CAUSAL_LM",
-            }
-            with open(save_path / "adapter_config.json", "w") as f:
-                json.dump(config, f, indent=2)
+        else:
+            # Bridge all-gathers between its own barriers, so a rank that drops out here
+            # cannot be rejoined by another barrier. Let the failure propagate.
+            bridge.save_hf_adapter(
+                model,
+                path=peft_export_path,
+                peft_config=peft_config,
+                base_model_name_or_path=args.hf_checkpoint,
+                show_progress=False,
+            )
 
-            os.sync()
-            logger.info(f"Saved HF PEFT adapter to {save_path} with {len(lora_state_dict)} tensors")
-    except Exception as hf_export_err:
-        logger.warning(
-            f"HF PEFT adapter export skipped ({hf_export_err}); the per-rank native "
-            f"shards + training state are sufficient for training resume."
-        )
+            # Past Bridge's exit barrier the group is quiesced. Weights first, config last:
+            # a reader that keys on adapter_config.json never sees it without its weights.
+            promotion_err: Exception | None = None
+            try:
+                if not dist.is_initialized() or dist.get_rank() == 0:
+                    os.sync()
+                    (peft_export_path / "adapter_model.safetensors").replace(save_path / "adapter_model.safetensors")
+                    (peft_export_path / "adapter_config.json").replace(save_path / "adapter_config.json")
+            except Exception as error:
+                promotion_err = error
+            promotion_err = _first_error_across_ranks(promotion_err, "HF PEFT export promotion")
+
+            if promotion_err is not None:
+                logger.warning(
+                    f"HF PEFT adapter export skipped ({promotion_err}); the native shards + "
+                    f"training state are sufficient for training resume."
+                )
+            else:
+                logger.info(f"Saved HF PEFT adapter to {save_path}")
 
     # ---- Training state (optimizer + scheduler) for resume ----
     if optimizer is not None:
@@ -522,7 +540,7 @@ def load_lora_adapter(
 
     Attempts to load from Megatron-native format first (per-rank ``.pt`` files),
     which preserves the exact TP/PP sharding and requires no name conversion.
-    Falls back to HF PEFT ``adapter_model.bin`` if native files are not found
+    Falls back to HF PEFT ``adapter_model.safetensors``/``.bin`` if native files are not found
     (not yet implemented for HF PEFT format).
 
     When ``optimizer`` is provided, also restores training state (optimizer +
@@ -569,8 +587,15 @@ def load_lora_adapter(
         return True, iteration
 
     # ---- HF PEFT format (future work) ----
-    hf_path = adapter_dir / "adapter_model.bin"
-    if hf_path.exists():
+    hf_path = next(
+        (
+            path
+            for path in (adapter_dir / "adapter_model.safetensors", adapter_dir / "adapter_model.bin")
+            if path.exists()
+        ),
+        None,
+    )
+    if hf_path is not None:
         logger.warning(
             f"Found HF PEFT adapter at {hf_path} but direct HF PEFT loading into "
             f"Megatron is not yet supported. Please save using Megatron-native format "

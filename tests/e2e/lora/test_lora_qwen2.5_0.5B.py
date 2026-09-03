@@ -11,7 +11,11 @@ Requires: 8 GPUs, Qwen2.5-0.5B-Instruct model, GSM8K dataset.
 Triggered by label: run-ci-lora
 """
 
+import glob
+import json
 import os
+
+import torch
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 
@@ -26,12 +30,39 @@ ENABLE_EVAL = bool(int(os.environ.get("MILES_TEST_ENABLE_EVAL", "1")))
 MODEL_NAME = "Qwen2.5-0.5B-Instruct"
 MODEL_TYPE = "qwen2.5-0.5B"
 NUM_GPUS = 4
+SAVE_DIR = "/root/checkpoints/lora-qwen2.5-0.5B-ci"
 
 
 def prepare():
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu("hf download --repo-type dataset zhuzilin/gsm8k --local-dir /root/datasets/gsm8k")
+    U.exec_command_cpu(f"rm -rf {SAVE_DIR}")
+
+
+def _assert_peft_export():
+    from peft import PeftModel
+    from safetensors.torch import load_file
+    from transformers import AutoModelForCausalLM
+
+    adapter_dirs = sorted(glob.glob(f"{SAVE_DIR}/iter_*/adapter"))
+    assert adapter_dirs
+    adapter_dir = adapter_dirs[-1]
+    on_disk = load_file(f"{adapter_dir}/adapter_model.safetensors")
+    assert on_disk
+    base = AutoModelForCausalLM.from_pretrained(f"/root/models/{MODEL_NAME}", dtype=torch.float32)
+    loaded = PeftModel.from_pretrained(base, adapter_dir).state_dict()
+
+    expected_names = {name.replace(".weight", ".default.weight") for name in on_disk}
+    loaded_names = {name for name in loaded if ".lora_A." in name or ".lora_B." in name}
+    assert loaded_names == expected_names
+    for name, expected in on_disk.items():
+        loaded_name = name.replace(".weight", ".default.weight")
+        assert torch.equal(loaded[loaded_name], expected), name
+
+    with open(f"{adapter_dir}/adapter_config.json") as config_file:
+        config = json.load(config_file)
+    assert MODEL_NAME in config["base_model_name_or_path"]
 
 
 def execute():
@@ -96,7 +127,7 @@ def execute():
 
     ci_args = "--ci-test "
 
-    save_args = "--save-interval 2 " "--save /root/checkpoints/lora-qwen2.5-0.5B-ci "
+    save_args = f"--save-interval 2 --save {SAVE_DIR} "
 
     misc_args = (
         "--attention-dropout 0.0 "
@@ -131,6 +162,7 @@ def execute():
         num_gpus_per_node=NUM_GPUS,
         megatron_model_type=MODEL_TYPE,
     )
+    _assert_peft_export()
 
 
 if __name__ == "__main__":
