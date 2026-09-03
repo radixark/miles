@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
@@ -165,6 +166,34 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_proxy_chat_postprocesses_completion_once(self, router_env, monkeypatch):
+        calls = []
+        original = TITOTokenizer.postprocess_completion
+
+        def tracked_postprocess(self, *, choice, assistant_message, completion_token_ids):
+            calls.append((choice, assistant_message, completion_token_ids))
+            return original(
+                self,
+                choice=choice,
+                assistant_message=assistant_message,
+                completion_token_ids=completion_token_ids,
+            )
+
+        monkeypatch.setattr(TITOTokenizer, "postprocess_completion", tracked_postprocess)
+        session_id = _create_session(router_env.url)
+
+        response = _post_chat(
+            router_env.url,
+            session_id,
+            {"messages": [{"role": "user", "content": "hook once"}]},
+        )
+
+        assert response.status_code == 200
+        assert len(calls) == 1
+        choice, assistant_message, completion_token_ids = calls[0]
+        assert choice["message"] is assistant_message
+        assert completion_token_ids
 
     def test_proxy_chat_response_has_no_duplicate_server_or_date_header(self, router_env):
         # Both the backend and this server run under uvicorn, so each emits its own
