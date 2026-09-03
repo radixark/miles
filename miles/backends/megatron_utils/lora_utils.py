@@ -11,6 +11,8 @@ import torch
 import torch.distributed as dist
 
 from miles.backends.training_utils.parallel import get_parallel_state
+from miles.utils.distributed_utils import get_gloo_group
+from miles.utils.ft_utils.process_group_utils import collective_bool_and
 from miles.utils.lora import is_lora_enabled, lora_rollout_enabled  # noqa: F401  (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -396,6 +398,90 @@ def create_lora_instance(args: Namespace):
 # ---------------------------------------------------------------------------
 
 
+def _all_ranks_true(value: bool) -> bool:
+    if not dist.is_initialized():
+        return value
+    return collective_bool_and(value=value, group=get_gloo_group())
+
+
+def _raise_if_any_rank_failed(local_error: Exception | None, message: str) -> None:
+    """Raise on every rank when any rank reports ``local_error``, so failures stay collective."""
+    if _all_ranks_true(local_error is None):
+        return
+    if local_error is not None:
+        raise RuntimeError(message) from local_error
+    raise RuntimeError(message)
+
+
+def _optimizer_param_state_entries(optimizer: Any, directory: Path) -> list[tuple[Any, Path]]:
+    """``(child, parameter-state file)`` for the children whose state is not in ``state_dict()``.
+
+    ``DistributedOptimizer`` shards master weights and Adam moments over the data-parallel
+    group and keeps them out of ``state_dict()``; they are saved to their own per-rank files.
+    Stubs hold no shard at all and are skipped, as they are in Megatron's own load path.
+    """
+    from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
+
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    children = getattr(optimizer, "chained_optimizers", [optimizer])
+    return [
+        (child, directory / f"optimizer_param_state_rank{rank}_optimizer{index}.pt")
+        for index, child in enumerate(children)
+        if isinstance(child, DistributedOptimizer) and not child.is_stub_optimizer
+    ]
+
+
+def _holds_gathered_param_state(child: Any) -> bool:
+    """Only the data-parallel root gathers the full state, and so only it reads and writes it."""
+    return child.data_parallel_group.rank() == 0
+
+
+def _save_optimizer_param_state(optimizer: Any, directory: Path) -> None:
+    """``save_parameter_state`` gathers over the data-parallel group: every rank must call it."""
+    save_error = None
+    for child, path in _optimizer_param_state_entries(optimizer, directory):
+        try:
+            child.save_parameter_state(str(path))
+        except Exception as error:
+            save_error = save_error or error
+    _raise_if_any_rank_failed(save_error, "Failed to save optimizer parameter state on at least one rank")
+
+
+def _check_param_state_matches_buffers(child: Any, state: dict) -> None:
+    """``load_parameter_state_from_dp_zero`` asserts this between two scatters, where a failure
+    on the data-parallel root hangs the rest of the group; check it before any collective runs."""
+    child.split_state_dict_if_needed(state)
+    for gbuf_index, dtypes in enumerate(child.gbuf_ranges):
+        for dtype in dtypes:
+            expected = child.buffers[gbuf_index].numel_unpadded
+            found = state[gbuf_index][dtype]["numel_unpadded"]
+            if expected != found:
+                raise RuntimeError(
+                    f"Optimizer parameter state does not match the model: buffer {gbuf_index} holds "
+                    f"{expected} unpadded elements, the checkpoint holds {found}"
+                )
+
+
+def _load_optimizer_param_state(entries: list[tuple[Any, Path]]) -> None:
+    """``load_parameter_state_from_dp_zero`` scatters from the data-parallel root: every rank
+    must call it, so the reads are coordinated before the first scatter."""
+    states = []
+    load_error = None
+    for child, path in entries:
+        state = None
+        if _holds_gathered_param_state(child):
+            try:
+                state = torch.load(path, map_location="cpu", weights_only=True)
+                _check_param_state_matches_buffers(child, state)
+            except Exception as error:
+                load_error = load_error or error
+        states.append((child, state))
+
+    _raise_if_any_rank_failed(load_error, "Failed to read optimizer parameter state on at least one rank")
+    for child, state in states:
+        child.load_parameter_state_from_dp_zero(state)
+
+
 def save_lora_checkpoint(
     model: Sequence[torch.nn.Module],
     args: Namespace,
@@ -420,7 +506,8 @@ def save_lora_checkpoint(
     never change, so they are not saved.
 
     This function is collective: **all ranks must call it** because the bridge
-    export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
+    export performs TP all-gather internally and the optimizer parameter-state
+    save gathers over the data-parallel group.
     """
     import json
 
@@ -495,14 +582,21 @@ def save_lora_checkpoint(
     # ---- Training state (optimizer + scheduler) for resume ----
     if optimizer is not None:
         rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save(
-            {
-                "iteration": iteration,
-                "optimizer": optimizer.state_dict(),
-                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            },
-            save_path / f"training_state_rank{rank}.pt",
-        )
+        save_error = None
+        try:
+            torch.save(
+                {
+                    "iteration": iteration,
+                    "optimizer": optimizer.state_dict(),
+                    "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+                },
+                save_path / f"training_state_rank{rank}.pt",
+            )
+        except Exception as error:
+            save_error = error
+        # The parameter-state save below is collective; a rank that raised here would hang its peers.
+        _raise_if_any_rank_failed(save_error, "Failed to save optimizer training state on at least one rank")
+        _save_optimizer_param_state(optimizer, save_path)
         logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
     if dist.is_initialized():
@@ -565,6 +659,11 @@ def load_lora_adapter(
                     loaded += 1
         logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
 
+        if optimizer is not None:
+            # The fp32 masters were snapshotted at optimizer construction, before this load;
+            # without this the first step() copies them back over the adapter just written.
+            optimizer.reload_model_params()
+
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration
 
@@ -593,15 +692,46 @@ def _load_training_state(
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     state_path = adapter_dir / f"training_state_rank{rank}.pt"
-    if not state_path.exists():
+    # Agreed on before the early return: the restore below is collective, so a rank that
+    # skipped it would leave its peers waiting.
+    if not _all_ranks_true(state_path.exists()):
+        if state_path.exists():
+            logger.warning(f"{state_path.name} is missing on some ranks; skipping the optimizer restore")
         return None
 
-    # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
-    # param group metadata), so full unpickling is required here.
-    training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+    training_state = None
+    load_error = None
+    try:
+        # Optimizer state dicts may contain non-tensor objects (e.g. step counts,
+        # param group metadata), so full unpickling is required here.
+        training_state = torch.load(state_path, map_location="cpu", weights_only=False)
+        optimizer.load_state_dict(training_state["optimizer"])
+    except Exception as error:
+        load_error = error
+    _raise_if_any_rank_failed(
+        load_error, f"Failed to restore optimizer state on at least one rank ({state_path.name})"
+    )
 
-    optimizer.load_state_dict(training_state["optimizer"])
-    logger.info("Restored optimizer state from LoRA checkpoint")
+    # The restore below is collective, so every rank must reach the same verdict about the files.
+    entries = _optimizer_param_state_entries(optimizer, adapter_dir)
+    present = [path.exists() for child, path in entries if _holds_gathered_param_state(child)]
+    all_present = _all_ranks_true(all(present))
+    none_present = _all_ranks_true(not any(present))
+    if all_present:
+        _load_optimizer_param_state(entries)
+        logger.info("Restored optimizer state from LoRA checkpoint")
+    elif none_present:
+        # Checkpoint written before parameter state was saved. The masters already track the
+        # adapter (load_lora_adapter refreshed them), but the Adam moments start from zero.
+        logger.warning(
+            "No optimizer parameter state next to the LoRA adapter; master weights and Adam "
+            "moments warm-start from the adapter instead of resuming exactly."
+        )
+    else:
+        raise RuntimeError(
+            "Optimizer parameter state is incomplete: some optimizer_param_state_rank*.pt shards are "
+            "missing. Resume from a checkpoint that has all of them, or remove them all to warm-start."
+        )
 
     if opt_param_scheduler is not None and training_state.get("opt_param_scheduler") is not None:
         opt_param_scheduler.load_state_dict(training_state["opt_param_scheduler"])
