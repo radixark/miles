@@ -113,7 +113,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         # flock behind /pull_weights.
         self.rollout_engines = rollout_engines
         self._connection_stale = False
-        self._group_name = "miles-disk-delta"
+        self.group_name = "miles-disk-delta"
         replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
         self.is_sender = replica_rank == 0
         self.is_lora_sender = self.is_sender and (placement.gather_pp or parallel_state.pp.rank == 0)

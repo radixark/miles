@@ -115,7 +115,7 @@ class WeightUpdater:
 
         with timer("update_weights_implementation"):
             if sync_base:
-                pbar = tqdm(desc=f"[{protocol._group_name}] Update weights", total=0) if protocol.is_sender else None
+                pbar = tqdm(desc=f"[{protocol.group_name}] Update weights", total=0) if protocol.is_sender else None
                 for bucket in self._iter_base_buckets(materialize=protocol.is_sender):
                     if protocol.is_sender:
                         protocol.send_bucket(bucket, self.weight_version)

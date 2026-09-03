@@ -55,12 +55,12 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         shard = 0 if placement.gather_pp else parallel_state.pp.rank
         self.is_lora_sender = self.is_sender and shard == 0
         if self.is_sender:
-            self._group_name = f"miles-pp_{shard}"
+            self.group_name = f"miles-pp_{shard}"
             disconnect_rollout_engines_from_distributed(
-                self.args, self._group_name, self._model_update_groups, self.rollout_engines
+                self.args, self.group_name, self._model_update_groups, self.rollout_engines
             )
             self._model_update_groups = connect_rollout_engines_from_distributed(
-                self.args, self._group_name, rollout_engines
+                self.args, self.group_name, rollout_engines
             )
 
     def send_bucket(self, bucket: list[tuple[str, torch.Tensor]], weight_version: int) -> None:
@@ -69,7 +69,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
             time.sleep(0.1)
         try:
             refs = update_weights_from_distributed(
-                self._group_name,
+                self.group_name,
                 self._model_update_groups,
                 weight_version,
                 self.rollout_engines,
@@ -89,7 +89,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         """Send adapter metadata over Ray, then broadcast the tensors (src=0).
 
         Reuses the base broadcast group (``self._model_update_groups`` /
-        ``self._group_name``); base and adapter syncs are strictly sequential, so
+        ``self.group_name``); base and adapter syncs are strictly sequential, so
         sharing the NCCL communicator is safe. No CUDA IPC, so it works across
         nodes: the engine allocates buffers from the metadata and broadcast-receives
         in order. ``upsert`` maps to the engine's in-place insert-or-overwrite RPC
@@ -110,7 +110,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
                 names=names,
                 dtypes=dtypes,
                 shapes=shapes,
-                group_name=self._group_name,
+                group_name=self.group_name,
                 **({"upsert": True} if upsert else {}),
             )
             for engine in self.rollout_engines
