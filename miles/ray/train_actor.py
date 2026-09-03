@@ -2,6 +2,7 @@ import abc
 import logging
 import os
 import random
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
@@ -11,6 +12,7 @@ import torch.distributed as dist
 
 import miles.utils.eval_config
 from miles.ray.ray_actor import RayActor
+from miles.ray.train_batch_admission import TrainBatchPublication, TrainerRankReceipt, validate_publication_data_ref
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
@@ -149,6 +151,40 @@ class TrainRayActor(RayActor):
         print_memory("before TrainRayActor.clear_memory")
         clear_memory()
         print_memory("after TrainRayActor.clear_memory")
+
+    def _admission_data_parallel(self) -> tuple[int, int] | None:
+        """Return the rank and size of the data-parallel group this rank consumes from.
+
+        Return ``None`` when the layout is unknown, which makes admission read every
+        published reference. Backend actors override this once they know the layout.
+        """
+        return None
+
+    def _admitted_refs(self, publication: TrainBatchPublication, rollout_data_ref, *, data_parallel) -> list:
+        """Return the published references this rank must read to prove admission."""
+        if not isinstance(rollout_data_ref, list):
+            return [rollout_data_ref]
+        if data_parallel is None:
+            return list(rollout_data_ref)
+        rank, size = data_parallel
+        if len(rollout_data_ref) != size:
+            raise ValueError(
+                f"Admission {publication.admission_id} published {len(rollout_data_ref)} "
+                f"train batch shards for a data-parallel size of {size}."
+            )
+        return [rollout_data_ref[rank]]
+
+    def admit_train_batch(self, publication: TrainBatchPublication, rollout_data_ref) -> TrainerRankReceipt:
+        """Prove that this rank can read the exact published batch it consumes, without training."""
+        validate_publication_data_ref(publication, rollout_data_ref)
+        data_parallel = self._admission_data_parallel() if isinstance(rollout_data_ref, list) else None
+        refs = self._admitted_refs(publication, rollout_data_ref, data_parallel=data_parallel)
+        store = object_store.get_instance()
+        for ref in refs:
+            with store.get(ref) as value:
+                if not isinstance(value, Mapping):
+                    raise ValueError(f"Admission {publication.admission_id} resolved a non-mapping train batch.")
+        return TrainerRankReceipt(publication=publication, rank=self.args.rank, data_parallel=data_parallel)
 
     @abc.abstractmethod
     def sleep(self, tags):

@@ -119,15 +119,17 @@ The **data buffer** is the store of finished groups between the two loops, and e
 group-level decision lives in it. The producer puts each group in as it completes, the
 trainer takes groups back out one at a time, and everything in between — what to keep,
 what to discard, what to send back for regeneration — is the buffer's call. It is one
-replaceable component with three methods:
+replaceable component with five methods:
 
 | Method | Called by | Purpose |
 |---|---|---|
 | `put()` | The rollout worker, once per finished group | Store the group, or reject it |
 | `get()` | The trainer, once per group it needs | Return the next group to train on, waiting if none is available |
 | `get_metrics()` | The trainer, once per step | Report what the buffer did since the previous step |
+| `validate_final_admission()` | The trainer, on every drained batch | Re-check the batch against the recorded update epoch and weight version; entries are rejected only once an update has been recorded against them |
+| `discard_all()` | The rollout worker, on close | Hand every retained group to the rollout's settlement handler, which returns an owned reservation to the source and sends a non-owned group to `--async-unused-samples-handler` |
 
-Those three methods are the whole interface: the worker and the trainer see nothing
+Those five methods are the whole interface: the worker and the trainer see nothing
 else, and everything inside the box below is the built-in `DefaultDataBuffer`.
 
 ```mermaid
@@ -149,12 +151,17 @@ flowchart LR
     T --> S[Optimizer step, weight sync]
 ```
 
-Groups are filtered at two points, because the two decisions become available at
+Groups are filtered at three points, because the three decisions become available at
 different times. Whether a group was aborted, and whether
 `--dynamic-sampling-filter-path` keeps it, is fixed the moment generation finishes, so
 both are decided on `put()`. Staleness depends on how long the group then sits in the
-buffer, so it is decided on `get()`. Once the trainer has a full batch it sorts the
-groups by index and applies `--rollout-sample-filter-path` to the assembled batch.
+buffer, so it is decided on `get()`. A weight update can still land between that drain
+and the handoff to training, so the assembled batch is re-checked on
+`validate_final_admission()`, and the entries the update invalidated are settled as
+unused: an owned reservation returns to the source for a fresh attempt, and any other
+group goes to `--async-unused-samples-handler`, which drops it by default. Once the
+trainer has a full batch it sorts the groups by index and applies
+`--rollout-sample-filter-path` to the assembled batch.
 
 The buffer decouples the two loops. As long as it holds finished groups, the trainer
 never waits for generation. If it sits empty, rollout is still the bottleneck and async
@@ -172,15 +179,43 @@ Staleness control decides which of those groups training is allowed to see:
 
 | Flag | Effect |
 |---|---|
-| `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the current engine version. Unset by default, which disables the filter |
+| `--max-weight-staleness` | Maximum gap between a group's oldest weight version and the manager-published trainer weight version. Unset by default, which disables the numeric filter but still recycles prefetched groups admitted before a recorded weight update |
 | `--async-unused-samples-handler` | What happens to a group training does not use, either aborted or too stale. The default `drop` discards it; `retry` recycles its prompts into the data source for regeneration. Dynamic-filter rejects are always dropped |
 
 When those knobs are not enough, `--custom-async-data-buffer-path` replaces the buffer
 itself. This is a larger step than setting any flag above: your `DataBuffer` subclass
-takes over all three methods and therefore every group-level decision, and the flags in
-this section apply only if your class reads them. The one decision that stays outside is
-`--rollout-sample-filter-path`, which runs on the assembled batch rather than on
-individual groups.
+implements the three abstract methods — `put()`, `get()` and `get_metrics()` — and
+therefore owns every group-level decision, and the flags in this section apply only if
+your class reads them. `validate_final_admission()` and `discard_all()` come with base
+implementations that fail closed rather than guess, so a buffer that applies its own
+staleness policy has to provide the first, and a buffer used with owned scheduling has to
+provide the second. The constructor input hands your class a `discard_handler_fn` alongside
+`unused_handler_fn`, for inputs consumed without training. The one decision that stays
+outside is `--rollout-sample-filter-path`, which runs on the assembled batch rather than
+on individual groups.
+
+### Checkpointing source reservations
+
+Durable source reservations are checkpointed with the source. Persisting them needs
+`--save-interval`. Setting `--save-trigger-sentinel` without `--save-interval` makes the
+data source report no reservation support. Owned scheduling is off in that case, and the
+run keeps the buffered legacy path. Loading a checkpoint that holds reservations into a
+data source that cannot own reservations fails at load. When neither flag is set,
+reservations still run and nothing is ever checkpointed, so there is no reservation state
+to lose.
+
+### Trainer admission
+
+Trainer admission runs under owned scheduling, so the configurations above that switch
+owned scheduling off skip it too. Before a training batch commits, every trainer rank
+reads the exact published batch and acknowledges it. A rank reads its own shard when the
+manager splits the publication by data-parallel rank. A rank that has not learned its
+data-parallel layout reads every shard. Under `--delay-split-train-data-by-dp` the
+publication is a single reference, and every rank reads the whole batch. Each trainer
+cell's receipts must together cover every published shard. A rank that cannot read what
+was published to it fails admission, and the step stops before any optimizer work. The
+trainer group stays alive through that failure, so the source group can be replayed on a
+later step.
 
 ## Evaluation
 
