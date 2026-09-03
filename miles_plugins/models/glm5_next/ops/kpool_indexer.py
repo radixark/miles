@@ -4,7 +4,6 @@ import triton.language as tl
 from triton.language.extra import libdevice
 
 from miles.utils.replay_base import indexer_replay_manager
-from miles_plugins.models.glm5.ops.tilelang_indexer_fwd import indexer_fwd_interface
 
 SPARSE_MLA_BLOCK = 64
 _SELECT_BLOCK = 256
@@ -269,6 +268,10 @@ def kpool_select_topk(
     eligible_pools = torch.div(local_positions + 1, kpool, rounding_mode="floor")
 
     if pooled_k.shape[0] > 0:
+        # TileLang is only needed for the scoring kernel; keep it out of module import so the
+        # packed-sequence helpers (pool_boundaries, ...) stay importable on CPU-only test runners.
+        from miles_plugins.models.glm5.ops.tilelang_indexer_fwd import indexer_fwd_interface
+
         with torch.no_grad():
             pool_logits = indexer_fwd_interface(
                 index_q,
