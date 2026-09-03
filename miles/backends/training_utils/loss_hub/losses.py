@@ -479,18 +479,23 @@ def sft_loss_function(
     response_lengths = batch["response_lengths"]
     total_lengths = batch["total_lengths"]
 
-    log_probs_and_entropy = get_log_probs_and_entropy(
-        logits,
-        args=args,
-        unconcat_tokens=batch["unconcat_tokens"],
-        total_lengths=total_lengths,
-        response_lengths=response_lengths,
-        with_entropy=False,
-        max_seq_lens=batch.get("max_seq_lens", None),
-    )
+    if args.sft_checkpointed_output_projection:
+        # The model output processor has already projected response-only hidden
+        # states and computed their TP log-probabilities in checkpointed chunks.
+        log_probs = logits
+    else:
+        log_probs_and_entropy = get_log_probs_and_entropy(
+            logits,
+            args=args,
+            unconcat_tokens=batch["unconcat_tokens"],
+            total_lengths=total_lengths,
+            response_lengths=response_lengths,
+            with_entropy=False,
+            max_seq_lens=batch.get("max_seq_lens", None),
+        )
 
-    log_probs = log_probs_and_entropy["log_probs"]
-    log_probs = torch.cat(log_probs, dim=0)
+        log_probs = log_probs_and_entropy["log_probs"]
+        log_probs = torch.cat(log_probs, dim=0)
     loss = -sum_of_sample_mean(log_probs)
 
     # make sure the gradient could backprop correctly.

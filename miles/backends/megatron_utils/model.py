@@ -41,6 +41,10 @@ from ..training_utils.ci_utils import check_grad_norm, check_kl
 from ..training_utils.data import DataIterator, get_batch
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
+from ..training_utils.loss_hub.checkpointed_cross_entropy import (
+    SFTCheckpointedOutputContext,
+    checkpointed_sft_output_processor,
+)
 from ..training_utils.parallel import get_parallel_state
 from .checkpoint import load_checkpoint, save_checkpoint, save_checkpoint_with_lora
 from .ci_utils import (
@@ -535,6 +539,9 @@ def train_one_step(
             m.stage = "replay_forward"
 
         if return_schedule_plan:
+            assert (
+                not args.sft_checkpointed_output_projection
+            ), "checkpointed SFT output projection is not supported with combined 1f1b"
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
             output_tensor = model.build_schedule_plan(
@@ -559,13 +566,24 @@ def train_one_step(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            output_tensor = model(
-                **forward_kwargs,
-                **_training_model_output_kwargs(
-                    loss_type=args.loss_type,
-                    use_mixed_precision=args.bf16 or args.fp16,
-                ),
-            )
+            if args.sft_checkpointed_output_projection:
+                forward_kwargs.update(
+                    output_processor=checkpointed_sft_output_processor,
+                    output_processor_context=SFTCheckpointedOutputContext(
+                        args=args,
+                        batch=batch,
+                        chunk_size=args.log_probs_chunk_size,
+                    ),
+                )
+                output_tensor = model(**forward_kwargs)
+            else:
+                output_tensor = model(
+                    **forward_kwargs,
+                    **_training_model_output_kwargs(
+                        loss_type=args.loss_type,
+                        use_mixed_precision=args.bf16 or args.fp16,
+                    ),
+                )
 
         for m, old_stage in zip(all_replay_managers, old_stages, strict=True):
             m.stage = old_stage

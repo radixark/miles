@@ -424,6 +424,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "--log-probs-chunk-size", type=int, default=-1, help="Chunk size to compute log probs to save memory"
             )
             parser.add_argument(
+                "--sft-checkpointed-output-projection",
+                action="store_true",
+                help=(
+                    "Checkpoint the SFT output projection and tensor-parallel cross-entropy in sequence chunks. "
+                    "This prevents long-context training from retaining a full sequence-by-vocabulary logits "
+                    "gradient; requires --loss-type sft_loss and a positive --log-probs-chunk-size."
+                ),
+            )
+            parser.add_argument(
                 "--indep-dp",
                 action="store_true",
                 default=False,
@@ -3523,6 +3532,15 @@ def miles_validate_args(args):
             if hasattr(args, k):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
+
+    if args.sft_checkpointed_output_projection:
+        assert args.loss_type == "sft_loss", "--sft-checkpointed-output-projection requires --loss-type sft_loss"
+        assert (
+            args.log_probs_chunk_size > 0
+        ), "--sft-checkpointed-output-projection requires a positive --log-probs-chunk-size"
+        assert (
+            not args.true_on_policy_mode
+        ), "--sft-checkpointed-output-projection does not support --true-on-policy-mode"
 
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True

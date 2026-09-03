@@ -17,6 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.backends.training_utils.loss_hub.checkpointed_cross_entropy import install_checkpointed_linear_cross_entropy
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.misc import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -324,6 +325,9 @@ def get_model_provider_func(
 
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)
+
+        if post_process and role == "actor" and getattr(args, "sft_checkpointed_output_projection", False):
+            install_checkpointed_linear_cross_entropy(model, args.log_probs_chunk_size)
 
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
