@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from typing import cast
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
@@ -22,9 +23,13 @@ from miles.ray.rollout.train_data_conversion import (
 )
 from miles.ray.utils import Lock
 from miles.rollout.base_types import (
+    LeasedRolloutFnTrainOutput,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnTrainInput,
+    RolloutFnTrainOutput,
+    TrainBatchLease,
+    TrainBatchRollbackReason,
     call_rollout_fn,
 )
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip
@@ -48,6 +53,22 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 logger = logging.getLogger(__name__)
+
+
+def _remove_train_data_refs(
+    data_ref: object_store.StoreObjectRef | list[object_store.StoreObjectRef],
+) -> None:
+    refs = data_ref if isinstance(data_ref, list) else [data_ref]
+    store = object_store.get_instance()
+    first_error: BaseException | None = None
+    for ref in refs:
+        try:
+            store.remove(ref)
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 @ray.remote
@@ -150,23 +171,66 @@ class RolloutManager:
         dashboard_hooks.register_engines(self.servers)
         if (get_buffer_length := getattr(self.data_source, "get_buffer_length", None)) is not None:
             dashboard_hooks.report_data_buffer(get_buffer_length())
-        with timer("rollout"):
-            data, metadata, metrics = await self._get_rollout_data(rollout_id=rollout_id)
-        save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
-        log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
-        data = convert_samples_to_train_data(
-            self.args,
-            data,
-            metadata=metadata,
-            custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
-            custom_reward_post_process_func=self.custom_reward_post_process_func,
-        )
-        sample_indices = data.get("sample_indices")
-        if self.args.delay_split_train_data_by_dp:
-            data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
-        else:
-            data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
-        return dict(sample_indices=sample_indices, data_ref=data_ref)
+        lease: TrainBatchLease | None = None
+        try:
+            with timer("rollout"):
+                if self.args.load_debug_rollout_data is not None:
+                    data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
+                    metrics = None
+                else:
+                    output = await self._get_rollout_output(rollout_id)
+                    if isinstance(output, LeasedRolloutFnTrainOutput):
+                        lease = output.lease
+                        if lease.rollout_id != rollout_id:
+                            raise ValueError(
+                                f"Leased train output for rollout {rollout_id} carries a lease "
+                                f"for rollout {lease.rollout_id}."
+                            )
+                    data = output.samples
+                    metrics = output.metrics
+                    data, metadata = postprocess_rollout_data(
+                        self.args, data, train_parallel_config=self.train_parallel_config
+                    )
+                    if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
+                        generated_data = data
+                        data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
+                        RolloutDataInjectionUtil.assert_matches_generated(
+                            self.args, generated=generated_data, injected=data, rollout_id=rollout_id
+                        )
+                        metrics = None
+            save_debug_rollout_data(self.args, data, rollout_id=rollout_id, evaluation=False, metadata=metadata)
+            log_rollout_data(rollout_id, self.args, data, metrics, time.time() - start_time)
+            data = convert_samples_to_train_data(
+                self.args,
+                data,
+                metadata=metadata,
+                custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
+                custom_reward_post_process_func=self.custom_reward_post_process_func,
+            )
+            sample_indices = data.get("sample_indices")
+            if self.args.delay_split_train_data_by_dp:
+                data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
+            else:
+                data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
+            result = dict(sample_indices=sample_indices, data_ref=data_ref)
+        except BaseException as handoff_error:
+            if lease is not None:
+                try:
+                    lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+                except BaseException as rollback_error:
+                    raise handoff_error from rollback_error
+            raise
+
+        if lease is not None:
+            try:
+                lease.commit()
+            except BaseException as commit_error:
+                try:
+                    _remove_train_data_refs(data_ref)
+                except BaseException as cleanup_error:
+                    raise commit_error from cleanup_error
+                raise
+        return result
 
     async def eval(
         self,
@@ -240,35 +304,46 @@ class RolloutManager:
     def report_eval_skip(self, rollout_id: int, reason: str) -> None:
         log_eval_skip(rollout_id, self.args, reason)
 
-    async def _get_rollout_data(self, rollout_id):
-        if self.args.load_debug_rollout_data is not None:
-            data, metadata = load_debug_rollout_data(self.args, rollout_id=rollout_id)
-            metrics = None
-        else:
-            if not self.use_legacy_rollout_v1:
-                data = await asyncio.to_thread(
+    async def _get_rollout_output(self, rollout_id: int) -> RolloutFnTrainOutput:
+        if not self.use_legacy_rollout_v1:
+            rollout_task = asyncio.create_task(
+                asyncio.to_thread(
                     call_rollout_function,
                     self.generate_rollout,
                     RolloutFnTrainInput(rollout_id=rollout_id, weight_version=self.weight_version),
                 )
-            else:
-                data = await asyncio.to_thread(
-                    call_rollout_fn, self.generate_rollout, self.args, rollout_id, self.data_source, evaluation=False
-                )
-            metrics = data.metrics
-            data = data.samples
-            data, metadata = postprocess_rollout_data(
-                self.args, data, train_parallel_config=self.train_parallel_config
             )
-            if RolloutDataInjectionUtil.should_inject(self.args, rollout_id):
-                generated_data = data
-                data, metadata = RolloutDataInjectionUtil.load(self.args, rollout_id=rollout_id)
-                RolloutDataInjectionUtil.assert_matches_generated(
-                    self.args, generated=generated_data, injected=data, rollout_id=rollout_id
+        else:
+            rollout_task = asyncio.create_task(
+                asyncio.to_thread(
+                    call_rollout_fn,
+                    self.generate_rollout,
+                    self.args,
+                    rollout_id,
+                    self.data_source,
+                    evaluation=False,
                 )
-                metrics = None
+            )
 
-        return data, metadata, metrics
+        try:
+            return await asyncio.shield(cast(asyncio.Task[RolloutFnTrainOutput], rollout_task))
+        except asyncio.CancelledError as cancellation_error:
+            if rollout_task.cancelled():
+                raise
+            try:
+                # Cancellation cannot stop the worker thread, so keep its Task shielded until settlement is possible.
+                while not rollout_task.done():
+                    try:
+                        await asyncio.shield(rollout_task)
+                    except asyncio.CancelledError:
+                        if rollout_task.cancelled():
+                            raise
+                output = rollout_task.result()
+                if isinstance(output, LeasedRolloutFnTrainOutput):
+                    output.lease.rollback(TrainBatchRollbackReason.HANDOFF_FAILED)
+            except BaseException as cleanup_error:
+                raise cancellation_error from cleanup_error
+            raise
 
     # -------------------------- checkpointing -----------------------------
 
