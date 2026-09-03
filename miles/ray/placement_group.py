@@ -211,13 +211,7 @@ def create_rollout_manager(args, pg):
         assert args.num_rollout > 0
 
     if args.check_weight_update_equal:
-        snapshot_action = "snapshot" if args.check_weight_update_allow_quant_error else "snapshot_checksum"
-        ray.get(
-            rollout_manager.check_weights.remote(
-                action=snapshot_action,
-                skip_list=args.check_weight_update_skip_list,
-            )
-        )
+        ray.get(rollout_manager.check_weights.remote(action="snapshot"))
         ray.get(
             rollout_manager.check_weights.remote(action="reset_tensors", skip_list=args.check_weight_update_skip_list)
         )
