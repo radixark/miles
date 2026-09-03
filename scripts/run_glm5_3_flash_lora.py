@@ -269,7 +269,9 @@ def _train(args: ScriptArgs):
         "TRITON_CACHE_DIR": "/tmp/triton_cache",
         "TORCHINDUCTOR_CACHE_DIR": "/tmp/inductor_cache",
     }
-    for passthrough in ("SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK",):
+    # FLA_CACHE_RESULTS=0 sidesteps a Triton 3.6 autotune-cache hashing failure on fla's KDA
+    # kernels (`Unsupported function referenced: next_power_of_2`); newer Triton does not need it.
+    for passthrough in ("SGLANG_SKIP_SGL_KERNEL_VERSION_CHECK", "FLA_CACHE_RESULTS"):
         if os.environ.get(passthrough):
             extra_env_vars[passthrough] = os.environ[passthrough]
 
