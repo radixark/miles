@@ -539,8 +539,8 @@ def train_one_step(
             m.stage = "replay_forward"
 
         if return_schedule_plan:
-            assert (
-                not args.sft_checkpointed_output_projection
+            assert not getattr(
+                args, "sft_checkpointed_output_projection", False
             ), "checkpointed SFT output projection is not supported with combined 1f1b"
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
             assert not args.enable_witness, "Witness is not supported with combined 1f1b (build_schedule_plan)"
@@ -566,7 +566,7 @@ def train_one_step(
             if (x := batch["multimodal_train_inputs"]) is not None:
                 forward_kwargs.update(x)
 
-            if args.sft_checkpointed_output_projection:
+            if getattr(args, "sft_checkpointed_output_projection", False):
                 forward_kwargs.update(
                     output_processor=checkpointed_sft_output_processor,
                     output_processor_context=SFTCheckpointedOutputContext(
