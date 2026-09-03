@@ -3,7 +3,7 @@ import sys
 from argparse import Namespace
 from contextlib import contextmanager, nullcontext
 from types import ModuleType
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import pytest
 import torch
@@ -214,6 +214,7 @@ def _lifecycle_worker(actor_module, monkeypatch, asleep):
         clear_quantized_weight_workspaces_on_offload=False,
     )
     worker._asleep = asleep
+    worker._grad_buffer_paused = False
     saver = Mock()
     reload_groups = Mock()
     monkeypatch.setattr(actor_module, "torch_memory_saver", saver)
@@ -256,6 +257,18 @@ def test_wake_up_resumes_offloaded_model_once(actor_module, monkeypatch):
 
     assert saver.resume.call_count == 1
     assert worker._asleep is False
+
+
+def test_lora_sleep_pauses_the_grad_buffers_and_wake_up_resumes_them(actor_module, monkeypatch):
+    """The LoRA grad buffers have no host backup, so a sleep that leaves them out keeps them on the GPU."""
+    worker, saver, _ = _lifecycle_worker(actor_module, monkeypatch, asleep=False)
+    monkeypatch.setattr(actor_module, "lora_rollout_enabled", lambda _args: True)
+
+    worker.sleep()
+    worker.wake_up()
+
+    assert saver.pause.call_args_list == [call(tag="grad_buffer"), call(tag="default")]
+    assert saver.resume.call_args_list == [call(tag="default"), call(tag="grad_buffer")]
 
 
 def _actor_train_args(**overrides):

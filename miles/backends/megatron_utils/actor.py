@@ -208,6 +208,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         start_rollout_id = loaded_rollout_id + 1
         self._asleep = False
+        self._grad_buffer_paused = False
 
         if role == "critic":
             if self.args.offload_train:
@@ -324,9 +325,14 @@ class MegatronTrainRayActor(TrainRayActor):
             # Params stay resident for update_weights, which pauses them afterwards.
             torch_memory_saver.pause(tag="grad_buffer")
             torch_memory_saver.pause(tag="default")
+        elif lora_rollout_enabled(self.args):
+            # adapter params keep their host backup in "default"; the grad buffers have none
+            if not self._grad_buffer_paused:
+                torch_memory_saver.pause(tag="grad_buffer")
+                self._grad_buffer_paused = True
+            torch_memory_saver.pause(tag="default")
         else:
-            tag = "default" if lora_rollout_enabled(self.args) else None
-            torch_memory_saver.pause(tag=tag)
+            torch_memory_saver.pause(tag=None)
 
         self._asleep = True
         print_memory("after offload model")
@@ -344,8 +350,12 @@ class MegatronTrainRayActor(TrainRayActor):
             return
         print_memory("before wake_up model")
 
-        tag = "default" if lora_rollout_enabled(self.args) else None
-        torch_memory_saver.resume(tag=tag)
+        if lora_rollout_enabled(self.args):
+            torch_memory_saver.resume(tag="default")
+            torch_memory_saver.resume(tag="grad_buffer")
+            self._grad_buffer_paused = False
+        else:
+            torch_memory_saver.resume(tag=None)
 
         clear_memory()
         reload_process_groups()
