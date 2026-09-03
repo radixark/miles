@@ -38,9 +38,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 import typer
+from scripts.run_glm5_3_flash import _MODEL_REGISTRY
 
 import miles.utils.external_utils.command_utils as U
-from scripts.run_glm5_3_flash import _MODEL_REGISTRY
 
 app = typer.Typer()
 

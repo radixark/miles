@@ -131,6 +131,7 @@ def hf_config_uses_kda(hf_config) -> bool:
     layer_types = getattr(text_config, "layer_types", None) or []
     return "linear_attention" in layer_types and getattr(hf_config, "model_type", "") in ("glm5_next", "kimi_linear")
 
+
 # Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
 _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
 
