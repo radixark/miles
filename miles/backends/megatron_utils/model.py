@@ -748,10 +748,7 @@ def train(
     if args.reset_optimizer_states and not disable_optimizer:
         if is_first_replica_megatron_main_rank():
             logger.info("Reset optimizer states")
-        reset_optimizer_states(
-            args.optimizer,
-            [chained_optimizer.optimizer for chained_optimizer in optimizer.chained_optimizers],
-        )
+        reset_optimizer_states(optimizer)
 
     if args.manual_gc:
         # Disable the default garbage collector and perform the collection manually.
