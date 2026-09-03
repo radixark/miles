@@ -167,6 +167,7 @@ def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tupl
         return _POST_FAULT_DIFF_THRESHOLDS
     return _DIFF_THRESHOLDS
 
+
 TEST_NAME: str = "trainer_ft_with_failure"
 PHASES: list[str] = ["phase_a", "phase_b"]
 
