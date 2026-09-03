@@ -6,6 +6,7 @@ import pytest
 from tests.e2e.ft.conftest_ft import scenario_with_failure
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
+    _BASELINE_ACTIONS,
     _DIFF_THRESHOLDS,
     _FAULT_ROLLOUT_ID,
     _FIRST_INJECTED_ROLLOUT_ID,
@@ -46,8 +47,8 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
 
 
-def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
-    """The baseline must isolate fault execution while retaining the target topology."""
+def test_baseline_matches_the_successful_retry_topology_without_crashing() -> None:
+    """The baseline must use one cell for the fault commit without crashing."""
     args = shlex.split(
         _build_baseline_args(
             MODES["dp2_cp2_real_rollout_dense"],
@@ -58,7 +59,8 @@ def test_baseline_uses_fault_tolerant_topology_without_fault_actions() -> None:
 
     assert "--use-fault-tolerance" in args
     assert "--ft-components" in args
-    assert "--ci-ft-test-actions" not in args
+    assert json.loads(_option_value(args, "--ci-ft-test-actions")) == _BASELINE_ACTIONS
+    assert all(action["action"] != "crash_before_allreduce" for action in _BASELINE_ACTIONS)
     assert "--ci-inject-rollout-data-path" not in args
 
 

@@ -69,9 +69,14 @@ _WITH_FAILURE_ACTIONS: list[dict] = [
     {"at_rollout": _FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_index": -1},
 ]
 
+_BASELINE_ACTIONS: list[dict] = [
+    {"at_rollout": _FAULT_ROLLOUT_ID - 1, "action": "stop_cell_at_end", "cell_index": -1},
+    {"at_rollout": _FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_index": -1},
+]
+
 
 def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
-    if not (is_target and phase == "phase_b"):
+    if phase != "phase_b":
         return []
     return [
         ReconfigureInfo(
@@ -111,6 +116,8 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                     f"--ci-inject-rollout-data-start-rollout-id {_FIRST_INJECTED_ROLLOUT_ID} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
+        else:
+            base += f"--ci-ft-test-actions '{json.dumps(_BASELINE_ACTIONS)}' "
 
     return base
 
