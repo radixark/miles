@@ -74,6 +74,13 @@ _MEGATRON_TO_HF_MODULES = {
     "linear_fc1_up": ["up_proj"],
     # GDN linear attention: SGLang serves the fused in_proj as two modules
     "in_proj": ["in_proj_qkvz", "in_proj_ba"],
+    # KDA linear attention (GLM-5.3-Flash / glm5_next): q/k/v are separate Megatron linears
+    # (linear_q/k/v above); the gate projections keep their HF leaf names on the SGLang side.
+    "linear_b": ["b_proj"],
+    "linear_f_a": ["f_a_proj"],
+    "linear_f_b": ["f_b_proj"],
+    "linear_g_a": ["g_a_proj"],
+    "linear_g_b": ["g_b_proj"],
 }
 
 _HF_MODULE_NAMES = {
@@ -100,6 +107,29 @@ _MLA_HF_TO_MEGATRON = {
     "weights_proj": "linear_weights_proj",
 }
 _MEGATRON_MLA_TO_HF = {v: k for k, v in _MLA_HF_TO_MEGATRON.items()}
+
+# KDA (Kimi Delta Attention) gate projections of GLM-5.3-Flash (glm5_next). Its q/k/v/o HF names
+# collide with dense attention, so on a KDA model q/k/v_proj map to the split linear_q/k/v (see
+# `kda_qkv_split` in convert_target_modules_to_megatron) instead of the fused linear_qkv.
+_KDA_HF_TO_MEGATRON = {
+    "b_proj": "linear_b",
+    "f_a_proj": "linear_f_a",
+    "f_b_proj": "linear_f_b",
+    "g_a_proj": "linear_g_a",
+    "g_b_proj": "linear_g_b",
+}
+_KDA_QKV_HF_TO_MEGATRON = {"q_proj": "linear_q", "k_proj": "linear_k", "v_proj": "linear_v"}
+KDA_HF_MODULE_NAMES = frozenset(_KDA_HF_TO_MEGATRON)
+
+
+def hf_config_uses_kda(hf_config) -> bool:
+    """True for KDA linear-attention checkpoints (GLM-5.3-Flash ``glm5_next``, Kimi Linear)."""
+    text_config = getattr(hf_config, "text_config", None) or hf_config
+    linear_attn_config = getattr(text_config, "linear_attn_config", None)
+    if isinstance(linear_attn_config, dict) and linear_attn_config.get("kda_layers"):
+        return True
+    layer_types = getattr(text_config, "layer_types", None) or []
+    return "linear_attention" in layer_types and getattr(hf_config, "model_type", "") in ("glm5_next", "kimi_linear")
 
 # Empty: dropping a module here makes sglang silently skip its shipped adapter tensors.
 _SGLANG_UNSUPPORTED_HF_TARGETS = frozenset()
@@ -233,6 +263,7 @@ def _get_lora_class_name(lora_type: type | object | None) -> str:
 def convert_target_modules_to_megatron(
     hf_modules: str | list[str],
     lora_type: type | object | None = None,
+    kda_qkv_split: bool = False,
 ) -> list[str]:
     """Convert HuggingFace LoRA target module names to Megatron format.
 
@@ -243,6 +274,10 @@ def convert_target_modules_to_megatron(
 
     Special values: "all", "all-linear", "all_linear" -> all standard linear modules.
     If input is already in Megatron format, returns as-is.
+
+    ``kda_qkv_split``: on KDA linear-attention models (GLM-5.3-Flash) the HF q/k/v_proj are
+    separate Megatron linears (linear_q/k/v) rather than a fused linear_qkv; the KDA gate
+    projections (b/f_a/f_b/g_a/g_b_proj) always map to linear_b/linear_f_a/...
     """
     class_name = _get_lora_class_name(lora_type)
     is_canonical = class_name == "CanonicalLoRA"
@@ -262,8 +297,12 @@ def convert_target_modules_to_megatron(
     if isinstance(hf_modules, tuple):
         hf_modules = list(hf_modules)
 
-    # Check if already in Megatron format (standard / canonical / Kimi MLA linear_*).
-    if all(m not in _HF_MODULE_NAMES and m not in _MLA_HF_TO_MEGATRON for m in hf_modules if "*" not in m):
+    # Check if already in Megatron format (standard / canonical / Kimi MLA / KDA linear_*).
+    if all(
+        m not in _HF_MODULE_NAMES and m not in _MLA_HF_TO_MEGATRON and m not in _KDA_HF_TO_MEGATRON
+        for m in hf_modules
+        if "*" not in m
+    ):
         return list(hf_modules)
 
     # Convert HF names to Megatron names (dedup while preserving order)
@@ -271,6 +310,10 @@ def convert_target_modules_to_megatron(
     for module in hf_modules:
         if module in _MLA_HF_TO_MEGATRON:
             megatron_name = _MLA_HF_TO_MEGATRON[module]
+        elif module in _KDA_HF_TO_MEGATRON:
+            megatron_name = _KDA_HF_TO_MEGATRON[module]
+        elif kda_qkv_split and module in _KDA_QKV_HF_TO_MEGATRON:
+            megatron_name = _KDA_QKV_HF_TO_MEGATRON[module]
         else:
             megatron_name = hf_to_megatron.get(module, module)
         if megatron_name not in megatron_modules:
@@ -335,6 +378,18 @@ def target_modules_hf_for_sglang_rollout(args: Namespace) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def _args_use_kda(args: Namespace) -> bool:
+    hf_checkpoint = getattr(args, "hf_checkpoint", None)
+    if not hf_checkpoint:
+        return False
+    try:
+        from miles.utils.hf_config import load_hf_config
+
+        return hf_config_uses_kda(load_hf_config(hf_checkpoint))
+    except Exception:  # config unavailable (tests, dummy checkpoints)
+        return False
+
+
 def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
     """Parse and convert exclude_modules argument."""
     exclude_modules: list[str] = []
@@ -344,7 +399,9 @@ def parse_exclude_modules(args: Namespace, lora_type=None) -> list[str]:
             exclude_modules = [m.strip() for m in raw.split(",")]
         else:
             exclude_modules = list(raw)
-        exclude_modules = convert_target_modules_to_megatron(exclude_modules, lora_type=lora_type)
+        exclude_modules = convert_target_modules_to_megatron(
+            exclude_modules, lora_type=lora_type, kda_qkv_split=_args_use_kda(args)
+        )
     return exclude_modules
 
 
@@ -364,7 +421,9 @@ def create_lora_instance(args: Namespace):
     else:
         lora_cls = LoRA
 
-    target_modules = convert_target_modules_to_megatron(args.target_modules, lora_type=lora_cls)
+    target_modules = convert_target_modules_to_megatron(
+        args.target_modules, lora_type=lora_cls, kda_qkv_split=_args_use_kda(args)
+    )
     exclude_modules = parse_exclude_modules(args, lora_type=lora_cls)
 
     lora_kwargs = dict(
