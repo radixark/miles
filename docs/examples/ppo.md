@@ -53,6 +53,7 @@ advantage computation to GAE.
 | `--critic-lr` | falls back to `--lr` | Critic learning rate. Usually wants to be larger than the actor's — this example uses `1e-5` against an actor `1e-6`. |
 | `--critic-load` | falls back to `--load` | Critic init checkpoint. |
 | `--critic-save` | `--save` + `_critic` | Sibling directory, so the two models do not clobber each other's iteration tracker. |
+| `--critic-lora-adapter-path` | none | LoRA critic resume: the critic's own `iter_*/adapter` directory under `--critic-save`, holding its adapters and value head. Never inherited from `--lora-adapter-path`, since the two models share parameter names. |
 | `--critic-lr-warmup-iters` | `0` | Linear warmup for the critic only. |
 | `--num-critic-only-steps` | `0` | Value-function warmup: the actor stays frozen for this many initial rollout steps while the critic learns. A critic that starts from noise otherwise injects noisy advantages into the very first actor updates. |
 | `--critic-num-nodes`, `--critic-num-gpus-per-node` | inherited from the actor | Set automatically — see the colocation constraint below. |
