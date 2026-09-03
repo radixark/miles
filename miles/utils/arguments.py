@@ -3275,10 +3275,23 @@ def miles_validate_args(args):
         args.offload_rollout = True
     del args.offload
 
+    assert not (
+        args.debug_rollout_only and args.debug_train_only
+    ), "debug_rollout_only and debug_train_only cannot be set at the same time, please set only one of them."
+
+    if args.rollout_external and not args.debug_train_only and not args.colocate:
+        assert (
+            args.rollout_num_gpus is not None and args.rollout_num_gpus > 0
+        ), "'--rollout-num-gpus' is required with '--rollout-external': provide a positive logical fleet size."
+
     if args.debug_rollout_only:
-        if args.colocate and (not args.rollout_num_gpus):
+        if args.colocate and not args.rollout_num_gpus:
             args.rollout_num_gpus = args.actor_num_gpus_per_node * args.actor_num_nodes
         else:
+            assert args.rollout_num_gpus is not None and args.rollout_num_gpus > 0, (
+                "'--rollout-num-gpus' is required with '--debug-rollout-only' unless '--colocate' "
+                "is set: provide a positive count."
+            )
             args.actor_num_gpus_per_node = min(8, args.rollout_num_gpus)
             args.actor_num_nodes = args.rollout_num_gpus // args.actor_num_gpus_per_node
         args.colocate = False
@@ -3286,10 +3299,6 @@ def miles_validate_args(args):
         if args.train_memory_margin_bytes > 0:
             logger.warning("Force train_memory_margin_bytes=0 since debug_rollout_only does not support it")
             args.train_memory_margin_bytes = 0
-
-    assert not (args.debug_rollout_only and args.debug_train_only), (
-        "debug_rollout_only and debug_train_only cannot be set at the same time, " "please set only one of them."
-    )
 
     if (
         args.ci_test

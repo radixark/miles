@@ -111,6 +111,10 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
         return args.rollout_num_gpus, 0
     if args.colocate:
         return max(actor_num_gpus, args.rollout_num_gpus), 0
+    assert args.rollout_num_gpus is not None and args.rollout_num_gpus > 0, (
+        "'--rollout-num-gpus' is required without '--colocate': the rollout engines are placed on "
+        "GPUs beyond the actor's, so provide a positive count."
+    )
     return actor_num_gpus + args.rollout_num_gpus + args.eval_num_gpus, actor_num_gpus
 
 
