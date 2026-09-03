@@ -174,7 +174,11 @@ class FSDPTrainRayActor(TrainRayActor):
         if args.gradient_checkpointing:
             self.model.gradient_checkpointing_enable()
 
-        if args.optimizer == "adam":
+        if args.num_rollout == 0:
+            args.no_load_optim = True
+            self.optimizer = None
+            self.lr_scheduler = None
+        elif args.optimizer == "adam":
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(),
                 lr=args.lr,
@@ -182,11 +186,9 @@ class FSDPTrainRayActor(TrainRayActor):
                 eps=args.adam_eps,
                 weight_decay=args.weight_decay,
             )
+            self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}. Supported options: 'adam'")
-
-        # Initialize LR scheduler
-        self.lr_scheduler = get_lr_scheduler(args, self.optimizer)
 
         self.global_step = 0
         self.micro_step = 0
@@ -326,7 +328,8 @@ class FSDPTrainRayActor(TrainRayActor):
         print_memory("before offload model")
 
         self.model.cpu()
-        move_torch_optimizer(self.optimizer, "cpu")
+        if self.optimizer is not None:
+            move_torch_optimizer(self.optimizer, "cpu")
         clear_memory()
         dist.barrier(group=get_gloo_group())
         print_memory("after offload model")
@@ -338,7 +341,8 @@ class FSDPTrainRayActor(TrainRayActor):
             return
 
         self.model.cuda()
-        move_torch_optimizer(self.optimizer, "cuda")
+        if self.optimizer is not None:
+            move_torch_optimizer(self.optimizer, "cuda")
         dist.barrier(group=get_gloo_group())
         print_memory("after wake_up model")
 

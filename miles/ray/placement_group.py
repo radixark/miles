@@ -167,7 +167,8 @@ async def create_training_models(args, pgs, rollout_manager):
     )
     actor_start_rollout_ids = await actor_model.init()
 
-    if args.use_critic:
+    critic_model = None
+    if args.use_critic and args.num_rollout != 0:
         critic_args = copy.deepcopy(args)
         critic_args.kl_coef = 0
         critic_args.use_opd = False
@@ -182,10 +183,8 @@ async def create_training_models(args, pgs, rollout_manager):
             rollout_manager=None,
         )
         critic_start_rollout_ids = await critic_model.init()
-    else:
-        critic_model = None
 
-    start_rollout_ids = critic_start_rollout_ids if args.use_critic else actor_start_rollout_ids
+    start_rollout_ids = critic_start_rollout_ids if critic_model is not None else actor_start_rollout_ids
 
     assert len(set(start_rollout_ids)) == 1
     if args.start_rollout_id is None:
