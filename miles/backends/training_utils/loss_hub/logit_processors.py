@@ -42,8 +42,6 @@ def _iter_response_chunk_parts(
         sequence parts separately so callers can process them without
         materializing a full-response logits concatenation.
     """
-    qkv_format = args.qkv_format
-
     if not args.true_on_policy_mode:
         # Model-precision callers hand native bf16/fp16 logits; chunks are upcast to fp32 downstream
         assert logits.dtype in (torch.float32, torch.bfloat16, torch.float16), f"{logits.dtype}"
@@ -64,6 +62,46 @@ def _iter_response_chunk_parts(
         elif getattr(args, "fp16", False):
             logits = logits.to(torch.float16)
 
+    yield from _iter_response_tensor_parts(
+        logits,
+        args=args,
+        unconcat_tokens=unconcat_tokens,
+        total_lengths=total_lengths,
+        response_lengths=response_lengths,
+        max_seq_lens=max_seq_lens,
+        include_response_indices=include_response_indices,
+    )
+
+
+def _iter_response_tensor_parts(
+    tensor: torch.Tensor,
+    *,
+    args: Namespace,
+    unconcat_tokens: list[torch.Tensor],
+    total_lengths: list[int],
+    response_lengths: list[int],
+    max_seq_lens: list[int] | None = None,
+    include_response_indices: bool,
+) -> Iterator[tuple[tuple[torch.Tensor, torch.Tensor, Sequence[int]], ...]]:
+    """Yield response-aligned parts from a sequence tensor without changing its values.
+
+    This is shared by ordinary logits processing and the checkpointed SFT
+    output projection, which applies the same CP/token alignment directly to
+    decoder hidden states before creating logits.
+    """
+
+    qkv_format = args.qkv_format
+    if tensor.ndim != 3:
+        raise ValueError(f"tensor must have shape [B, S, D], got {tensor.shape}")
+    if qkv_format == "thd":
+        if tensor.size(0) != 1:
+            raise ValueError(f"THD tensor must have batch dimension 1, got {tensor.shape}")
+        tensor = tensor.squeeze(0)
+    else:
+        if max_seq_lens is None:
+            raise ValueError("max_seq_lens is required for qkv_format='bshd'")
+        tensor = tensor.reshape(-1, tensor.size(-1))
+
     parallel_state = get_parallel_state()
     cp_size = parallel_state.cp.size
     end = 0
@@ -77,18 +115,18 @@ def _iter_response_chunk_parts(
             if qkv_format == "bshd":
                 end = max_seq_len * i + total_length
                 start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
+                logits_chunk = tensor[start - 1 : end - 1]
             else:
                 end += total_length
                 start = end - response_length
-                logits_chunk = logits[start - 1 : end - 1]
+                logits_chunk = tensor[start - 1 : end - 1]
             tokens_chunk = tokens[-response_length:] if response_length else tokens[0:0]
             response_indices = range(response_length) if include_response_indices else ()
             response_chunks = ((logits_chunk, tokens_chunk, response_indices),)
         elif args.allgather_cp:
             # DSA: global concat then contiguous CP split. Each rank owns logits for
             # global positions [chunk_start, chunk_end).
-            logits_local_len = logits.size(0)
+            logits_local_len = tensor.size(0)
             cp_rank = parallel_state.cp.rank
             chunk_start = cp_rank * logits_local_len
             chunk_end = chunk_start + logits_local_len
@@ -102,11 +140,11 @@ def _iter_response_chunk_parts(
             s = max(logit_global_start, chunk_start)
             e = min(logit_global_end, chunk_end)
             if e <= s:
-                logits_chunk = logits[0:0]
+                logits_chunk = tensor[0:0]
                 tokens_chunk = tokens[0:0]
                 response_indices = ()
             else:
-                logits_chunk = logits[s - chunk_start : e - chunk_start]
+                logits_chunk = tensor[s - chunk_start : e - chunk_start]
                 tokens_chunk = tokens[(s + 1) - seq_start : (e + 1) - seq_start]
                 response_indices = (
                     range(
@@ -124,7 +162,7 @@ def _iter_response_chunk_parts(
                 total_length, response_length, qkv_format, max_seq_len
             )
 
-            logits_0, logits_1 = logits[end : end + chunk_size], logits[end + chunk_size : end + 2 * chunk_size]
+            logits_0, logits_1 = tensor[end : end + chunk_size], tensor[end + chunk_size : end + 2 * chunk_size]
             end += 2 * chunk_size
 
             logits_0 = logits_0[logits_offset[0][0] - chunks_offset[0][0] : logits_offset[0][1] - chunks_offset[0][0]]

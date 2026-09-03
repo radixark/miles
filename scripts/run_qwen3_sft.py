@@ -25,6 +25,9 @@ Args:
     and defaults this to <output-dir>/<run-id>/dump_details.
   --log-probs-chunk-size: Response-token chunk size for memory-efficient log-probability
     and entropy computation. Defaults to 4096 for Qwen3.6 and disabled for other recipes.
+  --checkpointed-output-projection: Recompute the language-model output projection and
+    cross-entropy chunk-by-chunk during backward. This bounds long-context logits-gradient
+    memory while retaining FP32 gradient accumulation.
   --empty-unused-memory-level: Release cached CUDA blocks around the optimizer step.
     Level 2 also clears after gradient cleanup, before the next training step.
   --num-gpus-per-node: GPUs per node (default: 8).
@@ -120,6 +123,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     global_batch_size: int = 128
     max_tokens_per_gpu: int | None = None
     log_probs_chunk_size: int | None = None
+    checkpointed_output_projection: bool = False
     tensor_model_parallel_size: int | None = None
     pipeline_model_parallel_size: int = 1
     context_parallel_size: int = 1
@@ -202,6 +206,8 @@ def _validate_parallelism(args: ScriptArgs) -> None:
             "log_probs_chunk_size must be -1 (disabled) or a positive integer, "
             f"got {args.effective_log_probs_chunk_size}"
         )
+    if args.checkpointed_output_projection and args.effective_log_probs_chunk_size <= 0:
+        raise ValueError("checkpointed_output_projection requires a positive log_probs_chunk_size")
     if args.optimizer == "muon":
         if not 0.0 < args.muon_momentum < 1.0:
             raise ValueError(f"muon_momentum must be between 0 and 1, got {args.muon_momentum}")
@@ -259,6 +265,8 @@ def execute(args: ScriptArgs) -> None:
     )
     if args.effective_log_probs_chunk_size > 0:
         perf_args += f"--log-probs-chunk-size {args.effective_log_probs_chunk_size} "
+    if args.checkpointed_output_projection:
+        perf_args += "--sft-checkpointed-output-projection "
     if args.recipe.recompute_loss_function:
         perf_args += "--recompute-loss-function "
 
