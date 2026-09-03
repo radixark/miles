@@ -48,7 +48,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         super().__init__(args)
         self._model_update_groups = None
         # Overwritten with "miles" when connect finds a distributed engine tail.
-        self._group_name = "miles-colocate"
+        self.group_name = "miles-colocate"
 
         for start_rank in range(0, dist.get_world_size(), self.args.rollout_num_gpus_per_engine):
             end_rank = min(start_rank + self.args.rollout_num_gpus_per_engine, dist.get_world_size())
@@ -105,16 +105,16 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
             self._is_distributed_src_rank = (
                 parallel_state.intra_dp_cp.rank == 0 and parallel_state.tp.rank == 0 and parallel_state.pp.rank == 0
             )
-            self._group_name = "miles"
+            self.group_name = "miles"
             if self._is_distributed_src_rank:
                 if (g := self._model_update_groups) is not None:
                     disconnect_rollout_engines_from_distributed(
-                        self.args, self._group_name, g, self.distributed_rollout_engines
+                        self.args, self.group_name, g, self.distributed_rollout_engines
                     )
 
                 self._model_update_groups = connect_rollout_engines_from_distributed(
                     self.args,
-                    self._group_name,
+                    self.group_name,
                     self.distributed_rollout_engines,
                     engine_gpu_counts=distributed_gpu_counts,
                 )
@@ -178,7 +178,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         )
         if self.use_distribute and self._is_distributed_src_rank:
             refs_distributed = update_weights_from_distributed(
-                self._group_name,
+                self.group_name,
                 self._model_update_groups,
                 self.distributed_rollout_engines,
                 bucket,
