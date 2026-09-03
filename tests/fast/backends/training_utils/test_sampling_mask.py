@@ -219,3 +219,40 @@ def test_zigzag_cp_response_rows_keep_global_response_indices(monkeypatch, cp_ra
     assert list(response_indices) == expected_indices
     assert tokens_chunk.tolist() == [3 + index for index in expected_indices]
     assert logits_chunk.size(0) == len(expected_indices)
+
+
+def test_zigzag_cp_log_probs_processes_discontiguous_parts_separately(monkeypatch):
+    parallel_state = SimpleNamespace(
+        tp=SimpleNamespace(rank=0, group=None),
+        cp=SimpleNamespace(rank=1, size=2),
+    )
+    monkeypatch.setattr(logit_processors, "get_parallel_state", lambda: parallel_state)
+    monkeypatch.setattr(cp_utils, "get_parallel_state", lambda: parallel_state)
+    args = SimpleNamespace(
+        qkv_format="thd",
+        rollout_temperature=1.0,
+        true_on_policy_mode=False,
+        allgather_cp=False,
+        log_probs_chunk_size=-1,
+    )
+    processed_shapes = []
+
+    def fake_calculate(logits, tokens, *_args, **_kwargs):
+        processed_shapes.append(tuple(logits.shape))
+        values = tokens.to(torch.float32)
+        return values, values + 10
+
+    monkeypatch.setattr(logit_processors, "calculate_log_probs_and_entropy", fake_calculate)
+
+    result = logit_processors.get_log_probs_and_entropy(
+        torch.arange(32, dtype=torch.float32).reshape(1, 4, 8),
+        args=args,
+        unconcat_tokens=[torch.arange(8)],
+        total_lengths=[8],
+        response_lengths=[5],
+        with_entropy=True,
+    )
+
+    assert processed_shapes == [(2, 8), (2, 8)]
+    torch.testing.assert_close(result["log_probs"][0], torch.tensor([3.0, 4.0, 5.0, 6.0]))
+    torch.testing.assert_close(result["entropy"][0], torch.tensor([13.0, 14.0, 15.0, 16.0]))
