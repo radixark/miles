@@ -21,19 +21,51 @@ from miles.utils.types import Sample
 logger = logging.getLogger(__name__)
 
 
+async def request_abort(args: Namespace) -> None:
+    """Request global termination from inference engines and agent integration.
+
+    Args:
+        args: Parsed Miles arguments for the active inference deployment.
+
+    Returns:
+        None after every inference-engine request and the agent abort hook settle.
+
+    Raises:
+        BaseException: The first worker or agent abort failure, after all abort
+            operations settle.
+    """
+    agent_abort_task = asyncio.create_task(call_agent_abort_hook(args))
+    agent_abort_result: object = None
+    try:
+        urls = await get_worker_urls(args)
+        logger.info(f"Abort request for {urls}")
+        abort_results = await asyncio.gather(
+            *[post(f"{url}/abort_request", {"abort_all": True}) for url in urls],
+            return_exceptions=True,
+        )
+    except asyncio.CancelledError:
+        agent_abort_task.cancel()
+        raise
+    finally:
+        [agent_abort_result] = await asyncio.gather(agent_abort_task, return_exceptions=True)
+        if agent_abort_task.cancelled():
+            try:
+                agent_abort_task.result()
+            except BaseException as error:
+                agent_abort_result = error
+    for result in abort_results:
+        if isinstance(result, BaseException):
+            raise result
+    if isinstance(agent_abort_result, BaseException):
+        raise agent_abort_result
+
+
 async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[list[Sample]]:
     args = state.args
 
     assert not state.aborted
     state.aborted = True
-
-    urls = await get_worker_urls(args)
-    logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
-
-    # Let the agent integration tear down its in-flight trials so they stop hitting
-    # SGLang, instead of running on until their own max_seq_len / timeout.
-    await call_agent_abort_hook(args)
+    await request_abort(args)
 
     # make sure all the pending tasks are finished
     aborted_samples = []
