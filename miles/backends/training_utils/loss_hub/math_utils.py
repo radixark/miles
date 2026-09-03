@@ -250,14 +250,94 @@ def compute_gspo_kl(
     return ppo_kl
 
 
+def compute_ctpo_prefix_kl(
+    full_log_probs: list[torch.Tensor],
+    full_old_log_probs: list[torch.Tensor],
+    local_log_probs: list[torch.Tensor],
+    loss_masks: list[torch.Tensor],
+) -> torch.Tensor:
+    """Compute CTPO-style running prefix KL, one value per token.
+
+    ``compute_policy_loss`` forms ``ratio = exp(-ppo_kl)``, so returning the running
+    sum of the per-token KL makes the importance weight the prefix product
+    ``rho_{0:t} = prod_{i<=t} rho_i`` -- the raw prefix ratio, with no length
+    normalisation. GSPO's sequence mean and GRPO's per-token term are the two other
+    reductions of the same per-token quantity.
+
+    ``old`` is whatever the caller bound as the behaviour policy; under
+    ``--use-rollout-logprobs`` that is the inference engine's own log prob, so the
+    weight is genuinely ``pi_theta / mu``.
+
+    Masked-out tokens contribute no factor: the running sum carries through them
+    unchanged, and their own positions are zeroed by the caller.
+
+    Args:
+        full_log_probs: Current policy log-probs per sample (full or CP-local).
+        full_old_log_probs: Behaviour policy log-probs per sample.
+        local_log_probs: Local log-probs, for the CP shape check.
+        loss_masks: Loss masks per sample.
+
+    Returns:
+        Concatenated per-token tensor whose value at t is the sum of the per-token
+        KL over the masked tokens up to and including t, restarting at each sample.
+    """
+    ppo_kl = []
+    for log_prob, old_log_prob, local_log_prob, loss_mask in zip(
+        full_log_probs, full_old_log_probs, local_log_probs, loss_masks, strict=False
+    ):
+        if log_prob.shape != local_log_prob.shape:
+            raise NotImplementedError(
+                "ctpo does not support context parallelism yet: a prefix sum is not "
+                "local, so the running total would have to be sliced back to this "
+                "rank's shard. Run with context-parallel size 1."
+            )
+        ppo_kl.append(torch.cumsum((old_log_prob - log_prob) * loss_mask, dim=0))
+    return torch.cat(ppo_kl, dim=0)
+
+
+def compute_ctpo_clip_band(
+    loss_masks: list[torch.Tensor],
+    eps_clip: float,
+    eps_clip_high: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-token CTPO clip band, widening as sqrt(t) along the response.
+
+    ``log rho_{0:t}`` is a sum of t token log-ratios, so its spread grows as
+    ``sqrt(t)``. A fixed band would therefore clip an ever-larger share of tokens
+    as the response runs on; scaling the band the same way holds the clip rate
+    roughly constant in t.
+
+    ``t`` counts masked-in tokens and is 1-based, so the first generated token gets
+    the base band and contributes exactly one factor to the prefix product. A
+    leading masked token would otherwise give ``t = 0`` and a zero-width band, so
+    ``t`` is floored at 1; those positions are masked out of the loss regardless.
+
+    Returns:
+        ``(eps_low, eps_high)``, concatenated to match the layout of
+        :func:`compute_ctpo_prefix_kl`.
+    """
+    eps_low, eps_high = [], []
+    for loss_mask in loss_masks:
+        scale = torch.sqrt(torch.cumsum(loss_mask, dim=0).clamp_min(1.0))
+        eps_low.append(eps_clip * scale)
+        eps_high.append(eps_clip_high * scale)
+    return torch.cat(eps_low, dim=0), torch.cat(eps_high, dim=0)
+
+
 @torch.compile(dynamic=True)
 def compute_policy_loss(
     ppo_kl: torch.Tensor,
     advantages: torch.Tensor,
-    eps_clip: float,
-    eps_clip_high: float,
+    eps_clip: float | torch.Tensor,
+    eps_clip_high: float | torch.Tensor,
     eps_clip_c: float | None = None,
 ):
+    """PPO clipped policy loss.
+
+    ``eps_clip`` / ``eps_clip_high`` are scalars for the token- and sequence-ratio
+    estimators, or per-token tensors for CTPO, whose band widens along the
+    response. ``Tensor.clamp`` is elementwise either way.
+    """
     ratio = _safe_exp_neg_ppo_kl(ppo_kl)
     pg_losses1 = -ratio * advantages
     pg_losses2 = -ratio.clamp(1 - eps_clip, 1 + eps_clip_high) * advantages

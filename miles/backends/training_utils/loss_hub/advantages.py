@@ -50,7 +50,10 @@ def compute_advantages(
         `advantages`: List length `B`; `advantages[i]` has shape `[C_i]`.
         `returns`: List length `B`; `returns[i]` has shape `[C_i]`.
     """
-    if args.advantage_estimator in ["grpo", "gspo"]:
+    # ctpo shares this path deliberately: it changes the importance weight
+    # (prefix product instead of per-token or sequence-mean ratio), not the
+    # credit assignment, so the broadcast group-normalised advantage is the same.
+    if args.advantage_estimator in ["grpo", "gspo", "ctpo"]:
         rewards = torch.tensor(rewards, dtype=torch.float32, device=kl[0].device)
         returns = get_grpo_returns(rewards, kl)
         # TODO: is the copy necessary?

@@ -14,6 +14,8 @@ from miles.backends.training_utils.loss_hub.logit_processors import get_log_prob
 from miles.backends.training_utils.loss_hub.math_utils import (
     compute_approx_kl,
     compute_ess_ratio_contribution,
+    compute_ctpo_clip_band,
+    compute_ctpo_prefix_kl,
     compute_gspo_kl,
     compute_opsm_mask,
     compute_policy_loss,
@@ -138,7 +140,7 @@ def policy_loss_function(
     old_log_probs_list = old_log_probs
 
     # Pre-gather log probs if needed by OPSM or GSPO to avoid duplicate gathering
-    need_full_log_probs = args.use_opsm or args.advantage_estimator == "gspo"
+    need_full_log_probs = args.use_opsm or args.advantage_estimator in ("gspo", "ctpo")
 
     full_log_probs = None
     full_old_log_probs = None
@@ -169,9 +171,20 @@ def policy_loss_function(
             loss_masks=batch["loss_masks"],
         )
 
-    # Compute KL divergence (GSPO uses sequence-level KL, others use per-token KL)
+    # Which reduction of the per-token KL becomes the importance weight:
+    # GSPO takes the sequence mean, CTPO the running prefix sum, others the raw
+    # per-token term.
     if args.advantage_estimator == "gspo":
         ppo_kl = compute_gspo_kl(
+            full_log_probs=full_log_probs,
+            full_old_log_probs=full_old_log_probs,
+            local_log_probs=log_probs,
+            loss_masks=batch["loss_masks"],
+        )
+        old_log_probs = torch.cat(old_log_probs, dim=0)
+        log_probs = torch.cat(log_probs, dim=0)
+    elif args.advantage_estimator == "ctpo":
+        ppo_kl = compute_ctpo_prefix_kl(
             full_log_probs=full_log_probs,
             full_old_log_probs=full_old_log_probs,
             local_log_probs=log_probs,
@@ -204,8 +217,17 @@ def policy_loss_function(
         advantages.new_zeros(()),
     )
 
+    # CTPO's band widens as sqrt(t) along the response, so the clip bounds are
+    # per-token tensors rather than scalars; Tensor.clamp is elementwise either way.
+    if args.advantage_estimator == "ctpo":
+        eps_clip, eps_clip_high = compute_ctpo_clip_band(batch["loss_masks"], args.eps_clip, args.eps_clip_high)
+        eps_clip = eps_clip.to(ppo_kl.device)
+        eps_clip_high = eps_clip_high.to(ppo_kl.device)
+    else:
+        eps_clip, eps_clip_high = args.eps_clip, args.eps_clip_high
+
     pg_loss, pg_clipfrac = compute_policy_loss(
-        ppo_kl, advantages, args.eps_clip, args.eps_clip_high, getattr(args, "eps_clip_c", None)
+        ppo_kl, advantages, eps_clip, eps_clip_high, getattr(args, "eps_clip_c", None)
     )
 
     if getattr(args, "dump_details", None) is not None:
