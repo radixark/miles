@@ -1,6 +1,5 @@
 import torch
 
-
 _FLASHINFER_TIE_BREAK_VALUES = {
     "small": 1,
     "large": 2,
@@ -8,9 +7,17 @@ _FLASHINFER_TIE_BREAK_VALUES = {
 
 
 def torch_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:
-    score, indices = torch.topk(logits, topk, dim=-1)
+    # Short sequences (< index_topk keys) are legal — the serving-side indexer
+    # clamps to the context length. torch.topk hard-errors on k > n, so clamp
+    # and pad with -1, matching the invalid-index convention below.
+    k = min(topk, logits.shape[-1])
+    score, indices = torch.topk(logits, k, dim=-1)
     indices = indices.to(torch.int32)
-    return indices.masked_fill(score == -torch.inf, -1)
+    indices = indices.masked_fill(score == -torch.inf, -1)
+    if k < topk:
+        pad = indices.new_full((*indices.shape[:-1], topk - k), -1)
+        indices = torch.cat([indices, pad], dim=-1)
+    return indices
 
 
 def flashinfer_dsa_topk(logits: torch.Tensor, topk: int) -> torch.Tensor:

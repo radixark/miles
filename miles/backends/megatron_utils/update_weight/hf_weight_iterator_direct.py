@@ -34,9 +34,11 @@ class HfWeightIteratorDirect(HfWeightIteratorBase):
         rank = dist.get_rank()
 
         if weight_type == "lora":
-            from miles_plugins.models.inkling.lora import export_inkling_lora_hf_named
+            from ..lora_utils import resolve_lora_provider
 
-            yield export_inkling_lora_hf_named(self.model)
+            provider = resolve_lora_provider(self.args)
+            export = getattr(provider, "export_lora_sglang_named", provider.export_lora_hf_named)
+            yield export(self.model)
             return
 
         for megatron_local_param_infos in tqdm(

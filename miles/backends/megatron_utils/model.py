@@ -151,14 +151,10 @@ def setup_model_and_optimizer(
         model = _setup_lora_model_via_bridge(args)
     else:
         provider_func = get_model_provider_func(args, role)
-        if (
-            is_lora_enabled(args)
-            and role == "actor"
-            and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
-        ):
-            from miles_plugins.models.inkling.lora import wrap_model_provider_with_inkling_lora
+        if is_lora_enabled(args) and role == "actor":
+            from .lora_utils import resolve_lora_provider
 
-            provider_func = wrap_model_provider_with_inkling_lora(provider_func, args)
+            provider_func = resolve_lora_provider(args).wrap_model_provider_with_lora(provider_func, args)
         model = get_model(provider_func, ModelType.encoder_or_decoder)
 
     if args.debug_disable_optimizer:
@@ -974,16 +970,13 @@ def initialize_model_and_optimizer(
         and role == "actor"
         and args.megatron_to_hf_mode != "bridge"
         and getattr(args, "lora_adapter_path", None)
-        and "inkling" in (getattr(args, "custom_model_provider_path", None) or "")
+        and not all(getattr(chunk, "_miles_lora_native_checkpoint_loaded", False) for chunk in model)
     ):
-        if (Path(args.lora_adapter_path) / "adapter_model.safetensors").exists():
-            from miles_plugins.models.inkling.lora import load_inkling_lora_adapter
+        from .lora_utils import resolve_lora_provider
 
-            load_inkling_lora_adapter(model, args.lora_adapter_path)
-            if optimizer is not None:
-                # refresh the fp32 masters, or the first step() restores the
-                # pre-load init values over the adapter we just wrote
-                optimizer.reload_model_params()
+        resolve_lora_provider(args).load_lora_adapter_hf(model, args.lora_adapter_path)
+        if (args.fp16 or args.bf16) and optimizer is not None:
+            optimizer.reload_model_params()
 
     check_peak_gpu_memory_after_load(args)
     clear_memory()

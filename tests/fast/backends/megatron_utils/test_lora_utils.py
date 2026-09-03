@@ -1,25 +1,31 @@
 """Unit tests for miles.backends.megatron_utils.lora_utils.
 
 Tests cover module name conversion, LoRA detection helpers, parameter identification,
-exclude-module parsing, and LoRA sync config building — all without GPU.
+and LoRA sync config building — all without GPU.
 """
 
 from argparse import Namespace
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+import torch
 
 from miles.backends.megatron_utils.lora_utils import (
+    _adapter_shard_name,
     _get_lora_class_name,
     _is_adapter_param_name,
+    _is_canonical_shard_writer,
     build_lora_sync_config,
     convert_target_modules_to_hf,
     convert_target_modules_to_megatron,
     is_lora_enabled,
     is_lora_weight_name,
-    parse_exclude_modules,
+    reduce_marked_lora_grads,
+    resolve_lora_provider,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME
+from miles_plugins.lora.lora import export_lora_hf_named, load_lora_adapter_hf, wrap_model_provider_with_lora
 
 # ---------------------------------------------------------------------------
 # _get_lora_class_name
@@ -272,36 +278,6 @@ class TestIsAdapterParamName:
 
 
 # ---------------------------------------------------------------------------
-# parse_exclude_modules
-# ---------------------------------------------------------------------------
-
-
-class TestParseExcludeModules:
-    def test_none(self):
-        args = Namespace(exclude_modules=None)
-        assert parse_exclude_modules(args) == []
-
-    def test_single_module_string(self):
-        args = Namespace(exclude_modules="o_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert result == ["linear_proj"]
-
-    def test_comma_separated(self):
-        args = Namespace(exclude_modules="o_proj, down_proj")
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
-
-    def test_list_input(self):
-        args = Namespace(exclude_modules=["o_proj", "down_proj"])
-        result = parse_exclude_modules(args, lora_type=_make_lora_type("LoRA"))
-        assert set(result) == {"linear_proj", "linear_fc2"}
-
-    def test_missing_attr(self):
-        args = Namespace()
-        assert parse_exclude_modules(args) == []
-
-
-# ---------------------------------------------------------------------------
 # build_lora_sync_config
 # ---------------------------------------------------------------------------
 
@@ -342,9 +318,10 @@ class TestBuildLoraSyncConfig:
             lora_alpha=8,
             lora_dropout=0.1,
             target_modules=["linear_q", "linear_k"],
+            megatron_to_hf_mode="raw",
         )
         config = build_lora_sync_config(args)
-        assert config["target_modules"] == ["q_proj", "k_proj"]
+        assert config["target_modules"] == ["k_proj", "q_proj", "v_proj"]
         assert config["r"] == 8
 
 
@@ -355,3 +332,88 @@ class TestBuildLoraSyncConfig:
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
+
+
+def _fake_model(num_layers=2, *, output_gate=False, mla=False, with_qkv=True, num_query_groups=8, q_lora_rank=1536):
+    layers = []
+    for i in range(num_layers):
+        attn = SimpleNamespace(layer_number=i + 1)
+        if with_qkv:
+            attn.linear_qkv = object()
+        layers.append(SimpleNamespace(layer_number=i + 1, self_attention=attn))
+    cfg = SimpleNamespace(
+        attention_output_gate=output_gate,
+        multi_latent_attention=mla,
+        num_query_groups=num_query_groups,
+        q_lora_rank=q_lora_rank,
+    )
+    return SimpleNamespace(config=cfg, decoder=SimpleNamespace(layers=layers))
+
+
+class TestResolveLoraProvider:
+    def test_default_is_the_plugin(self):
+        mod = resolve_lora_provider(Namespace())
+        assert mod.wrap_model_provider_with_lora is wrap_model_provider_with_lora
+        assert mod.export_lora_hf_named is export_lora_hf_named
+        assert mod.load_lora_adapter_hf is load_lora_adapter_hf
+
+    @pytest.mark.parametrize("path", ["miles_plugins.lora.lora"])
+    def test_native_provider_paths_are_imported(self, path):
+        provider = resolve_lora_provider(Namespace(lora_provider_path=path))
+        assert provider.wrap_model_provider_with_lora is wrap_model_provider_with_lora
+        assert provider.export_lora_hf_named is export_lora_hf_named
+
+    def test_module_without_protocol_is_rejected(self):
+        args = Namespace(lora_provider_path="json")
+        with pytest.raises(AssertionError, match="wrap_model_provider_with_lora"):
+            resolve_lora_provider(args)
+
+
+class TestWrapModelProvider:
+    def test_provider_args_are_forwarded_and_result_wrapped(self):
+        seen = {}
+
+        def provider(pre_process, post_process, vp_stage=None):
+            seen.update(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            return _fake_model()
+
+        calls = []
+        wrapped = wrap_model_provider_with_lora(provider, Namespace(lora_rank=8))
+        import miles_plugins.lora.lora as ln
+
+        orig = ln.apply_native_lora
+        ln.apply_native_lora = lambda m, a: calls.append((m, a)) or m
+        try:
+            out = wrapped(True, False, vp_stage=1)
+        finally:
+            ln.apply_native_lora = orig
+
+        assert seen == {"pre_process": True, "post_process": False, "vp_stage": 1}
+        assert out is calls[0][0]
+
+
+class TestAdapterShardName:
+    def test_native_name_is_ep_invariant(self):
+        """Routed experts carry no native adapter and the shared expert shards over attention TP,
+        so every EP rank holds identical state for a given (tp, pp) — one file serves them all."""
+        names = {_adapter_shard_name(1, 2, ep, ep_sharded=False) for ep in range(4)}
+        assert names == {"adapter_megatron_tp1_pp2.pt"}
+
+    def test_bridge_name_keys_on_ep(self):
+        """Bridge PEFT can attach genuinely expert-parallel adapters, so its shards differ per EP rank."""
+        assert _adapter_shard_name(1, 2, 0, ep_sharded=True) == "adapter_megatron_tp1_pp2.pt"
+        assert _adapter_shard_name(1, 2, 3, ep_sharded=True) == "adapter_megatron_tp1_pp2_ep3.pt"
+        names = {_adapter_shard_name(0, 0, ep, ep_sharded=True) for ep in range(4)}
+        assert len(names) == 4
+
+    def test_writer_election_is_a_noop_without_distributed(self):
+        assert _is_canonical_shard_writer("adapter_megatron_tp0_pp0.pt")
+
+
+class TestReduceMarkedLoraGrads:
+    def test_no_marked_params_is_a_noop_without_distributed(self):
+        chunk = torch.nn.Linear(2, 2)
+        reduce_marked_lora_grads([chunk])
+
+    def test_empty_model_list_is_a_noop(self):
+        reduce_marked_lora_grads([])

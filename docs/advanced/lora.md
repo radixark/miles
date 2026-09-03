@@ -43,7 +43,7 @@ separate from SGLang's serving-side `--sglang-lora-backend` choice.
 | Implementation | How the adapter is built | Model coverage on current `main` | Status |
 |---|---|---|---|
 | **Megatron-Bridge PEFT** | `AutoBridge` builds the provider, applies Bridge LoRA before DDP, and exports HF-named adapter tensors. Select it with `--megatron-to-hf-mode bridge`. | Qwen2.5, Qwen3, GPT-OSS, Kimi K2.5, GLM-5/5.1/5.2, and Qwen3.5/3.6, subject to the evidence and module caveats below. | General production path. Current multi-LoRA also requires this path. |
-| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and attaches model-aware adapter modules directly before DDP. | Inkling and Inkling-Small. The current implementation is an Inkling-specific integration, including custom attention, MLP, routed/shared experts, LM head, adapter import, and export. | Specialized path on current `main`; use the Inkling launcher rather than assuming `raw` works for another model. |
+| **Native / raw-mode LoRA** | Under `--megatron-to-hf-mode raw`, miles builds the model with its own Megatron provider and the `miles_plugins/lora` plugin attaches adapter modules directly before DDP. | Architecture specs cover fused GQA (Llama/Qwen families), MLA (DeepSeek/GLM/Kimi), hybrid GQA+GDN (Qwen3.5/3.6), and Inkling TML; the registry maps HF `model_type` to a spec (`miles_plugins/lora/registry.py`). | Generalized plugin path; new model enablement primarily targets it. |
 
 <Note>
 The planned maintenance direction is native-first: after the generalized native plugin
@@ -55,10 +55,16 @@ recipes during the transition; this is not an immediate Bridge deprecation.
 ### Native LoRA
 
 Native LoRA attaches adapter modules directly to raw-mode Megatron models
-instead of relying on Bridge PEFT conversion. The implementation on `main` is
-model-specific to Inkling and Inkling-Small. Generalized model-provider support
-is under development in open [PR #1792](https://github.com/radixark/miles/pull/1792)
-and is not released on `main`.
+instead of relying on Bridge PEFT conversion. The implementation lives in
+`miles_plugins/lora/`: declarative per-architecture layout specs drive
+attachment, HF/PEFT export, SGLang serving export, and MCore distributed
+checkpointing. A checkpoint resolves through its HF `model_type`; unsupported
+layouts fail at startup with a pointer to bridge mode or
+`--lora-provider-path` (a dotted module supplying a model-specific provider).
+20-rollout train/serve parity runs (`train_rollout_logprob_abs_diff` ~1e-2)
+back Qwen3, Qwen3.5 (dense and MoE), GLM-5.2, Kimi-K2.5, and Inkling-Small,
+each also covered by the `lora-native` CI suite under
+[`tests/e2e/lora_native/`](https://github.com/radixark/miles/tree/main/tests/e2e/lora_native).
 
 ## Validated models and recipes
 
@@ -73,7 +79,11 @@ full-scale experiment evidence. It is not an exhaustive model whitelist.
 | Bridge | Kimi K2.5 | Multimodal MoE + MLA | [16-node recipe](https://github.com/radixark/miles/blob/main/examples/lora/run-kimi-k25-megatron-lora.sh) | Demonstrates shared-outer expert LoRA and an INT4 rollout / fake-QAT setup. |
 | Bridge | GLM-5 / 5.1 / 5.2 744B-A40B | MoE + MLA + DSA | [GLM-5.1 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_1_744b_a40b_lora.py), [GLM-5.2 launcher](https://github.com/radixark/miles/blob/main/scripts/run_glm5_2_744b_a40b_lora.py) | CI covers reduced 6-layer / 5-layer checkpoints; historical full-744B results are described below. |
 | Bridge | Qwen3.5 / Qwen3.6 35B-A3B | Hybrid GDN + MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_qwen3_5_35b_a3b_lora.py), [Qwen3.5 E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/test_qwen3_5_35b_a3b_lora_ci.py) | Uses explicit wildcard targets to exclude MTP and vision modules. |
-| Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 4-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/megatron/model_scripts/test_inkling_small_4layer_lora_ci.py) | Current `main` model-specific native path; larger profiles are launcher/experiment evidence rather than LoRA CI. |
+| Native / raw | Qwen3 0.6B–8B | Dense GQA | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_qwen3_lora_native.py), [E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora_native/test_qwen3_0_6b_lora_native_ci.py) | Reference dense recipe for the plugin path. |
+| Native / raw | Qwen3.5 9B / 35B-A3B | Hybrid GDN, dense and MoE | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_lora_native.py), [E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora_native/test_qwen3_5_35b_a3b_lora_native_ci.py) | |
+| Native / raw | GLM-4.7-Flash, GLM-5.2 744B-A40B | MoE + MLA (+DSA) | [Launcher](https://github.com/radixark/miles/blob/main/examples/lora/run_glm5_2_744b_a40b_lora_native.py), [E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora_native/test_glm5_2_5layer_lora_native_ci.py) | CI covers the 5-layer toy; conversion must be single-rank. |
+| Native / raw | Kimi K2.5 | Multimodal MoE + MLA | [E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora_native/test_kimi_k25_2layer_lora_native_ci.py) | Dequantized BF16 base must carry no `quantization_config`. |
+| Native / raw | Inkling / Inkling-Small | Native multimodal MoE | [Launcher](https://github.com/radixark/miles/blob/main/scripts/run_inkling.py), [Inkling-Small 4-layer E2E](https://github.com/radixark/miles/blob/main/tests/e2e/lora_native/test_inkling_small_4layer_lora_native_ci.py) | Full 42-layer validated on a 4-node 32-GPU run (TP4/EP4/PP8). |
 
 ## Quick start
 

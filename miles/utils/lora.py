@@ -9,9 +9,9 @@ def is_lora_enabled(args: Namespace) -> bool:
 
 
 def lora_rollout_enabled(args: Namespace) -> bool:
-    """LoRA enabled AND the rollout side participates; false under --lora-train-only.
+    """LoRA enabled AND the rollout side participates; false under --debug-lora-train-only.
 
     Gates everything rollout-facing: SGLang's ``enable_lora``, the per-request
     ``lora_path``, and the adapter weight sync. Training-side LoRA is unaffected.
     """
-    return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
+    return is_lora_enabled(args) and not getattr(args, "debug_lora_train_only", False)
