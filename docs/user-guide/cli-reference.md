@@ -345,6 +345,8 @@ contract, session behavior, and model-family selection.
 | Flag | Type | Default | Notes |
 |---|---|---|---|
 | `--partial-rollout` | flag | off | Resume aborted rollouts in the next iteration. |
+| `--async-max-concurrent-samples` | int | – | Maximum number of trajectories generating at once in fully async mode. Unset keeps the legacy bound of one training batch (`rollout_batch_size * n_samples_per_prompt`). Must be at least `--n-samples-per-prompt`; smaller values are rejected at startup. |
+| `--async-data-buffer-capacity-factor` | float | `2.0` | Capacity of the finished-group buffer between generation and training, as a multiple of `--rollout-batch-size` (`floor(factor * rollout_batch_size)` groups). The producer blocks while the buffer is full. Must be a positive finite number that keeps at least one group; other values are rejected at startup. |
 
 ### Logging
 
