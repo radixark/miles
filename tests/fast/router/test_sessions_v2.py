@@ -21,6 +21,8 @@ from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
 from miles.rollout.session.server import SessionServer
+from miles.rollout.session.v2 import core as session_core_v2
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
 from miles.utils.misc import function_registry
@@ -48,7 +50,7 @@ def _serve_router(extra_args: dict | None = None):
             save_debug_trajectory_data=None,
             session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
             session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-            **(extra_args or {}),
+            **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
         server_obj = SessionServer(args, backend_url=backend.url)
         port = find_available_port(31000)
@@ -122,6 +124,37 @@ def test_lora_adapter_reaches_backend():
 
         assert response.status_code == 200
         assert env.backend.request_log[-1]["lora_path"] == LORA_ADAPTER_NAME
+
+
+def test_proxy_chat_postprocesses_completion_before_commit(router_env, monkeypatch):
+    calls = []
+    committed_messages = []
+    original_commit = session_core_v2.commit_generation
+
+    def postprocess(self, *, choice, assistant_message, completion_token_ids):
+        calls.append((choice, assistant_message, completion_token_ids))
+        choice["message"] = {**assistant_message, "reasoning_content": "parsed"}
+        return {**choice["message"], "_server_state": "stored"}
+
+    def commit(*args, **kwargs):
+        committed_messages.append(kwargs["assistant_message"])
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(TITOTokenizer, "postprocess_completion", postprocess)
+    monkeypatch.setattr(session_core_v2, "commit_generation", commit)
+    session_id = _create_session(router_env.url)
+
+    response = _post_chat(
+        router_env.url,
+        session_id,
+        {"messages": [{"role": "user", "content": "hook once"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["reasoning_content"] == "parsed"
+    assert len(calls) == 1
+    assert calls[0][2]
+    assert committed_messages == [{**calls[0][1], "reasoning_content": "parsed", "_server_state": "stored"}]
 
 
 def _keep_all_picker(leaf_samples, _session_metadata):
@@ -454,7 +487,7 @@ class TestTruncationAndCompaction:
         assert nodes[1]["parent"] == nodes[0]["id"]
 
 
-# ── additional R3 (in-place weight updates): request offsets on the tree ──
+# ── additional R3 (non-retract pause modes): request offsets on the tree ──
 
 
 class TestAdditionR3RequestOffsetV2:
@@ -464,8 +497,9 @@ class TestAdditionR3RequestOffsetV2:
         data = requests.get(f"{url}/sessions/{session_id}", timeout=5.0).json()
         return data["metadata"]["accumulated_token_ids"]
 
-    def test_in_place_offsets_across_turns_and_branches(self):
-        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": "in_place"}) as env:
+    @pytest.mark.parametrize("mode", ["abort", "in_place"])
+    def test_incremental_offsets_across_turns_and_branches(self, mode):
+        with _serve_router({"use_rollout_routing_replay": True, "pause_generation_mode": mode}) as env:
             session_id = _create_session(env.url)
 
             first = _post_chat(env.url, session_id, {"messages": self.MESSAGES})

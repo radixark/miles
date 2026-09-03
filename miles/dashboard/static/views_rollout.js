@@ -5,6 +5,7 @@ import { drawChart } from "./charts.js";
 
 const DEFAULT_COLUMNS = [
   "sample_index",
+  "sample_occurrence",
   "group_index",
   "raw_reward",
   "reward",
@@ -20,6 +21,14 @@ const DEFAULT_COLUMNS = [
   "adv_mean",
   "non_generation_time",
 ];
+
+function sampleHash(rolloutId, row, evaluation) {
+  const params = new URLSearchParams();
+  if (row.sample_occurrence) params.set("occurrence", String(row.sample_occurrence));
+  if (evaluation) params.set("eval", "1");
+  const query = params.toString();
+  return `#/rollout/${rolloutId}/sample/${row.sample_index}${query ? `?${query}` : ""}`;
+}
 
 // one string column so mixed-version samples stay visibly distinct
 function versionSpan(row) {
@@ -168,8 +177,7 @@ export async function renderRollout(view, meta, route) {
   ]);
 
   // -------- tabs --------
-  const openTokens = (row) =>
-    (location.hash = `#/rollout/${rolloutId}/sample/${row.sample_index}${evaluation ? "?eval=1" : ""}`);
+  const openTokens = (row) => (location.hash = sampleHash(rolloutId, row, evaluation));
 
   const samplesTab = () => {
     const scatter = el("canvas", { class: "chart", style: "height: 260px" });
@@ -182,7 +190,8 @@ export async function renderRollout(view, meta, route) {
             x: r.response_length,
             y: r[rewardKey],
             flag: Boolean(r.truncated),
-            label: `sample ${r.sample_index}\nreward=${fmtNum(r[rewardKey])} len=${r.response_length}` +
+            label: `sample ${r.sample_index}${r.sample_occurrence ? ` #${r.sample_occurrence + 1}` : ""}\n` +
+              `reward=${fmtNum(r[rewardKey])} len=${r.response_length}` +
               (r.mean_abs_lp_diff !== null ? `\n|lp diff|=${fmtNum(r.mean_abs_lp_diff)}` : ""),
             row: r,
           })),
@@ -212,7 +221,7 @@ export async function renderRollout(view, meta, route) {
           lanes: trajectories.lanes,
           consumeTs: trajectories.consume_ts,
           rowsByIndex: new Map(rows.map((r) => [r.sample_index, r])),
-          onClickSample: (index) => openTokens({ sample_index: index }),
+          onClickSample: (index) => openTokens({ sample_index: index, sample_occurrence: 0 }),
         }),
       );
     }

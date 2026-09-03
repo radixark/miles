@@ -266,6 +266,22 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
 
+            parser.add_argument(
+                "--colocate-memory-peak-device",
+                type=str,
+                choices=["cpu", "gpu"],
+                default="cpu",
+                help=(
+                    "Which device absorbs the trainer<->rollout handoff overlap. 'cpu' "
+                    "(default): each side offloads before the other onloads, so the "
+                    "engine's weight mirror and the trainer's backup briefly coexist in "
+                    "host memory. 'gpu': onload the other side first, so both sides "
+                    "briefly coexist in GPU memory instead and the two host copies never "
+                    "overlap. Use 'gpu' when host RAM is the tighter budget than the "
+                    "handoff headroom on the GPU."
+                ),
+            )
+
             reset_arg(parser, "--distributed-backend", type=str, default="nccl")
             reset_arg(parser, "--distributed-timeout-minutes", type=int, default=10)
 
@@ -2909,12 +2925,15 @@ def miles_validate_args(args):
             "tree serving."
         )
 
+    assert not (
+        args.use_session_server and args.partial_rollout
+    ), "--use-session-server does not support --partial-rollout"
+
     if args.use_session_server == "v2":
         unsupported = [
             flag
             for enabled, flag in (
                 (args.group_rm, "--group-rm"),
-                (args.partial_rollout, "--partial-rollout"),
                 (args.recompute_logprobs_via_prefill, "--recompute-logprobs-via-prefill"),
             )
             if enabled
@@ -2924,9 +2943,13 @@ def miles_validate_args(args):
                 f"--use-session-server v2 does not support {', '.join(unsupported)}; v2 returns list[Sample]"
             )
 
-    assert not (
-        args.use_session_server and args.pause_generation_mode == "abort"
-    ), "--use-session-server is incompatible with --pause-generation-mode=abort"
+    if args.use_session_server and args.use_rollout_routing_replay and args.pause_generation_mode == "retract":
+        logger.warning(
+            "--use-session-server with --use-rollout-routing-replay and "
+            "--pause-generation-mode=retract returns full R3 data on every turn; "
+            "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
+            "have known issues in SGLang and need to be fixed."
+        )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(
@@ -3226,9 +3249,6 @@ def miles_validate_args(args):
     if args.use_critic:
         if args.train_backend != "megatron":
             raise ValueError("Shared Actor/Critic PPO requires the Megatron backend")
-        assert (
-            args.megatron_to_hf_mode != "bridge"
-        ), "Critic models are not supported with --megatron-to-hf-mode bridge"
         assert not enable_experimental_ft_trainer(), (
             "Shared Actor/Critic PPO is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
             "fault-tolerant train group cannot route critic values or lifecycle options yet. "
