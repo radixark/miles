@@ -2881,6 +2881,29 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.check_rematerialize_param_from_master_weight = True
 
 
+def _resolve_checkpoint_load(args) -> None:
+    """Resolve resume versus initial-weight loading before backend initialization."""
+    checkpoint_selected = args.load is not None and (
+        getattr(args, "exit_on_missing_checkpoint", False)
+        or getattr(args, "ckpt_step", None) is not None
+        or os.path.isfile(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
+    )
+    if checkpoint_selected:
+        return
+
+    args.start_rollout_id = 0
+    if args.megatron_to_hf_mode == "bridge":
+        args.load = args.ref_load or args.hf_checkpoint
+        return
+
+    args.no_load_optim = True
+    args.no_load_rng = True
+    args.finetune = True
+    args.load = args.ref_load
+    if args.ref_ckpt_step is not None:
+        args.ckpt_step = args.ref_ckpt_step
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
@@ -3074,31 +3097,7 @@ def miles_validate_args(args):
         if args.opd_teacher_urls:
             raise ValueError("--opd-teacher-urls is set but --use-opd is not enabled. Please add --use-opd flag.")
 
-    # TODO: During loading, we need to set the start_rollout_id here.
-    if args.megatron_to_hf_mode == "bridge":
-        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
-        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
-        # Mirrors the non-bridge branch below.
-        if (
-            args.load is None
-            or not os.path.exists(args.load)
-            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-        ):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
-    else:
-        if (
-            args.load is None
-            or not os.path.exists(args.load)
-            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-        ):
-            args.no_load_optim = True
-            args.no_load_rng = True
-            args.finetune = True
-            args.load = args.ref_load
-            if args.ref_ckpt_step is not None:
-                args.ckpt_step = args.ref_ckpt_step
-            args.start_rollout_id = 0
+    _resolve_checkpoint_load(args)
 
     if args.eval_interval is not None:
         assert args.eval_datasets, "Evaluation datasets must be configured when eval_interval is set."
