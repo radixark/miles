@@ -17,9 +17,8 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
-from megatron.core.optimizer import optimizer as megatron_optimizer_module
 from megatron.core.optimizer.muon import get_megatron_muon_optimizer
-from megatron.core.optimizer.optimizer import MegatronOptimizer
+from megatron.core.optimizer.optimizer import ChainedOptimizer, MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import get_data_parallel_group_if_dtensor, get_model_config, to_local_if_dtensor
@@ -57,7 +56,35 @@ from .parallel import get_packed_seq_params
 
 logger = logging.getLogger(__name__)
 
-_get_grad_norm_fp32 = megatron_optimizer_module.get_grad_norm_fp32
+
+class _DeterministicChainedOptimizer(ChainedOptimizer):
+    @torch.no_grad()
+    def get_grad_norm(self) -> float:
+        return self._get_grad_norm_fp64()
+
+    def _get_grad_norm_for_group(self, grad_norm_group: str) -> float:
+        return self._get_grad_norm_fp64(grad_norm_group)
+
+    def _get_grad_norm_fp64(self, grad_norm_group: str | None = None) -> float:
+        if self.grads_states_parallel_group_is_shared():
+            grads_for_norm = [
+                grad
+                for optimizer in self.chained_optimizers
+                for grad in optimizer.get_grads_for_grad_norm(grad_norm_group)
+            ]
+            return _get_grad_norm_fp64(
+                grads_for_norm,
+                grad_stats_parallel_group=self.get_grad_stats_parallel_group(),
+            )
+
+        grad_norms = [
+            _get_grad_norm_fp64(
+                optimizer.get_grads_for_grad_norm(grad_norm_group),
+                grad_stats_parallel_group=optimizer.get_grad_stats_parallel_group(),
+            )
+            for optimizer in self.chained_optimizers
+        ]
+        return math.sqrt(sum(grad_norm**2 for grad_norm in grad_norms if grad_norm))
 
 
 def _get_grad_norm_fp64(
@@ -66,7 +93,9 @@ def _get_grad_norm_fp64(
     grad_stats_parallel_group: torch.distributed.ProcessGroup | None = None,
 ) -> float:
     if float(norm_type) != 2.0:
-        return _get_grad_norm_fp32(
+        from megatron.core.optimizer.optimizer import get_grad_norm_fp32
+
+        return get_grad_norm_fp32(
             grads_for_norm,
             norm_type=norm_type,
             grad_stats_parallel_group=grad_stats_parallel_group,
@@ -241,8 +270,8 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if args.deterministic_mode and config.clip_grad > 0:
-        megatron_optimizer_module.get_grad_norm_fp32 = _get_grad_norm_fp64
+    if args.deterministic_mode and config.clip_grad > 0 and isinstance(optimizer, ChainedOptimizer):
+        optimizer = _DeterministicChainedOptimizer(optimizer.chained_optimizers)
         logger.info("Using FP64 gradient norm accumulation in deterministic mode")
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):

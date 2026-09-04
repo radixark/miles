@@ -163,7 +163,7 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
-- Baseline remains normal DP and target remains FT. Both run the production collective and the default active gradient clipping path.
+- Baseline remains normal DP and target remains FT. Both run the production collective and the configured `clip_grad=1.0`; deterministic mode accumulates the L2 norm in FP64 before the standard clipping step.
 - The target trains on its own live generated data in every rollout. Baseline rollout recordings are artifacts for audit only and are never injected into the target.
 - The target runs the full crash -> retry -> heal -> weight-sync path. Rollout 2 commits on degraded DP1; rollout 3 consumes weights from that commit, heals back to DP2, and trains the target's newly generated samples.
 - Post-fault dump comparison floors `max_abs <= 3e-3` on the measured noisy gradient families only (decoder-layer QK-norms, folded `layer_norm_weight`s, and attention/MLP matrices). Embedding/output/final-norm gradients, all activations, and the fault-and-earlier rollouts keep the strict set.

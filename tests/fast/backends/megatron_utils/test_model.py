@@ -2,14 +2,18 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import torch
 
 
-def test_fp64_grad_norm_uses_high_precision_scalar_reductions(monkeypatch) -> None:
-    """Deterministic clipping must reduce the squared gradient norm in FP64."""
-    from miles.backends.megatron_utils.model import _get_grad_norm_fp64
+def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) -> None:
+    """Deterministic clipping must use FP64 without changing other optimizer instances."""
+    from megatron.core.optimizer import optimizer as megatron_optimizer_module
+    from megatron.core.optimizer.optimizer import ChainedOptimizer
+
+    from miles.backends.megatron_utils.model import _DeterministicChainedOptimizer
 
     reduced_dtypes: list[torch.dtype] = []
 
@@ -18,10 +22,21 @@ def test_fp64_grad_norm_uses_high_precision_scalar_reductions(monkeypatch) -> No
 
     monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
 
-    grad_norm = _get_grad_norm_fp64([torch.tensor([3.0, 4.0]), torch.tensor([12.0])])
+    original_grad_norm = megatron_optimizer_module.get_grad_norm_fp32
+    config = object()
+    child_optimizer = Mock(
+        config=config,
+        is_stub_optimizer=False,
+        get_grads_for_grad_norm=Mock(return_value=[torch.tensor([3.0, 4.0]), torch.tensor([12.0])]),
+        get_grad_stats_parallel_group=Mock(return_value=None),
+    )
+    original_optimizer = ChainedOptimizer([child_optimizer])
+    deterministic_optimizer = _DeterministicChainedOptimizer(original_optimizer.chained_optimizers)
 
-    assert grad_norm == 13.0
+    assert deterministic_optimizer.get_grad_norm() == 13.0
     assert reduced_dtypes == [torch.float64]
+    assert type(original_optimizer) is ChainedOptimizer
+    assert megatron_optimizer_module.get_grad_norm_fp32 is original_grad_norm
 
 
 class FakeModelChunk:
