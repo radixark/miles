@@ -40,6 +40,9 @@ def test_env_type_is_required(monkeypatch):
 def test_docker_is_refused_with_a_pointer_to_the_agent_server():
     with pytest.raises(ValueError, match="swe-agent-harbor-docker"):
         launch_common.harbor_env_vars(_args(harbor_env_type="docker"))
+    # the worker normalizes HARBOR_ENV_TYPE, so the guard must see the same value
+    with pytest.raises(ValueError, match="Docker daemon"):
+        launch_common.harbor_env_vars(_args(harbor_env_type=" Docker "))
 
 
 def test_missing_harbor_names_the_install(monkeypatch):

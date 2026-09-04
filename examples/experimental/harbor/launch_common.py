@@ -17,11 +17,14 @@ def harbor_env_vars(args) -> dict[str, str]:
     provider's credential goes by key-file PATH, its endpoint variables by
     value, on the contract every sandbox backend shares.
     """
-    if not args.harbor_env_type:
+    # normalized the same way the agent function reads it, so the guards
+    # below see the value the worker will act on
+    env_type = args.harbor_env_type.strip().lower()
+    if not env_type:
         raise ValueError(
             "set --harbor-env-type / HARBOR_ENV_TYPE (e.g. e2b, daytona): in-process trials need a sandbox backend the worker can reach"
         )
-    if args.harbor_env_type == "docker":
+    if env_type == "docker":
         raise ValueError(
             "docker needs a Docker daemon next to Trial.run(); use examples/swe-agent-harbor-docker (agent server) for it"
         )
@@ -33,7 +36,7 @@ def harbor_env_vars(args) -> dict[str, str]:
         ) from e
 
     env = {
-        "HARBOR_ENV_TYPE": args.harbor_env_type,
+        "HARBOR_ENV_TYPE": env_type,
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         "HARBOR_TRIALS_DIR": args.harbor_trials_dir,
         "AGENT_MODEL_NAME": args.agent_model_name,
@@ -42,14 +45,14 @@ def harbor_env_vars(args) -> dict[str, str]:
     }
     if args.harbor_env_kwargs:
         env["HARBOR_ENV_KWARGS"] = args.harbor_env_kwargs
-    if spec := PROVIDER_CREDENTIALS.get(args.harbor_env_type):
+    if spec := PROVIDER_CREDENTIALS.get(env_type):
         provision_provider(env, spec, arg_path=getattr(args, spec["arg_attr"], "") or "")
     else:
         # Any other Harbor backend still passes straight through; there is just
         # no credential wiring known here, so the worker environment must carry
         # whatever that provider's SDK reads.
         print(
-            f"harbor: no credential wiring known for {args.harbor_env_type!r}; "
+            f"harbor: no credential wiring known for {env_type!r}; "
             "assuming the worker environment carries the provider's credentials",
             flush=True,
         )
