@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
+from types import MethodType
 
 import torch
 from megatron.core import mpu
@@ -57,34 +58,37 @@ from .parallel import get_packed_seq_params
 logger = logging.getLogger(__name__)
 
 
-class _DeterministicChainedOptimizer(ChainedOptimizer):
-    @torch.no_grad()
-    def get_grad_norm(self) -> float:
-        return self._get_grad_norm_fp64()
+def _use_deterministic_grad_norm(optimizer: MegatronOptimizer) -> MegatronOptimizer:
+    if type(optimizer) is ChainedOptimizer:
+        optimizer.get_grad_norm = MethodType(_get_chained_grad_norm_fp64, optimizer)
+        optimizer._get_grad_norm_for_group = MethodType(_get_chained_grad_norm_fp64, optimizer)
+    return optimizer
 
-    def _get_grad_norm_for_group(self, grad_norm_group: str) -> float:
-        return self._get_grad_norm_fp64(grad_norm_group)
 
-    def _get_grad_norm_fp64(self, grad_norm_group: str | None = None) -> float:
-        if self.grads_states_parallel_group_is_shared():
-            grads_for_norm = [
-                grad
-                for optimizer in self.chained_optimizers
-                for grad in optimizer.get_grads_for_grad_norm(grad_norm_group)
-            ]
-            return _get_grad_norm_fp64(
-                grads_for_norm,
-                grad_stats_parallel_group=self.get_grad_stats_parallel_group(),
-            )
-
-        grad_norms = [
-            _get_grad_norm_fp64(
-                optimizer.get_grads_for_grad_norm(grad_norm_group),
-                grad_stats_parallel_group=optimizer.get_grad_stats_parallel_group(),
-            )
-            for optimizer in self.chained_optimizers
+@torch.no_grad()
+def _get_chained_grad_norm_fp64(
+    optimizer: ChainedOptimizer,
+    grad_norm_group: str | None = None,
+) -> float:
+    if optimizer.grads_states_parallel_group_is_shared():
+        grads_for_norm = [
+            grad
+            for child_optimizer in optimizer.chained_optimizers
+            for grad in child_optimizer.get_grads_for_grad_norm(grad_norm_group)
         ]
-        return math.sqrt(sum(grad_norm**2 for grad_norm in grad_norms if grad_norm))
+        return _get_grad_norm_fp64(
+            grads_for_norm,
+            grad_stats_parallel_group=optimizer.get_grad_stats_parallel_group(),
+        )
+
+    grad_norms = [
+        _get_grad_norm_fp64(
+            child_optimizer.get_grads_for_grad_norm(grad_norm_group),
+            grad_stats_parallel_group=child_optimizer.get_grad_stats_parallel_group(),
+        )
+        for child_optimizer in optimizer.chained_optimizers
+    ]
+    return math.sqrt(sum(grad_norm**2 for grad_norm in grad_norms if grad_norm))
 
 
 def _get_grad_norm_fp64(
@@ -270,8 +274,8 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if args.deterministic_mode and config.clip_grad > 0 and isinstance(optimizer, ChainedOptimizer):
-        optimizer = _DeterministicChainedOptimizer(optimizer.chained_optimizers)
+    if args.deterministic_mode and config.clip_grad > 0 and type(optimizer) is ChainedOptimizer:
+        optimizer = _use_deterministic_grad_norm(optimizer)
         logger.info("Using FP64 gradient norm accumulation in deterministic mode")
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):

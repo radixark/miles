@@ -13,7 +13,7 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
     from megatron.core.optimizer import optimizer as megatron_optimizer_module
     from megatron.core.optimizer.optimizer import ChainedOptimizer
 
-    from miles.backends.megatron_utils.model import _DeterministicChainedOptimizer
+    from miles.backends.megatron_utils.model import _use_deterministic_grad_norm
 
     reduced_dtypes: list[torch.dtype] = []
 
@@ -31,11 +31,23 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
         get_grad_stats_parallel_group=Mock(return_value=None),
     )
     original_optimizer = ChainedOptimizer([child_optimizer])
-    deterministic_optimizer = _DeterministicChainedOptimizer(original_optimizer.chained_optimizers)
+    original_marker = object()
+    original_optimizer.marker = original_marker
+    other_optimizer = ChainedOptimizer([child_optimizer])
 
+    class SpecializedChainedOptimizer(ChainedOptimizer):
+        pass
+
+    specialized_optimizer = SpecializedChainedOptimizer([child_optimizer])
+    deterministic_optimizer = _use_deterministic_grad_norm(original_optimizer)
+
+    assert deterministic_optimizer is original_optimizer
+    assert deterministic_optimizer.marker is original_marker
     assert deterministic_optimizer.get_grad_norm() == 13.0
     assert reduced_dtypes == [torch.float64]
-    assert type(original_optimizer) is ChainedOptimizer
+    assert other_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
+    assert _use_deterministic_grad_norm(specialized_optimizer) is specialized_optimizer
+    assert specialized_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
     assert megatron_optimizer_module.get_grad_norm_fp32 is original_grad_norm
 
 
