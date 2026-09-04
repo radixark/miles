@@ -83,6 +83,36 @@ def _gather_over_mesh(tensor: torch.Tensor, mesh) -> torch.Tensor:
     return all_gather_single_autograd(tensor, 0, mesh.get_group())
 
 
+def _census(label: str) -> None:
+    """Name what is holding device memory, by tensor shape.
+
+    Reading the code found the wrong culprit twice; this asks the runtime which
+    tensors are actually alive, aggregated by shape and dtype so the biggest
+    group identifies its own source.
+    """
+    if os.environ.get("MILES_TITAN_MEM_PROBE") != "1":
+        return
+    import collections
+    import gc
+
+    totals: dict = collections.defaultdict(lambda: [0, 0])
+    for obj in gc.get_objects():
+        try:
+            if not isinstance(obj, torch.Tensor) or not obj.is_cuda:
+                continue
+            key = (tuple(obj.shape), str(obj.dtype))
+        except Exception:
+            continue
+        entry = totals[key]
+        entry[0] += 1
+        entry[1] += obj.nbytes
+    top = sorted(totals.items(), key=lambda kv: -kv[1][1])[:5]
+    logger.info(
+        f"[mem-census] {label}: "
+        + " | ".join(f"{shape}{dtype.replace('torch.', '')} x{n} = {b / 2**30:.1f}GB" for (shape, dtype), (n, b) in top)
+    )
+
+
 def _probe(label: str) -> None:
     """One line of device memory, gated on an env var.
 
@@ -771,6 +801,8 @@ class TitanTrainer(Trainer):
         for i, name in enumerate(names):
             if i % 200 == 0:
                 _probe(f"hf_weights: unit {i} of {len(names)} (held={held} received={received})")
+            if i in (2000, 5000):
+                _census(f"hf_weights unit {i}")
             shape, dtype = specs[name]
             holders = [rank for rank in owners[name] if rank in audience_set]
             # Every holder joins the gather -- they are exactly the ranks the
