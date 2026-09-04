@@ -98,6 +98,8 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         fixed_micro_batch_size=128 if mode.has_real_rollout else None,
     )
     base += get_train_env_vars_arg(mode, deterministic=False)
+    if mode.has_real_rollout:
+        base += "--debug-deterministic-collective "
 
     if is_target:
         base += get_ft_args(mode)

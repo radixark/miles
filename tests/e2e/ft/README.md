@@ -161,6 +161,7 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
+- Baseline remains normal DP and target remains FT. Both use the fixed-tree debug collective so the comparison retains its intentional topology difference without also depending on topology-specific floating-point SUM order.
 - The fault and post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout).
 - Why inject: separate temperature-0.8 generation runs do not produce bitwise-identical sampled responses even before the fault. Injection makes the compared training inputs identical by construction without relaxing their assertions; the target still runs live generation and checks its responses against the recording.
 - Uses fixed 128-sample microbatches, one nominal DP2 shard per microbatch. On the fault rollout only, the injected batch is grouped into the baseline's two strided DP shards before delayed splitting. The normal-DP baseline computes one shard on each DP rank; the degraded DP1 retry computes those same two shards sequentially instead of dynamically repacking or regrouping all 256 samples.
