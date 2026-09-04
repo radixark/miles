@@ -1,4 +1,4 @@
-"""Unit tests for miles.backends.megatron_utils.lora_utils.
+"""Unit tests for miles.backends.megatron_utils.lora.utils.
 
 Tests cover module name conversion, LoRA detection helpers, parameter identification,
 exclude-module parsing, and LoRA sync config building — all without GPU.
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from miles.backends.megatron_utils.lora_utils import (
+from miles.backends.megatron_utils.lora.utils import (
     _get_lora_class_name,
     _is_adapter_param_name,
     build_lora_sync_config,
@@ -373,7 +373,7 @@ class TestBuildLoraSyncConfigUnderMultiLora:
     def test_a_single_adapter_on_an_inkling_checkpoint_publishes_the_shorthand(self, monkeypatch):
         """The engine was launched to auto-detect its targets, so the adapter must say the same."""
         monkeypatch.setattr(
-            "miles.backends.megatron_utils.lora_utils.sglang_lora_target_all_sentinel", lambda _a: True
+            "miles.backends.megatron_utils.lora.utils.sglang_lora_target_all_sentinel", lambda _a: True
         )
 
         assert build_lora_sync_config(self._args())["target_modules"] == "all-linear"

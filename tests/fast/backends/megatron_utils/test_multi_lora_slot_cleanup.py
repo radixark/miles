@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from miles.backends.megatron_utils.multi_lora_utils import zero_optimizer_state_for_adapter
+from miles.backends.megatron_utils.lora.slots import zero_optimizer_state_for_adapter
 
 MLL_MODULE = "megatron.bridge.peft.multi_lora_layers"
 
