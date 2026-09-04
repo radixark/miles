@@ -23,7 +23,8 @@ instead, note that E2B Cloud builds templates as a non-root user, so `RUN`
 layers needing root fail there.)
 
 ```bash
-pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
+# uv, not pip: the branch carries a uv-workspace dependency pip cannot resolve
+uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
 mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
 # the key FILE, not an exported var: this is the credential path training uses,
 # so a smoke run exercises it too (E2B_API_KEY in the env would shadow it)
