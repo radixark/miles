@@ -193,8 +193,6 @@ def reset_grad_metadata_keep_grads(model_chunks) -> None:
 def step_slot_optimizers(
     slot_optimizers: dict[int, SlotOptimizer],
     adam_params_by_slot: dict[int, dict],
-    *,
-    clip_grad: float,
 ) -> dict[int, dict]:
     """Step the requested slots in one pass; every rank returns the same per-slot
     outcome: {"grad_norm"} stepped, {"skipped_nonfinite"} dropped, {"error"} failed.
@@ -218,7 +216,7 @@ def step_slot_optimizers(
         if slot in outcomes:
             continue
         try:
-            outcomes[slot] = slot_optimizers[slot].clip_and_step(clip_grad)
+            outcomes[slot] = slot_optimizers[slot].clip_and_step(adam_params_by_slot[slot]["grad_clip_norm"])
         except Exception as error:  # noqa: BLE001
             logger.exception(f"optim step failed for slot {slot}")
             outcomes[slot] = {"error": f"{type(error).__name__}: {error}"}
