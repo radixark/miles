@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, StrictBool, StrictFloat, StrictInt, field_validator
 
-from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.pydantic_utils import FrozenStrictBaseModel, StrictBaseModel
 
 
 class CreateSessionRequest(StrictBaseModel):
@@ -17,6 +17,18 @@ class CreateSessionRequest(StrictBaseModel):
         if isinstance(value, float) and value.is_integer():
             return int(value)
         return value
+
+
+class SessionServerInstance(FrozenStrictBaseModel):
+    """One session-server instance as the driver published it."""
+
+    # ``host:port`` the driver dials.
+    addr: str
+    instance_id: str | None = None
+
+    @property
+    def url(self) -> str:
+        return f"http://{self.addr}"
 
 
 class SessionRecord(BaseModel):

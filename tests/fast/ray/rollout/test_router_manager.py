@@ -8,6 +8,7 @@ import pytest
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.router_manager import wait_router_ready, wait_session_server_ready
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.workers.worker_spec import HostAndPort, NamedHostAndPorts
 
 
@@ -108,8 +109,7 @@ class TestWaitSessionServerReady:
         await wait_session_server_ready(args)
 
         assert created == []
-        assert not hasattr(args, "session_server_addrs")
-        assert not hasattr(args, "session_server_instance_ids")
+        assert not hasattr(args, "session_server_instances")
 
     async def test_enabled_without_hf_checkpoint_raises(self):
         """Enabling the session server without a tokenizer source fails fast."""
@@ -159,11 +159,10 @@ class TestWaitSessionServerReady:
         await wait_session_server_ready(args)
 
         assert requested == ["session-server-0-0", "session-server-1-0"]
-        assert args.session_server_addrs == ["10.0.0.9:5005", "10.0.0.9:5006"]
-        assert args.session_server_instance_ids == {
-            "10.0.0.9:5005": "00112233445566aa-0",
-            "10.0.0.9:5006": "00112233445566aa-1",
-        }
+        assert args.session_server_instances == [
+            SessionServerInstance(addr="10.0.0.9:5005", instance_id="00112233445566aa-0"),
+            SessionServerInstance(addr="10.0.0.9:5006", instance_id="00112233445566aa-1"),
+        ]
         assert waited == [("10.0.0.9", 5005), ("10.0.0.9", 5006)]
 
     async def test_servers_on_different_hosts_are_each_addressed_in_full(self, monkeypatch):
@@ -196,11 +195,10 @@ class TestWaitSessionServerReady:
         )
         await wait_session_server_ready(args)
 
-        assert args.session_server_addrs == ["10.0.0.1:5005", "10.0.0.2:5005"]
-        assert args.session_server_instance_ids == {
-            "10.0.0.1:5005": "00112233445566aa-0",
-            "10.0.0.2:5005": "00112233445566aa-1",
-        }
+        assert args.session_server_instances == [
+            SessionServerInstance(addr="10.0.0.1:5005", instance_id="00112233445566aa-0"),
+            SessionServerInstance(addr="10.0.0.2:5005", instance_id="00112233445566aa-1"),
+        ]
         assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
 
     async def test_one_unreachable_instance_fails_the_whole_readiness_wait(self, monkeypatch):

@@ -75,7 +75,7 @@ def test_aborted_generation_is_not_committed(version):
 
     with with_mock_server(model_name=_MODEL, process_fn=abort_generation) as backend:
         with _serve_session(backend_url=backend.url, hf_checkpoint=_MODEL, version=version) as args:
-            session_url = f"http://{args.session_server_addrs[0]}"
+            session_url = args.session_server_instances[0].url
             session_id = requests.post(f"{session_url}/sessions", timeout=5.0).json()["session_id"]
             response = requests.post(
                 f"{session_url}/sessions/{session_id}/v1/chat/completions",

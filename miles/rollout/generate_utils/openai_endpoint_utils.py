@@ -48,17 +48,15 @@ class OpenAIEndpointTracer:
 
     @staticmethod
     async def create(args: Namespace, *, evaluation: bool = False, sampling_params: dict | None = None):
-        session_addrs = getattr(args, "session_server_addrs", None)
-        if not session_addrs:
+        instances = getattr(args, "session_server_instances", None)
+        if not instances:
             raise RuntimeError(
-                "session_server_addrs is not set. Pass --use-session-server to start the session server."
+                "session_server_instances is not set. Pass --use-session-server to start the session server."
             )
         # The only routing decision in the system: pick the owning instance once
         # per session; every later touch of the session reuses this URL.
-        session_addr = random.choice(session_addrs)
-        session_url = f"http://{session_addr}"
-        instance_ids = getattr(args, "session_server_instance_ids", None) or {}
-        session_server_instance_id = instance_ids.get(session_addr)
+        instance = random.choice(instances)
+        session_url = instance.url
         # Drop engine-only sampling fields before validating the session creation body.
         session_params = {
             key: value for key, value in (sampling_params or {}).items() if key in CreateSessionRequest.model_fields
@@ -73,7 +71,7 @@ class OpenAIEndpointTracer:
         return OpenAIEndpointTracer(
             router_url=session_url,
             session_id=session_id,
-            session_server_instance_id=session_server_instance_id,
+            session_server_instance_id=instance.instance_id,
             samples_wire_fields=samples_wire_fields,
         )
 

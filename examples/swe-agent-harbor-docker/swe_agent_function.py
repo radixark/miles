@@ -140,7 +140,8 @@ async def abort(args) -> None:
     """
     agent_server_url = os.getenv("AGENT_SERVER_URL", os.getenv("SWE_AGENT_URL"))
 
-    instance_ids = set((getattr(args, "session_server_instance_ids", None) or {}).values())
+    instances = getattr(args, "session_server_instances", None) or []
+    instance_ids = {instance.instance_id for instance in instances if instance.instance_id}
     singular = getattr(args, "session_server_instance_id", None)  # back-compat / child path
     if singular:
         instance_ids.add(singular)
