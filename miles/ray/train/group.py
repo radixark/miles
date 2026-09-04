@@ -400,8 +400,15 @@ class TrainerController:
     async def forward_only_logprobs(self, unit_id: int, data_ref) -> list:
         return await self._execute_slots("forward_only_logprobs", unit_id=unit_id, rollout_data_ref=data_ref)
 
-    async def load_slot(self, slot: int, rank: int, alpha: float) -> None:
-        await self._execute_slots("load_slot", slot=slot, rank=rank, alpha=alpha)
+    async def load_slot(
+        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+    ) -> None:
+        await self._execute_slots(
+            "load_slot", slot=slot, rank=rank, alpha=alpha, ckpt_path=ckpt_path, load_optimizer=load_optimizer
+        )
+
+    async def save_slot(self, slot: int, path: str) -> None:
+        await self._execute_slots("save_slot", slot=slot, path=path)
 
     async def unload_slot(self, slot: int) -> None:
         await self._execute_slots("unload_slot", slot=slot)
