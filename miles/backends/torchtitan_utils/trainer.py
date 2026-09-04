@@ -83,6 +83,23 @@ def _gather_over_mesh(tensor: torch.Tensor, mesh) -> torch.Tensor:
     return all_gather_single_autograd(tensor, 0, mesh.get_group())
 
 
+def _probe(label: str) -> None:
+    """One line of device memory, gated on an env var.
+
+    The weight stream is where a rank's residency peaks, and the difference
+    between a spike at conversion time and a climb across the stream is what
+    separates "the adapter materializes everything up front" from "the
+    consumer accumulates".
+    """
+    if os.environ.get("MILES_TITAN_MEM_PROBE") != "1":
+        return
+    logger.info(
+        f"[mem-probe] {label}: allocated={torch.cuda.memory_allocated() / 2**30:.2f}GB "
+        f"reserved={torch.cuda.memory_reserved() / 2**30:.2f}GB "
+        f"peak={torch.cuda.max_memory_allocated() / 2**30:.2f}GB"
+    )
+
+
 def resolve_model_spec(args: Namespace):
     """The single model entry point: ``torchtitan.models.<name>.model_registry``."""
     module_name = f"torchtitan.models.{args.titan_model_name}"
@@ -648,7 +665,7 @@ class TitanTrainer(Trainer):
 
     # --------------------------------------------------------------- weights
 
-    def hf_weights(self) -> Iterator[tuple[str, torch.Tensor]]:
+    def hf_weights(self, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
         """HF-named tensors, materialized one at a time, for the engine push.
 
         The weight transport requires every rank in an IPC gather group to
@@ -669,20 +686,22 @@ class TitanTrainer(Trainer):
             for part in self.model_parts:
                 part.cuda()
         try:
-            yield from self._hf_weights_on_device()
+            yield from self._hf_weights_on_device(complete_across_pp=complete_across_pp)
         finally:
             if offloaded:
                 for part in self.model_parts:
                     part.cpu()
                 torch.cuda.empty_cache()
 
-    def _hf_weights_on_device(self) -> Iterator[tuple[str, torch.Tensor]]:
+    def _hf_weights_on_device(self, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
         # The checkpointer only builds its adapter when checkpointing is
         # enabled; weight streaming needs the mapping regardless.
         sd_adapter = getattr(self.checkpointer, "sd_adapter", None)
         if sd_adapter is None:
             sd_adapter = self.config.model_spec.state_dict_adapter(self.model_config, self.config.hf_assets_path)
+        _probe("hf_weights: before to_hf")
         local = sd_adapter.to_hf({k: v for part in self.model_parts for k, v in part.state_dict().items()})
+        _probe("hf_weights: after to_hf")
 
         # Which ranks hold which key. Two parallelisms make the export
         # rank-partial: a pipeline stage exports only its own layers, and under
@@ -698,7 +717,9 @@ class TitanTrainer(Trainer):
         if all(meta.keys() == local_meta.keys() for meta in gathered):
             # Every rank exports the same keys: dp/tp/fsdp sharding is internal
             # to each tensor and gather_full_param resolves it.
-            for name in sorted(local):
+            for i, name in enumerate(sorted(local)):
+                if i % 200 == 0:
+                    _probe(f"hf_weights: fast path unit {i}")
                 yield name, gather_full_param(local[name])
             return
 
@@ -711,7 +732,20 @@ class TitanTrainer(Trainer):
                     raise RuntimeError(f"ranks disagree on the shape/dtype of {name}")
 
         my_rank = dist.get_rank()
-        for name in sorted(owners):
+        if not complete_across_pp:
+            # The protocol takes each pipeline stage's own slice, so a rank
+            # yields only what it holds and never receives another stage's
+            # layers. That is the difference between every rank materializing
+            # the whole model and each holding its share of it.
+            for i, name in enumerate(sorted(local)):
+                if i % 200 == 0:
+                    _probe(f"hf_weights: pp-local unit {i}")
+                yield name, gather_full_param(local[name]).contiguous()
+            return
+
+        for i, name in enumerate(sorted(owners)):
+            if i % 200 == 0:
+                _probe(f"hf_weights: owner-broadcast unit {i}")
             shape, dtype = specs[name]
             holders = owners[name]
             # Every holder joins the gather -- they are exactly the ranks the

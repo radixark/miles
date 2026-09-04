@@ -25,15 +25,17 @@ from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_group
 class TitanHfWeightIterator(HfWeightIteratorBase):
     """Streams a TitanTrainer's weights as HF-named tensors.
 
-    ``model`` is the trainer rather than a module: the trainer owns the model
-    parts and the adapter, and its ``hf_weights`` already completes the stream
-    on every rank -- dp/tp shards reassembled, pp- and ep-partial tensors
-    broadcast from their owners -- which is why every dim is forced gathered
-    regardless of what the protocol asks for. Only the tensors handed out are
-    materialized, one at a time, so a 30B never exists unsharded on a rank.
+    ``model`` is the trainer rather than a module: it owns the model parts and
+    the adapter. dp/tp/ep shards are always reassembled; whether a pipeline
+    stage's layers are broadcast to the ranks that lack them follows the
+    protocol's placement, because completing the stream on every rank means
+    every rank materializes the whole model.
     """
 
-    forced_placement = WeightUpdatePlacement(gather_pp=True)
+    # No forced placement: the protocol decides. gather_pp=True has every rank
+    # materialize the whole model, which a pipelined 30B does not survive;
+    # gather_pp=False lets each stage stream its own layers.
+    forced_placement = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -43,7 +45,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         # ``weights`` is None by contract here: the trainer reads its live parts.
         # Non-materializing ranks still walk the stream, since producing each
         # tensor is a collective every rank has to join.
-        for name, tensor in self.model.hf_weights():
+        for name, tensor in self.model.hf_weights(complete_across_pp=self.placement.gather_pp):
             if materialize:
                 yield [(name, self._to_engine_dtype(tensor))]
 
