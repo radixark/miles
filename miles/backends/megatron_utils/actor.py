@@ -197,7 +197,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
-            from miles_plugins.models.cp_utils import detect_and_setup_hybrid_cp
+            from miles_plugins.models.hf_attention import detect_and_setup_hybrid_cp
 
             for model_chunk in self.model:
                 detect_and_setup_hybrid_cp(

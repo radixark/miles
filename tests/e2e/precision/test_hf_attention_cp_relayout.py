@@ -16,7 +16,7 @@ from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 register_cuda_ci(est_time=30, suite="stage-c-4-gpu-h200", labels=["precision"])
 register_rocm_ci(est_time=60, suite="nightly-stage-c-4-gpu-mi350", labels=["precision"])
 
-from miles_plugins.models.hf_attention import _packed_shard_to_zigzag, _zigzag_to_packed_shard
+from miles_plugins.models.cp_utils import packed_shard_to_zigzag, zigzag_to_packed_shard
 
 
 def setup_dist():
@@ -74,8 +74,8 @@ def test_relayout(rank: int, world_size: int):
 
     zigzag, expected_packed_shard, cu_seqlens = _build_rank_inputs(rank, world_size, device)
 
-    packed_shard = _zigzag_to_packed_shard(zigzag, cu_seqlens, cp_group, rank, world_size)
-    roundtrip = _packed_shard_to_zigzag(packed_shard, cu_seqlens, cp_group, rank, world_size)
+    packed_shard = zigzag_to_packed_shard(zigzag, cu_seqlens, cp_group, rank, world_size)
+    roundtrip = packed_shard_to_zigzag(packed_shard, cu_seqlens, cp_group, rank, world_size)
 
     packed_ok = torch.equal(packed_shard, expected_packed_shard)
     roundtrip_ok = torch.equal(roundtrip, zigzag)
