@@ -95,6 +95,7 @@ def test_agentic_wiring_is_the_shipped_wiring():
     assert "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate" in args
     assert "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted" in args
     assert "--tito-model qwen3" in args and "--session-server-workers 4" in args
+    assert "--session-server-port 30000" in args  # the default; multi-launcher hosts pass their own
     # the miles-side paths must resolve, or every launcher fails at load_function time
     from miles.rollout.filter_hub.dynamic_sampling_filters import check_no_aborted  # noqa: F401
     from miles.rollout.generate_hub.agentic_tool_call import generate  # noqa: F401
