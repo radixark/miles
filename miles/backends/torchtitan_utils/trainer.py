@@ -767,9 +767,10 @@ class TitanTrainer(Trainer):
 
         audience_set = set(audience)
         names = [name for name in sorted(owners) if audience_set.intersection(owners[name])]
+        held = received = 0
         for i, name in enumerate(names):
             if i % 200 == 0:
-                _probe(f"hf_weights: unit {i} of {len(names)}")
+                _probe(f"hf_weights: unit {i} of {len(names)} (held={held} received={received})")
             shape, dtype = specs[name]
             holders = [rank for rank in owners[name] if rank in audience_set]
             # Every holder joins the gather -- they are exactly the ranks the
@@ -780,10 +781,17 @@ class TitanTrainer(Trainer):
             # agreed on.
             if my_rank in holders:
                 tensor = gather_full_param(local[name]).contiguous()
+                held += 1
             else:
                 tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
+                received += 1
             dist.broadcast(tensor, src=holders[0], group=broadcast_group)
             yield name, tensor
+            # Drop this generator's reference as soon as the consumer has taken
+            # the tensor: holding it until the next iteration keeps one extra
+            # full tensor alive per unit, and the consumer's bucket is the only
+            # thing that should own it.
+            del tensor
 
 
 class TrainerStepRunner:
