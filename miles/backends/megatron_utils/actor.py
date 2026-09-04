@@ -101,7 +101,6 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
-        self._indep_dp_info = indep_dp_info
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -430,9 +429,7 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             with timer("data_preprocess"):
                 rollout_data, store_get_result = get_rollout_data(
-                    self.args,
-                    rollout_data_ref,
-                    witness_info=witness_info,
+                    self.args, rollout_data_ref, witness_info=witness_info
                 )
                 stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
@@ -921,5 +918,4 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
-        self._indep_dp_info = indep_dp_info
         self.weight_updater.conn_status.mark_trainer_stale()

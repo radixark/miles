@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -126,12 +125,6 @@ class FakeController:
     def __init__(self, num_cells: int, *, pool_id: str = _POOL_ID) -> None:
         self.pool_id = pool_id
         self.expected_num_cells = num_cells
-        self.worker_hashes = {f"{pool_id}-{cell_index}": "generation-1" for cell_index in range(num_cells)}
-
-    def get_cell_statuses(self) -> dict[str, SimpleNamespace]:
-        return {
-            cell_id: SimpleNamespace(workers_hash=workers_hash) for cell_id, workers_hash in self.worker_hashes.items()
-        }
 
 
 class FakeRemoteMethod:
@@ -149,22 +142,8 @@ class FakeWorkerManager:
     def __init__(self) -> None:
         self.stopped: list[str] = []
         self.started: list[str] = []
-        self.workers_hash = "generation-1"
         self.stop_cells = FakeRemoteMethod(self.stopped)
         self.start_cells = FakeRemoteMethod(self.started)
-        self.get_cell_infos = FakeGetCellInfosRemoteMethod(self)
-
-
-class FakeGetCellInfosRemoteMethod:
-    def __init__(self, manager: FakeWorkerManager) -> None:
-        self._manager = manager
-
-    async def remote(self, *, pool_ids: list[str]) -> dict[str, SimpleNamespace]:
-        return {
-            f"{pool_id}-{cell_index}": SimpleNamespace(alive=True, workers_hash=self._manager.workers_hash)
-            for pool_id in pool_ids
-            for cell_index in range(3)
-        }
 
 
 async def _run(executor: FTTestActionControllerExecutor, manager: FakeWorkerManager, rollout_id: int) -> None:
@@ -220,26 +199,6 @@ class TestRunAfterStep:
 
         assert manager.started == ["trainer-actor-1"]
         assert manager.stopped == []
-
-    @pytest.mark.asyncio
-    async def test_start_waits_for_controller_to_observe_the_new_generation(self):
-        """A completed start action means the next rollout can see the replacement cell."""
-        controller = FakeController(num_cells=2)
-        manager = FakeWorkerManager()
-        manager.workers_hash = "generation-2"
-        action = FTTestAction(at_rollout=2, action="start_cell_at_end", cell_id="trainer-actor-1")
-        executor = FTTestActionControllerExecutor(actions=[action], controller=controller)
-
-        async def observe_generation() -> None:
-            await asyncio.sleep(0.01)
-            controller.worker_hashes["trainer-actor-1"] = "generation-2"
-
-        observation_task = asyncio.create_task(observe_generation())
-        await _run(executor, manager, 2)
-        observation_completed_before_return = observation_task.done()
-        await observation_task
-
-        assert observation_completed_before_return
 
     @pytest.mark.asyncio
     async def test_two_actions_same_rollout_both_fire(self):
