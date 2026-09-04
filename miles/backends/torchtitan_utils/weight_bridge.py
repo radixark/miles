@@ -2,9 +2,12 @@
 
 Transport, engine session, bucketing and atomic groups all live in
 ``training_utils/weight_update``; the one thing a backend supplies is an HF
-weight iterator. torchtitan's turns the trainer's DTensor shards into HF-named
-full tensors through the model's own ``state_dict_adapter.to_hf`` -- the same
-mapping its checkpointer used to load the weights, run in reverse.
+weight iterator. torchtitan's is ``TitanHfWeightIterator``, fed by
+``hf_weights``: the trainer's DTensor shards become HF-named full tensors
+through the model's own ``state_dict_adapter.to_hf`` -- the same mapping its
+checkpointer used to load the weights, run in reverse -- reassembled across
+dp/tp/ep and, when the protocol's placement asks for it, completed across
+pipeline stages, one tensor resident at a time.
 """
 
 import glob

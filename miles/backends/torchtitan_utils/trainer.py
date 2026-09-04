@@ -5,25 +5,13 @@ the entire build (spec -> config tree -> ParallelDims -> parallelize/pipelining
 -> init -> optimizers -> LR -> checkpointer -> loss wiring, including handing
 the loss to the PP schedule), and ``forward_backward_step`` already hides the
 PP/non-PP split behind one call (the seam torchtitan committed to for
-integrators in pytorch/torchtitan#3856). What miles adds here is only the RL
-coupling:
-
-* ``build_trainer_config`` -- one ``Trainer.Config`` tree from miles args. The
-  config tree is the program: the HF checkpoint load is
-  ``checkpoint.initial_load_in_hf`` (the checkpointer resolves weights from
-  ``hf_assets_path``), the RL loss is ``config.loss`` (so the trainer wires it
-  into the pipeline schedule itself), and the dataloader is an empty stub
-  because the RL loop feeds microbatches directly.
-* ``RLLossAdapter`` -- a ``BaseLoss`` whose targets are microbatch indices: the
-  schedule only transports tensors, so each target names the miles batch the
-  real loss closure runs on. One class serves train (loss + log dict) and
-  forward-only (log-prob compute) via an armed mode.
-* ``TitanTrainer`` -- the Trainer subclass. It adds nothing to construction;
-  it exposes ``step_runner()`` (the shared loop's per-optimizer-step protocol)
-  and forward-only passes, both delegating to the trainer's own
-  ``forward_backward_step`` / ``pp_schedule``.
-* ``hf_weights`` -- HF-named full tensors for the rollout engines, via the
-  family's state-dict adapter (dp/tp gathered, pp broadcast).
+integrators in pytorch/torchtitan#3856). ``TitanTrainer`` adds nothing to
+construction; it translates the shared RL loop's step-runner protocol onto
+that machinery: microbatch shaping (PP's fixed shape, CP's block alignment),
+forward-backward and forward-only passes through the trainer's own schedule,
+and the optimizer step. The rest of the coupling lives beside it: the config
+tree in ``config``, the RL loss in ``loss``, the dataloader and checkpoint
+stand-ins in ``components``, and the HF weight stream in ``weight_bridge``.
 
 Like ``megatron_utils`` with megatron.core, this module imports torchtitan at
 module scope: it is only ever imported by the torchtitan backend, where
