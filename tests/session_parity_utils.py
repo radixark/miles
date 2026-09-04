@@ -24,6 +24,7 @@ from miles.rollout.generate_hub import agentic_tool_call
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
 from miles.rollout.session.samples.codec import SamplesReply
 from miles.rollout.session.server import SessionServer
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils import http_utils
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
@@ -244,8 +245,7 @@ def _serve_session(*, backend_url: str, hf_checkpoint: str, version: str) -> Ite
         use_rollout_indexer_replay=False,
         pause_generation_mode="retract",
         session_server_ip="127.0.0.1",
-        session_server_addrs=[session_addr],
-        session_server_instance_ids={session_addr: instance_id},
+        session_server_instances=[SessionServerInstance(addr=session_addr, instance_id=instance_id)],
         save_debug_trajectory_data=None,
         custom_agent_function_path="miles.utils.test_utils.session_verify_agent.run_agent",
         partial_rollout=False,

@@ -1,6 +1,7 @@
 import logging
 
 from miles.ray.specs.inference import compute_router_pool_id, compute_session_server_instance_id
+from miles.rollout.session.types import SessionServerInstance
 from miles.utils.http_utils import wait_tcp_ready_async
 from miles.utils.workers.naming import compute_worker_name
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -48,18 +49,18 @@ async def wait_session_server_ready(args):
         (await provider.get_addrs(worker_name=compute_worker_name(pool_id="session-server", cell_index=i)))["primary"]
         for i in range(args.session_server_workers)
     ]
-    # The canonical driver-side value; rollout code picks from this list. Instances may sit on
-    # different hosts, so each one is addressed in full rather than by a port under a shared ip.
-    args.session_server_addrs = [f"{x.host}:{x.port}" for x in addrs]
+    # The canonical driver-side value; rollout code picks one instance from this
+    # list per session. Each record carries the full address -- instances may sit
+    # on different hosts -- and the instance id that replaced the per-session
+    # /health probe, so a pick never has to line up with any other structure.
+    args.session_server_instances = [
+        SessionServerInstance(
+            addr=f"{x.host}:{x.port}",
+            instance_id=compute_session_server_instance_id(args, instance_index),
+        )
+        for instance_index, x in enumerate(addrs)
+    ]
 
-    # Spawn all children before waiting on any: each child pays the ~10s
-    # transformers import, so N servers start in ~one import of wall-time.
-    instance_ids: dict[str, str] = {}
-    for instance_index, addr in enumerate(args.session_server_addrs):
-        instance_ids[addr] = compute_session_server_instance_id(args, instance_index)
-    # The per-address map OpenAIEndpointTracer.create reads instance ids from,
-    # replacing the per-session /health probe.
-    args.session_server_instance_ids = instance_ids
     for addr in addrs:
         await wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
-    logger.info(f"Session servers ready at {args.session_server_addrs} ({len(addrs)} instances)")
+    logger.info(f"Session servers ready at {[x.addr for x in args.session_server_instances]} ({len(addrs)} instances)")
