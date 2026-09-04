@@ -1,10 +1,4 @@
-"""The two torchtitan components miles swaps into the trainer's config tree.
-
-Both exist because the RL loop, not the trainer, owns the data: the
-dataloader is an empty stub since microbatches are fed directly, and the
-checkpoint manager's HF load tolerates the tied checkpoints that torchtitan's
-flavors do not model.
-"""
+"""The two torchtitan components miles swaps into the trainer's config tree."""
 
 import logging
 from dataclasses import dataclass
@@ -17,8 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmptyDataLoader(BaseDataLoader):
-    """The RL loop feeds microbatches directly; the trainer's own dataloader
-    is never iterated and checkpoints no state."""
+    """The RL loop feeds microbatches directly; this is never iterated."""
 
     @dataclass(kw_only=True, slots=True)
     class Config(BaseDataLoader.Config):
@@ -38,17 +31,12 @@ class EmptyDataLoader(BaseDataLoader):
 
 
 class TiedCheckpointManager(titan_checkpoint.CheckpointManager):
-    """CheckpointManager whose HF load survives tied checkpoints.
+    """CheckpointManager whose HF load tolerates keys the checkpoint does not ship.
 
-    torchtitan flavors qwen3_5 with a separate ``lm_head`` while the HF
-    checkpoint ties it to the embedding and ships no ``lm_head.weight``;
-    upstream ``dcp_load`` requests every exported key and dies on the missing
-    one. The from_hf branch below is upstream's, plus: keys the checkpoint
-    does not ship are dropped from the request (the adapter's ``from_hf``
-    reconstructs them), and when the dropped key is the tied lm_head on a rank
-    that owns no embedding (a PP last stage), the checkpoint's embedding is
-    requested into an lm_head-shaped skeleton so the reconstruction has a
-    source.
+    Upstream's ``dcp_load`` requests every exported key; a tied checkpoint has no
+    ``lm_head.weight``. Missing keys are left to the adapter's ``from_hf``, and a
+    rank that owns the lm_head but no embedding requests the embedding into an
+    lm_head-shaped skeleton so the reconstruction has a source.
     """
 
     @dataclass(kw_only=True, slots=True)

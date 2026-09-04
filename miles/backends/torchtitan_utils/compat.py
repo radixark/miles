@@ -1,13 +1,7 @@
 """Bridges between released torch and the torch-nightly APIs torchtitan tracks.
 
-torchtitan pins nightly torch; miles pins the torch that sglang's kernels link
-against (2.13.0 as of sglang v0.5.18), so the backend permanently straddles the
-two. Each shim here backports a small upstream torch fix and is a no-op once
-the running torch already carries the upstream form -- so bumping torch
-retires shims without code changes here.
-
-``install()`` runs before any torchtitan object is built, since two of the three
-shims patch classes torchtitan instantiates during construction.
+Each shim backports one upstream torch change and is a no-op once the running
+torch carries it. ``install()`` runs before any torchtitan object is built.
 """
 
 import inspect
@@ -23,16 +17,11 @@ def install() -> None:
 
 
 def _shim_dist_set_timeout() -> None:
-    """nightly's public ``torch.distributed.set_timeout`` on released torch.
-
-    torchtitan's ``set_pg_timeouts`` (called from its train loop after the
-    first step) uses the public name; torch 2.13.0 only has the private
-    ``_set_pg_timeout`` with the identical signature.
-    """
+    """Alias nightly's public ``torch.distributed.set_timeout`` to 2.13's ``_set_pg_timeout``."""
     import torch.distributed as dist
 
     if hasattr(dist, "set_timeout"):
-        return  # this torch already has the public API
+        return
     from torch.distributed.distributed_c10d import _set_pg_timeout
 
     dist.set_timeout = _set_pg_timeout
@@ -40,34 +29,37 @@ def _shim_dist_set_timeout() -> None:
 
 
 def _patch_pipeline_schedule_microbatch_api() -> None:
-    """Backport nightly's per-microbatch-list schedule API to released torch.
-
-    torchtitan's trainer and validator drive the pipeline schedule with
-    ``step(arg_mbs=..., kwarg_mbs=..., target_mbs=..., losses=...,
-    loss_kwargs=...)`` -- pre-split microbatch lists, which is the only shape
-    that works for packed variable-length batches. Released torch 2.13 only
-    has the whole-batch ``step(*args, **kwargs)`` (it would try to re-split
-    the lists as model inputs); its internal ``_step_microbatches`` is the
-    same code nightly's step() calls, so this patch adds the nightly signature
-    on top of it, replicating step()'s per-iteration bookkeeping.
-    """
+    """Give the pipeline schedules nightly's ``step(arg_mbs=, kwarg_mbs=, target_mbs=, ...)``
+    over 2.13's ``_step_microbatches``, replicating step()'s per-call bookkeeping."""
     import torch
 
-    # The schedule classes through torchtitan's surface: its pipeline module
-    # re-exports the torch schedules it builds, and that is the same object the
-    # trainer will call step() on.
     from torchtitan.distributed.pipeline_parallel import PipelineScheduleMulti, PipelineScheduleSingle
 
     if "arg_mbs" in inspect.signature(PipelineScheduleSingle.step).parameters:
-        return  # this torch already has the microbatch-list API
+        return
 
     def _make_step(original_step):
-        def step(self, *args, arg_mbs=None, kwarg_mbs=None, target_mbs=None, target=None,
-                 losses=None, return_outputs=True, loss_kwargs=None, **kwargs):
+        def step(
+            self,
+            *args,
+            arg_mbs=None,
+            kwarg_mbs=None,
+            target_mbs=None,
+            target=None,
+            losses=None,
+            return_outputs=True,
+            loss_kwargs=None,
+            **kwargs
+        ):
             if arg_mbs is None and kwarg_mbs is None and target_mbs is None:
                 return original_step(
-                    self, *args, target=target, losses=losses,
-                    return_outputs=return_outputs, loss_kwargs=loss_kwargs, **kwargs,
+                    self,
+                    *args,
+                    target=target,
+                    losses=losses,
+                    return_outputs=return_outputs,
+                    loss_kwargs=loss_kwargs,
+                    **kwargs,
                 )
             if (
                 self._has_backward
@@ -94,24 +86,12 @@ def _patch_pipeline_schedule_microbatch_api() -> None:
 
 
 def _patch_fsdp2_grad_accumulation_attr_error() -> None:
-    """Backport pytorch/pytorch's getattr guard in ``to_accumulated_grad_if_needed``.
-
-    torch 2.13.0's body dereferences ``self._unsharded_param`` directly, but the
-    attribute only exists between ``init_unsharded_param`` and
-    ``free_unsharded_param``: a parameter that was resharded (or never
-    all-gathered) before a second backward has no unsharded gradient to upcast,
-    and upstream's fixed body returns early for it. A pipeline schedule's
-    back-to-back backwards on non-last stages hit exactly that window and crash
-    with AttributeError on the unpatched body.
-
-    This is the one deliberate torch-internal import in the backend: the patch
-    target is torch itself (torchtitan never touches FSDPParam), so there is no
-    torchtitan surface to reach it through.
-    """
+    """Backport upstream's getattr guard in ``FSDPParam.to_accumulated_grad_if_needed``,
+    which a pipeline schedule's back-to-back backwards hit on 2.13."""
     from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
 
     if "getattr" in inspect.getsource(FSDPParam.to_accumulated_grad_if_needed):
-        return  # this torch already has the upstream fix
+        return
 
     def to_accumulated_grad_if_needed(self) -> None:
         unsharded_param = getattr(self, "_unsharded_param", None)

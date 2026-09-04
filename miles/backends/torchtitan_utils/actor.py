@@ -1,12 +1,8 @@
 """TrainRayActor over torchtitan's Trainer.
 
-miles' responsibilities end at three things: build a ``Trainer.Config`` from
-miles args and instantiate the trainer (the black box -- model construction,
-parallelisms, the PP schedule, HF checkpoint load, optimizers all live in
-torchtitan), run the shared RL flow (rollout data in -> reference/actor log
-probs -> advantages -> optimizer steps), and stream weights to the rollout
-engines. The shared loop drives the trainer through its step-runner adapter;
-this class never touches torchtitan internals.
+miles builds the config tree, instantiates the trainer, drives it through the
+shared RL loop, and streams weights to the rollout engines. Nothing here
+touches torchtitan internals.
 """
 
 import logging
@@ -61,7 +57,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         assert recv_ckpt_src_rank is None, "torchtitan backend does not support checkpoint healing"
         assert not with_opd_teacher, "torchtitan backend does not support on-policy distillation yet"
 
-        # The LR schedule's horizon is optimizer steps over the whole run.
         config = build_trainer_config(
             args,
             hf_assets_path=args.hf_checkpoint,
@@ -84,48 +79,25 @@ class TorchtitanTrainRayActor(TrainRayActor):
         self.tokenizer = assets.tokenizer
 
         self.trainer = TitanTrainer(config)
-        # CP is internal to the trainer: it gathers logits back to full length
-        # before miles' loss hub sees them (see parallel.py on why the shared
-        # helpers are told cp is 1).
         self.trainer.enable_context_parallel_gather()
         set_parallel_state(
             create_titan_parallel_state(self.trainer.parallel_dims, is_pp_last_stage=self.trainer.has_last_stage())
         )
         self.train_parallel_config = {"dp_size": get_parallel_state().intra_dp.size}
-        # Actor only: registering twice would double the manager's stream list.
         routing_replay.install(self.trainer.model_parts)
 
-        # Tracking must live on the rank that produces the training metrics:
-        # the loss (and with it ppo_kl and the train-rollout mismatch numbers)
-        # exists only on the last pipeline stage, and the shared log helpers
-        # gate on exactly this predicate. Global rank 0 is a FIRST-stage rank
-        # under PP, so keying tracking off it loses every train metric.
         state = get_parallel_state()
-        # ParallelState reports cp=1 on purpose (see parallel.py), so the shared
-        # predicate cannot tell two context-parallel peers apart and both would
-        # write every metric. Their values are identical -- the loss is taken on
-        # the gathered full sequence -- so one of them reports and the other
-        # never initializes tracking, which makes its log calls no-ops.
         cp_mesh = self.trainer.parallel_dims.get_optional_mesh("cp")
         reports = cp_mesh is None or dist.get_rank(cp_mesh.get_group()) == 0
         if reports and state.effective_dp_cp.rank == 0 and state.tp.rank == 0 and state.is_pp_last_stage:
             init_tracking(args, primary=False)
 
-        # Fresh runs fall through to the HF assets load (from_hf via the
-        # family's adapter); a resumed run finds the native checkpoint under
-        # the trainer's dump folder and restores everything, trainer.step
-        # included.
         self.trainer.checkpointer.load()
         start_rollout_id = self.trainer.step // _steps_per_rollout(args)
 
-        # Built after the actor so the two never race for HBM during init; it
-        # is CPU-offloaded, so it costs host memory rather than device memory.
         if with_ref:
             self.ref_runner = self._build_ref_runner(args)
 
-        # The shared updater owns transport, session and bucketing; torchtitan
-        # supplies only the iterator that turns its shards into HF tensors.
-        # weights_getter is None: the iterator reads the trainer's live parts.
         self.weight_updater = WeightUpdater(
             args,
             self.trainer,
@@ -144,12 +116,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
         return int(getattr(args, "start_rollout_id", None) or start_rollout_id)
 
     def _build_ref_runner(self, args: Namespace):
-        """A frozen second trainer for reference log probs.
-
-        The same black box, pointed at the reference checkpoint and
-        CPU-offloaded so the two models never both hold HBM. Its optimizer
-        never steps, so no optimizer state is ever allocated.
-        """
+        """A frozen, CPU-offloaded second trainer for reference log probs."""
         if not args.ref_load:
             raise ValueError("--ref-load is required to build a torchtitan reference model")
         ref_config = build_trainer_config(args, hf_assets_path=args.ref_load, lr_total_steps=1, dump_subdir="ref")
@@ -188,8 +155,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if self.args.debug_rollout_only or self.args.save is None:
             return
         assert not self.args.async_save, "TorchtitanTrainRayActor does not support async_save yet."
-        # last_step forces the save regardless of titan's own interval; miles
-        # decides the cadence.
         self.trainer.checkpointer.save(self.trainer.step, last_step=True)
 
     def train(
@@ -215,16 +180,12 @@ class TorchtitanTrainRayActor(TrainRayActor):
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterators, num_microbatches = get_data_iterator(self.args, self.trainer.model_parts, rollout_data)
-        # Before unwrapping: fill_replay_data resets every iterator in the list.
         routing_replay.fill(
             self.args,
             self.trainer.model_parts,
             data_iterators,
             num_microbatches,
             rollout_data,
-            # The queues describe the sequence the routers actually see, which
-            # is the trainer's, not the rollout's: padded under PP, sharded
-            # under CP.
             align=self.trainer.align_token_side_channel,
         )
         data_iterator = data_iterators[0]
@@ -233,9 +194,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         runner = self.trainer.step_runner()
 
         if self.ref_runner is not None:
-            # The reference model routes on its own weights: replaying the
-            # actor's routing into it would make the KL term measure routing
-            # rather than the policy.
             with routing_replay.stage(routing_replay.FALLTHROUGH):
                 rollout_data.update(
                     run_log_probs(
@@ -298,10 +256,6 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if dist.get_rank() == 0:
             ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
-        # weight_version stays 0 when the protocol declined the sync, which
-        # disk-delta does on its first call: that one only captures the baseline
-        # its next sync diffs against. Nothing was published, so there is no
-        # version for the engine to agree with yet.
         if self.args.ci_test and info.rollout_engines and self.weight_updater.weight_version > 0:
             engine = random.choice(info.rollout_engines)
             engine_version = ray.get(engine.get_weight_version.remote())

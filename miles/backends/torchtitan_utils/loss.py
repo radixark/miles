@@ -15,31 +15,17 @@ from torchtitan.distributed.context_parallel import cp_shard
 
 
 def _gather_over_mesh(tensor: torch.Tensor, mesh) -> torch.Tensor:
-    """All-gather along dim 0 over ``mesh``, carrying gradients.
-
-    The logit gather needs the gradient path: the loss is taken on the full
-    sequence, so each rank's shard has to get its slice of the gradient back,
-    and a plain all_gather yields a tensor with no autograd history that
-    backward then refuses. torch's functional-collectives variant gathers along
-    dim 0 only, which is why callers transpose.
-    """
+    """All-gather along dim 0 over ``mesh``, carrying gradients."""
     return all_gather_single_autograd(tensor, 0, mesh.get_group())
 
 
 class RLLossAdapter(BaseLoss):
     """Trampoline between the schedule's (pred, target) and miles' RL loss.
 
-    Targets are microbatch-index tensors: the schedule only transports
-    tensors, and the RL loss needs the whole miles batch (advantages, old log
-    probs, masks), which stays outside torchtitan. ``arm`` sets the batches
-    and closure for the next step; in eval mode the closure result is stashed
-    and a zero scalar returned (the schedule requires a loss).
-
-    Results are keyed by microbatch index rather than appended: the schedule
-    may invoke the loss outside the scheduled microbatches (its first step
-    runs a backward-metadata inference call), which upstream's pure losses
-    never notice. Keying makes those calls idempotent -- the scheduled pass
-    overwrites, and exactly one result per microbatch survives.
+    Targets carry the microbatch index; ``arm`` sets the batches and closure for
+    the next pass. In eval mode the closure result is stashed and a zero scalar
+    returned. Results are keyed by index so a repeated call for one microbatch
+    (the schedule's shape-inference pass) overwrites instead of duplicating.
     """
 
     @dataclass(kw_only=True, slots=True)
@@ -57,30 +43,12 @@ class RLLossAdapter(BaseLoss):
         self._cp_restore: dict[int, torch.Tensor] = {}
 
     def set_context_parallel(self, mesh, balancer_type: str) -> None:
-        """Gather CP-sharded logits before the RL loss sees them.
-
-        Context parallelism is internal to the trainer: miles' loss hub is
-        handed full-length logits, so the memory it needs is the same as at
-        cp=1 while attention keeps CP's shorter sequences.
-        """
         self._cp_mesh = mesh
         self._cp_balancer = balancer_type
         self._cp_restore = {}
 
     def _restore_indices(self, seq_len: int, device) -> torch.Tensor:
-        """Where each sequence position ends up, asked of torchtitan directly.
-
-        Rather than reproduce the load-balancing permutation, this shards a
-        vector of positions through the same ``cp_shard`` the trainer shards its
-        inputs with and gathers the result: slot i of the gathered logits then
-        holds position ``order[i]``, and the inverse of that is the permutation
-        to undo. Nothing here names a balancer, so torchtitan stays the single
-        source of truth for the layout.
-
-        Cached per length rather than computed once: without pipeline
-        parallelism microbatches keep their own lengths, so one permutation
-        cannot cover them all.
-        """
+        """The permutation undoing the CP balancer, derived by sharding an arange through it."""
         cached = self._cp_restore.get(seq_len)
         if cached is None:
             positions = torch.arange(seq_len, device=device).unsqueeze(0)
@@ -101,14 +69,6 @@ class RLLossAdapter(BaseLoss):
         return [self._results[i] for i in range(len(self._batches))]
 
     def _gather_context_parallel(self, pred: torch.Tensor) -> torch.Tensor:
-        """All-gather sequence-sharded logits and undo the CP permutation.
-
-        The gather has to carry gradients: the loss is taken on the full
-        sequence, so each rank's shard needs its slice of the gradient back.
-        Plain ``dist.all_gather`` produces a tensor with no autograd history
-        and ``loss.backward()`` fails on it. The functional-collectives variant
-        gathers along dim 0 only, hence the transpose.
-        """
         gathered = _gather_over_mesh(pred.transpose(0, 1).contiguous(), self._cp_mesh)
         gathered = gathered.transpose(0, 1)
         restore = self._restore_indices(gathered.shape[1], gathered.device)
@@ -118,12 +78,6 @@ class RLLossAdapter(BaseLoss):
         from torch.distributed.tensor import DTensor
 
         if isinstance(pred, DTensor):
-            # Under TP titan shards the lm_head output over the vocab dim
-            # (Shard(-1)) -- exactly the Megatron vocab-parallel dialect miles'
-            # loss hub speaks (its softmax reduces over parallel_state.tp). So
-            # the loss gets the local shard; gathering to full vocab instead
-            # would double-count the softmax denominator, shifting every
-            # log-prob by -ln(tp).
             for placement in pred.placements:
                 if not (placement.is_shard() and placement.dim in (pred.ndim - 1, -1)):
                     raise RuntimeError(
@@ -131,14 +85,9 @@ class RLLossAdapter(BaseLoss):
                     )
             pred = pred.to_local()
 
-        # After the DTensor unwrap, never before: the CP gather is a plain
-        # collective over the cp mesh, and under TP the logits arrive as a
-        # DTensor whose local shard is what actually has to be gathered.
         if self._cp_mesh is not None:
             pred = self._gather_context_parallel(pred)
 
-        # Any element identifies the batch (see _microbatch_inputs); under CP
-        # this rank holds only a slice of the target.
         index = int(target.flatten()[0])
         batch = self._batches[index]
         if self._mode == "train":

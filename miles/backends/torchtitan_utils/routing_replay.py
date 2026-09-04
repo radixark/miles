@@ -1,22 +1,10 @@
 """Rollout routing replay (R3) for the torchtitan backend.
 
-R3 makes training re-select the experts the rollout engine chose, so the
-training forward is a faithful replay of what generated the tokens. The
-mechanism is the shared ``routing_replay_manager``: a per-MoE-layer queue of
-expert ids, keyed by decoder-layer index -- the axis the rollout's
-``[tokens, layers, topk]`` tensor uses.
-
-What is torchtitan-specific is the install step. Every titan MoE model routes
-through one class, ``torchtitan.models.common.moe.TokenChoiceTopKRouter``, so a single
-rebound forward covers qwen3, qwen3_5, deepseek_v3 and the rest; the FSDP
-backend needs a per-architecture adapter table instead because it trains stock
-HF modeling, where each family has its own router module.
-
-The rebound forward is upstream's, with one substitution: the expert-selection
-``torch.topk`` becomes the manager's topk. Everything above it (gate, score
-function, expert bias, node-limited routing) and below it (score gather,
-normalization, scaling) is unchanged, so replayed routing stays differentiable
-through the gate exactly as recorded routing is.
+Training re-selects the experts the rollout engine chose, through the shared
+``routing_replay_manager``: one queue of expert ids per MoE layer, keyed by
+decoder-layer index. Every torchtitan MoE model routes through
+``TokenChoiceTopKRouter``, so one rebound forward -- upstream's, with the
+expert-selection ``torch.topk`` replaced by the manager's -- covers them all.
 """
 
 import contextlib
@@ -40,12 +28,11 @@ REPLAY_BACKWARD = "replay_backward"
 
 
 def uses_rollout_replay(args) -> bool:
-    """True when routing comes from the rollout rather than from a recording pass."""
     return bool(getattr(args, "use_rollout_routing_replay", False))
 
 
 def enable(args) -> bool:
-    """Settle manager state before the model is built, and report whether R3 is on."""
+    """Settle manager state before the model is built; returns whether R3 is on."""
     routing_replay_manager.enabled = bool(getattr(args, "use_routing_replay", False))
     routing_replay_manager.enable_check_replay_result = routing_replay_manager.enabled and args.ci_test
     routing_replay_manager.register_replay_list_func = register_replay_list_sequential
@@ -53,20 +40,13 @@ def enable(args) -> bool:
 
 
 def _local(tensor: torch.Tensor) -> torch.Tensor:
-    """This rank's shard, whether or not the tensor is distributed."""
     from torch.distributed.tensor import DTensor
 
     return tensor.to_local() if isinstance(tensor, DTensor) else tensor
 
 
 def _like(local: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
-    """Put ``local`` back into ``reference``'s distributed layout.
-
-    The expert ids are per token, so they can carry any layout that shards
-    batch or sequence, but not one that shards the expert dimension -- there is
-    no meaningful way to express a global expert id as a shard of the expert
-    axis, and silently doing it anyway would route tokens to the wrong experts.
-    """
+    """Put ``local`` back into ``reference``'s layout; expert ids cannot be sharded over experts."""
     from torch.distributed.tensor import DTensor
 
     if not isinstance(reference, DTensor):
@@ -82,11 +62,7 @@ def _like(local: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
 
 
 def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor | None = None):
-    """torchtitan TokenChoiceTopKRouter.forward with the expert-selection topk replaced.
-
-    titan routes on ``(B, L, E)`` while the manager speaks ``(tokens, experts)``,
-    so the scores are flattened for the call and the ids restored after.
-    """
+    """torchtitan's TokenChoiceTopKRouter.forward with the expert-selection topk replaced."""
     with torch.autocast(device_type=x_BLD.device.type, dtype=torch.float32):
         scores_BLE = self.gate(x_BLD)
 
@@ -101,22 +77,13 @@ def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor
     if self.num_expert_groups is not None:
         scores_for_choice_BLE = self._get_node_limited_routing_scores(scores_for_choice_BLE)
 
-    # Tensor parallelism makes the scores a DTensor, and upstream's torch.topk
-    # would return one too. The replayed ids arrive as plain tensors from the
-    # queue, so they are put back into the same layout -- gather refuses a
-    # DTensor and a plain tensor together, and unwrapping the scores instead
-    # would drop the layout for everything downstream.
     local_choice = _local(scores_for_choice_BLE)
     b, seq_len, _ = local_choice.shape
     topk_expert_ids_BLK = _like(
-        self._miles_replay_topk(local_choice.reshape(b * seq_len, -1), self.top_k).reshape(
-            b, seq_len, self.top_k
-        ),
+        self._miles_replay_topk(local_choice.reshape(b * seq_len, -1), self.top_k).reshape(b, seq_len, self.top_k),
         scores_for_choice_BLE,
     )
 
-    # The gating values come from the model's own scores, so a replayed run
-    # never reuses the rollout's probabilities -- only its expert choice.
     topk_scores_BLK = scores_BLE.gather(dim=-1, index=topk_expert_ids_BLK)
 
     if self.route_norm:
@@ -129,19 +96,14 @@ def _token_router_forward(self, x_BLD: torch.Tensor, expert_bias_E: torch.Tensor
 
 _INSTALLED_ATTR = "_miles_replay_installed"
 
-# Which parts have yet to serve the schedule's probing forward, and the stage to
-# put the manager back into once the real microbatches start.
 _initializing: dict | None = None
 
 
 def install(model_parts: list[nn.Module]) -> int:
-    """Install R3 on every TokenChoiceTopKRouter and return the number of streams.
+    """Rebind every TokenChoiceTopKRouter; returns the number of streams (0 when R3 is off).
 
-    Returns 0 without touching the model when R3 is off. Call for the actor
-    only: a second registration would double the manager's stream list and
-    invalidate every ``stream_idx``. Streams are keyed by the router's
-    decoder-layer index, taken from the module path -- a pipeline stage's
-    ``layers`` keys keep their global indices, so PP needs no special case.
+    Call for the actor only. Streams are keyed by the router's decoder-layer
+    index from the module path, which a pipeline stage keeps global.
     """
     if not routing_replay_manager.enabled:
         return 0
@@ -177,40 +139,19 @@ def install(model_parts: list[nn.Module]) -> int:
 
     indices = sorted(idx for idx, _ in routers)
     logger.info(
-        f"[titan routing_replay] registered {len(routers)} MoE layers "
-        f"(global indices {indices[0]}..{indices[-1]})"
+        f"[titan routing_replay] registered {len(routers)} MoE layers " f"(global indices {indices[0]}..{indices[-1]})"
     )
     return len(routers)
 
 
 def _is_installed(model_parts: list[nn.Module]) -> bool:
-    """Whether these parts are the ones replaying.
-
-    Only the actor's model gets routers rebound; the reference model runs its
-    own routing. Both are TitanTrainers driving the same shared manager, so the
-    replay hooks have to tell them apart.
-    """
     return routing_replay_manager.enabled and all(getattr(part, _INSTALLED_ATTR, False) for part in model_parts)
 
 
 def bypass_schedule_initialization(model_parts: list[nn.Module]) -> None:
-    """Let the schedule's metadata inference run without touching the queues.
+    """Keep the schedule's shape-inference forward and backward off the queues.
 
-    A pipeline schedule works out what its stages exchange by running one real
-    forward per stage over microbatch 0's shapes and, when the pass has a
-    backward, a backward over its outputs -- keeping only the shapes. Both reach
-    the routers, and a queue is served to whoever asks next, so they would take
-    the first entry and leave every real microbatch replaying its predecessor's
-    routing. Adjacent microbatches share a prompt prefix, which is why the
-    damage read as "the prompt replays correctly and the response does not".
-
-    The whole window is bypassed rather than a counted number of calls: under
-    activation checkpointing the probing backward consumes as well, which is
-    what bypassing only the forward left misaligned. The window ends at the
-    first forward after every part has been probed, which is microbatch 0.
-
-    Torch repeats the inference on every eval-to-train switch, so this happens
-    twice per rollout rather than once per job.
+    The window ends at the first forward after every part has been probed.
     """
     global _initializing
     if not _is_installed(model_parts):
@@ -232,22 +173,11 @@ def _end_initialization() -> None:
 
 @contextlib.contextmanager
 def consumption_guard(model_parts: list[nn.Module], expected: int):
-    """Assert the pass read exactly one queue entry per microbatch.
-
-    The replay is only correct if entry k is read by microbatch k, and nothing
-    in the mechanism enforces it: a stray forward shifts every later lookup
-    silently. This turns that shift into a failure in the pass that caused it.
-
-    The queues are filled once per rollout and read across its optimizer steps,
-    so what a single pass can be held to is the *advance*, not the position.
-    """
+    """Assert the pass advanced every stream by exactly ``expected`` microbatches."""
     if not _is_installed(model_parts):
         yield
         return
-    before = {
-        id(replay): (replay.forward_index, replay.backward_index)
-        for replay in routing_replay_manager.replays
-    }
+    before = {id(replay): (replay.forward_index, replay.backward_index) for replay in routing_replay_manager.replays}
     try:
         yield
     finally:
@@ -260,8 +190,6 @@ def consumption_guard(model_parts: list[nn.Module], expected: int):
                 f"routing replay stream {replay.stream_idx} advanced {advance} times over a pass "
                 f"of {expected} microbatches; the queues no longer line up with the microbatches"
             )
-        # Activation checkpointing recomputes each block once per microbatch,
-        # off a second cursor; without it nothing reads that cursor at all.
         recompute = replay.backward_index - backward_before
         if recompute not in (0, expected):
             raise RuntimeError(
@@ -272,35 +200,17 @@ def consumption_guard(model_parts: list[nn.Module], expected: int):
 
 
 def _bracket_real_forward(part: nn.Module) -> None:
-    """Make a model part's own forward draw from the forward cursor.
-
-    The manager keeps two cursors over the same recorded routing: a training
-    step runs under ``replay_backward`` so that activation-checkpoint recompute
-    -- which re-runs each *block* during backward -- has its own cursor, while
-    the step's real forward must still read the forward cursor. Bracketing the
-    top-level forward separates them: recompute happens inside backward, i.e.
-    outside this call, and keeps the backward cursor. Without this both draw
-    from the backward cursor and it advances twice per microbatch.
-
-    Only ``replay_backward`` is promoted; ``fallthrough`` (the reference model)
-    and ``record`` must reach the routers unchanged.
-
-    ``functools.wraps`` is load-bearing, not cosmetic: callers introspect the
-    model's forward signature to decide which family kwargs to pass (qwen3_5
-    dereferences ``special_tokens`` unconditionally), and a bare
-    ``*args, **kwargs`` wrapper hides those parameters.
-    """
+    """Run the part's own forward on the forward cursor even inside a ``replay_backward`` step,
+    leaving activation-checkpoint recompute on the backward cursor. ``functools.wraps`` keeps
+    the forward signature visible to callers that introspect it."""
     inner = part.forward
 
     @functools.wraps(inner)
     def forward(*args, **kwargs):
         if _initializing is not None:
             if id(part) in _initializing["unprobed"]:
-                # The schedule's probing forward; its backward follows, and both
-                # run with the manager already in fallthrough.
                 _initializing["unprobed"].discard(id(part))
                 return inner(*args, **kwargs)
-            # Every part has been probed, so this is microbatch 0.
             _end_initialization()
         if routing_replay_manager.stage == REPLAY_BACKWARD:
             with stage(REPLAY_FORWARD):
@@ -311,20 +221,11 @@ def _bracket_real_forward(part: nn.Module) -> None:
 
 
 def fill(args, model_parts, data_iterators, num_microbatches, rollout_data, align=None) -> None:
-    """Load the rollout's routing into the per-layer replay queues.
+    """Load the rollout's routing into the replay queues.
 
-    Takes the iterator list rather than a single iterator: ``fill_replay_data``
-    resets every element and reads through element 0, so call before the caller
-    unwraps it.
-
-    ``align`` is the trainer's own reshaping of a per-token channel, applied to
-    every queued entry. The queues are filled from the rollout at each
-    microbatch's natural length, while the routers see whatever the trainer
-    hands the model: padded to one shape under pipeline parallelism, and then
-    sharded across the cp mesh under context parallelism. Routing that skipped
-    either step is read at positions the model is not looking at. Padding is
-    -1, which the replay manager already treats as padding (it substitutes
-    arange so the lookup stays in range) and which the loss never reads.
+    Takes the iterator list because ``fill_replay_data`` resets every element.
+    ``align`` reshapes each queued entry the way the trainer reshapes its input;
+    padding is -1, which the manager already treats as padding.
     """
     if not uses_rollout_replay(args):
         return
@@ -350,43 +251,25 @@ def fill(args, model_parts, data_iterators, num_microbatches, rollout_data, alig
 
 
 def log_prob_stage(args) -> str:
-    """Stage for the actor log-prob pass.
-
-    Rollout replay consumes the queues filled from the rollout; the
-    record-then-replay variant has nothing to consume yet and records instead.
-    """
     if not routing_replay_manager.enabled:
         return FALLTHROUGH
     return REPLAY_FORWARD if uses_rollout_replay(args) else RECORD
 
 
-class stage:
-    """Run a block with the replay manager in ``name``, restoring it after.
-
-    Nesting a ``replay_forward`` forward inside a ``replay_backward`` step is
-    what lets activation-checkpoint recompute draw from the independent
-    backward cursor.
-    """
-
-    def __init__(self, name: str):
-        self.name = name
-        self._previous: str | None = None
-
-    def __enter__(self):
-        self._previous = routing_replay_manager.stage
-        routing_replay_manager.stage = self.name
-        return self
-
-    def __exit__(self, *exc):
-        routing_replay_manager.stage = self._previous
-        return False
+@contextlib.contextmanager
+def stage(name: str):
+    """Run a block with the replay manager in ``name``, restoring the previous stage after."""
+    previous = routing_replay_manager.stage
+    routing_replay_manager.stage = name
+    try:
+        yield
+    finally:
+        routing_replay_manager.stage = previous
 
 
 def rewind() -> None:
-    """Return the forward cursors to the head of their queues."""
     routing_replay_manager.clear_all_forward()
 
 
 def reset() -> None:
-    """Drop the recorded routing once the rollout is done training."""
     routing_replay_manager.clear_all()

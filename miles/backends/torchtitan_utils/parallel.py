@@ -1,11 +1,9 @@
 """Translate torchtitan's ParallelDims into miles' shared ParallelState.
 
-ParallelState is what every shared helper in ``training_utils`` reads (data
-iteration, loss normalization, logging), so a backend's only topology
-responsibility is producing one. torchtitan owns all mesh construction --
-``ParallelDims.from_config`` (with ``data_parallel_shard_degree=-1`` inferring
-the FSDP degree) builds the dims, and this module is a pure mapping over the
-named meshes it exposes.
+torchtitan owns all mesh construction; this is a mapping over the named meshes
+it exposes. Context parallelism is deliberately absent: the trainer shards the
+sequence and gathers the logits back before the loss, so the shared helpers are
+told cp=1 and reduce metrics over the sample-parallel ("batch") mesh.
 """
 
 import logging
@@ -18,15 +16,6 @@ from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 logger = logging.getLogger(__name__)
 
-# titan mesh name -> miles ParallelState field. titan's "batch" mesh is
-# dp_replicate x dp_shard, the sample-parallel view.
-#
-# Context parallelism is deliberately absent: it stays internal to the trainer,
-# which shards the sequence itself and gathers the logits back before the loss
-# sees them. So the shared helpers must believe cp is 1 -- they would otherwise
-# slice the rollout a second time (in get_batch) and reduce metrics over ranks
-# that hold identical values. That is also why intra_dp_cp maps to "batch"
-# rather than titan's "loss" mesh, which folds cp in.
 _MESH_TO_FIELD = {
     "batch": "intra_dp",
     "tp": "tp",
@@ -36,21 +25,13 @@ _MESH_TO_FIELD = {
 
 
 def parallel_dims_from_config(parallelism_config):
-    """torchtitan's own dims construction, exactly as Trainer.init_distributed does it."""
     from torchtitan.distributed import ParallelDims
 
     return ParallelDims.from_config(parallelism_config, dist.get_world_size())
 
 
 def _gloo_subgroup(my_ranks: list[int]):
-    """A gloo subgroup over exactly ``my_ranks``.
-
-    Object-based reductions over the DP-CP group need gloo, and the shared
-    helpers use it even when the group is this rank alone (model parallelism
-    can shrink DP-CP to 1). ``new_group`` is a collective every rank must join
-    for every subgroup, so the groups are enumerated globally: each rank
-    contributes its own member list and all ranks create all distinct groups.
-    """
+    """A gloo subgroup over ``my_ranks``; every rank joins every distinct group's creation."""
     if len(my_ranks) == dist.get_world_size():
         return get_gloo_group()
 
@@ -65,13 +46,10 @@ def _gloo_subgroup(my_ranks: list[int]):
 
 
 def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True) -> ParallelState:
-    """Map titan's meshes onto ParallelState.
+    """Map titan's meshes onto ParallelState; a degree-1 axis becomes a single-rank group.
 
-    Axes titan leaves at degree 1 have no mesh; they become trivial single-rank
-    groups, which is what the shared helpers expect for a disabled dimension.
-    ``is_pp_last_stage`` comes from the trainer's stage placement (interleaved
-    schedules can place the last stage on any rank), and gates whose ranks
-    report loss metrics and log probs.
+    The sample-parallel group carries a gloo group even at degree 1, because the
+    shared log gathering reduces over it unconditionally.
     """
     rank = dist.get_rank()
     self_group = dist.new_group([rank])
@@ -81,11 +59,6 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
     for mesh_name, field in _MESH_TO_FIELD.items():
         mesh = parallel_dims.get_optional_mesh(mesh_name)
         if mesh is None:
-            # titan builds no mesh for a degree-1 axis. The sample-parallel one
-            # still needs a gloo group even when it is this rank alone -- the
-            # shared log gathering reduces over it unconditionally, and a None
-            # group fails with "Group None is not registered". Model parallelism
-            # alone (tp x pp filling the world) puts us here.
             fields[field] = (
                 GroupInfo(rank=0, size=1, group=self_group, gloo_group=_gloo_subgroup([rank]))
                 if field == "intra_dp"
@@ -98,12 +71,8 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
             rank=dist.get_rank(group=group),
             size=dist.get_world_size(group=group),
             group=group,
-            # Shared helpers reduce metrics over the DP-CP group, and some of
-            # those reductions are object-based, which needs a gloo group --
-            # a degree-1 DP-CP included (log gathering runs regardless).
             gloo_group=_gloo_subgroup(member_ranks) if field == "intra_dp" else None,
         )
-    # The metric-reduction axis is the sample-parallel one (see _MESH_TO_FIELD).
     fields["intra_dp_cp"] = fields["intra_dp"]
 
     meshes = {name: parallel_dims.get_mesh(name) for name in ("fsdp",) if parallel_dims.get_optional_mesh(name)}
@@ -115,7 +84,6 @@ def create_titan_parallel_state(parallel_dims, *, is_pp_last_stage: bool = True)
         tp=fields["tp"],
         pp=fields["pp"],
         ep=fields["ep"],
-        # titan has no separate expert-tensor axis; its EP region uses "efsdp".
         etp=trivial,
         indep_dp=trivial,
         meshes=meshes,
