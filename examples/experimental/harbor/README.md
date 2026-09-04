@@ -28,7 +28,8 @@ required for TITO (see the agent function's header for the full list) —
 with the extra for your backend:
 
 ```bash
-pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
+# uv, not pip: the branch carries a uv-workspace dependency pip cannot resolve
+uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
 # or harbor[daytona], harbor[modal], ...
 ```
 
