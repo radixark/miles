@@ -178,7 +178,7 @@ def execute(args: ScriptArgs):
     )
 
     extra_env_vars = {
-        "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), U.repo_base_dir]),
+        "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), str(U.repo_base_dir)]),
         **harbor_env_vars(args),
     }
     if args.miles_host_ip:
