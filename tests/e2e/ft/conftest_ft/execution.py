@@ -66,6 +66,7 @@ def get_common_train_args(
     num_steps: int | None = None,
     enable_dumper: bool = True,
     debug_rollout_data_dir: str | None = None,
+    fixed_micro_batch_size: int | None = None,
 ) -> str:
     ckpt_args = (
         f"--hf-checkpoint {_MODEL_DIR}/{mode.model_name} " f"--ref-load {_MODEL_DIR}/{mode.model_name}_torch_dist "
@@ -115,6 +116,11 @@ def get_common_train_args(
 
     event_logger_args = f"--save-debug-event-data {dump_dir}/events "
 
+    batching_args = (
+        "--use-dynamic-batch-size --max-tokens-per-gpu 32768 "
+        if fixed_micro_batch_size is None
+        else f"--micro-batch-size {fixed_micro_batch_size} "
+    )
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -124,8 +130,7 @@ def get_common_train_args(
         f"--actor-num-gpus-per-node {mode.train_gpus_per_node} "
         f"--global-batch-size 256 "
         "--delay-split-train-data-by-dp "
-        "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 32768 "
+        f"{batching_args}"
         "--moe-token-dispatcher-type alltoall "
         "--advantage-estimator grpo "
         "--eps-clip 0.2 "

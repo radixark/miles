@@ -42,6 +42,20 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
 
 
+def test_real_rollout_uses_one_nominal_dp_shard_per_microbatch() -> None:
+    """The degraded retry must retain the baseline DP shard as its accumulation unit."""
+    args = _build_target_args(
+        MODES["dp2_cp2_real_rollout_dense"],
+        "/tmp/target/phase_b",
+        enable_dumper=False,
+    )
+
+    tokens = shlex.split(args)
+    assert _option_value(args, "--micro-batch-size") == "128"
+    assert "--use-dynamic-batch-size" not in tokens
+    assert "--max-tokens-per-gpu" not in tokens
+
+
 def test_baseline_remains_normal_dp_while_target_uses_ft() -> None:
     """The comparison must retain its intentional normal-DP versus FT contract."""
     mode = MODES["dp2_cp2_real_rollout_dense"]
