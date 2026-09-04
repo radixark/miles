@@ -16,7 +16,7 @@ from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
 from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
-from .model_provider import LinearForLastLayer
+from .value_head import LinearForLastLayer
 
 try:
     # Here we patch out the `validate_non_overlapping_shards_metadata` in both functions
@@ -184,11 +184,13 @@ def _is_megatron_checkpoint(path: str | Path) -> bool:
 
 @contextmanager
 def _hide_critic_value_head_from_hf_load(ddp_model):
+    chunks = unwrap_model(ddp_model)
+    is_critic = getattr(chunks[0], "role", None) == "critic"
     value_heads = [
         (chunk, name, head)
-        for chunk in unwrap_model(ddp_model)
+        for chunk in chunks
         for name, head in chunk.named_children()
-        if isinstance(head, LinearForLastLayer)
+        if is_critic and isinstance(head, LinearForLastLayer)
     ]
     for chunk, name, _ in value_heads:
         delattr(chunk, name)
