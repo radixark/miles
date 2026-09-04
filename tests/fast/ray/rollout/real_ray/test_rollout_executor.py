@@ -375,7 +375,7 @@ class TestCheckpointWithoutARolloutFunction:
         import miles.ray.rollout.rollout_executor as rexec
 
         monkeypatch.delenv("MILES_USE_LEGACY_ROLLOUT_V1", raising=False)
-        recorder = _RecordingEventLoggerCheckpoint()
+        recorder = MagicMock()
         monkeypatch.setattr(rexec, "event_logger_checkpoint", recorder)
         args = _make_test_args(load_debug_rollout_data="/nonexistent/rollout_{rollout_id}.pt")
 
@@ -385,7 +385,7 @@ class TestCheckpointWithoutARolloutFunction:
         executor.save(6)
 
         executor.data_source.save.assert_called_once_with(6)
-        assert recorder.snapshots == [(args, 6)]
+        recorder.snapshot.assert_called_once_with(args, 6)
 
     async def test_an_absent_train_rollout_function_is_not_replaced_by_the_eval_one(
         self,

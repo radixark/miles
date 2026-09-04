@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import ray
 
-from miles.utils.misc import get_current_node_ip, get_free_port
+from miles.utils.misc import get_free_port
 from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
 
 logger = logging.getLogger(__name__)
