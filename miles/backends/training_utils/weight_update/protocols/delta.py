@@ -7,7 +7,7 @@ import queue
 import shutil
 from argparse import Namespace
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -17,14 +17,14 @@ import torch
 import torch.distributed as dist
 import zstandard
 from ray.actor import ActorHandle
-from tqdm import tqdm
 
-from miles.backends.training_utils.parallel import get_parallel_state
+from miles.backends.training_utils.parallel import ParallelState
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
+from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
+from miles.backends.training_utils.weight_update.session import check_weight_sync_results
+from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
 from miles.utils.disk_delta import NUM_WORKERS, checksum, make_tensor_reader, overwrite_encode
 from miles.utils.distributed_utils import get_gloo_group
-
-from ..common import _check_weight_sync_results
-from .mixin import DistBucketedWeightUpdateMixin
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _safetensors_dtype(dtype: torch.dtype) -> str:
         raise ValueError(f"Disk-delta does not support trainer tensor dtype {dtype}") from None
 
 
-class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
+class UpdateWeightFromDiskDelta(WeightTransferProtocol):
     """
     Delta weight sync over a shared filesystem. Source ranks diff each gathered HF tensor against
     a CPU snapshot of the previous sync and publish the changes as a canonical HF checkpoint dir;
@@ -75,24 +75,14 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
     talks to one endpoint per engine, so multi-node serving needs nothing extra.
     """
 
-    def __init__(
-        self,
-        args: Namespace,
-        model: Sequence[torch.nn.Module],
-        weights_getter: Callable[[], Mapping[str, torch.Tensor]],
-        *,
-        model_name: str,
-        quantization_config: dict[str, int | str | list[str]] | None,
-        is_lora: bool = False,
-    ) -> None:
-        assert not is_lora, "LoRA weight sync is not supported for disk-delta weight transfer."
-        self.args = args
-        self.model = model
-        self.model_name = model_name
-        self.quantization_config = quantization_config
-        self.weight_version = 0
-        self.rollout_engines: Sequence[ActorHandle] | None = None
-        self._connection_stale: bool = False
+    # The transport is asynchronous by design: the engine-side apply is serialized by a
+    # per-host flock behind /pull_weights and the reload pauses each engine itself, so
+    # the sync never runs inside the pause/begin session frame.
+    use_weight_update_session = False
+
+    def __init__(self, args: Namespace) -> None:
+        super().__init__(args)
+        self._pool: ThreadPoolExecutor | None = None
         self.delta_dir = args.update_weight_disk_dir
         os.makedirs(self.delta_dir, exist_ok=True)
         self.delta_encoding = args.update_weight_delta_encoding
@@ -107,53 +97,66 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             from miles.utils.misc import load_function
 
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
-        self._init_lora(
-            args=args,
-            model=model,
-            model_name=model_name,
-            quantization_config=quantization_config,
-            is_lora=is_lora,
-        )
 
-    def is_rollout_engines_fresh(self) -> bool:
-        return self.rollout_engines is not None and not self._connection_stale
-
-    def mark_engine_connection_stale(self) -> None:
-        self._connection_stale = True
-
-    def connect_rollout_engines(
+    def connect(
         self,
         rollout_engines: Sequence[ActorHandle],
-        rollout_engine_lock: ActorHandle,
-        engine_gpu_counts: Sequence[int] | None = None,
-        engine_gpu_offsets: Sequence[int] | None = None,
+        rollout_engine_lock: ActorHandle | None,
+        engine_gpu_counts: Sequence[int] | None,
+        engine_gpu_offsets: Sequence[int] | None,
+        parallel_state: ParallelState,
+        placement: WeightUpdatePlacement,
+        selector: str,
     ) -> None:
         # No NCCL groups: the transport is the shared filesystem. The rollout_engine_lock the
         # NCCL path uses isn't needed either — the engine-side apply is serialized by a per-host
         # flock behind /pull_weights.
         self.rollout_engines = rollout_engines
         self._connection_stale = False
-        self._group_name = "miles-disk-delta"
+        self.group_name = "miles-disk-delta"
+        replica_rank, _ = get_data_replica_rank_and_size(parallel_state, placement)
+        self.is_sender = replica_rank == 0
 
-    @property
-    def _is_source(self):
-        """If it's the source gpu producing the gathered HF tensors this rank publishes."""
-        return get_parallel_state().intra_dp_cp.rank == 0 and get_parallel_state().tp.rank == 0
-
-    @torch.no_grad()
-    def update_weights(self) -> None:
+    def begin_sync(self, weight_version: int, iter_buckets) -> bool:
         # The first call only captures the baseline snapshot the next sync diffs against.
         if not self._baseline_captured:
-            self._capture_baseline()
+            self._capture_baseline(iter_buckets)
             self._baseline_captured = True
-            return
+            return False
+        self._begin_encode(weight_version)
+        return True
 
-        self.weight_version += 1
-        self._publish()
-        self._reload_engines()
-        self._record_metrics()
+    def send_bucket(self, bucket: list[tuple[str, torch.Tensor]]) -> None:
+        """Submit each tensor of the bucket to the diff/compress pool (pipelined with the gather)."""
+        for name, tensor in bucket:
+            flat = tensor.detach().contiguous().view(torch.uint8).reshape(-1)
+            nbytes = int(flat.numel())
+            if self._use_pinned and nbytes <= self._max_bytes:
+                buf = self._free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
+                buf[:nbytes].copy_(flat, non_blocking=True)
+                torch.cuda.current_stream().synchronize()
+                payload, pinned = buf, True
+            else:
+                payload, pinned = flat.cpu().numpy(), False
+            self.total_bytes += nbytes
+            self._inflight.append(self._pool.submit(self._diff_and_compress, name, payload, nbytes, pinned))
+            if len(self._inflight) >= 2 * NUM_WORKERS:
+                self._collect(self._inflight.popleft())
 
-    def _capture_baseline(self) -> None:
+    def after_base_weights(self) -> None:
+        """Drain the in-flight diff/compress work and shut the pool down."""
+        while self._inflight:
+            self._collect(self._inflight.popleft())
+        self._pool.shutdown()
+        self._pool = None
+
+    def finalize(self, weight_version: int) -> None:
+        """Write this version as a canonical HF dir, have the engines pull and reload it."""
+        self._write_delta_files(weight_version)
+        self._reload_engines(weight_version)
+        self._record_metrics(weight_version)
+
+    def _capture_baseline(self, iter_buckets) -> None:
         """Capture the baseline snapshot the first delta diffs against (no publish), and clear any
         stale stream from a prior run. Seeds from hf_checkpoint — what each host materializes its
         base from — so the invariant ``snapshot == engine base`` holds even where the megatron->HF
@@ -173,19 +176,18 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
 
         read_hf = None
         local_error: ValueError | None = None
-        if self._is_source:
+        if self.is_sender:
             try:
                 read_hf = make_tensor_reader(self.args.hf_checkpoint)  # index the HF headers once
             except ValueError as error:
                 local_error = error
 
-        def seed_bucket(converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None) -> None:
-            nonlocal local_error
-            if local_error is not None:
-                return
+        for bucket in iter_buckets(materialize=self.is_sender):
+            if not self.is_sender or local_error is not None:
+                continue
             assert read_hf is not None
             try:
-                for name, tensor in converted_named_tensors:
+                for name, tensor in bucket:
                     try:
                         baseline = read_hf(
                             name,
@@ -204,11 +206,10 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                         )
                     self._snapshot[name] = baseline
             except ValueError as error:
-                # Source ranks run the callback, but every rank joins the surrounding gathers.
-                # Defer the error until those collectives finish, then make every rank fail.
+                # Source ranks read the checkpoint, but every rank drives the bucket iterator's
+                # collectives. Defer the error until iteration finishes, then make every rank fail.
                 local_error = error
 
-        self._for_each_hf_bucket(seed_bucket)
         group = get_gloo_group()
         error_messages: list[str | None] = [None] * dist.get_world_size(group=group)
         local_error_message = None if local_error is None else f"{type(local_error).__name__}: {local_error}"
@@ -223,7 +224,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             raise error
 
         if dist.get_rank() == 0:
-            _check_weight_sync_results(ray.get(pulls), is_lora=False)
+            check_weight_sync_results(ray.get(pulls), is_lora=False)
             if self.args.check_weight_update_equal:
                 # The weights checker resets engine tensors at startup and compares after the
                 # first sync, expecting it to rewrite every tensor. The baseline publishes
@@ -233,31 +234,74 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                     [
                         engine.update_weights_from_disk.remote(
                             model_path=self.args.update_weight_local_checkpoint_dir,
-                            weight_version=str(self.weight_version),
+                            weight_version="0",
                         )
                         for engine in self.rollout_engines
                     ]
                 )
-                _check_weight_sync_results(results, is_lora=False)
+                check_weight_sync_results(results, is_lora=False)
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
                 self.args.hf_checkpoint,
             )
 
-    def _for_each_hf_bucket(self, bucket_func: Callable[[list[tuple[str, torch.Tensor]], tqdm | None], None]) -> None:
-        """Feed every gathered HF bucket through ``bucket_func``: the base-class TP pass then the
-        EP pass. All ranks join the gathers; ``bucket_func`` only runs on source ranks."""
-        pbar = tqdm(desc=f"[{self._group_name}] Update weights", total=0) if self._is_source else None
-        self._gather_and_update_non_expert_weights(bucket_func, pbar)
-        dist.barrier(group=get_gloo_group())
-        self._gather_and_update_expert_weights(bucket_func, pbar)
-        dist.barrier(group=get_gloo_group())
+    def _begin_encode(self, weight_version: int) -> None:
+        """Set up this version's diff/compress pipeline: each ``send_bucket`` copies one tensor at
+        a time to a pinned buffer and submits it; pool workers diff against the snapshot and
+        compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+        self._version_dir = os.path.join(self.delta_dir, f"weight_v{weight_version:06d}")
+        if self.is_sender:
+            os.makedirs(self._version_dir, exist_ok=True)
+        self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
+        self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
+        self.changed_bytes = self.total_bytes = 0
 
-    def _publish(self) -> None:
-        """Encode this version's changed tensors (source ranks), then write it as a canonical HF dir."""
-        self._encode_delta()
-        self._write_delta_files()
+        # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
+        self._max_bytes = max((int(v.nbytes) for v in self._snapshot.values()), default=0)
+        self._free_q: queue.Queue = queue.Queue()
+        self._use_pinned = True
+        try:
+            for _ in range(max(4, min(2 * NUM_WORKERS, (32 << 30) // max(self._max_bytes, 1)))):
+                self._free_q.put(torch.empty(self._max_bytes, dtype=torch.uint8, pin_memory=True))
+        except RuntimeError as e:  # low memlock limit
+            logger.warning("pinned host buffers unavailable (%s); using pageable .cpu()", e)
+            self._use_pinned = False
+
+        self._pool = ThreadPoolExecutor(max_workers=NUM_WORKERS)
+        self._inflight: deque = deque()
+
+    def _diff_and_compress(self, name, buf, nbytes, pinned):
+        if pinned:  # copy out and free the pinned buffer before the heavy diff/compress
+            new = np.empty(nbytes, dtype=np.uint8)
+            np.copyto(new, buf.numpy()[:nbytes])
+            self._free_q.put(buf)
+        else:
+            new = buf
+        old = self._snapshot[name]
+        if self.delta_encoding == "xor":
+            diff = new ^ old
+            changed = int(np.count_nonzero(diff))
+        elif self.delta_encoding == "overwrite":
+            mask = new != old
+            changed = int(np.count_nonzero(mask))
+            diff = overwrite_encode(new, mask)
+        else:
+            raise ValueError(f"unknown delta encoding {self.delta_encoding!r}")
+        if not changed:
+            return name, new, None, None, 0
+        compressed = np.frombuffer(zstandard.ZstdCompressor(level=1).compress(diff), dtype=np.uint8)
+        return name, new, compressed, checksum(self.checksum_algorithm, new), changed
+
+    def _collect(self, fut):
+        name, new, compressed, digest, changed = fut.result()
+        self._snapshot[name] = new  # becomes the next sync's base
+        if changed:
+            self.changed_bytes += changed
+            self._delta[name] = compressed
+            self._checksums[name] = digest
 
     def _drop_duplicate_names(self, group, world: int, rank: int) -> None:
         """A parameter Megatron replicates across PP stages — the word embedding on the last stage
@@ -278,7 +322,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 del self._delta[name]
                 del self._checksums[name]
 
-    def _write_delta_files(self) -> None:
+    def _write_delta_files(self, weight_version: int) -> None:
         """Write this rank's changed tensors as one canonical model-NNNNN.safetensors, and on rank
         0 the HF index. The sequential file numbers and the index are coordinated over gloo (small
         object gathers), not the filesystem — a non-POSIX shared filesystem may not surface one
@@ -306,8 +350,8 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         if rank == 0:
             index = {
                 "metadata": {
-                    "version": f"{self.weight_version:06d}",
-                    "base_version": f"{self.weight_version - 1:06d}",
+                    "version": f"{weight_version:06d}",
+                    "base_version": f"{weight_version - 1:06d}",
                     "delta_encoding": self.delta_encoding,
                     "compression_format": "zstd",
                     "checksum_format": self.checksum_algorithm,
@@ -317,7 +361,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             _atomic_write(os.path.join(self._version_dir, "model.safetensors.index.json"), json.dumps(index).encode())
         dist.barrier(group=group)
 
-    def _reload_engines(self) -> None:
+    def _reload_engines(self, weight_version: int) -> None:
         """Commit the published files, have each engine pull the delta onto every host it spans
         (checksum-verified), then reload the engines. The pull is disk-only, so it runs before
         pause and overlaps generation."""
@@ -325,8 +369,8 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
             self._post_write_hook(self.args, self._version_dir, list(self.rollout_engines))
         dist.barrier(group=get_gloo_group())
         if dist.get_rank() == 0:
-            pulls = ray.get([engine.pull_weights.remote(self.weight_version) for engine in self.rollout_engines])
-            _check_weight_sync_results(pulls, is_lora=False)
+            pulls = ray.get([engine.pull_weights.remote(weight_version) for engine in self.rollout_engines])
+            check_weight_sync_results(pulls, is_lora=False)
             mode = self.args.pause_generation_mode
             ray.get([engine.pause_generation.remote(mode=mode) for engine in self.rollout_engines])
             if mode != "in_place":
@@ -335,96 +379,16 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
                 [
                     engine.update_weights_from_disk.remote(
                         model_path=self.args.update_weight_local_checkpoint_dir,
-                        weight_version=str(self.weight_version),
+                        weight_version=str(weight_version),
                     )
                     for engine in self.rollout_engines
                 ]
             )
-            _check_weight_sync_results(results, is_lora=False)
+            check_weight_sync_results(results, is_lora=False)
             ray.get([engine.continue_generation.remote() for engine in self.rollout_engines])
         dist.barrier(group=get_gloo_group())
 
-    def _encode_delta(self) -> None:
-        """Diff each gathered HF tensor against the snapshot, keeping the changed ones (compressed)
-        in self._delta with their checksums. The GPU->CPU gather is pipelined into a compute pool:
-        each bucket callback copies one tensor at a time to a pinned buffer and submits it; pool
-        workers diff and compress in parallel (each is a few big GIL-releasing numpy/zstd calls)."""
-        self._version_dir = os.path.join(self.delta_dir, f"weight_v{self.weight_version:06d}")
-        if self._is_source:
-            os.makedirs(self._version_dir, exist_ok=True)
-        snapshot = self._snapshot
-        self._delta: dict[str, np.ndarray] = {}  # changed tensor name -> compressed diff
-        self._checksums: dict[str, str] = {}  # changed tensor name -> new-state checksum
-        self.changed_bytes = self.total_bytes = 0
-
-        # Pinned host-buffer pool: a pinned non_blocking GPU->CPU copy is far faster than .cpu().
-        max_bytes = max((int(v.nbytes) for v in snapshot.values()), default=0)
-        free_q: queue.Queue = queue.Queue()
-        use_pinned = True
-        try:
-            for _ in range(max(4, min(2 * NUM_WORKERS, (32 << 30) // max(max_bytes, 1)))):
-                free_q.put(torch.empty(max_bytes, dtype=torch.uint8, pin_memory=True))
-        except RuntimeError as e:  # low memlock limit
-            logger.warning("pinned host buffers unavailable (%s); using pageable .cpu()", e)
-            use_pinned = False
-
-        def diff_and_compress(name, buf, nbytes, pinned):
-            if pinned:  # copy out and free the pinned buffer before the heavy diff/compress
-                new = np.empty(nbytes, dtype=np.uint8)
-                np.copyto(new, buf.numpy()[:nbytes])
-                free_q.put(buf)
-            else:
-                new = buf
-            old = snapshot[name]
-            if self.delta_encoding == "xor":
-                diff = new ^ old
-                changed = int(np.count_nonzero(diff))
-            elif self.delta_encoding == "overwrite":
-                mask = new != old
-                changed = int(np.count_nonzero(mask))
-                diff = overwrite_encode(new, mask)
-            else:
-                raise ValueError(f"unknown delta encoding {self.delta_encoding!r}")
-            if not changed:
-                return name, new, None, None, 0
-            compressed = np.frombuffer(zstandard.ZstdCompressor(level=1).compress(diff), dtype=np.uint8)
-            return name, new, compressed, checksum(self.checksum_algorithm, new), changed
-
-        def collect(fut):
-            name, new, compressed, digest, changed = fut.result()
-            snapshot[name] = new  # becomes the next sync's base
-            if changed:
-                self.changed_bytes += changed
-                self._delta[name] = compressed
-                self._checksums[name] = digest
-
-        pool = ThreadPoolExecutor(max_workers=NUM_WORKERS)
-        inflight: deque = deque()
-
-        def encode_bucket(converted_named_tensors: list[tuple[str, torch.Tensor]], pbar: tqdm | None = None) -> None:
-            for name, tensor in converted_named_tensors:
-                flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
-                nbytes = int(flat.numel())
-                if use_pinned and nbytes <= max_bytes:
-                    buf = free_q.get()  # blocks when all buffers are in flight -> backpressures the gather
-                    buf[:nbytes].copy_(flat, non_blocking=True)
-                    torch.cuda.current_stream().synchronize()
-                    payload, pinned = buf, True
-                else:
-                    payload, pinned = flat.cpu().numpy(), False
-                self.total_bytes += nbytes
-                inflight.append(pool.submit(diff_and_compress, name, payload, nbytes, pinned))
-                if len(inflight) >= 2 * NUM_WORKERS:
-                    collect(inflight.popleft())
-
-        try:
-            self._for_each_hf_bucket(encode_bucket)
-            while inflight:
-                collect(inflight.popleft())
-        finally:
-            pool.shutdown()
-
-    def _record_metrics(self) -> None:
+    def _record_metrics(self, weight_version: int) -> None:
         """All-reduce the byte counts and record changed-fraction / wire size; the actor drains
         update_weight_metrics onto the step log."""
         counts = torch.tensor(
@@ -441,7 +405,7 @@ class UpdateWeightFromDiskDelta(DistBucketedWeightUpdateMixin):
         if dist.get_rank() == 0:
             logger.info(
                 "[disk delta v=%s] density=%.2f%% wire=%.2f GB",
-                self.weight_version,
+                weight_version,
                 100.0 * changed / max(total, 1),
                 wire / 1e9,
             )

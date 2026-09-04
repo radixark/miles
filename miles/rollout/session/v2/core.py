@@ -179,6 +179,11 @@ class SessionCoreV2(SessionCore):
             return proxy_result_to_response(result)
 
         response, choice, assistant_message, completion_token_ids = extract_completion(result)
+        assistant_message = tito_tokenizer.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=completion_token_ids,
+        )
 
         # --- Phase 3: update state (lock held briefly) ---
         async with session.lock:

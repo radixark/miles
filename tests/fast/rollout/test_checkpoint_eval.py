@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import miles.ray.rollout.rollout_manager as rollout_manager_mod
+import miles.ray.rollout.rollout_executor as rollout_executor_mod
 from miles.rollout.base_types import RolloutFnEvalInput, RolloutFnEvalOutput
 from miles.rollout.checkpoint_eval import CheckpointEvalFn, EvalSkip, retarget_args
 
@@ -63,7 +63,7 @@ class CheckpointFnStub(CheckpointEvalFn):
 
 
 def make_manager(args, eval_fn=None, fleet=None):
-    mgr = object.__new__(rollout_manager_mod.RolloutManager.__ray_actor_class__)
+    mgr = object.__new__(getattr(rollout_executor_mod.RolloutExecutor, "__ray_actor_class__", rollout_executor_mod.RolloutExecutor))
     mgr.args = args
     mgr.rollout_id = 7
     mgr._eval_lock = asyncio.Lock()
@@ -79,14 +79,14 @@ def make_manager(args, eval_fn=None, fleet=None):
 @pytest.fixture
 def controller_env(monkeypatch):
     logged = {}
-    monkeypatch.setattr(rollout_manager_mod, "save_debug_rollout_data", lambda *a, **k: None)
+    monkeypatch.setattr(rollout_executor_mod, "save_debug_rollout_data", lambda *a, **k: None)
     monkeypatch.setattr(
-        rollout_manager_mod,
+        rollout_executor_mod,
         "log_eval_rollout_data",
         lambda rollout_id, args, data, extra: logged.setdefault("eval", (rollout_id, data, extra)) or {},
     )
     monkeypatch.setattr(
-        rollout_manager_mod,
+        rollout_executor_mod,
         "log_eval_skip",
         lambda rollout_id, args, reason: logged.setdefault("skip", (rollout_id, reason)),
     )
@@ -136,7 +136,7 @@ async def test_eval_checkpoint_runs_the_eval_fn_on_the_fleet(controller_env, mon
             return "fleet-state"
 
     fleet = FakeFleet()
-    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
+    monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_hf_dir=str(tmp_path))
     mgr = make_manager(args, eval_fn=eval_generate_rollout, fleet=fleet)
 
@@ -187,7 +187,7 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
         seen_inputs.append(input)
         return RolloutFnEvalOutput(data={})
 
-    monkeypatch.setattr(rollout_manager_mod, "call_rollout_function", lambda fn, input: fn(input))
+    monkeypatch.setattr(rollout_executor_mod, "call_rollout_function", lambda fn, input: fn(input))
     args = make_args(hf_checkpoint="/base", eval_num_gpus=0)
     mgr = make_manager(args, eval_fn=eval_generate_rollout)
 

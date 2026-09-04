@@ -306,9 +306,11 @@ def register_router(args) -> None:
     """Called by the rollout manager AFTER start_rollout_servers: only then are
     ``args.sglang_router_ip/port`` filled in. init_tracking runs earlier in
     __init__, so the backend cannot register the router at init time."""
+    if not args.use_miles_dashboard:
+        return
     from miles.dashboard import backend
 
-    handle = backend.current_collector()
+    handle = backend.resolve_collector()
     if handle is None:
         return
     # a None ip here is a wiring-order bug, not runtime flakiness: fail loud
@@ -320,7 +322,7 @@ def register_router(args) -> None:
 
 
 def register_engines(servers) -> None:
-    """Called at the top of every RolloutManager.generate(): pushes an engine
+    """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
     fault-tolerance recovery). Steady state costs one local tuple compare."""
     global _engines_fingerprint
@@ -342,7 +344,7 @@ def register_engines(servers) -> None:
 
 
 def report_data_buffer(length: int | None) -> None:
-    """Called at the top of every ``RolloutManager.generate()`` alongside
+    """Called at the top of every ``RolloutExecutor.get()`` alongside
     ``register_engines``, with ``getattr(data_source, "get_buffer_length",
     lambda: None)()``. A no-op for ``length is None`` — most data sources
     (plain ``RolloutDataSource``) never buffer samples across steps."""

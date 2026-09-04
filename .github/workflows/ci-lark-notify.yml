@@ -1,0 +1,54 @@
+name: CI Lark Notify
+
+# Post scheduled PR Test results to the Miles CI bot in RL Dev.
+
+on:
+  workflow_run:
+    workflows: ["PR Test"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Workflow run ID"
+        required: true
+        type: string
+      dry_run:
+        description: "Print the card instead of posting it"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUNBUFFERED: 1
+  DRY_RUN_FLAG: ${{ inputs.dry_run && '--dry-run' || '' }}
+
+jobs:
+  ci-status:
+    if: >-
+      github.repository == 'radixark/miles' && (
+        (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'schedule') ||
+        github.event_name == 'workflow_dispatch'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/workflows/scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post CI status card
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+        run: |
+          python .github/workflows/scripts/lark_notify.py $DRY_RUN_FLAG ci-status \
+            --run-id "$RUN_ID" \
+            ${{ github.event_name == 'workflow_dispatch' && '--any-event' || '' }}

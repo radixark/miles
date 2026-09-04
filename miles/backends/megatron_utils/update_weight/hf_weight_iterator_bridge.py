@@ -1,18 +1,21 @@
 import dataclasses
+import itertools
 import json
 import os
 
-from miles.backends.megatron_utils.lora_utils import is_lora_weight_name
+from miles.backends.megatron_utils.update_weight.hf_weight_iterator import (
+    MegatronHfWeightIteratorBase,
+    _iter_mm_tower_units,
+)
 from miles.utils import megatron_bridge_utils
+from miles.utils.lora import is_lora_weight_name
 
 from ..megatron_to_hf import postprocess_hf_param
 from ..megatron_to_hf.processors import quantize_params
 from ..misc_utils import strip_param_name_prefix
-from .common import get_atomic_update_groups
-from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
-class HfWeightIteratorBridge(HfWeightIteratorBase):
+class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -35,39 +38,54 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                     "_miles_quantized_basenames": quantized_basenames,
                 }
 
-    def get_hf_weight_chunks(self, megatron_local_weights, weight_type: str = "base"):
-        renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in megatron_local_weights.items()}
+    def _iter_hf_param_units(self, weights, *, materialize):
+        renamed_megatron_local_weights = {strip_param_name_prefix(k): v for k, v in weights.items()}
         with megatron_bridge_utils.patch_megatron_model(self.model):
-            if weight_type == "lora":
-                named_weights = self._bridge.export_adapter_weights(
-                    self.model,
-                    cpu=False,
-                    show_progress=False,
-                )
-            elif weight_type == "base":
-                conversion_tasks = self._bridge.get_conversion_tasks(self.model)
-                conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
-                named_weights = self._bridge.export_hf_weights(
-                    self.model,
-                    cpu=False,
-                    conversion_tasks=conversion_tasks,
-                    merge_adapter_weights=False,
-                )
+            conversion_tasks = self._bridge.get_conversion_tasks(self.model)
+            conversion_tasks = _process_conversion_tasks(conversion_tasks, renamed_megatron_local_weights)
+            named_weights = self._bridge.export_hf_weights(
+                self.model,
+                cpu=False,
+                conversion_tasks=conversion_tasks,
+                merge_adapter_weights=False,
+            )
 
             # Apply postprocess + quantization (when targeting a quantized rollout,
-            # e.g. FP8 sglang). Base weights are quantized to match the rollout's
+            # e.g. FP8 sglang): base weights are quantized to match the rollout's
             # storage format so update_weights_from_tensor lands real weight + scale
-            # pairs; LoRA adapters are passed through unchanged.
-            named_weights = self._postprocess_and_quantize(named_weights, weight_type)
+            # pairs.
+            if not materialize:
+                # The export's internal TP collectives must still run on every rank.
+                for _ in named_weights:
+                    pass
+                return
 
-            if weight_type == "base":
-                named_weights = ((h, w, m) for h, w, m in named_weights if not is_lora_weight_name(h))
-            elif weight_type == "lora":
-                named_weights = ((h, w, m) for h, w, m in named_weights if is_lora_weight_name(h))
+            named_weights = self._postprocess_and_quantize(named_weights, "base")
+            # One unit per megatron param: quantize emits weight + scales
+            # consecutively, so grouping by source name keeps them together.
+            for _megatron_name, group in itertools.groupby(named_weights, key=lambda item: item[2]):
+                unit = [(h, w) for h, w, _m in group if not is_lora_weight_name(h)]
+                if unit:
+                    yield unit
+        yield from _iter_mm_tower_units(self.args, materialize=materialize)
 
-            groups = get_atomic_update_groups(self.args, self.model_name)
-            units = _stream_atomic_units(named_weights, groups)
-            yield from _chunk_atomic_units_by_size(units, chunk_size=self.args.update_weight_buffer_size)
+    def _export_pp_local_lora(self, adapter):
+        if adapter is None:
+            return self._export_current_adapter()
+
+        from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
+
+        from ..multi_lora_utils import slice_lora_to_rank
+
+        with expose_adapter_slot(self.model, adapter.slot):
+            named_tensors = self._export_current_adapter()
+        return [(h, slice_lora_to_rank(h, w, adapter.config.rank)) for h, w in named_tensors]
+
+    def _export_current_adapter(self) -> list:
+        with megatron_bridge_utils.patch_megatron_model(self.model):
+            named_weights = self._bridge.export_adapter_weights(self.model, cpu=False, show_progress=False)
+            named_weights = self._postprocess_and_quantize(named_weights, "lora")
+            return [(h, w) for h, w, _m in named_weights if is_lora_weight_name(h)]
 
     def _postprocess_and_quantize(self, named_weights, weight_type: str):
         for hf_param_name, weight, megatron_param_name in named_weights:
@@ -98,50 +116,6 @@ def _load_quantized_param_basenames(hf_checkpoint):
     with open(index_path) as f:
         names = json.load(f)["weight_map"]
     return {n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")}
-
-
-def _stream_atomic_units(items, atomic_update_groups):
-    """Streaming counterpart of get_named_value_update_units: buffer items
-    whose megatron name matches an AtomicUpdateGroup suffix until every
-    suffix in the same (prefix, group.key) arrives, then yield together."""
-    pending: dict[tuple[str, str], list] = {}
-    for hf_name, weight, megatron_name in items:
-        match = next(
-            (
-                (group, idx, suffix)
-                for group in atomic_update_groups
-                for idx, suffix in enumerate(group.suffixes)
-                if megatron_name.endswith(suffix)
-            ),
-            None,
-        )
-        if match is None:
-            yield [(hf_name, weight)]
-            continue
-        group, idx, suffix = match
-        prefix = megatron_name[: -len(suffix)]
-        slots = pending.setdefault((prefix, group.key), [None] * len(group.suffixes))
-        slots[idx] = (hf_name, weight)
-        if None not in slots:
-            yield list(slots)
-            del pending[(prefix, group.key)]
-    assert not pending, f"Incomplete atomic update groups at end of stream: {sorted(pending)}"
-
-
-def _chunk_atomic_units_by_size(units, chunk_size):
-    """Pack atomic units into chunks <= chunk_size bytes, never splitting a unit."""
-    bucket: list = []
-    bucket_size = 0
-    for unit in units:
-        unit_size = sum(t.nbytes for _, t in unit)
-        if bucket and bucket_size + unit_size >= chunk_size:
-            yield bucket
-            bucket = []
-            bucket_size = 0
-        bucket.extend(unit)
-        bucket_size += unit_size
-    if bucket:
-        yield bucket
 
 
 def _process_conversion_tasks(vanilla_conversion_tasks, new_weight_dict):

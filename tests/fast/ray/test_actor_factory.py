@@ -41,7 +41,6 @@ def test_megatron_offload_uses_torch_memory_saver_preload_resolver(monkeypatch):
         offload_train_target="cpu",
         train_backend="megatron",
         train_env_vars={},
-        update_weight_transfer_mode="broadcast",
         use_fault_tolerance=False,
     )
 

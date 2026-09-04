@@ -32,7 +32,8 @@ class RayTrainGroup:
         num_gpus_per_node,
         pg: tuple[PlacementGroup, list[int], list[int]],
         *,
-        rollout_manager: object | None,
+        inference_controller: object | None,
+        rollout_executor: object | None,
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
@@ -43,7 +44,8 @@ class RayTrainGroup:
         self._num_gpus_per_node = num_gpus_per_node
         self.role = role
         self.with_ref = with_ref
-        self._rollout_manager = rollout_manager
+        self._inference_controller = inference_controller
+        self._rollout_executor = rollout_executor
         self.with_opd_teacher = with_opd_teacher
 
         # Allocate the GPUs for actors w/o instantiating them
@@ -122,12 +124,13 @@ class RayTrainGroup:
             return
 
         if self.args.use_fault_tolerance and "rollout" in self.args.ft_components:
-            await self.rollout_manager.recover_updatable_engines.remote()
+            await self._inference_controller.recover_updatable_engines()
 
-        info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
-        await self.rollout_manager.health_monitoring_pause.remote()
+        info = await self._inference_controller.get_updatable_engines_and_lock()
+        await self._inference_controller.health_monitoring_pause()
 
         await self._broadcast("update_weights", info=info)
+        await self._inference_controller.clear_updatable_has_new_engines()
 
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set
@@ -143,9 +146,8 @@ class RayTrainGroup:
     async def clear_memory(self):
         await self._broadcast("clear_memory")
 
-    async def set_rollout_manager(self):
-        self.rollout_manager = self._rollout_manager
-        await self._broadcast("set_rollout_manager", self._rollout_manager)
+    async def set_rollout_executor(self):
+        await self._broadcast("set_rollout_executor", self._rollout_executor)
 
     async def _broadcast(self, method_name: str, *args, **kwargs) -> list:
         refs = [getattr(actor, method_name).remote(*args, **kwargs) for actor in self._actor_handles]

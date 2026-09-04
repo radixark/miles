@@ -1,61 +1,29 @@
 import re
 
-from ..update_weight.common import AtomicUpdateGroup
+import torch
 
 
-def get_deepseek_v4_atomic_update_groups():
-    return [
-        AtomicUpdateGroup(key, suffixes)
-        for key, suffixes in [
-            ("wqkv_a", (".self_attention.linear_q_down_proj.weight", ".self_attention.linear_kv_proj.weight")),
-            (
-                "self_attention_hc_alphas",
-                (
-                    ".self_attention_hyper_connection.alpha_pre",
-                    ".self_attention_hyper_connection.alpha_post",
-                    ".self_attention_hyper_connection.alpha_res",
-                ),
-            ),
-            (
-                "mlp_hc_alphas",
-                (
-                    ".mlp_hyper_connection.alpha_pre",
-                    ".mlp_hyper_connection.alpha_post",
-                    ".mlp_hyper_connection.alpha_res",
-                ),
-            ),
-            (
-                "compressor_wkv_gate",
-                (
-                    ".self_attention.core_attention.compressor.linear_wkv.weight",
-                    ".self_attention.core_attention.compressor.linear_wgate.weight",
-                ),
-            ),
-            (
-                "indexer_compressor_wkv_gate",
-                (
-                    ".self_attention.core_attention.indexer.compressor.linear_wkv.weight",
-                    ".self_attention.core_attention.indexer.compressor.linear_wgate.weight",
-                ),
-            ),
-        ]
-    ]
+_PENDING_ALPHAS: dict[str, dict[str, torch.Tensor]] = {}
 
 
-def _packed_alphas(name: str, param, bucket):
+def _packed_alphas(name: str, param):
     """Pack a hyper-connection site's three alphas the way the checkpoint stores them.
 
     Megatron keeps alpha_pre / alpha_post / alpha_res as separate scalars, one per bias
-    segment; the checkpoint carries them as one [pre, post, res] tensor. The three arrive
-    in the same bucket because they share an atomic update group.
+    segment; the checkpoint carries them as one [pre, post, res] tensor. The three may
+    arrive in any order across weight-sync buckets, so stash pieces and emit the packed
+    tensor once the site is complete.
     """
-    import torch
+    prefix, seg = name.rsplit(".alpha_", 1)
+    slots = _PENDING_ALPHAS.setdefault(prefix, {})
+    slots[seg] = param.reshape(1)
+    if len(slots) < 3:
+        return None
+    del _PENDING_ALPHAS[prefix]
+    return torch.cat([slots[seg] for seg in ("pre", "post", "res")])
 
-    prefix = name.rsplit(".", 1)[0]
-    return torch.cat([bucket[f"{prefix}.alpha_{seg}"].reshape(1) for seg in ("pre", "post", "res")])
 
-
-def convert_deepseekv4_to_hf(args, name, param, bucket=None):
+def convert_deepseekv4_to_hf(args, name, param):
     if name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":
@@ -79,18 +47,16 @@ def convert_deepseekv4_to_hf(args, name, param, bucket=None):
             return [(f"model.layers.{layer_idx}.hc_attn_fn", param)]
         elif rest == "self_attention_hyper_connection.bias":
             return [(f"model.layers.{layer_idx}.hc_attn_base", param)]
-        elif rest == "self_attention_hyper_connection.alpha_pre":
-            return [(f"model.layers.{layer_idx}.hc_attn_scale", _packed_alphas(name, param, bucket))]
         elif rest.startswith("self_attention_hyper_connection.alpha_"):
-            return []
+            packed = _packed_alphas(name, param)
+            return [] if packed is None else [(f"model.layers.{layer_idx}.hc_attn_scale", packed)]
         elif rest == "mlp_hyper_connection.mapping_proj.weight":
             return [(f"model.layers.{layer_idx}.hc_ffn_fn", param)]
         elif rest == "mlp_hyper_connection.bias":
             return [(f"model.layers.{layer_idx}.hc_ffn_base", param)]
-        elif rest == "mlp_hyper_connection.alpha_pre":
-            return [(f"model.layers.{layer_idx}.hc_ffn_scale", _packed_alphas(name, param, bucket))]
         elif rest.startswith("mlp_hyper_connection.alpha_"):
-            return []
+            packed = _packed_alphas(name, param)
+            return [] if packed is None else [(f"model.layers.{layer_idx}.hc_ffn_scale", packed)]
 
         expert_pattern = r"mlp.experts\.(.+)\.weight(\d+)"
         match = re.match(expert_pattern, rest)

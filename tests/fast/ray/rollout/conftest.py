@@ -65,7 +65,6 @@ def make_args(**overrides: Any) -> Namespace:
         debug_train_only=False,
         debug_rollout_only=False,
         colocate=False,
-        update_weight_transfer_mode="broadcast",
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
         critic_num_nodes=0,
@@ -83,6 +82,7 @@ def make_args(**overrides: Any) -> Namespace:
         sglang_model_routers=None,
         prefill_num_servers=None,
         # routers / session server
+        use_miles_dashboard=False,
         use_miles_router=False,
         use_session_server=False,
         session_server_ip=None,
@@ -115,7 +115,7 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_min_match_ratio=0.9,
         ci_inject_rollout_data_group_by_dp_rollout_id=None,
         ci_inject_rollout_data_group_by_dp_size=None,
-        # event checkpointing (event_logger.restore/snapshot in RolloutManager)
+        # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
         load=None,
         save=None,
