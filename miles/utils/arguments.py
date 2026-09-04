@@ -3295,9 +3295,9 @@ def miles_validate_args(args):
         assert (
             args.ci_inject_rollout_data_path is not None
         ), "--ci-inject-rollout-data-nominal-dp-size requires --ci-inject-rollout-data-path."
-        assert args.ci_inject_rollout_data_nominal_dp_size > 1, (
-            "--ci-inject-rollout-data-nominal-dp-size must exceed one."
-        )
+        assert (
+            args.ci_inject_rollout_data_nominal_dp_size > 1
+        ), "--ci-inject-rollout-data-nominal-dp-size must exceed one."
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
