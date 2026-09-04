@@ -412,50 +412,8 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
-def train_one_step(
-    args: Namespace,
-    rollout_id: int,
-    step_id: int,
-    data_iterator: Sequence[DataIterator],
-    model: Sequence[DDP],
-    optimizer: MegatronOptimizer | None,
-    opt_param_scheduler: OptimizerParamScheduler | None,
-    num_microbatches: int,
-    num_rollouts: int,
-    witness_info: WitnessInfo | None,
-    attempt: int,
-    ft_test_action_executor: FTTestActionActorExecutor | None = None,
-) -> tuple[dict[str, float], float, TrainStepOutcome]:
-    """Execute a single pipeline-parallel training step.
-
-    Runs forward/backward over ``num_microbatches``, applies optimizer step and
-    one scheduler step when gradients are valid.
-
-    Args:
-        args: Runtime arguments.
-        rollout_id: Rollout identifier.
-        step_id: Step index within the current rollout.
-        data_iterator: Iterable(s) yielding training batches.
-        model: Sequence of DDP-wrapped model chunks.
-        optimizer: Optimizer instance.
-        opt_param_scheduler: LR/WD scheduler.
-        num_microbatches: Number of microbatches to process.
-        num_rollouts: This step's rollout count (loss normalizer + LR increment).
-
-    Returns:
-        Tuple of (reduced loss dict, gradient norm, step outcome).
-    """
-    args = get_args()
-    parallel_state = get_parallel_state()
-    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
-    disable_optimizer = args.debug_disable_optimizer or optimizer is None
-    _zero_grads(model, optimizer, disable_optimizer)
-
-    if args.custom_megatron_before_train_step_hook_path:
-        from miles.utils.function_registry import load_function
-
-        custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
-        custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
+def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts):
+    """One pipeline forward/backward pass over the microbatches; no optimizer interaction."""
 
     @dumper_phase_util.wrap_forward_step
     def forward_step(data_iterator: DataIterator, model: GPTModel, return_schedule_plan: bool = False) -> tuple[
@@ -552,7 +510,7 @@ def train_one_step(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    losses_reduced = forward_backward_func(
+    return forward_backward_func(
         forward_step_func=forward_step,
         data_iterator=data_iterator,
         model=model,
@@ -561,6 +519,56 @@ def train_one_step(
         micro_batch_size=args.micro_batch_size,
         decoder_seq_length=args.decoder_seq_length,
         forward_only=False,
+    )
+
+
+def train_one_step(
+    args: Namespace,
+    rollout_id: int,
+    step_id: int,
+    data_iterator: Sequence[DataIterator],
+    model: Sequence[DDP],
+    optimizer: MegatronOptimizer | None,
+    opt_param_scheduler: OptimizerParamScheduler | None,
+    num_microbatches: int,
+    num_rollouts: int,
+    witness_info: WitnessInfo | None,
+    attempt: int,
+    ft_test_action_executor: FTTestActionActorExecutor | None = None,
+) -> tuple[dict[str, float], float, TrainStepOutcome]:
+    """Execute a single pipeline-parallel training step.
+
+    Runs forward/backward over ``num_microbatches``, applies optimizer step and
+    one scheduler step when gradients are valid.
+
+    Args:
+        args: Runtime arguments.
+        rollout_id: Rollout identifier.
+        step_id: Step index within the current rollout.
+        data_iterator: Iterable(s) yielding training batches.
+        model: Sequence of DDP-wrapped model chunks.
+        optimizer: Optimizer instance.
+        opt_param_scheduler: LR/WD scheduler.
+        num_microbatches: Number of microbatches to process.
+        num_rollouts: This step's rollout count (loss normalizer + LR increment).
+
+    Returns:
+        Tuple of (reduced loss dict, gradient norm, step outcome).
+    """
+    args = get_args()
+    parallel_state = get_parallel_state()
+    dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
+    disable_optimizer = args.debug_disable_optimizer or optimizer is None
+    _zero_grads(model, optimizer, disable_optimizer)
+
+    if args.custom_megatron_before_train_step_hook_path:
+        from miles.utils.function_registry import load_function
+
+        custom_before_train_step_hook = load_function(args.custom_megatron_before_train_step_hook_path)
+        custom_before_train_step_hook(args, rollout_id, step_id, model, optimizer, opt_param_scheduler)
+
+    losses_reduced = run_forward_backward_pass(
+        args, dumper_phase_util, data_iterator, model, num_microbatches, num_rollouts
     )
 
     outcome = TrainStepOutcome.NORMAL
@@ -653,6 +661,25 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     return finalize_model_grads(*args, **kwargs)
 
 
+def setup_train_iteration_config(args, model, optimizer, disable_optimizer):
+    """Wire DDP grad/param sync hooks into the model config. Idempotent so
+    command-grained callers can run it per invocation."""
+    config = get_model_config(model[0])
+    config.grad_scale_func = None if disable_optimizer else optimizer.scale_loss
+    config.timers = None
+    if isinstance(model[0], DDP) and args.overlap_grad_reduce:
+        no_sync_funcs = [model_chunk.no_sync for model_chunk in model]
+        config.no_sync_func = no_sync_funcs[0] if len(model) == 1 else no_sync_funcs
+        if args.align_grad_reduce:
+            grad_sync_funcs = [model_chunk.start_grad_sync for model_chunk in model]
+            config.grad_sync_func = grad_sync_funcs[0] if len(model) == 1 else grad_sync_funcs
+    if args.overlap_param_gather and args.align_param_gather:
+        param_sync_funcs = [model_chunk.start_param_sync for model_chunk in model]
+        config.param_sync_func = param_sync_funcs[0] if len(model) == 1 else param_sync_funcs
+    config.finalize_model_grads_func = finalize_model_grads_with_empty_cache
+    return config
+
+
 def train(
     rollout_id: int,
     model: Sequence[DDP],
@@ -695,27 +722,7 @@ def train(
     for model_module in model:
         model_module.train()
 
-    # Setup some training config params.
-    config = get_model_config(model[0])
-    config.grad_scale_func = None if disable_optimizer else optimizer.scale_loss
-    config.timers = None
-    if isinstance(model[0], DDP) and args.overlap_grad_reduce:
-        assert config.no_sync_func is None, (
-            "When overlap_grad_reduce is True, config.no_sync_func must be None; "
-            "a custom no_sync_func is not supported when overlapping grad-reduce"
-        )
-        config.no_sync_func = [model_chunk.no_sync for model_chunk in model]
-        if len(model) == 1:
-            config.no_sync_func = config.no_sync_func[0]
-        if args.align_grad_reduce:
-            config.grad_sync_func = [model_chunk.start_grad_sync for model_chunk in model]
-            if len(model) == 1:
-                config.grad_sync_func = config.grad_sync_func[0]
-    if args.overlap_param_gather and args.align_param_gather:
-        config.param_sync_func = [model_chunk.start_param_sync for model_chunk in model]
-        if len(model) == 1:
-            config.param_sync_func = config.param_sync_func[0]
-    config.finalize_model_grads_func = finalize_model_grads_with_empty_cache
+    config = setup_train_iteration_config(args, model, optimizer, disable_optimizer)
 
     pre_hook_enabled = False
 

@@ -384,6 +384,28 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
+    # ------------------------ API :: multi-LoRA slot commands ------------------------
+
+    async def _execute_slots(self, fn_name: str, **kwargs) -> list:
+        results = await asyncio.gather(*[cell.execute(fn_name, **kwargs) for cell in self._cells])
+        # one trainer cell; its result is the per-actor list
+        return results[0]
+
+    async def forward_backward(self, unit_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_backward", unit_id=unit_id, rollout_data_ref=data_ref)
+
+    async def optim_step(self, adam_params_by_slot: dict[int, dict]) -> list:
+        return await self._execute_slots("optim_step", adam_params_by_slot=adam_params_by_slot)
+
+    async def forward_only_logprobs(self, unit_id: int, data_ref) -> list:
+        return await self._execute_slots("forward_only_logprobs", unit_id=unit_id, rollout_data_ref=data_ref)
+
+    async def load_slot(self, slot: int, rank: int, alpha: float) -> None:
+        await self._execute_slots("load_slot", slot=slot, rank=rank, alpha=alpha)
+
+    async def unload_slot(self, slot: int) -> None:
+        await self._execute_slots("unload_slot", slot=slot)
+
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
