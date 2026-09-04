@@ -1,8 +1,10 @@
 """Megatron implementations' shared base and factory for the backend-neutral
 HF weight iterator API."""
 
+import json
 import logging
 import math
+import os
 from abc import abstractmethod
 from argparse import Namespace
 from collections.abc import Sequence
@@ -28,6 +30,10 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        if self.quantization_config is not None:
+            self.quantization_config = with_checkpoint_quantized_basenames(
+                self.quantization_config, self.args.hf_checkpoint
+            )
         trainer_has_mtp = bool(unwrap_model(self.model)[0].config.mtp_num_layers)
         if self.args.sglang_speculative_algorithm and not trainer_has_mtp:
             self.weight_update_selector = "target"
@@ -35,10 +41,10 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
     def _hf_atomic_update_groups(self):
         return get_hf_atomic_update_groups(self.model_name, q_lora_rank=self.args.q_lora_rank)
 
-    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+    def _iter_hf_adapter_units(self, lora_name, adapter, *, weights, materialize):
         """Both megatron exporters are PP-local after gathering TP/EP; the PP
         gather runs only where the resolved placement asks for it."""
-        named_tensors = self._export_pp_local_lora(adapter)
+        named_tensors = self._export_pp_local_lora(adapter, weights)
         # TODO: the PP-local branch is unreachable until actor.py lifts its bridge-only guard
         # for distributed LoRA; add an e2e for native-LoRA disaggregate when it does
         if self.placement.gather_pp:
@@ -47,9 +53,7 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             return
         if not named_tensors:
             raise RuntimeError(
-                f"LoRA weight sync failed: the adapter export produced zero tensors"
-                f"{f' for adapter {adapter!r}' if adapter is not None else ''}. "
-                "This usually means the Megatron-Bridge or SGLang version is incompatible."
+                f"LoRA weight sync failed: the adapter export produced zero tensors{f' for adapter {adapter!r}' if adapter is not None else ''}. This usually means the Megatron-Bridge or SGLang version is incompatible."
             )
         if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
@@ -57,8 +61,9 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             yield [(f"{lora_name}:{hf_name}", tensor)]
 
     @abstractmethod
-    def _export_pp_local_lora(self, adapter) -> list[tuple[str, torch.Tensor]]:
-        """Backend hook: the adapter's HF-named tensors, TP/EP gathered, PP-local."""
+    def _export_pp_local_lora(self, adapter, weights) -> list[tuple[str, torch.Tensor]]:
+        """Backend hook: the adapter's HF-named tensors, TP/EP gathered, PP-local;
+        ``weights`` as in ``iter_hf_weights``."""
 
 
 def get_hf_weight_iterator(
@@ -84,6 +89,24 @@ def get_hf_weight_iterator(
         model_name=model_name,
         quantization_config=quantization_config,
     )
+
+
+def with_checkpoint_quantized_basenames(quantization_config: dict | None, hf_checkpoint: str) -> dict | None:
+    """Quantize exactly the params the checkpoint stores packed: the published ignore list of
+    multimodal checkpoints (e.g. Kimi-K2.5 VL) omits the vision tower and projector."""
+    if quantization_config is None or quantization_config.get("quant_method") != "compressed-tensors":
+        return quantization_config
+    index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
+    if not os.path.exists(index_path):
+        return quantization_config
+    with open(index_path) as index_file:
+        names = json.load(index_file)["weight_map"]
+    return {
+        **quantization_config,
+        "_miles_quantized_basenames": {
+            n.removesuffix(".weight_packed") for n in names if n.endswith(".weight_packed")
+        },
+    }
 
 
 def _gather_pp_full_adapter(

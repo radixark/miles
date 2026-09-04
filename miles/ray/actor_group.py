@@ -128,6 +128,8 @@ class RayTrainGroup:
         await self.rollout_manager.health_monitoring_pause.remote()
 
         await self._broadcast("update_weights", info=info)
+        if self.args.colocate and self.args.offload_train and not self.args.debug_skip_weight_update:
+            await asyncio.gather(*(engine.continue_generation.remote() for engine in info.rollout_engines))
 
     async def reconcile_adapters(self) -> None:
         """Multi-LoRA: reconcile loaded adapters with the controller's active set

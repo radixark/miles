@@ -76,7 +76,8 @@ class MilesRouter:
     async def _check_worker_health(self, url):
         """Encapsulated health check logic for better maintainability."""
         try:
-            response = await self.client.get(f"{url}/health", timeout=5.0)
+            # an engine mid long generation or weight-sync sleep answers /health slowly; 5s quarantined live ones
+            response = await self.client.get(f"{url}/health", timeout=30.0)
             if response.status_code == 200:
                 return url, True
             logger.debug(f"[miles-router] Worker {url} is unhealthy (Status: {response.status_code})")

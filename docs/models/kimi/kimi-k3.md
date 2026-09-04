@@ -37,17 +37,16 @@ as HF-named chunks over CUDA IPC.
 `--model-variant` selects between them and sets the matching checkpoint paths and
 `megatron_model_type`.
 
-Architecture, from `scripts/models/kimi-k3.sh`: hidden 7168, FFN 33792, 96 attention heads,
+Architecture, from `scripts/models/kimi-k3.py`: hidden 7168, FFN 33792, 96 attention heads,
 `kv_channels=256`, MLA with `q_lora_rank=1536` / `kv_lora_rank=512` /
 `qk_head_dim=128` / `qk_pos_emb_head_dim=64` / `v_head_dim=128`, 896 experts at
 `moe_ffn_hidden_size=3072`, shared expert 6144, vocab 163840, no position embedding.
 
 ## 3. Environment Setup
 
-Use the `docker.io/radixark/miles:kimi-k3` image, which pins miles, SGLang (the
-[`sglang-miles-k3`](https://github.com/sgl-project/sglang/tree/sglang-miles-k3) branch) and
-flashinfer `0.6.15.post1` at the validated versions. On Hopper set
-`SGLANG_K3_ATTN_RES_MODE=jit`.
+Use the `radixark/miles:dev` image with the Megatron and SGLang changes from
+[radixark/Megatron-LM#94](https://github.com/radixark/Megatron-LM/pull/94) and
+[sgl-project/sglang#37704](https://github.com/sgl-project/sglang/pull/37704) until they merge.
 
 The only external asset is the Kimi-K3 MXFP4 HF checkpoint. Everything else derives in-repo.
 
@@ -69,9 +68,10 @@ Unlike the bridge-mode recipes, K3 needs an offline conversion. Run it on 32 ran
 output re-shards at load, so the conversion layout does not have to match the training one:
 
 ```bash
-source scripts/models/kimi-k3.sh   # defines MODEL_ARGS
+MODEL_ARGS_LINE="$(python3 miles/utils/external_utils/model_args_utils.py kimi-k3)" || exit 1
+read -ra MODEL_ARGS <<< "${MODEL_ARGS_LINE}"
 torchrun --nnodes=8 --nproc-per-node=4 ... \
-    tools/convert_hf_to_torch_dist.py "${MODEL_ARGS[@]}" \
+    tools/convert_hf_to_torch_dist.py ${MODEL_ARGS[@]} \
     --hf-checkpoint <bf16-hf> --save <torch-dist-dcp> \
     --bf16 --tensor-model-parallel-size 32 --sequence-parallel \
     --pipeline-model-parallel-size 1 --context-parallel-size 1 \

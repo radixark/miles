@@ -1798,7 +1798,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help=(
                     "LoRA + colocate: keep SGLang-side CPU mirror of base weights "
                     "and skip per-step base sync. Trades host RAM for faster "
-                    "onload/offload. Ignored unless --colocate and LoRA are both on."
+                    "onload/offload. Ignored unless --colocate and LoRA are both on. "
+                    "Also needs 'weight' in --offload-rollout-level: SGLang populates "
+                    "the mirror during release_weights_occupation, so with the weights "
+                    "never released the mirror is never built and the flag does nothing."
                 ),
             )
             parser.add_argument(

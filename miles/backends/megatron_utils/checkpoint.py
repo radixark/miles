@@ -1,7 +1,8 @@
 import logging
 import os
 import re
-from contextlib import contextmanager
+import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch.distributed as dist
@@ -15,7 +16,7 @@ from megatron.training.global_vars import get_args
 from miles.utils import megatron_bridge_utils
 from miles_plugins.models.deepseek_v4.arguments import assert_checkpoint_is_current, is_dsv4_model
 
-from .lora_utils import is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
+from .lora_utils import _is_adapter_param_name, is_lora_enabled, is_lora_model, load_lora_adapter, save_lora_checkpoint
 from .model_provider import LinearForLastLayer
 
 try:
@@ -101,11 +102,34 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
+@contextmanager
+def _exclude_adapter_params_from_sharded_state_dict(models):
+    originals = []
+    for model in unwrap_model(models):
+        original = model.sharded_state_dict
+        originals.append((model, original))
+
+        def sharded_state_dict(*args, _original=original, **kwargs):
+            state_dict = _original(*args, **kwargs)
+            return {name: value for name, value in state_dict.items() if not _is_adapter_param_name(name)}
+
+        model.sharded_state_dict = sharded_state_dict
+
+    try:
+        yield
+    finally:
+        for model, original in originals:
+            model.sharded_state_dict = original
+
+
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
 
     load_path = args.load
+    load_started = time.perf_counter()
+    if dist.get_rank() == 0:
+        logger.info("Starting checkpoint load from %s", load_path)
 
     has_local_checkpoint_manager = "local_checkpoint_manager" in (checkpointing_context or {})
     if has_local_checkpoint_manager:
@@ -118,13 +142,17 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
     if has_local_checkpoint_manager or _is_megatron_checkpoint(load_path):
         if not has_local_checkpoint_manager and is_dsv4_model(args):
             assert_checkpoint_is_current(load_path)
-        result = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+        sharded_state_dict_context = (
+            _exclude_adapter_params_from_sharded_state_dict(ddp_model) if is_lora_enabled(args) else nullcontext()
         )
+        with sharded_state_dict_context:
+            result = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     else:
         result = _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -154,6 +182,8 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_con
                     f"Training will start with freshly initialized adapter weights."
                 )
 
+    if dist.get_rank() == 0:
+        logger.info("Checkpoint load from %s completed in %.2f seconds", load_path, time.perf_counter() - load_started)
     return result
 
 

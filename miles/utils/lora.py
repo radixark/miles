@@ -25,3 +25,8 @@ def lora_rollout_enabled(args: Namespace) -> bool:
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     """LoRA + --colocate + --lora-base-cpu-backup all set."""
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
+
+
+def lora_rollout_base_retained(args: Namespace) -> bool:
+    """The engines never release the frozen base, so a LoRA sync need not re-push it."""
+    return not args.offload_rollout or "weight" not in args.offload_rollout_level

@@ -8,7 +8,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.utils.environ import enable_experimental_ft_trainer
 from ..utils.ray_utils import compute_ray_pin_head_options
-from .rollout.rollout_manager import RolloutManager
+from .rollout.rollout_manager import RolloutManager, get_rollout_offload_tags
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +221,6 @@ def create_rollout_manager(args, pg):
             # keep weight on GPU to reduce peak CPU memory
             ray.get(rollout_manager.offload_kv.remote())
         else:
-            ray.get(rollout_manager.offload.remote())
+            ray.get(rollout_manager.offload.remote(tags=get_rollout_offload_tags(args)))
 
     return rollout_manager, num_rollout_per_epoch

@@ -14,7 +14,7 @@ from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.session import check_weight_sync_results
-from miles.utils.lora import lora_base_cpu_backup_enabled, lora_rollout_enabled
+from miles.utils.lora import lora_base_cpu_backup_enabled, lora_rollout_base_retained, lora_rollout_enabled
 
 try:
     from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket  # type: ignore[import]
@@ -164,7 +164,7 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         base_persists = (
             self.use_distribute
             or lora_base_cpu_backup_enabled(self.args)
-            or (self.args.colocate and not self.args.offload_rollout)
+            or (self.args.colocate and lora_rollout_base_retained(self.args))
         )
         self.needs_base_resync_for_lora = self.args.check_weight_update_equal or not base_persists
 

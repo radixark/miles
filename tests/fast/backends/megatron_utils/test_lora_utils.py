@@ -18,7 +18,7 @@ from miles.backends.megatron_utils.lora_utils import (
     is_lora_enabled,
     parse_exclude_modules,
 )
-from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name, lora_rollout_base_retained
 
 # ---------------------------------------------------------------------------
 # _get_lora_class_name
@@ -213,6 +213,22 @@ class TestIsLoraEnabled:
     def test_disabled_missing_attrs(self):
         args = Namespace()
         assert is_lora_enabled(args) is False
+
+
+@pytest.mark.parametrize(
+    "offload_rollout,offload_rollout_level,expected",
+    [
+        (False, ["kv_cache", "weight"], True),
+        (True, ["kv_cache"], True),
+        (True, ["kv_cache", "weight"], False),
+    ],
+)
+def test_lora_rollout_base_retained(offload_rollout, offload_rollout_level, expected):
+    args = Namespace(
+        offload_rollout=offload_rollout,
+        offload_rollout_level=offload_rollout_level,
+    )
+    assert lora_rollout_base_retained(args) is expected
 
 
 # ---------------------------------------------------------------------------
