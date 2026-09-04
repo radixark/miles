@@ -380,6 +380,86 @@ and LR scheduler, plus a `latest_checkpointed_iteration.txt` tracker. So `--load
 **parent** directory exactly like the Megatron backend does. These are FSDP-backend
 checkpoints, not `torch_dist` ones, and the two formats are not interchangeable.
 
+### 5. Compute kernels
+
+By default (`--kernel-backend native`) every fused kernel comes from the wheels baked into the
+image: `flash_attn`, `causal_conv1d`, `flash-linear-attention` and the rest, built out of band and
+installed by `docker/Dockerfile`.
+
+`--kernel-backend hub` additionally resolves a few of them from
+[Hugging Face Hub kernel repos](https://huggingface.co/docs/kernels/en/index) instead. A kernel
+repo ships one prebuilt variant per `(torch, CUDA, C++ ABI, arch, OS)`, so the client picks a
+variant at load time and imports it from the HF cache — **no compiler on the training node, and no
+image rebuild to change a kernel.**
+
+| Flag | Effect |
+|---|---|
+| `--kernel-backend {native,hub}` | `native` (default) never imports `kernels`. `hub` loads the mapping below. |
+| `--kernel-mapping-path` | Dotted path to your own `(args) -> dict[str, HubKernelSpec]`, replacing the shipped mapping entirely. |
+| `--kernel-strict` | Raise when a repo or a function will not resolve, instead of falling back to the native kernel. |
+
+What miles ships, in `miles/backends/fsdp_utils/kernels/presets.py`:
+
+| Slot | Repo | Feeds |
+|---|---|---|
+| `gated_delta_rule` | `kernels-community/fla` v1 | GatedDeltaNet's linear-attention recurrence (Qwen3-Next, Qwen3.5, Qwen3.6) |
+| `causal_conv1d` | `kernels-community/causal-conv1d` v1 | GatedDeltaNet's short causal convolution, same architectures |
+| `flash_attn_varlen` | `kernels-community/flash-attn2` v2 | The NemotronH attention mixer's varlen path |
+
+Slots resolve independently, so one unavailable repo costs you that kernel and nothing else.
+
+These are **module-level** kernels: `kernels.get_kernel()` returns a module and miles rebinds the
+free functions HF modeling code already looks up per forward. Nothing rebinds an `nn.Module.forward`,
+so `state_dict`, `_no_split_modules` and the DTensor gather in `update_weight_utils.py` are all
+untouched — which is why the binding runs before `apply_fsdp2` and the ref model takes the same call.
+
+<Note>
+
+This is worth turning on for the packing path specifically. Every slot feeds a kernel that
+[sequence packing](#going-deeper-when-an-hf-model-needs-help) needs in order to reset state per
+packed document, and each one fails differently when its wheel is missing:
+
+- no `flash-linear-attention` — `transformers` binds `torch_chunk_gated_delta_rule`, whose signature
+  ends in `**kwargs`, so the injected `cu_seqlens` is *accepted and ignored*;
+- no `causal_conv1d` — the handle is `None` and the forward drops to `F.silu(self.conv1d(...))`,
+  which takes no `seq_idx`;
+- no `flash_attn` — the NemotronH attention patch returns the unpatched dense forward.
+
+In all three the per-document reset stops happening, nothing raises, and the only symptom is a wider
+train/rollout logprob gap. Serving the kernels from the Hub removes that failure mode without a
+wheel build.
+
+</Note>
+
+Hub kernels are rejected together with `--true-on-policy-mode` and `--deterministic-mode`: those
+modes require the training kernel to match SGLang's build exactly, and that equivalence has not been
+established per kernel yet.
+
+For clusters whose compute nodes have no egress, pin and pre-download at image build time:
+
+```toml
+# pyproject.toml
+[tool.kernels.dependencies]
+"kernels-community/fla" = 1
+"kernels-community/causal-conv1d" = 1
+"kernels-community/flash-attn2" = 2
+```
+
+```dockerfile
+RUN kernels lock . && kernels download .
+```
+
+`kernels.lock` records a commit SHA plus a per-variant SHA-256, so every rank loads a byte-identical
+kernel and the run works under `HF_HUB_OFFLINE=1`.
+
+<Tip>
+
+Attention needs none of this. `--attn-implementation` is passed straight to `from_pretrained`, and
+`transformers` resolves a Hub repo ID there on its own:
+`--attn-implementation kernels-community/flash-attn2@v2` works with `--kernel-backend native`.
+
+</Tip>
+
 ### Limits
 
 <Warning>

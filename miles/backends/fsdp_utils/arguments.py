@@ -29,6 +29,13 @@ class FSDPArgs:
 
     attn_implementation: str = "flash_attention_2"
 
+    # Compute kernels. "native" uses whatever the image's wheels provide; "hub" additionally
+    # resolves the module-level kernels in fsdp_utils/kernels/presets.py from the Hugging Face Hub
+    # (prebuilt per torch/CUDA/arch variant, no compiler on the node). See kernels/hub.py.
+    kernel_backend: str = "native"  # {"native", "hub"}
+    kernel_mapping_path: str = ""  # dotted path to (args) -> dict[str, HubKernelSpec], via load_function
+    kernel_strict: bool = False  # raise instead of falling back to the native kernel
+
     # Logging
     wandb_project: str = "miles-fsdp"
     wandb_run_name: str | None = None
@@ -120,6 +127,30 @@ def load_fsdp_args(extra_args_provider=None):
         args = parser.parse_args()
     args.bf16 = not args.fp16
     return args
+
+
+def validate_kernel_backend_args(args) -> None:
+    """Validate --kernel-backend and keep hub kernels out of the bit-exact run modes.
+
+    miles reports bit-wise identical training and inference log probs under --true-on-policy-mode,
+    which requires the training-side kernel to match SGLang's build exactly. Until that equivalence
+    is established per kernel, the two stay mutually exclusive.
+    """
+    from miles.backends.fsdp_utils.kernels.hub import KERNEL_BACKENDS
+
+    backend = getattr(args, "kernel_backend", "native")
+    if backend not in KERNEL_BACKENDS:
+        raise ValueError(f"--kernel-backend must be one of {KERNEL_BACKENDS}, got {backend!r}")
+
+    if backend != "hub":
+        if getattr(args, "kernel_strict", False):
+            raise ValueError("--kernel-strict only applies with --kernel-backend hub")
+        if getattr(args, "kernel_mapping_path", ""):
+            raise ValueError("--kernel-mapping-path only applies with --kernel-backend hub")
+        return
+
+    if getattr(args, "true_on_policy_mode", False) or getattr(args, "deterministic_mode", False):
+        raise ValueError("--kernel-backend hub is incompatible with --true-on-policy-mode / --deterministic-mode")
 
 
 def validate_hybrid_shard_args(args) -> None:
