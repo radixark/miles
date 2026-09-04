@@ -24,7 +24,10 @@ layers needing root fail there.)
 
 ```bash
 pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
-export E2B_API_KEY=e2b_...            # or a self-hosted E2B-compatible endpoint:
+mkdir -p ~/.config/e2b && echo e2b_... > ~/.config/e2b/api_key
+# the key FILE, not an exported var: this is the credential path training uses,
+# so a smoke run exercises it too (E2B_API_KEY in the env would shadow it)
+# self-hosted E2B-compatible endpoint instead of E2B Cloud:
 # export E2B_API_URL=http://<server>:8000 E2B_SANDBOX_URL=http://<server>:8000
 python scripts/sandbox_smoke/run.py --connector harbor --backend e2b
 ```
