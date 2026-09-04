@@ -1,5 +1,7 @@
 from argparse import Namespace
 
+import torch
+
 from miles.rollout.filter_hub.base_types import FilterOutput, iter_samples
 from miles.utils.types import Sample
 
@@ -11,6 +13,15 @@ def check_no_aborted(args: Namespace, samples: Group, **kwargs) -> FilterOutput:
     if any(sample.status == Sample.Status.ABORTED for sample in iter_samples(samples)):
         return FilterOutput(keep=False, reason="group_has_aborted")
     return FilterOutput(keep=True)
+
+
+def check_reward_nonzero_std(args, samples: list[Sample | list[Sample]], **kwargs):
+    rewards = [sample.get_reward_value(args) for sample in iter_samples(samples)]
+    keep = torch.tensor(rewards, dtype=torch.float64).std() > 1e-8
+    return FilterOutput(
+        keep=keep,
+        reason=None if keep else f"zero_std_{round(rewards[0], 1)}",
+    )
 
 
 def group_staleness(group: Group, current_version: int | None) -> int | None:

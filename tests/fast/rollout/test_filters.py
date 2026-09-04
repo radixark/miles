@@ -5,7 +5,10 @@ register_cpu_ci(est_time=20, suite="stage-a-cpu", labels=[])
 from argparse import Namespace
 
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput, FilterOutput, iter_samples
-from miles.rollout.filter_hub.common_filters import check_no_aborted, group_staleness
+from miles.rollout.filter_hub.common_filters import check_no_aborted, check_reward_nonzero_std, group_staleness
+from miles.rollout.filter_hub.dynamic_sampling_filters import (
+    check_reward_nonzero_std as legacy_check_reward_nonzero_std,
+)
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -27,6 +30,10 @@ def make_sample(
 
 def test_dynamic_filter_output_is_a_compatibility_alias():
     assert DynamicFilterOutput is FilterOutput
+
+
+def test_dynamic_sampling_filters_reexports_common_implementation():
+    assert legacy_check_reward_nonzero_std is check_reward_nonzero_std
 
 
 def test_iter_samples_preserves_flat_and_mixed_nested_order():
