@@ -104,6 +104,8 @@ _DEFAULT_FT_API_SERVER_PORT = 18080
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
+        parser.set_defaults(entry="train")
+
         def add_run_uuid_arguments(parser):
             parser.add_argument(
                 "--run-uuid",
@@ -1127,10 +1129,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-batch-size",
                 type=int,
-                required=True,
+                default=None,
                 help=(
                     "The number of prompts in each rollout step. "
                     "The total data returned should be rollout_batch_size * n_samples_per_prompt. "
+                    "Required for the train entry. "
                 ),
             )
             parser.add_argument(
@@ -1834,6 +1837,24 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Enable shared-outer grouped-expert LoRA (gate_up lora_A and "
                 "down lora_B shared across experts, expert_dim=1). Matches SGLang "
                 "PR #21466's experts_shared_outer_loras=True serving contract.",
+            )
+            parser.add_argument(
+                "--tinker-server-port",
+                type=int,
+                default=10613,
+                help="Port for the Tinker gateway HTTP server (default: 10613)",
+            )
+            parser.add_argument(
+                "--tinker-base-model",
+                type=str,
+                default=None,
+                help="Model name the gateway advertises and validates against (default: --hf-checkpoint)",
+            )
+            parser.add_argument(
+                "--tinker-checkpoint-root",
+                type=str,
+                default=None,
+                help="Directory for tinker:// checkpoints (default: <save>/tinker)",
             )
             parser.add_argument(
                 "--multi-lora-n-adapters",
@@ -2644,7 +2665,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
-def parse_args(add_custom_arguments=None):
+def parse_args(add_custom_arguments=None, entry="train"):
+    assert entry in ("train", "serve"), f"unknown entry {entry!r}"
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
 
@@ -2688,6 +2710,7 @@ def parse_args(add_custom_arguments=None):
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
     args.ci_enable_metrics_capture = bool(os.environ.get(RECORD_DIR_ENV))
 
+    args.entry = entry
     miles_validate_args(args)
 
     if backend == "megatron":
@@ -3470,27 +3493,30 @@ def miles_validate_args(args):
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
 
-    if args.over_sampling_batch_size is None:
-        args.over_sampling_batch_size = args.rollout_batch_size
+    if args.entry == "train":
+        assert args.rollout_batch_size is not None, "please set --rollout-batch-size"
 
-    assert args.over_sampling_batch_size >= args.rollout_batch_size, (
-        f"over_sampling_batch_size {args.over_sampling_batch_size} should be greater than or equal to "
-        f"rollout_batch_size {args.rollout_batch_size}"
-    )
+        if args.over_sampling_batch_size is None:
+            args.over_sampling_batch_size = args.rollout_batch_size
 
-    if args.num_epoch is not None:
-        if args.num_rollout is not None:
-            logger.info("Both num_epoch and num_rollout are set, num_epoch will be ignored.")
-        else:
-            assert args.rollout_global_dataset, (
-                "num_epoch is set, but rollout_global_dataset is not set, "
-                "please remove --disable-rollout-global-dataset to use num_epoch"
-            )
-    else:
-        # if num_epoch is not set, we should set num_rollout
-        assert args.num_rollout is not None, (
-            "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
+        assert args.over_sampling_batch_size >= args.rollout_batch_size, (
+            f"over_sampling_batch_size {args.over_sampling_batch_size} should be greater than or equal to "
+            f"rollout_batch_size {args.rollout_batch_size}"
         )
+
+        if args.num_epoch is not None:
+            if args.num_rollout is not None:
+                logger.info("Both num_epoch and num_rollout are set, num_epoch will be ignored.")
+            else:
+                assert args.rollout_global_dataset, (
+                    "num_epoch is set, but rollout_global_dataset is not set, "
+                    "please remove --disable-rollout-global-dataset to use num_epoch"
+                )
+        else:
+            # if num_epoch is not set, we should set num_rollout
+            assert args.num_rollout is not None, (
+                "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
+            )
 
     if args.enable_mtp_training:
         assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"
