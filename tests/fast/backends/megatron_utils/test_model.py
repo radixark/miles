@@ -2,7 +2,6 @@ import logging
 from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import Any
-from unittest.mock import Mock
 
 import pytest
 import torch
@@ -11,7 +10,7 @@ import torch
 def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) -> None:
     """Deterministic clipping must use FP64 without changing other optimizer instances."""
     from megatron.core.optimizer import optimizer as megatron_optimizer_module
-    from megatron.core.optimizer.optimizer import ChainedOptimizer
+    from megatron.core.optimizer.optimizer import ChainedOptimizer, MegatronOptimizer
 
     from miles.backends.megatron_utils.model import _use_deterministic_grad_norm
 
@@ -24,12 +23,22 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
 
     original_grad_norm = megatron_optimizer_module.get_grad_norm_fp32
     config = object()
-    child_optimizer = Mock(
-        config=config,
-        is_stub_optimizer=False,
-        get_grads_for_grad_norm=Mock(return_value=[torch.tensor([3.0, 4.0]), torch.tensor([12.0])]),
-        get_grad_stats_parallel_group=Mock(return_value=None),
-    )
+
+    class FakeChildOptimizer:
+        get_grad_norm = MegatronOptimizer.get_grad_norm
+
+        def __init__(self, grad_stats_parallel_group: object = None) -> None:
+            self.config = config
+            self.is_stub_optimizer = False
+            self._grad_stats_parallel_group = grad_stats_parallel_group
+
+        def get_grads_for_grad_norm(self, grad_norm_group: str | None = None) -> list[torch.Tensor]:
+            return [torch.tensor([3.0, 4.0]), torch.tensor([12.0])]
+
+        def get_grad_stats_parallel_group(self) -> object:
+            return self._grad_stats_parallel_group
+
+    child_optimizer = FakeChildOptimizer()
     original_optimizer = ChainedOptimizer([child_optimizer])
     original_marker = object()
     original_optimizer.marker = original_marker
@@ -37,11 +46,7 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
     nonshared_optimizer = ChainedOptimizer(
         [
             child_optimizer,
-            Mock(
-                config=config,
-                is_stub_optimizer=False,
-                get_grad_stats_parallel_group=Mock(return_value=object()),
-            ),
+            FakeChildOptimizer(grad_stats_parallel_group=object()),
         ]
     )
 
@@ -49,6 +54,8 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
         pass
 
     specialized_optimizer = SpecializedChainedOptimizer([child_optimizer])
+    single_specialized_child_optimizer = ChainedOptimizer([specialized_optimizer])
+    empty_optimizer = ChainedOptimizer([])
     deterministic_optimizer = _use_deterministic_grad_norm(original_optimizer)
 
     assert deterministic_optimizer is original_optimizer
@@ -60,6 +67,10 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
     assert nonshared_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
     assert _use_deterministic_grad_norm(specialized_optimizer) is specialized_optimizer
     assert specialized_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
+    assert _use_deterministic_grad_norm(single_specialized_child_optimizer) is single_specialized_child_optimizer
+    assert single_specialized_child_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
+    assert _use_deterministic_grad_norm(empty_optimizer) is empty_optimizer
+    assert empty_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
     assert megatron_optimizer_module.get_grad_norm_fp32 is original_grad_norm
 
 

@@ -59,10 +59,21 @@ logger = logging.getLogger(__name__)
 
 
 def _use_deterministic_grad_norm(optimizer: MegatronOptimizer) -> MegatronOptimizer:
-    if type(optimizer) is ChainedOptimizer and optimizer.grads_states_parallel_group_is_shared():
+    if _can_use_deterministic_grad_norm(optimizer):
         optimizer.get_grad_norm = MethodType(_get_chained_grad_norm_fp64, optimizer)
         optimizer._get_grad_norm_for_group = MethodType(_get_chained_grad_norm_fp64, optimizer)
     return optimizer
+
+
+def _can_use_deterministic_grad_norm(optimizer: MegatronOptimizer) -> bool:
+    if type(optimizer) is not ChainedOptimizer or not optimizer.chained_optimizers:
+        return False
+    if (
+        len(optimizer.chained_optimizers) == 1
+        and type(optimizer.chained_optimizers[0]).get_grad_norm is not MegatronOptimizer.get_grad_norm
+    ):
+        return False
+    return optimizer.grads_states_parallel_group_is_shared()
 
 
 @torch.no_grad()
@@ -267,8 +278,7 @@ def setup_model_and_optimizer(
     if (
         args.deterministic_mode
         and config.clip_grad > 0
-        and type(optimizer) is ChainedOptimizer
-        and optimizer.grads_states_parallel_group_is_shared()
+        and _can_use_deterministic_grad_norm(optimizer)
     ):
         optimizer = _use_deterministic_grad_norm(optimizer)
         logger.info("Using FP64 gradient norm accumulation in deterministic mode")
