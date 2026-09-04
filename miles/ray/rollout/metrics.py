@@ -123,7 +123,7 @@ def _compute_metrics_from_samples(args, samples):
             log_dict[f"{metric_prefix}/{mtype}"] = np.mean(
                 [any(m.get("type") == mtype for m in v) for v in tito_vals]
             ).item()
-        if args.ci_test:
+        if args.ci_test and not args.ci_disable_tito_strict_checker:
             for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
                 rate = log_dict.get(f"{metric_prefix}/{strict_type}", 0)
                 assert (
