@@ -79,6 +79,7 @@ async def test_post_methods_hit_the_server_url_with_expected_payload(client, rec
         "serialized_named_tensors": ["a"],
         "load_format": "direct",
         "flush_cache": True,
+        "selector": "all",
     }
     assert recorder.calls[1][2]["json"] == {"new_version": "run-0001", "abort_all_requests": True}
 
