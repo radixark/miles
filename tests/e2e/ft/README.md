@@ -9,7 +9,7 @@
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
 |------|------|-----------------|
 | `scenario_no_failure` | Comparison | indep_dp matches normal DP when no faults |
-| `scenario_with_failure` | Comparison, multi-phase | faulted indep_dp matches no-fault indep_dp after ckpt resume |
+| `scenario_with_failure` | Comparison, multi-phase | indep_dp matches normal DP after fault + ckpt resume |
 | `scenario_deterministic` | Comparison, multi-phase | healing state transfer is bitwise-correct (stop+start), on cold start and on resume from a post-healing ckpt |
 | `scenario_ft_random` | Non-comparison | system survives random crashes without hanging |
 | `scenario_realistic_gsm8k` | Non-comparison | model still reaches gsm8k accuracy under random crashes |
@@ -120,8 +120,7 @@ Roughly equal, not bitwise — allreduce kernel ordering differs across topologi
 ### `scenario_with_failure`
 
 ```
-Type: comparison, multi-phase (baseline=indep_dp with planned topology changes, target=indep_dp with faults;
-phase_a + phase_b)
+Type: comparison, multi-phase (phase_a + phase_b)
 Phase A steps: 1, Phase B steps: 3 (rollouts 1..3; --num-rollout 4 resumed from the
 rollout-0 checkpoint), metrics rtol: 5e-2
 
@@ -131,9 +130,7 @@ Phase A (both baseline and target):
 
 Phase B — baseline:
   1. Resume from phase_a checkpoint
-  2. Rollout 1: N cells normal, then stop the last cell
-  3. Rollout 2: reconfigure to N-1 cells and commit, then start the last cell
-  4. Rollout 3: heal to N cells and train with the healed cell
+  2. Run 3 normal steps (rollouts 1..3)
 
 Phase B — target:
   1. Resume from phase_a checkpoint
@@ -148,12 +145,12 @@ Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm 
 also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault/injected rollouts'
 grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
 
-Healing witness: both phase_b event dirs must contain exactly two CellReconfigureEvents,
-in order — a shrink at rollout 2 and a healing at rollout 3 (healed = last cell, ckpt
-src = cell 0, alive back to N). The baseline's shrink is planned after rollout 1; the
-target's shrink at the fault rollout is positive proof the injected crash fired and its
-failed attempt was discarded before the successful retry. Phase_a event dirs must
-contain zero reconfigure events.
+Healing witness: the target phase_b event dir must contain exactly two
+CellReconfigureEvents, in order — a shrink at rollout 2 (alive N -> N-1, positive proof
+the fault injection fired) and a healing at rollout 3 (healed = last cell, ckpt src =
+cell 0, alive back to N). Baseline and phase_a event dirs must contain zero reconfigure
+events. This positively proves the crash -> shrink -> heal path executed; without it the
+comparison could silently degenerate to two fault-free runs.
 
 Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.
@@ -164,15 +161,12 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
-- Baseline and target both use indep_dp. The baseline uses only planned stop/start actions; the target alone executes crash→discard→retry. Both shrink and heal at the same rollout boundaries, preventing topology history from contaminating the recovery comparison.
 - The fault and post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout).
-- Why inject: baseline and target otherwise train the fault commit from separately sampled responses. Under live sampling, different content can flip subsequent sampled tokens and invalidate strict A/B comparison. Injection makes the successful commits' training inputs identical by construction; the planned baseline shrink also gives those commits identical microbatch accumulation brackets.
+- Why inject: the degraded-quorum commit accumulates microbatches in a different fp bracketing than the fault-free side — a fault-inherent ulp diff no collective ordering removes. Under live sampling it flips sampled tokens, after which the two runs' rollout data diverges wholesale, so a strict vs-baseline comparison of real-sampled fault-and-post-fault rollouts is ill-posed. Injection makes training inputs identical by construction without relaxing their assertions.
 - Stays real on the target: engines + generation (samples discarded), `update_weights` after the degraded commit and after healing, health-monitor pause/resume — the whole crash→retry→heal→weight-sync path.
-- The fault-free reference plans the same successful topology: it stops the spare cell after rollout 1, commits rollout 2 on one cell without a crash, then heals before rollout 3. The target alone performs the failed DP2 attempt and retry, while both successful commits use identical microbatch accumulation brackets; post-fault tensor checks therefore do not need to absorb topology-induced floating-point history.
 - Post-healing `update_weights` is consumed: real_rollout asserts the target pushed bitwise-identical engine weights to the baseline (see inference engine weight checksum).
-- Witness tensors use retry-local ring-buffer IDs, so their raw embedding rows are not a cross-run coordinate system. The generic tensor comparator excludes them; the final comparison instead runs the event analyzer over every phase, which uses the latest attempt's allocated IDs and strictly checks missing/extra/stale rows, zero-advantage samples, and cross-cell checksums within each run.
-- Injected rollouts retain the existing calibrated `max_abs <= 3e-3` floor on the **selected noisy grad families only** (decoder-layer QK-norms, folded `layer_norm_weight`s, attn/MLP matrices). The matched successful-commit topology does not rely on this floor: the final validation produced zero tensor difference for every compared model tensor. Embedding/output/final-norm grads, all activations, and all pre-fault rollouts keep the strict set.
-- Generation is still asserted: each injected rollout checks generated responses match the recording at a mean per-token ratio above threshold with bitwise-identical prompts (`RolloutDataInjectionUtil.assert_matches_generated`). Gross weight bugs (e.g. broken `update_weights`) drop the ratio ~2 orders → still fail. Exact fault/post-fault sampled content beyond the ratio is not asserted. Pre-fault rollouts are not injected (real comparison).
+- Post-fault rollouts' dump comparison floors `max_abs <= 3e-3` on the **noisy grad families only** (decoder-layer QK-norms, folded `layer_norm_weight`s, attn/MLP matrices): training data is bitwise-identical, but target weights carry the degraded commit's ulp drift, landing as <=2.8e-3 absolute noise in those near-zero grads while real grads sit ~1e-2 (40 tensors, 2026-06-12; same argument as the 1e-3 QK-norm floor, recalibrated for the dense model). Embedding/output/final-norm grads, all activations, and the fault-and-earlier rollouts keep the strict set.
+- Generation is still asserted: each injected rollout checks generated responses match the recording at a mean per-token ratio above threshold with bitwise-identical prompts (`RolloutDataInjectionUtil.assert_matches_generated`). Gross weight bugs (e.g. broken `update_weights`) drop the ratio ~2 orders → still fail. Exact fault-and-post-fault sampled content beyond the ratio is not asserted. The target still runs generation before replacing its training data. Only rollout 1 is pre-fault and not injected (real comparison).
 
 Guard calibration (2026-06-12, first post-fault rollout, 256 samples, correct weights; metric counts everything after a response's first flipped token as mismatched):
 

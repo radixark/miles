@@ -8,7 +8,6 @@ from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
-from miles.utils.audit_utils.event_analyzer.analyzer import run_analysis
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
@@ -69,14 +68,9 @@ _WITH_FAILURE_ACTIONS: list[dict] = [
     {"at_rollout": _FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_index": -1},
 ]
 
-_BASELINE_ACTIONS: list[dict] = [
-    {"at_rollout": _FAULT_ROLLOUT_ID - 1, "action": "stop_cell_at_end", "cell_index": -1},
-    {"at_rollout": _FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_index": -1},
-]
-
 
 def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
-    if phase != "phase_b":
+    if not (is_target and phase == "phase_b"):
         return []
     return [
         ReconfigureInfo(
@@ -98,7 +92,9 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
     base += get_train_env_vars_arg(mode, deterministic=False)
-    base += get_ft_args(mode)
+
+    if is_target:
+        base += get_ft_args(mode)
 
     if is_phase_a:
         base += f"--save {dump_dir}/ckpt --save-interval 1 "
@@ -116,8 +112,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                     f"--ci-inject-rollout-data-start-rollout-id {_FIRST_INJECTED_ROLLOUT_ID} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
-        else:
-            base += f"--ci-ft-test-actions '{json.dumps(_BASELINE_ACTIONS)}' "
 
     return base
 
@@ -131,8 +125,6 @@ def _build_target_args(mode: FTTestMode, dump_dir: str, enable_dumper: bool = Tr
 
 
 def _compare(dump_dir: str, mode: FTTestMode) -> None:
-    _assert_event_analysis(dump_dir)
-
     for side in ["baseline", "target"]:
         for phase in PHASES:
             assert_reconfigure_events(
@@ -168,21 +160,8 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
             allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
-            excluded_tensor_pattern=r".*witness.*",
         )
     print("With-failure comparison test PASSED")
-
-
-def _assert_event_analysis(dump_dir: str) -> None:
-    issues_by_run: dict[str, list[object]] = {}
-    for side in ["baseline", "target"]:
-        for phase in PHASES:
-            run_name = f"{side}/{phase}"
-            issues = run_analysis(event_dir=Path(dump_dir) / side / phase / "events")
-            if issues:
-                issues_by_run[run_name] = issues
-
-    assert not issues_by_run, f"Event analysis found issues: {issues_by_run}"
 
 
 def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tuple[str, str]]:

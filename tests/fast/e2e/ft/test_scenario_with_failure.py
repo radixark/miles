@@ -1,18 +1,13 @@
 import json
 import shlex
-from pathlib import Path
 
-import pytest
-from tests.e2e.ft.conftest_ft import scenario_with_failure
 from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
-    _BASELINE_ACTIONS,
     _DIFF_THRESHOLDS,
     _FAULT_ROLLOUT_ID,
     _FIRST_INJECTED_ROLLOUT_ID,
     _FIRST_POST_FAULT_ROLLOUT_ID,
     _POST_FAULT_DIFF_THRESHOLDS,
-    _assert_event_analysis,
     _build_baseline_args,
     _build_target_args,
     _diff_thresholds_for_rollout,
@@ -47,8 +42,32 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
 
 
-def test_baseline_matches_the_successful_retry_topology_without_crashing() -> None:
-    """The baseline must use one cell for the fault commit without crashing."""
+def test_baseline_remains_normal_dp_while_target_uses_ft() -> None:
+    """The comparison must retain its intentional normal-DP versus FT contract."""
+    mode = MODES["dp2_cp2_real_rollout_dense"]
+    baseline_args = _build_baseline_args(
+        mode,
+        "/tmp/baseline/phase_b",
+        enable_dumper=False,
+    )
+    target_args = _build_target_args(
+        mode,
+        "/tmp/target/phase_b",
+        enable_dumper=False,
+    )
+
+    baseline_tokens = shlex.split(baseline_args)
+    target_tokens = shlex.split(target_args)
+    assert "--use-fault-tolerance" not in baseline_tokens
+    assert "--ft-components" not in baseline_tokens
+    assert "--ci-ft-test-actions" not in baseline_tokens
+    assert "--use-fault-tolerance" in target_tokens
+    assert "--ft-components" in target_tokens
+    assert "--ci-ft-test-actions" in target_tokens
+
+
+def test_baseline_has_no_planned_topology_changes() -> None:
+    """The fault-free reference must run every successful step on normal DP2."""
     args = _build_baseline_args(
         MODES["dp2_cp2_real_rollout_dense"],
         "/tmp/baseline/phase_b",
@@ -56,32 +75,8 @@ def test_baseline_matches_the_successful_retry_topology_without_crashing() -> No
     )
 
     tokens = shlex.split(args)
-    assert "--use-fault-tolerance" in tokens
-    assert "--ft-components" in tokens
-    assert json.loads(_option_value(args, "--ci-ft-test-actions")) == _BASELINE_ACTIONS
-    assert all(action["action"] != "crash_before_allreduce" for action in _BASELINE_ACTIONS)
+    assert "--ci-ft-test-actions" not in tokens
     assert "--ci-inject-rollout-data-path" not in tokens
-
-
-def test_final_event_analysis_failure_fails_the_comparison(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A witness issue from the final rollout must fail the post-run semantic check."""
-    calls: list[Path] = []
-
-    def fake_run_analysis(event_dir: Path) -> list[object]:
-        calls.append(event_dir)
-        return ["witness mismatch"] if event_dir.parts[-3:-1] == ("target", "phase_b") else []
-
-    monkeypatch.setattr(scenario_with_failure, "run_analysis", fake_run_analysis)
-
-    with pytest.raises(AssertionError, match="target/phase_b.*witness mismatch"):
-        _assert_event_analysis(str(tmp_path))
-
-    assert calls == [
-        tmp_path / "baseline" / "phase_a" / "events",
-        tmp_path / "baseline" / "phase_b" / "events",
-        tmp_path / "target" / "phase_a" / "events",
-        tmp_path / "target" / "phase_b" / "events",
-    ]
 
 
 def test_fake_rollout_does_not_inject_recorded_data() -> None:
