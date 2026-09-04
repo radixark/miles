@@ -4,7 +4,6 @@ from collections.abc import Callable, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig

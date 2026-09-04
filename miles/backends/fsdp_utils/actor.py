@@ -5,7 +5,6 @@ from argparse import Namespace
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
-import ray
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
