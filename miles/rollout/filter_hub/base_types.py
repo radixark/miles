@@ -3,20 +3,23 @@ from dataclasses import dataclass
 
 
 @dataclass
-class DynamicFilterOutput:
+class FilterOutput:
     keep: bool
     reason: str | None = None
 
 
+DynamicFilterOutput = FilterOutput
+
+
 def call_dynamic_filter(fn, *args, **kwargs):
     if fn is None:
-        return DynamicFilterOutput(keep=True)
+        return FilterOutput(keep=True)
 
     output = fn(*args, **kwargs)
 
     # compatibility for legacy version
-    if not isinstance(output, DynamicFilterOutput):
-        output = DynamicFilterOutput(keep=output)
+    if not isinstance(output, FilterOutput):
+        output = FilterOutput(keep=output)
 
     return output
 

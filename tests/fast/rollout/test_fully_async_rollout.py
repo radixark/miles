@@ -12,7 +12,7 @@ import pytest
 import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
-from miles.rollout.filter_hub.base_types import DynamicFilterOutput
+from miles.rollout.filter_hub.base_types import FilterOutput
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 N_SAMPLES_PER_PROMPT = 2
@@ -347,7 +347,7 @@ async def test_nested_group_recycles_the_flat_prompt_group(monkeypatch):
 
 def reject_group_1(args, group, **kwargs):
     keep = group[0].group_index != 1
-    return DynamicFilterOutput(keep=keep, reason=None if keep else "rejected")
+    return FilterOutput(keep=keep, reason=None if keep else "rejected")
 
 
 async def test_dynamic_filter_drops_group_without_recycling(monkeypatch):
