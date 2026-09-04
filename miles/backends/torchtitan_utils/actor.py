@@ -302,7 +302,11 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if dist.get_rank() == 0:
             ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
-        if self.args.ci_test and info.rollout_engines:
+        # weight_version stays 0 when the protocol declined the sync, which
+        # disk-delta does on its first call: that one only captures the baseline
+        # its next sync diffs against. Nothing was published, so there is no
+        # version for the engine to agree with yet.
+        if self.args.ci_test and info.rollout_engines and self.weight_updater.weight_version > 0:
             engine = random.choice(info.rollout_engines)
             engine_version = ray.get(engine.get_weight_version.remote())
             if str(engine_version) != str(self.weight_updater.weight_version):
