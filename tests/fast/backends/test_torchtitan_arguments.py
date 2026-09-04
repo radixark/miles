@@ -45,24 +45,14 @@ def test_sdpa_is_rejected_outright(monkeypatch):
         validate_torchtitan_args(_args(titan_attn_backend="sdpa"))
 
 
-@pytest.mark.parametrize(
-    ("backend", "needed"),
-    [("flex", "2.13"), ("flex_flash", "2.13"), ("varlen", "2.12")],
-)
-def test_attention_backends_carry_their_own_torch_threshold(monkeypatch, backend, needed):
-    """flex and varlen do not unblock at the same torch version: varlen_attn(enable_gqa=)
-    is public from 2.12, create_block_mask(separate_full_blocks=) only from 2.13. Quoting
-    one threshold for both is how a 2.12 bump would drop the gate and break flex."""
-    monkeypatch.setattr(torch, "__version__", "2.11.0")
-    with pytest.raises(ValueError, match=f"torch>={needed}"):
-        validate_torchtitan_args(_args(titan_attn_backend=backend))
-
-
-def test_varlen_passes_on_212_while_flex_still_needs_213(monkeypatch):
+def test_the_backend_needs_torch_213(monkeypatch):
+    """The stack pins torch 2.13; flex's create_block_mask(separate_full_blocks=) is
+    only public from there, and the compat shims are written against it."""
     monkeypatch.setattr(torch, "__version__", "2.12.0")
-    validate_torchtitan_args(_args(titan_attn_backend="varlen"))
     with pytest.raises(ValueError, match="torch>=2.13"):
-        validate_torchtitan_args(_args(titan_attn_backend="flex"))
+        validate_torchtitan_args(_args())
+    monkeypatch.setattr(torch, "__version__", "2.13.0")
+    validate_torchtitan_args(_args(titan_attn_backend="varlen"))
 
 
 def test_pipeline_parallelism_is_accepted(monkeypatch):
@@ -108,9 +98,7 @@ def test_without_a_context_bound_the_response_must_leave_room_for_a_prompt(monke
         validate_torchtitan_args(
             _args(titan_seq_len=8192, rollout_max_context_len=None, rollout_max_response_len=8192)
         )
-    validate_torchtitan_args(
-        _args(titan_seq_len=16384, rollout_max_context_len=None, rollout_max_response_len=8192)
-    )
+    validate_torchtitan_args(_args(titan_seq_len=16384, rollout_max_context_len=None, rollout_max_response_len=8192))
 
 
 def test_periodic_reference_refresh_is_rejected_rather_than_ignored(monkeypatch):
