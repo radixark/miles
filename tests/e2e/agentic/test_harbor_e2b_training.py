@@ -61,9 +61,7 @@ def preflight():
     """Fail fast with instructions instead of failing every trial later."""
     api_url = os.environ.get("E2B_API_URL", "").strip()
     if not api_url:
-        sys.exit(
-            "set E2B_API_URL (and E2B_SANDBOX_URL) to your E2B-compatible service; see the module docstring"
-        )
+        sys.exit("set E2B_API_URL (and E2B_SANDBOX_URL) to your E2B-compatible service; see the module docstring")
     key_file = Path(os.environ.get("E2B_API_KEY_FILE", "~/.config/e2b/api_key")).expanduser()
     # non-empty, mirroring the real check (credentials.sandbox_key_supply): an
     # empty placeholder file must fail here, not deep inside training

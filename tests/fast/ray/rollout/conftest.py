@@ -119,6 +119,7 @@ def make_args(**overrides: Any) -> Namespace:
         save=None,
         # CI
         ci_test=False,
+        ci_disable_tito_strict_checker=False,
         # dumper (sglang debug dumper integration)
         dumper_enable=False,
         dumper_inference=False,
