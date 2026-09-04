@@ -258,9 +258,7 @@ class DeepSeekV4Attention(MegatronModule):
         qr = q = self.q_layernorm(q_after_wq_a)
         q_after_wq_b = self.linear_q_up_proj(q)[0]
         q = q_after_wq_b.unflatten(-1, (self.n_local_heads, self.head_dim))
-        q_fp32 = q.float()
-        q = (q_fp32 * torch.rsqrt(q_fp32.square().mean(-1, keepdim=True) + self.eps)).to(q.dtype)
-        q = q.clone()
+        q = torch.nn.functional.rms_norm(q, (self.head_dim,), eps=self.eps)
         apply_rotary_emb(q[..., -rd:], freqs_cis)
 
         kv_after_wkv = self.linear_kv_proj(x)[0]
