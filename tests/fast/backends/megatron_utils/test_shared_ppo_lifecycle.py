@@ -69,7 +69,14 @@ def actor_module():
 
 def _worker(actor_module, role, *, asleep=True):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
-    worker.args = Namespace(offload_train=True, debug_rollout_only=False)
+    worker.args = Namespace(
+        offload_train=True,
+        debug_rollout_only=False,
+        deterministic_mode=False,
+        use_distributed_optimizer=True,
+        multi_lora=False,
+    )
+    worker._indep_dp_info = SimpleNamespace(num_cells=1, alive_size=1)
     worker.role = role
     worker._asleep = asleep
     worker._heartbeat = Mock()

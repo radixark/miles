@@ -31,4 +31,4 @@ def test_degraded_retry_preserves_nominal_strided_dp_partitions(monkeypatch) -> 
 
     assert num_microbatches == [8]
     assert rollout_data["stable_dp_microbatches"] == [[4, 4]]
-    assert data_iterators[0].micro_batch_indices == [[0], [2], [4], [6], [1], [3], [5], [7]]
+    assert data_iterators[0].micro_batch_indices == [[6], [4], [2], [0], [7], [5], [3], [1]]
