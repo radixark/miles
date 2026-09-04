@@ -122,7 +122,8 @@ class DefaultDataBuffer(DataBuffer):
     def _preput_filter(self, input: DataBufferInput) -> bool:
         output = check_no_aborted(self._args, input.group)
         if not output.keep:
-            self._handle_aborted(input.prompt_group)
+            self._metric_aborted_groups += 1
+            self._unused_handler_fn(input.prompt_group)
             return False
 
         output = call_dynamic_filter(self._dynamic_filter, self._args, input.group)
@@ -130,10 +131,6 @@ class DefaultDataBuffer(DataBuffer):
             self._metric_gatherer.on_dynamic_filter_drop(reason=output.reason)
             return False
         return True
-
-    def _handle_aborted(self, prompt_group: list[Sample]) -> None:
-        self._metric_aborted_groups += 1
-        self._unused_handler_fn(prompt_group)
 
     async def get(self, current_version: int | None = None, **_) -> DataBufferInput:
         if current_version is not None:
@@ -149,14 +146,11 @@ class DefaultDataBuffer(DataBuffer):
                 if staleness is not None:
                     self._metric_consumed_staleness.append(staleness)
                     if self._args.max_weight_staleness is not None and staleness > self._args.max_weight_staleness:
-                        self._handle_stale(entry.prompt_group, staleness)
+                        logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
+                        self._metric_stale_groups += 1
+                        self._unused_handler_fn(entry.prompt_group)
                         continue
                 return entry
-
-    def _handle_stale(self, prompt_group: list[Sample], staleness: int) -> None:
-        logger.info(f"Filtered stale group ({staleness=} > max={self._args.max_weight_staleness})")
-        self._metric_stale_groups += 1
-        self._unused_handler_fn(prompt_group)
 
     def get_metrics(self) -> dict[str, float]:
         prefix = "rollout/fully_async/"
