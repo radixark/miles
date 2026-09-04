@@ -89,6 +89,8 @@ def prepare():
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     if not (Path(TASKS_DIR) / SMOKE_TASK).is_dir():
+        # clear any partial clone (an interrupted one leaves a non-empty dir git refuses)
+        shutil.rmtree(TASKS_DIR, ignore_errors=True)
         U.exec_command_cpu(f"git clone --depth 1 {TB2_REPO} {TASKS_DIR}")
     # One prompt, run as a GRPO group of 2: the instruction text is unused by the
     # Harbor path (the task directory carries it) but must be non-empty.
