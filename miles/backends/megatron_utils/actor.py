@@ -28,7 +28,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.multi_lora import AdapterSpec, is_multi_lora_enabled
+from miles.utils.multi_lora import AdapterSpec
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -271,7 +271,6 @@ class MegatronTrainRayActor(TrainRayActor):
             is_lora=is_lora,
             lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
         )
-
 
         # empty cache after initialization
         clear_memory()
@@ -829,7 +828,6 @@ class MegatronTrainRayActor(TrainRayActor):
             print_memory("before update_weights")
             self.weight_updater.update_weights()
             print_memory("after update_weights")
-
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
