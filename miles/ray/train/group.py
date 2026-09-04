@@ -384,6 +384,10 @@ class TrainerController:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
+    async def offload_grad_buffer(self):
+        # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
+        await self._execute_all_alive_and_catch("offload_grad_buffer")
+
     async def reconcile_adapters(self) -> None:
         await asyncio.gather(*[cell.execute("reconcile_adapters") for cell in self._cells])
 
