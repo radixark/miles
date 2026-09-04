@@ -269,6 +269,10 @@ async def generate(args: Namespace, sample: Sample, sampling_params: dict[str, A
             f"prompt_tokens={output['meta_info'].get('prompt_tokens')} response={len(new_response_tokens)} "
             f"unexpanded_tokens={len(sample.tokens)}"
         )
+        assert _re.size == 0 or _re.any(), (
+            "routed_experts payload is all zeros: the sglang engine did not capture routed experts "
+            "(topk-bypassing --moe-runner-backend such as flashinfer_trtllm?)."
+        )
         sample.rollout_routed_experts = _re.reshape(_ntok, args.num_layers, _topk)
     if "indexer_topk" in output["meta_info"]:
         sample.rollout_indexer_topk = get_indexer_topk_from_response(args, output, sample)
