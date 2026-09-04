@@ -36,7 +36,7 @@ Harbor backend; the table lists only pairs a training run has used.
 
 | Sandbox provider | Used within | Guide |
 |---|---|---|
-| [AgentENV](https://github.com/kvcache-ai/AgentENV) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
+| [AgentENV](https://github.com/kvcache-ai/AgentENV) | Harbor, OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/agentenv) |
 | [Daytona](https://www.daytona.io/) | Harbor, HUD, NeMo Gym, OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 | [E2B](https://e2b.dev/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
 | [Modal](https://modal.com/) | OpenEnv | [example](https://github.com/radixark/miles/tree/main/examples/experimental/openenv) |
