@@ -173,8 +173,6 @@ def is_lora_model(model: Sequence[torch.nn.Module]) -> bool:
             if "lora_" in name or "adapter" in name:
                 return True
     return False
-
-
 def _is_adapter_param_name(name: str) -> bool:
     """Check if a parameter name belongs to a LoRA adapter (Megatron internal naming)."""
     return "lora_" in name or (".adapter." in name and ("linear_in" in name or "linear_out" in name))

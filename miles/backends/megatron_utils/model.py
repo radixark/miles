@@ -50,7 +50,7 @@ from .ci_utils import (
     save_model_hashes,
 )
 from .initialize import is_first_replica_megatron_main_rank
-from .lora_utils import is_lora_enabled, is_lora_model
+from .lora.utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
@@ -62,7 +62,7 @@ def _has_loadable_ckpt(load_dir: str | None) -> bool:
     return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
 
 
-from .bridge_lora_helpers import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
+from .lora.bridge import _ensure_model_list, _setup_lora_model_via_bridge  # noqa: F401
 
 
 def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer) -> OptimizerParamScheduler:
@@ -197,7 +197,7 @@ def setup_model_and_optimizer(
             layer_wise_distributed_optimizer="dist" in config.optimizer.lower(),
         )
     elif is_multi_lora_enabled(args):
-        from miles.backends.megatron_utils.multi_lora_optimizer import build_multi_lora_optimizer
+        from miles.backends.megatron_utils.lora.optimizer import build_multi_lora_optimizer
 
         optimizer = build_multi_lora_optimizer(args, config, model)
     else:
@@ -431,10 +431,6 @@ def train_one_step(
     Runs forward/backward over ``num_microbatches``, applies optimizer step and
     one scheduler step when gradients are valid.
 
-    Multi-LoRA: gradients are retained across train calls (per-adapter
-    gradient accumulation); only the slots in the batch's ``step_slots`` step,
-    and only their gradients are zeroed.
-
     Args:
         args: Runtime arguments.
         rollout_id: Rollout identifier.
@@ -453,16 +449,7 @@ def train_one_step(
     parallel_state = get_parallel_state()
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=rollout_id)
     disable_optimizer = args.debug_disable_optimizer or optimizer is None
-    multi_lora = is_multi_lora_enabled(args)
-
-    if multi_lora:
-        from miles.backends.megatron_utils.multi_lora_optimizer import reset_grad_metadata_keep_grads
-
-        # Retain accumulated per-adapter gradients; reset only the per-iteration
-        # DDP bookkeeping. Slot grads are zeroed selectively at step time.
-        reset_grad_metadata_keep_grads(model)
-    else:
-        _zero_grads(model, optimizer, disable_optimizer)
+    _zero_grads(model, optimizer, disable_optimizer)
 
     if args.custom_megatron_before_train_step_hook_path:
         from miles.utils.function_registry import load_function
@@ -595,7 +582,7 @@ def train_one_step(
             outcome = TrainStepOutcome.DISCARDED_SHOULD_RETRY
             valid_step = False
 
-    if (not disable_optimizer) and (not multi_lora) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
+    if (not disable_optimizer) and (not getattr(args, "check_for_nan_in_loss_and_grad", True)):
         found_inf_flag = optimizer.prepare_grads()
         if found_inf_flag:
             valid_step = False
@@ -620,24 +607,11 @@ def train_one_step(
         dumper_phase_util.finalize(model)
 
     if not disable_optimizer and valid_step:
-        if multi_lora:
-            from miles.backends.megatron_utils.multi_lora_utils import step_stepped_adapter_slots
+        update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
+        assert update_successful
+        opt_param_scheduler.step(increment=num_rollouts)
 
-            grad_norm = step_stepped_adapter_slots(
-                args, model, optimizer, data_iterator[0].rollout_data, rollout_id, step_id
-            )
-        else:
-            # Update parameters.
-            update_successful, grad_norm, num_zeros_in_grad = optimizer.step()
-
-            # Update learning rate.
-            assert update_successful
-            opt_param_scheduler.step(increment=num_rollouts)
-
-    # release grad (multi-LoRA retains accumulated grads; stepped slots were
-    # zeroed selectively inside step_adapter_slots)
-    if not multi_lora:
-        _zero_grads(model, optimizer, disable_optimizer)
+    _zero_grads(model, optimizer, disable_optimizer)
 
     log_structured(
         logger.info,
@@ -673,7 +647,7 @@ def finalize_model_grads_with_empty_cache(*args, **kwargs):
     free, total = torch.cuda.mem_get_info(device)
     if free / total < 0.1:
         clear_memory()
-    from .lora_utils import reduce_marked_lora_grads
+    from .lora.utils import reduce_marked_lora_grads
 
     reduce_marked_lora_grads(args[0])
     return finalize_model_grads(*args, **kwargs)

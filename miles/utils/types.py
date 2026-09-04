@@ -58,14 +58,6 @@ class WeightVersionsPerCall:
 
 
 @dataclass(frozen=True)
-class AdapterRef:
-    """Which LoRA adapter a sample is bound to (training slot routing, inference lora_path); ``None`` = no adapter."""
-
-    name: str
-    slot: int
-
-
-@dataclass(frozen=True)
 class RewardSpec:
     """Per-sample spec of how the response is scored; intentionally decoupled from adapter routing."""
 
@@ -123,9 +115,7 @@ class Sample:
     # metadata used during training, e.g., what loss to use for this sample.
     train_metadata: dict | None = None
 
-    # MultiLoRA: which adapter this sample trains/infers with
-    adapter: AdapterRef | None = None
-    # Per-sample reward dispatch override (e.g., per-adapter RM in multi-LoRA)
+    # Per-sample reward dispatch override
     reward_spec: RewardSpec | None = None
 
     # Per-sample routing key for the router's consistent_hashing policy (sent as X-SMG-Routing-Key)
