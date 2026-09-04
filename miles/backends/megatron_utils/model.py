@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
+from types import MethodType
 
 import torch
 from megatron.core import mpu
@@ -18,10 +19,10 @@ from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
 from megatron.core.optimizer.muon import get_megatron_muon_optimizer
-from megatron.core.optimizer.optimizer import MegatronOptimizer
+from megatron.core.optimizer.optimizer import ChainedOptimizer, MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
-from megatron.core.utils import get_model_config
+from megatron.core.utils import get_data_parallel_group_if_dtensor, get_model_config, to_local_if_dtensor
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
@@ -55,6 +56,73 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 logger = logging.getLogger(__name__)
+
+
+def _use_deterministic_grad_norm(optimizer: MegatronOptimizer) -> MegatronOptimizer:
+    if _can_use_deterministic_grad_norm(optimizer):
+        optimizer.get_grad_norm = MethodType(_get_chained_grad_norm_fp64, optimizer)
+        optimizer._get_grad_norm_for_group = MethodType(_get_chained_grad_norm_fp64, optimizer)
+    return optimizer
+
+
+def _can_use_deterministic_grad_norm(optimizer: MegatronOptimizer) -> bool:
+    if type(optimizer) is not ChainedOptimizer or not optimizer.chained_optimizers:
+        return False
+    if (
+        len(optimizer.chained_optimizers) == 1
+        and type(optimizer.chained_optimizers[0]).get_grad_norm is not MegatronOptimizer.get_grad_norm
+    ):
+        return False
+    return optimizer.grads_states_parallel_group_is_shared()
+
+
+@torch.no_grad()
+def _get_chained_grad_norm_fp64(
+    optimizer: ChainedOptimizer,
+    grad_norm_group: str | None = None,
+) -> float:
+    grads_for_norm = [
+        grad
+        for child_optimizer in optimizer.chained_optimizers
+        for grad in child_optimizer.get_grads_for_grad_norm(grad_norm_group)
+    ]
+    return _get_grad_norm_fp64(
+        grads_for_norm,
+        grad_stats_parallel_group=optimizer.get_grad_stats_parallel_group(),
+    )
+
+
+def _get_grad_norm_fp64(
+    grads_for_norm: Sequence[torch.Tensor] | torch.Tensor,
+    norm_type: int | float = 2,
+    grad_stats_parallel_group: torch.distributed.ProcessGroup | None = None,
+) -> float:
+    if float(norm_type) != 2.0:
+        from megatron.core.optimizer.optimizer import get_grad_norm_fp32
+
+        return get_grad_norm_fp32(
+            grads_for_norm,
+            norm_type=norm_type,
+            grad_stats_parallel_group=grad_stats_parallel_group,
+        )
+
+    grads = [grads_for_norm] if isinstance(grads_for_norm, torch.Tensor) else list(grads_for_norm)
+    data_parallel_group = None
+    for grad in grads:
+        data_parallel_group = get_data_parallel_group_if_dtensor(grad, data_parallel_group)
+    local_grads = [to_local_if_dtensor(grad) for grad in grads]
+
+    squared_norms = [torch.linalg.vector_norm(grad, ord=2, dtype=torch.float64).square() for grad in local_grads]
+    total_squared_norm = (
+        torch.stack(squared_norms).sum()
+        if squared_norms
+        else torch.zeros((), dtype=torch.float64, device=torch.cuda.current_device())
+    )
+    if data_parallel_group is not None:
+        torch.distributed.all_reduce(total_squared_norm, group=data_parallel_group)
+    torch.distributed.all_reduce(total_squared_norm, group=grad_stats_parallel_group)
+
+    return total_squared_norm.sqrt().item()
 
 
 def _run_stable_dp_shards(
@@ -265,6 +333,10 @@ def setup_model_and_optimizer(
             model_chunks=model,
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
+
+    if args.deterministic_mode and config.clip_grad > 0 and _can_use_deterministic_grad_norm(optimizer):
+        optimizer = _use_deterministic_grad_norm(optimizer)
+        logger.info("Using FP64 gradient norm accumulation in deterministic mode")
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         # Muon took the chunked-offloader route above; this store is DistOpt-only.
