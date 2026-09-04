@@ -1,17 +1,16 @@
 # doc-dev: docs/ci/02-docker-build.md
-# Multi-arch ROCm image for Miles (built on a prebuilt sglang base):
+# ROCm / gfx950 image for Miles (built on a prebuilt sglang base):
 #
-# 1. rocm700-mi35x  (gfx950, ROCm 7.0 / MI350 / MI355X)
-#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.14-rocm700-mi35x-20260627
-#
-# 2. rocm700-mi30x  (gfx942, ROCm 7.0 / MI300 / MI325)
-#    build-arg:GPU_ARCH=gfx942  SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi30x
-#
-# 3. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X)
+# 1. rocm720-mi35x  (gfx950, ROCm 7.2 / MI350 / MI355X, Python 3.10 base)
 #    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.16-rocm720-mi35x-20260730
+#                WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.16  TE_USE_WHEEL=1  APPLY_ROCR_VMMFIX=1
+#
+# 2. rocm10-mi35x   (gfx950, ROCm 10 / MI350 / MI355X, Python 3.12 base)
+#    build-arg:SGLANG_IMAGE_REPO=rocm/sgl-dev  SGLANG_IMAGE_TAG=v0.5.18-rocm10-mi35x-20260831
+#                WHEELS_TAG_ROCM=rocm10-gfx950-v0.5.18  TE_USE_WHEEL=1   (cp312 shelf)
 
-ARG SGLANG_IMAGE_REPO=lmsysorg/sglang
-ARG SGLANG_IMAGE_TAG=v0.5.10-rocm700-mi35x
+ARG SGLANG_IMAGE_REPO=rocm/sgl-dev
+ARG SGLANG_IMAGE_TAG=v0.5.16-rocm720-mi35x-20260730
 FROM ${SGLANG_IMAGE_REPO}:${SGLANG_IMAGE_TAG} AS sglang
 
 SHELL ["/bin/bash", "-ceuxo", "pipefail"]
@@ -26,11 +25,12 @@ ARG MEGATRON_BRANCH=miles-main
 ARG MILES_COMMIT=main
 
 ARG GPU_ARCH=gfx950
-# 1 on ROCm 7.2 to bake the ROCr VMM-pause fix; ROCm 7.0 has no such regression, leave 0.
+# 1 bakes the rebuilt ROCr with the VMM-pause fix (ROCm 7.2 needs it; ROCm 10 has it upstream).
 ARG APPLY_ROCR_VMMFIX=0
-ARG SGLANG_USE_ROCM700A=0
 ARG WHEELS_REPO=XinyuJiangCMU/miles-wheels-rocm
 ARG WHEELS_TAG_ROCM=rocm720-gfx950-v0.5.16
+ARG APEX_USE_PREBUILT=0
+ARG NVRX_INSTALL=0
 ARG MAX_JOBS=128
 
 ARG RCCL_TESTS_REPO=https://github.com/ROCm/rocm-systems.git
@@ -48,13 +48,13 @@ WORKDIR /root/
 
 ENV MAX_JOBS=${MAX_JOBS}
 
-# Build configuration for the selected arch (gfx942 / gfx950).
+# Build configuration for the target arch.
 ENV GPU_ARCH=${GPU_ARCH}
 ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}
 ENV GPU_ARCH_LIST=${GPU_ARCH}
 ENV AMDGPU_TARGET=${GPU_ARCH}
 
-# Transformer Engine build knobs for the v2.8_rocm branch.
+# Transformer Engine build knobs (consumed by the TE_USE_WHEEL=0 source build).
 ENV NVTE_FRAMEWORK=pytorch
 ENV NVTE_ROCM_ARCH=${GPU_ARCH}
 ENV NVTE_USE_HIPBLASLT=1
@@ -89,7 +89,7 @@ RUN mkdir -p /tmp/wheels && \
     curl -fsSL "https://api.github.com/repos/${WHEELS_REPO}/releases/tags/${WHEELS_TAG_ROCM}" \
     | python3 -c "import sys,json,subprocess,os; w='/tmp/wheels'; [subprocess.run(['curl','-fsSL','-o',os.path.join(w,a['name']),a['browser_download_url']],check=True) for a in json.load(sys.stdin).get('assets',[]) if a['name'].endswith(('.whl','.tar.gz'))]" && \
     ls -lh /tmp/wheels/
-# Transformer Engine: prebuilt fp8 wheel
+# Transformer Engine: prebuilt wheel from the variant's wheels shelf, or source build
 ARG TE_USE_WHEEL=0
 RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_torch || true; \
     if [ "${TE_USE_WHEEL}" = "1" ]; then \
@@ -100,6 +100,15 @@ RUN pip uninstall -y transformer-engine transformer_engine transformer_engine_to
       cd /root/TransformerEngine && NVTE_FUSED_ATTN=0 pip install . --no-build-isolation -v; \
     fi
 RUN pip install /tmp/wheels/flash_attn-*.whl
+
+# Prebuilt ROCm/apex@40608ba wheel from the shelf; Megatron needs its fused ops.
+RUN if [ "${APEX_USE_PREBUILT}" = "1" ]; then \
+      pip install cxxfilt==0.3.0 py-cpuinfo==9.0.0 && \
+      pip install --no-deps /tmp/wheels/apex-*.whl && \
+      python3 -c "import fused_weight_gradient_mlp_cuda"; \
+    else \
+      echo "[apex] prebuilt wheel skipped (APEX_USE_PREBUILT=${APEX_USE_PREBUILT})"; \
+    fi
 
 # make install lays down mooncake's native modules but not its pure Python files.
 RUN pip install --no-deps --target=/tmp/mc "mooncake-transfer-engine-non-cuda==${MOONCAKE_VERSION}" && \
@@ -113,7 +122,7 @@ RUN pip install flash-linear-attention==0.5.2
 # and fix TileLang's HIP fp8->float conversion to use ROCm device intrinsics instead of the SDK host-only operator.
 # Drop these patches once the corresponding tilelang/tile_kernels fixes land in the base image.
 RUN pip install --no-deps tile_kernels==1.0.0 && \
-    patch -p1 -d /opt/venv/lib/python3.10/site-packages < /tmp/amd_patch/tile_kernels.patch && \
+    patch -p1 -d "$(python3 -c 'import site; print(site.getsitepackages()[0])')" < /tmp/amd_patch/tile_kernels.patch && \
     patch -p1 -d /opt/tilelang/src/tl_templates/hip < /tmp/amd_patch/tilelang_hip_fp8.patch
 
 RUN rm -rf /root/Megatron-LM && \
@@ -136,7 +145,8 @@ RUN pip install "numba==0.65.1"
 
 RUN python -c "import sglang; import sgl_kernel; print('SGLang + sgl_kernel: OK')"
 
-RUN pip install git+https://github.com/fzyzcjy/torch_memory_saver.git@f05a8754daf68238d54e4cf31cb3ba866684bbaf --no-cache-dir --force-reinstall
+# Temporary fork pin; back to upstream once fzyzcjy/torch_memory_saver#109 merges.
+RUN pip install git+https://github.com/XinyuJiangCMU/torch_memory_saver.git@b8e5b35ad2349a60afd5f183fbdaf62f6b2ed89e --no-cache-dir --force-reinstall --no-build-isolation
 
 # Fix the ROCm 7.2 ROCr VMM-pause leak.
 RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
@@ -151,7 +161,7 @@ RUN if [ "$APPLY_ROCR_VMMFIX" = "1" ]; then \
       install -m0644 "/tmp/$asset" "$dst" && rm -f "/tmp/$asset" && \
       echo "[vmmfix] installed patched ROCr at $dst"; \
     else \
-      echo "[vmmfix] skipped (APPLY_ROCR_VMMFIX=$APPLY_ROCR_VMMFIX; ROCm 7.0 has no VMM-pause regression)"; \
+      echo "[vmmfix] skipped (APPLY_ROCR_VMMFIX=$APPLY_ROCR_VMMFIX; ROCm 10 has the fix upstream)"; \
     fi
 RUN pip install git+https://github.com/radixark/Megatron-Bridge.git@bridge --no-deps --no-build-isolation
 RUN pip install megatron-energon --no-deps
@@ -167,11 +177,15 @@ RUN rm -rf /usr/lib/python3/dist-packages/jwt /usr/lib/python3/dist-packages/PyJ
     sed -i '/nvidia-resiliency-ext/d' /tmp/requirements.txt && \
     pip install -r /tmp/requirements.txt
 
+# nvidia-resiliency-ext needs glibc>=2.39; opt in only on compatible variants.
+RUN if [ "${NVRX_INSTALL}" = "1" ]; then \
+      pip install "nvidia-resiliency-ext~=0.6.0"; \
+    else \
+      echo "[nvrx] skipped (NVRX_INSTALL=${NVRX_INSTALL})"; \
+    fi
+
 # Pin the CLI stack (typer/click) for huggingface_hub / Ray compatibility.
 RUN pip install "typer==0.25.1" "click==8.2.1"
-
-# Pin numpy 1.x for Megatron compatibility.
-RUN pip install "numpy<2"
 
 COPY docker/install-kube-tools.sh /tmp/install-kube-tools.sh
 RUN bash /tmp/install-kube-tools.sh "${TARGETARCH}" && rm -f /tmp/install-kube-tools.sh
@@ -212,6 +226,25 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 RUN rm -rf /tmp/wheels
 
+# Collapse duplicate wheel-SDK libs (devel vs core/libraries) that can be loaded twice (ROCm/TheRock#7818).
+RUN set -eux; \
+    SP="$(python3 -c 'import site; print(site.getsitepackages()[0])')"; \
+    if [ -d "$SP/_rocm_sdk_devel/lib" ]; then \
+      for f in "$SP"/_rocm_sdk_devel/lib/*.so*; do \
+        { [ -f "$f" ] && [ ! -L "$f" ]; } || continue; \
+        for t in _rocm_sdk_core _rocm_sdk_libraries; do \
+          c="$SP/$t/lib/$(basename "$f")"; \
+          if [ -f "$c" ] && cmp -s "$f" "$c"; then \
+            ln -srf "$c" "$f"; \
+            echo "[dedup] $(basename "$f") -> $t"; \
+            break; \
+          fi; \
+        done; \
+      done; \
+    else \
+      echo "[dedup] no wheel-SDK trees, skipping"; \
+    fi
+
 # ====================================== Runtime knobs ==========================================
 
 # Runtime knobs consumed by the current SGLang/PyTorch stack.
@@ -226,7 +259,6 @@ ENV SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
 ENV SGLANG_MOE_PADDING=1
 ENV SGLANG_SET_CPU_AFFINITY=1
 ENV SGLANG_ROCM_FUSED_DECODE_MLA=1
-ENV SGLANG_USE_ROCM700A=${SGLANG_USE_ROCM700A}
 ENV NCCL_MIN_NCHANNELS=112
 ENV TORCHINDUCTOR_MAX_AUTOTUNE=1
 ENV TORCHINDUCTOR_MAX_AUTOTUNE_POINTWISE=1
