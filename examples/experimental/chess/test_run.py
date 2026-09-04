@@ -3,6 +3,7 @@ import pytest
 from run import (
     ScriptArgs,
     _checkpoint_args,
+    _extra_env_vars,
     _grpo_args,
     _misc_args,
     _optimizer_args,
@@ -10,6 +11,15 @@ from run import (
     _rollout_args,
     _sglang_args,
 )
+
+
+def test_extra_env_vars_forward_nonempty_ld_library_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda/lib:/opt/nccl/lib")
+    args = ScriptArgs(hardware="H200", num_gpus_per_node=8)
+
+    assert _extra_env_vars(args)["LD_LIBRARY_PATH"] == "/opt/cuda/lib:/opt/nccl/lib"
 
 
 def test_prompt_rows_pass_system_prompt_selection_to_chess_harness() -> None:
