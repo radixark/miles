@@ -166,6 +166,9 @@ def test_terminus_2_binding_aborts_on_truncation_and_carries_sampling_params(tas
     assert cfg.agent.kwargs["response_length_exceeded_policy"] == "abort"
     assert cfg.agent.kwargs["llm_call_kwargs"] == {"max_tokens": 512}
     assert cfg.agent.kwargs["api_base"] == "http://s/v1"
+    # no top-level api_key parameter on Terminus2; litellm gets it per call via llm_kwargs
+    assert cfg.agent.kwargs["llm_kwargs"] == {"api_key": "dummy"}
+    assert "api_key" not in cfg.agent.kwargs
     assert cfg.agent.env == {"OPENAI_API_KEY": "dummy", "OPENAI_API_BASE": "http://s/v1"}
 
 

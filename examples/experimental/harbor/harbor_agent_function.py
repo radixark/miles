@@ -132,7 +132,10 @@ def _terminus_kwargs(
         "abort_on_response_length_exceeded": True,
         "llm_call_kwargs": dict(sampling_params),
         "api_base": session_url,
-        "api_key": api_key,
+        # Terminus2 has no top-level api_key parameter: the key must ride
+        # llm_kwargs (the LLM constructor extras, spread into every litellm
+        # call) or litellm falls back to OPENAI_API_KEY in the process env.
+        "llm_kwargs": {"api_key": api_key},
         "enable_summarize": _env_flag("HARBOR_TERMINUS_2_ENABLE_SUMMARIZE"),
         "trajectory_config": {"linear_history": _env_flag("HARBOR_TERMINUS_2_LINEAR_HISTORY")},
         # "abort" ends the trajectory when one reply is truncated at max_tokens;
