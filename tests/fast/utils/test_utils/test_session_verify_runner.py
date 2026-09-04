@@ -8,8 +8,8 @@ import pytest
 from scripts.tools.verify_session_tito_tokenizer import _print_action_table, _with_session_verify_defaults
 from tests.e2e.sglang.test_session_server_multi_role import _common
 
-from miles.utils.test_utils import session_verify_runner
 from miles.utils.arguments import parse_args_train_backend
+from miles.utils.test_utils import session_verify_runner
 from miles.utils.test_utils.session_verify_runner import (
     SESSION_VERIFY_INVARIANT_ARGS,
     assert_session_verify_metrics,
