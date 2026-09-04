@@ -34,6 +34,16 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
     original_marker = object()
     original_optimizer.marker = original_marker
     other_optimizer = ChainedOptimizer([child_optimizer])
+    nonshared_optimizer = ChainedOptimizer(
+        [
+            child_optimizer,
+            Mock(
+                config=config,
+                is_stub_optimizer=False,
+                get_grad_stats_parallel_group=Mock(return_value=object()),
+            ),
+        ]
+    )
 
     class SpecializedChainedOptimizer(ChainedOptimizer):
         pass
@@ -46,6 +56,8 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
     assert deterministic_optimizer.get_grad_norm() == 13.0
     assert reduced_dtypes == [torch.float64]
     assert other_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
+    assert _use_deterministic_grad_norm(nonshared_optimizer) is nonshared_optimizer
+    assert nonshared_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
     assert _use_deterministic_grad_norm(specialized_optimizer) is specialized_optimizer
     assert specialized_optimizer.get_grad_norm.__func__ is ChainedOptimizer.get_grad_norm
     assert megatron_optimizer_module.get_grad_norm_fp32 is original_grad_norm

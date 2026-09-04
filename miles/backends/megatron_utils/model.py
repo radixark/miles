@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 
 def _use_deterministic_grad_norm(optimizer: MegatronOptimizer) -> MegatronOptimizer:
-    if type(optimizer) is ChainedOptimizer:
+    if type(optimizer) is ChainedOptimizer and optimizer.grads_states_parallel_group_is_shared():
         optimizer.get_grad_norm = MethodType(_get_chained_grad_norm_fp64, optimizer)
         optimizer._get_grad_norm_for_group = MethodType(_get_chained_grad_norm_fp64, optimizer)
     return optimizer
@@ -70,25 +70,15 @@ def _get_chained_grad_norm_fp64(
     optimizer: ChainedOptimizer,
     grad_norm_group: str | None = None,
 ) -> float:
-    if optimizer.grads_states_parallel_group_is_shared():
-        grads_for_norm = [
-            grad
-            for child_optimizer in optimizer.chained_optimizers
-            for grad in child_optimizer.get_grads_for_grad_norm(grad_norm_group)
-        ]
-        return _get_grad_norm_fp64(
-            grads_for_norm,
-            grad_stats_parallel_group=optimizer.get_grad_stats_parallel_group(),
-        )
-
-    grad_norms = [
-        _get_grad_norm_fp64(
-            child_optimizer.get_grads_for_grad_norm(grad_norm_group),
-            grad_stats_parallel_group=child_optimizer.get_grad_stats_parallel_group(),
-        )
+    grads_for_norm = [
+        grad
         for child_optimizer in optimizer.chained_optimizers
+        for grad in child_optimizer.get_grads_for_grad_norm(grad_norm_group)
     ]
-    return math.sqrt(sum(grad_norm**2 for grad_norm in grad_norms if grad_norm))
+    return _get_grad_norm_fp64(
+        grads_for_norm,
+        grad_stats_parallel_group=optimizer.get_grad_stats_parallel_group(),
+    )
 
 
 def _get_grad_norm_fp64(
@@ -274,7 +264,12 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if args.deterministic_mode and config.clip_grad > 0 and type(optimizer) is ChainedOptimizer:
+    if (
+        args.deterministic_mode
+        and config.clip_grad > 0
+        and type(optimizer) is ChainedOptimizer
+        and optimizer.grads_states_parallel_group_is_shared()
+    ):
         optimizer = _use_deterministic_grad_norm(optimizer)
         logger.info("Using FP64 gradient norm accumulation in deterministic mode")
 
