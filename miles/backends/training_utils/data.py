@@ -467,7 +467,7 @@ def get_data_iterator(
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
 
-    if (stable_dp_size := rollout_data.get("stable_dp_size")) is not None:
+    if (stable_dp_size := rollout_data.pop("stable_dp_size", None)) is not None:
         assert dp_size == 1
         assert global_batch_size % stable_dp_size == 0
         stable_local_gbs = global_batch_size // stable_dp_size

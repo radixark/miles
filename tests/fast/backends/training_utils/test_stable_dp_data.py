@@ -30,5 +30,6 @@ def test_degraded_retry_preserves_nominal_strided_dp_partitions(monkeypatch) -> 
     data_iterators, num_microbatches = data_module.get_data_iterator(args, object(), rollout_data)
 
     assert num_microbatches == [8]
+    assert "stable_dp_size" not in rollout_data
     assert rollout_data["stable_dp_microbatches"] == [[4, 4]]
     assert data_iterators[0].micro_batch_indices == [[6], [4], [2], [0], [7], [5], [3], [1]]
