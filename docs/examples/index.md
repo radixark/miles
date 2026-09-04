@@ -41,12 +41,12 @@ Not fully verified — for experimental and development use.
 - **[eval](https://github.com/radixark/miles/tree/main/examples/experimental/eval)**: Documentation and setup for evaluation environments using NeMo-Skills.
 - **[eval_multi_task](https://github.com/radixark/miles/tree/main/examples/experimental/eval_multi_task)**: Example for supporting OOD evaluation tasks, e.g., GPQA, IFBench.
 - **[formal_math](https://github.com/radixark/miles/tree/main/examples/experimental/formal_math)**: Examples related to formal math reasoning tasks, including a single round demo.
+- **[harbor](https://github.com/radixark/miles/tree/main/examples/experimental/harbor)**: Harbor run in-process inside the rollout worker, with task sandboxes on E2B / AgentENV, Daytona, or any other Harbor backend.
 - **[multi_agent](https://github.com/radixark/miles/tree/main/examples/experimental/multi_agent)**: Example of running multi-agent RL with `miles`.
 - **[nemo-gym](https://github.com/radixark/miles/tree/main/examples/experimental/nemo-gym)**: SWE-agent training with NVIDIA NeMo Gym as the environment ecosystem.
 - **[openenv](https://github.com/radixark/miles/tree/main/examples/experimental/openenv)**: Rollouts against OpenEnv-hosted environments.
 - **[reproducibility](https://github.com/radixark/miles/tree/main/examples/experimental/reproducibility)**: Guides on achieving bitwise experiment reproduction using deterministic modes.
 - **[search-r1](https://github.com/radixark/miles/tree/main/examples/experimental/search-r1)**: A minimal reproduction of Search-R1, featuring multi-turn conversation and tool-calling.
 - **[strands_sglang](https://github.com/radixark/miles/tree/main/examples/experimental/strands_sglang)**: Integration example with the Strands-Agents scaffolding framework.
-- **[swe-agent-harbor-daytona](https://github.com/radixark/miles/tree/main/examples/experimental/swe-agent-harbor-daytona)**: The `swe-agent-harbor-docker` pipeline with task sandboxes hosted on Daytona instead of local Docker.
 - **[tau-bench](https://github.com/radixark/miles/tree/main/examples/experimental/tau-bench)**: Training in an agentic multi-turn tool use environment (Tau-bench).
 - **[verifiers](https://github.com/radixark/miles/tree/main/examples/experimental/verifiers)**: Training on a Prime Intellect Verifiers environment instead of a Miles prompt dataset.
