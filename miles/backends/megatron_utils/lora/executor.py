@@ -22,6 +22,7 @@ from miles.backends.megatron_utils.lora.slots import zero_optimizer_state_for_ad
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data import get_data_iterator
 from miles.backends.training_utils.log_utils import aggregate_train_losses
+from miles.backends.training_utils.loss_hub.tinker_losses import drain_per_datum_outputs, start_per_datum_outputs
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch
@@ -47,31 +48,38 @@ def forward_backward(
     reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=unit_id)
-    losses_reduced = run_forward_backward_pass(
-        args, dumper_phase_util, data_iterator, model, num_microbatches[0], num_rollouts=None
-    )
+    start_per_datum_outputs()
+    try:
+        losses_reduced = run_forward_backward_pass(
+            args, dumper_phase_util, data_iterator, model, num_microbatches[0], num_rollouts=None
+        )
+    finally:
+        per_datum_outputs = drain_per_datum_outputs()
     dumper_phase_util.finalize(model)
 
     if get_parallel_state().is_pp_last_stage:
-        return aggregate_train_losses(losses_reduced, None)
-    return {}
+        return {"metrics": aggregate_train_losses(losses_reduced, None), "per_datum": per_datum_outputs}
+    return {"metrics": {}, "per_datum": per_datum_outputs}
 
 
 def optim_step(
-    args: Namespace,
     model: Sequence[DDP],
     optimizer: MegatronOptimizer,
     adam_params_by_slot: dict[int, dict],
 ) -> dict[int, float]:
+    grad_norms: dict[int, float] = {}
     for slot, adam_params in adam_params_by_slot.items():
         _apply_adam_params(optimizer, slot, adam_params)
-    # batch size 1: grads step as accumulated; normalization is the client's loss weights
-    return step_adapter_slots(
-        optimizer,
-        model,
-        {slot: 1 for slot in adam_params_by_slot},
-        clip_grad=args.clip_grad,
-    )
+        # batch size 1: grads step as accumulated; normalization is the client's loss weights
+        grad_norms.update(
+            step_adapter_slots(
+                optimizer,
+                model,
+                {slot: 1},
+                clip_grad=adam_params["grad_clip_norm"],
+            )
+        )
+    return grad_norms
 
 
 def _apply_adam_params(optimizer: MegatronOptimizer, slot: int, adam_params: dict) -> None:

@@ -382,6 +382,7 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "seq_witness_ids",
             "weight_versions",
             "adapter_slots",
+            "loss_weights",
         ]:
             if key not in data:
                 continue
@@ -393,6 +394,8 @@ def _package_shards(args, data: dict[str, Any], partitions) -> list[dict[str, An
             "total_lengths",
             "dynamic_global_batch_size",
             "prompt_group_sizes",
+            "loss_fn",
+            "loss_fn_config",
         ]:
             if key not in data:
                 continue

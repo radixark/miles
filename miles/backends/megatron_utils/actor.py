@@ -416,7 +416,7 @@ class MegatronTrainRayActor(TrainRayActor):
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
         assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
         self._heartbeat.bump()
-        return lora_executor.optim_step(self.args, self.model, self.optimizer, adam_params_by_slot)
+        return lora_executor.optim_step(self.model, self.optimizer, adam_params_by_slot)
 
     @with_logs
     def forward_only_logprobs(self, unit_id: int, rollout_data_ref: Box) -> Box | None:
