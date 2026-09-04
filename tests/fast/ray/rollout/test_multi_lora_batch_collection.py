@@ -28,6 +28,7 @@ def make_args(**overrides) -> SimpleNamespace:
         multi_lora_dp_size=4,
         multi_lora_max_coalesce_wait_s=0.05,
         max_weight_staleness=None,
+        reward_key=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -44,6 +45,9 @@ def make_worker(args=None) -> AsyncMultiLoRAWorker:
     worker.metrics = MultiLoRAWorkerMetrics()
     worker.registrations = {}
     worker.failure = None
+    worker.state = SimpleNamespace(sampling_params={})
+    worker.generate_fn = None
+    worker.data_source = None
     return worker
 
 
@@ -105,6 +109,25 @@ def snapshot_of(*adapters: AdapterRun, retiring: tuple[AdapterRun, ...] = ()) ->
 
 def collect(worker, snapshot):
     return asyncio.run(collect_batch(worker.args, worker, snapshot))
+
+
+@pytest.mark.asyncio
+async def test_process_and_enqueue_drops_missing_reward(monkeypatch):
+    worker = make_worker()
+    adapter = adapter_run("A", 0)
+    group = make_group(adapter)
+
+    async def fake_process_group(*args, **kwargs):
+        return group
+
+    monkeypatch.setattr("miles.rollout.multi_lora.async_rollout.process_group", fake_process_group)
+
+    await worker.process_and_enqueue(group)
+
+    assert len(worker.buffers["A"]) == 0
+    assert worker.metrics.pop_metrics() == {
+        "rollout/dynamic_filter/drop_group_has_missing_reward": 1,
+    }
 
 
 def test_no_pop_until_a_whole_group_multiple_is_buffered():
