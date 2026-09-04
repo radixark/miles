@@ -18,8 +18,8 @@ def _option_value(args: str, option: str) -> str:
     return tokens[tokens.index(option) + 1]
 
 
-def test_real_rollout_preserves_nominal_dp_shards_on_fault_retry() -> None:
-    """The degraded retry must consume the baseline DP shards as separate microbatches."""
+def test_real_rollout_isolates_fault_recovery_from_clipping_noise() -> None:
+    """The live comparison must align fault inputs without topology-dependent active clipping."""
     args = _build_target_args(
         MODES["dp2_cp2_real_rollout_dense"],
         "/tmp/target/phase_b",
@@ -31,11 +31,10 @@ def test_real_rollout_preserves_nominal_dp_shards_on_fault_retry() -> None:
     assert int(_option_value(args, "--ci-inject-rollout-data-start-rollout-id")) == _FAULT_ROLLOUT_ID
     assert {action["at_rollout"] for action in actions} == {_FAULT_ROLLOUT_ID}
     tokens = shlex.split(args)
-    assert _option_value(args, "--micro-batch-size") == "128"
-    assert _option_value(args, "--ci-inject-rollout-data-nominal-dp-size") == "2"
+    assert _option_value(args, "--clip-grad") == "2.0"
     assert "--debug-deterministic-collective" in tokens
-    assert "--use-dynamic-batch-size" not in tokens
-    assert "--max-tokens-per-gpu" not in tokens
+    assert "--use-dynamic-batch-size" in tokens
+    assert _option_value(args, "--max-tokens-per-gpu") == "32768"
 
 
 def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:

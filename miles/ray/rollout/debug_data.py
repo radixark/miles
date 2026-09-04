@@ -2,7 +2,6 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
 import torch
 
@@ -170,28 +169,6 @@ class RolloutDataInjectionUtil:
             f"{mean_ratio:.4f} (threshold {min_match_ratio}); the engine "
             "weights likely diverged from the baseline beyond ulp-level drift"
         )
-
-    @classmethod
-    def group_train_data_by_dp_shard(cls, args, data: dict[str, Any], *, rollout_id: int) -> dict[str, Any]:
-        if rollout_id != args.ci_inject_rollout_data_start_rollout_id:
-            return data
-
-        if (dp_size := args.ci_inject_rollout_data_nominal_dp_size) is None:
-            return data
-        sample_count: int = len(data["sample_indices"])
-        assert (
-            sample_count % dp_size == 0
-        ), f"rollout {rollout_id}: cannot group {sample_count} injected samples into {dp_size} equal DP shards"
-        order: list[int] = [index for dp_rank in range(dp_size) for index in range(dp_rank, sample_count, dp_size)]
-        grouped: dict[str, Any] = {
-            key: [value[index] for index in order] if isinstance(value, list) and len(value) == sample_count else value
-            for key, value in data.items()
-        }
-        logger.info(
-            f"CI rollout-data injection: grouped rollout {rollout_id} into {dp_size} nominal DP shards "
-            "for degraded retry"
-        )
-        return grouped
 
     @classmethod
     def _response_token_match_ratio(cls, a: Sample, b: Sample) -> float:

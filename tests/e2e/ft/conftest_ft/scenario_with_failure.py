@@ -94,16 +94,10 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
 
 def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enable_dumper: bool = True) -> str:
     is_phase_a: bool = dump_dir.endswith("phase_a")
-    base = get_common_train_args(
-        mode,
-        dump_dir=dump_dir,
-        num_steps=NUM_PHASE_B_STEPS,
-        enable_dumper=enable_dumper,
-        fixed_micro_batch_size=128 if mode.has_real_rollout else None,
-    )
+    base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
     base += get_train_env_vars_arg(mode, deterministic=False)
     if mode.has_real_rollout:
-        base += "--debug-deterministic-collective "
+        base += "--debug-deterministic-collective --clip-grad 2.0 "
 
     if is_target:
         base += get_ft_args(mode)
@@ -122,7 +116,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
                     f"--ci-inject-rollout-data-start-rollout-id {_FAULT_ROLLOUT_ID} "
-                    f"--ci-inject-rollout-data-nominal-dp-size {mode.num_cells} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 

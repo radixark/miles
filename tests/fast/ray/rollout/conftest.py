@@ -143,7 +143,6 @@ def make_args(**overrides: Any) -> Namespace:
         ci_inject_rollout_data_path=None,
         ci_inject_rollout_data_start_rollout_id=None,
         ci_inject_rollout_data_min_match_ratio=0.9,
-        ci_inject_rollout_data_nominal_dp_size=None,
         # event checkpointing (event_logger.restore/snapshot in RolloutExecutor)
         save_debug_event_data=None,
         load=None,

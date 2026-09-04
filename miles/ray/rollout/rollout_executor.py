@@ -132,7 +132,6 @@ class RolloutExecutor:
             custom_convert_samples_to_train_data_func=self.custom_convert_samples_to_train_data_func,
             custom_reward_post_process_func=self.custom_reward_post_process_func,
         )
-        data = RolloutDataInjectionUtil.group_train_data_by_dp_shard(self.args, data, rollout_id=rollout_id)
         sample_indices = data.get("sample_indices")
         if self.args.delay_split_train_data_by_dp:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
