@@ -96,7 +96,7 @@ class TestRolloutServerPureFunctions:
         config = resolve_sglang_config(args)
 
         assert [model.name for model in config.models] == ["eval"]
-        assert config.total_num_gpus == 8
+        assert sum(group.num_gpus for model in config.models for group in model.server_groups) == 8
 
     def test_yaml_eval_model_is_filled_from_cli_without_clobbering(self, tmp_path):
         """Anything the YAML leaves unset falls through to the eval CLI args."""
