@@ -9,11 +9,15 @@ import logging
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
 from sglang.srt.entrypoints.anthropic.serving import convert_response, convert_to_chat_completion_request
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionResponse
 from sglang.srt.parser.template_detection import detect_inline_system_support
 from starlette.responses import Response
+
+try:
+    from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+except ImportError:
+    anthropic_utils = None
 
 from miles.rollout.session.anthropic_adapter import (
     _ANTHROPIC_ERROR_HEADER_ALLOWLIST as _ANTHROPIC_ERROR_HEADER_ALLOWLIST,
@@ -170,6 +174,8 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
         try:
             openai_response = ChatCompletionResponse.model_validate_json(core_response.body)
             if anthropic_stream:
+                if anthropic_utils is None:
+                    raise RuntimeError("The installed SGLang does not support synthetic Anthropic SSE responses")
                 events = anthropic_utils.to_anthropic_fake_sse_events(
                     openai_response,
                     model=anthropic_request.model,
