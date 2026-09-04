@@ -732,22 +732,33 @@ class TitanTrainer(Trainer):
                     raise RuntimeError(f"ranks disagree on the shape/dtype of {name}")
 
         my_rank = dist.get_rank()
-        if not complete_across_pp:
-            # The protocol takes each pipeline stage's own slice, so a rank
-            # yields only what it holds and never receives another stage's
-            # layers. That is the difference between every rank materializing
-            # the whole model and each holding its share of it.
-            for i, name in enumerate(sorted(local)):
-                if i % 200 == 0:
-                    _probe(f"hf_weights: pp-local unit {i}")
-                yield name, gather_full_param(local[name]).contiguous()
-            return
+        # Who shares my pipeline stage. Completion is always needed *within* a
+        # stage -- expert parallelism has each rank export a different slice of
+        # the experts, so no single rank holds a stage's whole set -- and the
+        # placement only decides whether it also crosses stages.
+        stage_of: list = [None] * world
+        pp_mesh = self.parallel_dims.get_optional_mesh("pp")
+        my_stage_id = dist.get_rank(group=pp_mesh.get_group()) if pp_mesh is not None else 0
+        dist.all_gather_object(stage_of, my_stage_id)
+        stage_groups: dict[int, list[int]] = {}
+        for rank, stage in enumerate(stage_of):
+            stage_groups.setdefault(stage, []).append(rank)
+        my_stage = stage_of[my_rank]
 
-        for i, name in enumerate(sorted(owners)):
+        if complete_across_pp:
+            audience, broadcast_group = list(range(world)), None
+        else:
+            # new_group is collective: every rank creates every stage's group.
+            groups = {stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())}
+            audience, broadcast_group = stage_groups[my_stage], groups[my_stage]
+
+        audience_set = set(audience)
+        names = [name for name in sorted(owners) if audience_set.intersection(owners[name])]
+        for i, name in enumerate(names):
             if i % 200 == 0:
-                _probe(f"hf_weights: owner-broadcast unit {i}")
+                _probe(f"hf_weights: unit {i} of {len(names)}")
             shape, dtype = specs[name]
-            holders = owners[name]
+            holders = [rank for rank in owners[name] if rank in audience_set]
             # Every holder joins the gather -- they are exactly the ranks the
             # tensor's own mesh spans, so the collective is complete. The
             # lowest of them then broadcasts to the ranks that lack it;
@@ -758,7 +769,7 @@ class TitanTrainer(Trainer):
                 tensor = gather_full_param(local[name]).contiguous()
             else:
                 tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
-            dist.broadcast(tensor, src=holders[0])
+            dist.broadcast(tensor, src=holders[0], group=broadcast_group)
             yield name, tensor
 
 
