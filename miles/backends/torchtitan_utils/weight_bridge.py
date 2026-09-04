@@ -15,6 +15,7 @@ from argparse import Namespace
 import safetensors
 import torch
 
+from miles.backends.torchtitan_utils.trainer import TitanTrainer
 from miles.backends.training_utils.weight_update.hf_weight_iterator import (
     HfWeightIteratorBase,
     WeightUpdatePlacement,
@@ -46,7 +47,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         # ``weights`` is None by contract here: the trainer reads its live parts.
         # Non-materializing ranks still walk the stream, since producing each
         # tensor is a collective every rank has to join.
-        for name, tensor in self.model.hf_weights(complete_across_pp=self.placement.gather_pp):
+        for name, tensor in TitanTrainer.hf_weights(self.model, complete_across_pp=self.placement.gather_pp):
             if materialize:
                 yield [(name, self._to_engine_dtype(name, tensor))]
 

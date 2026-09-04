@@ -655,9 +655,8 @@ class TitanTrainer(Trainer):
     def step_runner(self) -> "TrainerStepRunner":
         return TrainerStepRunner(self)
 
-    # --------------------------------------------------------------- weights
-
-    def hf_weights(self, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
+    @staticmethod
+    def hf_weights(trainer, *, complete_across_pp: bool = True) -> Iterator[tuple[str, torch.Tensor]]:
         """HF-named tensors, materialized one at a time, for the engine push.
 
         The weight transport requires every rank in an IPC gather group to
@@ -673,19 +672,20 @@ class TitanTrainer(Trainer):
         have no CPU backend. Weights-only occupancy is strictly below the
         training peak, so whenever training fits, this does.
         """
-        offloaded = next(self.model_parts[0].parameters()).device.type == "cpu"
+        offloaded = next(trainer.model_parts[0].parameters()).device.type == "cpu"
         if offloaded:
-            for part in self.model_parts:
+            for part in trainer.model_parts:
                 part.cuda()
         try:
-            yield from self._hf_weights_on_device(complete_across_pp=complete_across_pp)
+            yield from TitanTrainer._hf_weights_on_device(trainer, complete_across_pp=complete_across_pp)
         finally:
             if offloaded:
-                for part in self.model_parts:
+                for part in trainer.model_parts:
                     part.cpu()
                 torch.cuda.empty_cache()
 
-    def _stage_group(self, stage_groups: dict[int, list[int]], my_stage: int):
+    @staticmethod
+    def _stage_group(trainer, stage_groups: dict[int, list[int]], my_stage: int):
         """This rank's pipeline-stage process group, created once.
 
         Weights are pushed on every optimizer step, and ``new_group`` builds a
@@ -694,17 +694,20 @@ class TitanTrainer(Trainer):
         updates ("Failed to CUDA calloc"). Creation is collective, so every rank
         builds every stage's group in the same order.
         """
-        if getattr(self, "_stage_groups", None) is None:
-            self._stage_groups = {stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())}
-        return self._stage_groups[my_stage]
+        if getattr(trainer, "_stage_groups", None) is None:
+            trainer._stage_groups = {stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())}
+        return trainer._stage_groups[my_stage]
 
-    def _hf_weights_on_device(self, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
+    @staticmethod
+    def _hf_weights_on_device(trainer, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
         # The checkpointer only builds its adapter when checkpointing is
         # enabled; weight streaming needs the mapping regardless.
-        sd_adapter = getattr(self.checkpointer, "sd_adapter", None)
+        sd_adapter = getattr(trainer.checkpointer, "sd_adapter", None)
         if sd_adapter is None:
-            sd_adapter = self.config.model_spec.state_dict_adapter(self.model_config, self.config.hf_assets_path)
-        local = sd_adapter.to_hf({k: v for part in self.model_parts for k, v in part.state_dict().items()})
+            sd_adapter = trainer.config.model_spec.state_dict_adapter(
+                trainer.model_config, trainer.config.hf_assets_path
+            )
+        local = sd_adapter.to_hf({k: v for part in trainer.model_parts for k, v in part.state_dict().items()})
 
         # Which ranks hold which key. Two parallelisms make the export
         # rank-partial: a pipeline stage exports only its own layers, and under
@@ -738,7 +741,7 @@ class TitanTrainer(Trainer):
         # the experts, so no single rank holds a stage's whole set -- and the
         # placement only decides whether it also crosses stages.
         stage_of: list = [None] * world
-        pp_mesh = self.parallel_dims.get_optional_mesh("pp")
+        pp_mesh = trainer.parallel_dims.get_optional_mesh("pp")
         my_stage_id = dist.get_rank(group=pp_mesh.get_group()) if pp_mesh is not None else 0
         dist.all_gather_object(stage_of, my_stage_id)
         stage_groups: dict[int, list[int]] = {}
@@ -749,7 +752,9 @@ class TitanTrainer(Trainer):
         if complete_across_pp:
             audience, broadcast_group = list(range(world)), None
         else:
-            audience, broadcast_group = stage_groups[my_stage], self._stage_group(stage_groups, my_stage)
+            audience, broadcast_group = stage_groups[my_stage], TitanTrainer._stage_group(
+                trainer, stage_groups, my_stage
+            )
 
         audience_set = set(audience)
         names = [name for name in sorted(owners) if audience_set.intersection(owners[name])]
@@ -765,7 +770,7 @@ class TitanTrainer(Trainer):
             if my_rank in holders:
                 tensor = gather_full_param(local[name]).contiguous()
             else:
-                tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
+                tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=trainer.device)
             dist.broadcast(tensor, src=holders[0], group=broadcast_group)
             yield name, tensor
             # Drop this generator's reference as soon as the consumer has taken
