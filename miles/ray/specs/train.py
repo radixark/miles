@@ -4,7 +4,7 @@ from pathlib import Path
 
 from miles.ray.train_actor import TRAINER_CONCURRENCY_GROUPS, TRAINER_METHOD_CONCURRENCY_GROUPS
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
-from miles.utils.environ import default_fp8_block_scaling_fp32_scales
+from miles.utils.environ import default_fp8_block_scaling_fp32_scales, default_train_inductor_autotune_env
 from miles.utils.ft_utils.indep_dp import create_tcp_store
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.workers.worker_spec import PortInfo, SchedulingSpec, ServeWorkerSpec, WorkerLaunchContext
@@ -82,11 +82,12 @@ def _compute_spec_trainer(
         if (x := os.environ.get("NVTE_FP8_BLOCK_SCALING_FP32_SCALES")) is not None
         else default_fp8_block_scaling_fp32_scales()
     )
+    inductor_env = default_train_inductor_autotune_env()
 
     return ServeWorkerSpec(
         name=compute_trainer_pool_id(role),
         port_infos=[PortInfo(name=MASTER_PORT_NAME, static_port=9000, mode="master", allow_dynamic=True)],
-        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales),
+        env_var=lambda ctx: compute_trainer_env_vars(args, ctx, fp8_scales=fp8_scales, inductor_env=inductor_env),
         scheduling=SchedulingSpec(
             num_cells=num_cells,
             num_workers_per_cell=gpus_per_cell,
@@ -110,7 +111,9 @@ def _compute_spec_trainer(
     )
 
 
-def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str) -> dict[str, str]:
+def compute_trainer_env_vars(
+    args, ctx: WorkerLaunchContext, *, fp8_scales: str, inductor_env: dict[str, str]
+) -> dict[str, str]:
     env_vars = {
         # because sglang will always set NCCL_CUMEM_ENABLE to 0
         # we need also set it to 0 to prevent nccl error.
@@ -119,6 +122,7 @@ def compute_trainer_env_vars(args, ctx: WorkerLaunchContext, *, fp8_scales: str)
         "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
         "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": fp8_scales,
         **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
+        **inductor_env,
         **args.train_env_vars,
     }
 
