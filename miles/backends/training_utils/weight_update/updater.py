@@ -148,6 +148,11 @@ class WeightUpdater:
                 set_weight_version(protocol.rollout_engines, self.weight_version)
                 resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
+        # CUDA IPC keeps every sent bucket alive on the producer until the engines drop it (LoRA
+        # tensors only at end_weight_update) and we collect; a memory-saver resume bypasses the
+        # torch allocator, so torch would never reclaim this on its own.
+        torch.cuda.ipc_collect()
+        torch.cuda.empty_cache()
 
     def _iter_base_buckets(self, *, materialize: bool):
         return self._hf_weight_iterator.iter_hf_weights(self.weights_getter(), materialize=materialize)
