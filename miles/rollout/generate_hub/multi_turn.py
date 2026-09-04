@@ -18,9 +18,9 @@ from miles.rollout.generate_utils.tool_call_utils import (
     execute_tool_calls,
     update_sample_with_tool_responses,
 )
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import post
 from miles.utils.lifecycle import TrajectoryLifecycle
-from miles.utils.misc import load_function
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:

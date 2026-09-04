@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 import socket
 import uuid
 from contextlib import contextmanager
@@ -13,13 +12,18 @@ import httpx
 import pytest
 import requests
 from fastapi.responses import JSONResponse
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 from miles.rollout.session.server import SessionServer
 from miles.utils.chat_template_utils import strict_message_matches
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.openai_stream_client import stream_chat_completions
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
+
+
+_INSTANCE_ID = "0123456789abcdef-0"
 
 
 def _create_session(url: str) -> str:
@@ -63,19 +67,15 @@ def router_env():
 
     with patch.object(MockSGLangServer, "_compute_chat_completions_response", new=patched_chat_response):
         with with_mock_server(process_fn=process_fn) as backend:
-            args = SimpleNamespace(
-                miles_router_timeout=30,
+            config = make_session_server_config(
+                backend_url=backend.url,
                 hf_checkpoint="Qwen/Qwen3-0.6B",
-                chat_template_path=None,
                 apply_chat_template_kwargs={"enable_thinking": False},
                 tito_model="default",
-                sglang_speculative_algorithm=None,
-                trajectory_manager="linear_trajectory",
-                session_server_instance_id=uuid.uuid4().hex,
-                save_debug_trajectory_data=None,
+                instance_id=_INSTANCE_ID,
                 pause_generation_mode="retract",
             )
-            server_obj = SessionServer(args, backend_url=backend.url)
+            server_obj = SessionServer(config)
 
             port = find_available_port(31000)
             server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
@@ -100,7 +100,7 @@ class TestSessionRoutes:
         second_body = second.json()
         assert first_body["status"] == "ok"
         assert second_body["status"] == "ok"
-        assert re.fullmatch(r"[0-9a-f]{32}", first_body["session_server_instance_id"])
+        assert first_body["session_server_instance_id"] == _INSTANCE_ID
         assert second_body["session_server_instance_id"] == first_body["session_server_instance_id"]
 
     def test_create_session(self, router_env):
@@ -165,6 +165,34 @@ class TestSessionProxy:
         record = records[0]
         assert record["path"] == "/v1/chat/completions"
         assert record["status_code"] == 200
+
+    def test_proxy_chat_postprocesses_completion_once(self, router_env, monkeypatch):
+        calls = []
+        original = TITOTokenizer.postprocess_completion
+
+        def tracked_postprocess(self, *, choice, assistant_message, completion_token_ids):
+            calls.append((choice, assistant_message, completion_token_ids))
+            return original(
+                self,
+                choice=choice,
+                assistant_message=assistant_message,
+                completion_token_ids=completion_token_ids,
+            )
+
+        monkeypatch.setattr(TITOTokenizer, "postprocess_completion", tracked_postprocess)
+        session_id = _create_session(router_env.url)
+
+        response = _post_chat(
+            router_env.url,
+            session_id,
+            {"messages": [{"role": "user", "content": "hook once"}]},
+        )
+
+        assert response.status_code == 200
+        assert len(calls) == 1
+        choice, assistant_message, completion_token_ids = calls[0]
+        assert choice["message"] is assistant_message
+        assert completion_token_ids
 
     def test_proxy_chat_response_has_no_duplicate_server_or_date_header(self, router_env):
         # Both the backend and this server run under uvicorn, so each emits its own
@@ -591,19 +619,16 @@ def _serve_router(extra_args: dict | None = None):
         return ProcessResult(text="ok", finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as backend:
-        args = SimpleNamespace(
-            miles_router_timeout=30,
+        config = make_session_server_config(
+            backend_url=backend.url,
+            timeout=30,
             hf_checkpoint="Qwen/Qwen3-0.6B",
-            chat_template_path=None,
             apply_chat_template_kwargs={"enable_thinking": False},
             tito_model="default",
-            sglang_speculative_algorithm=None,
-            trajectory_manager="linear_trajectory",
-            session_server_instance_id=uuid.uuid4().hex,
-            save_debug_trajectory_data=None,
+            instance_id=uuid.uuid4().hex,
             **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
-        server_obj = SessionServer(args, backend_url=backend.url)
+        server_obj = SessionServer(config)
         port = find_available_port(31000)
         server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
         server.start()
@@ -619,8 +644,8 @@ class TestUseAdditionR3Derivation:
 
     @pytest.mark.parametrize(("mode", "expected"), [("abort", True), ("in_place", True), ("retract", False)])
     def test_mode_mapping(self, mode, expected):
-        args = SimpleNamespace(hf_checkpoint=None, pause_generation_mode=mode)
-        assert SessionServer(args, backend_url="http://127.0.0.1:9").use_addition_r3 is expected
+        config = make_session_server_config(hf_checkpoint=None, pause_generation_mode=mode)
+        assert SessionServer(config).use_addition_r3 is expected
 
 
 class TestAdditionR3RequestOffset:

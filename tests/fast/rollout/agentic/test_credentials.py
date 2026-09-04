@@ -3,6 +3,7 @@ import types
 
 import pytest
 
+import miles.rollout.agentic.credentials as credentials
 from miles.rollout.agentic.credentials import (
     PROVIDER_CREDENTIALS,
     forward_address,
@@ -23,6 +24,8 @@ _SPEC_KEYS = {
     "forward",
     "target",
 }
+# Per-backend extras a spec may carry; the launchers read them with .get().
+_OPTIONAL_SPEC_KEYS = {"sdk_min_version"}
 
 
 # --- the credential table ----------------------------------------------------
@@ -31,7 +34,7 @@ _SPEC_KEYS = {
 @pytest.mark.parametrize("backend", sorted(PROVIDER_CREDENTIALS))
 def test_credential_spec_is_complete(backend):
     spec = PROVIDER_CREDENTIALS[backend]
-    assert set(spec) == _SPEC_KEYS, backend
+    assert _SPEC_KEYS <= set(spec) <= _SPEC_KEYS | _OPTIONAL_SPEC_KEYS, backend
     assert spec["key_env_vars"], backend
     assert spec["default_path"], backend
 
@@ -154,6 +157,36 @@ def test_preflight_passes_when_the_sdk_imports(monkeypatch):
 def test_preflight_names_the_install_hint_when_the_sdk_is_missing():
     with pytest.raises(RuntimeError, match="pip install nonexistent-sdk"):
         preflight_sdk("nonexistent_provider_sdk", "pip install nonexistent-sdk")
+
+
+def test_preflight_enforces_min_version(monkeypatch):
+    monkeypatch.setitem(sys.modules, "fakesdk", types.ModuleType("fakesdk"))
+    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "2.11.0")
+    with pytest.raises(RuntimeError, match=r"fakesdk>=2\.12 \(installed: 2\.11\.0\)"):
+        preflight_sdk("fakesdk", "pip install fakesdk", "2.12")
+    monkeypatch.setattr(credentials.importlib.metadata, "version", lambda name: "2.46.0")
+    preflight_sdk("fakesdk", "pip install fakesdk", "2.12")  # no error
+    preflight_sdk("fakesdk", "pip install fakesdk")  # no floor, no check
+
+
+def test_preflight_skips_floor_without_package_metadata(monkeypatch, capsys):
+    """A vendored copy imports fine but has no dist-info; the floor check is
+    skipped with a note rather than blocking a possibly-fine install."""
+    monkeypatch.setitem(sys.modules, "fakesdk", types.ModuleType("fakesdk"))
+
+    def raise_not_found(name):
+        raise credentials.importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(credentials.importlib.metadata, "version", raise_not_found)
+    preflight_sdk("fakesdk", "pip install fakesdk", "2.12")  # no error
+    assert "cannot verify fakesdk>=2.12" in capsys.readouterr().out
+
+
+def test_version_tuple_reads_leading_numbers():
+    assert credentials._version_tuple("2.12") == (2, 12)
+    assert credentials._version_tuple("2.46.0") == (2, 46, 0)
+    assert credentials._version_tuple("2.12.0rc1") == (2, 12, 0)
+    assert credentials._version_tuple("2.12") < credentials._version_tuple("2.46.0")
 
 
 # --- worker-side key resolution -------------------------------------------------

@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from sglang.srt.entrypoints.openai.chat_encoding import resolve_dsv4_reasoning_effort_profile
 from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 from sglang.srt.entrypoints.openai.serving_chat import OpenAIServingChat
 from transformers import AutoTokenizer
@@ -67,6 +68,7 @@ def _make_serving(tokenizer) -> OpenAIServingChat:
     serving.is_gemma4 = False
     serving.tool_call_parser = None
     serving.reasoning_parser = None
+    serving._dsv4_reasoning_effort_profile = None
     # sglang v0.5.16 added server-level default chat-template kwargs, merged into
     # the request's chat_template_kwargs at the top of _process_messages.
     # __init__ always sets it (to `... or {}`); mirror the empty default so the
@@ -146,6 +148,7 @@ def sglang_dsv4_prompt_ids(
     serving.chat_encoding_spec = "dsv4"
     serving.reasoning_parser = "deepseek-v4"
     serving.tool_call_parser = "deepseekv4"
+    serving._dsv4_reasoning_effort_profile = resolve_dsv4_reasoning_effort_profile(model_path=_DEEPSEEK_V4_MODEL)
     result = serving._process_messages(request, is_multimodal=False)
     return result.prompt_ids
 

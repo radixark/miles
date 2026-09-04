@@ -90,10 +90,11 @@ legitimately not hold.
 
 Three more take values rather than switching off:
 
-**Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>` asserts
-that at least one eval during the run reported `key >= x`. The verdict lands when the
-checker is disposed at the end of the run, so a single good eval is enough to pass and a
-run with no eval at all fails.
+**Accuracy gate.** `--ci-metric-checker-key <key> --ci-metric-checker-threshold <x>`
+checks eval metrics when the checker is disposed at the end of the run. By default, at
+least one eval must report `key >= x`. Set `--ci-metric-checker-expect-num <n>` to
+require exactly `n` eval checks and require all of them to succeed. A run with no eval
+always fails.
 
 **Gradient-norm comparison.** `--ci-save-grad-norm <path>` writes the grad norm, and
 `--ci-load-grad-norm <path>` asserts a later run matches within `rel_tol=abs_tol=0.03`.
@@ -107,10 +108,10 @@ JSON per rank under `iter_<iteration>/model_hash_tp*_pp*_dp*_cp*.json`. Layer gr
 is deliberate: a mismatch names the layer instead of just saying the model differs.
 
 **Fault injection.** `--ci-ft-test-actions` takes a JSON array of actions such as
-`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_index": -1}`, with
-`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and
-`cell_index: -1` meaning the last cell. It is how the fault-tolerance suite kills things on
-purpose. See [Fault Tolerance](/advanced/fault-tolerance).
+`{"at_rollout": 3, "action": "stop_cell_at_end", "cell_id": "trainer-actor-0"}`, with
+`stop_cell_at_end`, `start_cell_at_end` and `crash_before_allreduce` available and `cell_id`
+naming the target cell. It is how the fault-tolerance suite kills things on purpose. See
+[Fault Tolerance](/advanced/fault-tolerance).
 
 ## Aligning precision
 

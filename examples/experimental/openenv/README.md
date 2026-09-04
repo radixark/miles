@@ -51,11 +51,11 @@ few tasks at a time if it does.
 
 Whichever provider you pick, install `tbench2_env` **editable**: the recipe
 bakes the installed source into each task image, so that install must carry
-the `>=` #1012 server contract. The launcher preflights the installed source
+the `>=` #1025 server contract. The launcher preflights the installed source
 and fails fast on an older one.
 
 ```bash
-git clone https://github.com/huggingface/OpenEnv.git   # >= the #1012 merge (04d259ea6, the full canonical contract for both modes); pin that sha if you need frozen reward semantics across a long run
+git clone https://github.com/huggingface/OpenEnv.git   # >= the #1025 merge (38b2a3135: canonical contract for both modes, and a missing verdict is an error rather than reward 0); pin that sha if you need frozen reward semantics across a long run
 pip install -e OpenEnv/envs/tbench2_env
 ```
 
@@ -97,7 +97,7 @@ microVM platform whose native API *is* the E2B API — set `E2B_API_URL` and
 `agentenv` is accepted as an alias for this backend.
 
 ```bash
-pip install e2b
+pip install -e '<miles>[e2b]'   # e2b>=2.12 (see the AgentENV recipe)
 export E2B_API_KEY=e2b_...     # or E2B_API_KEY_FILE (default ~/.config/e2b/api_key)
 export OPENENV_TB2_TASKS_DIR=/workspace/terminal-bench-2
 OPENENV_SANDBOX_BACKEND=e2b python run-openenv-tbench2.py
@@ -159,7 +159,7 @@ launcher uses `--openenv-env-url` instead. `MAX_CONCURRENT_ENVS` caps live
 containers; keep it at or below the rollout batch concurrency. Those containers
 are heavy on disk, so if you'd rather not colocate them with the GPU workload,
 run the server on a separate Docker host and point the launcher at it with
-`--openenv-env-url http://<env-host>:8003`. The same `>=` #1012 `tbench2_env`
+`--openenv-env-url http://<env-host>:8003`. The same `>=` #1025 `tbench2_env`
 contract applies: the adapter drops every episode (with a warning) from a
 server that doesn't carry it.
 

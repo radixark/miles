@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import statistics
 import time
 
@@ -7,7 +8,8 @@ import polars as pl
 import pytest
 from tests.fast.dashboard.dummy_dump import blank_samples, dump_dummy_run
 
-from miles.dashboard.dump_reader import DumpReader
+from miles.dashboard.dump_reader import DumpReader, _weight_version_summary
+from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
 
 REMOVED = (3,)  # within-step positions marked remove_sample=True by the fixture
 
@@ -31,7 +33,7 @@ def test_summary_matches_hand_computed(reader):
 
     for sample in joined.samples:
         entry = _df_row(df, sample.index)
-        row = joined.train_rows[sample.index]
+        row = joined.train_rows[(sample.index, 0)]
         assert entry["group_index"] == sample.group_index
         assert entry["response_length"] == sample.response_length
         assert entry["raw_reward"] == sample.reward
@@ -112,7 +114,7 @@ def test_tokens_full_range(reader):
     assert len(payload["train_log_probs"]) == sample.response_length
     assert len(payload["imp_ratio"]) == sample.response_length
     assert payload["rollout_log_probs"] == pytest.approx(sample.rollout_log_probs)
-    row = joined.train_rows[sample.index]
+    row = joined.train_rows[(sample.index, 0)]
     assert payload["lp_diff"][0] == pytest.approx(float(row.log_probs[0] - row.rollout_log_probs[0]))
 
 
@@ -124,7 +126,7 @@ def test_tokens_null_the_stats_where_the_loss_is_masked(reader):
     for key in ("train_log_probs", "rollout_log_probs", "lp_diff", "imp_ratio", "ref_log_probs", "advantages"):
         assert masked[key] == [None] * len(masked["loss_mask"]), key
 
-    row = reader.load_joined(0).train_rows[0]
+    row = reader.load_joined(0).train_rows[(0, 0)]
     unmasked = reader.tokens(0, 0)
     assert set(unmasked["loss_mask"]) == {1}
     assert unmasked["train_log_probs"] == pytest.approx([float(v) for v in row.log_probs])
@@ -213,7 +215,6 @@ def test_summary_and_tokens_survive_dump_without_log_probs(tmp_path):
     derived from them degrades to None instead of KeyError -> HTTP 404
     (disagg report 2026-07-14)."""
     import torch
-
     from tests.fast.dashboard.dummy_dump import dump_dummy_run
 
     from miles.dashboard.dump_reader import DumpReader
@@ -307,6 +308,41 @@ def test_empty_step_survives_the_parquet_cache(tmp_path):
     assert reloaded.columns == list(DumpReader.SUMMARY_COLUMNS)
 
 
+def test_trajectory_occurrences_follow_the_full_sample_order(tmp_path):
+    """The trajectory sidecar only holds samples that recorded a conversation,
+    so file positions cannot number occurrences: when the first of two TITO
+    leaves sharing an index has no conversation, the recorded one is
+    occurrence 1 in summary/tokens and must be occurrence 1 here too. The
+    writer persists that numbering in each row."""
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    sidecar = tmp_path / "trajectory" / "0.jsonl"
+    rows = [json.loads(line) for line in sidecar.read_text().splitlines()]
+    index0 = [row for row in rows if int(row["sample_index"]) == 0]
+    assert [row["sample_occurrence"] for row in index0] == [0, 1]  # full-list numbering, persisted
+    # leaf 0 recorded no conversation: only the occurrence-1 row remains
+    rows.remove(index0[0])
+    sidecar.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    reader = DumpReader(tmp_path)
+    assert int(reader.trajectory_messages(0, 0, sample_occurrence=1)["sample_index"]) == 0
+    with pytest.raises(KeyError):
+        reader.trajectory_messages(0, 0, sample_occurrence=0)  # the conversationless leaf
+
+
+def test_trajectory_legacy_sidecar_falls_back_to_file_positions(tmp_path):
+    """Sidecars written before the occurrence column keep working, numbered by
+    file position (the best available for them)."""
+    dump_dummy_run(tmp_path, steps=1, duplicate_first_sample_index=True)
+    sidecar = tmp_path / "trajectory" / "0.jsonl"
+    rows = [json.loads(line) for line in sidecar.read_text().splitlines()]
+    for row in rows:
+        row.pop("sample_occurrence")
+    sidecar.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    reader = DumpReader(tmp_path)
+    assert int(reader.trajectory_messages(0, 0, sample_occurrence=1)["sample_index"]) == 0
+
+
 def test_pre_fix_columnless_cache_is_not_served(tmp_path):
     """A cache dir populated before the no-sample schema fix holds a columnless
     parquet for the aborted step, and its mtime stamps still match the dump.
@@ -322,3 +358,133 @@ def test_pre_fix_columnless_cache_is_not_served(tmp_path):
 
     assert reader.summary(1).columns == list(DumpReader.SUMMARY_COLUMNS)
     assert DumpReader.SUMMARY_VERSION > 4  # regressing the bump re-serves those caches
+
+
+def test_turns_counts_calls_not_spans():
+    """A single generation call that spanned a weight update is still one turn."""
+    from miles.dashboard.dump_reader import _weight_version_summary
+    from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+    sample = Sample(group_index=0, index=0, prompt="p", tokens=[1, 2, 3], response="r", response_length=3, label="l")
+    sample.weight_versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan("4", 0, 2), WeightVersionSpan("5", 2, 3)])
+    ]
+
+    assert _weight_version_summary(sample) == (["4", "5"], 1)
+
+
+def test_turns_counts_a_call_that_carried_no_version():
+    """An unstamped call still happened, so it must not vanish from the turn count."""
+    from miles.dashboard.dump_reader import _weight_version_summary
+    from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+
+    sample = Sample(group_index=0, index=0, prompt="p", tokens=[1, 2], response="r", response_length=2, label="l")
+    sample.weight_versions = [
+        WeightVersionsPerCall(spans=[WeightVersionSpan("4", 0, 1)]),
+        WeightVersionsPerCall(spans=[]),
+    ]
+
+    assert _weight_version_summary(sample) == (["4"], 2)
+
+
+class TestLegacyWeightVersionSummary:
+    def test_reads_versions_from_a_pre_span_dump(self):
+        """A dump that predates spans still reports its versions and turn count."""
+        sample = Sample.from_dict({"status": "completed", "weight_versions": ["3", "4"], "tokens": [1, 2]})
+
+        versions, turns = _weight_version_summary(sample)
+
+        assert versions == ["3", "4"]
+        assert turns == 2
+
+    def test_prefers_spans_when_the_dump_has_them(self):
+        """A current dump is read from its spans, in generation order."""
+        sample = Sample(
+            weight_versions=[
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+                WeightVersionsPerCall(spans=[WeightVersionSpan("4", 1, 2), WeightVersionSpan("5", 2, 3)]),
+            ]
+        )
+
+        versions, turns = _weight_version_summary(sample)
+
+        assert versions == ["3", "4", "5"]
+        assert turns == 2
+
+    def test_reports_nothing_when_the_sample_was_never_stamped(self):
+        """A sample with no versions at all yields no series rather than a zero."""
+        assert _weight_version_summary(Sample()) == ([], None)
+
+    def test_repeated_legacy_versions_are_two_turns_but_not_mixed(self):
+        """Two calls that happened to see the same weights are still two turns."""
+        sample = Sample.from_dict({"status": "completed", "weight_versions": ["3", "3"], "tokens": [1, 2]})
+
+        assert _weight_version_summary(sample) == (["3", "3"], 2)
+
+
+class TestCurrentFormatWeightVersionSummary:
+    def test_turns_counts_calls_when_every_call_is_unstamped(self):
+        """Two calls that the engine never stamped report no versions but still count as two turns."""
+        sample = Sample(weight_versions=[WeightVersionsPerCall(spans=[]), WeightVersionsPerCall(spans=[])])
+
+        assert _weight_version_summary(sample) == ([], 2)
+
+    def test_summary_does_not_mark_repeated_current_version_as_mixed(self, tmp_path):
+        """Two calls that saw the same weights give two turns without flagging a mixed version."""
+        sample = Sample(
+            group_index=0,
+            index=0,
+            tokens=[1, 2],
+            response_length=2,
+            weight_versions=[
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 0, 1)]),
+                WeightVersionsPerCall(spans=[WeightVersionSpan("3", 1, 2)]),
+            ],
+        )
+
+        row = DumpReader(tmp_path)._summary_row(sample, None, rollout_id=0, sample_occurrence=0)
+
+        assert row["turns"] == 2
+        assert row["mixed_version"] is False
+        assert row["weight_version"] == "3"
+
+
+class TestSummaryCacheVersioning:
+    def test_summary_invalidates_v2_cache_after_weight_version_schema_change(self, reader):
+        """A summary cache stamped with the previous schema version is rebuilt and restamped at version 5."""
+        import polars as pl
+
+        expected = reader.summary(0)
+        cache_path = reader.cache_dir / "rollout_0.parquet"
+        sources_path = reader.cache_dir / "rollout_0.sources.json"
+        pl.DataFrame({"sample_index": [-1]}).write_parquet(cache_path)
+        sources_path.write_text(json.dumps(json.loads(sources_path.read_text()) | {"_summary_version": 2}))
+
+        rebuilt = reader.summary(0)
+
+        assert rebuilt.equals(expected)
+        assert pl.read_parquet(cache_path).equals(expected)
+        assert json.loads(sources_path.read_text())["_summary_version"] == 7
+
+
+def test_pre_span_dump_survives_the_full_reader_pipeline(tmp_path):
+    """A real dump downgraded to the pre-span format still rebuilds its parquet and summarises."""
+    import polars as pl
+    import torch
+
+    dump_dummy_run(tmp_path, steps=1, dp_size=2, tp_dup=2, with_eval=False)
+    shutil.rmtree(tmp_path / "dashboard_columns")
+    for path in (tmp_path / "rollout_data").glob("*.pt"):
+        pack = torch.load(path, weights_only=False)
+        for data in pack["samples"]:
+            data["weight_versions"] = [span["version"] for call in data["weight_versions"] for span in call]
+        torch.save(pack, path)
+
+    reader = DumpReader(tmp_path)
+    df = reader.summary(0)
+
+    assert df.height > 0
+    agentic = df.filter(pl.col("sample_index") % 3 == 0)
+    assert agentic["turns"].min() == 2
+    assert agentic["mixed_version"].all()
+    assert reader.tokens(0, int(agentic["sample_index"][0]))

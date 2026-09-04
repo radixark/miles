@@ -16,10 +16,9 @@ from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_hf,
     convert_target_modules_to_megatron,
     is_lora_enabled,
-    is_lora_weight_name,
     parse_exclude_modules,
 )
-from miles.utils.lora import LORA_ADAPTER_NAME
+from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
 # ---------------------------------------------------------------------------
 # _get_lora_class_name
@@ -355,3 +354,26 @@ class TestBuildLoraSyncConfig:
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
+
+
+class TestBuildLoraSyncConfigUnderMultiLora:
+    @staticmethod
+    def _args(**overrides):
+        return Namespace(
+            **{
+                "lora_rank": 8,
+                "lora_alpha": 8,
+                "lora_dropout": 0.0,
+                "target_modules": ["linear_qkv"],
+                "multi_lora": False,
+                **overrides,
+            }
+        )
+
+    def test_a_single_adapter_on_an_inkling_checkpoint_publishes_the_shorthand(self, monkeypatch):
+        """The engine was launched to auto-detect its targets, so the adapter must say the same."""
+        monkeypatch.setattr(
+            "miles.backends.megatron_utils.lora_utils.sglang_lora_target_all_sentinel", lambda _a: True
+        )
+
+        assert build_lora_sync_config(self._args())["target_modules"] == "all-linear"

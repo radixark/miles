@@ -71,30 +71,59 @@
         {{- "<|end_message|>" -}}
 
     {%- else -%}
-        {%- if message.role == "assistant" and message.reasoning_content is defined and message.reasoning_content -%}
-            {{- "<|message_model|><|content_thinking|>" ~ message.reasoning_content ~ "<|end_message|>" -}}
-        {%- endif -%}
+        {%- set ordered_blocks = message.content_blocks if (
+            message.role == "assistant"
+            and message.content_blocks is defined
+            and message.content_blocks is not none
+        ) else none -%}
 
-        {%- if message.content is string and message.content -%}
-            {{- rtok ~ "<|content_text|>" ~ message.content ~ "<|end_message|>" -}}
-        {%- elif message.content -%}
-            {%- for part in message.content -%}
-                {%- if part is string -%}
-                    {{- rtok ~ "<|content_text|>" ~ part ~ "<|end_message|>" -}}
-                {%- elif part.type is not defined or part.type in ("text", "input_text") -%}
-                    {%- set text_part = (part.text if part.text is defined and part.text is string else "") -%}
-                    {{- rtok ~ "<|content_text|>" ~ text_part ~ "<|end_message|>" -}}
-                {%- elif part.type in ("image", "input_image", "image_url") -%}
-                    {{- rtok ~ "<|content_image|><|unused_200054|><|end_message|>" -}}
-                {%- elif part.type in ("audio", "input_audio", "audio_url") -%}
-                    {{- rtok ~ "<|content_audio_input|><|unused_200053|><|audio_end|><|end_message|>" -}}
+        {%- if ordered_blocks is not none -%}
+            {%- for block in ordered_blocks -%}
+                {%- if block.type in ("thinking", "text") -%}
+                    {%- if block.text is not defined or block.text is not string -%}
+                        {{- raise_exception("assistant content block text must be a string") -}}
+                    {%- endif -%}
+                    {%- set content_token = "<|content_thinking|>" if block.type == "thinking" else "<|content_text|>" -%}
+                    {{- "<|message_model|>" ~ content_token ~ block.text ~ "<|end_message|>" -}}
+                {%- elif block.type == "tool_call" -%}
+                    {%- if block.recipient is not defined or block.recipient is not string -%}
+                        {{- raise_exception("tool call recipient must be a string") -}}
+                    {%- endif -%}
+                    {%- if block.raw_json is not defined or block.raw_json is not string -%}
+                        {{- raise_exception("tool call raw_json must be a string") -}}
+                    {%- endif -%}
+                    {{- "<|message_model|>" ~ block.recipient ~ "<|content_invoke_tool_json|>" -}}
+                    {{- block.raw_json ~ "<|end_message|>" -}}
                 {%- else -%}
-                    {{- raise_exception("Unsupported content part type: " ~ part.type) -}}
+                    {{- raise_exception("Unsupported assistant content block type: " ~ block.type) -}}
                 {%- endif -%}
             {%- endfor -%}
+        {%- else -%}
+            {%- if message.role == "assistant" and message.reasoning_content is defined and message.reasoning_content -%}
+                {{- "<|message_model|><|content_thinking|>" ~ message.reasoning_content ~ "<|end_message|>" -}}
+            {%- endif -%}
+
+            {%- if message.content is string and message.content -%}
+                {{- rtok ~ "<|content_text|>" ~ message.content ~ "<|end_message|>" -}}
+            {%- elif message.content -%}
+                {%- for part in message.content -%}
+                    {%- if part is string -%}
+                        {{- rtok ~ "<|content_text|>" ~ part ~ "<|end_message|>" -}}
+                    {%- elif part.type is not defined or part.type in ("text", "input_text") -%}
+                        {%- set text_part = (part.text if part.text is defined and part.text is string else "") -%}
+                        {{- rtok ~ "<|content_text|>" ~ text_part ~ "<|end_message|>" -}}
+                    {%- elif part.type in ("image", "input_image", "image_url") -%}
+                        {{- rtok ~ "<|content_image|><|unused_200054|><|end_message|>" -}}
+                    {%- elif part.type in ("audio", "input_audio", "audio_url") -%}
+                        {{- rtok ~ "<|content_audio_input|><|unused_200053|><|audio_end|><|end_message|>" -}}
+                    {%- else -%}
+                        {{- raise_exception("Unsupported content part type: " ~ part.type) -}}
+                    {%- endif -%}
+                {%- endfor -%}
+            {%- endif -%}
         {%- endif -%}
 
-        {%- if message.role == "assistant" and message.tool_calls -%}
+        {%- if ordered_blocks is none and message.role == "assistant" and message.tool_calls -%}
             {%- for tc in message.tool_calls -%}
                 {%- set fn = tc.function -%}
                 {%- if fn.name is not defined or fn.name is not string -%}
@@ -115,7 +144,8 @@
         {%- endif -%}
 
         {%- if message.role == "assistant" and (
-            (message.reasoning_content is defined and message.reasoning_content)
+            ordered_blocks is not none
+            or (message.reasoning_content is defined and message.reasoning_content)
             or message.content
             or message.tool_calls
         ) -%}

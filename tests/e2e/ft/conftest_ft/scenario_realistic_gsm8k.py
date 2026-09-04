@@ -3,14 +3,16 @@
 
 import os
 import shutil
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from tests.e2e.ft.conftest_ft.app import resolve_dump_dir
-from tests.e2e.ft.conftest_ft.fault_injection import CONTROL_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
+from tests.e2e.ft.conftest_ft.fault_injection import API_SERVER_PORT, MEAN_INTERVAL_SECONDS, spawn_fault_injector
 
 import miles.utils.external_utils.command_utils as U
+from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
 
@@ -51,7 +53,7 @@ def run_ci(
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
-    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval)
+    injector = spawn_fault_injector(seed=seed, mean_interval_seconds=mean_interval, cell_type="actor")
 
     try:
         U.execute_train(
@@ -59,9 +61,6 @@ def run_ci(
             num_gpus_per_node=_TRAIN_GPUS + _ROLLOUT_GPUS,
             megatron_model_type=_MODEL_TYPE,
             extra_env_vars={
-                # --ft-components train depends on cell-based indep_dp, which only
-                # the v2 RayTrainGroup supports.
-                "MILES_EXPERIMENTAL_FT_TRAINER": "1",
                 # Same as run_training: a cell respawned after a crash cold-recompiles
                 # its first forward, which is slow and memory-heavy enough to OOM.
                 "TORCHDYNAMO_DISABLE": "1",
@@ -71,6 +70,11 @@ def run_ci(
         )
     finally:
         injector.stop_and_join(timeout_seconds=5)
+
+    assert_soak_reconfigure_events(
+        Path(dump_dir) / "events",
+        num_successful_injections=injector.num_successful_injections,
+    )
 
     print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
 
@@ -146,7 +150,7 @@ def _get_gsm8k_train_args(*, seed: int, num_rollout: int, metric_threshold: floa
     fault_tolerance_args = (
         "--use-fault-tolerance "
         "--ft-components train "
-        f"--control-server-port {CONTROL_SERVER_PORT} "
+        f"--api-server-port {API_SERVER_PORT} "
         "--mini-ft-controller-enable "
     )
 

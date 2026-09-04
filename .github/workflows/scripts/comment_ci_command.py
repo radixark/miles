@@ -356,7 +356,14 @@ class GitHubAPI:
                     return None
                 return json.loads(body.decode("utf-8"))
         except urllib.error.HTTPError as error:
-            raise CommentCommandError(f"GitHub API returned HTTP {error.code}") from error
+            # Name the request so a permission failure points at one call; the
+            # token never appears here, and GitHub's accepted-permissions header
+            # states which installation permission that call needed.
+            detail = f"GitHub API returned HTTP {error.code} for {method} {path}"
+            accepted = error.headers.get("X-Accepted-GitHub-Permissions")
+            if accepted:
+                detail = f"{detail}; accepted permissions: {accepted}"
+            raise CommentCommandError(detail) from error
         except urllib.error.URLError as error:
             raise CommentCommandError(f"GitHub API request failed: {error.reason}") from error
         except TimeoutError as error:

@@ -1,7 +1,5 @@
-"""Unit tests for HfWeightIteratorBase factory routing.
-
-Validates that the right iterator subclass is selected based on megatron_to_hf_mode.
-"""
+"""Unit tests for the megatron hf-weight-iterator factory: mode routing and
+placement resolution against each implementation's forced placement."""
 
 from tests.ci.ci_register import register_cpu_ci
 
@@ -13,9 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from miles.backends.megatron_utils.update_weight.hf_weight_iterator_base import HfWeightIteratorBase
-
-_BASE_MODULE = "miles.backends.megatron_utils.update_weight.hf_weight_iterator_base"
+from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
 
 class TestHfWeightIteratorFactory:
@@ -26,33 +22,57 @@ class TestHfWeightIteratorFactory:
             update_weight_buffer_size=1,
         )
 
-    @patch(f"{_BASE_MODULE}.HfWeightIteratorBase.__init__", return_value=None)
-    def test_bridge_mode_creates_bridge_iterator(self, mock_init):
-        """Factory should select HfWeightIteratorBridge for 'bridge' mode."""
+    def _create(self, mode, required_placement=None):
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator import get_hf_weight_iterator
+
+        if required_placement is None:
+            required_placement = WeightUpdatePlacement(gather_pp=True)
+        return get_hf_weight_iterator(
+            self._make_args(mode),
+            [MagicMock()],
+            required_placement=required_placement,
+            model_name="qwen",
+            quantization_config=None,
+        )
+
+    def test_bridge_mode_creates_bridge_iterator(self):
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
 
         with patch.object(HfWeightIteratorBridge, "__init__", return_value=None):
-            args = self._make_args("bridge")
-            iterator = HfWeightIteratorBase.create(
-                args=args, model=[MagicMock()], is_lora=True, model_name="qwen", quantization_config=None
-            )
+            iterator = self._create("bridge")
             assert isinstance(iterator, HfWeightIteratorBridge)
 
-    @patch(f"{_BASE_MODULE}.HfWeightIteratorBase.__init__", return_value=None)
-    def test_raw_mode_creates_direct_iterator(self, mock_init):
-        """Factory should select HfWeightIteratorDirect for 'raw' mode."""
+    def test_raw_mode_creates_direct_iterator(self):
         from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
 
         with patch.object(HfWeightIteratorDirect, "__init__", return_value=None):
-            args = self._make_args("raw")
-            iterator = HfWeightIteratorBase.create(
-                args=args, model=[MagicMock()], is_lora=False, model_name="qwen", quantization_config=None
-            )
+            iterator = self._create("raw")
             assert isinstance(iterator, HfWeightIteratorDirect)
 
     def test_invalid_mode_raises(self):
-        args = self._make_args("invalid_mode")
         with pytest.raises(KeyError):
-            HfWeightIteratorBase.create(
-                args=args, model=[MagicMock()], is_lora=False, model_name="qwen", quantization_config=None
-            )
+            self._create("invalid_mode")
+
+    def test_forced_placement_resolves_by_implementation(self):
+        """Bridge forces a full gather; the direct iterator can keep PP local,
+        so resolution joins the requirement with each implementation's floor."""
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import HfWeightIteratorBridge
+        from miles.backends.megatron_utils.update_weight.hf_weight_iterator_direct import HfWeightIteratorDirect
+
+        full = WeightUpdatePlacement(gather_pp=True)
+        keep_pp = WeightUpdatePlacement(gather_pp=False)
+        assert HfWeightIteratorBridge.forced_placement == full
+        assert HfWeightIteratorDirect.forced_placement == keep_pp
+
+        captured = {}
+
+        def _capture_init(self, args, model, *, placement, model_name, quantization_config):
+            captured["placement"] = placement
+
+        with patch.object(HfWeightIteratorBridge, "__init__", _capture_init):
+            self._create("bridge", required_placement=keep_pp)
+        assert captured["placement"] == full
+
+        with patch.object(HfWeightIteratorDirect, "__init__", _capture_init):
+            self._create("raw", required_placement=keep_pp)
+        assert captured["placement"] == keep_pp

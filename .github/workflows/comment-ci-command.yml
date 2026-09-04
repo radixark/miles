@@ -71,7 +71,9 @@ jobs:
           client-id: ${{ vars.CI_COMMAND_APP_CLIENT_ID }}
           private-key: ${{ secrets.CI_COMMAND_APP_PRIVATE_KEY }}
           permission-issues: write
-          permission-pull-requests: read
+          # The label lands on a pull request, and GitHub gates issues-API writes
+          # on a PR on pull-requests scope, so read alone fails the label POST.
+          permission-pull-requests: write
 
       - name: Authorize and run the issues command
         if: steps.authorize.outputs.capability == 'issues'

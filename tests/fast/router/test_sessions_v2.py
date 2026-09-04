@@ -20,10 +20,13 @@ import safetensors.numpy
 from fastapi.responses import JSONResponse
 from tests.fast.router.test_sessions import _create_session, _post_chat
 
+from miles.rollout.session.config import compute_session_server_config
 from miles.rollout.session.server import SessionServer
+from miles.rollout.session.v2 import core as session_core_v2
+from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
+from miles.utils.function_registry import function_registry
 from miles.utils.http_utils import find_available_port
 from miles.utils.lora import LORA_ADAPTER_NAME
-from miles.utils.misc import function_registry
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, ProcessResult, with_mock_server
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -36,22 +39,37 @@ def _serve_router(extra_args: dict | None = None):
         return ProcessResult(text=f"echo: {prompt}", finish_reason="stop")
 
     with with_mock_server(process_fn=process_fn) as backend:
-        args = SimpleNamespace(
-            miles_router_timeout=30,
-            hf_checkpoint="Qwen/Qwen3-0.6B",
-            chat_template_path=None,
-            apply_chat_template_kwargs={"enable_thinking": False},
-            tito_model="default",
-            sglang_speculative_algorithm=None,
-            use_session_server="v2",
-            session_server_instance_id=uuid.uuid4().hex,
-            save_debug_trajectory_data=None,
-            session_sample_picker_path="miles.rollout.session.v2.picker_hub.drop_retries",
-            session_sample_postprocessor_path="miles.rollout.session.v2.postprocessor_hub.default_postprocess",
-            **({"pause_generation_mode": "retract"} | (extra_args or {})),
-        )
-        server_obj = SessionServer(args, backend_url=backend.url)
+        args_values = {
+            "miles_router_timeout": 30,
+            "hf_checkpoint": "Qwen/Qwen3-0.6B",
+            "chat_template_path": None,
+            "apply_chat_template_kwargs": {"enable_thinking": False},
+            "tito_model": "default",
+            "use_rollout_routing_replay": False,
+            "use_rollout_indexer_replay": False,
+            "sglang_speculative_algorithm": None,
+            "num_layers": None,
+            "moe_router_topk": None,
+            "save_debug_trajectory_data": None,
+            "lora_rank": 0,
+            "lora_adapter_path": None,
+            "use_session_server": "v2",
+            "session_server_instance_id": uuid.uuid4().hex,
+            "pause_generation_mode": "retract",
+            "session_sample_picker_path": "miles.rollout.session.v2.picker_hub.drop_retries",
+            "session_sample_postprocessor_path": "miles.rollout.session.v2.postprocessor_hub.default_postprocess",
+        }
+        args_values.update(extra_args or {})
+        args = SimpleNamespace(**args_values)
         port = find_available_port(31000)
+        config = compute_session_server_config(
+            args,
+            host="127.0.0.1",
+            port=port,
+            instance_id=args.session_server_instance_id,
+            backend_url=backend.url,
+        )
+        server_obj = SessionServer(config)
         server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
         server.start()
         try:
@@ -122,6 +140,68 @@ def test_lora_adapter_reaches_backend():
 
         assert response.status_code == 200
         assert env.backend.request_log[-1]["lora_path"] == LORA_ADAPTER_NAME
+
+
+def test_proxy_chat_postprocesses_completion_before_commit(router_env, monkeypatch):
+    calls = []
+    committed_messages = []
+    original_commit = session_core_v2.commit_generation
+
+    def postprocess(self, *, choice, assistant_message, completion_token_ids):
+        calls.append((choice, assistant_message, completion_token_ids))
+        choice["message"] = {**assistant_message, "reasoning_content": "parsed"}
+        return {**choice["message"], "_server_state": "stored"}
+
+    def commit(*args, **kwargs):
+        committed_messages.append(kwargs["assistant_message"])
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(TITOTokenizer, "postprocess_completion", postprocess)
+    monkeypatch.setattr(session_core_v2, "commit_generation", commit)
+    session_id = _create_session(router_env.url)
+
+    response = _post_chat(
+        router_env.url,
+        session_id,
+        {"messages": [{"role": "user", "content": "hook once"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["reasoning_content"] == "parsed"
+    assert len(calls) == 1
+    assert calls[0][2]
+    assert committed_messages == [{**calls[0][1], "reasoning_content": "parsed", "_server_state": "stored"}]
+
+
+class TestHealth:
+    def test_health_reports_configured_instance_id(self):
+        """The v2 core is built with config.instance_id, so /health echoes the configured identity."""
+        with _serve_router({"session_server_instance_id": "v2-instance-under-test"}) as env:
+            response = requests.get(f"{env.url}/health", timeout=5.0)
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["session_server_instance_id"] == "v2-instance-under-test"
+
+
+class TestIndexerReplayWiring:
+    def test_indexer_replay_config_requests_indexer_topk_from_backend(self):
+        """With indexer replay enabled, the upstream chat request asks for indexer topk."""
+        with _serve_router({"use_rollout_indexer_replay": True}) as env:
+            session_id = _create_session(env.url)
+            response = _post_chat(env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
+
+            assert response.status_code == 200
+            assert env.backend.request_log[-1]["return_indexer_topk"] is True
+
+    def test_without_indexer_replay_the_backend_request_omits_indexer_topk(self, router_env):
+        """The flag comes from config rather than being hardcoded, so a plain server never asks for it."""
+        session_id = _create_session(router_env.url)
+        response = _post_chat(router_env.url, session_id, {"messages": [{"role": "user", "content": "hi"}]})
+
+        assert response.status_code == 200
+        assert "return_indexer_topk" not in router_env.backend.request_log[-1]
 
 
 def _keep_all_picker(leaf_samples, _session_metadata):
