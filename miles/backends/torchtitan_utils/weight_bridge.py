@@ -1,113 +1,66 @@
-"""Stream torchtitan weights to the rollout engines.
+"""torchtitan's hook into the shared weight-update machinery.
 
-The HF naming comes from the model's own ``state_dict_adapter.to_hf`` -- the
-same mapping the trainer's checkpointer used to load the initial checkpoint,
-run in reverse -- exposed by the trainer as ``hf_weights()``. The transport
-(IPC buckets to a colocated engine) and the engine handshake are the shared
-implementations, so this module is only the weight *production* side.
+Transport, engine session, bucketing and atomic groups all live in
+``training_utils/weight_update``; the one thing a backend supplies is an HF
+weight iterator. torchtitan's turns the trainer's DTensor shards into HF-named
+full tensors through the model's own ``state_dict_adapter.to_hf`` -- the same
+mapping its checkpointer used to load the weights, run in reverse.
 """
 
-import logging
-
-import torch
-
-from miles.backends.fsdp_utils.update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
-from miles.backends.training_utils.weight_sync import weight_push_session
-
-logger = logging.getLogger(__name__)
-
-# Names sglang fuses into a single parameter by caching the halves and writing
-# only once both have arrived. The cache lives inside one
-# update_weights_from_tensor call, so a bucket boundary between them leaves the
-# fused parameter holding stale values -- silently, since nothing errors. The
-# halves must therefore share a bucket. Only DeepSeek's MLA down-projections
-# work this way: sglang's other fusions (gate_proj/up_proj -> gate_up_proj) go
-# through a weight loader that takes a shard id and writes its slice directly,
-# so their halves are independent.
-_FUSED_SIBLINGS = (("q_a_proj", "kv_a_proj_with_mqa"),)
+from argparse import Namespace
 
 
-def _fused_group_key(name: str) -> str | None:
-    """The key naming the fused parameter this tensor is half of, or None."""
-    for first, second in _FUSED_SIBLINGS:
-        for token in (first, second):
-            if token in name:
-                return name.replace(token, "<fused>")
-    return None
+from miles.backends.training_utils.weight_update.hf_weight_iterator import (
+    HfWeightIteratorBase,
+    WeightUpdatePlacement,
+    resolve_placement,
+)
+from miles.backends.training_utils.weight_update.hf_weight_iterator.atomic_groups import get_hf_atomic_update_groups
 
 
-class _TitanWeightProducer:
-    """Weight production for torchtitan, independent of how they are shipped.
+class TitanHfWeightIterator(HfWeightIteratorBase):
+    """Streams a TitanTrainer's weights as HF-named tensors.
 
-    FSDP streams ``model.state_dict()`` under HF names because it trains stock
-    HF modeling. torchtitan's parameter names are its own, so the trainer maps
-    each tensor through its state-dict adapter and materializes it from its
-    DTensor shards (pp-broadcast included) before it goes on the wire. Only
-    the tensors handed to the transport are materialized, and the bucketing
-    bounds how many are resident at once; gathering the whole state dict up
-    front would put a full unsharded copy of the model on every rank, fine for
-    a 0.6B and fatal for a 30B.
-
-    Mixed in ahead of a transport class, so ``_stream_weights`` is titan's
-    while ``connect_rollout_engines`` and ``update_bucket_weights`` stay the
-    shared implementations.
+    ``model`` is the trainer rather than a module: the trainer owns the model
+    parts and the adapter, and its ``hf_weights`` already completes the stream
+    on every rank -- dp/tp shards reassembled, pp- and ep-partial tensors
+    broadcast from their owners -- which is why every dim is forced gathered
+    regardless of what the protocol asks for. Only the tensors handed out are
+    materialized, one at a time, so a 30B never exists unsharded on a rank.
     """
 
-    def __init__(self, args, trainer) -> None:
-        super().__init__(args, trainer.model_parts[0])
-        self._trainer = trainer
+    forced_placement = WeightUpdatePlacement(gather_pp=True)
 
-    def update_weights(self) -> None:
-        self.weight_version += 1
-        with weight_push_session(self.args, self.rollout_engines):
-            self._stream_weights()
+    def _iter_hf_param_units(self, weights, *, materialize):
+        # ``weights`` is None by contract here: the trainer reads its live parts.
+        # Non-materializing ranks still walk the stream, since producing each
+        # tensor is a collective every rank has to join.
+        for name, tensor in self.model.hf_weights():
+            if materialize:
+                yield [(name, tensor)]
 
-    def _stream_weights(self) -> None:
-        bucket: list[tuple[str, torch.Tensor, None]] = []
-        bucket_size = 0
-        pending: dict[str, list[tuple[str, torch.Tensor]]] = {}
+    def _hf_atomic_update_groups(self):
+        # DeepSeek's MLA down-projections are fused by sglang from two HF
+        # tensors; whether the model has them is a fact of its architecture.
+        q_lora_rank = getattr(self.model.model_config, "q_lora_rank", None) or None
+        return get_hf_atomic_update_groups(self.model_name, q_lora_rank=q_lora_rank)
 
-        for name, tensor in self._trainer.hf_weights():
-            group_key = _fused_group_key(name)
-            if group_key is not None:
-                # Hold the first half until its sibling shows up, then place
-                # both in one bucket. The stream is name-sorted, so siblings
-                # are not adjacent and a boundary between them is likely.
-                half = pending.setdefault(group_key, [])
-                half.append((name, tensor))
-                if len(half) < 2:
-                    continue
-                group = pending.pop(group_key)
-            else:
-                group = [(name, tensor)]
-
-            size = sum(t.numel() * t.element_size() for _, t in group)
-            if bucket and bucket_size + size >= self.args.update_weight_buffer_size:
-                self.wait_and_update_bucket_weights(bucket)
-                bucket = []
-                bucket_size = 0
-            bucket.extend((n, t, None) for n, t in group)
-            bucket_size += size
-
-        if pending:
-            raise RuntimeError(
-                f"fused-parameter halves never completed: {sorted(pending)} -- sglang would leave "
-                "those parameters stale, so fail rather than push a partial update"
-            )
-        if bucket:
-            self.wait_and_update_bucket_weights(bucket)
+    def _iter_hf_adapter_units(self, lora_name, adapter, *, materialize):
+        raise NotImplementedError("the torchtitan backend has no LoRA")
 
 
-class TitanUpdateWeightFromTensor(_TitanWeightProducer, UpdateWeightFromTensor):
-    """Colocated: the engine shares the rank's device, so buckets go over IPC."""
-
-
-class TitanUpdateWeightFromDistributed(_TitanWeightProducer, UpdateWeightFromDistributed):
-    """Disaggregated: the engines are on their own GPUs, so rank 0 broadcasts
-    each bucket over a temporary NCCL group.
-
-    Every rank still walks the whole weight stream: producing a tensor takes
-    collectives (the DTensor gather, and the owner broadcast that completes the
-    stream under PP or EP), so a rank that skipped ahead would hang the others.
-    Only the final push is rank 0's.
-    """
+def get_hf_weight_iterator(
+    args: Namespace,
+    trainer,
+    *,
+    required_placement: WeightUpdatePlacement,
+    model_name: str,
+    quantization_config: dict | None,
+) -> HfWeightIteratorBase:
+    return TitanHfWeightIterator(
+        args,
+        trainer,
+        placement=resolve_placement(required_placement, TitanHfWeightIterator.forced_placement),
+        model_name=model_name,
+        quantization_config=quantization_config,
+    )

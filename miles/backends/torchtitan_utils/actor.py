@@ -10,6 +10,7 @@ this class never touches torchtitan internals.
 """
 
 import logging
+import random
 from argparse import Namespace
 
 import ray
@@ -19,17 +20,14 @@ import torch.distributed as dist
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
 from miles.backends.torchtitan_utils.trainer import TitanTrainer, build_trainer_config
-from miles.backends.torchtitan_utils.weight_bridge import (
-    TitanUpdateWeightFromDistributed,
-    TitanUpdateWeightFromTensor,
-)
+from miles.backends.torchtitan_utils.weight_bridge import get_hf_weight_iterator
 from miles.backends.training_utils.data import get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import log_rollout_data
 from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native_loop import run_log_probs, run_optimizer_steps
-from miles.backends.training_utils.weight_sync import connect_engines_if_stale, verify_engine_weight_version
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
@@ -127,11 +125,19 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if with_ref:
             self.ref_runner = self._build_ref_runner(args)
 
-        # Colocated engines share the rank's device, so weights go over IPC;
-        # engines on their own GPUs are reached by broadcast. The argument gate
-        # has already rejected any other transfer mode.
-        updater = TitanUpdateWeightFromTensor if args.colocate else TitanUpdateWeightFromDistributed
-        self.weight_updater = updater(args, self.trainer)
+        # The shared updater owns transport, session and bucketing; torchtitan
+        # supplies only the iterator that turns its shards into HF tensors.
+        # weights_getter is None: the iterator reads the trainer's live parts.
+        self.weight_updater = WeightUpdater(
+            args,
+            self.trainer,
+            weights_getter=lambda: None,
+            model_name=type(self.hf_config).__name__.lower() if args.model_name is None else args.model_name,
+            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            iterator_factory=get_hf_weight_iterator,
+            parallel_state=get_parallel_state(),
+            is_lora=False,
+        )
 
         clear_memory()
         if args.offload_train:
@@ -279,12 +285,28 @@ class TorchtitanTrainRayActor(TrainRayActor):
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        connect_engines_if_stale(self.weight_updater, self.rollout_manager, info)
+        if info.has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
+            self.weight_updater.connect_rollout_engines(
+                info.rollout_engines,
+                info.rollout_engine_lock,
+                engine_gpu_counts=info.engine_gpu_counts,
+                engine_gpu_offsets=info.engine_gpu_offsets,
+            )
+            dist.barrier(group=get_gloo_group())
+            if dist.get_rank() == 0:
+                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
+
         self.weight_updater.update_weights()
         if dist.get_rank() == 0:
             ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
-        if self.args.ci_test:
-            verify_engine_weight_version(self.weight_updater, info.rollout_engines)
+
+        if self.args.ci_test and info.rollout_engines:
+            engine = random.choice(info.rollout_engines)
+            engine_version = ray.get(engine.get_weight_version.remote())
+            if str(engine_version) != str(self.weight_updater.weight_version):
+                raise RuntimeError(
+                    f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
+                )
         clear_memory()
 
     def _get_parallel_config(self):

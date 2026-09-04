@@ -26,8 +26,6 @@ def _args(**overrides) -> Namespace:
         titan_expert_parallel_degree=1,
         rollout_max_context_len=8192,
         rollout_max_response_len=4096,
-        colocate=True,
-        update_weight_transfer_mode="broadcast",
         ref_update_interval=None,
         save_debug_train_data=None,
     )
@@ -113,16 +111,6 @@ def test_without_a_context_bound_the_response_must_leave_room_for_a_prompt(monke
     validate_torchtitan_args(
         _args(titan_seq_len=16384, rollout_max_context_len=None, rollout_max_response_len=8192)
     )
-
-
-def test_only_broadcast_is_implemented_for_a_disaggregated_rollout(monkeypatch):
-    """The other transfer modes carry megatron-specific weight production; the
-    colocated case never reaches them because it ships over IPC."""
-    monkeypatch.setattr(torch, "__version__", "2.13.0")
-    with pytest.raises(ValueError, match="update-weight-transfer-mode"):
-        validate_torchtitan_args(_args(colocate=False, update_weight_transfer_mode="p2p"))
-    validate_torchtitan_args(_args(colocate=False, update_weight_transfer_mode="broadcast"))
-    validate_torchtitan_args(_args(colocate=True, update_weight_transfer_mode="p2p"))
 
 
 def test_periodic_reference_refresh_is_rejected_rather_than_ignored(monkeypatch):

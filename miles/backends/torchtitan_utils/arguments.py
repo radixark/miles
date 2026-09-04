@@ -110,16 +110,6 @@ def validate_torchtitan_args(args) -> None:
             "inside the rope kernel"
         )
 
-    # Disaggregated rollout means the engines are not on the training ranks'
-    # devices, so the weights have to go over the wire. Only the NCCL broadcast
-    # transport is implemented for this backend; the others (p2p, rdt,
-    # disk-delta) carry megatron-specific weight production.
-    if not args.colocate and args.update_weight_transfer_mode != "broadcast":
-        raise ValueError(
-            f"--update-weight-transfer-mode {args.update_weight_transfer_mode} is not implemented "
-            "for the torchtitan backend; disaggregated rollout uses broadcast"
-        )
-
     # The reference model is built once from --ref-load; refreshing it mid-run
     # would need the actor-to-ref copy FSDP does, which this backend has not
     # wired up. Silently ignoring the interval would quietly train against a
