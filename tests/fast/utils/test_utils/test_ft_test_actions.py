@@ -130,8 +130,7 @@ class FakeController:
 
     def get_cell_statuses(self) -> dict[str, SimpleNamespace]:
         return {
-            cell_id: SimpleNamespace(workers_hash=workers_hash)
-            for cell_id, workers_hash in self.worker_hashes.items()
+            cell_id: SimpleNamespace(workers_hash=workers_hash) for cell_id, workers_hash in self.worker_hashes.items()
         }
 
 
