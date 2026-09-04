@@ -3266,12 +3266,12 @@ def miles_validate_args(args):
         "--ci-inject-rollout-data-group-by-dp-size must be set together."
     )
     if args.ci_inject_rollout_data_group_by_dp_size is not None:
-        assert args.ci_inject_rollout_data_path is not None, (
-            "--ci-inject-rollout-data-group-by-dp-* requires --ci-inject-rollout-data-path."
-        )
-        assert args.ci_inject_rollout_data_group_by_dp_size > 1, (
-            "--ci-inject-rollout-data-group-by-dp-size must exceed one."
-        )
+        assert (
+            args.ci_inject_rollout_data_path is not None
+        ), "--ci-inject-rollout-data-group-by-dp-* requires --ci-inject-rollout-data-path."
+        assert (
+            args.ci_inject_rollout_data_group_by_dp_size > 1
+        ), "--ci-inject-rollout-data-group-by-dp-size must exceed one."
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
