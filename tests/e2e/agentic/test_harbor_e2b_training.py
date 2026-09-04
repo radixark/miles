@@ -8,15 +8,15 @@ generate.reward_func, and one optimizer step. Deliberately fixed to
 harbor x e2b x terminus-2 x TB2 fix-git -- one combination, the one we run.
 
 Registered ``disabled`` because it needs what CI runners do not have yet: a
-route to the sandbox-service control plane (tailnet) and the platform key on
-the machine. Until then, run it manually on a GPU devbox acquired with
-``--tailnet``:
+network route to an E2B-compatible sandbox service and the platform key on
+the machine. Until then, run it manually on a GPU devbox that has both:
 
     # on the devbox, from the repo root (2 GPUs)
-    pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
-    export E2B_API_URL=http://sandbox-service-control-plane
+    # uv, not pip: the branch carries a uv-workspace dependency pip cannot resolve
+    uv pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor-miles-v0.20.0"
+    export E2B_API_URL=http://<your-e2b-service>
     export E2B_SANDBOX_URL=$E2B_API_URL
-    # key at ~/.config/e2b/api_key (see the sandbox-service skill / its README)
+    # key at ~/.config/e2b/api_key
     python tests/e2e/agentic/test_harbor_e2b_training.py
 
 terminus-2 is a host-process agent: the sandboxes never call back into the
@@ -39,7 +39,7 @@ register_cuda_ci(
     est_time=900,
     suite="stage-c-2-gpu-h200",
     labels=["agentic"],
-    disabled="needs the sandbox-service (tailnet) and its key on the runner; run manually on a --tailnet GPU devbox",
+    disabled="needs a network route to the sandbox service and its key on the runner; run manually on a GPU devbox that has both",
 )
 
 REPO = Path(__file__).resolve().parents[3]
@@ -62,7 +62,7 @@ def preflight():
     api_url = os.environ.get("E2B_API_URL", "").strip()
     if not api_url:
         sys.exit(
-            "set E2B_API_URL (and E2B_SANDBOX_URL) to the sandbox-service control plane; see the module docstring"
+            "set E2B_API_URL (and E2B_SANDBOX_URL) to your E2B-compatible service; see the module docstring"
         )
     key_file = Path(os.environ.get("E2B_API_KEY_FILE", "~/.config/e2b/api_key")).expanduser()
     # non-empty, mirroring the real check (credentials.sandbox_key_supply): an
@@ -76,7 +76,7 @@ def preflight():
     except urllib.error.HTTPError:
         pass  # a 401 still proves the control plane answers
     except OSError as e:
-        sys.exit(f"sandbox-service control plane unreachable at {api_url} ({e}); is this machine on the tailnet?")
+        sys.exit(f"sandbox service unreachable at {api_url} ({e}); does this machine have a route to it?")
     try:
         import harbor  # noqa: F401
     except ImportError:
