@@ -188,6 +188,10 @@ class UpdateWeightFromTensor(WeightTransferProtocol):
         check_weight_sync_results(async_utils.wait_futures(futures or []), is_lora=False)
         del long_lived_tensors
 
+    def after_engines_resumed(self) -> None:
+        torch.cuda.ipc_collect()
+        torch.cuda.empty_cache()
+
 
 def _send_to_colocated_engine(
     hf_named_tensors: list[tuple[str, torch.Tensor]],
