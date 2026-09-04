@@ -54,6 +54,12 @@ misconfiguration fails in seconds instead of after a multi-node startup.
 
 A flash backend that is installed but exposes no `deterministic` parameter is also rejected, with a message naming which kernels were found.
 
+### In the Megatron optimizer
+
+- When gradient clipping is active, a plain Megatron `ChainedOptimizer` whose children share one gradient-statistics group accumulates and reduces its L2 gradient norm in FP64, then rounds the final scalar once to FP32 at the clipping boundary.
+- This prevents distributed-optimizer shard boundaries from changing the clipping coefficient through intermediate FP32 reduction rounding while keeping the FP32 scalar contract at the clipping boundary.
+- The behavior is scoped to that nonempty optimizer instance. Specialized optimizer subclasses, single-child chains that override gradient-norm calculation, non-shared chains, non-deterministic optimizers, and non-L2 norm calls keep Megatron's implementation.
+
 ### How the flash patch works
 
 For diffusers-backed families, miles wraps the dispatch functions diffusers routes flash through:
@@ -76,6 +82,7 @@ forwards equal. That is a precision problem — see [Dtype Control](/diffusion/a
 
 Real but usually acceptable: `cudnn.benchmark=False` gives up kernel autotuning, deterministic
 kernels are chosen over faster nondeterministic ones, and cuBLAS reserves ~32 MiB per handle.
+Megatron's deterministic gradient clipping also launches FP64 norm reductions instead of its fused FP32 L2 norm.
 Recipes that need reproducibility more than throughput keep it on permanently.
 
 ## In CI
@@ -95,4 +102,3 @@ Because reward metrics are compared too, the CI recipes also pin the engine side
 ## Related
 
 - [Dtype Control](/diffusion/advanced/dtype-control) — the other half of train/rollout numeric agreement.
-

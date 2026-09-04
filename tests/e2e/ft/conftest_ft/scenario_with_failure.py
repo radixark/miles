@@ -4,6 +4,8 @@
 import json
 from pathlib import Path
 
+import torch
+
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
@@ -20,6 +22,7 @@ from miles.utils.workers.naming import compute_cell_id
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
+_FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -37,37 +40,20 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (".*", "rel <= 0.0085"),
 ]
 
-# Post-fault (injected) rollouts in the real_rollout mode: training data is injected to be
-# bitwise-identical, but the target's weights carry the fault-inherent ulp drift of the
-# degraded-quorum commit. On the converged dense model that drift lands in the
-# cancellation-dominated near-zero grads of the decoder-layer norms and attention/MLP
-# matrices as absolute noise measured <= 2.8e-3 (40 tensors, 2026-06-12; q_layernorm up to
-# rel 20% at max_abs 2.6e-3) while real grads sit at ~1e-2 — only those measured families
-# get a 3e-3 floor. Everything else (embeddings, output layer, final norm, all
-# activations/values) stays strict, and all passed at rel <= 0.85% in the same run.
-_POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
-    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (".*", "rel <= 0.0085"),
-]
-
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 def _build_actions(num_cells: int) -> list[dict]:
     target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
     return [
         {
-            "at_rollout": NUM_PHASE_A_STEPS + 1,
+            "at_rollout": _FAULT_ROLLOUT_ID,
             "action": "crash_before_allreduce",
             "cell_id": target_cell_id,
             "rank": 0,
             "attempt": 0,
         },
-        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_id": target_cell_id},
-        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_id": target_cell_id},
+        {"at_rollout": _FAULT_ROLLOUT_ID, "action": "stop_cell_at_end", "cell_id": target_cell_id},
+        {"at_rollout": _FAULT_ROLLOUT_ID, "action": "start_cell_at_end", "cell_id": target_cell_id},
     ]
 
 
@@ -76,7 +62,7 @@ def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> li
         return []
     return [
         ReconfigureInfo(
-            rollout_id=NUM_PHASE_A_STEPS + 1,
+            rollout_id=_FAULT_ROLLOUT_ID,
             src_cell_index=None,
             healed_cell_indices=[],
             alive_cell_indices_after=list(range(num_cells - 1)),
@@ -106,14 +92,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         base += f"--load {phase_a_dir}/ckpt "
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_build_actions(num_cells=mode.num_cells))}' "
-            if mode.has_real_rollout:
-                # Post-fault rollouts inject the baseline's recorded data (see README).
-                baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
-                base += (
-                    f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {NUM_PHASE_A_STEPS + 2} "
-                    "--ci-inject-rollout-data-min-match-ratio 0.5 "
-                )
 
     return base
 
@@ -133,6 +111,9 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
                 Path(f"{dump_dir}/{side}/{phase}/events"),
                 expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
             )
+
+    if mode.has_real_rollout:
+        _report_live_rollout_matches(dump_dir)
 
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
@@ -154,18 +135,57 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         f"{expected_leaves}; a new leaf would silently skip comparison"
     )
 
-    first_injected_rollout_id = NUM_PHASE_A_STEPS + 2
     for rollout_id in phase_b_rollout_ids:
-        is_post_fault = mode.has_real_rollout and rollout_id >= first_injected_rollout_id
         compare_dumps(
             baseline_dir=f"{dump_dir}/baseline/phase_b",
             target_dir=f"{dump_dir}/target/phase_b",
-            diff_thresholds=_POST_FAULT_DIFF_THRESHOLDS if is_post_fault else _DIFF_THRESHOLDS,
+            diff_thresholds=_DIFF_THRESHOLDS,
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
             allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
         )
     print("With-failure comparison test PASSED")
+
+
+def _report_live_rollout_matches(dump_dir: str) -> None:
+    for rollout_id in range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS):
+        payloads = [
+            torch.load(
+                f"{dump_dir}/{side}/phase_b/rollout_data/{rollout_id}.pt",
+                weights_only=False,
+            )
+            for side in ["baseline", "target"]
+        ]
+        baseline_samples, target_samples = [payload["samples"] for payload in payloads]
+        assert len(baseline_samples) == len(target_samples)
+
+        prompt_matches = 0
+        exact_response_matches = 0
+        matched_response_tokens = 0
+        total_response_tokens = 0
+        reward_matches = 0
+        for baseline, target in zip(baseline_samples, target_samples, strict=True):
+            baseline_response_length = baseline["response_length"]
+            target_response_length = target["response_length"]
+            baseline_prompt = baseline["tokens"][:-baseline_response_length]
+            target_prompt = target["tokens"][:-target_response_length]
+            baseline_response = baseline["tokens"][-baseline_response_length:]
+            target_response = target["tokens"][-target_response_length:]
+
+            prompt_matches += baseline_prompt == target_prompt
+            exact_response_matches += baseline_response == target_response
+            matched_response_tokens += sum(a == b for a, b in zip(baseline_response, target_response, strict=False))
+            total_response_tokens += max(len(baseline_response), len(target_response))
+            reward_matches += baseline["reward"] == target["reward"]
+
+        num_samples = len(baseline_samples)
+        response_token_match_ratio = matched_response_tokens / total_response_tokens
+        print(
+            f"Live rollout audit {rollout_id}: samples={num_samples}, "
+            f"prompt_matches={prompt_matches}, exact_response_matches={exact_response_matches}, "
+            f"response_token_match_ratio={response_token_match_ratio:.6f}, reward_matches={reward_matches}"
+        )
+        assert prompt_matches == num_samples
 
 
 TEST_NAME: str = "trainer_ft_with_failure"
