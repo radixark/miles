@@ -146,9 +146,9 @@ def setup_model_and_optimizer(
     # Multi-LoRA and single-LoRA (actor, bridge) both build via the bridge helper,
     # which picks the adapter type internally.
     if is_multi_lora_enabled(args) or (
-        is_lora_enabled(args) and role == "actor" and args.megatron_to_hf_mode == "bridge"
+        is_lora_enabled(args) and role in ("actor", "critic") and args.megatron_to_hf_mode == "bridge"
     ):
-        model = _setup_lora_model_via_bridge(args)
+        model = _setup_lora_model_via_bridge(args, role=role)
     else:
         provider_func = get_model_provider_func(args, role)
         if (

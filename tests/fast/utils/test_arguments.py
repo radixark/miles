@@ -1129,6 +1129,65 @@ class TestValidateSkipActorForwardOnly:
         )
 
 
+class TestCriticLoraAdapterPath:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    _LORA = ["--advantage-estimator", "ppo", "--lora-rank", "8", "--target-modules", "q_proj"]
+
+    def test_accepts_distinct_critic_path(self):
+        args = self._validate(
+            self._LORA
+            + [
+                "--lora-adapter-path",
+                "/ckpts/run1/iter_0000010/adapter",
+                "--critic-lora-adapter-path",
+                "/ckpts/run1_critic/iter_0000010/adapter",
+            ]
+        )
+        assert args.critic_lora_adapter_path == "/ckpts/run1_critic/iter_0000010/adapter"
+
+    def test_critic_never_inherits_actor_path(self):
+        args = self._validate(self._LORA + ["--lora-adapter-path", "/ckpts/run1/iter_0000010/adapter"])
+        assert args.critic_lora_adapter_path is None
+
+    def test_rejects_same_path_for_both_roles(self):
+        with pytest.raises(AssertionError, match="must differ from --lora-adapter-path"):
+            self._validate(
+                self._LORA + ["--lora-adapter-path", "/ckpts/shared", "--critic-lora-adapter-path", "/ckpts/shared"]
+            )
+
+    def test_rejects_without_lora(self):
+        with pytest.raises(AssertionError, match="requires a LoRA critic"):
+            self._validate(
+                [
+                    "--advantage-estimator",
+                    "ppo",
+                    "--critic-lora-adapter-path",
+                    "/ckpts/run1_critic/iter_0000010/adapter",
+                ]
+            )
+
+    def test_rejects_without_ppo(self):
+        with pytest.raises(AssertionError, match="requires --advantage-estimator ppo"):
+            self._validate(
+                [
+                    "--advantage-estimator",
+                    "grpo",
+                    "--lora-rank",
+                    "8",
+                    "--target-modules",
+                    "q_proj",
+                    "--critic-lora-adapter-path",
+                    "/ckpts/c",
+                ]
+            )
+
+
 class TestRunUuidResolution:
     def _parse(self, extra: list[str]):
         parser = argparse.ArgumentParser()

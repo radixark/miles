@@ -5,9 +5,11 @@ exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
 from argparse import Namespace
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
 from miles.backends.megatron_utils.lora_utils import (
     _get_lora_class_name,
@@ -16,7 +18,9 @@ from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_hf,
     convert_target_modules_to_megatron,
     is_lora_enabled,
+    load_lora_adapter,
     parse_exclude_modules,
+    save_lora_checkpoint,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
@@ -354,3 +358,108 @@ class TestBuildLoraSyncConfig:
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
+
+
+# ---------------------------------------------------------------------------
+# save_lora_checkpoint / load_lora_adapter: the trainable set, not a name pattern
+# ---------------------------------------------------------------------------
+
+
+class _TinyLoraCritic(torch.nn.Module):
+    """Frozen base, one adapter pair, and a trainable non-adapter value head."""
+
+    def __init__(self, with_head: bool = True):
+        super().__init__()
+        self.base = torch.nn.Linear(4, 4)
+        self.base.weight.requires_grad_(False)
+        self.base.bias.requires_grad_(False)
+        self.adapter = torch.nn.Module()
+        self.adapter.linear_in = torch.nn.Linear(4, 2, bias=False)
+        self.adapter.linear_out = torch.nn.Linear(2, 4, bias=False)
+        if with_head:
+            self.output_layer = torch.nn.Linear(4, 1)
+
+
+def _single_rank_parallel_state():
+    zero = SimpleNamespace(rank=0)
+    return SimpleNamespace(effective_dp=zero, cp=zero, tp=zero, pp=zero)
+
+
+_SAVE_ARGS = Namespace(
+    hf_checkpoint="/nonexistent/hf", target_modules=None, lora_rank=2, lora_alpha=4, lora_dropout=0.0
+)
+
+
+@pytest.fixture
+def lora_ckpt_env():
+    with (
+        patch(
+            "miles.backends.megatron_utils.lora_utils.get_parallel_state", return_value=_single_rank_parallel_state()
+        ),
+        patch("megatron.bridge.AutoBridge") as bridge_cls,
+    ):
+        bridge_cls.from_hf_pretrained.side_effect = RuntimeError("no bridge in unit tests")
+        yield bridge_cls
+
+
+class TestSaveLoraCheckpointTrainableSet:
+    def test_native_shard_includes_trainable_value_head(self, tmp_path, lora_ckpt_env):
+        model = _TinyLoraCritic()
+        model.role = "critic"
+
+        save_lora_checkpoint([model], _SAVE_ARGS, str(tmp_path))
+
+        shard = torch.load(tmp_path / "adapter_megatron_rank0.pt", weights_only=True)
+        assert set(shard) == {
+            "adapter.linear_in.weight",
+            "adapter.linear_out.weight",
+            "output_layer.weight",
+            "output_layer.bias",
+        }
+        torch.testing.assert_close(shard["output_layer.weight"], model.output_layer.weight.detach())
+
+    def test_critic_skips_hf_peft_export(self, tmp_path, lora_ckpt_env):
+        model = _TinyLoraCritic()
+        model.role = "critic"
+
+        save_lora_checkpoint([model], _SAVE_ARGS, str(tmp_path))
+
+        lora_ckpt_env.from_hf_pretrained.assert_not_called()
+        assert not (tmp_path / "adapter_model.bin").exists()
+
+    def test_actor_still_attempts_hf_peft_export(self, tmp_path, lora_ckpt_env):
+        model = _TinyLoraCritic(with_head=False)
+        model.role = "actor"
+
+        save_lora_checkpoint([model], _SAVE_ARGS, str(tmp_path))
+
+        lora_ckpt_env.from_hf_pretrained.assert_called_once()
+        shard = torch.load(tmp_path / "adapter_megatron_rank0.pt", weights_only=True)
+        assert set(shard) == {"adapter.linear_in.weight", "adapter.linear_out.weight"}
+
+
+class TestLoadLoraAdapterTrainableSet:
+    def test_value_head_round_trips(self, tmp_path, lora_ckpt_env):
+        saved = _TinyLoraCritic()
+        saved.role = "critic"
+        save_lora_checkpoint([saved], _SAVE_ARGS, str(tmp_path))
+
+        torch.manual_seed(1234)
+        resumed = _TinyLoraCritic()
+        assert not torch.equal(resumed.output_layer.weight, saved.output_layer.weight)
+
+        loaded, iteration = load_lora_adapter([resumed], str(tmp_path))
+
+        assert loaded is True and iteration is None
+        torch.testing.assert_close(resumed.output_layer.weight, saved.output_layer.weight)
+        torch.testing.assert_close(resumed.output_layer.bias, saved.output_layer.bias)
+        torch.testing.assert_close(resumed.adapter.linear_in.weight, saved.adapter.linear_in.weight)
+
+    def test_missing_trainable_tensor_is_an_error(self, tmp_path, lora_ckpt_env):
+        # An adapter-only shard (the pre-fix format, or an actor's shard) has no head.
+        actor = _TinyLoraCritic(with_head=False)
+        actor.role = "actor"
+        save_lora_checkpoint([actor], _SAVE_ARGS, str(tmp_path))
+
+        with pytest.raises(RuntimeError, match="output_layer.weight"):
+            load_lora_adapter([_TinyLoraCritic()], str(tmp_path))

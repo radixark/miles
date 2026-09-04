@@ -438,20 +438,43 @@ def save_lora_checkpoint(
     if dist.is_initialized():
         dist.barrier()
 
+    # The trainable set, not a name pattern: under LoRA that is the adapters plus
+    # whatever PEFT left trainable, i.e. the critic's freshly built value head.
+    # A name-only filter would drop the head and a resumed critic would start
+    # from a random head with no error.
     adapter_state: dict[str, torch.Tensor] = {}
+    trainable_non_adapter: list[str] = []
     for model_chunk in model:
         for name, param in model_chunk.named_parameters():
-            if _is_adapter_param_name(name):
+            if param.requires_grad or _is_adapter_param_name(name):
                 adapter_state[name] = param.data.cpu()
+                if not _is_adapter_param_name(name):
+                    trainable_non_adapter.append(name)
 
     global_rank = dist.get_rank() if dist.is_initialized() else 0
     native_path = save_path / f"adapter_megatron_rank{global_rank}.pt"
     torch.save(adapter_state, native_path)
-    logger.info(f"Saved {len(adapter_state)} adapter tensors (native) to {native_path}")
+    logger.info(
+        f"Saved {len(adapter_state)} trainable tensors (native) to {native_path}, "
+        f"{len(trainable_non_adapter)} of them non-adapter: {trainable_non_adapter}"
+    )
 
     # ---- HF PEFT format (uses bridge for correct name/weight conversion) ----
     # Bridge export is collective: all TP ranks participate in the all-gather,
-    # so every rank must call export_adapter_weights.
+    # so every rank must call export_adapter_weights. The decision to skip must
+    # therefore be rank-uniform: use the role, not the head's presence, because
+    # the head only exists on the last pipeline stage.
+    if getattr(model[0], "role", "actor") == "critic":
+        logger.info(
+            "Skipping HF PEFT adapter export for the critic: its value head has no HF "
+            "PEFT counterpart and a CAUSAL_LM adapter would be unusable. The native "
+            "shards are the resume format (--critic-lora-adapter-path)."
+        )
+        _save_lora_training_state(save_path, optimizer, opt_param_scheduler, iteration)
+        if dist.is_initialized():
+            dist.barrier()
+        return str(save_path)
+
     try:
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
 
@@ -492,23 +515,33 @@ def save_lora_checkpoint(
             f"shards + training state are sufficient for training resume."
         )
 
-    # ---- Training state (optimizer + scheduler) for resume ----
-    if optimizer is not None:
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        torch.save(
-            {
-                "iteration": iteration,
-                "optimizer": optimizer.state_dict(),
-                "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
-            },
-            save_path / f"training_state_rank{rank}.pt",
-        )
-        logger.info(f"Saved optimizer/scheduler state to {save_path}")
+    _save_lora_training_state(save_path, optimizer, opt_param_scheduler, iteration)
 
     if dist.is_initialized():
         dist.barrier()
 
     return str(save_path)
+
+
+def _save_lora_training_state(
+    save_path: Path,
+    optimizer: Any | None,
+    opt_param_scheduler: Any | None,
+    iteration: int | None,
+) -> None:
+    """Save per-rank optimizer + scheduler state next to the adapter shard for resume."""
+    if optimizer is None:
+        return
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    torch.save(
+        {
+            "iteration": iteration,
+            "optimizer": optimizer.state_dict(),
+            "opt_param_scheduler": opt_param_scheduler.state_dict() if opt_param_scheduler else None,
+        },
+        save_path / f"training_state_rank{rank}.pt",
+    )
+    logger.info(f"Saved optimizer/scheduler state to {save_path}")
 
 
 def load_lora_adapter(
@@ -557,13 +590,29 @@ def load_lora_adapter(
             native_path = legacy
     if native_path.exists():
         state_dict = torch.load(native_path, map_location="cpu", weights_only=True)
-        loaded = 0
+        loaded: set[str] = set()
+        missing_trainable: list[str] = []
         for model_chunk in model:
             for name, param in model_chunk.named_parameters():
                 if name in state_dict:
                     param.data.copy_(state_dict[name].to(device=param.device))
-                    loaded += 1
-        logger.info(f"Loaded {loaded} adapter tensors from Megatron-native checkpoint: {native_path}")
+                    loaded.add(name)
+                elif param.requires_grad:
+                    missing_trainable.append(name)
+        # Every trainable tensor must come back, or the resume is silently partial:
+        # a shard saved without the critic's value head, or an actor adapter pointed
+        # at a critic, would otherwise train on from a random head with no signal.
+        if missing_trainable:
+            raise RuntimeError(
+                f"Adapter checkpoint {native_path} lacks {len(missing_trainable)} trainable "
+                f"tensor(s) of this model, e.g. {missing_trainable[:3]}; refusing to resume "
+                f"with re-initialized parameters. Check that the shard was saved from the same "
+                f"role (actor vs critic) and includes every trainable parameter."
+            )
+        unused = sorted(set(state_dict) - loaded)
+        if unused:
+            logger.warning(f"{len(unused)} tensors in {native_path} match no model parameter, e.g. {unused[:3]}")
+        logger.info(f"Loaded {len(loaded)} adapter tensors from Megatron-native checkpoint: {native_path}")
 
         iteration = _load_training_state(adapter_dir, optimizer, opt_param_scheduler)
         return True, iteration

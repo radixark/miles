@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 from argparse import Namespace
-from dataclasses import dataclass
 
 from megatron.core.utils import get_attr_wrapped_model
 
+from miles.backends.megatron_utils.value_head import attach_value_head
 from miles.utils.hf_config import load_hf_config
 from miles.utils.multi_lora import is_multi_lora_enabled, targets_expert_leaves
 
@@ -20,49 +20,8 @@ from .lora_utils import convert_target_modules_to_hf, patch_param_grad_buffer_fo
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class _BridgeWrapperConfig:
-    """Configuration for Megatron-Bridge module wrapping."""
-
-    is_value_model: bool = False
-    wrap_with_ddp: bool = True
-    use_distributed_optimizer: bool = True
-
-
 def _ensure_model_list(model):
     return model if isinstance(model, list) else [model]
-
-
-def _make_value_model_hook(hidden_size: int):
-    """Create a pre-wrap hook that replaces the output layer with a value head."""
-    from megatron.core import parallel_state
-
-    from .model_provider import LinearForLastLayer
-
-    def hook(model):
-        model_post_process = []
-        if (
-            parallel_state.get_pipeline_model_parallel_world_size() > 1
-            and parallel_state.get_virtual_pipeline_model_parallel_world_size() is not None
-        ):
-            for i in range(parallel_state.get_virtual_pipeline_model_parallel_world_size()):
-                model_post_process.append(parallel_state.is_pipeline_last_stage(ignore_virtual=False, vp_stage=i))
-        else:
-            model_post_process.append(parallel_state.is_pipeline_last_stage())
-
-        model_list = _ensure_model_list(model)
-        assert len(model_post_process) == len(model_list), "Model list length and post process list length must match."
-
-        for index, model_chunk in enumerate(model_list):
-            if not model_post_process[index]:
-                continue
-            model_chunk.output_layer = LinearForLastLayer(
-                input_size=hidden_size,
-                output_size=1,
-                config=model_chunk.config,
-            )
-
-    return hook
 
 
 def _get_model_config_from_wrapped(model):
@@ -109,13 +68,13 @@ def _validate_multi_lora_moe_support(args: Namespace, provider) -> None:
     ), "Multi-LoRA on MoE experts requires moe_permute_fusion=False."
 
 
-def _setup_lora_model_via_bridge(args: Namespace) -> list:
+def _setup_lora_model_via_bridge(args: Namespace, role: str = "actor") -> list:
     """Build Megatron model with LoRA using Megatron-Bridge.
 
     This handles:
     1. Creating the Bridge and Provider
     2. Creating and registering the LoRA pre-wrap hook
-    3. Registering value-model hooks if needed
+    3. Untying and replacing the output layer with a value head for critics
     4. Building the DDP-wrapped model
 
     Args:
@@ -163,6 +122,13 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
         provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
     if hasattr(provider, "dsa_attention_backend"):
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
+    is_value_model = (
+        role == "critic"
+        or "ForTokenClassification" in hf_config.architectures[0]
+        or "ForSequenceClassification" in hf_config.architectures[0]
+    )
+    if is_value_model:
+        provider.share_embeddings_and_output_weights = False
     provider.finalize()
 
     if is_multi_lora_enabled(args):
@@ -178,18 +144,12 @@ def _setup_lora_model_via_bridge(args: Namespace) -> list:
 
     def apply_lora_hook(model_chunks):
         transformed = lora(model_chunks, training=True)
+        if is_value_model:
+            attach_value_head(transformed)
         lora.set_params_to_save(transformed)
         return transformed
 
     provider.register_pre_wrap_hook(apply_lora_hook)
-
-    is_value_model = (
-        "ForTokenClassification" in hf_config.architectures[0]
-        or "ForSequenceClassification" in hf_config.architectures[0]
-    )
-    if is_value_model:
-        hidden_size = hf_config.text_config.hidden_size if hasattr(hf_config, "text_config") else hf_config.hidden_size
-        provider.register_pre_wrap_hook(_make_value_model_hook(hidden_size))
 
     use_distributed_optimizer = "muon" not in (args.optimizer or "").lower()
     if is_multi_lora_enabled(args):

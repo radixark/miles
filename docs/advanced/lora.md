@@ -178,8 +178,10 @@ alternative aligned-expert path.
   policy loss. The maintained RL recipes use critic-free estimators such as
   GRPO. The SFT loss path can use the same adapter hooks, although the repository
   does not yet have a dedicated LoRA-SFT E2E test. Shared actor/critic PPO with
-  Bridge LoRA is untested: the critic is always built as a full model without
-  adapters.
+  Bridge LoRA builds the critic through the same adapter path as the actor; its
+  value head stays trainable and is saved in the critic's native adapter shards,
+  which resume through `--critic-lora-adapter-path`. The critic writes no HF
+  PEFT export, since a value head has no PEFT counterpart.
 - **Checkpoints.** miles saves native per-rank adapter shards and
   optimizer/scheduler state. Exact resume expects the same TP/PP topology. It
   also attempts a best-effort HF PEFT `adapter_model.bin` plus
@@ -374,8 +376,8 @@ dataset-driven driver.
   is model-specific to Inkling. General native coverage is pending PR #1792.
 - **Remote transport:** NCCL broadcast only, with PP1. P2P/RDMA and disk-delta
   reject LoRA.
-- **PPO:** shared actor/critic PPO with Bridge LoRA is untested; the critic never
-  gets adapters.
+- **PPO:** shared actor/critic PPO with Bridge LoRA is supported; the critic
+  resumes only from its own shards via `--critic-lora-adapter-path`.
 - **Resume:** miles adapter shards are resumable with the matching parallel
   topology. Direct HF PEFT import into the Bridge model is not yet implemented;
   native Inkling has a custom importer.
