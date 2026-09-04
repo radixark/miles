@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import TypeAdapter
 
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
+from miles.utils.retry_utils import retry_until_deadline
 from miles.utils.workers.naming import parse_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 
@@ -26,6 +27,7 @@ _ACTION_LIST_ADAPTER: TypeAdapter[list[FTTestAction]] = TypeAdapter(list[FTTestA
 
 _CONTROLLER_ACTIONS = {"stop_cell_at_end", "start_cell_at_end"}
 _ACTOR_ACTIONS = {"crash_before_allreduce"}
+_START_OBSERVATION_TIMEOUT_SECONDS = 30.0
 
 
 def _load_actions(args: object, action_filter: set[str]) -> list[FTTestAction]:
@@ -66,6 +68,31 @@ class FTTestActionControllerExecutor:
                     await worker_manager.stop_cells.remote([action.cell_id])
                 elif action.action == "start_cell_at_end":
                     await worker_manager.start_cells.remote([action.cell_id])
+                    cell_infos = await worker_manager.get_cell_infos.remote(pool_ids=[self._controller.pool_id])
+                    cell_info = cell_infos[action.cell_id]
+                    assert cell_info.alive, f"Started FT test cell is not alive (action={action}, info={cell_info})"
+                    await self._wait_for_observed_generation(
+                        cell_id=action.cell_id,
+                        workers_hash=cell_info.workers_hash,
+                    )
+
+    async def _wait_for_observed_generation(self, *, cell_id: str, workers_hash: str) -> None:
+        async def _check(_remaining: float) -> None:
+            status = self._controller.get_cell_statuses().get(cell_id)
+            if status is None or status.workers_hash != workers_hash:
+                raise TimeoutError(
+                    f"Controller has not observed started FT test cell generation "
+                    f"(cell_id={cell_id!r}, workers_hash={workers_hash!r}, status={status})"
+                )
+
+        await retry_until_deadline(
+            _check,
+            total_seconds=_START_OBSERVATION_TIMEOUT_SECONDS,
+            retry_on=TimeoutError,
+            initial_delay=0.1,
+            max_delay=1.0,
+            log_fields=dict(tag="ft", cell=cell_id, workers_hash=workers_hash),
+        )
 
     def _check_action_target(self, action: FTTestAction) -> None:
         parsed = parse_cell_id(action.cell_id)
