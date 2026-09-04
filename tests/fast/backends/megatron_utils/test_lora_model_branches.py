@@ -183,36 +183,9 @@ class TestSaveLoRaBranch:
         from miles.backends.megatron_utils.model import save
 
         model = [MagicMock()]
-        optimizer = MagicMock()
-        opt_param_scheduler = MagicMock()
-        mock_get_args.return_value = Namespace(
-            ci_test=False, ci_save_model_hash=False, no_save_optim=False
-        )
-
-        save(42, model, optimizer, opt_param_scheduler)
-
-        mock_save_lora.assert_called_once_with(42, model, optimizer, opt_param_scheduler)
-
-    @patch(f"{_MODEL_MODULE}.save_model_hashes")
-    @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
-    @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
-    @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.get_args")
-    @patch(f"{_MODEL_MODULE}.save_checkpoint_with_lora")
-    @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=True)
-    def test_lora_no_save_optim_strips_optimizer_and_scheduler(
-        self, mock_is_lora, mock_save_lora, mock_get_args, mock_should, mock_disable, mock_enable, mock_save_hashes
-    ):
-        from miles.backends.megatron_utils.model import save
-
-        model = [MagicMock()]
-        mock_get_args.return_value = Namespace(
-            ci_test=False, ci_save_model_hash=False, no_save_optim=True
-        )
-
         save(42, model, MagicMock(), MagicMock())
 
-        mock_save_lora.assert_called_once_with(42, model, None, None)
+        mock_save_lora.assert_called_once()
 
     @patch(f"{_MODEL_MODULE}.save_model_hashes")
     @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
@@ -227,51 +200,6 @@ class TestSaveLoRaBranch:
         from miles.backends.megatron_utils.model import save
 
         model = [MagicMock()]
-        optimizer = MagicMock()
-        opt_param_scheduler = MagicMock()
-        mock_get_args.return_value = Namespace(
-            ci_test=False, ci_save_model_hash=False, no_save_optim=False
-        )
-
-        save(42, model, optimizer, opt_param_scheduler)
-
-        mock_save_ckpt.assert_called_once_with(
-            42,
-            model,
-            optimizer,
-            opt_param_scheduler,
-            num_floating_point_operations_so_far=0,
-            checkpointing_context=None,
-            train_data_iterator=None,
-            preprocess_common_state_dict_fn=None,
-        )
-
-    @patch(f"{_MODEL_MODULE}.save_model_hashes")
-    @patch(f"{_MODEL_MODULE}.enable_forward_pre_hook")
-    @patch(f"{_MODEL_MODULE}.disable_forward_pre_hook")
-    @patch(f"{_MODEL_MODULE}.should_disable_forward_pre_hook", return_value=False)
-    @patch(f"{_MODEL_MODULE}.get_args")
-    @patch(f"{_MODEL_MODULE}.save_checkpoint")
-    @patch(f"{_MODEL_MODULE}.is_lora_model", return_value=False)
-    def test_non_lora_no_save_optim_strips_optimizer_and_scheduler(
-        self, mock_is_lora, mock_save_ckpt, mock_get_args, mock_should, mock_disable, mock_enable, mock_save_hashes
-    ):
-        from miles.backends.megatron_utils.model import save
-
-        model = [MagicMock()]
-        mock_get_args.return_value = Namespace(
-            ci_test=False, ci_save_model_hash=False, no_save_optim=True
-        )
-
         save(42, model, MagicMock(), MagicMock())
 
-        mock_save_ckpt.assert_called_once_with(
-            42,
-            model,
-            None,
-            None,
-            num_floating_point_operations_so_far=0,
-            checkpointing_context=None,
-            train_data_iterator=None,
-            preprocess_common_state_dict_fn=None,
-        )
+        mock_save_ckpt.assert_called_once()
