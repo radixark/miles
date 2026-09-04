@@ -53,6 +53,7 @@ _SKIPPED_SERVER_ARGS = [
     "gpu_id_step",
     "base_gpu_id",
     "nccl_port",
+    "gated_launch_port",
     "skip_server_warmup",
     "enable_return_routed_experts",
     "enable_return_indexer_topk",

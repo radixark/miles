@@ -9,9 +9,9 @@ import logging
 import random
 from argparse import Namespace
 
-import ray
 import torch.distributed as dist
 
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.torchtitan_utils import routing_replay
 from miles.backends.torchtitan_utils.config import build_trainer_config
 from miles.backends.torchtitan_utils.parallel import create_titan_parallel_state, parallel_dims_from_config
@@ -25,6 +25,7 @@ from miles.backends.training_utils.parallel import get_parallel_state, set_paral
 from miles.backends.training_utils.torch_native_loop import run_log_probs, run_optimizer_steps
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.train_actor import TrainRayActor
+from miles.utils import async_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.memory_utils import clear_memory, move_optimizer_state, print_memory
@@ -163,7 +164,7 @@ class TorchtitanTrainRayActor(TrainRayActor):
         rollout_data_ref: Box,
         witness_info=None,
         attempt: int = 0,
-    ) -> None:
+    ) -> TrainStepOutput:
         assert witness_info is None and attempt == 0
         self._heartbeat.bump()
         if self.args.offload_train:
@@ -173,10 +174,11 @@ class TorchtitanTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             with store_get_result:
                 if self.args.debug_rollout_only:
-                    return
+                    return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
                 self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
         self._heartbeat.bump()
+        return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterators, num_microbatches = get_data_iterator(self.args, self.trainer.model_parts, rollout_data)
@@ -235,35 +237,32 @@ class TorchtitanTrainRayActor(TrainRayActor):
         self.prof.step(rollout_id=rollout_id)
 
     @timer
-    def update_weights(self, info) -> None:  # type: ignore[override]
+    def update_weights(self, info) -> int | None:  # type: ignore[override]
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
+            return None
 
-        if info.has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
+        if self.weight_updater.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
             self.weight_updater.connect_rollout_engines(
                 info.rollout_engines,
-                info.rollout_engine_lock,
                 engine_gpu_counts=info.engine_gpu_counts,
                 engine_gpu_offsets=info.engine_gpu_offsets,
             )
+            self.weight_updater.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         print_memory("before update_weights")
         self.weight_updater.update_weights()
         print_memory("after update_weights")
-        if dist.get_rank() == 0:
-            ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
         if self.args.ci_test and info.rollout_engines and self.weight_updater.weight_version > 0:
             engine = random.choice(info.rollout_engines)
-            engine_version = ray.get(engine.get_weight_version.remote())
+            engine_version = async_utils.run(engine.get_weight_version())
             if str(engine_version) != str(self.weight_updater.weight_version):
                 raise RuntimeError(
                     f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
                 )
         clear_memory()
+        return self.weight_updater.weight_version
 
     def _get_parallel_config(self):
         return self.train_parallel_config

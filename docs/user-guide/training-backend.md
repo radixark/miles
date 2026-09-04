@@ -602,9 +602,6 @@ A router sits in front of the SGLang workers. Router-side flags take a `--router
 --router-balance-abs-threshold 0   # force uniform distribution (lowers prefix-cache hit rate)
 ```
 
-Set `--sglang-router-ip` and `--sglang-router-port` and Miles treats the router as
-**external**, skipping its own. Engines then register via `/add_worker` at startup.
-
 ---
 
 ## Further reading

@@ -77,9 +77,12 @@ def _mock_megatron_environment():
             {
                 "OptimizerConfig": _DummyOptimizerConfig,
                 "get_megatron_optimizer": MagicMock(),
+                "Adam": _DummyOptimizer,
+                "CPUAdam": _DummyOptimizer,
             },
             is_package=True,
         )
+        _stub_module("megatron.core.optimizer.emerging_optimizers", {"TensorParallelMuon": _DummyOptimizer})
         _stub_module("megatron.core.optimizer.muon", {"get_megatron_muon_optimizer": MagicMock()})
         _stub_module("megatron.core.optimizer.distrib_optimizer", {"DistributedOptimizer": _DummyDistributedOptimizer})
         _stub_module(
@@ -94,7 +97,7 @@ def _mock_megatron_environment():
         _stub_module("megatron.core.pipeline_parallel", {"get_forward_backward_func": MagicMock()})
         _stub_module("megatron.core.transformer", is_package=True)
         _stub_module("megatron.core.transformer.utils", {"sharded_state_dict_default": MagicMock()})
-        _stub_module("megatron.core.utils", {"get_model_config": MagicMock()})
+        _stub_module("megatron.core.utils", {"get_model_config": MagicMock(), "unwrap_model": MagicMock()})
         _stub_module("megatron.core.config", {"set_experimental_flag": MagicMock()})
         _stub_module("megatron.core.num_microbatches_calculator", {"init_num_microbatches_calculator": MagicMock()})
         _stub_module("megatron.training", is_package=True)
@@ -130,7 +133,13 @@ def _mock_megatron_environment():
                 "_setup_lora_model_via_bridge": MagicMock(),
             },
         )
-        _stub_module("miles.backends.megatron_utils.model_provider", {"get_model_provider_func": MagicMock()})
+        _stub_module(
+            "miles.backends.megatron_utils.model_provider",
+            {
+                "get_model_provider_func": MagicMock(),
+                "LinearForLastLayer": _DummyModel,
+            },
+        )
         yield
     finally:
         sys.modules.clear()

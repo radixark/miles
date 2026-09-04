@@ -7,7 +7,6 @@ validation, v2 attach search, the effective history handed to TITO, and
 registry ownership.
 """
 
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -91,7 +90,7 @@ class _ToolOnlyRecordingTITOTokenizer(_RecordingTITOTokenizer):
 
 
 def _session_with_one_checkpoint(tito: _RecordingTITOTokenizer) -> LinearTrajectory:
-    registry = SessionRegistry(SimpleNamespace(), tokenizer=None, tito_tokenizer=tito)
+    registry = SessionRegistry(tokenizer=None, tito_tokenizer=tito)
     session = registry.get_session(registry.create_session())
     session.prepare_pretokenized([USER], tito_tokenizer=tito)
     session.update_pretokenized_state([USER], STORED_ASSISTANT, [0], [1], 0)
@@ -247,13 +246,12 @@ class TestV2ReplayMatching:
 
 class TestRegistryOwnership:
     def test_defaults_to_the_strict_matcher(self):
-        registry = SessionRegistry(SimpleNamespace(), tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
+        registry = SessionRegistry(tokenizer=None, tito_tokenizer=_RecordingTITOTokenizer())
 
         assert registry.message_matcher is strict_message_matches
 
     def test_holds_the_injected_matcher(self):
         registry = SessionRegistry(
-            SimpleNamespace(),
             tokenizer=None,
             tito_tokenizer=_RecordingTITOTokenizer(),
             message_matcher=loose_tool_call_message_matches,

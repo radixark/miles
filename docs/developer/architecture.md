@@ -112,9 +112,9 @@ from the trainer loop and uses a continuously-running worker.
 | Support a new architecture on Megatron | `miles_plugins/models/<model>.py` + a bridge in `miles_plugins/mbridge/` |
 | Support a new architecture on FSDP | `miles/backends/fsdp_utils/adaptations/specs/<arch>.py` |
 | Add a new flag | `miles/utils/arguments.py` |
-| Change the engine handshake (pause / flush / announce / resume) | `miles/backends/training_utils/weight_sync.py` — shared by all backends |
-| Change how weights are produced or transported | `miles/backends/megatron_utils/update_weight/` (Megatron), `miles/backends/fsdp_utils/update_weight_utils.py` (FSDP), `miles/backends/torchtitan_utils/weight_bridge.py` (torchtitan) |
-| Add a training backend | a new `miles/backends/<name>_utils/` beside the existing three, a loader + validator in `miles/utils/arguments.py`, and a branch in `miles/ray/train/actor_factory.py` |
+| Change the engine handshake (pause / flush / announce / resume) | `miles/backends/training_utils/weight_update/session.py` — shared by all backends |
+| Change how weights are produced or transported | `miles/backends/training_utils/weight_update/` (transport protocols, shared), each backend's HF weight iterator beside it: `miles/backends/megatron_utils/update_weight/`, `miles/backends/fsdp_utils/update_weight_utils.py`, `miles/backends/torchtitan_utils/weight_bridge.py` (torchtitan) |
+| Add a training backend | a new `miles/backends/<name>_utils/` beside the existing three, a loader + validator in `miles/utils/arguments.py`, and an entry in `_TRAINER_ACTOR_CLASSES` in `miles/ray/specs/train.py` |
 | Change rollout buffer | `miles/rollout/data_source.py` |
 
 ## Extension points (the right way)
@@ -156,7 +156,7 @@ If you have 30 minutes and want to understand Miles end-to-end:
 2. `miles/rollout/sglang_rollout.py:generate_rollout` — how prompts become samples.
 3. `miles/backends/training_utils/loss.py` — the loss and advantage computation.
 4. `miles/router/router.py` — the FastAPI proxy.
-5. `miles/backends/training_utils/weight_sync.py` — how trained weights reach the engines,
-   and `miles/backends/megatron_utils/update_weight/` for one backend's transport.
+5. `miles/backends/training_utils/weight_update/` — how trained weights reach the engines:
+   the session handshake, the transport protocols, and the per-backend HF weight iterators.
 
 That's the spine. Everything else hangs off it.

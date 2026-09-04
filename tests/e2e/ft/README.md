@@ -3,7 +3,7 @@
 ## Layout
 
 - Scenario logic lives in `conftest_ft/scenario_<name>.py`.
-- CI runs it via thin per-mode entry files `test_trainer_ft_<scenario>_<mode>.py`, each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
+- CI runs it via thin per-mode entry files `test_<component>_ft_<scenario>_<mode>.py` (`<component>` is `trainer` or `rollout`, after the components the mode enables ft on), each registered with `register_cuda_ci(est_time=..., suite="stage-c-8-gpu-h200", labels=["ft-short"])` (comparison scenarios) or `labels=["ft-long"]` (soak scenarios).
 - The CUDA CI runner executes each entry as bare `python3 <file>` (exit code = pass/fail); the entry just calls the scenario's `run_ci(mode)`.
 
 | Scenario (`conftest_ft/scenario_*.py`) | Type | What it verifies |
@@ -17,7 +17,7 @@
 ## Mode Variants
 
 - Each scenario runs with a `--mode`.
-- All modes are **disaggregated** (training and rollout on separate nodes). Modes without rollout use debug rollout data.
+- A mode declares its `ft_components` (default `("train",)`) and whether it is `colocate`d (default disaggregated: training and rollout on separate nodes). Modes without rollout use debug rollout data.
 
 | Mode | Nodes | DP cells | Parallelism | Rollout | Model | Coverage |
 |------|-------|----------|-------------|---------|-------|----------|
@@ -26,11 +26,13 @@
 | `dp4_cp2` | 1 | 4 | CP2 | debug data | 5-layer MoE | Multi-replica (>=4 cells) |
 | `dp2_cp2_real_rollout` | 1 | 2 | CP2 | 4 engines × 1 GPU | 5-layer MoE | Real rollout engines + weight update path (no_failure, deterministic) |
 | `dp2_cp2_real_rollout_dense` | 1 | 2 | CP2 | 4 engines × 1 GPU | dense Qwen3-0.6B | Real rollout under a fault + injection match guard (with_failure) |
+| `colocate_dp2_cp2_rollout_ft` | 1 | 2 | CP2 | 4 engines × 1 GPU, colocated | dense Qwen3-0.6B | Rollout ft under colocation (gated relaunch) |
 | `6node_dp4_cp2_tp2_pp2_ep2_etp2` | 4+2 | 4 | CP2 TP2 PP2 EP2 ETP2 | 2 engines × 8 GPU | full MoE | Large-scale, all parallelism |
 
 - All scenarios use `--rollout-batch-size 32 --n-samples-per-prompt 8 --global-batch-size 256` (256 samples/rollout), which divides evenly across both 2 and 4 cells. Uneven sample distribution across replicas is **not** exercised.
-- 1-node modes use the 5-layer MoE (`Qwen3-30B-A3B-5layer`), except `dp2_cp2_real_rollout_dense` (dense `Qwen3-0.6B` — see `scenario_with_failure` for why).
+- 1-node modes use the 5-layer MoE (`Qwen3-30B-A3B-5layer`), except `dp2_cp2_real_rollout_dense` and `colocate_dp2_cp2_rollout_ft` (dense `Qwen3-0.6B` — see `scenario_with_failure` for why).
 - Authorized CI skips (no entry file): `6node_dp4_cp2_tp2_pp2_ep2_etp2` (multi-node), `with_failure × dp4_cp2`.
+- `colocate_dp2_cp2_rollout_ft` has one entry, `test_rollout_ft_random_colocate_dp2_cp2.py` (`scenario_ft_random`); it is the only mode that crashes engines rather than trainer cells.
 
 ## Running
 
@@ -152,7 +154,7 @@ cell 0, alive back to N). Baseline and phase_a event dirs must contain zero reco
 events. This positively proves the crash -> shrink -> heal path executed; without it the
 comparison could silently degenerate to two fault-free runs.
 
-Fault injection via --ci-ft-test-actions JSON (data-driven, executed by RayTrainGroup).
+Fault injection via --ci-ft-test-actions JSON (data-driven, executed by TrainerController).
 The JSON `at_rollout` field specifies which rollout_id triggers the action.
 The `attempt` field (for actor-level actions like `crash_before_allreduce`) specifies which retry attempt to match.
 ```
@@ -238,14 +240,20 @@ fault-free runs.
 Type: non-comparison (no baseline, no compare)
 Steps: 30 (default), configurable via --num-steps
 
+Targeting and assertions are derived from the mode's ft_components:
+  - ("train",)            -> inject into "actor" cells only, assert healing CellReconfigureEvents
+  - ("rollout",)          -> inject into "rollout" cells only, assert gated healing (below)
+  - ("train","rollout")   -> inject into every kind, assert both
+  Injecting into a component whose ft is off would crash something nothing is watching.
+
 Architecture (external fault injection, not inside training loop):
-  1. Start training with indep_dp + control server (port 18080) + mini FT controller
+  1. Start training with indep_dp + api server (port 18080) + mini FT controller
   2. Start a background daemon thread that:
      a. Sleeps a random interval (exponential, mean = 60s / crash_probability ≈ 120s at the default)
-     b. GET /api/v1/cells — read each cell's Healthy condition
+     b. GET /api/v1/cells — read each cell's Healthy condition, keeping only the targeted cell type
      c. Count the genuinely-alive cells — reported Healthy, minus cells we injected that have
         not finished a down->up recovery (RecoveryGate) — and skip if injecting would leave
-        <=1 of them. The control server reports a just-killed cell Healthy for ~95s >> the
+        <=1 of them. The api server reports a just-killed cell Healthy for ~95s >> the
         inject interval, so excluding still-recovering cells is what keeps >=1 live replica
         (indep_dp cannot heal from zero survivors).
      d. Otherwise POST /api/v1/cells/{name}/inject-fault with a random failure mode
@@ -260,6 +268,12 @@ Architecture (external fault injection, not inside training loop):
      --crash-probability is set high enough that the soak reliably clears this floor. Faults are
      random, so neither an exact sequence nor the end-state membership is asserted — the
      witness only proves repeated faults were injected and healing actually ran.
+  8. Rollout recovery witness: every accepted rollout injection must be paired, per cell and in
+     order, with one completed Serving -> (Suspended|Pending) -> Serving cycle; an injection still
+     unpaired when training ends fails the soak. The terminal state is Serving, not Running:
+     phase Running also covers a replacement that got weights but never re-entered the router.
+     Suspended is not required in between — it lasts only --mini-ft-controller-resume-delay (10s),
+     which a 2s poll can miss.
 
 CLI options: --seed (default 42), --num-steps (default 30), --crash-probability (default 0.5)
 ```
@@ -273,7 +287,7 @@ Type: non-comparison (no baseline run; reference = the baseline test's wandb cur
 Recipe: Qwen2.5-0.5B, GRPO, 250 rollouts; parallelism mirrors dp2_cp2_real_rollout
         (2 cells x CP2 on 4 train GPUs + 4 rollout engines x 1 GPU, disaggregated)
 Faults: same external random injection loop as scenario_ft_random
-        (train cells via control server)
+        (train cells via api server)
 
 Assertion: --ci-metric-checker-key eval/gsm8k with a threshold that must stay
   identical to the no-fault baseline's (0.55): fault recovery must not cost

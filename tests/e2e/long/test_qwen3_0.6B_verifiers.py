@@ -60,7 +60,7 @@ def prepare():
 
 def execute():
     config_path = RUN_DIR / "code-golf.toml"
-    config_path.write_text('[taskset]\nid = "code-golf-v1"\n')
+    config_path.write_text('[taskset]\nid = "code-golf-v1"\n\n[timeout]\nrollout = 300\n')
     dump_dir = RUN_DIR / "dump"
 
     train_args = " ".join(
@@ -113,6 +113,7 @@ def execute():
         megatron_model_type=MODEL_TYPE,
         extra_env_vars={
             "MILES_USE_LEGACY_ROLLOUT_V1": "1",
+            "VF_LOG_LEVEL": "INFO",
             "PYTHONPATH": (
                 f"{VERIFIERS_SITE_PACKAGES}:{CODE_GOLF_DIR}:{MEGATRON_PATH}:{ADAPTER_DIR}:{U.repo_base_dir}"
             ),

@@ -13,8 +13,9 @@ class EvalDispatcher:
     """Dispatches eval points without holding up the training loop.
 
     Exports a snapshot per point, fires the eval, and reclaims the snapshot once the
-    point settles. Failures degrade to a skipped point, never a crash. Shared-engine
-    eval takes the plain blocking call instead.
+    point settles. Failures degrade to a skipped point outside CI; under ``--ci-test``,
+    every skipped point fails the run. Shared-engine eval takes the plain blocking call
+    instead.
     """
 
     def __init__(self, args, actor_model, rollout_manager):

@@ -117,7 +117,7 @@ class ProcessPushSpy:
 
 def test_sample_once_converts_units():
     push = PushSpy()
-    sampler = GpuSampler(push, node="10.0.0.1", nvml=FakeNvml(count=2))
+    sampler = GpuSampler(push=push, node="10.0.0.1", nvml=FakeNvml(count=2))
     assert sampler.available
     assert sampler.gpu_uuids() == ["GPU-fake-0", "GPU-fake-1"]
 
@@ -133,7 +133,7 @@ def test_sample_once_converts_units():
 
 def test_amd_sample_once_preserves_native_units_and_uuids():
     push = PushSpy()
-    sampler = GpuSampler(push, node="amd-node", amdsmi=FakeAmdSmi(count=2))
+    sampler = GpuSampler(push=push, node="amd-node", amdsmi=FakeAmdSmi(count=2))
     assert sampler.available
     assert sampler.gpu_uuids() == ["GPU-amd-0", "GPU-amd-1"]
 
@@ -173,7 +173,7 @@ def test_amd_unavailable_power_reports_zero_but_keeps_util_and_mem():
     push = PushSpy()
     amdsmi = FakeAmdSmi(count=1)
     amdsmi.amdsmi_get_power_info = lambda handle: {"socket_power": "N/A", "current_socket_power": "N/A"}
-    sampler = GpuSampler(push, node="n", amdsmi=amdsmi)
+    sampler = GpuSampler(push=push, node="n", amdsmi=amdsmi)
 
     assert sampler.sample_once(ts=1.0) == 1
     sampler.flush()
@@ -183,7 +183,7 @@ def test_amd_unavailable_power_reports_zero_but_keeps_util_and_mem():
 
 def test_flush_clears_buffer_and_skips_empty():
     push = PushSpy()
-    sampler = GpuSampler(push, node="n", nvml=FakeNvml(count=1))
+    sampler = GpuSampler(push=push, node="n", nvml=FakeNvml(count=1))
     sampler.flush()  # empty: no call
     assert push.calls == []
 
@@ -196,7 +196,7 @@ def test_flush_clears_buffer_and_skips_empty():
 def test_nvml_init_failure_disables_sampler(caplog):
     push = PushSpy()
     with caplog.at_level(logging.WARNING):
-        sampler = GpuSampler(push, node="n", nvml=FakeNvml(fail_init=True))
+        sampler = GpuSampler(push=push, node="n", nvml=FakeNvml(fail_init=True))
     assert not sampler.available
     assert sampler.start() is False
     assert sampler.sample_once(ts=1.0) == 0
@@ -207,7 +207,7 @@ def test_nvml_init_failure_disables_sampler(caplog):
 @pytest.mark.parametrize("backend", ["nvml", "amdsmi"])
 def test_zero_devices_disable_sampler(backend):
     fake = FakeNvml(count=0) if backend == "nvml" else FakeAmdSmi(count=0)
-    sampler = GpuSampler(PushSpy(), node="n", **{backend: fake})
+    sampler = GpuSampler(push=PushSpy(), node="n", **{backend: fake})
     assert not sampler.available
     assert sampler.gpu_uuids() == []
 
@@ -216,7 +216,7 @@ def test_production_auto_detection_falls_back_from_nvml_to_amdsmi(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", FakeNvml(fail_init=True))
     monkeypatch.setitem(sys.modules, "amdsmi", FakeAmdSmi(count=1))
 
-    sampler = GpuSampler(PushSpy(), node="n")
+    sampler = GpuSampler(push=PushSpy(), node="n")
 
     assert sampler.available
     assert sampler.gpu_uuids() == ["GPU-amd-0"]
@@ -229,7 +229,7 @@ def test_explicit_injection_does_not_probe_the_other_backend(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "amdsmi", BoomAmdSmi())
 
-    sampler = GpuSampler(PushSpy(), node="n", nvml=FakeNvml(fail_init=True))
+    sampler = GpuSampler(push=PushSpy(), node="n", nvml=FakeNvml(fail_init=True))
 
     assert not sampler.available
 
@@ -239,7 +239,7 @@ def test_missing_optional_backends_disable_sampler(monkeypatch, caplog):
     monkeypatch.setitem(sys.modules, "pynvml", None)
     monkeypatch.setitem(sys.modules, "amdsmi", None)
     with caplog.at_level(logging.WARNING):
-        sampler = GpuSampler(PushSpy(), node="n")
+        sampler = GpuSampler(push=PushSpy(), node="n")
 
     assert not sampler.available
     assert sampler.start() is False
@@ -248,12 +248,12 @@ def test_missing_optional_backends_disable_sampler(monkeypatch, caplog):
 
 def test_only_one_backend_may_be_injected():
     with pytest.raises(AssertionError, match="inject only one"):
-        GpuSampler(PushSpy(), node="n", nvml=FakeNvml(), amdsmi=FakeAmdSmi())
+        GpuSampler(push=PushSpy(), node="n", nvml=FakeNvml(), amdsmi=FakeAmdSmi())
 
 
 def test_failing_device_is_skipped_others_report(caplog):
     push = PushSpy()
-    sampler = GpuSampler(push, node="n", nvml=FakeNvml(count=3, failing_devices={1}))
+    sampler = GpuSampler(push=push, node="n", nvml=FakeNvml(count=3, failing_devices={1}))
     with caplog.at_level(logging.WARNING):
         assert sampler.sample_once(ts=1.0) == 2
     sampler.flush()
@@ -264,7 +264,7 @@ def test_failing_device_is_skipped_others_report(caplog):
 
 def test_amd_failing_device_is_skipped_while_others_report(caplog):
     push = PushSpy()
-    sampler = GpuSampler(push, node="n", amdsmi=FakeAmdSmi(count=3, failing_devices={1}))
+    sampler = GpuSampler(push=push, node="n", amdsmi=FakeAmdSmi(count=3, failing_devices={1}))
     with caplog.at_level(logging.WARNING):
         assert sampler.sample_once(ts=1.0) == 2
     sampler.flush()
@@ -285,7 +285,7 @@ def test_amd_degraded_metric_value_skips_device_while_others_report(method, payl
     amdsmi = FakeAmdSmi(count=2)
     original = getattr(amdsmi, method)
     setattr(amdsmi, method, lambda handle: payload if handle == 0 else original(handle))
-    sampler = GpuSampler(push, node="n", amdsmi=amdsmi)
+    sampler = GpuSampler(push=push, node="n", amdsmi=amdsmi)
 
     with caplog.at_level(logging.WARNING):
         assert sampler.sample_once(ts=1.0) == 1
@@ -298,7 +298,7 @@ def test_amd_uses_smi_visible_order_without_refiltering_process_env(monkeypatch)
     monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2")
     monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "2")
     push = PushSpy()
-    sampler = GpuSampler(push, node="n", amdsmi=FakeAmdSmi(count=3))
+    sampler = GpuSampler(push=push, node="n", amdsmi=FakeAmdSmi(count=3))
 
     assert sampler.sample_once(ts=1.0) == 3
     sampler.flush()
@@ -307,7 +307,7 @@ def test_amd_uses_smi_visible_order_without_refiltering_process_env(monkeypatch)
 
 def test_thread_lifecycle_flushes_on_stop():
     push = PushSpy()
-    sampler = GpuSampler(push, node="n", interval=0.01, nvml=FakeNvml(count=1))
+    sampler = GpuSampler(push=push, node="n", interval=0.01, nvml=FakeNvml(count=1))
     assert sampler.start() is True
     time.sleep(0.08)
     sampler.stop()
@@ -319,7 +319,7 @@ def test_thread_lifecycle_flushes_on_stop():
 def test_sample_processes_once_converts_units():
     push = PushSpy()
     push_processes = ProcessPushSpy()
-    sampler = GpuSampler(push, node="n", nvml=FakeNvml(count=2), push_processes=push_processes)
+    sampler = GpuSampler(push=push, node="n", nvml=FakeNvml(count=2), push_processes=push_processes)
     assert sampler.sample_processes_once(ts=5.0) == 2
     sampler.flush()
     [(node, batch)] = push_processes.calls
@@ -332,7 +332,7 @@ def test_sample_processes_once_converts_units():
 
 def test_amd_processes_convert_bytes_fall_back_on_name_and_drop_zero_vram():
     push_processes = ProcessPushSpy()
-    sampler = GpuSampler(PushSpy(), node="n", amdsmi=FakeAmdSmi(count=2), push_processes=push_processes)
+    sampler = GpuSampler(push=PushSpy(), node="n", amdsmi=FakeAmdSmi(count=2), push_processes=push_processes)
 
     assert sampler.sample_processes_once(ts=5.0) == 2
     sampler.flush()
@@ -348,7 +348,9 @@ def test_amd_processes_convert_bytes_fall_back_on_name_and_drop_zero_vram():
 def test_failing_device_skipped_for_process_sampling(caplog):
     push = PushSpy()
     push_processes = ProcessPushSpy()
-    sampler = GpuSampler(push, node="n", nvml=FakeNvml(count=3, failing_devices={1}), push_processes=push_processes)
+    sampler = GpuSampler(
+        push=push, node="n", nvml=FakeNvml(count=3, failing_devices={1}), push_processes=push_processes
+    )
     with caplog.at_level(logging.WARNING):
         assert sampler.sample_processes_once(ts=1.0) == 2
     sampler.flush()
@@ -360,7 +362,7 @@ def test_failing_device_skipped_for_process_sampling(caplog):
 def test_amd_failing_device_is_skipped_for_process_sampling(caplog):
     push_processes = ProcessPushSpy()
     sampler = GpuSampler(
-        PushSpy(),
+        push=PushSpy(),
         node="n",
         amdsmi=FakeAmdSmi(count=3, failing_devices={1}),
         push_processes=push_processes,
@@ -375,7 +377,7 @@ def test_amd_failing_device_is_skipped_for_process_sampling(caplog):
 
 def test_process_batch_dropped_silently_without_push_processes():
     push = PushSpy()
-    sampler = GpuSampler(push, node="n", nvml=FakeNvml(count=1))
+    sampler = GpuSampler(push=push, node="n", nvml=FakeNvml(count=1))
     assert sampler.sample_processes_once(ts=1.0) == 1
     sampler.flush()
     assert push.calls == []
@@ -383,7 +385,7 @@ def test_process_batch_dropped_silently_without_push_processes():
 
 def test_interval_must_be_positive():
     with pytest.raises(AssertionError):
-        GpuSampler(lambda n, b: None, node="n", interval=0, nvml=FakeNvml())
+        GpuSampler(push=lambda n, b: None, node="n", interval=0, nvml=FakeNvml())
 
 
 def test_real_nvml_when_gpus_present():
@@ -398,7 +400,7 @@ def test_real_nvml_when_gpus_present():
 
     push = PushSpy()
     push_processes = ProcessPushSpy()
-    sampler = GpuSampler(push, node="local", nvml=pynvml, push_processes=push_processes)
+    sampler = GpuSampler(push=push, node="local", nvml=pynvml, push_processes=push_processes)
     assert sampler.available
     assert sampler.sample_once(ts=1.0) >= 1
     # idle test GPUs may have zero compute processes — asserting >= 0 just
@@ -419,7 +421,7 @@ def test_real_amdsmi_when_gpus_present():
     amdsmi = pytest.importorskip("amdsmi")
     push = PushSpy()
     push_processes = ProcessPushSpy()
-    sampler = GpuSampler(push, node="local", amdsmi=amdsmi, push_processes=push_processes)
+    sampler = GpuSampler(push=push, node="local", amdsmi=amdsmi, push_processes=push_processes)
     if not sampler.available:
         pytest.skip("no usable AMD SMI device")
 
@@ -434,3 +436,10 @@ def test_real_amdsmi_when_gpus_present():
     if push_processes.calls:
         proc_sample = push_processes.calls[0][1][0]
         assert proc_sample.pid > 0 and proc_sample.mem_mb > 0 and proc_sample.name
+
+
+class TestConstructorContract:
+    def test_a_positional_push_is_rejected(self):
+        """The sampler is built as a ray actor, so push must be bound by keyword only."""
+        with pytest.raises(TypeError):
+            GpuSampler(PushSpy(), node="n", nvml=FakeNvml())

@@ -7,7 +7,7 @@ from tests.fast.rollout.inference_rollout.integration.utils import (
     load_and_call_train,
 )
 
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
 
 # Data with only 2 reward=1 samples out of 4.
 # This ensures all 4 samples must be generated to collect 2 valid ones.
