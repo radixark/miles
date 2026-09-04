@@ -430,7 +430,14 @@ class MegatronTrainRayActor(TrainRayActor):
             outputs = self.compute_log_prob(data_iterator, num_microbatches, rollout_id=unit_id)
         if not get_parallel_state().is_pp_last_stage:
             return None
-        return Box(ray.put({key: [t.cpu() for t in tensors] for key, tensors in outputs.items()}))
+        return Box(
+            ray.put(
+                {
+                    "sample_indices": rollout_data["sample_indices"],
+                    "logprobs": [t.cpu() for t in outputs["log_probs"]],
+                }
+            )
+        )
 
     @with_logs
     def load_slot(
