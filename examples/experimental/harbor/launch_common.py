@@ -6,8 +6,40 @@ credential contract.
 """
 
 import os
+from pathlib import Path
 
 from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, provision_provider
+
+HARBOR_EXAMPLE_DIR = Path(__file__).resolve().parent
+# reward_func / RolloutFn (agent-metric aggregation) are reused from the agent-server example
+HARBOR_DOCKER_EXAMPLE_DIR = HARBOR_EXAMPLE_DIR.parents[1] / "swe-agent-harbor-docker"
+
+
+def agentic_pythonpath_dirs() -> list[str]:
+    """Directories every Harbor launcher puts on the workers' PYTHONPATH: the
+    agent function here, and the reward hook it reuses from the agent-server
+    example."""
+    return [str(HARBOR_EXAMPLE_DIR), str(HARBOR_DOCKER_EXAMPLE_DIR)]
+
+
+def agentic_train_args(*, tito_model: str, session_server_workers: int) -> str:
+    """The agentic wiring every Harbor launcher passes to train.py.
+
+    One copy, shared by the recipes and the GPU e2e, so the flags the test
+    exercises are the flags the recipes ship. Model-specific values come from
+    the caller.
+    """
+    return (
+        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
+        "--custom-agent-function-path harbor_agent_function.run "
+        "--custom-rm-path generate.reward_func "
+        "--rollout-function-path generate.RolloutFn "
+        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
+        f"--tito-model {tito_model} "
+        "--use-session-server "
+        "--session-server-port 30000 "
+        f"--session-server-workers {session_server_workers} "
+    )
 
 
 def harbor_env_vars(args) -> dict[str, str]:
