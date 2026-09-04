@@ -28,7 +28,7 @@ from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.hf_config import load_hf_config
 from miles.utils.memory_utils import clear_memory, print_memory
-from miles.utils.multi_lora import is_multi_lora_enabled
+from miles.utils.multi_lora import AdapterSpec, is_multi_lora_enabled
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.ray_utils import Box
 from miles.utils.reloadable_process_group import destroy_process_groups, monkey_patch_torch_dist, reload_process_groups
@@ -756,6 +756,38 @@ class MegatronTrainRayActor(TrainRayActor):
             return self.weights_backuper.get("actor")
         return dict(self._named_actor_weights())
 
+    def _ensure_engines_connected(
+        self, rollout_engines, snapshot_cell_id_to_hashes, engine_gpu_counts, engine_gpu_offsets
+    ) -> None:
+        if not self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes):
+            return
+        self.weight_updater.connect_rollout_engines(
+            rollout_engines,
+            engine_gpu_counts=engine_gpu_counts,
+            engine_gpu_offsets=engine_gpu_offsets,
+        )
+        self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
+        dist.barrier(group=get_gloo_group())
+
+    @with_logs
+    def push_slot(self, info: "UpdatableEngines", slot: int, lora_name: str, rank: int, alpha: float) -> None:
+        assert self.args.multi_lora, "push_slot is a multi-LoRA slot command"
+        self._heartbeat.bump()
+        self._ensure_engines_connected(
+            info.rollout_engines, info.snapshot_cell_id_to_hashes, info.engine_gpu_counts, info.engine_gpu_offsets
+        )
+        self.weight_updater.push_adapter(lora_name, AdapterSpec(slot=slot, rank=rank, alpha=alpha))
+
+    @with_logs
+    def unload_adapter(self, info: "UpdatableEngines", lora_name: str) -> None:
+        assert self.args.multi_lora, "unload_adapter is a multi-LoRA slot command"
+        self._heartbeat.bump()
+        if dist.get_rank() == 0:
+            async_utils.wait_futures(
+                [async_utils.submit(client.unload_lora_adapter(lora_name)) for client in info.rollout_engines]
+            )
+        dist.barrier(group=get_gloo_group())
+
     @with_logs
     @timer
     def update_weights(self, info: "UpdatableEngines") -> int | None:
@@ -773,15 +805,9 @@ class MegatronTrainRayActor(TrainRayActor):
         if process_groups_are_temporary:
             reload_process_groups()
 
-        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
-        if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
+        self._ensure_engines_connected(
+            rollout_engines, snapshot_cell_id_to_hashes, engine_gpu_counts, engine_gpu_offsets
+        )
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:

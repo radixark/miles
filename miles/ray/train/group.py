@@ -413,6 +413,16 @@ class TrainerController:
     async def unload_slot(self, slot: int) -> None:
         await self._execute_slots("unload_slot", slot=slot)
 
+    async def push_slot(self, slot: int, lora_name: str, rank: int, alpha: float) -> None:
+        info = await self._inference_controller.start_update_weights()
+        await self._execute_slots("push_slot", info=info, slot=slot, lora_name=lora_name, rank=rank, alpha=alpha)
+        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
+    async def unload_adapter(self, lora_name: str) -> None:
+        info = await self._inference_controller.start_update_weights()
+        await self._execute_slots("unload_adapter", info=info, lora_name=lora_name)
+        await self._inference_controller.end_update_weights(snapshot_cell_id_to_hashes=info.snapshot_cell_id_to_hashes)
+
     async def set_rollout_executor(self):
         await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
