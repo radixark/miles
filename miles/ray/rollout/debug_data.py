@@ -175,9 +175,9 @@ class RolloutDataInjectionUtil:
         if rollout_id != args.ci_inject_rollout_data_group_by_dp_rollout_id:
             return samples
 
-        assert len(samples) % dp_size == 0, (
-            f"rollout {rollout_id}: cannot group {len(samples)} injected samples into {dp_size} equal DP shards"
-        )
+        assert (
+            len(samples) % dp_size == 0
+        ), f"rollout {rollout_id}: cannot group {len(samples)} injected samples into {dp_size} equal DP shards"
         grouped = [sample for dp_rank in range(dp_size) for sample in samples[dp_rank::dp_size]]
         logger.info(
             f"CI rollout-data injection: grouped rollout {rollout_id} into {dp_size} nominal DP shards "
