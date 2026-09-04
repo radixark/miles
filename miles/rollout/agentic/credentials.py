@@ -177,3 +177,25 @@ def resolve_provider_api_key(env_var: str, file_env_var: str, default_path: str)
     if not key:
         raise RuntimeError(f"no API key: {env_var} is unset and {key_file} is missing or empty")
     return key
+
+
+def provision_provider(env: dict[str, str], spec: dict, *, arg_path: str = "") -> None:
+    """One provider's whole launcher-side provisioning, from its PROVIDER_CREDENTIALS spec:
+    key supply (the file's path, never the value), SDK preflight, forwarding the
+    address-like vars by value, and echoing which endpoint is in effect."""
+    sandbox_key_supply(
+        env,
+        provider=spec["provider"],
+        key_env_vars=spec["key_env_vars"],
+        file_env_var=spec["file_env_var"],
+        arg_path=arg_path,
+        default_path=spec["default_path"],
+        provision_hint=spec["provision_hint"],
+    )
+    preflight_sdk(spec["sdk"], spec["sdk_hint"])
+    for var in spec["forward"]:
+        if value := os.environ.get(var, "").strip():
+            forward_address(env, var, value)
+    if spec["target"]:
+        var, label, default_desc = spec["target"]
+        print(f"{spec['provider']} {label}: {env.get(var, default_desc)}", flush=True)
