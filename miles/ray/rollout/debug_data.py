@@ -2,6 +2,7 @@ import json
 import logging
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -171,15 +172,22 @@ class RolloutDataInjectionUtil:
         )
 
     @classmethod
-    def group_by_dp_shard(cls, args, samples: list[Sample], *, rollout_id: int) -> list[Sample]:
+    def group_train_data_by_dp_shard(cls, args, data: dict[str, Any], *, rollout_id: int) -> dict[str, Any]:
         if rollout_id != args.ci_inject_rollout_data_group_by_dp_rollout_id:
-            return samples
+            return data
 
         dp_size: int = args.ci_inject_rollout_data_group_by_dp_size
+        sample_count: int = len(data["sample_indices"])
         assert (
-            len(samples) % dp_size == 0
-        ), f"rollout {rollout_id}: cannot group {len(samples)} injected samples into {dp_size} equal DP shards"
-        grouped = [sample for dp_rank in range(dp_size) for sample in samples[dp_rank::dp_size]]
+            sample_count % dp_size == 0
+        ), f"rollout {rollout_id}: cannot group {sample_count} injected samples into {dp_size} equal DP shards"
+        order: list[int] = [index for dp_rank in range(dp_size) for index in range(dp_rank, sample_count, dp_size)]
+        grouped: dict[str, Any] = {
+            key: [value[index] for index in order]
+            if isinstance(value, list) and len(value) == sample_count
+            else value
+            for key, value in data.items()
+        }
         logger.info(
             f"CI rollout-data injection: grouped rollout {rollout_id} into {dp_size} nominal DP shards "
             "for degraded retry"
