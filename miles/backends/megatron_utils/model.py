@@ -275,11 +275,7 @@ def setup_model_and_optimizer(
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
 
-    if (
-        args.deterministic_mode
-        and config.clip_grad > 0
-        and _can_use_deterministic_grad_norm(optimizer)
-    ):
+    if args.deterministic_mode and config.clip_grad > 0 and _can_use_deterministic_grad_norm(optimizer):
         optimizer = _use_deterministic_grad_norm(optimizer)
         logger.info("Using FP64 gradient norm accumulation in deterministic mode")
 
