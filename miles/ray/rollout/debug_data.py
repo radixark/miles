@@ -183,9 +183,7 @@ class RolloutDataInjectionUtil:
         ), f"rollout {rollout_id}: cannot group {sample_count} injected samples into {dp_size} equal DP shards"
         order: list[int] = [index for dp_rank in range(dp_size) for index in range(dp_rank, sample_count, dp_size)]
         grouped: dict[str, Any] = {
-            key: [value[index] for index in order]
-            if isinstance(value, list) and len(value) == sample_count
-            else value
+            key: [value[index] for index in order] if isinstance(value, list) and len(value) == sample_count else value
             for key, value in data.items()
         }
         logger.info(
