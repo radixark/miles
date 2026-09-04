@@ -415,9 +415,9 @@ def save_lora_checkpoint(
        checkpoint resume without name/weight conversion. Each TP/PP rank saves its
        own shard with original parameter names.
 
-    When ``optimizer`` is provided, training state (optimizer + LR scheduler) is
-    also saved per-rank for checkpoint resume. Base model weights are frozen and
-    never change, so they are not saved.
+    When ``optimizer`` is provided and ``--no-save-optim`` is not set, training
+    state (optimizer + LR scheduler) is also saved per-rank for checkpoint resume.
+    Base model weights are frozen and never change, so they are not saved.
 
     This function is collective: **all ranks must call it** because the bridge
     export performs TP all-gather internally. Only ``dp_rank == 0`` writes files.
@@ -493,7 +493,7 @@ def save_lora_checkpoint(
         )
 
     # ---- Training state (optimizer + scheduler) for resume ----
-    if optimizer is not None:
+    if optimizer is not None and not args.no_save_optim:
         rank = dist.get_rank() if dist.is_initialized() else 0
         torch.save(
             {
