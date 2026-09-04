@@ -11,15 +11,16 @@ SWE-bench, Terminal-Bench, custom tasks — train through one endpoint.
 
 Miles integrates Harbor as an
 [agent-function integration](/user-guide/environments): the agent function
-hands each session's OpenAI-compatible URL to a Harbor server, which runs the
-per-task container, installs and runs the agent against that URL, and grades
-the result; the grade becomes the sample's reward through a custom reward
-hook.
+hands each session's OpenAI-compatible URL to Harbor, which runs the per-task
+sandbox, runs the agent against that URL, and grades the result; the grade
+becomes the sample's reward through a custom reward hook.
 
 ## Try it
 
-The maintained recipe lives in
-[`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker),
-with synchronous and fully-async launchers. Follow the
-[recipe README](https://github.com/radixark/miles/blob/main/examples/swe-agent-harbor-docker/README.md)
-for the architecture, Harbor server setup, task format, and launch scripts.
+Two execution modes; each example README is the complete guide for its mode:
+
+- Tasks on a **local Docker daemon** → the agent-server mode:
+  [`examples/swe-agent-harbor-docker`](https://github.com/radixark/miles/tree/main/examples/swe-agent-harbor-docker).
+- Tasks on a **cloud sandbox backend** (E2B, Daytona, Modal, ...) → the
+  in-process mode, no server in between:
+  [`examples/experimental/harbor`](https://github.com/radixark/miles/tree/main/examples/experimental/harbor).
