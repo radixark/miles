@@ -108,20 +108,22 @@ python examples/swe-agent-harbor-docker/run.py \
     --num-rollout 200 \
     --save-interval 10 \
     --agent-server-url http://127.0.0.1:11000 \
-    --router-external-host <trainer-address-reachable-from-agent-server> \
+    --node-external-ip <trainer-address-reachable-from-agent-server> \
     --save-traces-dir /path/to/traces \
     --wandb-project <your-wandb-project>
 ```
 
 For a smoke test, set `--num-rollout 1`.
 
-`--router-external-host` is the address the agent server uses to reach the Miles
-session server, substituted into the base URL handed to the agent. It only has
-to resolve from the agent-server host, so a hostname is fine — use one when the
-agent server reaches the trainer over a tailnet or other overlay. Do not confuse
-it with `--miles-host-ip`, which is bound locally on the trainer and must be an
-address that already exists on one of its interfaces. Ports 30000 and 31000 must
-be reachable from the agent-server host.
+`--node-external-ip` is the address the agent server uses to reach the Miles
+session server: it sets `MILES_NODE_EXTERNAL_IP` on every node, and the driver
+builds the base URL handed to the agent from it. It only has to resolve from
+the agent-server host, so a hostname is fine — use one when the agent server
+reaches the trainer over a tailnet or other overlay. Do not confuse it with
+`--miles-host-ip`, which is bound locally on the trainer and must be an address
+that already exists on one of its interfaces. Ports 30000 and 31000 must be
+reachable from the agent-server host. On a multi-node job see the network note
+in [the docker recipe](../../swe-agent-harbor-docker/README.md).
 
 ## Sizing the per-turn response cap
 

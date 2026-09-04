@@ -55,7 +55,8 @@ async def wait_session_server_ready(args):
     # /health probe, so a pick never has to line up with any other structure.
     args.session_server_instances = [
         SessionServerInstance(
-            addr=f"{x.host}:{x.port}",
+            addr=x.netloc,
+            external_addr=x.external_netloc,
             instance_id=compute_session_server_instance_id(args, instance_index),
         )
         for instance_index, x in enumerate(addrs)
@@ -63,4 +64,7 @@ async def wait_session_server_ready(args):
 
     for addr in addrs:
         await wait_tcp_ready_async(addr.host, addr.port, timeout=_SERVER_READY_TIMEOUT_SECS)
-    logger.info(f"Session servers ready at {[x.addr for x in args.session_server_instances]} ({len(addrs)} instances)")
+    logger.info(
+        f"Session servers ready at {[x.addr for x in args.session_server_instances]} ({len(addrs)} instances), "
+        f"externally at {[x.external_addr for x in args.session_server_instances]}"
+    )

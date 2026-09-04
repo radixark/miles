@@ -201,6 +201,54 @@ class TestWaitSessionServerReady:
         ]
         assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
 
+    async def test_instances_carry_each_host_external_address(self, monkeypatch):
+        """Every instance keeps its own external address, so an off-cluster agent reaches
+        the one instance that owns its session rather than whichever one an address
+        shared by all of them happens to point at."""
+
+        class _FakeProvider:
+            def __init__(self):
+                self._counter = 0
+
+            async def get_addrs(self, worker_name: str) -> NamedHostAndPorts:
+                self._counter += 1
+                return {
+                    "primary": HostAndPort(
+                        host=f"10.0.0.{self._counter}",
+                        port=5005,
+                        external_host=f"100.64.0.{self._counter}",
+                    )
+                }
+
+        waited: list[tuple[str, int]] = []
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.RayWorkerProvider",
+            SimpleNamespace(create=lambda: _FakeProvider()),
+        )
+        monkeypatch.setattr(
+            "miles.ray.rollout.router_manager.wait_tcp_ready_async",
+            _recording_probe(waited),
+        )
+
+        args = make_args(
+            use_session_server=True,
+            hf_checkpoint="/fake/model",
+            session_server_workers=2,
+            run_uuid="00112233445566aa",
+        )
+        await wait_session_server_ready(args)
+
+        assert args.session_server_instances == [
+            SessionServerInstance(
+                addr="10.0.0.1:5005", external_addr="100.64.0.1:5005", instance_id="00112233445566aa-0"
+            ),
+            SessionServerInstance(
+                addr="10.0.0.2:5005", external_addr="100.64.0.2:5005", instance_id="00112233445566aa-1"
+            ),
+        ]
+        # Readiness is the driver's own probe, so it runs against the cluster addresses.
+        assert waited == [("10.0.0.1", 5005), ("10.0.0.2", 5005)]
+
     async def test_one_unreachable_instance_fails_the_whole_readiness_wait(self, monkeypatch):
         """A single session server whose port never opens fails startup even if its siblings are up."""
 

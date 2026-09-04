@@ -250,8 +250,9 @@ class _BaseActorManager(Generic[SpecT]):
     async def alloc_ports(self) -> None:
         allocated: NamedHostAndPorts = {}
 
-        node_ip, self.local_gpu_ids = await asyncio.gather(
+        node_ip, external_ip, self.local_gpu_ids = await asyncio.gather(
             self.actor_handle._get_node_ip.remote(),
+            self.actor_handle._get_node_external_ip.remote(),
             self.actor_handle._to_local_gpu_ids.remote(gpu_ids=self.gpu_ids),
         )
         for port_info in self.spec.port_infos:
@@ -264,7 +265,11 @@ class _BaseActorManager(Generic[SpecT]):
             else:
                 port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
                 await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
-            allocated[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+            allocated[port_info.name] = HostAndPort(
+                host=_wrap_ipv6(node_ip),
+                port=port,
+                external_host=_wrap_ipv6(external_ip) if external_ip else None,
+            )
 
         self.self_addrs = allocated
 

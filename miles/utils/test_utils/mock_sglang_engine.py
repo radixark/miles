@@ -95,6 +95,10 @@ class MockSGLangEngine:
         self._record("_get_node_ip", (), {})
         return NodeProbeMixin._get_node_ip()
 
+    def _get_node_external_ip(self):
+        self._record("_get_node_external_ip", (), {})
+        return NodeProbeMixin._get_node_external_ip()
+
     def _to_local_gpu_ids(self, *, gpu_ids: list[int]) -> list[int]:
         self._record("_to_local_gpu_ids", (), {"gpu_ids": gpu_ids})
         return list(range(len(gpu_ids)))

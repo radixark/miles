@@ -74,7 +74,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     try:
         logger.debug(f"{log_prefix} Starting agent function call")
         agent_metadata = await custom_agent_function(
-            base_url=tracer.base_url,
+            base_url=tracer.agent_base_url,
             prompt=input.sample.prompt,
             request_kwargs=build_chat_request_kwargs(input.sampling_params),
             metadata=metadata,

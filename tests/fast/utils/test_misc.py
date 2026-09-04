@@ -125,6 +125,17 @@ class TestGetGpuUuids:
 
 
 class TestNodeProbeMixin:
+    def test_get_node_external_ip_is_absent_until_the_node_sets_it(self, monkeypatch):
+        """A node without the env var reports None, which keeps its placed address in use."""
+        monkeypatch.delenv("MILES_NODE_EXTERNAL_IP", raising=False)
+        assert NodeProbeMixin._get_node_external_ip() is None
+
+        monkeypatch.setenv("MILES_NODE_EXTERNAL_IP", "")
+        assert NodeProbeMixin._get_node_external_ip() is None
+
+        monkeypatch.setenv("MILES_NODE_EXTERNAL_IP", "100.64.0.7")
+        assert NodeProbeMixin._get_node_external_ip() == "100.64.0.7"
+
     def test_get_node_ip_returns_nonempty_string(self):
         """The node ip probe answers with a usable address string."""
         node_ip = NodeProbeMixin._get_node_ip()
