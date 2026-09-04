@@ -181,18 +181,24 @@ class TestGroupInjectedRolloutDataByDpShard:
     def test_fault_rollout_preserves_nominal_dp_shards_for_degraded_retry(self):
         """A degraded retry must consume the fault-free run's nominal DP shards as whole microbatches."""
         samples = [make_sample(index=index) for index in range(8)]
-        args = make_args(ci_inject_rollout_data_group_by_dp_rollout_id=2)
+        args = make_args(
+            ci_inject_rollout_data_group_by_dp_rollout_id=2,
+            ci_inject_rollout_data_group_by_dp_size=2,
+        )
 
-        grouped = RolloutDataInjectionUtil.group_by_dp_shard(args, samples, rollout_id=2, dp_size=2)
+        grouped = RolloutDataInjectionUtil.group_by_dp_shard(args, samples, rollout_id=2)
 
         assert [sample.index for sample in grouped] == [0, 2, 4, 6, 1, 3, 5, 7]
 
     def test_other_rollouts_keep_recorded_order(self):
         """Only the degraded fault rollout may change order; healed rollouts retain normal DP splitting."""
         samples = [make_sample(index=index) for index in range(8)]
-        args = make_args(ci_inject_rollout_data_group_by_dp_rollout_id=2)
+        args = make_args(
+            ci_inject_rollout_data_group_by_dp_rollout_id=2,
+            ci_inject_rollout_data_group_by_dp_size=2,
+        )
 
-        grouped = RolloutDataInjectionUtil.group_by_dp_shard(args, samples, rollout_id=3, dp_size=2)
+        grouped = RolloutDataInjectionUtil.group_by_dp_shard(args, samples, rollout_id=3)
 
         assert grouped is samples
 

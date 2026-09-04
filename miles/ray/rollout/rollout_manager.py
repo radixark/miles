@@ -270,7 +270,6 @@ class RolloutManager:
                     self.args,
                     data,
                     rollout_id=rollout_id,
-                    dp_size=self.train_parallel_config["dp_size"],
                 )
                 metrics = None
 

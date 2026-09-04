@@ -171,10 +171,11 @@ class RolloutDataInjectionUtil:
         )
 
     @classmethod
-    def group_by_dp_shard(cls, args, samples: list[Sample], *, rollout_id: int, dp_size: int) -> list[Sample]:
+    def group_by_dp_shard(cls, args, samples: list[Sample], *, rollout_id: int) -> list[Sample]:
         if rollout_id != args.ci_inject_rollout_data_group_by_dp_rollout_id:
             return samples
 
+        dp_size: int = args.ci_inject_rollout_data_group_by_dp_size
         assert (
             len(samples) % dp_size == 0
         ), f"rollout {rollout_id}: cannot group {len(samples)} injected samples into {dp_size} equal DP shards"

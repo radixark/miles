@@ -2301,6 +2301,12 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "data-parallel shards before delayed train-side splitting.",
             )
             parser.add_argument(
+                "--ci-inject-rollout-data-group-by-dp-size",
+                type=int,
+                default=None,
+                help="Nominal data-parallel size used to group the selected injected rollout.",
+            )
+            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
@@ -3251,10 +3257,21 @@ def miles_validate_args(args):
             "--ci-inject-rollout-data-path replaces data of individual rollouts while engines "
             "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
         )
-    if args.ci_inject_rollout_data_group_by_dp_rollout_id is not None:
-        assert (
-            args.ci_inject_rollout_data_path is not None
-        ), "--ci-inject-rollout-data-group-by-dp-rollout-id requires --ci-inject-rollout-data-path."
+    group_by_dp_args = (
+        args.ci_inject_rollout_data_group_by_dp_rollout_id,
+        args.ci_inject_rollout_data_group_by_dp_size,
+    )
+    assert all(value is None for value in group_by_dp_args) or all(value is not None for value in group_by_dp_args), (
+        "--ci-inject-rollout-data-group-by-dp-rollout-id and "
+        "--ci-inject-rollout-data-group-by-dp-size must be set together."
+    )
+    if args.ci_inject_rollout_data_group_by_dp_size is not None:
+        assert args.ci_inject_rollout_data_path is not None, (
+            "--ci-inject-rollout-data-group-by-dp-* requires --ci-inject-rollout-data-path."
+        )
+        assert args.ci_inject_rollout_data_group_by_dp_size > 1, (
+            "--ci-inject-rollout-data-group-by-dp-size must exceed one."
+        )
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:

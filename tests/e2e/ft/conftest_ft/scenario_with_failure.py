@@ -117,6 +117,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
                     f"--ci-inject-rollout-data-start-rollout-id {_FIRST_INJECTED_ROLLOUT_ID} "
                     f"--ci-inject-rollout-data-group-by-dp-rollout-id {_FAULT_ROLLOUT_ID} "
+                    f"--ci-inject-rollout-data-group-by-dp-size {mode.num_cells} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 
