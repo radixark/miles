@@ -6,6 +6,8 @@ same commit/skip decisions — clients only ever see Anthropic wire shapes.
 """
 
 import json
+import subprocess
+import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -116,7 +118,30 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
     return events
 
 
+@pytest.mark.parametrize(
+    "missing_module",
+    [
+        "sglang.srt.entrypoints.anthropic.utils",
+        "sglang.srt.entrypoints.anthropic.serving",
+    ],
+)
+def test_sessions_module_imports_without_optional_sglang_anthropic_helpers(missing_module: str) -> None:
+    script = f"import sys\nsys.modules[{missing_module!r}] = None\nfrom miles.rollout.session import sessions\nassert sessions.anthropic_utils is None\nassert sessions.convert_response is None\nassert sessions.convert_to_chat_completion_request is None\n"
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+
 class TestAnthropicRoute:
+    def test_unavailable_sglang_adapter_returns_501_without_record(self, anthropic_env):
+        session_id = _create_session(anthropic_env.url)
+        with patch.object(sessions_module, "anthropic_utils", None):
+            resp = _post_messages(anthropic_env.url, session_id, _payload([{"role": "user", "content": "hello"}]))
+
+        assert resp.status_code == 501
+        assert resp.json() == {"error": "The installed SGLang does not support the Anthropic Messages adapter"}
+        assert _records(anthropic_env.url, session_id) == []
+
     def test_health_reports_live_intermediate_system_capability(self, anthropic_env):
         body = requests.get(f"{anthropic_env.url}/health", timeout=5.0).json()
         assert body["anthropic_intermediate_system_supported"] is True

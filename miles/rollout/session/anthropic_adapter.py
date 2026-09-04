@@ -3,9 +3,13 @@
 import json
 
 from pydantic import ValidationError
-from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
 from sglang.srt.entrypoints.anthropic.protocol import AnthropicMessagesRequest, is_server_tool
 from starlette.responses import Response
+
+try:
+    from sglang.srt.entrypoints.anthropic import utils as anthropic_utils
+except ImportError:
+    anthropic_utils = None
 
 from miles.rollout.session.core import JSON_MEDIA_TYPE, _render_json
 
