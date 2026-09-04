@@ -2516,6 +2516,14 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
             )
             parser.add_argument(
+                # known false positive on qwen3: the template re-renders
+                # historical assistant turns with an empty think skeleton, so
+                # multi-turn sessions always mismatch on special_token_count
+                # while the engine-recorded training tokens stay lossless
+                "--ci-disable-tito-strict-checker",
+                action="store_true",
+            )
+            parser.add_argument(
                 "--ci-disable-weight-update-checker",
                 action="store_true",
             )

@@ -257,6 +257,23 @@ class TestTitoMismatchMetrics:
         ):
             _compute_metrics_from_samples(args, samples)
 
+    def test_strict_mismatch_does_not_raise_when_opted_out(self):
+        """--ci-disable-tito-strict-checker skips only the ci_test assertion
+        (for known template false positives); the metric is still logged."""
+        args = make_args(
+            advantage_estimator="ppo",
+            ci_test=True,
+            log_passrate=False,
+            use_session_server="v1",
+            ci_disable_tito_strict_checker=True,
+        )
+        samples = make_samples_grouped(1, 4)
+        samples[0].metadata = {"tito_session_mismatch": [{"type": "special_token_count"}]}
+        for s in samples[1:]:
+            s.metadata = {"tito_session_mismatch": []}
+        out = _compute_metrics_from_samples(args, samples)
+        assert out["tito_session_mismatch_rate/v1/special_token_count"] == 0.25
+
     def test_assistant_text_mismatch_does_not_raise_under_ci_test(self):
         """assistant_text mismatch is non-critical (tokens inherited from the
         pretokenized prefix) — even under ci_test, must not raise."""
