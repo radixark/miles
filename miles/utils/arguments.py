@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -2881,6 +2882,50 @@ def _validate_rematerialize_param_from_master_weight(args):
         args.check_rematerialize_param_from_master_weight = True
 
 
+def _lora_checkpoint_root(adapter_path: str | None) -> str | None:
+    """The run root of a `<root>/iter_XXXXXXX/adapter` path, or None if it is not one."""
+    if adapter_path is None:
+        return None
+    path = Path(adapter_path)
+    iteration = path.parent.name
+    if path.name != "adapter" or not iteration.startswith("iter_"):
+        return None
+    step = iteration.removeprefix("iter_")
+    return str(path.parent.parent) if len(step) == 7 and step.isdigit() else None
+
+
+def _resolve_checkpoint_resume(args) -> None:
+    adapter_path = getattr(args, "lora_adapter_path", None)
+    checkpoint_root = _lora_checkpoint_root(adapter_path)
+    args.rollout_data_load = checkpoint_root if getattr(args, "rollout_global_dataset", True) else None
+    args.lora_training_state_resume_enabled = adapter_path is None or args.rollout_data_load is not None
+    if not args.lora_training_state_resume_enabled:
+        if checkpoint_root is None:
+            logger.warning(
+                "Cannot infer the dataset checkpoint root from --lora-adapter-path=%s; "
+                "loading adapter weights as a new-run warm start.",
+                adapter_path,
+            )
+        else:
+            logger.warning(
+                "Exact LoRA resume currently requires the built-in global dataset; "
+                "loading adapter weights as a new-run warm start."
+            )
+
+    has_training_checkpoint = (
+        args.load is not None
+        and os.path.exists(args.load)
+        and os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
+    )
+    if not has_training_checkpoint:
+        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
+        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
+        # Mirrors the non-bridge branch below.
+        args.load = args.ref_load or args.hf_checkpoint
+        if args.start_rollout_id is None and adapter_path is None:
+            args.start_rollout_id = 0
+
+
 def miles_validate_args(args):
     validate_dashboard_args(args)
 
@@ -3076,16 +3121,7 @@ def miles_validate_args(args):
 
     # TODO: During loading, we need to set the start_rollout_id here.
     if args.megatron_to_hf_mode == "bridge":
-        # Fresh runs pass a not-yet-created `--load` dir; fall back to the reference
-        # weights (loaded via the HF bridge) instead of asserting in load_checkpoint.
-        # Mirrors the non-bridge branch below.
-        if (
-            args.load is None
-            or not os.path.exists(args.load)
-            or not os.path.exists(os.path.join(args.load, "latest_checkpointed_iteration.txt"))
-        ):
-            args.load = args.ref_load or args.hf_checkpoint
-            args.start_rollout_id = 0
+        _resolve_checkpoint_resume(args)
     else:
         if (
             args.load is None

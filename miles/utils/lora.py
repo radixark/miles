@@ -22,6 +22,13 @@ def lora_rollout_enabled(args: Namespace) -> bool:
     return is_lora_enabled(args) and not getattr(args, "lora_train_only", False)
 
 
+def start_rollout_id_from_checkpoint(args: Namespace, loaded_rollout_id: int) -> int:
+    """A LoRA adapter loaded without its training state is a warm start, not a resume."""
+    if getattr(args, "lora_adapter_path", None) is not None and not getattr(args, "lora_training_state_loaded", False):
+        return 0
+    return loaded_rollout_id + 1
+
+
 def lora_base_cpu_backup_enabled(args: Namespace) -> bool:
     """LoRA + --colocate + --lora-base-cpu-backup all set."""
     return is_lora_enabled(args) and getattr(args, "colocate", False) and getattr(args, "lora_base_cpu_backup", False)
