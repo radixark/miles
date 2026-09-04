@@ -21,15 +21,18 @@ delays (5s / 10s / 20s) without actually waiting.  The trick:
 This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
+import asyncio
 import multiprocessing
 import socket
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
+import httpx
 import pytest
 
-from miles.utils.http_utils import wait_for_server_ready
+from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready
 
 
 def _find_free_port() -> int:
@@ -194,3 +197,173 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class TestGeneralHttpClientProvider:
+    """The provider hands out one httpx client per event loop."""
+
+    async def test_the_same_loop_gets_the_same_client(self):
+        """Two calls on one loop must share one connection pool."""
+        assert GeneralHttpClientProvider.client() is GeneralHttpClientProvider.client()
+
+    async def test_a_different_loop_gets_a_different_client(self):
+        """A client's connections belong to the loop that opened them; reusing it elsewhere fails."""
+        mine = GeneralHttpClientProvider.client()
+        others: list[object] = []
+
+        async def _on_the_other_loop():
+            return GeneralHttpClientProvider.client()
+
+        thread = threading.Thread(target=lambda: others.append(asyncio.run(_on_the_other_loop())))
+        thread.start()
+        thread.join(timeout=10)
+
+        assert others and others[0] is not mine
+
+    def test_calling_it_off_loop_fails_loudly(self):
+        """Building the client outside a loop would bind it to whichever loop ran next."""
+        with pytest.raises(RuntimeError):
+            GeneralHttpClientProvider.client()
+
+    async def test_the_client_has_no_read_timeout_but_finite_connect_write_and_pool_deadlines(self):
+        """A weight-update request blocks until the collective forms, but a stuck peer, a full send
+        buffer or an exhausted pool must never block a control-path caller forever."""
+        timeout = GeneralHttpClientProvider.client().timeout
+
+        assert timeout.read is None
+        assert timeout.connect == 10.0
+        assert timeout.write == 60.0
+        assert timeout.pool == 60.0
+
+    async def test_the_pool_is_configured_without_a_connection_cap(self):
+        """A capped pool queues the last requests behind the collective waiting for them."""
+        assert GeneralHttpClientProvider._LIMITS.max_connections is None
+        assert GeneralHttpClientProvider._LIMITS.max_keepalive_connections is None
+
+    async def test_more_requests_than_httpxs_default_cap_reach_the_server_at_once(self):
+        """101 engines must all arrive before the caller joins the collective, and httpx caps
+        connections at 100 by default."""
+        num_requests = 101
+        arrived = _ArrivalGate()
+        server = _BlockingHttpServer(arrived)
+
+        try:
+            client = GeneralHttpClientProvider.client()
+            requests = [asyncio.create_task(client.get(server.url)) for _ in range(num_requests)]
+
+            deadline = time.monotonic() + 60
+            while arrived.count < num_requests:
+                assert time.monotonic() < deadline, (
+                    f"only {arrived.count}/{num_requests} requests reached the server; the rest are "
+                    "queued behind the connection cap"
+                )
+                await asyncio.sleep(0.01)
+
+            arrived.release()
+            assert [response.status_code for response in await asyncio.gather(*requests)] == [200] * num_requests
+        finally:
+            arrived.release()
+            server.close()
+
+
+class TestGeneralHttpClientTimeoutPolicy:
+    """Only the read deadline of the shared client may be unbounded."""
+
+    async def test_read_is_the_only_deadline_left_unbounded(self):
+        """A peer that stops draining the socket must not be able to block a caller forever."""
+        timeout = GeneralHttpClientProvider.client().timeout
+
+        assert [name for name, seconds in timeout.as_dict().items() if seconds is None] == ["read"]
+
+    async def test_the_bounded_deadlines_are_positive_and_small_enough_to_fire(self):
+        """A zero deadline fails every request and an astronomical one is no deadline at all."""
+        deadlines = GeneralHttpClientProvider.client().timeout.as_dict()
+
+        for name in ("connect", "write", "pool"):
+            assert deadlines[name] is not None and 0 < deadlines[name] <= 300, name
+
+    async def test_the_bounded_deadlines_track_the_class_constants(self):
+        """Retuning a timeout constant must move the client's deadline instead of silently desyncing."""
+        timeout = GeneralHttpClientProvider.client().timeout
+
+        assert timeout.connect == GeneralHttpClientProvider._CONNECT_TIMEOUT
+        assert timeout.write == GeneralHttpClientProvider._WRITE_TIMEOUT
+        assert timeout.pool == GeneralHttpClientProvider._POOL_TIMEOUT
+
+    async def test_every_request_carries_the_bounded_deadlines_down_to_the_transport(self):
+        """Deadlines bound a stuck peer only if httpx hands them to the transport on each request."""
+        recorded = _RecordingTransport()
+        timeout = GeneralHttpClientProvider.client().timeout
+
+        async with httpx.AsyncClient(timeout=timeout, transport=recorded) as client:
+            await client.post("http://weight-update.invalid/update_weights", json={})
+
+        assert recorded.deadlines == timeout.as_dict()
+        assert recorded.deadlines["write"] is not None
+        assert recorded.deadlines["pool"] is not None
+
+    async def test_a_client_built_on_another_loop_keeps_the_same_deadlines(self):
+        """Every event loop gets a fresh client, and each one must carry the same timeout policy."""
+        mine = GeneralHttpClientProvider.client().timeout.as_dict()
+        theirs: list[dict[str, float | None]] = []
+
+        async def _on_the_other_loop() -> dict[str, float | None]:
+            return GeneralHttpClientProvider.client().timeout.as_dict()
+
+        thread = threading.Thread(target=lambda: theirs.append(asyncio.run(_on_the_other_loop())))
+        thread.start()
+        thread.join(timeout=10)
+
+        assert theirs == [mine]
+
+
+class _ArrivalGate:
+    def __init__(self):
+        self.count = 0
+        self._lock = threading.Lock()
+        self._released = threading.Event()
+
+    def wait_for_release(self) -> None:
+        with self._lock:
+            self.count += 1
+        self._released.wait(timeout=60)
+
+    def release(self) -> None:
+        self._released.set()
+
+
+class _BlockingHttpServer:
+    def __init__(self, gate: _ArrivalGate):
+        handler = self._make_handler(gate)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}/health_generate"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+    @staticmethod
+    def _make_handler(gate: _ArrivalGate):
+        class _Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self):
+                gate.wait_for_release()
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, format, *args):
+                pass
+
+        return _Handler
+
+
+class _RecordingTransport(httpx.AsyncBaseTransport):
+    def __init__(self) -> None:
+        self.deadlines: dict[str, float | None] | None = None
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.deadlines = request.extensions["timeout"]
+        return httpx.Response(200)

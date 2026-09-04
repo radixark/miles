@@ -4,7 +4,6 @@ from collections.abc import Callable, Iterator, Sequence
 
 import torch
 import torch.distributed as dist
-from ray.actor import ActorHandle
 from sglang.srt import server_args as server_args_module
 from sglang.srt.configs.device_config import DeviceConfig
 from sglang.srt.configs.load_config import LoadConfig
@@ -15,8 +14,10 @@ from sglang.srt.layers.quantization.fp4_utils import initialize_fp4_gemm_config
 from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 from sglang.srt.model_loader import get_model
 from sglang.srt.model_loader.parameter_mapper import ParameterMapper
+from ray.actor import ActorHandle
 from sglang.srt.server_args import ServerArgs
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
@@ -122,7 +123,7 @@ class UpdateWeightP2P(WeightTransferProtocol):
 
     def connect(
         self,
-        rollout_engines: Sequence[ActorHandle],
+        rollout_engines: Sequence[SGLangApiClient],
         rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,

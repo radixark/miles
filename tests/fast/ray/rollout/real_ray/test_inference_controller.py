@@ -8,18 +8,40 @@ import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.ray.rollout.inference_controller import InferenceController
+from miles.ray.rollout.server_cell import flatten_cells
+
+
+class _NoopRouterApiClient:
+    """The rollout process registers its engines for real; ``sglang_router_ip``
+    here is a placeholder that keeps ``start_router`` short-circuited, and no
+    router listens on it."""
+
+    def __init__(self, router_url: str):
+        self.router_url = router_url
+
+    async def add_worker(self, **kwargs):
+        return None
+
+    async def remove_worker(self, **kwargs):
+        return None
 
 
 @pytest.fixture
 def patch_low_level(monkeypatch):
+    """Replace, in the test process:
+    - ``SGLangEngine`` → ``MockSGLangEngine`` so created actors are mocks
+      (the real addr allocator runs; each mock serves HTTP on its port).
+    - ``SGLangRouterApiClient`` → no-op (no router runs at the placeholder address).
+    - ``start_session_server`` → no-op (the production default touches network)."""
     import miles.ray.rollout.inference_controller as ictl
     import miles.ray.rollout.rollout_server as rsrv
+    import miles.ray.rollout.server_cell as scell
     import miles.ray.rollout.server_group as sg
-    from miles.ray.rollout.addr_allocator import PortCursors
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
-    monkeypatch.setattr(sg, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
+    monkeypatch.setattr(scell, "SGLangEngine", MockSGLangEngine.__ray_actor_class__)
     # multi-model tests would otherwise spawn a real router subprocess for
     # ``model_idx > 0`` (force_new=True bypasses the args.sglang_router_ip cache).
     monkeypatch.setattr(
@@ -28,23 +50,7 @@ def patch_low_level(monkeypatch):
         lambda args, **kw: (args.sglang_router_ip, args.sglang_router_port),
     )
 
-    def _fake_alloc(*args, **kwargs):
-        engines = kwargs["rollout_engines"]
-        return (
-            {
-                rank: dict(
-                    host="127.0.0.1",
-                    port=30000 + rank,
-                    nccl_port=31000 + rank,
-                    engine_info_bootstrap_port=32000 + rank,
-                    dist_init_addr=f"127.0.0.1:{33000 + rank}",
-                )
-                for rank, _ in engines
-            },
-            PortCursors(_values={0: 34000}),
-        )
-
-    monkeypatch.setattr(sg, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
+    monkeypatch.setattr(sg, "SGLangRouterApiClient", _NoopRouterApiClient)
     monkeypatch.setattr(ictl, "start_session_server", lambda args: None)
 
 
@@ -96,11 +102,15 @@ def _make_test_args(tmp_path, *, models: list[tuple[str, bool]]):
     )
 
 
+def _engine_slots(controller, model: str = "actor"):
+    return controller.servers[model].server_groups[0].engines
+
+
 async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_interval_s: float = 0.2) -> None:
     deadline = time.monotonic() + deadline_s
     while True:
         try:
-            ray.get(actor_handle.health_generate.remote(timeout=1.0), timeout=5.0)
+            ray.get(actor_handle.get_calls.remote(), timeout=5.0)
         except (ray.exceptions.RayActorError, ray.exceptions.RayTaskError):
             return
         except ray.exceptions.GetTimeoutError:
@@ -112,51 +122,6 @@ async def _assert_engine_dies(actor_handle, *, deadline_s: float = 15.0, poll_in
 
 @pytest.mark.asyncio
 class TestInferenceControllerInit:
-    @pytest.mark.parametrize(
-        ("ft_components", "expected_monitor_count", "expected_injection_pending"),
-        [
-            (["train"], 0, False),
-            (["rollout"], 1, True),
-        ],
-    )
-    async def test_rollout_ft_lifecycle_follows_selected_component(
-        self,
-        ray_local_mode,
-        placement_group_factory,
-        tmp_path,
-        patch_low_level,
-        monkeypatch,
-        ft_components,
-        expected_monitor_count,
-        expected_injection_pending,
-    ):
-        import miles.ray.rollout.inference_controller as ictl
-
-        started_monitors = []
-
-        class FakeMonitor:
-            def __init__(self, group, args):
-                self.group = group
-
-            def start(self):
-                started_monitors.append(self)
-
-            def stop(self):
-                pass
-
-        monkeypatch.setattr(ictl, "RolloutHealthMonitor", FakeMonitor)
-        args = _make_test_args(tmp_path, models=[("actor", True)])
-        args.use_fault_tolerance = True
-        args.ft_components = ft_components
-        args.ci_test = True
-        pg = placement_group_factory(2)
-
-        controller = _make_controller(args, pg)
-
-        assert len(started_monitors) == expected_monitor_count
-        assert len(controller._health_monitors) == expected_monitor_count
-        assert controller._ci_fault_injection_pending is expected_injection_pending
-
     async def test_init_creates_live_mock_engines_via_real_start_rollout_servers(
         self,
         ray_local_mode,
@@ -165,17 +130,20 @@ class TestInferenceControllerInit:
         patch_low_level,
     ):
         """End-to-end smoke: production ``__init__`` + ``start_rollout_servers``
-        runs against MockSGLangEngine; resulting engines are reachable as Ray
-        actor handles via the public ``get_updatable_engines_and_lock``."""
+        runs against MockSGLangEngine; the resulting engines are addressable over
+        http via the public ``get_updatable_engines_and_lock``, and their launcher
+        actors are reachable through the engine slots."""
         args = _make_test_args(tmp_path, models=[("actor", True)])
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2
-        for h in eal.rollout_engines:
-            assert isinstance(h, ray.actor.ActorHandle)
-            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+        for api_client in eal.rollout_engines:
+            assert isinstance(api_client, SGLangApiClient)
+            assert await api_client.health_generate(timeout=5.0) is True
+        for engine in _engine_slots(controller):
+            assert isinstance(ray.get(engine.actor_handle.get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
@@ -192,13 +160,13 @@ class TestStartStopCell:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal = await controller.get_updatable_engines_and_lock()
-        actor0, actor1 = eal.rollout_engines
+        await controller.get_updatable_engines_and_lock()
+        actor0, actor1 = [engine.actor_handle for engine in _engine_slots(controller)]
 
         await controller.stop_cell(0)
 
         await _assert_engine_dies(actor0)
-        assert ray.get(actor1.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(actor1.get_calls.remote()), list)
 
     async def test_start_cell_recovers_after_stop_cell(
         self,
@@ -214,16 +182,19 @@ class TestStartStopCell:
 
         controller = _make_controller(args, pg)
         eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = eal_before.rollout_engines[0]
+        actor0_before = _engine_slots(controller)[0].actor_handle
+        url_before = eal_before.rollout_engines[0].server_url
 
         await controller.stop_cell(0)
         await controller.start_cell(0)
 
         eal_after = await controller.get_updatable_engines_and_lock()
-        actor0_after = eal_after.rollout_engines[0]
+        actor0_after = _engine_slots(controller)[0].actor_handle
 
         assert actor0_after is not actor0_before, "start_cell must produce a fresh actor"
-        assert ray.get(actor0_after.health_generate.remote(timeout=1.0)) is True
+        assert eal_after.rollout_engines[0].server_url != url_before, "the recovered engine serves on a new port"
+        assert await eal_after.rollout_engines[0].health_generate(timeout=5.0) is True
+        assert isinstance(ray.get(actor0_after.get_calls.remote()), list)
 
     async def test_stop_cell_targets_high_id_correctly(
         self,
@@ -238,12 +209,12 @@ class TestStartStopCell:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal = await controller.get_updatable_engines_and_lock()
-        actor0, actor1 = eal.rollout_engines
+        await controller.get_updatable_engines_and_lock()
+        actor0, actor1 = [engine.actor_handle for engine in _engine_slots(controller)]
 
         await controller.stop_cell(1)
 
-        assert ray.get(actor0.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(actor0.get_calls.remote()), list)
         await _assert_engine_dies(actor1)
 
     async def test_stop_cell_is_idempotent_on_already_stopped(
@@ -288,10 +259,10 @@ class TestCellDispatchAcrossModels:
 
         # actor untouched
         for h in actor_handles:
-            assert ray.get(h.health_generate.remote(timeout=1.0)) is True
+            assert isinstance(ray.get(h.get_calls.remote()), list)
         # ref engine 0 dead, ref engine 1 alive
         await _assert_engine_dies(ref_handles[0])
-        assert ray.get(ref_handles[1].health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(ref_handles[1].get_calls.remote()), list)
 
 
 @pytest.mark.asyncio
@@ -312,8 +283,8 @@ class TestGetUpdatableEnginesAndLock:
         eal = await controller.get_updatable_engines_and_lock()
         assert len(eal.rollout_engines) == 2  # actor's 2, not ref's 2
         assert eal.engine_gpu_counts == [1, 1]
-        assert all(isinstance(h, ray.actor.ActorHandle) for h in eal.rollout_engines)
-        assert ray.get(eal.rollout_engines[0].health_generate.remote(timeout=1.0)) is True
+        assert all(isinstance(api_client, SGLangApiClient) for api_client in eal.rollout_engines)
+        assert await eal.rollout_engines[0].health_generate(timeout=5.0) is True
 
     async def test_returns_empty_when_no_updatable_model(
         self,
@@ -424,18 +395,32 @@ class TestCheckWeights:
         for per_group in results:
             assert len(per_group) == 2
             for engine_result in per_group:
-                assert engine_result == {"_mock": True}
+                assert engine_result == {"mock": True}
 
-        # Frozen (non-updatable) servers must not have been touched.
-        for srv in controller.servers.values():
-            if srv.update_weights:
-                continue
-            for group in srv.server_groups:
-                for engine in group.engines:
-                    if not engine.is_allocated:
-                        continue
-                    calls = ray.get(engine.actor_handle.get_calls.remote())
-                    assert not any(c[0] == "check_weights" for c in calls)
+        updatable_engines = [
+            engine
+            for srv in controller.servers.values()
+            if srv.update_weights
+            for group in srv.server_groups
+            for engine in group.engines
+            if engine.is_allocated
+        ]
+        frozen_engines = [
+            engine
+            for srv in controller.servers.values()
+            if not srv.update_weights
+            for group in srv.server_groups
+            for engine in group.engines
+            if engine.is_allocated
+        ]
+        assert updatable_engines and frozen_engines
+
+        for engine in updatable_engines:
+            paths = ray.get(engine.actor_handle.get_http_paths.remote())
+            assert "/weights_checker" in paths, f"updatable engine {engine.addr_info.server_url} was not checked"
+        for engine in frozen_engines:
+            paths = ray.get(engine.actor_handle.get_http_paths.remote())
+            assert "/weights_checker" not in paths, f"frozen engine {engine.addr_info.server_url} must not be checked"
 
 
 @pytest.mark.asyncio
@@ -454,18 +439,18 @@ class TestRecoverUpdatableEngines:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = eal_before.rollout_engines[0]
+        await controller.get_updatable_engines_and_lock()
+        actor0_before = _engine_slots(controller)[0].actor_handle
 
         # Kill engine 0 directly + mark stopped (simulates a fault before any
         # rollout). recover_updatable_engines must not bring it back yet.
         ray.kill(actor0_before)
-        controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+        flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].mark_stopped()
 
         await controller.recover_updatable_engines()
 
         # Slot 0 is still de-allocated; recovery skipped because rollout_id=-1.
-        assert not controller.servers["actor"].server_groups[0].all_engines[0].is_allocated
+        assert not flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].is_allocated
 
     async def test_recovers_dead_engine_after_rollout_started(
         self,
@@ -480,16 +465,89 @@ class TestRecoverUpdatableEngines:
         pg = placement_group_factory(2)
 
         controller = _make_controller(args, pg)
-        eal_before = await controller.get_updatable_engines_and_lock()
-        actor0_before = eal_before.rollout_engines[0]
+        await controller.get_updatable_engines_and_lock()
+        actor0_before = _engine_slots(controller)[0].actor_handle
 
         ray.kill(actor0_before)
-        controller.servers["actor"].server_groups[0].all_engines[0].mark_stopped()
+        flatten_cells(controller.servers["actor"].server_groups[0].cells)[0].mark_stopped()
 
         await controller.prepare_rollout(0)
         await controller.recover_updatable_engines()
 
-        slot0 = controller.servers["actor"].server_groups[0].all_engines[0]
+        slot0 = flatten_cells(controller.servers["actor"].server_groups[0].cells)[0]
         assert slot0.is_allocated
         assert slot0.actor_handle is not actor0_before
-        assert ray.get(slot0.actor_handle.health_generate.remote(timeout=1.0)) is True
+        assert isinstance(ray.get(slot0.actor_handle.get_calls.remote()), list)
+
+
+@pytest.mark.asyncio
+class TestRolloutFaultToleranceIsUnsupported:
+    async def test_health_monitoring_hooks_are_noops_without_fault_tolerance(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """A plain run never asked for fault tolerance, so the hooks stay out of its way."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+
+        await controller.health_monitoring_pause()
+        await controller.health_monitoring_resume()
+
+    async def test_health_monitoring_hooks_refuse_to_run_under_fault_tolerance(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """Asking for fault tolerance must fail loudly, not run unmonitored."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+        controller.args.use_fault_tolerance = True
+        controller.args.ft_components = ["rollout"]
+
+        with pytest.raises(NotImplementedError):
+            await controller.health_monitoring_pause()
+        with pytest.raises(NotImplementedError):
+            await controller.health_monitoring_resume()
+
+    async def test_health_monitoring_hooks_are_noops_when_fault_tolerance_skips_rollout(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """Fault tolerance limited to training never monitored the engines, so nothing is lost."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+        controller.args.use_fault_tolerance = True
+        controller.args.ft_components = ["train"]
+
+        await controller.health_monitoring_pause()
+        await controller.health_monitoring_resume()
+
+    async def test_fault_injection_refuses_to_run(
+        self,
+        ray_local_mode,
+        placement_group_factory,
+        tmp_path,
+        patch_low_level,
+    ):
+        """The injector depended on the deleted monitor to observe the crash."""
+        args = _make_test_args(tmp_path, models=[("actor", True)])
+        pg = placement_group_factory(2)
+
+        controller = _make_controller(args, pg)
+
+        with pytest.raises(NotImplementedError):
+            await controller._try_ci_fault_injection()

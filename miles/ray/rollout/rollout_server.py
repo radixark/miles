@@ -6,10 +6,12 @@ import ray
 
 from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, SglangConfig
-from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.router_manager import start_router
+from miles.ray.rollout.server_cell import ServerCell
 from miles.ray.rollout.server_engine import ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
+from miles.utils import async_utils
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +41,14 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
             args.sglang_router_port = router_port
 
         server_groups: list[ServerGroup] = []
-        all_init_handles: list = []
-        new_engine_indices_per_group: list[list[int]] = []
-        port_cursors = PortCursors.empty()
+        start_futures: list = []
+        port_allocator = PortAllocator.empty()
 
         for group_cfg in model_cfg.server_groups:
             gpus_per_engine = group_cfg.num_gpus_per_engine
             num_gpu_per_engine_local = min(gpus_per_engine, args.num_gpus_per_node)
             num_engines = group_cfg.num_gpus // num_gpu_per_engine_local
+            nodes_per_engine = max(1, gpus_per_engine // args.num_gpus_per_node)
 
             group_abs_start = rollout_pg_offset + gpu_offset
             needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
@@ -58,37 +60,55 @@ def start_rollout_servers(args, pg) -> dict[str, "RolloutServer"]:
                 f"(abs={group_abs_start}): needs_offload={needs_offload}"
             )
 
+            cells: list[ServerCell] = []
+            if group_cfg.worker_type != "placeholder":
+                assert num_engines % nodes_per_engine == 0, (
+                    f"group '{group_cfg.worker_type}' has {num_engines=} which is not a whole number of "
+                    f"{nodes_per_engine=} engines; the trailing engine would have no node to run its remaining ranks"
+                )
+                assert engine_offset % nodes_per_engine == 0, (
+                    f"group '{group_cfg.worker_type}' starts at {engine_offset=}, which is not aligned to "
+                    f"{nodes_per_engine=}: sglang derives each engine's node_rank from its global rank, so a "
+                    f"misaligned start would make the cell's primary a worker node"
+                )
+
+                for cell_start in range(0, num_engines, nodes_per_engine):
+                    cells.append(
+                        ServerCell(
+                            args=args,
+                            worker_type=group_cfg.worker_type,
+                            engines=[ServerEngine() for _ in range(nodes_per_engine)],
+                            pg=pg,
+                            num_gpus_per_engine=gpus_per_engine,
+                            rank_offset=engine_offset + cell_start,
+                            gpu_offset=gpu_offset + cell_start * num_gpu_per_engine_local,
+                            sglang_overrides=overrides,
+                        )
+                    )
+
             group = ServerGroup(
                 args=args,
-                pg=pg,
-                all_engines=(
-                    [ServerEngine() for _ in range(num_engines)] if group_cfg.worker_type != "placeholder" else []
-                ),
+                cells=cells,
                 num_gpus_per_engine=gpus_per_engine,
                 has_new_engines=False,
                 worker_type=group_cfg.worker_type,
-                rank_offset=engine_offset,
-                gpu_offset=gpu_offset,
-                sglang_overrides=overrides,
                 needs_offload=needs_offload,
                 model_path=overrides.get("model_path", args.hf_checkpoint),
                 router_ip=router_ip,
                 router_port=router_port,
                 update_weights=model_cfg.update_weights,
             )
-            handles, new_engine_indices = group.start_engines(port_cursors)
-            all_init_handles.extend(handles)
+            start_futures.append(async_utils.submit(group.start_engines(port_allocator)))
             server_groups.append(group)
-            new_engine_indices_per_group.append(new_engine_indices)
 
             engine_offset += num_engines
             gpu_offset += group_cfg.num_gpus
 
-        if all_init_handles:
-            ray.get(all_init_handles)
+        new_engine_indices_per_group = async_utils.wait_futures(start_futures)
 
         for group, new_engine_indices in zip(server_groups, new_engine_indices_per_group, strict=True):
             group.mark_alive(engine_indices=new_engine_indices)
+            async_utils.run(group.register_workers(new_engine_indices))
 
         servers[model_cfg.name] = RolloutServer(
             server_groups=server_groups,
@@ -224,15 +244,11 @@ class RolloutServer:
     @property
     def engine_gpu_counts(self) -> list[int]:
         """Per-engine GPU count for all node-0 engines, parallel to ``engines``."""
-        return [g.num_gpus_per_engine for g in self.server_groups for _ in g.engines]
+        return [cell.num_gpus_per_engine for g in self.server_groups for cell in g.cells]
 
     @property
     def engine_gpu_offsets(self) -> list[int]:
-        offsets = []
-        for g in self.server_groups:
-            for j in range(len(g.engines)):
-                offsets.append(g.gpu_offset + j * g.num_gpus_per_engine)
-        return offsets
+        return [cell.gpu_offset for g in self.server_groups for cell in g.cells]
 
     @property
     def nodes_per_engine(self):
@@ -262,20 +278,16 @@ class RolloutServer:
 
     async def recover(self):
         """Recover dead engines across all active groups, overlapping init."""
-        port_cursors = PortCursors.empty()
-        await asyncio.gather(*[g.recover(port_cursors=port_cursors) for g in self.server_groups])
+        port_allocator = PortAllocator.empty()
+        await asyncio.gather(*[g.recover(port_allocator=port_allocator) for g in self.server_groups])
 
     async def offload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.offload(tags=tags))
-        return await asyncio.gather(*handles)
+        per_group = await asyncio.gather(*[g.offload(tags=tags) for g in self.server_groups])
+        return [result for group_results in per_group for result in group_results]
 
     async def onload(self, tags: list[str] | None = None):
-        handles = []
-        for g in self.server_groups:
-            handles.extend(g.onload(tags))
-        return await asyncio.gather(*handles)
+        per_group = await asyncio.gather(*[g.onload(tags) for g in self.server_groups])
+        return [result for group_results in per_group for result in group_results]
 
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
@@ -294,7 +306,7 @@ class RolloutServer:
         # picture of init/recovery upper bounds across model sizes
         sleep_time = 2
         for _ in range(int(timeout // sleep_time)):
-            if all(e.is_alive for g in self.server_groups for e in g.all_engines):
+            if all(e.is_alive for g in self.server_groups for cell in g.cells for e in cell.engines):
                 return
             await asyncio.sleep(sleep_time)
             logger.info("wait_all_engines_alive looping...")

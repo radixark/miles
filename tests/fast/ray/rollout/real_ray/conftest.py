@@ -39,7 +39,7 @@ def mock_engine_class(ray_local_mode):
 
     Production wraps via ``ray.remote(SGLangEngine)``; substituting the
     already-wrapped class would double-wrap, so callers monkeypatch the
-    unwrapped class inside ``miles.ray.rollout.server_group``."""
+    unwrapped class inside ``miles.ray.rollout.server_cell``."""
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
     return MockSGLangEngine.__ray_actor_class__
@@ -47,36 +47,9 @@ def mock_engine_class(ray_local_mode):
 
 @pytest.fixture
 def patched_sglang_engine(monkeypatch, mock_engine_class):
-    """Replace SGLangEngine with the mock + stub the addr allocator with a
-    deterministic dict. The real allocator path is exercised separately by
-    ``patched_sglang_engine_real_allocator`` and ``test_addr_allocator.py``."""
-    import miles.ray.rollout.server_group as mod
+    """Replace SGLangEngine with the mock; the real addr allocator runs, and
+    each mock engine serves HTTP on the port it is allocated, so the urls
+    ServerGroup derives from the allocator actually serve requests."""
+    import miles.ray.rollout.server_cell as cell_mod
 
-    monkeypatch.setattr(mod, "SGLangEngine", mock_engine_class)
-
-    from miles.ray.rollout.addr_allocator import PortCursors
-
-    def _fake_alloc(*args, **kwargs):
-        engines = kwargs["rollout_engines"]
-        addr_and_ports = {}
-        for rank, _ in engines:
-            addr_and_ports[rank] = dict(
-                host="127.0.0.1",
-                port=30000 + rank,
-                nccl_port=31000 + rank,
-                engine_info_bootstrap_port=32000 + rank,
-                dist_init_addr=f"127.0.0.1:{33000 + rank}",
-            )
-        return addr_and_ports, PortCursors(_values={0: 34000})
-
-    monkeypatch.setattr(mod, "allocate_rollout_engine_addr_and_ports_normal", _fake_alloc)
-
-
-@pytest.fixture
-def patched_sglang_engine_real_allocator(monkeypatch, mock_engine_class):
-    """Replace SGLangEngine with the mock but keep the real addr allocator,
-    so the actor → driver port round-trip via
-    ``_get_current_node_ip_and_free_port.remote`` runs end-to-end."""
-    import miles.ray.rollout.server_group as mod
-
-    monkeypatch.setattr(mod, "SGLangEngine", mock_engine_class)
+    monkeypatch.setattr(cell_mod, "SGLangEngine", mock_engine_class)

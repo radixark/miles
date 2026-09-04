@@ -1,13 +1,50 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
-from tests.fast.ray.rollout.conftest import fake_actor_handle, make_args
+from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, make_args
 
 from miles.ray.rollout.rollout_server import RolloutServer
-from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
-from miles.ray.rollout.server_engine import ServerEngine
+from miles.ray.rollout.server_cell import ServerCell, get_cell_indexer_of_id_map
+from miles.ray.rollout.server_engine import AddrInfo, ServerEngine
 from miles.ray.rollout.server_group import ServerGroup
+
+
+class TestServerCellPrimaryEngine:
+    def test_primary_engine_is_the_first_engine(self):
+        """The node-0 engine of the cell owns the server url and receives per-cell calls."""
+        engines = [MagicMock(), MagicMock()]
+        assert ServerCell(args=None, worker_type="regular", engines=engines).primary_engine is engines[0]
+
+    async def test_offload_releases_memory_on_the_primary_engine_only(self):
+        """Non-primary engines are workers without their own HTTP endpoint."""
+        engines = [MagicMock(), MagicMock()]
+        engines[0].api_client.release_memory_occupation = AsyncMock(return_value="released")
+        assert (
+            await ServerCell(args=None, worker_type="regular", engines=engines).offload(tags=["weights"]) == "released"
+        )
+        engines[0].api_client.release_memory_occupation.assert_awaited_once_with(tags=["weights"])
+        engines[1].api_client.release_memory_occupation.assert_not_called()
+
+    async def test_onload_resumes_memory_on_the_primary_engine_only(self):
+        """Non-primary engines are workers without their own HTTP endpoint."""
+        engines = [MagicMock(), MagicMock()]
+        engines[0].api_client.resume_memory_occupation = AsyncMock(return_value="resumed")
+        assert await ServerCell(args=None, worker_type="regular", engines=engines).onload(tags=None) == "resumed"
+        engines[0].api_client.resume_memory_occupation.assert_awaited_once_with(tags=None)
+        engines[1].api_client.resume_memory_occupation.assert_not_called()
+
+    async def test_check_weights_forwards_all_arguments_to_the_primary_engine(self):
+        """The whole keyword set must reach the engine api unchanged."""
+        engines = [MagicMock()]
+        engines[0].api_client.check_weights = AsyncMock(return_value={"ok": True})
+        result = await ServerCell(args=None, worker_type="regular", engines=engines).check_weights(
+            action="report", allow_quant_error=True, selector="first", skip_list=["a"]
+        )
+        assert result == {"ok": True}
+        engines[0].api_client.check_weights.assert_awaited_once_with(
+            action="report", allow_quant_error=True, selector="first", skip_list=["a"]
+        )
 
 
 def _build_servers(
@@ -21,12 +58,14 @@ def _build_servers(
             engines = [ServerEngine() for _ in range(engines_per_group)]
             for e in engines:
                 e.mark_allocated_uninitialized(fake_actor_handle())
+                e.set_addressing(AddrInfo(server_url="http://127.0.0.1:30000"))
                 e.mark_alive()
             groups.append(
                 ServerGroup(
                     args=args,
-                    pg=None,
-                    all_engines=engines,
+                    cells=chunk_engines_into_cells(
+                        engines, num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8, args=args
+                    ),
                     num_gpus_per_engine=num_gpus_per_engine,
                     has_new_engines=False,
                     update_weights=True,
@@ -43,14 +82,14 @@ def _build_servers(
 class TestGetCellIndexerOfIdMap:
     def test_single_server_single_group_one_cell_per_engine(self):
         """Happy path: one server with one group of N engines → N cells, each
-        engine_indices=[i], all under model_0/group_0."""
+        cell_index=i, all under model_0/group_0."""
         servers = _build_servers(num_servers=1, groups_per_server=1, engines_per_group=3)
         cells = get_cell_indexer_of_id_map(servers)
         assert len(cells) == 3
         for i, cell in enumerate(cells):
             assert cell.srv_key == "model_0"
             assert cell.group_index == 0
-            assert cell.engine_indices == [i]
+            assert cell.cell_index == i
 
     def test_multi_group_cells_increment_continuously_across_groups(self):
         servers = _build_servers(num_servers=1, groups_per_server=2, engines_per_group=2)
@@ -70,21 +109,17 @@ class TestGetCellIndexerOfIdMap:
 
     def test_multinode_engine_cells_span_contiguous_engine_slots(self):
         """num_gpus_per_engine=16 and num_gpus_per_node=8 → nodes_per_engine=2;
-        each cell maps to 2 contiguous engine slots."""
+        the 2 engine slots form one cell."""
         servers = _build_servers(num_servers=1, groups_per_server=1, engines_per_group=2, num_gpus_per_engine=16)
         cells = get_cell_indexer_of_id_map(servers)
         assert len(cells) == 1
-        assert cells[0].engine_indices == [0, 1]
+        assert cells[0].cell_index == 0
 
     def test_placeholder_group_with_zero_engines_emits_zero_cells(self):
-        """``placeholder`` worker_type groups have empty all_engines/engines.
-        The internal assertion ``len(all_engines) == len(engines) *
-        nodes_per_engine`` still holds (0 == 0 * N)."""
+        """``placeholder`` worker_type groups have no cells, so no cell ids are emitted."""
         srv = MagicMock()
         group = MagicMock()
-        group.all_engines = []
-        group.engines = []
-        group.nodes_per_engine = 2
+        group.cells = []
         srv.server_groups = [group]
         out = get_cell_indexer_of_id_map({"only": srv})
         assert out == []

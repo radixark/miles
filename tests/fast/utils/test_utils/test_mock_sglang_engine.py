@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 import ray
-from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 from tests.fast.ray.rollout.conftest import make_args
 
 from miles.backends.sglang_utils.sglang_engine import SGLangEngine
+from miles.utils.misc import get_current_node_ip, get_free_port
 from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
 
 # tests/fast/utils/test_utils/test_mock_sglang_engine.py → 4 levels up → repo root
@@ -107,22 +107,17 @@ class TestRealRayActorLifecycle:
             num_gpus_per_engine=1,
         )
         try:
-            ray.get(actor.init.remote(host="127.0.0.1", port=20000))
-            ray.get(actor.health_generate.remote(timeout=1.0))
-            ray.get(actor.release_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
-            ray.get(actor.resume_memory_occupation.remote(tags=[GPU_MEMORY_TYPE_WEIGHTS]))
-            ray.get(actor.update_weights_from_disk.remote(model_path="/fake"))
-            ray.get(actor.check_weights.remote(action="pre_update"))
+            ray.get(actor.init.remote(host="127.0.0.1", port=get_free_port(start_port=20000)))
+            ray.get(actor._get_current_node_ip_and_free_port.remote(start_port=20100))
+            ray.get(actor.simulate_crash.remote())
 
             calls = ray.get(actor.get_calls.remote())
             method_names = [name for name, _, _ in calls]
             assert method_names == [
                 "init",
-                "health_generate",
-                "release_memory_occupation",
-                "resume_memory_occupation",
-                "update_weights_from_disk",
-                "check_weights",
+                "_get_current_node_ip_and_free_port",
+                "simulate_crash",
+                "shutdown",
             ]
         finally:
             try:
@@ -143,10 +138,31 @@ class TestRealRayActorLifecycle:
             num_gpus_per_engine=1,
         )
         try:
-            ray.get(actor.set_fault.remote("health_generate", RuntimeError("boom")))
+            ray.get(actor.set_fault.remote("shutdown", RuntimeError("boom")))
             with pytest.raises(ray.exceptions.RayTaskError, match="boom"):
-                ray.get(actor.health_generate.remote(timeout=1.0))
+                ray.get(actor.shutdown.remote())
             # Fault is one-shot — second call must succeed.
-            assert ray.get(actor.health_generate.remote(timeout=1.0)) is True
+            assert ray.get(actor.shutdown.remote()) is True
         finally:
             ray.kill(actor)
+
+
+class TestNodeAddress:
+    def test_the_mock_reports_the_node_ip_instead_of_loopback(self) -> None:
+        """A mock engine placed on another node must publish an address its peers can reach."""
+        engine = MockSGLangEngine.__ray_actor_class__()
+
+        assert engine._get_node_ip() == get_current_node_ip()
+        assert engine._get_node_ip() != "127.0.0.1"
+
+
+class TestNodeIpReporting:
+    def test_get_node_ip_reports_the_reachable_node_ip_and_records_the_call(self) -> None:
+        """Driven in process, the mock hands back the node's routable ip rather than loopback."""
+        engine = MockSGLangEngine.__ray_actor_class__()
+
+        node_ip = engine._get_node_ip()
+
+        assert node_ip == get_current_node_ip()
+        assert node_ip != "127.0.0.1"
+        assert engine.get_calls() == [("_get_node_ip", (), {})]

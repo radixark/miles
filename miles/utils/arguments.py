@@ -3699,7 +3699,7 @@ def _maybe_apply_dumper_overrides(args) -> None:
         return
 
     if args.use_fault_tolerance:
-        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
+        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress fault tolerance heartbeats")
         args.use_fault_tolerance = False
 
     logger.info("Dumper mode: all heartbeat mechanisms disabled")

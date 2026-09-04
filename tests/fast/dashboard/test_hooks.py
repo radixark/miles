@@ -6,6 +6,7 @@ import pytest
 from miles.dashboard import backend, hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
+from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.timer import Timer
 
 
@@ -152,7 +153,10 @@ class FakeServerEngine:
 
 class FakeGroup:
     def __init__(self, engines, nodes_per_engine=1):
-        self.all_engines = engines
+        self.cells = [
+            ServerCell(args=None, worker_type="regular", engines=engines[i : i + nodes_per_engine])
+            for i in range(0, len(engines), nodes_per_engine)
+        ]
         self.nodes_per_engine = nodes_per_engine
 
 

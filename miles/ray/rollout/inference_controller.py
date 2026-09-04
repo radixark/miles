@@ -1,18 +1,17 @@
-import asyncio
 import logging
 from dataclasses import dataclass
 
 import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.addr_allocator import PortCursors
+from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.eval_fleet import EvalFleet
 from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
 from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
-from miles.utils.health_monitor import RolloutHealthMonitor
 
 
 logger = logging.getLogger(__name__)
@@ -33,33 +32,20 @@ class InferenceController:
         self.rollout_id = -1
         self.eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
 
-        # TODO will be replaced by full ft, thus temporarily leave it without modifications
-        self._health_monitors = []
-        self._rollout_ft_enabled = self.args.use_fault_tolerance and "rollout" in self.args.ft_components
-        self._ci_fault_injection_pending = False
-        if not self.args.debug_train_only and self._rollout_ft_enabled:
-            for srv in self.servers.values():
-                for group in srv.server_groups:
-                    monitor = RolloutHealthMonitor(group, args)
-                    monitor.start()
-                    self._health_monitors.append(monitor)
-            self._ci_fault_injection_pending = self.args.ci_test
-
     # -------------------------- rollout lifecycle hooks -----------------------------
 
     async def prepare_rollout(self, rollout_id):
         self.rollout_id = rollout_id
-        self._health_monitoring_resume()
+        await self.health_monitoring_resume()
         if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
             await self._try_ci_fault_injection()
         dashboard_hooks.register_engines(self.servers)
 
     async def prepare_eval(self):
-        self._health_monitoring_resume()
+        await self.health_monitoring_resume()
 
     async def dispose(self):
-        for monitor in self._health_monitors:
-            monitor.stop()
+        pass
 
     # -------------------------- offload/onload -----------------------------
 
@@ -108,7 +94,7 @@ class InferenceController:
 
         await srv.wait_all_engines_alive()
         return EnginesAndLock(
-            rollout_engines=[e.actor_handle for e in srv.engines],
+            rollout_engines=[e.api_client for e in srv.engines],
             rollout_engine_lock=self.rollout_engine_lock,
             has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
@@ -150,15 +136,15 @@ class InferenceController:
     # -------------------------- external start/stop -----------------------------
 
     async def start_cell(self, cell_id: int):
-        port_cursors = PortCursors.empty()
+        port_allocator = PortAllocator.empty()
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
         group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        await group.recover(port_cursors=port_cursors, filter_indices=idx.engine_indices)
+        await group.recover(port_allocator=port_allocator, filter_cell_indices=[idx.cell_index])
 
     async def stop_cell(self, cell_id: int):
         idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
         group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        group.stop_engines(engine_indices=idx.engine_indices)
+        group.stop_engines(cell_indices=[idx.cell_index])
 
     # -------------------------- misc APIs -----------------------------
 
@@ -176,12 +162,21 @@ class InferenceController:
     # -------------------------- utils -----------------------------
 
     async def health_monitoring_pause(self) -> None:
-        for monitor in self._health_monitors:
-            monitor.pause()
+        self._assert_rollout_fault_tolerance_is_unsupported()
 
-    def _health_monitoring_resume(self) -> None:
-        for monitor in self._health_monitors:
-            monitor.resume()
+    async def health_monitoring_resume(self) -> None:
+        self._assert_rollout_fault_tolerance_is_unsupported()
+
+    @property
+    def _rollout_ft_enabled(self) -> bool:
+        return self.args.use_fault_tolerance and "rollout" in self.args.ft_components
+
+    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
+        if not self.args.debug_train_only and self._rollout_ft_enabled:
+            raise NotImplementedError(
+                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
+                "get_updatable_engines_and_lock snapshots the engines"
+            )
 
     @property
     def _server(self) -> RolloutServer | None:
@@ -190,36 +185,13 @@ class InferenceController:
             return None
         return next(iter(self.servers.values()))
 
-    # TODO will be replaced by full ft, thus temporarily leave it without modifications
     async def _try_ci_fault_injection(self):
-        """Try to inject fault during generate (when health monitor is running)."""
-        if not self._ci_fault_injection_pending:
-            return
-
-        # Only inject fault once
-        self._ci_fault_injection_pending = False
-
-        if (
-            self._server
-            and self._server.server_groups[0].all_engines
-            and self._server.server_groups[0].all_engines[0].is_allocated
-        ):
-            logger.info("CI Fault Injection: Simulating crash on engine 0 during generate")
-            try:
-                # This will cause the ray actor to exit
-                self._server.server_groups[0].all_engines[0].actor_handle.simulate_crash.remote()
-                # Wait for health monitor to detect the crash and mark engine as None
-                # health_check_interval + health_check_timeout + buffer
-                wait_time = self.args.rollout_health_check_interval + self.args.rollout_health_check_timeout + 5
-                logger.info(f"CI Fault Injection: Waiting {wait_time}s for health monitor to detect crash")
-                await asyncio.sleep(wait_time)
-            except Exception as e:
-                logger.warning(f"CI Fault Injection failed: {e}")
+        raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
 
 
 @dataclass(frozen=True)
 class EnginesAndLock:
-    rollout_engines: list[ray.actor.ActorHandle]
+    rollout_engines: list[SGLangApiClient]
     rollout_engine_lock: ray.actor.ActorHandle
     has_new_engines: bool
     engine_gpu_counts: list[int]

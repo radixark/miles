@@ -2,17 +2,19 @@ import socket
 import time
 from argparse import Namespace
 from collections.abc import Sequence
+from concurrent.futures import Future
 
 import ray
 import torch
 import torch.distributed as dist
-from ray import ObjectRef
 from ray.actor import ActorHandle
 
+from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.training_utils.parallel import ParallelState
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 from miles.backends.training_utils.weight_update.protocol import WeightTransferProtocol
 from miles.backends.training_utils.weight_update.utils import get_data_replica_rank_and_size
+from miles.utils import async_utils
 from miles.utils.distributed_utils import init_process_group
 
 
@@ -30,7 +32,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
 
     def connect(
         self,
-        rollout_engines: Sequence[ActorHandle],
+        rollout_engines: Sequence[SGLangApiClient],
         rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
@@ -65,14 +67,14 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
         while not ray.get(self.rollout_engine_lock.acquire.remote()):
             time.sleep(0.1)
         try:
-            refs = update_weights_from_distributed(
+            futures = update_weights_from_distributed(
                 self.group_name,
                 self._model_update_groups,
                 self.rollout_engines,
                 bucket,
                 selector=self._selector,
             )
-            ray.get(refs)
+            async_utils.wait_futures(futures)
             bucket.clear()
         finally:
             # Leaking this lock makes the next weight sync poll forever, so the
@@ -83,7 +85,7 @@ class UpdateWeightFromDistributed(WeightTransferProtocol):
 def connect_rollout_engines_from_distributed(
     args: Namespace,
     group_name: str,
-    rollout_engines: Sequence[ActorHandle],
+    rollout_engines: Sequence[SGLangApiClient],
     engine_gpu_counts: Sequence[int] | None = None,
 ) -> dist.ProcessGroup:
     """
@@ -101,17 +103,19 @@ def connect_rollout_engines_from_distributed(
         master_port = sock.getsockname()[1]
     world_size = sum(engine_gpu_counts) + 1
 
-    refs = []
+    futures = []
     rank_cursor = 1
-    for i, engine in enumerate(rollout_engines):
-        refs.append(
-            engine.init_weights_update_group.remote(
-                master_address,
-                master_port,
-                rank_cursor,
-                world_size,
-                group_name,
-                backend="nccl",
+    for i, api_client in enumerate(rollout_engines):
+        futures.append(
+            async_utils.submit(
+                api_client.init_weights_update_group(
+                    master_address,
+                    master_port,
+                    rank_cursor,
+                    world_size,
+                    group_name,
+                    backend="nccl",
+                )
             )
         )
         rank_cursor += engine_gpu_counts[i]
@@ -122,7 +126,7 @@ def connect_rollout_engines_from_distributed(
         rank=0,
         group_name=group_name,
     )
-    ray.get(refs)
+    async_utils.wait_futures(futures)
     return model_update_groups
 
 
@@ -130,33 +134,35 @@ def disconnect_rollout_engines_from_distributed(args, group_name, model_update_g
     """
     Destroy NCCL on training and engines.
     """
-    refs = [engine.destroy_weights_update_group.remote(group_name) for engine in rollout_engines]
+    futures = [async_utils.submit(client.destroy_weights_update_group(group_name)) for client in rollout_engines]
     try:
         if model_update_groups is not None:
             dist.destroy_process_group(model_update_groups)
     finally:
-        ray.get(refs)
+        async_utils.wait_futures(futures)
 
 
 def update_weights_from_distributed(
     group_name: str,
     group: dist.ProcessGroup,
-    rollout_engines: Sequence[ActorHandle],
+    rollout_engines: Sequence[SGLangApiClient],
     converted_named_tensors: Sequence[tuple[str, torch.Tensor]],
     selector: str = "all",
-) -> list[ObjectRef]:
+) -> list[Future]:
     """
-    Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
+    Send metadata (HTTP), broadcast tensors (NCCL rank 0 → engines).
     """
-    refs = [
-        engine.update_weights_from_distributed.remote(
-            names=[name for name, _ in converted_named_tensors],
-            dtypes=[param.dtype for _, param in converted_named_tensors],
-            shapes=[param.shape for _, param in converted_named_tensors],
-            selector=selector,
-            group_name=group_name,
+    futures = [
+        async_utils.submit(
+            client.update_weights_from_distributed(
+                names=[name for name, _ in converted_named_tensors],
+                dtypes=[param.dtype for _, param in converted_named_tensors],
+                shapes=[param.shape for _, param in converted_named_tensors],
+                selector=selector,
+                group_name=group_name,
+            )
         )
-        for engine in rollout_engines
+        for client in rollout_engines
     ]
 
     contiguous_tensors = [
@@ -168,4 +174,4 @@ def update_weights_from_distributed(
     for handle in handles:
         handle.wait()
 
-    return refs
+    return futures

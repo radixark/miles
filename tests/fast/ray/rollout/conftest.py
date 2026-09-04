@@ -94,6 +94,7 @@ def make_args(**overrides: Any) -> Namespace:
         # offload / fault tolerance
         offload_rollout=False,
         use_fault_tolerance=False,
+        ft_components=[],
         rollout_health_check_interval=10.0,
         rollout_health_check_timeout=30.0,
         # checkpoint / data source
@@ -259,14 +260,45 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
+def chunk_engines_into_cells(
+    engines,
+    *,
+    num_gpus_per_engine: int,
+    num_gpus_per_node: int,
+    args=None,
+    worker_type: str = "regular",
+    rank_offset: int = 0,
+    gpu_offset: int = 0,
+    **cell_config,
+):
+    """Group a flat engine list the way production lays cells out."""
+    from miles.ray.rollout.server_cell import ServerCell
+
+    nodes_per_engine = max(1, num_gpus_per_engine // num_gpus_per_node)
+    assert len(engines) % nodes_per_engine == 0, f"{len(engines)=} must be a multiple of {nodes_per_engine=}"
+    num_gpu_per_engine_local = min(num_gpus_per_engine, num_gpus_per_node)
+    return [
+        ServerCell(
+            args=args if args is not None else make_args(num_gpus_per_node=num_gpus_per_node),
+            worker_type=worker_type,
+            engines=engines[i : i + nodes_per_engine],
+            num_gpus_per_engine=num_gpus_per_engine,
+            rank_offset=rank_offset + i,
+            gpu_offset=gpu_offset + i * num_gpu_per_engine_local,
+            **cell_config,
+        )
+        for i in range(0, len(engines), nodes_per_engine)
+    ]
+
+
 def make_dataclass_group(
     *,
     num_engines: int = 2,
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
 ):
-    """Build a ``ServerGroup`` with ``pg=None`` (no actor scheduling). Each
-    engine starts unallocated."""
+    """Build a ``ServerGroup`` whose cells have ``pg=None`` (no actor
+    scheduling). Each engine starts unallocated."""
     from miles.ray.rollout.server_engine import ServerEngine
     from miles.ray.rollout.server_group import ServerGroup
 
@@ -274,11 +306,15 @@ def make_dataclass_group(
     engines = [ServerEngine() for _ in range(num_engines)]
     return ServerGroup(
         args=args,
-        pg=None,
-        all_engines=engines,
+        cells=chunk_engines_into_cells(
+            engines,
+            num_gpus_per_engine=num_gpus_per_engine,
+            num_gpus_per_node=8,
+            args=args,
+            gpu_offset=gpu_offset,
+        ),
         num_gpus_per_engine=num_gpus_per_engine,
         has_new_engines=False,
-        gpu_offset=gpu_offset,
         update_weights=True,
     )
 
@@ -288,8 +324,11 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
 
     Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
     with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment."""
+    can predict and assert on port assignment. It also passes
+    ``isinstance(x, ray.actor.ActorHandle)`` so it can be handed to
+    ``ServerEngine.mark_allocated_uninitialized`` (see ``fake_actor_handle``)."""
     e = MagicMock()
+    e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
 
     def _alloc(start_port: int = 15000, consecutive: int = 1):
