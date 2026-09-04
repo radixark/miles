@@ -590,7 +590,13 @@ def setup_muon_state_on_disk(args) -> None:
 
 
 def _state_dir_root(args) -> str:
-    return os.path.join(args.offload_train_disk_dir, "optimizer_state")
+    scope = os.environ.get("MILES_TRAIN_DISK_SCOPE")
+    if scope is None:
+        raise RuntimeError(
+            "MILES_TRAIN_DISK_SCOPE is not set; the training launcher scopes on-disk optimizer "
+            "state per process so colocated roles cannot wipe each other's store"
+        )
+    return os.path.join(args.offload_train_disk_dir, scope, "optimizer_state")
 
 
 def _purge_rank_dir(dir_root: str) -> str:

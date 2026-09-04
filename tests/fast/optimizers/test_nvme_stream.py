@@ -5,6 +5,7 @@ keeps working against pinned host memory while the log still claims otherwise.
 """
 
 import os
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -79,3 +80,13 @@ def test_disk_buffer_preserves_dtype(tmp_path, dtype):
 
     assert buf.dtype is dtype
     assert buf.numel() == src.numel()
+
+
+def test_state_dir_root_is_scoped_per_training_process(monkeypatch):
+    args = SimpleNamespace(offload_train_disk_dir="/spill")
+    monkeypatch.setenv("MILES_TRAIN_DISK_SCOPE", "critic_cell0_rank2")
+    assert nvme_stream._state_dir_root(args) == "/spill/critic_cell0_rank2/optimizer_state"
+
+    monkeypatch.delenv("MILES_TRAIN_DISK_SCOPE")
+    with pytest.raises(RuntimeError, match="MILES_TRAIN_DISK_SCOPE"):
+        nvme_stream._state_dir_root(args)
