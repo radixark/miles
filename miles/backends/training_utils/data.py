@@ -496,7 +496,8 @@ def get_data_iterator(
                 )
                 if vpp_size > 1:
                     shard_num_microbatches = max(
-                        shard_num_microbatches // microbatch_group_size_per_vp_stage
+                        shard_num_microbatches
+                        // microbatch_group_size_per_vp_stage
                         * microbatch_group_size_per_vp_stage,
                         1,
                     )

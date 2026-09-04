@@ -40,6 +40,7 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (".*", "rel <= 0.0085"),
 ]
 
+
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 def _build_actions(num_cells: int) -> list[dict]:
     target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
@@ -185,6 +186,7 @@ def _report_live_rollout_matches(dump_dir: str) -> None:
             f"response_token_match_ratio={response_token_match_ratio:.6f}, reward_matches={reward_matches}"
         )
         assert prompt_matches == num_samples
+
 
 TEST_NAME: str = "trainer_ft_with_failure"
 PHASES: list[str] = ["phase_a", "phase_b"]
