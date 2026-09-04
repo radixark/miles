@@ -7,6 +7,7 @@ REAL package lives in test_harbor_contract.py.
 
 import asyncio
 import enum
+import os
 import sys
 import types
 from datetime import datetime, timedelta
@@ -87,6 +88,8 @@ def tasks_dir(tmp_path, monkeypatch):
     (tmp_path / "task-1").mkdir()
     monkeypatch.setenv("HARBOR_TASKS_DIR", str(tmp_path))
     monkeypatch.setenv("HARBOR_ENV_TYPE", "e2b")
+    # so tests never read a real key file from the developer's machine
+    monkeypatch.setenv("E2B_API_KEY", "test-key")
     monkeypatch.delenv("MILES_ROUTER_EXTERNAL_HOST", raising=False)
     monkeypatch.delenv("HARBOR_ENV_KWARGS", raising=False)
     return tmp_path
@@ -279,6 +282,27 @@ def test_run_scores_a_timeout_zero(tasks_dir, fake_harbor, monkeypatch):
 
     out = run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
     assert out == {"reward": 0.0, "exit_status": "TimeLimitExceeded", "eval_report": {}, "agent_metrics": {}}
+
+
+def test_run_resolves_the_provider_key_file_into_the_sdk_env_var(tasks_dir, fake_harbor, tmp_path, monkeypatch):
+    """The launcher forwards the key by PATH; the SDK reads its own env var, so
+    the worker must resolve the file -- the gap the first live e2e run hit."""
+    key_file = tmp_path / "api_key"
+    key_file.write_text("e2b_test_key\n")
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.setenv("E2B_API_KEY_FILE", str(key_file))
+    fake_harbor.result = _verdict()
+
+    run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert os.environ["E2B_API_KEY"] == "e2b_test_key"
+
+
+def test_run_raises_when_no_provider_key_is_resolvable(tasks_dir, fake_harbor, monkeypatch):
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    monkeypatch.setenv("E2B_API_KEY_FILE", "/nonexistent/api_key")
+    with pytest.raises(RuntimeError, match="no API key"):
+        run_async(haf.run("http://s/sessions/s1", [], {}, {"instance_id": "task-1"}))
+    assert fake_harbor.created == []
 
 
 def test_run_scores_a_trial_exception_zero(tasks_dir, fake_harbor):

@@ -31,6 +31,10 @@ Env vars (read on the rollout worker):
                          -- it decides whose quota a run spends)
   HARBOR_ENV_KWARGS      JSON object passed as ``EnvironmentConfig.kwargs``
                          (backend-specific, e.g. Daytona's auto_snapshot)
+  E2B_API_KEY_FILE / DAYTONA_API_KEY_FILE / ...
+                         the launcher forwards the provider key by file PATH;
+                         the worker resolves it into the SDK's env var here
+                         (raises if neither the var nor a usable file exists)
   HARBOR_TRIALS_DIR      where Harbor writes trial dirs (default /tmp/harbor_trials)
   AGENT_TIMEOUT          Harbor's per-trial agent timeout in seconds; the
                          wall-clock cap AGENT_TRIAL_TIMEOUT (default 7200) sits
@@ -68,6 +72,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from miles.rollout.agentic.credentials import PROVIDER_CREDENTIALS, resolve_provider_api_key
 from miles.rollout.agentic.session import resolve_session_url
 
 logger = logging.getLogger(__name__)
@@ -269,6 +274,18 @@ def _task_path(tasks_dir: Path, instance_id: str) -> Path:
     return path
 
 
+def _ensure_provider_key() -> None:
+    """Resolve the key file the launcher forwarded (by PATH) into the env var the
+    provider's SDK reads. Modal needs nothing here: its SDK reads the config file
+    MODAL_CONFIG_PATH names."""
+    spec = PROVIDER_CREDENTIALS.get(os.getenv("HARBOR_ENV_TYPE", "").strip().lower())
+    if not spec or len(spec["key_env_vars"]) != 1:
+        return
+    key_env = spec["key_env_vars"][0]
+    if not os.getenv(key_env, "").strip():
+        os.environ[key_env] = resolve_provider_api_key(key_env, spec["file_env_var"], spec["default_path"])
+
+
 def _environment_config():
     """``HARBOR_ENV_TYPE`` straight through to Harbor's ``EnvironmentType``: adding a
     backend is Harbor's job, not a branch here. Backend-specific settings ride in
@@ -407,8 +424,10 @@ async def run(
     instance_id = metadata.get("instance_id")
     trial_timeout_s = int(os.environ.get("AGENT_TRIAL_TIMEOUT", _DEFAULT_AGENT_TRIAL_TIMEOUT_S))
 
-    # Config errors (missing task dir, bad env vars) fail every sample the same
-    # way; raising beats training on silent all-zero rewards.
+    # Config errors (missing task dir, bad env vars, unresolvable provider key)
+    # fail every sample the same way; raising beats training on silent all-zero
+    # rewards.
+    _ensure_provider_key()
     config = build_trial_config(metadata, session_url, request_kwargs)
 
     try:
