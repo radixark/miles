@@ -428,7 +428,10 @@ class GLM47TITOTokenizer(TITOTokenizer):
 
 
 class GLM53TITOTokenizer(GLM47TITOTokenizer):
-    """GLM-5.3 native text renderer with the shared GLM token boundary."""
+    """GLM-5.3 native text renderer with the shared GLM token boundary.
+
+    The GLM-5.3 and GLM-5.3-Flash templates start generation with ``<think>`` even when ``enable_thinking=False``, so this family pins ``enable_thinking=True``. Flash support covers tokenizer text inputs, not multimodal processor inputs.
+    """
 
     FIXED_TEMPLATE = FixedTemplate(
         template=None,
