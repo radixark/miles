@@ -19,6 +19,7 @@ def _make_args(**overrides) -> Namespace:
         check_weight_update_equal=False,
         check_weight_update_skip_list=[],
         offload_rollout=False,
+        colocate_memory_peak_device="cpu",
         sglang_router_ip=None,
         sglang_router_port=None,
     )
