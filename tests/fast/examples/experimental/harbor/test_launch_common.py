@@ -2,6 +2,7 @@
 
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import launch_common
@@ -85,3 +86,18 @@ def test_env_kwargs_and_server_knobs_are_forwarded_when_set(monkeypatch):
     assert env["HARBOR_ENV_KWARGS"] == '{"auto_snapshot": true}'
     assert env["HARBOR_RESPONSE_LENGTH_POLICY"] == "abort"
     assert "HARBOR_MAX_SEQ_LEN" not in env
+
+
+def test_agentic_wiring_is_the_shipped_wiring():
+    """One shared copy: the flags the GPU e2e exercises are the flags the recipes ship."""
+    args = launch_common.agentic_train_args(tito_model="qwen3", session_server_workers=4)
+    assert "--custom-agent-function-path harbor_agent_function.run" in args
+    assert "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate" in args
+    assert "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted" in args
+    assert "--tito-model qwen3" in args and "--session-server-workers 4" in args
+    # the miles-side paths must resolve, or every launcher fails at load_function time
+    from miles.rollout.filter_hub.dynamic_sampling_filters import check_no_aborted  # noqa: F401
+    from miles.rollout.generate_hub.agentic_tool_call import generate  # noqa: F401
+
+    for d in launch_common.agentic_pythonpath_dirs():
+        assert Path(d).is_dir(), d

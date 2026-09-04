@@ -14,17 +14,12 @@ import socket
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 import typer
-from launch_common import harbor_env_vars
+from launch_common import agentic_pythonpath_dirs, agentic_train_args, harbor_env_vars
 
 import miles.utils.external_utils.command_utils as U
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-# reward_func / RolloutFn (agent-metric aggregation) are shared with the agent-server example
-HARBOR_DOCKER_EXAMPLE_DIR = SCRIPT_DIR.parents[1] / "swe-agent-harbor-docker"
 
 
 @dataclass
@@ -157,17 +152,7 @@ def execute(args: ScriptArgs):
         "--sglang-reasoning-parser glm45 "
         "--sglang-router-port 31000 "
     )
-    agent_args = (
-        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path harbor_agent_function.run "
-        "--custom-rm-path generate.reward_func "
-        "--rollout-function-path generate.RolloutFn "
-        "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
-        "--tito-model glm47 "
-        "--use-session-server "
-        "--session-server-port 30000 "
-        "--session-server-workers 32 "
-    )
+    agent_args = agentic_train_args(tito_model="glm47", session_server_workers=32)
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
@@ -193,7 +178,7 @@ def execute(args: ScriptArgs):
     )
 
     extra_env_vars = {
-        "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{HARBOR_DOCKER_EXAMPLE_DIR}:{U.repo_base_dir}",
+        "PYTHONPATH": ":".join([args.megatron_path, *agentic_pythonpath_dirs(), U.repo_base_dir]),
         **harbor_env_vars(args),
     }
     if args.miles_host_ip:
