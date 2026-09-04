@@ -150,7 +150,9 @@ def execute():
     )
     sglang_args = "--rollout-num-gpus-per-engine 2 --sglang-decode-log-interval 1000 "
     perf_args = "--use-dynamic-batch-size --max-tokens-per-gpu 32768 "
-    ci_args = "--ci-test --ci-disable-kl-checker "
+    # tito strict check off: qwen3's template re-renders history with an empty
+    # think skeleton (known false positive; engine-recorded tokens train losslessly)
+    ci_args = "--ci-test --ci-disable-kl-checker --ci-disable-tito-strict-checker "
     misc_args = f"--actor-num-nodes 1 --actor-num-gpus-per-node {NUM_GPUS} --colocate --train-backend fsdp "
 
     train_args = (
