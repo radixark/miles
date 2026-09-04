@@ -404,10 +404,13 @@ def _build_train_args(args: ScriptArgs) -> str:
 
 def _extra_env_vars(args: ScriptArgs) -> dict[str, str]:
     chess_package = Path(args.radix_raft_dir) / "experiments" / "shi" / "chess_eval"
-    return {
+    env_vars = {
         "AGENT_MODEL_NAME": "model",
         "PYTHONPATH": f"{_SCRIPT_DIR}:{chess_package}:{U.repo_base_dir}",
     }
+    if ld_library_path := os.environ.get("LD_LIBRARY_PATH"):
+        env_vars["LD_LIBRARY_PATH"] = ld_library_path
+    return env_vars
 
 
 def _prepare(args: ScriptArgs) -> None:
