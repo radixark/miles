@@ -276,7 +276,7 @@ def test_loss_dispatcher_uses_args_without_extra_policy_kwargs(monkeypatch, skip
     batch = make_batch(inputs, "policy_loss")
     logits = deep_clone(inputs["policy_logits"])
     policy_loss = Mock(return_value=(logits.sum(), {"loss": logits.new_zeros(())}))
-    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: policy_loss)
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args, _loss_fn=None: policy_loss)
 
     loss_module.loss_function(
         args,
@@ -296,7 +296,7 @@ def test_loss_dispatcher_does_not_apply_actor_skip_to_value_loss(monkeypatch):
     batch = make_batch(inputs, "value_loss")
     logits = deep_clone(inputs["value_logits"])
     value_loss = Mock(return_value=(logits.sum(), {"loss": logits.new_zeros(())}))
-    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args: value_loss)
+    monkeypatch.setattr(loss_module, "get_loss_function", lambda _args, _loss_fn=None: value_loss)
 
     loss_module.loss_function(args, batch, 1, logits)
 

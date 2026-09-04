@@ -104,6 +104,8 @@ _DEFAULT_FT_API_SERVER_PORT = 18080
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
+        parser.set_defaults(entry="train")
+
         def add_run_uuid_arguments(parser):
             parser.add_argument(
                 "--run-uuid",
@@ -1127,10 +1129,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             parser.add_argument(
                 "--rollout-batch-size",
                 type=int,
-                required=True,
+                default=None,
                 help=(
                     "The number of prompts in each rollout step. "
                     "The total data returned should be rollout_batch_size * n_samples_per_prompt. "
+                    "Required for the train entry. "
                 ),
             )
             parser.add_argument(
@@ -1836,82 +1839,28 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "PR #21466's experts_shared_outer_loras=True serving contract.",
             )
             parser.add_argument(
+                "--tinker-server-port",
+                type=int,
+                default=10613,
+                help="Port for the Tinker gateway HTTP server (default: 10613)",
+            )
+            parser.add_argument(
+                "--tinker-base-model",
+                type=str,
+                default=None,
+                help="Model name the gateway advertises and validates against (default: --hf-checkpoint)",
+            )
+            parser.add_argument(
+                "--tinker-checkpoint-root",
+                type=str,
+                default=None,
+                help="Directory for tinker:// checkpoints (default: <save>/tinker)",
+            )
+            parser.add_argument(
                 "--multi-lora-n-adapters",
                 type=int,
                 default=0,
                 help="Maximum number of concurrent adapter slots for multi-LoRA. Set to 0 to disable multi-LoRA (default: 0)",
-            )
-            parser.add_argument(
-                "--multi-lora-adapter",
-                nargs=2,
-                action="append",
-                type=str,
-                dest="multi_lora_adapters",
-                default=[],
-            )
-            parser.add_argument(
-                "--multi-lora-idle-poll-s",
-                type=float,
-                default=5.0,
-                help="When no adapter is RUNNING, the trainer polls for new registrations every this many seconds (default: 5.0)",
-            )
-            parser.add_argument(
-                "--multi-lora-http-server-path",
-                type=str,
-                default=None,
-                help=(
-                    "Dotted path to a MultiLoRAHTTPServer subclass to use for the multi-LoRA "
-                    "controller's HTTP server (default: MultiLoRAHTTPServer)"
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-backend-path",
-                type=str,
-                default=None,
-                help=(
-                    "Dotted path to a MultiLoRABackend subclass for the multi-LoRA controller, "
-                    "e.g. to add custom adapter validation via validate_adapter (default: MultiLoRABackend)"
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-api-port",
-                type=int,
-                default=8068,
-                help="Port for the multi-LoRA controller's control-plane API, served from the head node (default: 8068)",
-            )
-            parser.add_argument(
-                "--multi-lora-disable-service-mode",
-                action="store_false",
-                dest="multi_lora_service_mode",
-                help="Disable service mode. By default, the trainer waits indefinitely for new adapters. With this flag, it exits after all adapters have been processed.",
-            )
-            parser.add_argument(
-                "--multi-lora-max-adapter-global-batch-size",
-                type=int,
-                default=None,
-                help=(
-                    "Registration-time upper bound on an adapter's samples per optimizer "
-                    "step (rollout_batch_size x n_samples_per_prompt). Defaults to 4x "
-                    "--global-batch-size."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-coalesce-wait-s",
-                type=float,
-                default=0.5,
-                help=(
-                    "Maximum time ready groups wait for the batch to fill toward "
-                    "--global-batch-size before training starts on what is ready (default: 0.5)."
-                ),
-            )
-            parser.add_argument(
-                "--multi-lora-max-empty-wait-s",
-                type=float,
-                default=30.0,
-                help=(
-                    "How long a generate call waits for the first poppable group before "
-                    "failing with an empty-batch timeout (default: 30)."
-                ),
             )
             return parser
 
@@ -2722,7 +2671,8 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
     return add_miles_arguments
 
 
-def parse_args(add_custom_arguments=None):
+def parse_args(add_custom_arguments=None, entry="train"):
+    assert entry in ("train", "serve"), f"unknown entry {entry!r}"
     # Users may call `parse_args` very early, thus we ensure logger is configured here
     configure_logger_raw("main")
 
@@ -2766,6 +2716,7 @@ def parse_args(add_custom_arguments=None):
     # locates the per-test record). No CLI flag: non-CI runs always stay False.
     args.ci_enable_metrics_capture = bool(os.environ.get(RECORD_DIR_ENV))
 
+    args.entry = entry
     miles_validate_args(args)
 
     if backend == "megatron":
@@ -2871,7 +2822,7 @@ def _validate_rematerialize_param_from_master_weight(args):
     assert (
         args.train_backend == "megatron"
     ), "--rematerialize-param-from-master-weight reads Megatron's distributed-optimizer main params"
-    from miles.backends.megatron_utils.lora_utils import is_lora_enabled
+    from miles.backends.megatron_utils.lora.utils import is_lora_enabled
 
     assert not is_lora_enabled(args), "--rematerialize-param-from-master-weight does not support LoRA"
     assert not args.debug_disable_optimizer, "--debug-disable-optimizer leaves no main params to rematerialize from"
@@ -3548,27 +3499,30 @@ def miles_validate_args(args):
         args.grpo_std_normalization = False
         logger.info("n_samples_per_prompt is set to 1, grpo_std_normalization will be set to False.")
 
-    if args.over_sampling_batch_size is None:
-        args.over_sampling_batch_size = args.rollout_batch_size
+    if args.entry == "train":
+        assert args.rollout_batch_size is not None, "please set --rollout-batch-size"
 
-    assert args.over_sampling_batch_size >= args.rollout_batch_size, (
-        f"over_sampling_batch_size {args.over_sampling_batch_size} should be greater than or equal to "
-        f"rollout_batch_size {args.rollout_batch_size}"
-    )
+        if args.over_sampling_batch_size is None:
+            args.over_sampling_batch_size = args.rollout_batch_size
 
-    if args.num_epoch is not None:
-        if args.num_rollout is not None:
-            logger.info("Both num_epoch and num_rollout are set, num_epoch will be ignored.")
-        else:
-            assert args.rollout_global_dataset, (
-                "num_epoch is set, but rollout_global_dataset is not set, "
-                "please remove --disable-rollout-global-dataset to use num_epoch"
-            )
-    else:
-        # if num_epoch is not set, we should set num_rollout
-        assert args.num_rollout is not None, (
-            "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
+        assert args.over_sampling_batch_size >= args.rollout_batch_size, (
+            f"over_sampling_batch_size {args.over_sampling_batch_size} should be greater than or equal to "
+            f"rollout_batch_size {args.rollout_batch_size}"
         )
+
+        if args.num_epoch is not None:
+            if args.num_rollout is not None:
+                logger.info("Both num_epoch and num_rollout are set, num_epoch will be ignored.")
+            else:
+                assert args.rollout_global_dataset, (
+                    "num_epoch is set, but rollout_global_dataset is not set, "
+                    "please remove --disable-rollout-global-dataset to use num_epoch"
+                )
+        else:
+            # if num_epoch is not set, we should set num_rollout
+            assert args.num_rollout is not None, (
+                "num_epoch is not set, but num_rollout is not set, " "please set --num-rollout or --num-epoch"
+            )
 
     if args.enable_mtp_training:
         assert args.mtp_num_layers, "mtp_num_layers must be set when enable_mtp_training is set"

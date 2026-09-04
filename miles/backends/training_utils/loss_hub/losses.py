@@ -505,7 +505,11 @@ def sft_loss_function(
     )
 
 
-def get_loss_function(args: Namespace) -> LossFunction:
+def get_loss_function(args: Namespace, loss_fn: str | None = None) -> LossFunction:
+    if loss_fn is not None:
+        from miles.backends.training_utils.loss_hub.tinker_losses import TINKER_LOSS_FUNCTIONS
+
+        return TINKER_LOSS_FUNCTIONS[loss_fn]
     match args.loss_type:
         case "policy_loss":
             return policy_loss_function

@@ -1,4 +1,4 @@
-"""Tests for the bridge value-model hook in bridge_lora_helpers.
+"""Tests for the bridge value-model hook in lora/bridge.py.
 
 ``_make_value_model_hook`` swaps a bridge-built model's language-model head for
 a scalar value head. Its body had no coverage, which let a constructor mismatch
@@ -74,7 +74,7 @@ def helpers_module():
         stub("megatron.core.utils", {"get_attr_wrapped_model": lambda *a, **k: None})
         install("megatron.core.parallel_state", parallel_state)
 
-        from miles.backends.megatron_utils import bridge_lora_helpers
+        from miles.backends.megatron_utils.lora import bridge as bridge_lora_helpers
 
         # The hook imports LinearForLastLayer lazily from the sibling module, so
         # swapping the module in sys.modules is enough to intercept it.
