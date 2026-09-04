@@ -412,6 +412,62 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _run_nominal_dp_shards(
+    args: Namespace,
+    data_iterator: Sequence[DataIterator],
+    model: Sequence[DDP],
+    forward_step: Callable[..., object],
+    forward_backward_func: Callable[..., list[dict[str, torch.Tensor | list[str]]]],
+) -> list[dict[str, torch.Tensor | list[str]]]:
+    nominal_dp_size: int = args.ci_inject_rollout_data_group_by_dp_size
+    buckets = [
+        bucket
+        for model_chunk in model
+        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups
+        for bucket in bucket_group.buckets
+    ]
+    original_scaling_factors = [bucket.gradient_scaling_factor for bucket in buckets]
+    accumulated_grads: list[torch.Tensor] | None = None
+    losses_reduced: list[dict[str, torch.Tensor | list[str]]] = []
+
+    for bucket in buckets:
+        bucket.gradient_scaling_factor /= nominal_dp_size
+
+    try:
+        for shard_id in range(nominal_dp_size):
+            if shard_id > 0:
+                for model_chunk in model:
+                    model_chunk.zero_grad_buffer()
+
+            losses_reduced += forward_backward_func(
+                forward_step_func=forward_step,
+                data_iterator=data_iterator,
+                model=model,
+                num_microbatches=1,
+                seq_length=args.seq_length,
+                micro_batch_size=args.micro_batch_size,
+                decoder_seq_length=args.decoder_seq_length,
+                forward_only=False,
+                force_all_reduce=True,
+            )
+
+            if shard_id == 0:
+                accumulated_grads = [bucket.grad_data.clone() for bucket in buckets]
+            elif shard_id < nominal_dp_size - 1:
+                assert accumulated_grads is not None
+                for accumulated, bucket in zip(accumulated_grads, buckets, strict=True):
+                    accumulated.add_(bucket.grad_data)
+
+        assert accumulated_grads is not None
+        for accumulated, bucket in zip(accumulated_grads, buckets, strict=True):
+            bucket.grad_data.add_(accumulated)
+    finally:
+        for bucket, scaling_factor in zip(buckets, original_scaling_factors, strict=True):
+            bucket.gradient_scaling_factor = scaling_factor
+
+    return losses_reduced
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -565,16 +621,29 @@ def train_one_step(
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    losses_reduced = forward_backward_func(
-        forward_step_func=forward_step,
-        data_iterator=data_iterator,
-        model=model,
-        num_microbatches=num_microbatches,
-        seq_length=args.seq_length,
-        micro_batch_size=args.micro_batch_size,
-        decoder_seq_length=args.decoder_seq_length,
-        forward_only=False,
+    use_nominal_dp_shards = (
+        rollout_id == args.ci_inject_rollout_data_group_by_dp_rollout_id and parallel_state.indep_dp.size == 1
     )
+    if use_nominal_dp_shards:
+        assert num_microbatches == args.ci_inject_rollout_data_group_by_dp_size
+        losses_reduced = _run_nominal_dp_shards(
+            args=args,
+            data_iterator=data_iterator,
+            model=model,
+            forward_step=forward_step,
+            forward_backward_func=forward_backward_func,
+        )
+    else:
+        losses_reduced = forward_backward_func(
+            forward_step_func=forward_step,
+            data_iterator=data_iterator,
+            model=model,
+            num_microbatches=num_microbatches,
+            seq_length=args.seq_length,
+            micro_batch_size=args.micro_batch_size,
+            decoder_seq_length=args.decoder_seq_length,
+            forward_only=False,
+        )
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0
