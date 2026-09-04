@@ -379,10 +379,10 @@ class SGLangApiClient:
         sessions) and apply the streamed LoRA stash."""
         return await self._make_request("end_weight_update", {"expected_lora_checksums": expected_lora_checksums})
 
-    async def update_weight_version(self, weight_version: str):
+    async def update_weight_version(self, weight_version: str, abort_all_requests: bool = False):
         return await self._make_request(
             "update_weight_version",
-            {"new_version": weight_version, "abort_all_requests": False},
+            {"new_version": weight_version, "abort_all_requests": abort_all_requests},
         )
 
     async def start_profile(

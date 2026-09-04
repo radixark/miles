@@ -115,24 +115,24 @@ class SimpleHealthChecker(BaseHealthChecker):
     async def start(self) -> None:
         if self._task is not None:
             return
-        log_structured(logger.info, op="health", phase="start", name=self._name)
+        log_structured(logger.info, tag="ft", op="health", phase="start", name=self._name)
         self._task = asyncio.create_task(self._loop())
         await asyncio.sleep(0)
 
     def stop(self) -> None:
         if self._task is not None:
-            log_structured(logger.info, op="health", phase="stop", name=self._name)
+            log_structured(logger.info, tag="ft", op="health", phase="stop", name=self._name)
             self._task.cancel()
             self._task = None
         self._status = TriState.UNKNOWN
 
     def pause(self) -> None:
-        log_structured(logger.info, op="health", phase="pause", name=self._name)
+        log_structured(logger.info, tag="ft", op="health", phase="pause", name=self._name)
         self._paused = True
         self._status = TriState.UNKNOWN
 
     def resume(self) -> None:
-        log_structured(logger.info, op="health", phase="resume", name=self._name)
+        log_structured(logger.info, tag="ft", op="health", phase="resume", name=self._name)
         self._paused = False
         self._need_first_wait = True
         self._status = TriState.UNKNOWN
@@ -143,7 +143,12 @@ class SimpleHealthChecker(BaseHealthChecker):
             if self._need_first_wait:
                 self._need_first_wait = False
                 log_structured(
-                    logger.info, op="health", phase="first_wait", name=self._name, wait_s=self._config.first_wait
+                    logger.info,
+                    tag="ft",
+                    op="health",
+                    phase="first_wait",
+                    name=self._name,
+                    wait_s=self._config.first_wait,
                 )
                 await self._clock.sleep(self._config.first_wait)
 
@@ -153,7 +158,9 @@ class SimpleHealthChecker(BaseHealthChecker):
                     await asyncio.wait_for(self._check_fn(), timeout=self._config.timeout)
                     success = True
                 except Exception:
-                    log_structured(logger.error, op="health", phase="check_failed", name=self._name, exc_info=True)
+                    log_structured(
+                        logger.error, tag="ft", op="health", phase="check_failed", name=self._name, exc_info=True
+                    )
 
                 prev_status = self._status
                 if success:
@@ -166,6 +173,7 @@ class SimpleHealthChecker(BaseHealthChecker):
 
                 log_structured(
                     logger.info,
+                    tag="ft",
                     op="health",
                     phase="poll",
                     name=self._name,
@@ -177,6 +185,7 @@ class SimpleHealthChecker(BaseHealthChecker):
                 if prev_status != self._status:
                     log_structured(
                         logger.info,
+                        tag="ft",
                         op="health",
                         phase="status_change",
                         name=self._name,
@@ -190,7 +199,12 @@ class SimpleHealthChecker(BaseHealthChecker):
                         self._on_result(success)
                     except Exception:
                         log_structured(
-                            logger.error, op="health", phase="on_result_failed", name=self._name, exc_info=True
+                            logger.error,
+                            tag="ft",
+                            op="health",
+                            phase="on_result_failed",
+                            name=self._name,
+                            exc_info=True,
                         )
 
             await self._clock.sleep(self._config.interval)

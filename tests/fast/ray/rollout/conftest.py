@@ -64,6 +64,7 @@ def make_args(**overrides: Any) -> Namespace:
         # placement / colocation
         debug_train_only=False,
         debug_rollout_only=False,
+        debug_skip_weight_update=False,
         colocate=False,
         actor_num_nodes=1,
         actor_num_gpus_per_node=8,
@@ -260,63 +261,31 @@ def dedent(s: str) -> str:
     return textwrap.dedent(s).lstrip("\n")
 
 
-def chunk_engines_into_cells(
-    engines,
+def make_dataclass_cells(
     *,
-    num_gpus_per_engine: int,
-    num_gpus_per_node: int,
-    args=None,
-    worker_type: str = "regular",
-    rank_offset: int = 0,
-    gpu_offset: int = 0,
-    **cell_config,
-):
-    """Group a flat engine list the way production lays cells out."""
-    from miles.ray.rollout.server_cell import ServerCell
-
-    nodes_per_engine = max(1, num_gpus_per_engine // num_gpus_per_node)
-    assert len(engines) % nodes_per_engine == 0, f"{len(engines)=} must be a multiple of {nodes_per_engine=}"
-    num_gpu_per_engine_local = min(num_gpus_per_engine, num_gpus_per_node)
-    return [
-        ServerCell(
-            args=args if args is not None else make_args(num_gpus_per_node=num_gpus_per_node),
-            worker_type=worker_type,
-            engines=engines[i : i + nodes_per_engine],
-            num_gpus_per_engine=num_gpus_per_engine,
-            rank_offset=rank_offset + i,
-            gpu_offset=gpu_offset + i * num_gpu_per_engine_local,
-            **cell_config,
-        )
-        for i in range(0, len(engines), nodes_per_engine)
-    ]
-
-
-def make_dataclass_group(
-    *,
-    num_engines: int = 2,
+    num_cells: int = 2,
     num_gpus_per_engine: int = 1,
     gpu_offset: int = 0,
 ):
-    """Build a ``ServerGroup`` whose cells have ``pg=None`` (no actor
-    scheduling). Each engine starts unallocated."""
-    from miles.ray.rollout.server_engine import ServerEngine
-    from miles.ray.rollout.server_group import ServerGroup
+    """Build configured ``ServerCell``s with ``pg=None`` (no actor scheduling).
+    Each cell starts unallocated."""
+    from miles.ray.rollout.server_cell import ServerCell, compute_nodes_per_engine
 
     args = make_args(num_gpus_per_node=8)
-    engines = [ServerEngine() for _ in range(num_engines)]
-    return ServerGroup(
-        args=args,
-        cells=chunk_engines_into_cells(
-            engines,
-            num_gpus_per_engine=num_gpus_per_engine,
-            num_gpus_per_node=8,
+    nodes_per_engine = compute_nodes_per_engine(num_gpus_per_engine=num_gpus_per_engine, num_gpus_per_node=8)
+    return [
+        ServerCell(
             args=args,
-            gpu_offset=gpu_offset,
-        ),
-        num_gpus_per_engine=num_gpus_per_engine,
-        has_new_engines=False,
-        update_weights=True,
-    )
+            worker_type="regular",
+            cell_id=f"cell-{cell_index}",
+            num_nodes=nodes_per_engine,
+            pg=None,
+            num_gpus_per_engine=num_gpus_per_engine,
+            rank_offset=cell_index * nodes_per_engine,
+            gpu_offset=gpu_offset + cell_index * min(num_gpus_per_engine, 8),
+        )
+        for cell_index in range(num_cells)
+    ]
 
 
 def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
@@ -324,9 +293,10 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
 
     Mocks ``_get_current_node_ip_and_free_port.remote(start_port, consecutive)``
     with a deterministic ``max(seq, start_port)`` counter so allocator tests
-    can predict and assert on port assignment. It also passes
-    ``isinstance(x, ray.actor.ActorHandle)`` so it can be handed to
-    ``ServerEngine.mark_allocated_uninitialized`` (see ``fake_actor_handle``)."""
+    can predict and assert on port assignment. The argument-less form is the
+    node-ip probe, which the cell awaits, so it returns an awaitable just like a
+    real ``ObjectRef``. It also passes ``isinstance(x, ray.actor.ActorHandle)``
+    so it can be handed to ``mark_allocated_uninitialized``."""
     e = MagicMock()
     e._spec_class = ray.actor.ActorHandle
     e._port_cursor = port_seed
@@ -336,7 +306,10 @@ def fake_engine(host: str = "10.0.0.1", port_seed: int = 30000) -> MagicMock:
         e._port_cursor = port + consecutive
         return (host, port)
 
-    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw)
+    async def _probe():
+        return _alloc()
+
+    e._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: _alloc(**kw) if kw else _probe()
     return e
 
 

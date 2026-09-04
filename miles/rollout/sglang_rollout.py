@@ -20,10 +20,11 @@ from miles.utils import dumper_utils
 from miles.utils.async_utils import run
 from miles.utils.data import Dataset
 from miles.utils.eval_config import EvalDatasetConfig
+from miles.utils.function_registry import load_function
 from miles.utils.http_utils import get, post, router_worker_base_urls
 from miles.utils.lifecycle import TrajectoryLifecycle
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_rollout_enabled
-from miles.utils.misc import SingletonMeta, call_agent_abort_hook, load_function
+from miles.utils.misc import SingletonMeta, call_agent_abort_hook
 from miles.utils.multi_lora import make_rid, slot_lora_name
 from miles.utils.processing_utils import (
     call_processor,

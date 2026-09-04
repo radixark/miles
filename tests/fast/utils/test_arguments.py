@@ -19,7 +19,8 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
+from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
@@ -1126,3 +1127,58 @@ class TestValidateSkipActorForwardOnly:
                 use_dynamic_global_batch_size=True,
             )
         )
+
+
+class TestRunUuidResolution:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    def test_unset_run_uuid_is_generated(self):
+        """Every launch gets an identifier, so nothing has to cope with it being absent."""
+        args = self._parse([])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_two_launches_do_not_share_a_run_uuid(self):
+        """A colliding identifier would attribute one run's artifacts to another."""
+        first, second = self._parse([]), self._parse([])
+        miles_validate_args(first)
+        miles_validate_args(second)
+
+        assert first.run_uuid != second.run_uuid
+
+    def test_an_explicit_run_uuid_is_kept(self):
+        """Reproducing a run means being able to pin its identifier."""
+        pinned = ("ab12cd34ef5678ab" * 4)[:RUN_UUID_LENGTH]
+        args = self._parse(["--run-uuid", pinned])
+        miles_validate_args(args)
+
+        assert args.run_uuid == pinned
+
+    def test_a_run_uuid_from_the_custom_config_file_is_validated_too(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so it must not skip the check."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: my-experiment\n")
+        args = self._parse(["--custom-config-path", str(config)])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)
+
+    def test_a_run_uuid_blanked_by_the_custom_config_file_is_regenerated(self, tmp_path):
+        """A null in the config file must not leave the identifier unset for the whole run."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: null\n")
+        args = self._parse(["--custom-config-path", str(config)])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_a_malformed_explicit_run_uuid_fails_at_launch(self):
+        """Rejecting it here beats corrupting every string that embeds it hours into a run."""
+        args = self._parse(["--run-uuid", "my-experiment"])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)

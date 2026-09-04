@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-from tests.fast.ray.rollout.conftest import chunk_engines_into_cells, fake_actor_handle, fake_engine, make_args
+import ray
 
-import miles.ray.rollout.server_group as server_group_module
+from tests.fast.ray.rollout.conftest import fake_engine, make_args
+
+import miles.ray.rollout.server_cell as server_cell_module
 from miles.ray.rollout.addr_allocator import PortAllocator
-from miles.ray.rollout.server_engine import ServerEngine
-from miles.ray.rollout.server_group import ServerGroup
+from miles.ray.rollout.server_cell import ServerCell
 
 
 def _start_engines_and_collect_addressing(
@@ -17,53 +18,39 @@ def _start_engines_and_collect_addressing(
     port_allocator: PortAllocator,
     rollout_engines,
     worker_type: str = "regular",
-    num_gpus_per_engine: int | None = None,
-    rank_offset: int = 0,
 ) -> dict[int, dict]:
-    """Run ``ServerGroup.start_engines`` against the given actor mocks and return,
+    """Run ``ServerCell.start_engines`` against the given actor mocks and return,
     per global rank, the kwargs its ``init`` was called with."""
-    gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
-    nodes_per_engine = max(1, gpus_per_engine // args.num_gpus_per_node)
     requested = dict(rollout_engines)
-    slots = [ServerEngine() for _ in range(max(requested) - rank_offset + 1)]
-    group = ServerGroup(
+    cell = ServerCell(
         args=args,
-        cells=chunk_engines_into_cells(
-            slots,
-            num_gpus_per_engine=gpus_per_engine,
-            num_gpus_per_node=args.num_gpus_per_node,
-            args=args,
-            worker_type=worker_type,
-            rank_offset=rank_offset,
-        ),
-        num_gpus_per_engine=gpus_per_engine,
-        has_new_engines=False,
+        num_nodes=len(requested),
         worker_type=worker_type,
+        cell_id="cell-0",
+        rank_offset=min(requested),
     )
-    for index, slot in enumerate(slots):
-        if rank_offset + index not in requested:
-            slot.mark_allocated_uninitialized(fake_actor_handle())
     for engine in requested.values():
+        engine.__class__ = ray.actor.ActorHandle
         engine.init.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
-    started_cell_indices = sorted({(rank - rank_offset) // nodes_per_engine for rank in requested})
 
     def _launch(*, global_rank, **kwargs):
         return requested[global_rank]
 
-    with patch.object(server_group_module, "launch_sglang_ray_actor", side_effect=_launch):
-        asyncio.run(group.start_engines(port_allocator, start_cell_indices=started_cell_indices))
+    with patch.object(server_cell_module, "launch_sglang_ray_actor", side_effect=_launch):
+        asyncio.run(cell.start_engines(port_allocator))
 
     return {rank: dict(engine.init.remote.call_args.kwargs) for rank, engine in requested.items()}
 
 
 class TestPortAllocator:
-    def test_empty_has_no_values(self):
-        c = PortAllocator.empty()
+    def test_a_fresh_allocator_has_no_cursors(self):
+        """A brand new allocator starts with no per-node cursors."""
+        c = PortAllocator()
         assert c._values == {}
 
     def test_alloc_advances_the_cursor_of_its_node(self, patch_ray_get):
         """Two allocations on the same node must hand out non-overlapping ports."""
-        cursors = PortAllocator.empty()
+        cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         first = cursors.alloc(engine=engine, node_ip="10.0.0.1")
         second = cursors.alloc(engine=engine, node_ip="10.0.0.1")
@@ -72,20 +59,20 @@ class TestPortAllocator:
 
     def test_alloc_starts_from_the_base_port_on_an_unseen_node(self, patch_ray_get):
         """A node with no cursor yet starts at the base port, away from ray's range."""
-        cursors = PortAllocator.empty()
+        cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         assert cursors.alloc(engine=engine, node_ip="10.0.0.1") == 15000
 
     def test_alloc_consecutive_reserves_a_whole_block(self, patch_ray_get):
         """A consecutive=N allocation must move this node's cursor past the entire block."""
-        cursors = PortAllocator.empty()
+        cursors = PortAllocator()
         engine = fake_engine(host="10.0.0.1", port_seed=0)
         first = cursors.alloc(engine=engine, node_ip="10.0.0.1", consecutive=5)
         assert cursors._values["10.0.0.1"] == first + 5
 
     def test_alloc_tracks_nodes_independently(self, patch_ray_get):
         """Each node ip owns its own cursor."""
-        cursors = PortAllocator.empty()
+        cursors = PortAllocator()
         engine_a = fake_engine(host="10.0.0.1", port_seed=0)
         engine_b = fake_engine(host="10.0.0.2", port_seed=0)
         cursors.alloc(engine=engine_a, node_ip="10.0.0.1")
@@ -108,15 +95,25 @@ def _all_ports(addr_and_ports: dict) -> list[int]:
     return out
 
 
+def _alloc_single_engine_cells(args, cursors: PortAllocator, engines, worker_type: str = "regular") -> dict:
+    """One allocator call per single-engine cell, mirroring how cells allocate."""
+    addr_and_ports: dict[int, dict] = {}
+    for rank, engine in engines:
+        addr_and_ports.update(
+            _start_engines_and_collect_addressing(
+                args=args, port_allocator=cursors, rollout_engines=[(rank, engine)], worker_type=worker_type
+            )
+        )
+    return addr_and_ports
+
+
 class TestAddressingOfStartedEngines:
     def test_single_node_8_cards_tp1(self, patch_ray_get):
-        """Eight single-gpu engines on one node get complete, mutually distinct addressing."""
+        """Eight single-gpu cells on one node get complete, mutually distinct addressing."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(rank, fake_engine(host="10.0.0.1", port_seed=30000)) for rank in range(8)]
-        cursors = PortAllocator.empty()
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args, port_allocator=cursors, rollout_engines=engines, num_gpus_per_engine=1
-        )
+        cursors = PortAllocator()
+        addr_and_ports = _alloc_single_engine_cells(args, cursors, engines)
 
         assert set(addr_and_ports.keys()) == set(range(8))
         for rank in range(8):
@@ -128,7 +125,7 @@ class TestAddressingOfStartedEngines:
             host, _, port_str = addr_and_ports[rank]["dist_init_addr"].partition(":")
             assert host == "10.0.0.1"
             assert int(port_str) >= 30000
-            # No same-rank collisions among the port fields.
+            # No same-rank collisions among the four port fields.
             same_rank_ports = {
                 addr_and_ports[rank]["port"],
                 addr_and_ports[rank]["nccl_port"],
@@ -150,16 +147,12 @@ class TestAddressingOfStartedEngines:
         """A prefill engine's disaggregation bootstrap port is distinct from its other ports."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(rank, fake_engine()) for rank in range(2)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=engines,
-            worker_type="prefill",
-            num_gpus_per_engine=1,
-        )
+        addr_and_ports = _alloc_single_engine_cells(args, PortAllocator(), engines, worker_type="prefill")
+        for rank in range(2):
+            assert isinstance(addr_and_ports[rank]["disaggregation_bootstrap_port"], int)
+        # The disagg port must be distinct from the other ports on the same rank.
         for rank in range(2):
             entry = addr_and_ports[rank]
-            assert isinstance(entry["disaggregation_bootstrap_port"], int)
             assert entry["disaggregation_bootstrap_port"] not in (
                 entry["port"],
                 entry["nccl_port"],
@@ -170,37 +163,28 @@ class TestAddressingOfStartedEngines:
         """Only prefill engines carry a disaggregation bootstrap port; others must not reserve one."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(rank, fake_engine()) for rank in range(2)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args, port_allocator=PortAllocator.empty(), rollout_engines=engines, num_gpus_per_engine=1
-        )
+        addr_and_ports = _alloc_single_engine_cells(args, PortAllocator(), engines)
         for rank in range(2):
             assert "disaggregation_bootstrap_port" not in addr_and_ports[rank]
 
-    def test_gpus_per_engine_greater_than_node_shares_dist_init_addr(self, patch_ray_get):
-        """When `gpus_per_engine > num_gpus_per_node`, all ranks of one engine
-        share a single ``dist_init_addr`` (multi-node engine)."""
+    def test_multinode_cell_shares_a_dist_init_addr_on_the_primary_node(self, patch_ray_get):
+        """A 2-node cell (16 gpus, 8 per node) gets one dist_init_addr, allocated
+        on the primary (first) engine's node and shared by both node-ranks."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        # 2-node engine: 16 gpus total, 8 per node, 2 ranks share dist_init_addr
-        engines = [(rank, fake_engine(host="10.0.0.42")) for rank in range(2)]
+        engines = [(0, fake_engine(host="10.0.0.42")), (1, fake_engine(host="10.0.0.43"))]
         addr_and_ports = _start_engines_and_collect_addressing(
-            args=args, port_allocator=PortAllocator.empty(), rollout_engines=engines, num_gpus_per_engine=16
+            args=args, port_allocator=PortAllocator(), rollout_engines=engines
         )
         assert addr_and_ports[0]["dist_init_addr"] == addr_and_ports[1]["dist_init_addr"]
         host, _, port_str = addr_and_ports[0]["dist_init_addr"].partition(":")
         assert host == "10.0.0.42"
         assert int(port_str) > 0
 
-    def test_rank_offset_does_not_break_indexing(self, patch_ray_get):
-        """A group starting at rank 4 populates exactly ranks 4..7 with collision-free ports."""
+    def test_nonzero_ranks_key_the_result_by_global_rank(self, patch_ray_get):
+        """A batch starting at rank 4 populates exactly ranks 4..7 with collision-free ports."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(rank, fake_engine(host="10.0.0.7", port_seed=40000)) for rank in (4, 5, 6, 7)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=engines,
-            num_gpus_per_engine=1,
-            rank_offset=4,
-        )
+        addr_and_ports = _alloc_single_engine_cells(args, PortAllocator(), engines)
         # Exactly the requested ranks are populated; no leakage into 0..3.
         assert set(addr_and_ports.keys()) == {4, 5, 6, 7}
         for r in (4, 5, 6, 7):
@@ -217,7 +201,7 @@ class TestAddressingOfStartedEngines:
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(3, fake_engine())]
         addr_and_ports = _start_engines_and_collect_addressing(
-            args=args, port_allocator=PortAllocator.empty(), rollout_engines=engines, num_gpus_per_engine=1
+            args=args, port_allocator=PortAllocator(), rollout_engines=engines
         )
         assert set(addr_and_ports.keys()) == {3}
         for k in ("host", "port", "nccl_port", "engine_info_bootstrap_port", "dist_init_addr"):
@@ -227,123 +211,70 @@ class TestAddressingOfStartedEngines:
         """The node cursor is left beyond every port handed out, including reserved blocks."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
         engines = [(0, fake_engine(port_seed=22000))]
-        cursors = PortAllocator.empty()
+        cursors = PortAllocator()
         addr_and_ports = _start_engines_and_collect_addressing(
-            args=args, port_allocator=cursors, rollout_engines=engines, num_gpus_per_engine=1
+            args=args, port_allocator=cursors, rollout_engines=engines
         )
-        # Cursor must sit strictly past every port we handed out (the allocation
+        # Cursor must sit strictly past every port we handed out (the allocator
         # also reserves consecutive blocks for dist_init_addr that aren't all
         # visible in the output, so we can't pin to max_issued + 1).
         max_issued = max(_all_ports(addr_and_ports))
         assert cursors._values["10.0.0.1"] > max_issued
 
 
-class TestSharedPortAllocatorAcrossGroups:
-    """Two ``ServerGroup``s sharing one ``PortAllocator`` must produce disjoint
+class TestSharedPortAllocatorAcrossCells:
+    """Cell batches sharing one ``PortAllocator`` must produce disjoint
     port allocations across nodes — required for parallel recover."""
 
-    def test_sequential_groups_share_cursor_and_avoid_overlap(self, patch_ray_get):
-        """Groups started one after another off a shared allocator never reuse a port."""
+    def test_sequential_batches_share_cursor_and_avoid_overlap(self, patch_ray_get):
+        """Batches started one after another off a shared allocator never reuse a port."""
         args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        cursors = PortAllocator.empty()
+        cursors = PortAllocator()
 
         engines_a = [(rank, fake_engine(port_seed=0)) for rank in range(4)]
-        addrs_a = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=cursors,
-            rollout_engines=engines_a,
-            num_gpus_per_engine=1,
-        )
+        addrs_a = _alloc_single_engine_cells(args, cursors, engines_a)
 
         engines_b = [(rank, fake_engine(port_seed=0)) for rank in range(4, 8)]
-        addrs_b = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=cursors,
-            rollout_engines=engines_b,
-            num_gpus_per_engine=1,
-            rank_offset=4,
-        )
+        addrs_b = _alloc_single_engine_cells(args, cursors, engines_b)
 
         ports_a = {addrs_a[r]["port"] for r in addrs_a} | {addrs_a[r]["nccl_port"] for r in addrs_a}
         ports_b = {addrs_b[r]["port"] for r in addrs_b} | {addrs_b[r]["nccl_port"] for r in addrs_b}
         assert ports_a.isdisjoint(ports_b), f"port overlap A={ports_a} B={ports_b}"
 
 
-class TestRankPortConsistency:
-    """rank ↔ addr_and_ports consistency inside ``ServerGroup.start_engines``.
+class TestConcurrentNodeProbes:
+    async def test_a_cell_probes_all_of_its_nodes_concurrently(self, patch_ray_get):
+        """Serializing the node probes would make cell startup scale with the node count."""
+        events: list[tuple[str, int]] = []
+        num_nodes = 3
 
-    The init loop iterates ``new_engines`` as ``(global_rank, engine)`` pairs, so
-    the addressing must be keyed by global rank even when ``rank_offset != 0`` or
-    ``nodes_per_engine > 1``."""
+        def _instrumented(index: int):
+            engine = fake_engine(host=f"10.0.0.{index + 1}", port_seed=0)
+            engine.__class__ = ray.actor.ActorHandle
+            engine.init.remote.side_effect = lambda **kwargs: asyncio.sleep(0)
+            alloc = engine._get_current_node_ip_and_free_port.remote.side_effect
 
-    def test_rank_offset_kwargs_keyed_by_global_rank(self, patch_ray_get):
-        """When rank_offset=4, addr_and_ports must be keyed by ranks 4..7, not 0..3."""
-        args = make_args(num_gpus_per_node=4, sglang_dp_size=1)
-        engines = [(rank, fake_engine(port_seed=0)) for rank in range(4, 8)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=engines,
-            num_gpus_per_engine=1,
-            rank_offset=4,
+            async def _probe():
+                events.append(("enter", index))
+                await asyncio.sleep(0.05)
+                events.append(("exit", index))
+                return alloc(start_port=15000, consecutive=1)
+
+            engine._get_current_node_ip_and_free_port.remote.side_effect = lambda **kw: alloc(**kw) if kw else _probe()
+            return engine
+
+        actors = {rank: _instrumented(rank) for rank in range(num_nodes)}
+        cell = ServerCell(
+            args=make_args(num_gpus_per_node=8, sglang_dp_size=1),
+            num_nodes=num_nodes,
+            worker_type="regular",
+            cell_id="cell-0",
         )
-        assert set(addr_and_ports.keys()) == {4, 5, 6, 7}
+        with patch.object(
+            server_cell_module,
+            "launch_sglang_ray_actor",
+            side_effect=lambda *, global_rank, **kw: actors[global_rank],
+        ):
+            await cell.start_engines(PortAllocator())
 
-    def test_each_global_rank_has_complete_kwargs(self, patch_ray_get):
-        """Every started rank receives the full addressing kwarg set."""
-        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        engines = [(rank, fake_engine(port_seed=0)) for rank in range(4)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=engines,
-            num_gpus_per_engine=1,
-        )
-        for rank in range(4):
-            kw = addr_and_ports[rank]
-            for key in ("host", "port", "nccl_port", "dist_init_addr"):
-                assert key in kw, f"rank {rank} missing {key}"
-
-    def test_multinode_engine_shares_dist_init_addr_across_node_ranks(self, patch_ray_get):
-        """nodes_per_engine=2 (16 gpus, 8 per node) — both ranks of one
-        multi-node engine MUST get the same dist_init_addr."""
-        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        engines = [(0, fake_engine(port_seed=0)), (1, fake_engine(port_seed=0))]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=engines,
-            num_gpus_per_engine=16,
-        )
-        assert addr_and_ports[0]["dist_init_addr"] == addr_and_ports[1]["dist_init_addr"]
-
-    def test_init_kwargs_exist_for_every_started_rank(self, patch_ray_get):
-        """For every (rank, engine) pair the init loop walks, the addressing dict has an entry."""
-        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        new_engines = [(rank, fake_engine(port_seed=0)) for rank in range(2, 6)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=new_engines,
-            num_gpus_per_engine=1,
-            rank_offset=2,
-        )
-        for index, _engine in new_engines:
-            assert index in addr_and_ports, f"missing addr_and_ports for global_rank={index}"
-            for key in ("host", "port", "nccl_port", "dist_init_addr"):
-                assert key in addr_and_ports[index]
-
-    def test_ports_are_unique_within_a_node(self, patch_ray_get):
-        """No two engines on the same node share any of their allocated ports."""
-        args = make_args(num_gpus_per_node=8, sglang_dp_size=1)
-        engines = [(rank, fake_engine(port_seed=0)) for rank in range(8)]
-        addr_and_ports = _start_engines_and_collect_addressing(
-            args=args,
-            port_allocator=PortAllocator.empty(),
-            rollout_engines=engines,
-            num_gpus_per_engine=1,
-        )
-        all_ports = []
-        for kw in addr_and_ports.values():
-            all_ports.extend([kw["port"], kw["nccl_port"], kw["engine_info_bootstrap_port"]])
-        assert len(set(all_ports)) == len(all_ports), f"duplicate ports: {all_ports}"
+        assert [kind for kind, _ in events[:num_nodes]] == ["enter"] * num_nodes, events

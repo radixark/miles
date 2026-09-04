@@ -281,6 +281,25 @@ class TestChatCompletionsEndpoint:
             },
         }
 
+    def test_chat_completions_forwards_weight_version_spans_in_meta_info(self):
+        """Per-token weight version spans set on the process result reach the chat choice's meta_info verbatim."""
+        spans = [{"version": "v1", "start": 0, "end": 1}, {"version": "v2", "start": 1, "end": 3}]
+
+        def process_fn(_: str) -> ProcessResult:
+            return ProcessResult(text="one two three", meta_info=ProcessResultMetaInfo(weight_versions=spans))
+
+        with with_mock_server(process_fn=process_fn) as server:
+            response = requests.post(
+                f"{server.url}/v1/chat/completions",
+                json={"model": "test", "messages": [{"role": "user", "content": "count"}]},
+                timeout=5.0,
+            )
+            meta_info = response.json()["choices"][0]["meta_info"]
+
+        assert meta_info["weight_versions"] == spans
+        assert "weight_version" not in meta_info
+        assert meta_info["completion_tokens"] == len(meta_info["output_token_logprobs"])
+
     def test_with_tool_calls(self):
         tool_call_response = 'Let me check for you.\n<tool_call>\n{"name": "get_year", "arguments": {}}\n</tool_call>'
 

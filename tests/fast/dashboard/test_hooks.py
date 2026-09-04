@@ -6,7 +6,6 @@ import pytest
 from miles.dashboard import backend, hooks
 from miles.dashboard.hooks import BATCH_MAX_EVENTS, BATCH_MAX_SECONDS, _Identity
 from miles.dashboard.store import Role
-from miles.ray.rollout.server_cell import ServerCell
 from miles.utils.timer import Timer
 
 
@@ -144,28 +143,25 @@ class FakeEngineHandle:
         return self._info  # hooks._ray_get is patched to the identity function
 
 
-class FakeServerEngine:
-    def __init__(self, info, alive=True):
-        self.actor_handle = FakeEngineHandle(info)
-        self.is_allocated = alive
+class FakeCell:
+    """Duck-typed ServerCell: the hooks only read is_alive and actor_handles."""
+
+    def __init__(self, infos, alive=True):
+        self.actor_handles = [FakeEngineHandle(info) for info in infos]
         self.is_alive = alive
 
 
-class FakeGroup:
-    def __init__(self, engines, nodes_per_engine=1):
-        self.cells = [
-            ServerCell(args=None, worker_type="regular", engines=engines[i : i + nodes_per_engine])
-            for i in range(0, len(engines), nodes_per_engine)
-        ]
-        self.nodes_per_engine = nodes_per_engine
+def _cell(*infos, alive=True):
+    return [FakeCell(list(infos), alive=alive)]
 
 
 def _info(url, node, gpus):
     return dict(url=url, node_ip=node, gpu_ids=gpus, gpu_uuids=[None] * len(gpus), worker_type="regular", node_rank=0)
 
 
-def _servers(*groups):
-    server = type("FakeServer", (), {"server_groups": list(groups)})()
+def _servers(*cell_lists):
+    cells = [cell for cells in cell_lists for cell in cells]
+    server = type("FakeServer", (), {"server_cells": {f"cell-{i}": cell for i, cell in enumerate(cells)}})()
     return {"default": server}
 
 
@@ -173,10 +169,9 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
     # one multi-node engine (master + worker node) and one single-node engine
-    master = FakeServerEngine(_info("http://a:1", "node-a", [0, 1]))
-    worker = FakeServerEngine(_info("http://a-worker:1", "node-b", [0, 1]))
-    single = FakeServerEngine(_info("http://b:1", "node-a", [2, 3]))
-    servers = _servers(FakeGroup([master, worker], nodes_per_engine=2), FakeGroup([single]))
+    multinode_cell = _cell(_info("http://a:1", "node-a", [0, 1]), _info("http://a-worker:1", "node-b", [0, 1]))
+    single_cell = _cell(_info("http://b:1", "node-a", [2, 3]))
+    servers = _servers(multinode_cell, single_cell)
 
     hooks.register_engines(servers)
     [(args, _)] = handle.update_topology.calls
@@ -188,7 +183,7 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     hooks.register_engines(servers)  # steady state: no remote traffic
     assert len(handle.update_topology.calls) == 1
 
-    single.actor_handle = FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))  # recovery: new actor
+    single_cell[0].actor_handles = [FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))]  # recovery: new actor
     hooks.register_engines(servers)
     assert len(handle.update_topology.calls) == 2
     assert handle.update_topology.calls[-1][0][0].engines[1].addr == "http://b:2"
@@ -197,16 +192,16 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
 def test_register_engines_skips_dead_chunks(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
-    alive = FakeServerEngine(_info("http://a:1", "n", [0]))
-    dead = FakeServerEngine(_info("http://b:1", "n", [1]), alive=False)
-    hooks.register_engines(_servers(FakeGroup([alive]), FakeGroup([dead])))
+    hooks.register_engines(
+        _servers(_cell(_info("http://a:1", "n", [0])), _cell(_info("http://b:1", "n", [1]), alive=False))
+    )
 
     [(args, _)] = handle.update_topology.calls
     assert [e.addr for e in args[0].engines] == ["http://a:1"]
 
 
 def test_register_engines_without_collector_is_noop():
-    hooks.register_engines(_servers(FakeGroup([FakeServerEngine(_info("http://a:1", "n", [0]))])))
+    hooks.register_engines(_servers(_cell(_info("http://a:1", "n", [0]))))
     assert hooks._engines_fingerprint is None
 
 

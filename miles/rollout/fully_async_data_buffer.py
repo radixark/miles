@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)

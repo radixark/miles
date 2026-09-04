@@ -6,13 +6,10 @@ from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
-from miles.ray.rollout.addr_allocator import PortAllocator
 from miles.ray.rollout.eval_fleet import EvalFleet
-from miles.ray.rollout.rollout_server import RolloutServer, start_rollout_servers
+from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
 from miles.ray.rollout.router_manager import start_session_server
-from miles.ray.rollout.server_cell import get_cell_indexer_of_id_map
 from miles.ray.utils import Lock
-
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +18,18 @@ class InferenceController:
     def __init__(self, args, pg):
         self.pg = pg
         self.args = args
-
-        if self.args.debug_train_only:
-            self.servers: dict[str, RolloutServer] = {}
-        else:
-            self.servers = start_rollout_servers(args, pg)
-            dashboard_hooks.register_router(args)
-            start_session_server(args)
+        self.servers: dict[str, RolloutServer] = {}
         self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
         self.rollout_id = -1
         self.eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
+
+    async def init(self) -> None:
+        if self.args.debug_train_only:
+            return
+
+        self.servers = await start_rollout_servers(self.args, self.pg)
+        dashboard_hooks.register_router(self.args)
+        start_session_server(self.args)
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
@@ -94,7 +93,7 @@ class InferenceController:
 
         await srv.wait_all_engines_alive()
         return EnginesAndLock(
-            rollout_engines=[e.api_client for e in srv.engines],
+            rollout_engines=srv.api_clients,
             rollout_engine_lock=self.rollout_engine_lock,
             has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
@@ -135,16 +134,19 @@ class InferenceController:
 
     # -------------------------- external start/stop -----------------------------
 
-    async def start_cell(self, cell_id: int):
-        port_allocator = PortAllocator.empty()
-        idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        await group.recover(port_allocator=port_allocator, filter_cell_indices=[idx.cell_index])
+    async def start_cell(self, cell_id: str):
+        await self._server_of(cell_id).recover(cell_ids=[cell_id])
 
-    async def stop_cell(self, cell_id: int):
-        idx = get_cell_indexer_of_id_map(self.servers)[cell_id]
-        group = self.servers[idx.srv_key].server_groups[idx.group_index]
-        group.stop_engines(cell_indices=[idx.cell_index])
+    async def stop_cell(self, cell_id: str):
+        await self._server_of(cell_id).stop_cells([cell_id])
+
+    def list_cell_ids(self) -> list[str]:
+        return list_cell_ids(self.servers)
+
+    def _server_of(self, cell_id: str) -> RolloutServer:
+        owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]
+        assert len(owners) == 1, f"{cell_id=} must name exactly one cell, but {len(owners)} servers hold it"
+        return owners[0]
 
     # -------------------------- misc APIs -----------------------------
 

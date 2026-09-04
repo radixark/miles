@@ -1015,8 +1015,8 @@ class TestLogStepEndEvent:
 
 
 def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
-    """Build a nested groups->engines check_weights('checksum') response."""
-    engines = [
+    """Build a flat per-engine check_weights('checksum') response."""
+    return [
         {
             "success": True,
             "message": "ok",
@@ -1024,7 +1024,6 @@ def _checksum_response(engine_checksums: list[dict[str, str]]) -> list:
         }
         for cs in engine_checksums
     ]
-    return [engines]
 
 
 class TestMaybeLogInferenceEngineWeightChecksums:

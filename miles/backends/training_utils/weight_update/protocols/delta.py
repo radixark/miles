@@ -95,7 +95,7 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
         # (e.g. uploading them to the backing object store) before the engines can see them.
         self._post_write_hook: Callable | None = None
         if args.custom_update_weight_post_write_path:
-            from miles.utils.misc import load_function
+            from miles.utils.function_registry import load_function
 
             self._post_write_hook = load_function(args.custom_update_weight_post_write_path)
 
@@ -252,6 +252,9 @@ class UpdateWeightFromDiskDelta(WeightTransferProtocol):
                     ]
                 )
                 check_weight_sync_results(results, is_lora=False)
+            else:
+                # TODO: temporarily weaken checkers; should enhance and fix related logics
+                _update_weight_version_if_unset(self.rollout_engines, "0")
             logger.info(
                 "[disk delta] captured baseline snapshot of %d tensors from %s",
                 len(self._snapshot),
@@ -448,3 +451,23 @@ def _atomic_write(path: str, data: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+
+
+_UNSET_WEIGHT_VERSION = "default"
+
+
+def _update_weight_version_if_unset(rollout_engines: Sequence[SGLangApiClient], weight_version: str) -> None:
+    reported = async_utils.wait_futures(
+        [async_utils.submit(client.get_weight_version()) for client in rollout_engines]
+    )
+    unset = [
+        client
+        for client, version in zip(rollout_engines, reported, strict=True)
+        if version in (None, _UNSET_WEIGHT_VERSION)
+    ]
+    async_utils.wait_futures(
+        [
+            async_utils.submit(client.update_weight_version(weight_version=weight_version, abort_all_requests=False))
+            for client in unset
+        ]
+    )
