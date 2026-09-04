@@ -28,8 +28,8 @@ coupling:
 Like ``megatron_utils`` with megatron.core, this module imports torchtitan at
 module scope: it is only ever imported by the torchtitan backend, where
 torchtitan is a hard dependency. The version bridges between released torch
-and the nightly APIs torchtitan tracks live in ``compat`` and install at
-import time, before any torchtitan object is built.
+and the nightly APIs torchtitan tracks live in ``compat``; the package's
+``__init__`` installs them before any of its modules import torchtitan.
 """
 
 import importlib
@@ -43,26 +43,20 @@ from dataclasses import dataclass
 
 import torch
 import torch.distributed as dist
+from torch.distributed._functional_collectives import all_gather_single_autograd
+from torchtitan.components import checkpoint as titan_checkpoint
+from torchtitan.components.dataloader import BaseDataLoader
+from torchtitan.components.loss import BaseLoss
+from torchtitan.components.optimizer import ParamGroupConfig
+from torchtitan.distributed import utils as titan_dist_utils
+from torchtitan.distributed.activation_checkpoint import FullAC
+from torchtitan.distributed.context_parallel import cp_shard
+from torchtitan.trainer import Trainer
 
-from miles.backends.torchtitan_utils import compat
-
-compat.install()
-
-from torch.distributed._functional_collectives import all_gather_single_autograd  # noqa: E402
-
-from torchtitan.components import checkpoint as titan_checkpoint  # noqa: E402
-from torchtitan.components.dataloader import BaseDataLoader  # noqa: E402
-from torchtitan.components.loss import BaseLoss  # noqa: E402
-from torchtitan.components.optimizer import ParamGroupConfig  # noqa: E402
-from torchtitan.distributed import utils as titan_dist_utils  # noqa: E402
-from torchtitan.distributed.activation_checkpoint import FullAC  # noqa: E402
-from torchtitan.distributed.context_parallel import cp_shard  # noqa: E402
-from torchtitan.trainer import Trainer  # noqa: E402
-
-from miles.backends.fsdp_utils.dtensor import gather_full_param  # noqa: E402
-from miles.backends.torchtitan_utils import routing_replay  # noqa: E402
-from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config  # noqa: E402
-from miles.backends.training_utils.torch_native_loop import StepMetrics  # noqa: E402
+from miles.backends.fsdp_utils.dtensor import gather_full_param
+from miles.backends.torchtitan_utils import routing_replay
+from miles.backends.torchtitan_utils.parallel import parallel_dims_from_config
+from miles.backends.training_utils.torch_native_loop import StepMetrics
 
 logger = logging.getLogger(__name__)
 

@@ -37,9 +37,6 @@ _MESH_TO_FIELD = {
 
 def parallel_dims_from_config(parallelism_config):
     """torchtitan's own dims construction, exactly as Trainer.init_distributed does it."""
-    from miles.backends.torchtitan_utils import compat
-
-    compat.install()
     from torchtitan.distributed import ParallelDims
 
     return ParallelDims.from_config(parallelism_config, dist.get_world_size())
