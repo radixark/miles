@@ -121,12 +121,26 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
 @pytest.mark.parametrize(
     "missing_module",
     [
+        "sglang.srt.entrypoints.anthropic",
         "sglang.srt.entrypoints.anthropic.utils",
         "sglang.srt.entrypoints.anthropic.serving",
+        "sglang.srt.entrypoints.anthropic.protocol",
     ],
 )
 def test_sessions_module_imports_without_optional_sglang_anthropic_helpers(missing_module: str) -> None:
-    script = f"import sys\nsys.modules[{missing_module!r}] = None\nfrom miles.rollout.session import sessions\nassert sessions.anthropic_utils is None\nassert sessions.convert_response is None\nassert sessions.convert_to_chat_completion_request is None\n"
+    script = (
+        "import sys\n"
+        f"missing = {missing_module!r}\n"
+        "sys.modules[missing] = None\n"
+        "from miles.rollout.session import anthropic_adapter, sessions\n"
+        "if missing.endswith(('.utils', 'anthropic')):\n"
+        "    assert sessions.anthropic_utils is None\n"
+        "if missing.endswith(('.serving', 'anthropic')):\n"
+        "    assert sessions.convert_response is None\n"
+        "    assert sessions.convert_to_chat_completion_request is None\n"
+        "if missing.endswith(('.protocol', 'anthropic')):\n"
+        "    assert anthropic_adapter.anthropic_adapter_available() is False\n"
+    )
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=False)
 
     assert result.returncode == 0, result.stderr
@@ -139,7 +153,13 @@ class TestAnthropicRoute:
             resp = _post_messages(anthropic_env.url, session_id, _payload([{"role": "user", "content": "hello"}]))
 
         assert resp.status_code == 501
-        assert resp.json() == {"error": "The installed SGLang does not support the Anthropic Messages adapter"}
+        assert resp.json() == {
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": "The installed SGLang does not support the Anthropic Messages adapter",
+            },
+        }
         assert _records(anthropic_env.url, session_id) == []
 
     def test_health_reports_live_intermediate_system_capability(self, anthropic_env):
