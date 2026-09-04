@@ -13,6 +13,7 @@ from miles.backends.megatron_utils.lora.optimizer import (
 from miles.backends.megatron_utils.model import run_forward_backward_pass, setup_train_iteration_config
 from miles.backends.training_utils.data import get_data_iterator
 from miles.backends.training_utils.log_utils import aggregate_train_losses
+from miles.backends.training_utils.loss_hub.tinker_losses import drain_per_datum_outputs, start_per_datum_outputs
 from miles.backends.training_utils.parallel import get_parallel_state
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.types import RolloutBatch
@@ -36,24 +37,27 @@ def forward_backward(
     reset_grad_metadata_keep_grads(model)
 
     dumper_phase_util = DumperMegatronUtil(args, model, DumperPhase.FWD_BWD, rollout_id=batch_id)
-    losses_reduced = run_forward_backward_pass(
-        args, dumper_phase_util, data_iterator, model, num_microbatches[0], num_rollouts=None
-    )
+    start_per_datum_outputs()
+    try:
+        losses_reduced = run_forward_backward_pass(
+            args, dumper_phase_util, data_iterator, model, num_microbatches[0], num_rollouts=None
+        )
+    finally:
+        per_datum_outputs = drain_per_datum_outputs()
     dumper_phase_util.finalize(model)
 
     if get_parallel_state().is_pp_last_stage:
-        return aggregate_train_losses(losses_reduced, None)
-    return {}
+        return {"metrics": aggregate_train_losses(losses_reduced, None), "per_datum": per_datum_outputs}
+    return {"metrics": {}, "per_datum": per_datum_outputs}
 
 
 def optim_step(
-    args: Namespace,
     slot_optimizers: dict[int, SlotOptimizer],
     adam_params_by_slot: dict[int, dict],
 ) -> dict[int, dict]:
     # batch size 1: grads step as accumulated; normalization is the client's loss weights
     stepped = {slot: slot_optimizers[slot] for slot in adam_params_by_slot}
-    return step_slot_optimizers(stepped, adam_params_by_slot, clip_grad=args.clip_grad)
+    return step_slot_optimizers(stepped, adam_params_by_slot)
 
 
 def load_slot(args: Namespace, model: Sequence[DDP], slot: int, rank: int, alpha: float) -> SlotOptimizer:

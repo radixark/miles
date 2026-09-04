@@ -197,9 +197,6 @@ class MegatronTrainRayActor(TrainRayActor):
             self.model, self.optimizer, self.opt_param_scheduler, loaded_rollout_id = initialize_model_and_optimizer(
                 args, role, checkpointing_context=checkpointing_context
             )
-        if args.multi_lora:
-            # per-tenant optimizers: created by load_slot, destroyed by unload_slot
-            self.slot_optimizers: dict[int, lora_executor.SlotOptimizer] = {}
 
         parallel_state = get_parallel_state()
         if parallel_state.cp.size > 1:
@@ -440,13 +437,13 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref)
             stack.enter_context(store_get_result)
-            return lora_executor.forward_backward(self.args, batch_id, self.model, rollout_data)
+            return lora_executor.forward_backward(self.args, batch_id, self.model, self.optimizer, rollout_data)
 
     @with_logs
     def optim_step(self, adam_params_by_slot: dict[int, dict]) -> dict[int, float]:
         assert self.args.multi_lora, "optim_step is a multi-LoRA slot command"
         self._heartbeat.bump()
-        return lora_executor.optim_step(self.args, self.slot_optimizers, adam_params_by_slot)
+        return lora_executor.optim_step(self.model, self.optimizer, adam_params_by_slot)
 
     @with_logs
     def forward_only_logprobs(self, batch_id: int, rollout_data_ref: Box) -> Box | None:
@@ -464,12 +461,12 @@ class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     def load_slot(self, slot: int, rank: int, alpha: float) -> None:
         assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
-        self.slot_optimizers[slot] = lora_executor.load_slot(self.args, self.model, slot, rank, alpha)
+        lora_executor.load_slot(self.model, self.optimizer, slot, rank, alpha)
 
     @with_logs
     def unload_slot(self, slot: int) -> None:
         assert self.args.multi_lora, "unload_slot is a multi-LoRA slot command"
-        lora_executor.unload_slot(self.model, self.slot_optimizers.pop(slot))
+        lora_executor.unload_slot(self.model, self.optimizer, slot)
 
     @with_logs
     @event_logger_context(
