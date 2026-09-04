@@ -237,6 +237,23 @@ class TestSessionProxy:
         assert resp.status_code == 400
         assert resp.json()["error"].startswith("invalid JSON body:")
 
+    def test_chat_client_input_ids_are_silently_overwritten(self, router_env):
+        messages = [{"role": "user", "content": "hi"}]
+        control_session = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        assert _post_chat(router_env.url, control_session, {"messages": messages}).status_code == 200
+        control_input_ids = router_env.backend.request_log[-1]["input_ids"]
+
+        client_session = requests.post(f"{router_env.url}/sessions", timeout=5.0).json()["session_id"]
+        resp = _post_chat(
+            router_env.url,
+            client_session,
+            {"messages": messages, "input_ids": [1, 2, 3]},
+        )
+
+        assert resp.status_code == 200
+        assert router_env.backend.request_log[-1]["input_ids"] == control_input_ids
+        assert router_env.backend.request_log[-1]["input_ids"] != [1, 2, 3]
+
     def test_chat_template_kwargs_override_reaches_render_and_backend(self, router_env):
         """A request response-mode kwarg wins over the launch default in both
         the locally rendered input_ids and the outbound backend request."""

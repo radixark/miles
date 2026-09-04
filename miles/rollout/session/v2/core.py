@@ -12,7 +12,6 @@ from miles.rollout.session.core import (
     _render_json,
     _samples_response,
     extract_completion,
-    prepare_chat_request,
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
@@ -146,22 +145,25 @@ class SessionCoreV2(SessionCore):
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
-            )
+            prepared_request = self.request_contract.prepare(body)
+            client_stream = prepared_request.client_stream
+            tito_tokenizer = prepared_request.tito_tokenizer
 
-            request_messages = request_body.get("messages", [])
+            request_messages = prepared_request.body.get("messages", [])
             position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
             prompt_token_ids = prepare_pretokenized(
                 session,
                 request_messages,
-                tools=request_body.get("tools"),
+                tools=prepared_request.body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
             )
-            request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
-            self._maybe_request_addition_r3(request_body, session.active_token_ids(), prompt_token_ids)
+            request_body = self._finalize_chat_request(
+                prepared_request,
+                session.active_token_ids(),
+                prompt_token_ids,
+            )
 
             proxy_body = json.dumps(request_body).encode()
             attach_parent = session.active_leaf

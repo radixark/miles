@@ -16,13 +16,9 @@ from dataclasses import dataclass
 from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
-from miles.rollout.session.errors import (
-    MessageValidationError,
-    SessionNotFoundError,
-    TokenizationError,
-    UpstreamResponseError,
-)
+from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
 from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.request_contract import PreparedChatRequest, SessionRequestContract
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import (
     compute_samples_from_openai_records,
@@ -155,57 +151,6 @@ def proxy_result_to_response(result: dict) -> Response:
     return Response(content=_render_json(data), status_code=status_code, headers=headers, media_type=JSON_MEDIA_TYPE)
 
 
-def prepare_chat_request(body: bytes, args, tito_tokenizer) -> tuple:
-    """Parse and normalize a chat request body — the session-independent half
-    of chat dispatch, shared verbatim by the v1 and v2 cores. Returns
-    ``(request_body, client_stream, tito_tokenizer)``; the tokenizer may be a
-    request-scoped clone.
-    """
-    try:
-        request_body = json.loads(body) if body else {}
-    except json.JSONDecodeError as e:
-        raise MessageValidationError(f"invalid JSON body: {e}") from e
-
-    # Fake streaming: the backend must stay non-streaming (TITO needs the
-    # complete message + meta_info, and sglang rejects return_meta_info
-    # with stream=true), so pop the client's intent here and honor it
-    # when rendering the client response.
-    client_stream = bool(request_body.pop("stream", False))
-    request_body.pop("stream_options", None)
-
-    # TITO token tracking needs Miles-owned input_ids plus SGLang output
-    # metadata: logprobs=True populates meta_info.output_token_logprobs and
-    # return_meta_info wraps it in choice.meta_info. Hardcoded (not
-    # setdefault) so agent-side overrides cannot break token accumulation.
-    request_body["logprobs"] = True
-    request_body["return_meta_info"] = True
-    if getattr(args, "use_rollout_routing_replay", False):
-        request_body["return_routed_experts"] = True
-    if getattr(args, "use_rollout_indexer_replay", False):
-        request_body["return_indexer_topk"] = True
-    # Must be False so stop-token text is trimmed from assistant content;
-    # token IDs still come from logprobs below.
-    request_body["no_stop_trim"] = False
-    # Serve the adapter being trained instead of the base weights.
-    if is_lora_enabled(args):
-        request_body["lora_path"] = LORA_ADAPTER_NAME
-    # FIXME(session): Only nested `chat_template_kwargs` reach the local renderer;
-    # top-level `reasoning` and `reasoning_effort` are not mapped to template kwargs.
-    request_ctk = request_body.get("chat_template_kwargs")
-    if request_ctk is not None and not isinstance(request_ctk, dict):
-        raise MessageValidationError("chat_template_kwargs must be an object")
-    if request_ctk:
-        try:
-            tito_tokenizer = tito_tokenizer.clone_with_chat_template_kwargs(request_ctk)
-        except ValueError as e:
-            raise MessageValidationError(str(e)) from e
-    if tito_tokenizer.chat_template_kwargs:
-        request_body["chat_template_kwargs"] = dict(tito_tokenizer.chat_template_kwargs)
-    else:
-        request_body.pop("chat_template_kwargs", None)
-    return request_body, client_stream, tito_tokenizer
-
-
 def extract_completion(result: dict) -> tuple:
     """Decode and validate the backend chat response — shared verbatim by the
     v1 and v2 cores. Returns ``(response, choice, assistant_message,
@@ -251,28 +196,42 @@ class SessionCore:
         self.registry = registry
         self.args = args
         self.instance_id = session_server_instance_id
+        self.request_contract = SessionRequestContract.from_settings(
+            registry.tito_tokenizer,
+            force_return_routed_experts=getattr(args, "use_rollout_routing_replay", False),
+            force_return_indexer_topk=getattr(args, "use_rollout_indexer_replay", False),
+            lora_path=LORA_ADAPTER_NAME if is_lora_enabled(args) else None,
+        )
         # Derived from pause_generation_mode at server bootstrap; session code
         # must depend on this capability, never on the weight-update mode.
         self.use_addition_r3 = use_addition_r3
 
-    def _maybe_request_addition_r3(
-        self, request_body: dict, checkpoint_token_ids: list[int], prompt_token_ids: list[int]
-    ) -> None:
-        """Ask SGLang to return only the R3 rows the session has not retained.
+    def _finalize_chat_request(
+        self,
+        prepared_request: PreparedChatRequest,
+        checkpoint_token_ids: list[int],
+        prompt_token_ids: list[int],
+    ) -> dict:
+        """Add session-derived values to the request sent to SGLang.
 
         ``checkpoint_token_ids`` is the stored snapshot this request builds on
         (v1: the post-rollback checkpoint; v2: the positioned attach node). The
         checkpoint's N - 1 rows must remain a causal prefix of the new prompt,
         so every persisted patch starts exactly where the previous one ended.
         """
-        if not (self.use_addition_r3 and request_body.get("return_routed_experts")):
-            return
-        previous_rows = max(0, len(checkpoint_token_ids) - 1)
-        stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
-        assert (
-            stable_prefix_tokens >= previous_rows
-        ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
-        request_body["routed_experts_start_len"] = previous_rows
+        finalize_kwargs = {}
+        if self.use_addition_r3 and prepared_request.body.get("return_routed_experts"):
+            previous_rows = max(0, len(checkpoint_token_ids) - 1)
+            stable_prefix_tokens = _lcp_len(checkpoint_token_ids, prompt_token_ids)
+            assert (
+                stable_prefix_tokens >= previous_rows
+            ), f"additional R3 requires {previous_rows} stable prefix tokens, got {stable_prefix_tokens}"
+            finalize_kwargs["routed_experts_start_len"] = previous_rows
+        return self.request_contract.finalize(
+            prepared_request,
+            input_ids=prompt_token_ids,
+            **finalize_kwargs,
+        )
 
     async def health(self) -> Response:
         body = {"status": "ok"}
@@ -372,23 +331,22 @@ class SessionCore:
             if session.closing:
                 raise SessionNotFoundError(f"session not found: session_id={session_id}")
 
-            request_body, client_stream, tito_tokenizer = prepare_chat_request(
-                body, self.args, self.registry.tito_tokenizer
-            )
+            prepared_request = self.request_contract.prepare(body)
+            client_stream = prepared_request.client_stream
+            tito_tokenizer = prepared_request.tito_tokenizer
 
-            request_messages = request_body.get("messages", [])
+            request_messages = prepared_request.body.get("messages", [])
             prompt_token_ids = session.prepare_pretokenized(
                 request_messages,
-                tools=request_body.get("tools"),
+                tools=prepared_request.body.get("tools"),
                 tito_tokenizer=tito_tokenizer,
                 message_matcher=self.registry.message_matcher,
             )
-            request_body["input_ids"] = prompt_token_ids
             logger.debug("Using TITO input_ids: %d tokens", len(prompt_token_ids))
 
             # prepare_pretokenized applied any retry rollback, so token_ids is
             # the checkpoint this request builds on.
-            self._maybe_request_addition_r3(request_body, session.token_ids, prompt_token_ids)
+            request_body = self._finalize_chat_request(prepared_request, session.token_ids, prompt_token_ids)
 
             proxy_body = json.dumps(request_body).encode()
             expected_num_assistant = session.num_assistant
