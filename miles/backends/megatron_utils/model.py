@@ -28,6 +28,7 @@ from megatron.training.training import get_model
 from miles.backends.megatron_utils.ft.indep_dp import allreduce_grads_and_losses_across_replicas
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome
 from miles.backends.megatron_utils.local_weight_checksum import dump_local_weight_checksums
+from miles.backends.megatron_utils.misc_utils import report_nonfinite_grads
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
 from miles.utils.audit_utils.witness.module import witness_dump_and_clear_stale
 from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
@@ -412,6 +413,13 @@ def _zero_grads(model: Sequence[DDP], optimizer: MegatronOptimizer | None, disab
         optimizer.zero_grad()
 
 
+def _report_nonfinite_grads(model: Sequence[DDP], rollout_id: int, step_id: int) -> None:
+    named = (
+        (name, param) for model_chunk in model for name, param in model_chunk.named_parameters() if param.requires_grad
+    )
+    report_nonfinite_grads(named, header=f"rollout {rollout_id} step {step_id}: grad norm is non-finite")
+
+
 def train_one_step(
     args: Namespace,
     rollout_id: int,
@@ -605,6 +613,8 @@ def train_one_step(
                 valid_step = not (torch.isnan(grad_norm) or torch.isinf(grad_norm))
             else:
                 valid_step = not (math.isnan(grad_norm) or math.isinf(grad_norm))
+            if not valid_step:
+                _report_nonfinite_grads(model, rollout_id=rollout_id, step_id=step_id)
 
     # CI check: verify only MTP parameters have non-zero gradients when truncation happens
     # This check must happen before optimizer.step() as gradients may be modified during step
