@@ -368,7 +368,7 @@ class QwenNextTITOTokenizer(Qwen3TITOTokenizer):
 
 
 # ---------------------------------------------------------------------------
-# GLM 4.7 implementation
+# GLM family implementation
 # ---------------------------------------------------------------------------
 
 
@@ -425,6 +425,18 @@ class GLM47TITOTokenizer(TITOTokenizer):
         if prefix and prefix[-1] in self._ambiguous_boundary_ids:
             prefix = prefix[:-1]
         return prefix + incremental
+
+
+class GLM53TITOTokenizer(GLM47TITOTokenizer):
+    """GLM-5.3 native text renderer with the shared GLM token boundary.
+
+    The GLM-5.3 and GLM-5.3-Flash templates start generation with ``<think>`` even when ``enable_thinking=False``, so this family pins ``enable_thinking=True``. Flash support covers tokenizer text inputs, not multimodal processor inputs.
+    """
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template=None,
+        extra_kwargs={"clear_thinking": False, "enable_thinking": True},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -860,6 +872,7 @@ class TITOTokenizerType(StrEnum):
     QWEN4_EXP = "qwen4exp"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
+    GLM53 = "glm53"
     NEMOTRON3 = "nemotron3"
     KIMI25 = "kimi25"
     KIMI26 = "kimi26"
@@ -887,6 +900,8 @@ class TITOTokenizerType(StrEnum):
                 return QwenNextTITOTokenizer
             case cls.GLM47:
                 return GLM47TITOTokenizer
+            case cls.GLM53:
+                return GLM53TITOTokenizer
             case cls.NEMOTRON3:
                 return Nemotron3TITOTokenizer
             case cls.KIMI25:

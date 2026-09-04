@@ -165,6 +165,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         f"--actor-num-gpus-per-node {ns.actor_num_gpus_per_node}",
         f"--train-backend {ns.train_backend}",
     ]
+    if getattr(ns, "rollout_num_gpus", None) is not None:
+        parts.append(f"--rollout-num-gpus {ns.rollout_num_gpus}")
     if ns.sglang_tool_call_parser:
         parts.append(f"--sglang-tool-call-parser {ns.sglang_tool_call_parser}")
     if ns.sglang_context_length is not None:
@@ -173,6 +175,8 @@ def namespace_to_train_args(ns: argparse.Namespace) -> str:
         parts.append(f"--sglang-kv-cache-dtype {ns.sglang_kv_cache_dtype}")
     if ns.sglang_mamba_full_memory_ratio is not None:
         parts.append(f"--sglang-mamba-full-memory-ratio {ns.sglang_mamba_full_memory_ratio}")
+    if getattr(ns, "sglang_cuda_graph_max_bs_decode", None) is not None:
+        parts.append(f"--sglang-cuda-graph-max-bs-decode {ns.sglang_cuda_graph_max_bs_decode}")
     if ns.sglang_cuda_graph_backend_prefill is not None:
         parts.append(f"--sglang-cuda-graph-backend-prefill {ns.sglang_cuda_graph_backend_prefill}")
     # DeepSeek V3.2 (and other NSA/MoE archs) requires expert-parallel > 1 in
