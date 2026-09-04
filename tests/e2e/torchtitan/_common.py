@@ -44,6 +44,7 @@ class CaseConfig:
     rollout_num_gpus_per_engine: int | None = None
     fully_async: bool = False
     mem_fraction_static: float = 0.7
+    use_mooncake: bool = False
     num_rollout: int = 2
     global_batch_size: int = 32
     extra_args: str = ""
@@ -167,6 +168,10 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     misc_args += "--colocate " if case.colocate else f"--rollout-num-gpus {case.rollout_num_gpus} "
     if case.with_ref:
         misc_args += f"--ref-load {case.model_dir} --use-kl-loss "
+    if case.use_mooncake:
+        # The p2p weight transfer writes into a mooncake object store the
+        # engines read from; the master is started before the job is submitted.
+        misc_args += U.get_mooncake_object_store_args()
 
     ci_args = "--ci-test --ci-disable-kl-checker "
 
@@ -192,5 +197,6 @@ def execute(case: CaseConfig, *, wandb_file: str) -> None:
         num_gpus_per_node=case.num_gpus + (0 if case.colocate else case.rollout_num_gpus),
         megatron_model_type=None,
         train_script="train_async.py" if case.fully_async else "train.py",
+        before_ray_job_submit=U.start_mooncake_master if case.use_mooncake else None,
         extra_env_vars=dict(case.extra_env_vars),
     )
