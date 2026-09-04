@@ -10,11 +10,13 @@ register_cuda_ci(est_time=1200, suite="stage-c-8-gpu-h200", labels=["torchtitan"
 # of that gets reassembled before it ships. Completing the whole model on every
 # rank is what a pipelined 30B could not afford, and skipping the completion
 # inside a stage is what silently corrupted expert weights, so this case exists
-# to keep both halves honest.
+# to keep both halves honest. The model is the untied dense one: torchtitan
+# cannot tie lm_head to the embedding across stages, so a tied checkpoint is
+# refused under PP.
 CASE = CaseConfig(
-    model_repo="Qwen/Qwen3.5-4B",
-    titan_model_name="qwen3_5",
-    titan_model_flavor="4B",
+    model_repo="Qwen/Qwen3-8B",
+    titan_model_name="qwen3",
+    titan_model_flavor="8B",
     num_gpus=4,
     pp_size=2,
     seq_len=8192,

@@ -59,6 +59,14 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     if args.optimizer != "adam":
         raise ValueError(f"torchtitan backend supports --optimizer adam, got {args.optimizer!r}")
 
+    ties_embeddings = _checkpoint_ties_embeddings(hf_assets_path)
+    if ties_embeddings and args.titan_pipeline_parallel_degree > 1:
+        raise ValueError(
+            "the checkpoint ties lm_head to the embedding, which torchtitan cannot do across pipeline "
+            "stages: it would train a separate lm_head that the HF export then has no tensor to ship "
+            "into. Use --titan-pipeline-parallel-degree 1 or an untied checkpoint."
+        )
+
     config = Trainer.Config()
     config.model_spec = resolve_model_spec(args)
     if args.titan_num_layers:
@@ -84,7 +92,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
     # not in the checkpoint it diffs against. The cost is that the trained
     # lm_head is not shipped; the engine projects with the embedding, which is
     # what a tied model means.
-    if _checkpoint_ties_embeddings(hf_assets_path) and hasattr(config.model_spec.model, "enable_weight_tying"):
+    if ties_embeddings and hasattr(config.model_spec.model, "enable_weight_tying"):
         config.model_spec.model.enable_weight_tying = True
         logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
 
