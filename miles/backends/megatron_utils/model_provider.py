@@ -5,8 +5,6 @@ import logging
 from contextlib import nullcontext
 from typing import Literal
 
-import torch
-from megatron.core import tensor_parallel
 from megatron.core.models.gpt import GPTModel
 from megatron.core.models.gpt.gpt_layer_specs import (
     get_gpt_decoder_block_spec,
@@ -17,6 +15,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from miles.backends.megatron_utils.value_head import attach_value_head
 from miles.utils.audit_utils.witness.module import install_witness
 from miles.utils.misc import load_function
 from miles.utils.replay_base import routing_replay_manager
@@ -97,38 +96,6 @@ def _apply_bridge_runtime_config(provider, args: argparse.Namespace) -> None:
         provider.dsa_attention_backend = getattr(args, "dsa_attention_backend", "megatron")
 
 
-# Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
-class LinearForLastLayer(torch.nn.Linear):
-    def __init__(
-        self,
-        input_size: int,
-        output_size: int,
-        *,
-        config: TransformerConfig,
-        bias: bool = True,
-    ) -> None:
-        super().__init__(in_features=input_size, out_features=output_size, bias=bias)
-        self.sequence_parallel = config.sequence_parallel
-        if self.sequence_parallel:
-            self.weight.sequence_parallel = True
-
-        self.weight.data.normal_(mean=0.0, std=0.02)
-        if bias:
-            self.bias.data.zero_()
-
-    def forward(
-        self,
-        input_: torch.Tensor,
-        weight: torch.Tensor | None = None,
-        runtime_gather_output: bool | None = None,
-    ) -> tuple[torch.Tensor, None]:
-        logits = super().forward(input_)
-        logits = logits.float()
-        if self.sequence_parallel:
-            logits = tensor_parallel.gather_from_sequence_parallel_region(logits, tensor_parallel_output_grad=False)
-        return logits, None
-
-
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -152,10 +119,8 @@ def get_model_provider_func(
             else:
                 model = custom_model_provider(pre_process=pre_process, post_process=post_process)
             # Apply critic output layer if needed
-            if post_process and role == "critic":
-                model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
-                )
+            if role == "critic":
+                attach_value_head(model)
             _maybe_install_witness(args, model)
             return model
 
@@ -185,10 +150,8 @@ def get_model_provider_func(
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
-            if post_process and role == "critic":
-                model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
-                )
+            if role == "critic":
+                attach_value_head(model)
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward
@@ -331,8 +294,8 @@ def get_model_provider_func(
         with build_model_context(**build_model_context_args):
             model = GPTModel(**kwargs)
 
-        if post_process and role == "critic":
-            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+        if role == "critic":
+            attach_value_head(model)
 
         _maybe_install_witness(args, model)
 
