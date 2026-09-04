@@ -1,10 +1,13 @@
-"""Tests for eager_create_task and AsyncioGatherUtils."""
+"""Tests for eager_create_task, AsyncioGatherUtils, and the get_async_loop singleton."""
 
 import asyncio
 import logging
+import threading
+import time
 
 import pytest
 
+import miles.utils.async_utils as async_utils
 from miles.utils.async_utils import AsyncioGatherUtils, eager_create_task
 
 
@@ -90,6 +93,41 @@ class TestCreateTaskComparison:
             task = asyncio.create_task(compute())
 
         assert await task == {"key": "value"}
+
+
+# ---- get_async_loop ----
+
+
+class TestGetAsyncLoopSingleton:
+    def test_concurrent_first_callers_share_one_loop(self, monkeypatch):
+        """Two threads racing the first call must construct exactly one loop; a
+        primitive bound to a losing loop later raises "bound to a different event loop"."""
+        constructed = []
+        real_init = async_utils.AsyncLoopThread.__init__
+
+        def slow_init(self):
+            constructed.append(self)
+            time.sleep(0.2)  # hold the check-then-act window open
+            real_init(self)
+
+        monkeypatch.setattr(async_utils.AsyncLoopThread, "__init__", slow_init)
+        monkeypatch.setattr(async_utils, "async_loop", None)
+
+        barrier = threading.Barrier(2)
+        results = []
+
+        def call():
+            barrier.wait()
+            results.append(async_utils.get_async_loop())
+
+        threads = [threading.Thread(target=call) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(constructed) == 1
+        assert results[0] is results[1]
 
 
 # ---- AsyncioGatherUtils ----

@@ -31,12 +31,15 @@ class AsyncLoopThread:
 
 # Create one global instance
 async_loop = None
+_async_loop_init_lock = threading.Lock()
 
 
 def get_async_loop():
     global async_loop
     if async_loop is None:
-        async_loop = AsyncLoopThread()
+        with _async_loop_init_lock:
+            if async_loop is None:
+                async_loop = AsyncLoopThread()
     return async_loop
 
 

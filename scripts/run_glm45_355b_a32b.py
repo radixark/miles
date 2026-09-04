@@ -20,8 +20,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     model_org: str = "zai-org"
     model_name: str = "GLM-4.5"
     megatron_model_type: str = "glm4.5-355B-A32B"
-    num_gpus_per_node: int = 4
-    hardware: Literal["H100", "GB200", "GB300"] = "GB200"
+    num_gpus_per_node: int | None = None
+    hardware: Literal["auto", "H100", "GB200", "GB300"] = "auto"
     enable_eval: bool = True
     extra_args: str = ""
     data_dir: str = "/root/datasets"
@@ -37,6 +37,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     # TODO improve, should be able to override more easily
     tis_use_rs: bool = True
     task: Literal["dapo_aime", "gsm8k"] = "dapo_aime"
+
+    def __post_init__(self):
+        self.hardware = U.resolve_hardware(self)
+        self.num_gpus_per_node = self.num_gpus_per_node or U.NUM_GPUS_OF_HARDWARE[self.hardware]
 
 
 def _prepare_download(args: ScriptArgs):

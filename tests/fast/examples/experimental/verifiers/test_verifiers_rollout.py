@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from packaging.version import Version
 
 if sys.version_info < (3, 11):
     pytest.skip("Verifiers requires Python 3.11+", allow_module_level=True)
@@ -13,9 +12,9 @@ if sys.version_info < (3, 11):
 from examples.experimental.verifiers.verifiers_rollout import (
     MilesSGLangTransport,
     VerifiersRolloutFn,
-    _check_version,
     _config_path,
     _finish_reason,
+    _import_verifiers,
     _load_config_data,
     _make_eval_args,
     _raise_for_unsupported_trace_errors,
@@ -143,9 +142,28 @@ def test_config_loader_rejects_non_toml_formats(tmp_path):
         _load_config_data(path)
 
 
-def test_verifiers_0_2_1_is_rejected_with_compatibility_reason():
+def test_verifiers_0_2_1_is_rejected_with_compatibility_reason(monkeypatch):
+    monkeypatch.setattr(
+        "examples.experimental.verifiers.verifiers_rollout._installed_version",
+        lambda package: {"verifiers": "0.2.1"}[package],
+    )
+
     with pytest.raises(RuntimeError, match="SGLang 0.5.15 pins OpenAI"):
-        _check_version("verifiers", "0.2.1", Version("0.2.0"), Version("0.2.1"))
+        _import_verifiers()
+
+
+def test_renderers_0_1_11_is_rejected_with_compatibility_reason(monkeypatch):
+    versions = {"verifiers": "0.2.0", "renderers": "0.1.11"}
+    monkeypatch.setattr(
+        "examples.experimental.verifiers.verifiers_rollout._installed_version",
+        versions.__getitem__,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"renderers>=0\.1\.8,<0\.1\.11.*removes the renderer pool APIs",
+    ):
+        _import_verifiers()
 
 
 def test_transport_does_not_treat_aborted_generation_as_complete():

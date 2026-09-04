@@ -14,11 +14,16 @@ try:
     from enum import StrEnum
 except ImportError:
     from backports.strenum import StrEnum
+
 from pathlib import Path
 from typing import Any
 
 from miles.utils.chat_template_utils import deepseek, template
-from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils.inkling_parser import InklingResponseParser
+from miles.utils.chat_template_utils.message_matcher_hub import (
+    assert_messages_append_only_with_allowed_role,
+    strict_message_matches,
+)
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -154,6 +159,29 @@ class TITOTokenizer:
             **self.chat_template_kwargs,
         )
 
+    def postprocess_completion(
+        self,
+        *,
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+    ) -> dict[str, Any]:
+        """Postprocess an upstream completion and return the message to store.
+
+        The default path trusts SGLang's parsed message. Model families that
+        need token-aware response handling override this hook and may update
+        ``choice`` before returning their server-side message representation.
+        """
+        return assistant_message
+
+    def preserve_server_message_state(
+        self,
+        stored_messages: list[dict[str, Any]],
+        request_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Restore model-specific server-owned sidecars after client replay."""
+        return list(request_messages)
+
     def _encode_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
@@ -287,21 +315,44 @@ class Qwen3TITOTokenizer(TITOTokenizer):
         return prefix + incremental
 
 
-# Qwen3.5 and Qwen3-Next-Thinking share the ``<|im_end|>`` boundary handling
-# with Qwen3, so they reuse Qwen3TITOTokenizer's token-level logic via plain
-# inheritance.  They are still split into named subclasses because each owns
-# its own ``FIXED_TEMPLATE`` pointing to a distinct fixed jinja, even
-# though their boundary behavior is identical.
+# Qwen3.5/3.6 and Qwen3-Next-Thinking share the ``<|im_end|>`` boundary
+# handling with Qwen3. Their subclasses only own the distinct fixed-template
+# contracts layered on that token boundary.
 
 
 class Qwen35TITOTokenizer(Qwen3TITOTokenizer):
-    """Qwen3.5 — same boundary behavior as Qwen3, distinct fixed template."""
+    """Qwen3.5 template and Qwen3 token boundary."""
 
     tool_call_parser = "qwen3_coder"
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.5_fixed.jinja",
-        extra_kwargs={"clear_thinking": False},
+        extra_kwargs={"preserve_thinking": True},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    )
+
+
+class Qwen36TITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3.6 template and Qwen3 token boundary."""
+
+    tool_call_parser = "qwen3_coder"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template="qwen3.6_fixed.jinja",
+        extra_kwargs={"preserve_thinking": True},
+        allowed_append_roles=frozenset({"tool", "user", "assistant"}),
+    )
+
+
+class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
+    """Qwen3.8 reasoning-effort template with the Qwen3 token boundary."""
+
+    tool_call_parser = "qwen3_coder"
+
+    FIXED_TEMPLATE = FixedTemplate(
+        template="qwen3.8_small_and_flash_next_fixed.jinja",
+        # FIXME: Pin reasoning effort to xhigh until request-argument precedence is unified.
+        extra_kwargs={"preserve_thinking": True, "reasoning_effort": "xhigh"},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
 
@@ -731,9 +782,6 @@ class InklingTITOTokenizer(TITOTokenizer):
     failures after an assistant turn.
     """
 
-    reasoning_parser = "inkling"
-    tool_call_parser = "inkling"
-
     FIXED_TEMPLATE = FixedTemplate(template="inkling_fixed.jinja")
 
     _DEFAULT_ASSISTANT_START = "<|message_model|>"
@@ -755,6 +803,47 @@ class InklingTITOTokenizer(TITOTokenizer):
                 tokenizer.convert_tokens_to_ids("<|message_tool|>"),
             },
         )
+        self._response_parser = None
+
+    def postprocess_completion(
+        self,
+        *,
+        choice: dict[str, Any],
+        assistant_message: dict[str, Any],
+        completion_token_ids: list[int],
+    ) -> dict[str, Any]:
+        if self._response_parser is None:
+            self._response_parser = InklingResponseParser(self.tokenizer)
+        parsed = self._response_parser.parse(
+            completion_token_ids,
+            finish_reason=choice.get("finish_reason"),
+        )
+        choice["message"] = parsed.client_message
+        meta_info = choice.setdefault("meta_info", {})
+        meta_info["miles_response_parser"] = parsed.parser_name
+        if parsed.parse_error is not None:
+            meta_info["miles_response_parse_error"] = parsed.parse_error
+        elif parsed.client_message.get("tool_calls") and choice.get("finish_reason") == "stop":
+            choice["finish_reason"] = "tool_calls"
+        return parsed.stored_message
+
+    def preserve_server_message_state(
+        self,
+        stored_messages: list[dict[str, Any]],
+        request_messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        preserved = list(request_messages)
+        for index, request_message in enumerate(preserved):
+            if index >= len(stored_messages):
+                break
+            stored_message = stored_messages[index]
+            if stored_message.get("role") != "assistant" or not strict_message_matches(
+                stored_message, request_message
+            ):
+                continue
+            if "content_blocks" in stored_message:
+                preserved[index] = {**request_message, "content_blocks": stored_message["content_blocks"]}
+        return preserved
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +855,9 @@ class TITOTokenizerType(StrEnum):
     DEFAULT = "default"
     QWEN3 = "qwen3"
     QWEN35 = "qwen35"
+    QWEN36 = "qwen36"
+    QWEN38_SMALL = "qwen38small"
+    QWEN4_EXP = "qwen4exp"
     QWENNEXT = "qwennext"
     GLM47 = "glm47"
     NEMOTRON3 = "nemotron3"
@@ -787,6 +879,10 @@ class TITOTokenizerType(StrEnum):
                 return Qwen3TITOTokenizer
             case cls.QWEN35:
                 return Qwen35TITOTokenizer
+            case cls.QWEN36:
+                return Qwen36TITOTokenizer
+            case cls.QWEN38_SMALL | cls.QWEN4_EXP:
+                return Qwen38SmallTITOTokenizer
             case cls.QWENNEXT:
                 return QwenNextTITOTokenizer
             case cls.GLM47:

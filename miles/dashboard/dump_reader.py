@@ -17,8 +17,9 @@ surfacing as corruption.
 from __future__ import annotations
 
 import json
+import os
 import time
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
@@ -59,6 +60,55 @@ def _tool_call_count(sample: Sample) -> int | None:
     if not isinstance(sample.prompt, list):
         return None
     return sum(1 for message in sample.prompt if isinstance(message, dict) and message.get("role") == "tool")
+
+
+SampleKey = tuple[int, int]
+
+
+def _sample_keys(samples: list[Sample]) -> list[SampleKey]:
+    """Return ``(Sample.index, occurrence)`` keys in rollout order.
+
+    TITO v2 may emit multiple leaf samples for one rollout execution. Those
+    leaves intentionally share ``Sample.index``, so the occurrence is the
+    smallest backward-compatible discriminator available in existing dumps.
+    """
+    occurrences: defaultdict[int, int] = defaultdict(int)
+    keys = []
+    for sample in samples:
+        assert sample.index is not None, "dashboard dumps require Sample.index"
+        key = (int(sample.index), occurrences[int(sample.index)])
+        occurrences[int(sample.index)] += 1
+        keys.append(key)
+    return keys
+
+
+def _matching_train_locations(
+    handles: list[dict],
+    locations: list[tuple[int, int]],
+    *,
+    response_length: int,
+    total_length: int,
+    tokens: Any,
+) -> list[tuple[int, int]]:
+    """Select the physical-rank replicas of one logical rollout row.
+
+    Older train dumps only record ``sample_indices``. When TITO produces more
+    than one leaf for an index, lengths and tokens recover the rollout-row
+    identity without conflating the leaves.
+    """
+    expected_tokens = torch.as_tensor(tokens)
+    matches = []
+    for shard, row in locations:
+        columns = handles[shard]["rollout_data"]
+        if int(columns["response_lengths"][row]) != response_length:
+            continue
+        if int(columns["total_lengths"][row]) != total_length:
+            continue
+        candidate_tokens = torch.as_tensor(columns["tokens"][row])
+        if candidate_tokens.shape != expected_tokens.shape or not torch.equal(candidate_tokens, expected_tokens):
+            continue
+        matches.append((shard, row))
+    return matches
 
 
 @dataclass
@@ -287,7 +337,8 @@ class JoinedRollout:
     rollout_id: int
     evaluation: bool
     samples: list[Sample]
-    train_rows: dict[int, TrainRow]  # keyed by Sample.index; empty for eval dumps
+    # TITO leaves can share Sample.index; occurrence keeps each row distinct.
+    train_rows: dict[SampleKey, TrainRow]  # empty for eval dumps
 
     @property
     def train_coverage(self) -> float:
@@ -303,7 +354,45 @@ class DumpReader:
     FRESH_SECONDS: ClassVar[float] = 60.0
 
     # bump to invalidate summary parquet caches when their columns change
-    SUMMARY_VERSION: ClassVar[int] = 4  # v4: per-sample staleness
+    SUMMARY_VERSION: ClassVar[int] = 6  # v6: TITO leaves sharing Sample.index remain distinct
+
+    # Column order of summary(). Only needed to give a step with no samples the
+    # same shape as any other step; with rows present the schema comes from
+    # _summary_row itself. test_summary_columns_declaration_matches_reality
+    # pins the two together, so adding a column there fails loudly here.
+    SUMMARY_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "sample_index",
+        "sample_occurrence",
+        "group_index",
+        "status",
+        "remove_sample",
+        "response_length",
+        "total_length",
+        "reward",
+        "weight_version",
+        "weight_version_min",
+        "mixed_version",
+        "staleness",
+        "turns",
+        "tool_calls",
+        "non_generation_time",
+        "spec_accept_rate",
+        "prefix_cache_hit_rate",
+        "raw_reward",
+        "normalized_reward",
+        "truncated",
+        "dumped_rank",
+        "mean_entropy",
+        "max_entropy",
+        "ref_entropy_mean",
+        "mean_abs_lp_diff",
+        "max_abs_lp_diff",
+        "mean_imp_ratio",
+        "adv_mean",
+        "adv_std",
+        "return_mean",
+        "alignment_failed",
+    )
 
     def __init__(self, dump_dir: Path | str, *, cache_dir: Path | str | None = None, tensor_lru: int = 2):
         self.dump_dir = Path(dump_dir)
@@ -313,8 +402,8 @@ class DumpReader:
         self.tensor_lru = tensor_lru
         self._joined_cache: OrderedDict[tuple[int, bool], JoinedRollout] = OrderedDict()
         # token-view point reads: mmap'd train shards + {sample -> (shard, row)}
-        self._shard_cache: OrderedDict[int, tuple[list[dict], dict[int, tuple[int, int]]]] = OrderedDict()
-        self._trajectory_cache: OrderedDict[tuple[int, bool], dict[int, dict]] = OrderedDict()
+        self._shard_cache: OrderedDict[int, tuple[list[dict], dict[int, list[tuple[int, int]]]]] = OrderedDict()
+        self._trajectory_cache: OrderedDict[tuple[int, bool], dict[SampleKey, dict]] = OrderedDict()
         self._tokenizer = None
         self._tokenizer_loaded = False
 
@@ -337,11 +426,15 @@ class DumpReader:
         pack = self._torch_load(self.rollout_dir / name)
         assert pack["rollout_id"] == rollout_id, f"{pack['rollout_id']=} != {rollout_id=} in {name}"
         samples = [Sample.from_dict(data) for data in pack["samples"]]
+        sample_keys = _sample_keys(samples)
+        sample_counts: defaultdict[int, int] = defaultdict(int)
+        for sample_index, _occurrence in sample_keys:
+            sample_counts[sample_index] += 1
         # raw_reward is stored batch-global, so it is indexed by the sample's
         # position in the rollout dump, not by shard row.
-        batch_position = {s.index: i for i, s in enumerate(samples)}
+        sample_indices = {key[0] for key in sample_keys}
 
-        train_rows: dict[int, TrainRow] = {}
+        train_rows: dict[SampleKey, TrainRow] = {}
         if not evaluation:
             handles: list[dict] = []
             index: dict[int, list[tuple[int, int]]] = {}
@@ -358,15 +451,30 @@ class DumpReader:
                     raw_reward_column = raw_rewards
                 for row, sample_index in enumerate(columns["sample_indices"]):
                     assert (
-                        sample_index in batch_position
+                        int(sample_index) in sample_indices
                     ), f"{path} references sample_index {sample_index} absent from the rollout dump"
                     index.setdefault(int(sample_index), []).append((shard, row))
                 handles.append(rank_pack)
-            for sample_index, locations in index.items():
-                train_rows[sample_index] = _build_train_row(
+            for position, (sample, key) in enumerate(zip(samples, sample_keys, strict=True)):
+                locations = index.get(key[0], [])
+                if locations and sample_counts[key[0]] > 1:
+                    locations = _matching_train_locations(
+                        handles,
+                        locations,
+                        response_length=sample.response_length,
+                        total_length=len(sample.tokens),
+                        tokens=sample.tokens,
+                    )
+                if not locations:
+                    # Partial train coverage: a sample the trainer never dumped
+                    # (or, for TITO leaves, an index whose shard rows all belong
+                    # to other leaves) keeps null train columns, as before this
+                    # file keyed rows by occurrence -- it must not fail the step.
+                    continue
+                train_rows[key] = _build_train_row(
                     handles,
                     locations,
-                    raw_reward=None if raw_reward_column is None else raw_reward_column[batch_position[sample_index]],
+                    raw_reward=None if raw_reward_column is None else raw_reward_column[position],
                 )
 
         return JoinedRollout(rollout_id=rollout_id, evaluation=evaluation, samples=samples, train_rows=train_rows)
@@ -410,12 +518,29 @@ class DumpReader:
             return pl.read_parquet(cache_path)
 
         joined = self.joined(rollout_id, evaluation=evaluation)
-        df = pl.DataFrame(
-            [self._summary_row(s, joined.train_rows.get(s.index), rollout_id=rollout_id) for s in joined.samples],
-            strict=False,
+        rows = [
+            self._summary_row(
+                sample,
+                joined.train_rows.get(key),
+                rollout_id=rollout_id,
+                sample_occurrence=key[1],
+            )
+            for sample, key in zip(joined.samples, _sample_keys(joined.samples), strict=True)
+        ]
+        # A step can be dumped with no samples at all (aborted before any
+        # generation landed). Inferring the schema from an empty row list gives
+        # a frame with no COLUMNS, and every view below this one then dies on a
+        # missing column instead of simply reporting an empty step, so the
+        # declared schema is supplied explicitly in that case.
+        df = (
+            pl.DataFrame(rows, strict=False)
+            if rows
+            else pl.DataFrame(schema={name: pl.Null for name in self.SUMMARY_COLUMNS})
         )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(cache_path)
+        tmp_path = cache_path.with_suffix(f".{os.getpid()}.tmp")
+        df.write_parquet(tmp_path)
+        tmp_path.replace(cache_path)
         sources_path.write_text(json.dumps(sources))
         return df
 
@@ -465,22 +590,51 @@ class DumpReader:
             )
         return pl.DataFrame(rows, strict=False)
 
-    def trajectory_messages(self, rollout_id: int, sample_index: int, *, evaluation: bool = False) -> dict:
+    def trajectory_messages(
+        self, rollout_id: int, sample_index: int, *, sample_occurrence: int = 0, evaluation: bool = False
+    ) -> dict:
         """Sidecar row for one sample; missing file or sample raises (-> 404),
         which is how the frontend learns the run recorded no conversation."""
-        key = (rollout_id, evaluation)
-        if key not in self._trajectory_cache:
+        cache_key = (rollout_id, evaluation)
+        if cache_key not in self._trajectory_cache:
             name = f"eval_{rollout_id}.jsonl" if evaluation else f"{rollout_id}.jsonl"
             with open(self.dump_dir / "trajectory" / name) as f:
-                rows = {row["sample_index"]: row for row in map(json.loads, f)}
-            self._trajectory_cache[key] = rows
+                file_rows = [json.loads(line) for line in f]
+            rows = self._keyed_trajectory_rows(file_rows)
+            self._trajectory_cache[cache_key] = rows
             while len(self._trajectory_cache) > 4:
                 self._trajectory_cache.popitem(last=False)
-        self._trajectory_cache.move_to_end(key)
-        rows = self._trajectory_cache[key]
-        if sample_index not in rows:
-            raise KeyError(f"sample {sample_index} has no recorded conversation in rollout {rollout_id}")
-        return rows[sample_index]
+        self._trajectory_cache.move_to_end(cache_key)
+        rows = self._trajectory_cache[cache_key]
+        sample_key = (sample_index, sample_occurrence)
+        if sample_key not in rows:
+            raise KeyError(
+                f"sample {sample_index} occurrence {sample_occurrence} has no recorded conversation in rollout {rollout_id}"
+            )
+        return rows[sample_key]
+
+    @staticmethod
+    def _keyed_trajectory_rows(file_rows: list[dict]) -> dict:
+        """Key sidecar rows by the same (index, occurrence) numbering as summary().
+
+        The sidecar holds one row per sample that recorded a conversation
+        (``trajectory_rows`` skips the rest), so numbering by file position
+        disagrees with the full-sample-list numbering used everywhere else
+        whenever a conversationless TITO leaf precedes a recorded one at the
+        same index. The writer therefore persists ``sample_occurrence``; a
+        sidecar from before that column falls back to file-position numbering,
+        its best available.
+        """
+        occurrences: defaultdict[int, int] = defaultdict(int)
+        rows: dict[SampleKey, dict] = {}
+        for row in file_rows:
+            index = int(row["sample_index"])
+            occurrence = row.get("sample_occurrence")
+            if occurrence is None:
+                occurrence = occurrences[index]
+            occurrences[index] += 1
+            rows[(index, int(occurrence))] = row
+        return rows
 
     # -------------------------- token-view point reads ----------------------
 
@@ -496,7 +650,9 @@ class DumpReader:
         "rollout_log_probs",
     )
 
-    def _rollout_columns(self, rollout_id: int, sample_index: int, *, evaluation: bool) -> dict:
+    def _rollout_columns(
+        self, rollout_id: int, sample_index: int, *, sample_occurrence: int, evaluation: bool
+    ) -> dict:
         stem = ("eval_" if evaluation else "") + str(rollout_id)
         path = self.dump_dir / "dashboard_columns" / f"rollout_{stem}.parquet"
         if not path.exists() or set(pl.read_parquet_schema(path)) != set(self.ROLLOUT_COLUMNS):
@@ -506,11 +662,15 @@ class DumpReader:
             pack = self._torch_load(self.rollout_dir / name)
             save_dashboard_columns([Sample.from_dict(data) for data in pack["samples"]], path)
         frame = pl.scan_parquet(path).filter(pl.col("sample_index") == sample_index).collect()
-        if not len(frame):
-            raise KeyError(f"unknown sample_index {sample_index} in rollout {rollout_id}")
-        return frame.row(0, named=True)
+        if not 0 <= sample_occurrence < len(frame):
+            raise KeyError(
+                f"unknown sample_index {sample_index} occurrence {sample_occurrence} in rollout {rollout_id}"
+            )
+        row = frame.row(sample_occurrence, named=True)
+        row["_sample_occurrence_count"] = len(frame)
+        return row
 
-    def _train_row_lazy(self, rollout_id: int, sample_index: int) -> TrainRow | None:
+    def _train_row_lazy(self, rollout_id: int, sample_index: int, rollout_columns: dict) -> TrainRow | None:
         """One sample's train columns via mmap'd shards: opening a shard reads
         only its pickle graph; slicing a row faults in ~contiguous KBs."""
         if rollout_id not in self._shard_cache:
@@ -529,12 +689,29 @@ class DumpReader:
         locations = index.get(sample_index)
         if not locations:
             return None
+        if rollout_columns["_sample_occurrence_count"] > 1:
+            locations = _matching_train_locations(
+                handles,
+                locations,
+                response_length=int(rollout_columns["response_length"]),
+                total_length=int(rollout_columns["total_length"]),
+                tokens=rollout_columns["tokens"],
+            )
+        if not locations:
+            return None
         return _build_train_row(handles, locations, raw_reward=None)
 
     # ------------------------------- L2 view --------------------------------
 
     def tokens(
-        self, rollout_id: int, sample_index: int, *, start: int = 0, end: int | None = None, evaluation: bool = False
+        self,
+        rollout_id: int,
+        sample_index: int,
+        *,
+        sample_occurrence: int = 0,
+        start: int = 0,
+        end: int | None = None,
+        evaluation: bool = False,
     ) -> dict:
         """Per-token payload for one sample over token positions [start, end).
 
@@ -545,8 +722,10 @@ class DumpReader:
         Stat values are null at loss-masked positions: the engine never scored
         those tokens.
         """
-        columns = self._rollout_columns(rollout_id, sample_index, evaluation=evaluation)
-        row = None if evaluation else self._train_row_lazy(rollout_id, sample_index)
+        columns = self._rollout_columns(
+            rollout_id, sample_index, sample_occurrence=sample_occurrence, evaluation=evaluation
+        )
+        row = None if evaluation else self._train_row_lazy(rollout_id, sample_index, columns)
 
         total = columns["total_length"]
         prompt_len = total - columns["response_length"]
@@ -574,6 +753,7 @@ class DumpReader:
         return dict(
             rollout_id=rollout_id,
             sample_index=sample_index,
+            sample_occurrence=sample_occurrence,
             evaluation=evaluation,
             total_len=total,
             prompt_len=prompt_len,
@@ -610,11 +790,12 @@ class DumpReader:
         paths = [rollout_path] + ([] if evaluation else self._train_paths(rollout_id))
         return {"_summary_version": self.SUMMARY_VERSION, **{p.name: p.stat().st_mtime for p in paths}}
 
-    def _summary_row(self, sample: Sample, row: TrainRow | None, *, rollout_id: int) -> dict:
+    def _summary_row(self, sample: Sample, row: TrainRow | None, *, rollout_id: int, sample_occurrence: int) -> dict:
         spec = sample.spec_info
         cache_info = sample.prefix_cache_info
         entry = dict(
             sample_index=sample.index,
+            sample_occurrence=sample_occurrence,
             group_index=sample.group_index,
             status=sample.status.value,
             remove_sample=sample.remove_sample,
@@ -639,25 +820,22 @@ class DumpReader:
             ),
         )
         if row is None:
-            train_columns = dict.fromkeys(
-                (
-                    "raw_reward",
-                    "normalized_reward",
-                    "dumped_rank",
-                    "mean_entropy",
-                    "max_entropy",
-                    "ref_entropy_mean",
-                    "mean_abs_lp_diff",
-                    "max_abs_lp_diff",
-                    "mean_imp_ratio",
-                    "adv_mean",
-                    "adv_std",
-                    "return_mean",
-                )
+            return entry | dict(
+                raw_reward=None,
+                normalized_reward=None,
+                truncated=sample.status == Sample.Status.TRUNCATED,
+                dumped_rank=None,
+                mean_entropy=None,
+                max_entropy=None,
+                ref_entropy_mean=None,
+                mean_abs_lp_diff=None,
+                max_abs_lp_diff=None,
+                mean_imp_ratio=None,
+                adv_mean=None,
+                adv_std=None,
+                return_mean=None,
+                alignment_failed=False,
             )
-            train_columns["alignment_failed"] = False
-            train_columns["truncated"] = sample.status == Sample.Status.TRUNCATED
-            return entry | train_columns
 
         mask = row.loss_mask > 0
         lp_diff = (

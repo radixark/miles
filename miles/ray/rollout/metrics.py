@@ -1,4 +1,5 @@
 import logging
+from numbers import Number
 from typing import Any
 
 import numpy as np
@@ -13,7 +14,7 @@ from miles.utils.metric_utils import (
 )
 from miles.utils.misc import load_function
 from miles.utils.tracking_utils import tracking
-from miles.utils.types import Sample
+from miles.utils.types import AdapterRef, Sample
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +32,7 @@ def log_eval_rollout_data(rollout_id, args, data, extra_metrics: dict[str, Any] 
         log_dict[f"eval/{key}-none_reward_ratio"] = num_none / len(rewards) if len(rewards) > 0 else 0.0
         if num_none:
             logger.warning(
-                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None "
-                "(likely errored/aborted trials); treating as 0.0 for metrics."
+                f"eval/{key}: {num_none}/{len(rewards)} samples have reward=None (likely errored/aborted trials); treating as 0.0 for metrics."
             )
             rewards = [0.0 if r is None else r for r in rewards]
         log_dict[f"eval/{key}"] = sum(rewards) / len(rewards) if len(rewards) > 0 else 0.0
@@ -96,6 +96,8 @@ def _compute_metrics_from_samples(args, samples):
     response_lengths = [sample.effective_response_length for sample in samples]
 
     log_dict = {}
+    log_dict |= _compute_training_sample_metrics(args, samples)
+    log_dict |= _compute_episode_response_length_metrics(samples)
     log_dict |= dict_add_prefix(compute_statistics(response_lengths), "response_len/")
     log_dict |= _compute_zero_std_metrics(args, samples)
     log_dict |= _compute_spec_metrics(args, samples)
@@ -124,15 +126,79 @@ def _compute_metrics_from_samples(args, samples):
         if args.ci_test:
             for strict_type in ("special_token_count", "special_token_type", "non_assistant_text"):
                 rate = log_dict.get(f"{metric_prefix}/{strict_type}", 0)
-                assert rate == 0, (
-                    f"{metric_prefix}/{strict_type}={rate:.4f} must be 0 — "
-                    "this indicates a bug in the TITO algorithm or chat template. "
-                    "Please check your tito model and chat template."
-                )
+                assert (
+                    rate == 0
+                ), f"{metric_prefix}/{strict_type}={rate:.4f} must be 0 — this indicates a bug in the TITO algorithm or chat template. Please check your tito model and chat template."
             # assistant_text mismatch is non-critical: assistant tokens are inherited
             # from the pretokenized prefix and may differ from canonical tokenization.
 
     return log_dict
+
+
+def _get_rollout_key(sample: Sample, position: int) -> tuple[AdapterRef | None, str, int | None, int]:
+    # Adapter identity scopes the IDs because each Multi-LoRA data source numbers them independently.
+    if sample.rollout_id is not None:
+        return (sample.adapter, "rollout", sample.group_index, sample.rollout_id)
+    if sample.index is not None:
+        return (sample.adapter, "sample", sample.group_index, sample.index)
+    return (sample.adapter, "position", sample.group_index, position)
+
+
+def _compute_episode_response_length_metrics(samples: list[Sample]) -> dict[str, float]:
+    """Aggregate trainable and total response tokens per original rollout.
+
+    Session compaction can split one rollout into several training samples.
+    Sibling samples share a rollout ID, so their lengths are summed before
+    computing batch-level statistics. Effective lengths count only trainable
+    tokens; total lengths count both masked and unmasked tokens in every sample.
+    """
+    if any(sample.adapter is not None for sample in samples):
+        return {}
+
+    effective_lengths_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], int] = {}
+    total_lengths_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], int] = {}
+    for position, sample in enumerate(samples):
+        rollout_key = _get_rollout_key(sample, position)
+        effective_response_length = 0 if sample.remove_sample else sample.effective_response_length
+        effective_lengths_by_rollout[rollout_key] = (
+            effective_lengths_by_rollout.get(rollout_key, 0) + effective_response_length
+        )
+        total_lengths_by_rollout[rollout_key] = total_lengths_by_rollout.get(rollout_key, 0) + sample.response_length
+
+    if not effective_lengths_by_rollout:
+        return {}
+
+    log_dict = dict_add_prefix(
+        compute_statistics(list(effective_lengths_by_rollout.values())),
+        "episode_response_length/",
+    )
+    log_dict["episode_total_response_length/mean"] = np.mean(list(total_lengths_by_rollout.values())).item()
+    return log_dict
+
+
+def _compute_training_sample_metrics(args: Any, samples: list[Sample]) -> dict[str, float | int]:
+    """Count training rows and average raw reward with equal weight per rollout.
+
+    Session compaction can turn one rollout into several training samples. The
+    sample count includes every resulting row, while the reward first averages
+    sibling rows that share a rollout ID so long rollouts do not receive more
+    metric weight merely because they produced more samples. Adapter identity
+    scopes these IDs because each Multi-LoRA data source numbers them independently.
+    """
+    rewards_by_rollout: dict[tuple[AdapterRef | None, str, int | None, int], list[float]] = {}
+    use_metadata_reward = bool(samples and samples[0].metadata and "raw_reward" in samples[0].metadata)
+    for position, sample in enumerate(samples):
+        rollout_key = _get_rollout_key(sample, position)
+
+        raw_reward = sample.metadata["raw_reward"] if use_metadata_reward else sample.get_reward_value(args)
+        if isinstance(raw_reward, Number):
+            rewards_by_rollout.setdefault(rollout_key, []).append(raw_reward)
+
+    rollout_rewards = [sum(rewards) / len(rewards) for rewards in rewards_by_rollout.values()]
+    return {
+        "num_training_samples": len(samples),
+        "episode_raw_reward": sum(rollout_rewards) / len(rollout_rewards) if rollout_rewards else 0.0,
+    }
 
 
 def _compute_perf_metrics_from_samples(args, samples, rollout_time):
@@ -248,8 +314,7 @@ def _compute_passrate_from_samples(args, all_samples: list[Sample]) -> dict[str,
     completed_groups = [g for g in groups.values() if len(g) == group_size]
     if len(completed_groups) < len(groups):
         logger.warning(
-            f"pass@k: excluding {len(groups) - len(completed_groups)}/{len(groups)} incomplete "
-            f"groups (fewer than n_samples_per_prompt={group_size} samples)."
+            f"pass@k: excluding {len(groups) - len(completed_groups)}/{len(groups)} incomplete groups (fewer than n_samples_per_prompt={group_size} samples)."
         )
     if not completed_groups:
         return {}

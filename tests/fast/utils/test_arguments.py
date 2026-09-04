@@ -360,7 +360,6 @@ class TestSessionServerV2Validation:
         ("extra", "flag"),
         [
             (["--group-rm"], "--group-rm"),
-            (["--partial-rollout"], "--partial-rollout"),
             (
                 ["--true-on-policy-mode", "--recompute-logprobs-via-prefill"],
                 "--recompute-logprobs-via-prefill",
@@ -374,6 +373,29 @@ class TestSessionServerV2Validation:
             miles_validate_args(args)
 
         assert str(exc_info.value) == (f"--use-session-server v2 does not support {flag}; v2 returns list[Sample]")
+
+
+class TestSessionServerScalingArguments:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+
+    def test_defaults_to_32_workers_and_an_auto_port(self):
+        args = self._parse([])
+
+        assert args.session_server_port is None
+        assert args.session_server_workers == 32
+
+    def test_parses_starting_port_and_worker_count(self):
+        args = self._parse(["--session-server-port", "30000", "--session-server-workers", "4"])
+
+        assert args.session_server_port == 30000
+        assert args.session_server_workers == 4
+
+    def test_rejects_the_removed_end_port_form(self):
+        with pytest.raises(SystemExit):
+            self._parse(["--session-server-port", "30000", "30004"])
 
 
 class TestSessionMessageMatcherArgument:
@@ -406,13 +428,14 @@ class TestSessionServerPauseGenerationMode:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
-    def test_session_server_rejects_abort(self):
-        args = self._parse(["--use-session-server", "--pause-generation-mode", "abort"])
+    @pytest.mark.parametrize("colocate", [False, True])
+    def test_session_server_accepts_abort(self, colocate):
+        extra = ["--use-session-server", "--pause-generation-mode", "abort"]
+        if colocate:
+            extra.append("--colocate")
+        args = self._parse(extra)
 
-        with pytest.raises(
-            AssertionError, match="--use-session-server is incompatible with --pause-generation-mode=abort"
-        ):
-            miles_validate_args(args)
+        miles_validate_args(args)
 
     def test_abort_without_session_server_passes(self):
         miles_validate_args(self._parse(["--pause-generation-mode", "abort"]))
@@ -420,6 +443,50 @@ class TestSessionServerPauseGenerationMode:
     @pytest.mark.parametrize("mode", ["retract", "in_place"])
     def test_session_server_accepts_non_abort_modes(self, mode):
         miles_validate_args(self._parse(["--use-session-server", "--pause-generation-mode", mode]))
+
+    @pytest.mark.parametrize(
+        "session_server_args",
+        [["--use-session-server"], ["--use-session-server", "v1"], ["--use-session-server", "v2"]],
+    )
+    def test_session_server_rejects_partial_rollout(self, session_server_args):
+        args = self._parse([*session_server_args, "--partial-rollout"])
+
+        with pytest.raises(AssertionError, match="does not support --partial-rollout"):
+            miles_validate_args(args)
+
+    @pytest.mark.parametrize(
+        ("extra", "expect_warning"),
+        [
+            (
+                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "retract"],
+                True,
+            ),
+            (["--use-session-server", "--pause-generation-mode", "retract"], False),
+            (["--use-rollout-routing-replay", "--pause-generation-mode", "retract"], False),
+            (
+                [
+                    "--use-session-server",
+                    "--use-rollout-routing-replay",
+                    "--colocate",
+                    "--pause-generation-mode",
+                    "abort",
+                ],
+                False,
+            ),
+            (
+                ["--use-session-server", "--use-rollout-routing-replay", "--pause-generation-mode", "in_place"],
+                False,
+            ),
+        ],
+    )
+    def test_retract_r3_warning(self, caplog, extra, expect_warning):
+        args = self._parse(extra)
+
+        with caplog.at_level(logging.WARNING, logger="miles.utils.arguments"):
+            miles_validate_args(args)
+
+        warned = any("R3 payloads can become very large" in record.message for record in caplog.records)
+        assert warned is expect_warning
 
 
 class TestTitoFixedTemplateConfiguration:
@@ -464,6 +531,23 @@ class TestTitoFixedTemplateConfiguration:
         assert args.chat_template_path.endswith("/qwen3_fixed.jinja")
         assert args.apply_chat_template_kwargs == {"clear_thinking": False}
 
+    @pytest.mark.parametrize(
+        ("family", "template"),
+        [("qwen35", "qwen3.5_fixed.jinja"), ("qwen36", "qwen3.6_fixed.jinja")],
+    )
+    def test_qwen35_and_qwen36_resolve_family_template(self, family, template):
+        args = self._parse(["--use-session-server", "--tito-model", family])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith(f"/{template}")
+        assert args.apply_chat_template_kwargs == {"preserve_thinking": True}
+
+    @pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
+    def test_qwen38_families_resolve_default_template(self, family):
+        args = self._parse(["--use-session-server", "--tito-model", family])
+        miles_validate_args(args)
+        assert args.chat_template_path.endswith("/qwen3.8_small_and_flash_next_fixed.jinja")
+        assert args.apply_chat_template_kwargs == {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+
     def test_named_family_rejects_custom_template(self):
         args = self._parse(
             [
@@ -507,7 +591,7 @@ class TestTitoFixedTemplateConfiguration:
         }
 
 
-def test_bridge_mode_rejects_critic(tmp_path):
+def test_bridge_mode_accepts_critic(tmp_path):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
@@ -524,11 +608,8 @@ def test_bridge_mode_rejects_critic(tmp_path):
         + REQUIRED_ARGS
     )
 
-    with pytest.raises(
-        AssertionError,
-        match="Critic models are not supported with --megatron-to-hf-mode bridge",
-    ):
-        miles_validate_args(args)
+    miles_validate_args(args)
+    assert args.use_critic is True
 
 
 def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):

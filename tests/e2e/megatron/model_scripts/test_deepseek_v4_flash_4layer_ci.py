@@ -8,14 +8,7 @@ else:
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
 from tests.ci.metric_history import register_ci_gate
 
-# TODO: add back after megatron bump
-register_cuda_ci(
-    est_time=1900,
-    suite="stage-c-4-gpu-h200",
-    labels=["megatron", "model-scripts"],
-    disabled="DSv4 megatron support (the dsv4 attention variant) is not in miles-main-20260819 yet; "
-    "re-enable in the DSv4 follow-up PR.",
-)
+register_cuda_ci(est_time=1900, suite="stage-c-4-gpu-h200", labels=["megatron", "model-scripts"])
 register_rocm_ci(
     est_time=1900,
     suite="stage-c-4-gpu-mi350",
@@ -33,10 +26,12 @@ register_ci_gate(metric_key="rollout/raw_reward")
 def _args() -> ScriptArgs:
     return ScriptArgs(
         model_name="DeepSeek-V4-Flash-FP8-4layer",
+        dsv4_impl="miles",
         task="gsm8k",
         enable_eval=False,
         num_nodes=1,
         num_gpus_per_node=4,
+        hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
         extra_args=(

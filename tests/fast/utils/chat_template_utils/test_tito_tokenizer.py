@@ -8,6 +8,9 @@ TestConfig
     them to the comparator.  These are NOT behavioral tests — they guard
     against accidental config regressions when modifying __init__.
 
+TestCompletionPostprocess
+    Verifies that the default completion hook is an identity operation.
+
 TestMergeTokensBoundary
     Unit tests for the core merge_tokens boundary logic, using *synthetic*
     prefix IDs ([100, 200, ...]) so the assertions are purely about prefix
@@ -66,6 +69,8 @@ from miles.utils.chat_template_utils.tito_tokenizer import (
     InklingTITOTokenizer,
     Qwen3TITOTokenizer,
     Qwen35TITOTokenizer,
+    Qwen36TITOTokenizer,
+    Qwen38SmallTITOTokenizer,
     QwenNextTITOTokenizer,
     TITOTokenizer,
     TITOTokenizerType,
@@ -276,6 +281,30 @@ class TestConfig:
         assert comp._trim_trailing_ids == set(qwen3_tito.trailing_token_ids)
 
 
+class TestCompletionPostprocess:
+    def test_default_returns_upstream_message_unchanged(self):
+        tito = TITOTokenizer(MagicMock())
+        assistant_message = {"role": "assistant", "content": "upstream"}
+        choice = {
+            "message": assistant_message,
+            "finish_reason": "stop",
+            "meta_info": {"existing": True},
+        }
+
+        stored_message = tito.postprocess_completion(
+            choice=choice,
+            assistant_message=assistant_message,
+            completion_token_ids=[1, 2, 3],
+        )
+
+        assert stored_message is assistant_message
+        assert choice == {
+            "message": assistant_message,
+            "finish_reason": "stop",
+            "meta_info": {"existing": True},
+        }
+
+
 class TestInklingComparatorBoundaries:
     @staticmethod
     def _build_comparator():
@@ -383,6 +412,65 @@ class TestInklingFixedTemplate:
             "<|message_model|><|content_text|>done<|end_message|>"
             "<|content_model_end_sampling|>"
         ) in rendered
+
+    def test_ordered_blocks_preserve_thinking_tool_call_and_text_order(self):
+        raw_json = '{ "args": {"command": "pwd"}, "name": "bash_command" }'
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "flattened-text",
+                    "reasoning_content": "flattened-thinking",
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "bash_command", "arguments": {"command": "pwd"}},
+                        }
+                    ],
+                    "content_blocks": [
+                        {"type": "thinking", "text": "think-1"},
+                        {"type": "text", "text": ""},
+                        {
+                            "type": "tool_call",
+                            "recipient": "bash",
+                            "name": "bash_command",
+                            "arguments": {"command": "pwd"},
+                            "raw_json": raw_json,
+                        },
+                        {"type": "thinking", "text": "think-2"},
+                        {"type": "text", "text": "done"},
+                    ],
+                },
+            ]
+        )
+
+        assert (
+            "<|message_model|><|content_thinking|>think-1<|end_message|>"
+            "<|message_model|><|content_text|><|end_message|>"
+            f"<|message_model|>bash<|content_invoke_tool_json|>{raw_json}<|end_message|>"
+            "<|message_model|><|content_thinking|>think-2<|end_message|>"
+            "<|message_model|><|content_text|>done<|end_message|>"
+            "<|content_model_end_sampling|>"
+        ) in rendered
+        assert "flattened-text" not in rendered
+        assert "flattened-thinking" not in rendered
+        assert rendered.count("<|content_invoke_tool_json|>") == 1
+
+    def test_empty_ordered_block_sequence_keeps_sampling_terminator(self):
+        rendered = self._render(
+            [
+                {"role": "user", "content": "hello"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "content_blocks": [],
+                },
+            ]
+        )
+
+        assert rendered.endswith("<|content_model_end_sampling|>")
 
 
 class TestDeepSeekV32IncrementalAppend:
@@ -674,6 +762,9 @@ class TestFactory:
         [
             ("qwen3", "Qwen/Qwen3-4B", Qwen3TITOTokenizer),
             ("qwen35", "Qwen/Qwen3-4B", Qwen35TITOTokenizer),
+            ("qwen36", "Qwen/Qwen3-4B", Qwen36TITOTokenizer),
+            ("qwen38small", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
+            ("qwen4exp", "Qwen/Qwen3-4B", Qwen38SmallTITOTokenizer),
             ("qwennext", "Qwen/Qwen3-4B", QwenNextTITOTokenizer),
             ("glm47", "zai-org/GLM-4.7-Flash", GLM47TITOTokenizer),
             ("default", "Qwen/Qwen3-4B", TITOTokenizer),
@@ -691,7 +782,13 @@ class TestFactory:
 
     @pytest.mark.parametrize(
         "type_str, cls",
-        [("qwen35", Qwen35TITOTokenizer), ("qwennext", QwenNextTITOTokenizer)],
+        [
+            ("qwen35", Qwen35TITOTokenizer),
+            ("qwen36", Qwen36TITOTokenizer),
+            ("qwen38small", Qwen38SmallTITOTokenizer),
+            ("qwen4exp", Qwen38SmallTITOTokenizer),
+            ("qwennext", QwenNextTITOTokenizer),
+        ],
     )
     def test_qwen_variant_inherits_qwen3_boundary_logic(self, type_str, cls):
         """Qwen3.5 / Qwen3-Next reuse Qwen3's boundary handling via inheritance.
@@ -723,6 +820,9 @@ class TestParserBinding:
         [
             (TITOTokenizerType.QWEN3, "qwen3", "qwen25"),
             (TITOTokenizerType.QWEN35, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN36, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN38_SMALL, "qwen3", "qwen3_coder"),
+            (TITOTokenizerType.QWEN4_EXP, "qwen3", "qwen3_coder"),
             (TITOTokenizerType.QWENNEXT, "qwen3", "qwen25"),
             (TITOTokenizerType.GLM47, "glm45", "glm47"),
             (TITOTokenizerType.NEMOTRON3, "nemotron_3", "qwen3_coder"),
@@ -732,7 +832,7 @@ class TestParserBinding:
             (TITOTokenizerType.MINIMAX_M27, "minimax-append-think", "minimax-m2"),
             (TITOTokenizerType.DEEPSEEKV32, "deepseek-v3", "deepseekv32"),
             (TITOTokenizerType.DEEPSEEKV4, "deepseek-v4", "deepseekv4"),
-            (TITOTokenizerType.INKLING, "inkling", "inkling"),
+            (TITOTokenizerType.INKLING, None, None),
             (TITOTokenizerType.DEFAULT, None, None),
         ],
     )
@@ -746,6 +846,9 @@ class TestParserBinding:
 
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN3) == ("qwen3", "qwen25")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN35) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN36) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN38_SMALL) == ("qwen3", "qwen3_coder")
+        assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.QWEN4_EXP) == ("qwen3", "qwen3_coder")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.GLM47) == ("glm45", "glm47")
         assert resolve_reasoning_and_tool_call_parser(TITOTokenizerType.DEEPSEEKV4) == ("deepseek-v4", "deepseekv4")
         # DEFAULT family has no binding for either parser; both come back None.

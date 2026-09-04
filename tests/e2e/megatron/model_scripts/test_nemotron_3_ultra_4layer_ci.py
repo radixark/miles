@@ -36,6 +36,7 @@ register_ci_gate(metric_key="rollout/raw_reward")
 
 def _args() -> ScriptArgs:
     return ScriptArgs(
+        hardware="H200",
         model_org="CharyZeng",
         model_name="NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16-4layer",
         mode="debug_minimal",

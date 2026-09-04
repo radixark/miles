@@ -162,16 +162,6 @@ def _validate_permissions(name, values):
     return frozenset(values)
 
 
-def _validate_user_ids(name, values):
-    if not isinstance(values, list):
-        raise CommentCommandError(f"{name} must be an array")
-    if any(type(value) is not int or value <= 0 for value in values):
-        raise CommentCommandError(f"{name} must contain only positive integers")
-    if len(set(values)) != len(values):
-        raise CommentCommandError(f"{name} contains duplicate user IDs")
-    return frozenset(values)
-
-
 def _validate_author_associations(name, values):
     if not isinstance(values, list) or not values:
         raise CommentCommandError(f"{name} must be a non-empty array")
@@ -197,8 +187,8 @@ def load_policy(path):
     raw = load_json(path)
     if not isinstance(raw, dict) or set(raw) != {"version", "groups", "commands"}:
         raise CommentCommandError("policy must contain only version, groups, and commands")
-    if type(raw["version"]) is not int or raw["version"] != 3:
-        raise CommentCommandError("policy version must be 3")
+    if type(raw["version"]) is not int or raw["version"] != 4:
+        raise CommentCommandError("policy version must be 4")
 
     raw_groups = raw["groups"]
     if not isinstance(raw_groups, dict) or set(raw_groups) != POLICY_GROUPS:
@@ -208,8 +198,8 @@ def load_policy(path):
     groups = {}
     for name, raw_group in raw_groups.items():
         expected_keys = {"repository_permissions"}
-        if name == "add_label_access":
-            expected_keys.add("user_ids")
+        if name in {"add_label_access", "prior_contributor_access"}:
+            expected_keys.add("users")
         if name == "prior_contributor_access":
             expected_keys.add("author_associations")
         if not isinstance(raw_group, dict) or set(raw_group) != expected_keys:
@@ -219,9 +209,8 @@ def load_policy(path):
                 f"groups.{name}.repository_permissions",
                 raw_group["repository_permissions"],
             ),
-            "user_ids": _validate_user_ids(
-                f"groups.{name}.user_ids",
-                raw_group.get("user_ids", []),
+            "user_ids": (
+                frozenset(user["id"] for user in raw_group["users"]) if "users" in raw_group else frozenset()
             ),
             "author_associations": (
                 _validate_author_associations(
@@ -367,7 +356,14 @@ class GitHubAPI:
                     return None
                 return json.loads(body.decode("utf-8"))
         except urllib.error.HTTPError as error:
-            raise CommentCommandError(f"GitHub API returned HTTP {error.code}") from error
+            # Name the request so a permission failure points at one call; the
+            # token never appears here, and GitHub's accepted-permissions header
+            # states which installation permission that call needed.
+            detail = f"GitHub API returned HTTP {error.code} for {method} {path}"
+            accepted = error.headers.get("X-Accepted-GitHub-Permissions")
+            if accepted:
+                detail = f"{detail}; accepted permissions: {accepted}"
+            raise CommentCommandError(detail) from error
         except urllib.error.URLError as error:
             raise CommentCommandError(f"GitHub API request failed: {error.reason}") from error
         except TimeoutError as error:
@@ -1018,7 +1014,7 @@ COMMAND_REGISTRY = {
         None,
         None,
         None,
-        False,
+        True,
         "command",
         _rerun_command_value,
         "none",
@@ -1030,7 +1026,7 @@ COMMAND_REGISTRY = {
         None,
         None,
         None,
-        False,
+        True,
         "test_file",
         _run_file_value,
         "+1",
