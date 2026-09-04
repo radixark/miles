@@ -166,6 +166,8 @@ class RolloutManager:
             data_ref = object_store.get_instance().put(value=data, value_spec=ROLLOUT_DATA_VALUE_SPEC)
         else:
             data_ref = split_train_data_by_dp(self.args, data, self.train_parallel_config)
+        if (snapshot := getattr(self.data_source, "snapshot", None)) is not None:
+            snapshot(rollout_id)
         return dict(sample_indices=sample_indices, data_ref=data_ref)
 
     async def eval(

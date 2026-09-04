@@ -27,6 +27,12 @@ class DataSource(abc.ABC):
         Add samples to the data source
         """
 
+    def snapshot(self, rollout_id):
+        """
+        Snapshot the state of the data source after a successful rollout.
+        """
+        return None
+
     @abc.abstractmethod
     def save(self, rollout_id):
         """
@@ -55,6 +61,7 @@ class RolloutDataSource(DataSource):
         self.sample_offset = 0
         # TODO remove this
         self.metadata = {}
+        self._rollout_state_snapshots = {}
 
         if args.rollout_global_dataset:
             tokenizer = load_tokenizer(
@@ -121,20 +128,44 @@ class RolloutDataSource(DataSource):
     def add_samples(self, samples: list[list[Sample]]):
         raise RuntimeError(f"Cannot add samples to {self.__class__.__name__}. This is a read-only data source.")
 
+    def _live_state(self):
+        return copy.deepcopy(
+            {
+                "sample_offset": self.sample_offset,
+                "epoch_id": self.epoch_id,
+                "sample_group_index": self.sample_group_index,
+                "sample_index": self.sample_index,
+                "metadata": self.metadata,
+            }
+        )
+
+    def snapshot(self, rollout_id):
+        if not self.args.rollout_global_dataset:
+            return
+
+        # The cursor advances while the trainer catches up, so capture it here, not at save time.
+        self._rollout_state_snapshots[rollout_id] = self._live_state()
+
     def save(self, rollout_id):
         if not self.args.rollout_global_dataset:
             return
 
-        state_dict = {
-            "sample_offset": self.sample_offset,
-            "epoch_id": self.epoch_id,
-            "sample_group_index": self.sample_group_index,
-            "sample_index": self.sample_index,
-            "metadata": self.metadata,
-        }
+        if rollout_id in self._rollout_state_snapshots:
+            state_dict = self._rollout_state_snapshots[rollout_id]
+        else:
+            # A save with no generate behind it, e.g. eval-only. The live cursor may sit past
+            # rollout_id, but it beats refusing to write one.
+            logger.warning(f"No data-source snapshot for rollout {rollout_id}; saving the live cursor instead.")
+            state_dict = self._live_state()
         path = os.path.join(self.args.save, f"rollout/global_dataset_state_dict_{rollout_id}.pt")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state_dict, path)
+        for snapshot_rollout_id in [
+            snapshot_rollout_id
+            for snapshot_rollout_id in self._rollout_state_snapshots
+            if snapshot_rollout_id <= rollout_id
+        ]:
+            del self._rollout_state_snapshots[snapshot_rollout_id]
 
     def load(self, rollout_id=None):
         if not self.args.rollout_global_dataset:
