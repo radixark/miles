@@ -15,7 +15,7 @@ from torch_memory_saver import torch_memory_saver
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import train_dump_utils
+from miles.utils import async_utils, train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -55,15 +55,12 @@ from .ft.indep_dp import reconfigure_indep_dp_group
 from .initialize import init, is_first_replica_megatron_main_rank
 from .lora_utils import is_lora_enabled, lora_rollout_enabled
 from .model import TrainStepOutcome, forward_only, initialize_model_and_optimizer, save, train
+from .named_weights import named_params_and_buffers
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
-from .update_weight.common import named_params_and_buffers
-from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
-from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.rollout_manager import EnginesAndLock
+    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 logging.getLogger("megatron").setLevel(logging.WARNING)
 
@@ -222,11 +219,7 @@ class MegatronTrainRayActor(TrainRayActor):
             main_cast_ctx = build_main_cast_context(args, model=self.model, optimizer=self.optimizer)
 
         self.weights_backuper = TensorBackuper.create(
-            source_getter=lambda: named_params_and_buffers(
-                self.args,
-                self.model,
-                convert_to_global_name=args.megatron_to_hf_mode == "raw",
-            ),
+            source_getter=self._named_actor_weights,
             main_cast_ctx=main_cast_ctx,
         )
         self._active_model_tag: str | None = "actor"
@@ -250,29 +243,28 @@ class MegatronTrainRayActor(TrainRayActor):
         if self.args.vocab_size is None:
             self.args.vocab_size = self.tokenizer.vocab_size
 
-        if self.args.update_weight_transfer_mode == "rdt":
-            from .update_weight.update_weight_from_rdt import UpdateWeightFromRDT
+        from miles.backends.training_utils.weight_update.updater import WeightUpdater
 
-            update_weight_cls = UpdateWeightFromRDT
-        elif self.args.colocate:
-            update_weight_cls = UpdateWeightFromTensor
-        else:
-            if self.args.update_weight_transfer_mode == "broadcast":
-                update_weight_cls = UpdateWeightFromDistributed
-            elif self.args.update_weight_transfer_mode == "disk-delta":
-                # Lazy import: keeps the delta deps (numpy/zstandard/xxhash) off the other paths.
-                from .update_weight.update_weight_from_distributed.delta import UpdateWeightFromDiskDelta
+        from .lora_utils import build_lora_sync_config
+        from .update_weight.hf_weight_iterator import get_hf_weight_iterator
 
-                update_weight_cls = UpdateWeightFromDiskDelta
-            else:
-                update_weight_cls = UpdateWeightP2P
-        self.weight_updater = update_weight_cls(
+        is_lora = lora_rollout_enabled(args)
+        uses_colocate_protocol = self.args.colocate
+        if is_lora and not uses_colocate_protocol:
+            assert args.megatron_to_hf_mode == "bridge", (
+                "LoRA weight sync over distributed engines requires "
+                f"--megatron-to-hf-mode bridge (got {args.megatron_to_hf_mode!r})."
+            )
+        self.weight_updater = WeightUpdater(
             self.args,
             self.model,
-            weights_getter=lambda: self.weights_backuper.get("actor"),
+            weights_getter=self._get_actor_weights,
             model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
             quantization_config=getattr(self.hf_config, "quantization_config", None),
-            is_lora=lora_rollout_enabled(args),
+            iterator_factory=get_hf_weight_iterator,
+            parallel_state=get_parallel_state(),
+            is_lora=is_lora,
+            lora_sync_config=build_lora_sync_config(self.args) if is_lora else None,
         )
 
         # Adapters currently loaded into Megatron slots on this rank.
@@ -290,7 +282,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
         self.rollout_data_postprocess = None
         if (x := self.args.rollout_data_postprocess_path) is not None:
-            from miles.utils.misc import load_function
+            from miles.utils.function_registry import load_function
 
             self.rollout_data_postprocess = load_function(x)
 
@@ -361,8 +353,22 @@ class MegatronTrainRayActor(TrainRayActor):
         print_memory("after wake_up model")
 
     @property
+    def _weight_sync_reads_tms_backup(self) -> bool:
+        """Under colocated LoRA the frozen base already has a memory-saver host backup; a
+        pinned "actor" copy of it would duplicate the whole base per rank. Model switching
+        still needs the real backups, and a disk offload target leaves no host backup to read."""
+        return (
+            self.args.colocate
+            and is_lora_enabled(self.args)
+            and self.args.offload_train_target == "cpu"
+            and not (self.with_ref or self.with_opd_teacher or self.args.keep_old_actor)
+        )
+
+    @property
     def _enable_weight_backup(self) -> bool:
         """Weight backup is only needed for CPU-side model switching or colocated tensor weight sync."""
+        if self._weight_sync_reads_tms_backup:
+            return False
         return self.with_ref or self.with_opd_teacher or self.args.keep_old_actor or self.args.colocate
 
     def _switch_model(self, target_tag: str) -> None:
@@ -676,13 +682,15 @@ class MegatronTrainRayActor(TrainRayActor):
             for adapter in adapters_to_load:
                 self.loaded_adapters[adapter.name] = adapter
                 self._multi_lora_pending_push.add(adapter.name)
-            self.weights_backuper.backup("actor")
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
         if adapters_to_clean_up:
             _cleanup_adapters(self.args, self.model, self.optimizer, adapters_to_clean_up)
             for adapter in adapters_to_clean_up:
                 self.loaded_adapters.pop(adapter.name, None)
                 self._multi_lora_pending_push.discard(adapter.name)
-            self.weights_backuper.backup("actor")
+            if self._enable_weight_backup:
+                self.weights_backuper.backup("actor")
 
         # Deregistered before ever being loaded: nothing to save or clear.
         if is_first_replica_megatron_main_rank():
@@ -722,7 +730,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             from megatron.training.checkpointing import get_checkpoint_name
 
-            from miles.utils.misc import load_function
+            from miles.utils.function_registry import load_function
 
             checkpoint_dir = get_checkpoint_name(self.args.save, rollout_id, return_base_dir=True)
             hf_checkpoint_dir = (
@@ -748,15 +756,30 @@ class MegatronTrainRayActor(TrainRayActor):
 
         save_hf_model(self.args, rollout_id, self.model, path=path, raise_on_error=True)
 
+    def _named_actor_weights(self, *, translate_gpu_to_cpu: bool = False):
+        return named_params_and_buffers(
+            self.args,
+            self.model,
+            convert_to_global_name=self.args.megatron_to_hf_mode == "raw",
+            translate_gpu_to_cpu=translate_gpu_to_cpu,
+        )
+
+    def _get_actor_weights(self):
+        if self._weight_sync_reads_tms_backup:
+            return dict(self._named_actor_weights(translate_gpu_to_cpu=True))
+        # use cpu backup only when weight is not live on gpu
+        if self.args.colocate or self._active_model_tag != "actor":
+            return self.weights_backuper.get("actor")
+        return dict(self._named_actor_weights())
+
     @with_logs
     @timer
-    def update_weights(self, info: "EnginesAndLock") -> None:
+    def update_weights(self, info: "UpdatableEngines") -> None:
         self._heartbeat.bump()
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
         rollout_engines = info.rollout_engines
-        rollout_engine_lock = info.rollout_engine_lock
         has_new_engines = info.has_new_engines
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
@@ -769,13 +792,10 @@ class MegatronTrainRayActor(TrainRayActor):
         if has_new_engines or not self.weight_updater.is_rollout_engines_fresh():
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
-                rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
             dist.barrier(group=get_gloo_group())
-            if dist.get_rank() == 0:
-                ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
@@ -809,7 +829,7 @@ class MegatronTrainRayActor(TrainRayActor):
 
             if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
                 engine = random.choice(rollout_engines)
-                engine_version = ray.get(engine.get_weight_version.remote())
+                engine_version = async_utils.run(engine.get_weight_version())
                 if str(engine_version) != str(self.weight_updater.weight_version):
                     raise RuntimeError(
                         f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"

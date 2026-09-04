@@ -6,27 +6,6 @@ import torch
 from miles.backends.fsdp_utils import update_weight_utils
 
 
-class _RemoteMethod:
-    def __init__(self, fn, submissions, name):
-        self._fn = fn
-        self._submissions = submissions
-        self._name = name
-
-    def remote(self, *args, **kwargs):
-        self._submissions.append(self._name)
-        return _RemoteRef(self._fn, args, kwargs)
-
-
-class _RemoteRef:
-    def __init__(self, fn, args, kwargs):
-        self._fn = fn
-        self._args = args
-        self._kwargs = kwargs
-
-    def resolve(self):
-        return self._fn(*self._args, **self._kwargs)
-
-
 class _SessionEngine:
     def __init__(self, name, events):
         self.name = name
@@ -34,38 +13,33 @@ class _SessionEngine:
         self.calls = []
         self.submissions = []
         self.session_open = False
-        self.pause_generation = self._remote(lambda: self._record("pause_generation"), "pause_generation")
-        self.flush_cache = self._remote(lambda: self._record("flush_cache"), "flush_cache")
-        self.begin_weight_update = self._remote(self._begin_weight_update, "begin_weight_update")
-        self.update_weights_from_tensor = self._remote(
-            self._update_weights_from_tensor,
-            "update_weights_from_tensor",
-        )
-        self.end_weight_update = self._remote(self._end_weight_update, "end_weight_update")
-        self.continue_generation = self._remote(self._continue_generation, "continue_generation")
-
-    def _remote(self, fn, name):
-        return _RemoteMethod(fn, self.submissions, name)
 
     def _record(self, name):
+        self.submissions.append(name)
         self.calls.append(name)
         self.events.append(f"{self.name}.{name}")
 
-    def _begin_weight_update(self):
+    async def pause_generation(self):
+        self._record("pause_generation")
+
+    async def flush_cache(self):
+        self._record("flush_cache")
+
+    async def begin_weight_update(self, selector: str = "all"):
         self._record("begin_weight_update")
         assert not self.session_open
         self.session_open = True
 
-    def _update_weights_from_tensor(self):
+    async def update_weights_from_tensor(self):
         self._record("update_weights_from_tensor")
         assert self.session_open, "update_weights_from_tensor requires an open begin_weight_update session"
 
-    def _end_weight_update(self):
+    async def end_weight_update(self):
         self._record("end_weight_update")
         assert self.session_open
         self.session_open = False
 
-    def _continue_generation(self):
+    async def continue_generation(self):
         self._record("continue_generation")
         assert not self.session_open
 
@@ -74,7 +48,6 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
     def connect_rollout_engines(
         self,
         rollout_engines,
-        rollout_engine_lock,
         engine_gpu_counts=None,
         engine_gpu_offsets=None,
     ):
@@ -83,13 +56,9 @@ class _SessionAwareUpdater(update_weight_utils.UpdateWeight):
     def update_bucket_weights(self, named_tensors, weight_version=None):
         assert named_tensors
         self.last_named_tensors = named_tensors
-        update_weight_utils.ray.get(self.rollout_engines[0].update_weights_from_tensor.remote())
-
-
-def _resolve_refs(value):
-    if isinstance(value, list):
-        return [ref.resolve() for ref in value]
-    return value.resolve()
+        update_weight_utils.async_utils.wait_futures(
+            [update_weight_utils.async_utils.submit(self.rollout_engines[0].update_weights_from_tensor())]
+        )
 
 
 def _make_updater(model, rollout_engines):
@@ -106,7 +75,6 @@ def test_fsdp_weight_updates_run_inside_engine_session(monkeypatch):
     engines = [_SessionEngine("engine0", events), _SessionEngine("engine1", events)]
     updater = _make_updater({"weight": torch.ones(1)}, engines)
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
@@ -139,7 +107,6 @@ def test_fsdp_nonzero_rank_does_not_manage_engine_session(monkeypatch):
     engine = _SessionEngine("engine0", events)
     updater = _make_updater({}, [engine])
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 1)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: events.append("barrier"))
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())
@@ -166,7 +133,6 @@ def test_fsdp_weight_sync_casts_to_rollout_contract_dtypes(monkeypatch):
         "bf16_weight": torch.bfloat16,
     }
 
-    monkeypatch.setattr(update_weight_utils.ray, "get", _resolve_refs)
     monkeypatch.setattr(update_weight_utils.dist, "get_rank", lambda: 0)
     monkeypatch.setattr(update_weight_utils.dist, "barrier", lambda **_kwargs: None)
     monkeypatch.setattr(update_weight_utils, "get_gloo_group", lambda: object())

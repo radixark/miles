@@ -3,20 +3,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import threading
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
-from miles.utils.ft_utils.control_server.models import (
-    Cell,
-    CellCondition,
-    CellMetadata,
-    CellSpec,
-    CellStatus,
-    TriState,
-)
+from miles.utils.ft_utils import mini_ft_controller
+from miles.utils.ft_utils.api_server.models import Cell, CellCondition, CellMetadata, CellSpec, CellStatus, TriState
 from miles.utils.ft_utils.mini_ft_controller import (
     CellHealthStatus,
     _CellSnapshot,
@@ -120,7 +115,7 @@ def _build_cell_list_json(cells: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _create_runner() -> _MiniFTControllerRunner:
     return _MiniFTControllerRunner(
-        control_server_url="http://127.0.0.1:8080",
+        api_server_url="http://127.0.0.1:8080",
         poll_interval=10.0,
         resume_delay=5.0,
     )
@@ -655,13 +650,13 @@ class TestRunnerPatchCell:
 
 
 class TestArgumentValidation:
-    def test_requires_control_server_port(self) -> None:
-        """mini_ft_controller_enable=True + control_server_port=0 → error."""
+    def test_requires_api_server_port(self) -> None:
+        """mini_ft_controller_enable=True + api_server_port=0 → error."""
         from miles.utils.arguments import miles_validate_args
 
         args = argparse.Namespace(
             mini_ft_controller_enable=True,
-            control_server_port=0,
+            api_server_port=0,
             use_fault_tolerance=False,
             ft_components=None,
             eval_datasets=None,
@@ -669,7 +664,57 @@ class TestArgumentValidation:
             eval_config=None,
             eval_prompt_data=None,
             use_miles_dashboard=False,
+            run_uuid=None,
         )
 
-        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --control-server-port"):
+        with pytest.raises(ValueError, match="--mini-ft-controller-enable requires --api-server-port"):
             miles_validate_args(args)
+
+
+class _FakeRunner:
+    def __init__(self, *, api_server_url: str, poll_interval: float, resume_delay: float) -> None:
+        self.api_server_url = api_server_url
+        self.poll_interval = poll_interval
+        self.resume_delay = resume_delay
+        self.ran = threading.Event()
+        self.thread_was_daemon: bool | None = None
+        self.thread_was_main_thread: bool | None = None
+
+    async def run(self) -> None:
+        current_thread = threading.current_thread()
+        self.thread_was_daemon = current_thread.daemon
+        self.thread_was_main_thread = current_thread is threading.main_thread()
+        self.ran.set()
+
+
+class TestMaybeStartMiniFtController:
+    def test_enabled_controller_uses_api_server_port_and_starts_a_daemon_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Enabling the mini FT controller aims the runner at the local API server port and runs it on a daemon thread."""
+        created_runners: list[_FakeRunner] = []
+
+        def _create_runner_spy(**kwargs: Any) -> _FakeRunner:
+            runner = _FakeRunner(**kwargs)
+            created_runners.append(runner)
+            return runner
+
+        monkeypatch.setattr(mini_ft_controller, "_MiniFTControllerRunner", _create_runner_spy)
+
+        mini_ft_controller.maybe_start_mini_ft_controller(
+            argparse.Namespace(
+                mini_ft_controller_enable=True,
+                api_server_port=18231,
+                mini_ft_controller_poll_interval=1.5,
+                mini_ft_controller_resume_delay=2.5,
+            )
+        )
+
+        assert len(created_runners) == 1
+        runner = created_runners[0]
+        assert runner.api_server_url == "http://127.0.0.1:18231"
+        assert runner.poll_interval == 1.5
+        assert runner.resume_delay == 2.5
+        assert runner.ran.wait(timeout=5.0)
+        assert runner.thread_was_daemon is True
+        assert runner.thread_was_main_thread is False

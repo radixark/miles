@@ -1,63 +1,10 @@
 import logging
-import os
+import socket
+from contextlib import ExitStack
 
 import pytest
 
-from miles.utils.misc import FunctionRegistry, filter_keys, function_registry, load_function
-
-
-def _fn_a():
-    return "a"
-
-
-def _fn_b():
-    return "b"
-
-
-class TestFunctionRegistry:
-    def test_register_and_get(self):
-        registry = FunctionRegistry()
-        with registry.temporary("my_fn", _fn_a):
-            assert registry.get("my_fn") is _fn_a
-
-    def test_register_duplicate_raises(self):
-        registry = FunctionRegistry()
-        with registry.temporary("my_fn", _fn_a):
-            with pytest.raises(AssertionError):
-                with registry.temporary("my_fn", _fn_b):
-                    pass
-
-    def test_unregister(self):
-        registry = FunctionRegistry()
-        with registry.temporary("my_fn", _fn_a):
-            assert registry.get("my_fn") is _fn_a
-        assert registry.get("my_fn") is None
-
-    def test_temporary_cleanup_on_exception(self):
-        registry = FunctionRegistry()
-        with pytest.raises(RuntimeError):
-            with registry.temporary("temp_fn", _fn_a):
-                raise RuntimeError("test")
-        assert registry.get("temp_fn") is None
-
-
-class TestLoadFunction:
-    def test_load_from_module(self):
-        import os.path
-
-        assert load_function("os.path.join") is os.path.join
-
-    def test_load_none_returns_none(self):
-        assert load_function(None) is None
-
-    def test_load_from_registry(self):
-        with function_registry.temporary("test:my_fn", _fn_a):
-            assert load_function("test:my_fn") is _fn_a
-
-    def test_registry_takes_precedence(self):
-        with function_registry.temporary("os.path.join", _fn_b):
-            assert load_function("os.path.join") is _fn_b
-        assert load_function("os.path.join") is os.path.join
+from miles.utils.misc import NodeProbeMixin, filter_keys, get_free_port
 
 
 class TestFilterKeys:
@@ -92,3 +39,32 @@ class TestFilterKeys:
             with pytest.raises(KeyError):
                 filter_keys(d, ["a", "missing"])
         assert any("filter_keys" in record.message for record in caplog.records)
+
+
+class TestNodeProbeMixin:
+    def test_get_node_ip_returns_nonempty_string(self):
+        """The node ip probe answers with a usable address string."""
+        node_ip = NodeProbeMixin._get_node_ip()
+        assert isinstance(node_ip, str) and node_ip
+
+    def test_get_free_port_block_returns_bindable_consecutive_ports(self) -> None:
+        """A block request returns five ports that can be bound simultaneously."""
+        candidate_start: int = get_free_port(start_port=15000, consecutive=10)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as occupied_socket:
+            occupied_socket.bind(("", candidate_start + 4))
+            occupied_socket.listen()
+            first_port: int = NodeProbeMixin._get_free_port_block(start_port=candidate_start, count=5)
+
+            with ExitStack() as stack:
+                for port in range(first_port, first_port + 5):
+                    available_socket: socket.socket = stack.enter_context(
+                        socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    )
+                    available_socket.bind(("", port))
+
+    def test_get_gpu_uuids_returns_one_entry_per_gpu(self):
+        """The uuid probe is best-effort: without NVML it still answers per gpu."""
+        uuids = NodeProbeMixin._get_gpu_uuids([0, 1, 2])
+        assert len(uuids) == 3
+        assert all(uuid is None or isinstance(uuid, str) for uuid in uuids)

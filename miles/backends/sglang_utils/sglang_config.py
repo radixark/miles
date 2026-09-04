@@ -1,15 +1,23 @@
-"""Configuration dataclasses for SGLang engine deployment."""
+"""Configuration models for SGLang engine deployment."""
 
-import dataclasses
 import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
+import pydantic
 import yaml
+
+from miles.backends.sglang_utils.arguments import collect_eval_sglang_overrides
+from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 logger = logging.getLogger(__name__)
 
 
-@dataclasses.dataclass
-class ServerGroupConfig:
+# ---------------------------- raw config -----------------------------
+
+
+class _RawServerGroupConfig(FrozenStrictBaseModel):
     """Configuration for a single server group.
 
     Attributes:
@@ -23,21 +31,13 @@ class ServerGroupConfig:
                    arguments in ``_compute_server_args``.
     """
 
-    worker_type: str
+    worker_type: Literal["regular", "prefill", "decode", "placeholder"]
     num_gpus: int
     num_gpus_per_engine: int | None = None
-    overrides: dict = dataclasses.field(default_factory=dict)
-
-    def __post_init__(self):
-        valid_types = {"regular", "prefill", "decode", "placeholder"}
-        assert (
-            self.worker_type in valid_types
-        ), f"Invalid worker_type '{self.worker_type}', must be one of {valid_types}"
-        assert self.num_gpus > 0, f"num_gpus must be > 0, got {self.num_gpus}"
+    overrides: dict = {}
 
 
-@dataclasses.dataclass
-class ModelConfig:
+class _RawModelConfig(FrozenStrictBaseModel):
     """Configuration for a single model deployment.
 
     Attributes:
@@ -57,51 +57,18 @@ class ModelConfig:
     name: str
     model_path: str | None = None
     num_gpus_per_engine: int | None = None
-    server_groups: list[ServerGroupConfig] = dataclasses.field(default_factory=list)
+    server_groups: list[_RawServerGroupConfig] = pydantic.Field(
+        default_factory=list,
+        validation_alias=pydantic.AliasChoices("server_groups", "engine_groups"),
+    )
     update_weights: bool | None = None
-
-    def resolve(self, args) -> None:
-        """Resolve per-group defaults from model-level then args-level values."""
-        default_gpus_per_engine = self.num_gpus_per_engine or args.rollout_num_gpus_per_engine
-        default_model_path = self.model_path or args.hf_checkpoint
-        for g in self.server_groups:
-            if g.num_gpus_per_engine is None:
-                g.num_gpus_per_engine = default_gpus_per_engine
-            if "model_path" not in g.overrides:
-                g.overrides["model_path"] = default_model_path
-
-        if self.server_groups:
-            model_paths = {g.overrides["model_path"] for g in self.server_groups}
-            assert len(model_paths) == 1, (
-                f"Model '{self.name}' has server groups with different model_path values: "
-                f"{model_paths}. All server groups within a model must use the same model_path."
-            )
-            effective_model_path = model_paths.pop()
-        else:
-            effective_model_path = default_model_path
-
-        if self.update_weights is None:
-            if effective_model_path != args.hf_checkpoint:
-                logger.warning(
-                    f"Model '{self.name}' uses model_path='{effective_model_path}' which differs "
-                    f"from hf_checkpoint='{args.hf_checkpoint}'. Defaulting update_weights to False. "
-                    f"Set update_weights explicitly in the config to suppress this warning."
-                )
-                self.update_weights = False
-            else:
-                self.update_weights = True
-
-    @property
-    def has_pd_disaggregation(self) -> bool:
-        return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
 
     @property
     def total_num_gpus(self) -> int:
         return sum(g.num_gpus for g in self.server_groups)
 
 
-@dataclasses.dataclass
-class SglangConfig:
+class _RawSglangConfig(FrozenStrictBaseModel):
     """Configuration for SGLang engine deployment.
 
     Loaded from ``--sglang-config`` YAML file.
@@ -140,55 +107,266 @@ class SglangConfig:
        ``server_groups`` in the YAML config.
     """
 
-    models: list[ModelConfig]
+    models: list[_RawModelConfig] = pydantic.Field(validation_alias=pydantic.AliasChoices("models", "sglang"))
+
+    @classmethod
+    def from_yaml(cls, path: str) -> "_RawSglangConfig":
+        return cls.model_validate(yaml.safe_load(Path(path).read_text()))
 
     @staticmethod
-    def from_yaml(path: str) -> "SglangConfig":
-        with open(path) as f:
-            data = yaml.safe_load(f)
-
-        assert "sglang" in data, (
-            f"sglang config must have a 'sglang' key, got {list(data.keys())}. "
-            f"Wrap your server_groups inside a model entry under 'sglang'."
-        )
-        models = []
-        for m in data["sglang"]:
-            raw_groups = m.get("server_groups") or m.get("engine_groups") or []
-            groups = [ServerGroupConfig(**g) for g in raw_groups]
-            models.append(
-                ModelConfig(
-                    name=m["name"],
-                    model_path=m.get("model_path"),
-                    num_gpus_per_engine=m.get("num_gpus_per_engine"),
-                    server_groups=groups,
-                    update_weights=m.get("update_weights"),
-                )
-            )
-        return SglangConfig(models=models)
-
-    @staticmethod
-    def from_prefill_num_servers(args) -> "SglangConfig":
+    def from_prefill_num_servers(args) -> "_RawSglangConfig":
         """Build a config equivalent to the legacy --prefill-num-servers flag."""
         total_gpus = args.rollout_num_gpus
         prefill_gpus = args.prefill_num_servers * args.rollout_num_gpus_per_engine
         decode_gpus = total_gpus - prefill_gpus
         assert decode_gpus > 0, f"No decode GPUs: total {total_gpus}, prefill {prefill_gpus}"
-        return SglangConfig(
+        return _RawSglangConfig(
             models=[
-                ModelConfig(
+                _RawModelConfig(
                     name="default",
                     server_groups=[
-                        ServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),
-                        ServerGroupConfig(worker_type="decode", num_gpus=decode_gpus),
+                        _RawServerGroupConfig(worker_type="prefill", num_gpus=prefill_gpus),
+                        _RawServerGroupConfig(worker_type="decode", num_gpus=decode_gpus),
                     ],
                 )
             ]
         )
 
     @property
+    def total_num_gpus(self) -> int:
+        return sum(m.total_num_gpus for m in self.models)
+
+
+# ---------------------------- resolved config -----------------------------
+
+
+class ServerGroupConfig(FrozenStrictBaseModel):
+    worker_type: Literal["regular", "prefill", "decode", "placeholder"]
+    num_gpus: int = pydantic.Field(gt=0)
+    num_gpus_per_engine: int = pydantic.Field(gt=0)
+    gpu_offset: int = pydantic.Field(ge=0)
+    overrides: dict = pydantic.Field(default_factory=dict)
+    needs_offload: bool
+
+    @property
+    def model_path(self) -> str:
+        return self.overrides["model_path"]
+
+    @classmethod
+    def resolve(
+        cls,
+        raw: _RawServerGroupConfig,
+        args,
+        default_gpus_per_engine: int,
+        default_model_path: str,
+        gpu_offset_cursor: "_MutableBox",
+    ) -> "ServerGroupConfig":
+        rollout_pg_offset = _compute_rollout_offset(args)
+        megatron_num_gpus = _compute_megatron_num_gpus(args)
+
+        gpu_offset = gpu_offset_cursor.value
+        group_abs_start = rollout_pg_offset + gpu_offset
+        needs_offload = args.offload_rollout and group_abs_start < megatron_num_gpus
+
+        ans = cls(
+            worker_type=raw.worker_type,
+            num_gpus=raw.num_gpus,
+            num_gpus_per_engine=x if (x := raw.num_gpus_per_engine) is not None else default_gpus_per_engine,
+            gpu_offset=gpu_offset,
+            overrides={
+                "model_path": default_model_path,
+                **({"enable_memory_saver": False} if args.offload_rollout and not needs_offload else {}),
+                **raw.overrides,
+            },
+            needs_offload=needs_offload,
+        )
+
+        gpu_offset_cursor.value += raw.num_gpus
+        return ans
+
+
+class ModelConfig(FrozenStrictBaseModel):
+    name: str
+    model_path: str | None
+    server_groups: list[ServerGroupConfig]
+    update_weights: bool
+
+    @classmethod
+    def resolve(cls, raw: _RawModelConfig, args, gpu_offset_cursor: "_MutableBox") -> "ModelConfig":
+        """Resolve per-group defaults from model-level then args-level values."""
+        default_model_path = p if (p := raw.model_path) is not None else args.hf_checkpoint
+        default_gpus_per_engine = n if (n := raw.num_gpus_per_engine) is not None else args.rollout_num_gpus_per_engine
+        server_groups = [
+            ServerGroupConfig.resolve(
+                g,
+                args,
+                default_gpus_per_engine=default_gpus_per_engine,
+                default_model_path=default_model_path,
+                gpu_offset_cursor=gpu_offset_cursor,
+            )
+            for g in raw.server_groups
+        ]
+
+        if server_groups:
+            model_paths = {g.overrides["model_path"] for g in server_groups}
+            assert len(model_paths) == 1, (
+                f"Model '{raw.name}' has server groups with different model_path values: "
+                f"{model_paths}. All server groups within a model must use the same model_path."
+            )
+            effective_model_path = model_paths.pop()
+        else:
+            effective_model_path = default_model_path
+
+        update_weights = raw.update_weights
+        if update_weights is None:
+            if effective_model_path != args.hf_checkpoint:
+                logger.warning(
+                    f"Model '{raw.name}' uses model_path='{effective_model_path}' which differs "
+                    f"from hf_checkpoint='{args.hf_checkpoint}'. Defaulting update_weights to False. "
+                    f"Set update_weights explicitly in the config to suppress this warning."
+                )
+                update_weights = False
+            else:
+                update_weights = True
+
+        return cls(
+            name=raw.name,
+            model_path=raw.model_path,
+            server_groups=server_groups,
+            update_weights=update_weights,
+        )
+
+    @property
+    def has_pd_disaggregation(self) -> bool:
+        return any(g.worker_type in ("prefill", "decode") for g in self.server_groups)
+
+
+class SglangConfig(FrozenStrictBaseModel):
+    models: list[ModelConfig]
+
+    @classmethod
+    def resolve(cls, raw: _RawSglangConfig, args) -> "SglangConfig":
+        gpu_offset_cursor = _MutableBox(value=0)
+        model_configs = [ModelConfig.resolve(m, args, gpu_offset_cursor) for m in raw.models]
+
+        assert gpu_offset_cursor.value == raw.total_num_gpus
+        return cls(models=model_configs)
+
+    @property
     def has_pd_disaggregation(self) -> bool:
         return any(m.has_pd_disaggregation for m in self.models)
 
-    @property
-    def total_num_gpus(self) -> int:
-        return sum(m.total_num_gpus for m in self.models)
+
+@dataclass
+class _MutableBox:
+    value: int
+
+
+def resolve_sglang_config(args) -> SglangConfig:
+    """Build a SglangConfig from args, choosing the right source."""
+    raw = _compute_raw_sglang_config(args)
+    return SglangConfig.resolve(raw, args)
+
+
+def _compute_raw_sglang_config(args) -> _RawSglangConfig:
+    eval_num_gpus = args.eval_num_gpus
+
+    if getattr(args, "sglang_config", None) is not None:
+        config = _RawSglangConfig.from_yaml(args.sglang_config)
+        expected = args.rollout_num_gpus + eval_num_gpus
+        actual = config.total_num_gpus
+        assert (
+            actual == expected
+        ), f"sglang_config total GPUs ({actual}) != rollout_num_gpus + eval_num_gpus ({expected})"
+        if eval_num_gpus == 0:
+            return config
+        eval_models = [m for m in config.models if m.name == "eval"]
+        assert len(eval_models) == 1 and eval_models[0].total_num_gpus == eval_num_gpus, (
+            f"--eval-num-gpus {eval_num_gpus} requires the sglang_config YAML to contain "
+            f"exactly one model named 'eval' with that many GPUs."
+        )
+        return _RawSglangConfig(
+            models=[_compute_eval_raw_model(m, args) if m.name == "eval" else m for m in config.models]
+        )
+
+    if args.prefill_num_servers is not None:
+        config = _RawSglangConfig.from_prefill_num_servers(args)
+    else:
+        config = _RawSglangConfig(
+            models=[
+                _RawModelConfig(
+                    name="default",
+                    server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=args.rollout_num_gpus)],
+                )
+            ]
+        )
+
+    if eval_num_gpus == 0:
+        return config
+
+    eval_model = _compute_eval_raw_model(
+        _RawModelConfig(
+            name="eval",
+            server_groups=[_RawServerGroupConfig(worker_type="regular", num_gpus=eval_num_gpus)],
+        ),
+        args,
+    )
+    return _RawSglangConfig(models=[*config.models, eval_model])
+
+
+def _eval_sglang_overrides(args) -> dict:
+    """Eval-fleet engine settings; anything absent is inherited from the rollout engines."""
+    overrides = {
+        # Eval samples never feed training, so the replay side-channels are pure overhead.
+        "enable_return_routed_experts": False,
+        "enable_return_indexer_topk": False,
+    }
+    if args.eval_num_gpus_per_engine != args.rollout_num_gpus_per_engine:
+        # Inheriting these across a different tp gives an engine SGLang refuses to boot.
+        tp_coupled = ("dp_size", "pp_size", "ep_size", "attn_cp_size")
+        overrides |= dict.fromkeys(tp_coupled, 1)
+        logger.info(
+            f"Eval tp={args.eval_num_gpus_per_engine} != rollout tp={args.rollout_num_gpus_per_engine}; "
+            f"{', '.join(tp_coupled)} default to 1. Override with --eval-sglang-*."
+        )
+    return overrides | collect_eval_sglang_overrides(args)
+
+
+def _compute_eval_raw_model(raw: _RawModelConfig, args) -> _RawModelConfig:
+    """Fill the eval model from the ``--eval-*`` args: YAML > ``--eval-sglang-*`` > ``--sglang-*``."""
+    overrides = _eval_sglang_overrides(args)
+    return raw.model_copy(
+        update=dict(
+            # Never joins the training broadcast group; the fleet is synced by snapshot only.
+            update_weights=False if raw.update_weights is None else raw.update_weights,
+            server_groups=[
+                group.model_copy(
+                    update=dict(
+                        num_gpus_per_engine=group.num_gpus_per_engine or args.eval_num_gpus_per_engine,
+                        overrides=overrides | group.overrides,
+                    )
+                )
+                for group in raw.server_groups
+            ],
+        )
+    )
+
+
+def _compute_rollout_offset(args) -> int:
+    """Offset (in PG bundle slots) where rollout GPUs start."""
+    if args.debug_train_only or args.debug_rollout_only or args.colocate:
+        return 0
+    if getattr(args, "critic_train_only", False):
+        return args.critic_num_nodes * args.critic_num_gpus_per_node
+    offset = args.actor_num_nodes * args.actor_num_gpus_per_node
+    return offset
+
+
+def _compute_megatron_num_gpus(args) -> int:
+    """Total number of megatron (actor + critic) GPU slots in the placement group."""
+    if getattr(args, "debug_rollout_only", False):
+        return 0
+    if getattr(args, "critic_train_only", False):
+        return args.critic_num_nodes * args.critic_num_gpus_per_node
+    num = args.actor_num_nodes * args.actor_num_gpus_per_node
+    return num

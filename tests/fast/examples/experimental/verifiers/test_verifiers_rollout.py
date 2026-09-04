@@ -5,17 +5,17 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
-from packaging.version import Version
 
 if sys.version_info < (3, 11):
     pytest.skip("Verifiers requires Python 3.11+", allow_module_level=True)
 
+import examples.experimental.verifiers.verifiers_rollout as verifiers_rollout
 from examples.experimental.verifiers.verifiers_rollout import (
     MilesSGLangTransport,
     VerifiersRolloutFn,
-    _check_version,
     _config_path,
     _finish_reason,
+    _import_verifiers,
     _load_config_data,
     _make_eval_args,
     _raise_for_unsupported_trace_errors,
@@ -28,6 +28,7 @@ from examples.experimental.verifiers.verifiers_rollout import (
     trace_to_samples,
 )
 
+from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput
 from miles.utils.types import Sample
 
 
@@ -143,9 +144,28 @@ def test_config_loader_rejects_non_toml_formats(tmp_path):
         _load_config_data(path)
 
 
-def test_verifiers_0_2_1_is_rejected_with_compatibility_reason():
+def test_verifiers_0_2_1_is_rejected_with_compatibility_reason(monkeypatch):
+    monkeypatch.setattr(
+        "examples.experimental.verifiers.verifiers_rollout._installed_version",
+        lambda package: {"verifiers": "0.2.1"}[package],
+    )
+
     with pytest.raises(RuntimeError, match="SGLang 0.5.15 pins OpenAI"):
-        _check_version("verifiers", "0.2.1", Version("0.2.0"), Version("0.2.1"))
+        _import_verifiers()
+
+
+def test_renderers_0_1_11_is_rejected_with_compatibility_reason(monkeypatch):
+    versions = {"verifiers": "0.2.0", "renderers": "0.1.11"}
+    monkeypatch.setattr(
+        "examples.experimental.verifiers.verifiers_rollout._installed_version",
+        versions.__getitem__,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"renderers>=0\.1\.8,<0\.1\.11.*removes the renderer pool APIs",
+    ):
+        _import_verifiers()
 
 
 def test_transport_does_not_treat_aborted_generation_as_complete():
@@ -705,3 +725,28 @@ async def test_eval_extracts_structured_miles_reward(monkeypatch):
     output = await adapter._call_eval(SimpleNamespace(rollout_id=0))
 
     assert output.data["test-env"]["rewards"] == [0.75]
+
+
+class TestRolloutFnContract:
+    def test_it_is_a_rollout_fn_the_loader_accepts(self):
+        """The loader rejects a rollout function that forgets the base, however complete it is."""
+        assert issubclass(VerifiersRolloutFn, BaseRolloutFn)
+
+    def test_the_constructor_input_reaches_the_base(self, monkeypatch):
+        """Skipping super().__init__ leaves constructor_input missing on every path that reads it."""
+
+        class _ImportVerifiersSentinel(Exception):
+            pass
+
+        def raise_sentinel():
+            raise _ImportVerifiersSentinel
+
+        monkeypatch.setattr(verifiers_rollout, "_import_verifiers", raise_sentinel)
+        data_source = object()
+        constructor_input = RolloutFnConstructorInput(args=_args(), data_source=data_source)
+        adapter = object.__new__(VerifiersRolloutFn)
+
+        with pytest.raises(_ImportVerifiersSentinel):
+            VerifiersRolloutFn.__init__(adapter, constructor_input)
+
+        assert adapter.constructor_input.data_source is data_source

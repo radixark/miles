@@ -19,7 +19,8 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
-from miles.utils.misc import function_registry
+from miles.utils.function_registry import function_registry
+from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
@@ -284,43 +285,6 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
 
     with pytest.raises(AssertionError, match="requires --use-dynamic-batch-size"):
         miles_validate_args(args)
-
-
-class TestRdtValidation:
-    def _validate(self, extra):
-        parser = argparse.ArgumentParser()
-        get_miles_extra_args_provider()(parser)
-        args = parser.parse_args(
-            ["--update-weight-transfer-mode", "rdt", *extra, "--num-rollout", "1"] + REQUIRED_ARGS
-        )
-        miles_validate_args(args)
-        return args
-
-    def test_accepts_megatron_without_critic(self):
-        args = self._validate(["--train-backend", "megatron", "--advantage-estimator", "grpo"])
-
-        assert args.use_critic is False
-
-    @pytest.mark.parametrize(
-        ("extra", "message"),
-        [
-            pytest.param(
-                ["--train-backend", "fsdp", "--advantage-estimator", "grpo"],
-                "only supported with --train-backend megatron",
-                id="fsdp",
-            ),
-            pytest.param(
-                ["--train-backend", "megatron", "--advantage-estimator", "ppo"],
-                "not compatible with Shared Actor/Critic PPO",
-                id="ppo",
-            ),
-        ],
-    )
-    def test_rejects_unsupported_configuration(self, monkeypatch, extra, message):
-        monkeypatch.delenv("MILES_EXPERIMENTAL_FT_TRAINER", raising=False)
-
-        with pytest.raises(AssertionError, match=message):
-            self._validate(extra)
 
 
 class TestCriticSaveDerivation:
@@ -591,7 +555,7 @@ class TestTitoFixedTemplateConfiguration:
         }
 
 
-def test_bridge_mode_rejects_critic(tmp_path):
+def test_bridge_mode_accepts_critic(tmp_path):
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
@@ -608,11 +572,8 @@ def test_bridge_mode_rejects_critic(tmp_path):
         + REQUIRED_ARGS
     )
 
-    with pytest.raises(
-        AssertionError,
-        match="Critic models are not supported with --megatron-to-hf-mode bridge",
-    ):
-        miles_validate_args(args)
+    miles_validate_args(args)
+    assert args.use_critic is True
 
 
 def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
@@ -1166,3 +1127,58 @@ class TestValidateSkipActorForwardOnly:
                 use_dynamic_global_batch_size=True,
             )
         )
+
+
+class TestRunUuidResolution:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1"] + extra + REQUIRED_ARGS)
+
+    def test_unset_run_uuid_is_generated(self):
+        """Every launch gets an identifier, so nothing has to cope with it being absent."""
+        args = self._parse([])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_two_launches_do_not_share_a_run_uuid(self):
+        """A colliding identifier would attribute one run's artifacts to another."""
+        first, second = self._parse([]), self._parse([])
+        miles_validate_args(first)
+        miles_validate_args(second)
+
+        assert first.run_uuid != second.run_uuid
+
+    def test_an_explicit_run_uuid_is_kept(self):
+        """Reproducing a run means being able to pin its identifier."""
+        pinned = ("ab12cd34ef5678ab" * 4)[:RUN_UUID_LENGTH]
+        args = self._parse(["--run-uuid", pinned])
+        miles_validate_args(args)
+
+        assert args.run_uuid == pinned
+
+    def test_a_run_uuid_from_the_custom_config_file_is_validated_too(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so it must not skip the check."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: my-experiment\n")
+        args = self._parse(["--custom-config-path", str(config)])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)
+
+    def test_a_run_uuid_blanked_by_the_custom_config_file_is_regenerated(self, tmp_path):
+        """A null in the config file must not leave the identifier unset for the whole run."""
+        config = tmp_path / "override.yaml"
+        config.write_text("run_uuid: null\n")
+        args = self._parse(["--custom-config-path", str(config)])
+        miles_validate_args(args)
+
+        assert validate_run_uuid(args.run_uuid)
+
+    def test_a_malformed_explicit_run_uuid_fails_at_launch(self):
+        """Rejecting it here beats corrupting every string that embeds it hours into a run."""
+        args = self._parse(["--run-uuid", "my-experiment"])
+
+        with pytest.raises(ValueError, match="invalid run uuid"):
+            miles_validate_args(args)

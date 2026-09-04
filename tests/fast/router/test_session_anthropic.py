@@ -18,6 +18,7 @@ import requests
 from fastapi.responses import JSONResponse
 from sglang.srt.entrypoints.anthropic.protocol import AnthropicMessagesRequest
 from sglang.srt.entrypoints.anthropic.serving import convert_to_chat_completion_request
+from tests.fast.fixtures.session_fixtures import make_session_server_config
 
 import miles.rollout.session.core as core_module
 import miles.rollout.session.v2.core as v2_core_module
@@ -49,19 +50,16 @@ def _anthropic_env(extra_args: dict | None = None, *, latency: float = 0.0):
     # The mock backend already emits choice.meta_info with
     # output_token_logprobs/completion_tokens in the session-server format.
     with with_mock_server(process_fn=_process_fn, latency=latency) as backend:
-        args = SimpleNamespace(
-            miles_router_timeout=30,
+        config = make_session_server_config(
+            backend_url=backend.url,
+            timeout=30,
             hf_checkpoint="Qwen/Qwen3-0.6B",
-            chat_template_path=None,
             apply_chat_template_kwargs={"enable_thinking": False},
             tito_model="default",
-            sglang_speculative_algorithm=None,
-            trajectory_manager="linear_trajectory",
-            session_server_instance_id=uuid.uuid4().hex,
-            save_debug_trajectory_data=None,
+            instance_id=uuid.uuid4().hex,
             **({"pause_generation_mode": "retract"} | (extra_args or {})),
         )
-        server_obj = SessionServer(args, backend_url=backend.url)
+        server_obj = SessionServer(config)
         port = find_available_port(31000)
         server = UvicornThreadServer(server_obj.app, host="127.0.0.1", port=port)
         server.start()

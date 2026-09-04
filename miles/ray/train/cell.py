@@ -15,7 +15,7 @@ from miles.ray.train.cell_state import (
     StatePending,
     StateStopped,
 )
-from miles.utils.ft_utils.control_server.models import CellStatus
+from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.tracking_utils.structured_log import log_structured
@@ -36,7 +36,7 @@ class RayTrainCell:
         with_opd_teacher: bool = False,
         cell_index: int,
         actor_factory: ActorFactory,
-        rollout_manager: object | None,
+        rollout_executor: object | None,
         health_checker: BaseHealthChecker,
     ) -> None:
         self.args = args
@@ -44,7 +44,7 @@ class RayTrainCell:
         self.role = role
         self.with_ref = with_ref
         self.with_opd_teacher = with_opd_teacher
-        self.rollout_manager = rollout_manager
+        self.rollout_executor = rollout_executor
         self.actor_factory = actor_factory
         self.health_checker = health_checker
 
@@ -73,9 +73,9 @@ class RayTrainCell:
         await self.health_checker.start()
         return results
 
-    async def set_rollout_manager(self):
-        if (m := self.rollout_manager) is not None:
-            return await self.execute("set_rollout_manager", m)
+    async def set_rollout_executor(self):
+        if (executor := self.rollout_executor) is not None:
+            return await self.execute("set_rollout_executor", executor)
         return []
 
     # ------------------------ API :: cooperatively prepare ------------------------
@@ -101,14 +101,20 @@ class RayTrainCell:
             recv_ckpt_src_rank=recv_ckpt_src_rank,
         )
 
-        await self.set_rollout_manager()
+        await self.set_rollout_executor()
 
     # ------------------------ state transition ------------------------
 
     def stop(self) -> None:
         if self.is_stopped:
             log_structured(
-                logger.info, op="state", name="stop", cell=self.cell_index, skipped=True, reason="already_stopped"
+                logger.info,
+                tag="ft",
+                op="state",
+                name="stop",
+                cell=self.cell_index,
+                skipped=True,
+                reason="already_stopped",
             )
             return
 
@@ -125,11 +131,14 @@ class RayTrainCell:
         handles = self._get_actor_handles() if self.is_allocated else []
         self.stop()
 
-        log_structured(logger.info, op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles))
+        log_structured(
+            logger.info, tag="ft", op="confirm_dead", phase="start", cell=self.cell_index, n_actors=len(handles)
+        )
         start = time.monotonic()
         await asyncio.gather(*[_confirm_actor_dead(handle) for handle in handles])
         log_structured(
             logger.info,
+            tag="ft",
             op="confirm_dead",
             phase="end",
             cell=self.cell_index,
@@ -140,6 +149,7 @@ class RayTrainCell:
         if self.is_pending or self.is_allocated:
             log_structured(
                 logger.info,
+                tag="ft",
                 op="state",
                 name="mark_as_pending",
                 cell=self.cell_index,
@@ -191,6 +201,7 @@ class RayTrainCell:
     ) -> None:
         log_structured(
             logger.info,
+            tag="ft",
             op="state",
             phase="start",
             name=debug_name,
@@ -201,6 +212,7 @@ class RayTrainCell:
         self._state = new_state
         log_structured(
             logger.info,
+            tag="ft",
             op="state",
             phase="end",
             name=debug_name,
@@ -227,7 +239,7 @@ class RayTrainCell:
     ) -> list:
         handles = self._get_actor_handles()
         log_structured(
-            logger.info, op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
+            logger.info, tag="ft", op="execute", phase="start", cell=self.cell_index, fn=fn_name, n_actors=len(handles)
         )
         start = time.monotonic()
         try:
@@ -239,6 +251,7 @@ class RayTrainCell:
             )
             log_structured(
                 logger.info,
+                tag="ft",
                 op="execute",
                 phase="end",
                 cell=self.cell_index,
@@ -250,6 +263,7 @@ class RayTrainCell:
         except Exception:
             log_structured(
                 logger.error,
+                tag="ft",
                 op="execute",
                 phase="fail",
                 cell=self.cell_index,

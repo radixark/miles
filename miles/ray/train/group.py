@@ -27,7 +27,7 @@ from miles.utils.ft_utils.health_checker import NoopHealthChecker, SimpleHealthC
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.retry_utils import retry
-from miles.utils.test_utils.ft_test_actions import FTTestActionGroupExecutor
+from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
 from miles.utils.tracking_utils.structured_log import log_structured
 
 if TYPE_CHECKING:
@@ -64,14 +64,16 @@ class RayTrainGroup:
         num_gpus_per_node: int,
         pg: tuple[PlacementGroup, list[int], list[int]],
         *,
-        rollout_manager: object | None,
+        inference_controller: object | None,
+        rollout_executor: object | None,
         num_gpus_per_actor: float = 1,
         role: str,
         with_ref: bool,
         with_opd_teacher: bool = False,
     ) -> None:
         self.args = args
-        self._rollout_manager = rollout_manager
+        self._inference_controller = inference_controller
+        self._rollout_executor = rollout_executor
 
         total_gpus = num_nodes * num_gpus_per_node
         num_cells = (total_gpus // compute_megatron_world_size_except_dp(args)) if args.indep_dp else 1
@@ -99,7 +101,7 @@ class RayTrainGroup:
                 with_ref=with_ref,
                 with_opd_teacher=with_opd_teacher,
                 cell_index=cell_index,
-                rollout_manager=rollout_manager,
+                rollout_executor=rollout_executor,
                 actor_factory=lambda _pg=cell_pg, _ci=cell_index: allocate_gpus_for_actor(
                     args=args,
                     gpus_per_cell=gpus_per_cell,
@@ -128,7 +130,7 @@ class RayTrainGroup:
         if self._witness_allocator is not None and args.save_debug_event_data is not None:
             self._witness_allocator.resume(read_persisted_witness_counter(Path(args.save_debug_event_data)))
 
-        self._test_action_executor = FTTestActionGroupExecutor.from_args(args, group=self)
+        self._test_action_executor = FTTestActionControllerExecutor.from_args(args, group=self)
 
     # ------------------------ API :: train ------------------------
 
@@ -144,7 +146,7 @@ class RayTrainGroup:
                 sample_indices=rollout_data_pack["sample_indices"],
             )
 
-            log_structured(logger.info, op="train", phase="start", rollout=rollout_id, attempt=attempt)
+            log_structured(logger.info, tag="ft", op="train", phase="start", rollout=rollout_id, attempt=attempt)
             await self._refresh_cells(rollout_id=rollout_id)
             snapshot_alive_cells, results = await self._execute_all_alive_and_catch(
                 "train",
@@ -199,17 +201,26 @@ class RayTrainGroup:
     def _check_train_one_attempt(snapshot_alive_cells, results):
         outcomes = RayTrainGroup._compute_attempt_outcomes(snapshot_alive_cells, results)
         if not outcomes["normal"] and not outcomes["discarded"]:
-            log_structured(logger.error, op="check", **outcomes, decision="retry", reason="all alive cells failed")
+            log_structured(
+                logger.error, tag="ft", op="check", **outcomes, decision="retry", reason="all alive cells failed"
+            )
             raise RuntimeError("All cells failed in this training attempt")
 
         # NOTE: If some cells errors + all other cells claim normal, we do *not* retry
         #       This may happen when some cells fails *after* exchanging gradients w/ others
         if outcomes["discarded"]:
-            log_structured(logger.warning, op="check", **outcomes, decision="retry", reason="discarded_should_retry")
+            log_structured(
+                logger.warning, tag="ft", op="check", **outcomes, decision="retry", reason="discarded_should_retry"
+            )
             raise ValueError("Exists DISCARDED_SHOULD_RETRY, thus need retry")
 
         log_structured(
-            logger.info, op="check", **outcomes, decision="no_retry", reason="survivors normal, gradients valid"
+            logger.info,
+            tag="ft",
+            op="check",
+            **outcomes,
+            decision="no_retry",
+            reason="survivors normal, gradients valid",
         )
 
     @staticmethod
@@ -254,17 +265,18 @@ class RayTrainGroup:
 
     async def update_weights(self, rollout_id: int | None = None):
         """Broadcast weights to rollout engines."""
-        log_structured(logger.info, op="update_weights", phase="start", rollout=rollout_id)
+        log_structured(logger.info, tag="ft", op="update_weights", phase="start", rollout=rollout_id)
         # TODO: allow using all cells to update weights (instead of first alive cell)
-        # Fetch the updatable engines + lock once (like V1 RayActorGroup) so all
-        # ranks observe a consistent engine set; the actor releases the lock itself.
-        info = await self._rollout_manager.get_updatable_engines_and_lock.remote()
-        await self._rollout_manager.health_monitoring_pause.remote()
+        # Fetch the updatable engines once (like V1 RayActorGroup) so all
+        # ranks observe a consistent engine set.
+        await self._inference_controller.health_monitoring_pause()
+        info = await self._inference_controller.get_updatable_engines()
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
             max_attempts=_RETRY_MAX_ATTEMPTS,
         )
+        await self._inference_controller.clear_updatable_has_new_engines()
 
         await self._maybe_log_inference_engine_weight_checksums(rollout_id=rollout_id)
 
@@ -274,7 +286,7 @@ class RayTrainGroup:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        check_weights_result = await self._rollout_manager.check_weights.remote("checksum")
+        check_weights_result = await self._inference_controller.check_weights("checksum")
         engine_checksums = flatten_inference_engine_checksums(check_weights_result)
         get_event_logger().log(
             InferenceEngineWeightChecksumEvent,
@@ -297,8 +309,8 @@ class RayTrainGroup:
         # Catch *without* retry: cells w/ exceptions are auto marked errored, and will not be used
         await self._execute_all_alive_and_catch("clear_memory")
 
-    async def set_rollout_manager(self):
-        await asyncio.gather(*[cell.set_rollout_manager() for cell in self._cells])
+    async def set_rollout_executor(self):
+        await asyncio.gather(*[cell.set_rollout_executor() for cell in self._cells])
 
     def stop_cell(self, cell_index: int) -> None:
         self._cells[cell_index].stop()
@@ -336,6 +348,7 @@ class RayTrainGroup:
         all_states = [(c.cell_index, c.state_name) for c in self._cells]
         log_structured(
             logger.info,
+            tag="ft",
             op="refresh",
             phase="start",
             rollout=rollout_id,
@@ -357,6 +370,7 @@ class RayTrainGroup:
         if not needs_reconfigure:
             log_structured(
                 logger.info,
+                tag="ft",
                 op="refresh",
                 phase="decision",
                 rollout=rollout_id,
@@ -375,6 +389,7 @@ class RayTrainGroup:
         )
         log_structured(
             logger.info,
+            tag="ft",
             op="refresh",
             phase="decision",
             rollout=rollout_id,
@@ -429,6 +444,7 @@ class RayTrainGroup:
             assert [c.cell_index for c in self._cells if c.is_alive] == will_alive_indices
             log_structured(
                 logger.info,
+                tag="ft",
                 op="refresh",
                 phase="end",
                 rollout=rollout_id,
@@ -446,6 +462,7 @@ class RayTrainGroup:
         else:
             log_structured(
                 logger.error,
+                tag="ft",
                 op="refresh",
                 phase="end",
                 rollout=rollout_id,

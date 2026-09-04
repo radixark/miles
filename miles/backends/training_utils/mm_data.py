@@ -42,6 +42,7 @@ def _expand_image_tokens_for_sample(
     grid_thws: torch.Tensor,
     media_token_id: int = KIMI_VL_MEDIA_TOKEN_ID,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    # TODO: expansion shifts token indices, so Sample.weight_versions span positions are not remapped and misalign here.
     if grid_thws is None or len(grid_thws) == 0:
         return tokens, loss_mask
 

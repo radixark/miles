@@ -35,13 +35,14 @@ from sglang.srt.entrypoints.openai.protocol import ChatCompletionRequest
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.openai_endpoint_utils import OpenAIEndpointTracer
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.types import Sample
 
 logger = logging.getLogger(__name__)
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:
+    assert not input.args.partial_rollout, "Partial rollout is not supported"
     assert getattr(input.args, "session_server_ip", None) and getattr(input.args, "session_server_ports", None), (
         "agentic_tool_call.generate requires session_server_ip/session_server_ports. "
         "Pass --use-session-server to start the session server."

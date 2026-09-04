@@ -134,34 +134,42 @@ def test_register_train_actor_attaches_train_sink(monkeypatch):
 # ---------------------------- engine registration ---------------------------
 
 
+class _FakeProbe:
+    def __init__(self, value_fn):
+        self._value_fn = value_fn
+
+    def remote(self, *args):
+        return self._value_fn(*args)  # hooks._ray_get is patched to the identity function
+
+
 class FakeEngineHandle:
-    def __init__(self, info):
-        self._info = info
-        self.get_topology_info = self
-
-    def remote(self):
-        return self._info  # hooks._ray_get is patched to the identity function
+    def __init__(self, node_ip):
+        self._get_node_ip = _FakeProbe(lambda: node_ip)
+        self._get_gpu_uuids = _FakeProbe(lambda gpu_ids: [None] * len(gpu_ids))
 
 
-class FakeServerEngine:
-    def __init__(self, info, alive=True):
-        self.actor_handle = FakeEngineHandle(info)
-        self.is_allocated = alive
+class FakeCell:
+    """Duck-typed ServerCell: the hooks read the driver-side placement facts."""
+
+    def __init__(self, members, alive=True):
+        self.actor_handles = [FakeEngineHandle(node_ip) for _, node_ip, _ in members]
+        self.addr_infos = [type("FakeAddrInfo", (), {"server_url": url})() for url, _, _ in members]
+        self.engine_gpu_ids = [gpu_ids for _, _, gpu_ids in members]
+        self.worker_type = "regular"
         self.is_alive = alive
 
 
-class FakeGroup:
-    def __init__(self, engines, nodes_per_engine=1):
-        self.all_engines = engines
-        self.nodes_per_engine = nodes_per_engine
+def _cell(*members, alive=True):
+    return [FakeCell(list(members), alive=alive)]
 
 
 def _info(url, node, gpus):
-    return dict(url=url, node_ip=node, gpu_ids=gpus, gpu_uuids=[None] * len(gpus), worker_type="regular", node_rank=0)
+    return (url, node, gpus)
 
 
-def _servers(*groups):
-    server = type("FakeServer", (), {"server_groups": list(groups)})()
+def _servers(*cell_lists):
+    cells = [cell for cells in cell_lists for cell in cells]
+    server = type("FakeServer", (), {"server_cells": {f"cell-{i}": cell for i, cell in enumerate(cells)}})()
     return {"default": server}
 
 
@@ -169,10 +177,9 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
     # one multi-node engine (master + worker node) and one single-node engine
-    master = FakeServerEngine(_info("http://a:1", "node-a", [0, 1]))
-    worker = FakeServerEngine(_info("http://a-worker:1", "node-b", [0, 1]))
-    single = FakeServerEngine(_info("http://b:1", "node-a", [2, 3]))
-    servers = _servers(FakeGroup([master, worker], nodes_per_engine=2), FakeGroup([single]))
+    multinode_cell = _cell(_info("http://a:1", "node-a", [0, 1]), _info("http://a-worker:1", "node-b", [0, 1]))
+    single_cell = _cell(_info("http://b:1", "node-a", [2, 3]))
+    servers = _servers(multinode_cell, single_cell)
 
     hooks.register_engines(servers)
     [(args, _)] = handle.update_topology.calls
@@ -184,7 +191,8 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
     hooks.register_engines(servers)  # steady state: no remote traffic
     assert len(handle.update_topology.calls) == 1
 
-    single.actor_handle = FakeEngineHandle(_info("http://b:2", "node-a", [2, 3]))  # recovery: new actor
+    recovered = FakeCell([_info("http://b:2", "node-a", [2, 3])])  # recovery: new actor
+    single_cell[0].actor_handles, single_cell[0].addr_infos = recovered.actor_handles, recovered.addr_infos
     hooks.register_engines(servers)
     assert len(handle.update_topology.calls) == 2
     assert handle.update_topology.calls[-1][0][0].engines[1].addr == "http://b:2"
@@ -193,16 +201,16 @@ def test_register_engines_groups_multinode_and_dedups(monkeypatch):
 def test_register_engines_skips_dead_chunks(monkeypatch):
     handle = FakeHandle()
     monkeypatch.setattr(backend, "_handle", handle)
-    alive = FakeServerEngine(_info("http://a:1", "n", [0]))
-    dead = FakeServerEngine(_info("http://b:1", "n", [1]), alive=False)
-    hooks.register_engines(_servers(FakeGroup([alive]), FakeGroup([dead])))
+    hooks.register_engines(
+        _servers(_cell(_info("http://a:1", "n", [0])), _cell(_info("http://b:1", "n", [1]), alive=False))
+    )
 
     [(args, _)] = handle.update_topology.calls
     assert [e.addr for e in args[0].engines] == ["http://a:1"]
 
 
 def test_register_engines_without_collector_is_noop():
-    hooks.register_engines(_servers(FakeGroup([FakeServerEngine(_info("http://a:1", "n", [0]))])))
+    hooks.register_engines(_servers(_cell(_info("http://a:1", "n", [0]))))
     assert hooks._engines_fingerprint is None
 
 
@@ -230,8 +238,16 @@ def test_dashboard_log_without_handle_is_noop():
 # ----------------------------- router registration --------------------------
 
 
-def _router_args(ip="10.0.0.5", port=3333):
-    return type("Args", (), {"sglang_router_ip": ip, "sglang_router_port": port})()
+def _router_args(ip="10.0.0.5", port=3333, use_miles_dashboard=True):
+    return type(
+        "Args",
+        (),
+        {
+            "sglang_router_ip": ip,
+            "sglang_router_port": port,
+            "use_miles_dashboard": use_miles_dashboard,
+        },
+    )()
 
 
 def test_register_router_pushes_resolved_addr(monkeypatch):
@@ -243,14 +259,29 @@ def test_register_router_pushes_resolved_addr(monkeypatch):
     assert kwargs == {}
 
 
+def test_register_router_resolves_the_collector_itself(monkeypatch):
+    """register_router works in a process that never ran init_tracking."""
+    handle = FakeHandle()
+    monkeypatch.setattr(backend, "_handle", None)
+    monkeypatch.setattr(backend, "resolve_collector", lambda: handle)
+    hooks.register_router(_router_args())
+    assert len(handle.set_router.calls) == 1
+
+
 def test_register_router_before_router_start_is_a_wiring_bug(monkeypatch):
     monkeypatch.setattr(backend, "_handle", FakeHandle())
     with pytest.raises(AssertionError, match="after start_rollout_servers"):
         hooks.register_router(_router_args(ip=None))
 
 
-def test_register_router_without_collector_is_noop():
-    hooks.register_router(_router_args())  # must not raise
+def test_register_router_without_dashboard_is_noop(monkeypatch):
+    """With the dashboard off the hook returns before resolve_collector, which would block."""
+    monkeypatch.setattr(backend, "resolve_collector", _never_resolve)
+    hooks.register_router(_router_args(use_miles_dashboard=False))
+
+
+def _never_resolve():
+    raise AssertionError("resolve_collector must not be called when the dashboard is disabled")
 
 
 # ---------------------------- data buffer report ----------------------------

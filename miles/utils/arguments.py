@@ -16,12 +16,13 @@ from miles.utils.environ import enable_experimental_ft_trainer, use_legacy_rollo
 from miles.utils.eval_config import EvalDatasetConfig, build_eval_dataset_configs, ensure_dataset_list
 from miles.utils.file_arg_utils import resolve_file_arg
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
+from miles.utils.function_registry import load_function
 from miles.utils.hf_config import is_dsa, load_hf_config
 from miles.utils.logging_utils import configure_logger_raw
 from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
-from miles.utils.misc import load_function
 from miles.utils.object_store import ObjectStoreBackend
+from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,20 @@ _FT_CHOICES = ["rollout", "train"]
 
 def get_miles_extra_args_provider(add_custom_arguments=None):
     def add_miles_arguments(parser):
+        def add_run_uuid_arguments(parser):
+            parser.add_argument(
+                "--run-uuid",
+                type=str,
+                default=None,
+                help=(
+                    f"Machine-readable identifier for this launch: exactly {RUN_UUID_LENGTH} lowercase "
+                    "hex characters, auto-generated when unset. Unlike the human-readable run "
+                    "names, two runs never share one, so anything stamped with it can be "
+                    "traced back to the launch that produced it."
+                ),
+            )
+            return parser
+
         # Ray
         def add_cluster_arguments(parser):
             parser.add_argument("--actor-num-nodes", type=int, default=1, help="Number of nodes for training actor")
@@ -844,7 +859,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 action="store_true",
                 default=False,
                 help=(
-                    "Pin the RolloutManager (and its co-located router process) to the Ray head node. "
+                    "Pin the RolloutExecutor (and the co-located router process) to the Ray head node. "
                     "Useful in K8s where the head pod has a stable Service address so that "
                     "external agent environments can reliably reach the router."
                 ),
@@ -864,12 +879,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
             )
             parser.add_argument(
                 "--update-weight-transfer-mode",
-                choices=["broadcast", "p2p", "disk-delta", "rdt"],
+                choices=["broadcast", "p2p", "disk-delta"],
                 default="broadcast",
                 help=(
                     "The method to transfer weights to remote rollout engines during update weight. "
-                    "'broadcast' = NCCL broadcast; 'p2p' = mooncake RDMA write; "
-                    "'rdt' = Ray Direct Transport (NIXL RDMA pull, requires sglang use_ray=True). "
                     "'disk-delta' diffs each sync against a CPU snapshot of the previous one and publishes "
                     "only the changed bytes to --update-weight-disk-dir; each engine's /pull_weights applies "
                     "them into a host-local checkpoint that the engine reloads from."
@@ -979,10 +992,10 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Initial grace period (in seconds) before starting health checks. This allows time for model compilation and initialization. Increase this value significantly when using deepgemm.",
             )
             parser.add_argument(
-                "--control-server-port",
+                "--api-server-port",
                 type=int,
                 default=0,
-                help="Port for HTTP control server. 0 = disabled.",
+                help="Port for HTTP api server. 0 = disabled.",
             )
             parser.add_argument(
                 "--mini-ft-controller-enable",
@@ -2645,6 +2658,7 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
         if add_custom_arguments is not None:
             parser = add_custom_arguments(parser)
 
+        parser = add_run_uuid_arguments(parser)
         parser = add_cluster_arguments(parser)
         parser = add_train_arguments(parser)
         parser = add_rollout_arguments(parser)
@@ -2887,8 +2901,8 @@ def miles_validate_args(args):
     args.ft_components = _resolve_ft_components(args)
     args.eval_datasets = _resolve_eval_datasets(args)
 
-    if args.mini_ft_controller_enable and args.control_server_port == 0:
-        raise ValueError("--mini-ft-controller-enable requires --control-server-port to be set (non-zero)")
+    if args.mini_ft_controller_enable and args.api_server_port == 0:
+        raise ValueError("--mini-ft-controller-enable requires --api-server-port to be set (non-zero)")
 
     if "train" in args.ft_components:
         args.indep_dp = True
@@ -3249,9 +3263,6 @@ def miles_validate_args(args):
     if args.use_critic:
         if args.train_backend != "megatron":
             raise ValueError("Shared Actor/Critic PPO requires the Megatron backend")
-        assert (
-            args.megatron_to_hf_mode != "bridge"
-        ), "Critic models are not supported with --megatron-to-hf-mode bridge"
         assert not enable_experimental_ft_trainer(), (
             "Shared Actor/Critic PPO is not supported with MILES_EXPERIMENTAL_FT_TRAINER=1: the v2 "
             "fault-tolerant train group cannot route critic values or lifecycle options yet. "
@@ -3303,23 +3314,18 @@ def miles_validate_args(args):
         args.check_weight_update_equal = True
 
     # always true on offload for colocate at the moment.
-    if args.update_weight_transfer_mode == "rdt":
-        assert args.train_backend == "megatron", "RDT weight transfer is only supported with --train-backend megatron."
-        assert not args.use_critic, (
-            "RDT weight transfer is not compatible with Shared Actor/Critic PPO: "
-            "RDT requires each trainer rank to reserve a full GPU, but PPO schedules "
-            "actor and critic ranks in the same GPU bundles."
-        )
-
-    if args.update_weight_transfer_mode in ("p2p", "rdt"):
+    if args.update_weight_transfer_mode == "p2p":
         assert not args.colocate, (
-            f"{args.update_weight_transfer_mode} weight transfer mode is not compatible with "
-            "--colocate. Please use broadcast mode or disable colocate."
+            "P2P weight transfer mode is not compatible with --colocate. "
+            "Please use broadcast mode or disable colocate."
         )
         assert (
             getattr(args, "prefill_num_servers", None) is None
-        ), f"{args.update_weight_transfer_mode} weight transfer mode has not been tested when PD is enabled."
+        ), "P2P weight transfer mode has not been tested when PD is enabled."
         assert args.lora_rank <= 0, "LoRA weight sync is not supported for p2p (RDMA) weight transfer."
+        assert (
+            args.megatron_to_hf_mode != "bridge"
+        ), f"{args.update_weight_transfer_mode} mode is not supported when use megatron-bridge"
 
     if args.update_weight_transfer_mode == "disk-delta":
         assert not args.colocate, (
@@ -3546,6 +3552,8 @@ def miles_validate_args(args):
                 logger.info(f"Warning: Argument {k} is already set to {getattr(args, k)}, will override with {v}.")
             setattr(args, k, v)
 
+    args.run_uuid = generate_run_uuid() if args.run_uuid is None else validate_run_uuid(args.run_uuid)
+
     if args.use_rollout_indexer_replay:
         args.use_indexer_replay = True
         assert args.context_parallel_size == 1, "indexer replay does not support context parallelism yet"
@@ -3681,7 +3689,7 @@ def _maybe_apply_dumper_overrides(args) -> None:
         return
 
     if args.use_fault_tolerance:
-        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress RolloutHealthMonitor heartbeats")
+        logger.info("Dumper mode: disabling --use-fault-tolerance to suppress fault tolerance heartbeats")
         args.use_fault_tolerance = False
 
     logger.info("Dumper mode: all heartbeat mechanisms disabled")

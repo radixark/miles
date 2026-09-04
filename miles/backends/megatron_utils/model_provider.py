@@ -18,7 +18,7 @@ from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
 from miles.utils.audit_utils.witness.module import install_witness
-from miles.utils.misc import load_function
+from miles.utils.function_registry import load_function
 from miles.utils.replay_base import routing_replay_manager
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,8 @@ def get_model_provider_func(
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
         _apply_bridge_runtime_config(provider, args)
+        if role == "critic":
+            provider.share_embeddings_and_output_weights = False
         provider.finalize()
 
         def wrapped_bridge_provider(
@@ -183,6 +185,10 @@ def get_model_provider_func(
             if pg_collection is not None:
                 provider._pg_collection = pg_collection
             model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            if post_process and role == "critic":
+                model.output_layer = LinearForLastLayer(
+                    input_size=model.config.hidden_size, output_size=1, config=model.config
+                )
             assert not getattr(args, "enable_witness", False), "Witness is not supported yet in this mode"
             # Gemma-4 forward returns (logits, loss_mask); keep logits only.
             _bridge_forward = model.forward

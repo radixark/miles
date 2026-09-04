@@ -303,6 +303,29 @@ class TestPrepareIndepDPModeHealing:
         assert any(c[0] == "init" for c in calls)
 
 
+class TestSetRolloutExecutor:
+    async def test_missing_rollout_executor_skips_worker_rpc(self):
+        """A cell configured without a rollout executor returns an empty result and dispatches nothing."""
+        cell = make_cell(actor_count=2)
+
+        results = await cell.set_rollout_executor()
+
+        assert results == []
+        for handle in cell._get_actor_handles():
+            assert ray.get(handle.get_calls.remote()) == []
+
+    async def test_present_rollout_executor_reaches_every_actor(self):
+        """A configured rollout executor handle is forwarded positionally to every actor of the cell."""
+        cell = make_cell(actor_count=2, rollout_executor="executor-handle")
+
+        results = await cell.set_rollout_executor()
+
+        assert len(results) == 2
+        for handle in cell._get_actor_handles():
+            calls = ray.get(handle.get_calls.remote())
+            assert calls == [("set_rollout_executor", ("executor-handle",), {})]
+
+
 class TestStatePredicates:
     def test_pending(self):
         cell = make_cell()

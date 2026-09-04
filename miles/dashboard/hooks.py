@@ -220,7 +220,7 @@ class TrajectorySink:
 
     def _emit(self, kind: str, sample, *, ts: float | None = None, turn: int = -1, detail: str = "") -> None:
         try:
-            versions = getattr(sample, "weight_versions", None) or []
+            versions = [span.version for span in getattr(sample, "all_weight_version_spans", None) or []]
             event = TrajectoryEvent(
                 ts=time.time() if ts is None else ts,
                 kind=kind,
@@ -306,9 +306,11 @@ def register_router(args) -> None:
     """Called by the rollout manager AFTER start_rollout_servers: only then are
     ``args.sglang_router_ip/port`` filled in. init_tracking runs earlier in
     __init__, so the backend cannot register the router at init time."""
+    if not args.use_miles_dashboard:
+        return
     from miles.dashboard import backend
 
-    handle = backend.current_collector()
+    handle = backend.resolve_collector()
     if handle is None:
         return
     # a None ip here is a wiring-order bug, not runtime flakiness: fail loud
@@ -320,7 +322,7 @@ def register_router(args) -> None:
 
 
 def register_engines(servers) -> None:
-    """Called at the top of every RolloutManager.generate(): pushes an engine
+    """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
     fault-tolerance recovery). Steady state costs one local tuple compare."""
     global _engines_fingerprint
@@ -330,11 +332,12 @@ def register_engines(servers) -> None:
     if handle is None:
         return
     try:
-        chunks = _alive_engine_chunks(servers)
-        fingerprint = tuple(id(engine.actor_handle) for chunk in chunks for engine in chunk)
+        cells = _alive_engine_cells(servers)
+        fingerprint = tuple(id(actor_handle) for cell in cells for actor_handle in cell.actor_handles)
         if fingerprint == _engines_fingerprint:
             return
-        infos = _ray_get([engine.actor_handle.get_topology_info.remote() for chunk in chunks for engine in chunk])
+        chunks = [cell.actor_handles for cell in cells]
+        infos = _collect_topology_infos(cells)
         handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=_group_engines(chunks, infos)))
         _engines_fingerprint = fingerprint
     except Exception:
@@ -342,7 +345,7 @@ def register_engines(servers) -> None:
 
 
 def report_data_buffer(length: int | None) -> None:
-    """Called at the top of every ``RolloutManager.generate()`` alongside
+    """Called at the top of every ``RolloutExecutor.get()`` alongside
     ``register_engines``, with ``getattr(data_source, "get_buffer_length",
     lambda: None)()``. A no-op for ``length is None`` — most data sources
     (plain ``RolloutDataSource``) never buffer samples across steps."""
@@ -359,20 +362,43 @@ def report_data_buffer(length: int | None) -> None:
         _warner.warn("dashboard data-buffer report failed")
 
 
-def _alive_engine_chunks(servers) -> list[list]:
-    """Multi-node engines occupy ``nodes_per_engine`` consecutive entries of
-    ``group.all_engines``; only the first (master) owns the router-visible
-    URL. Chunks with any dead member are skipped until recovery completes."""
-    chunks = []
+def _alive_engine_cells(servers) -> list:
+    """A multi-node engine's cell holds ``num_nodes`` actors; only the first
+    (master) owns the router-visible URL. Cells that are not alive are skipped
+    until recovery completes."""
+    cells = []
     for server in servers.values():
-        for group in server.server_groups:
-            stride = group.nodes_per_engine
-            engines = group.all_engines
-            for i in range(0, len(engines), stride):
-                chunk = engines[i : i + stride]
-                if all(engine.is_allocated and engine.is_alive for engine in chunk):
-                    chunks.append(chunk)
-    return chunks
+        for cell in server.server_cells.values():
+            if cell.is_alive:
+                cells.append(cell)
+    return cells
+
+
+def _collect_topology_infos(cells) -> list[dict]:
+    """The driver already knows each engine's url, worker type and gpu layout;
+    only the node ip and the NVML uuids must be probed on the engine's node."""
+    probe_refs = [
+        ref
+        for cell in cells
+        for actor_handle, gpu_ids in zip(cell.actor_handles, cell.engine_gpu_ids, strict=True)
+        for ref in (actor_handle._get_node_ip.remote(), actor_handle._get_gpu_uuids.remote(gpu_ids))
+    ]
+    probed = iter(_ray_get(probe_refs))
+
+    infos = []
+    for cell in cells:
+        for addr_info, gpu_ids in zip(cell.addr_infos, cell.engine_gpu_ids, strict=True):
+            node_ip, gpu_uuids = next(probed), next(probed)
+            infos.append(
+                dict(
+                    url=addr_info.server_url,
+                    node_ip=node_ip,
+                    gpu_ids=gpu_ids,
+                    gpu_uuids=gpu_uuids,
+                    worker_type=cell.worker_type,
+                )
+            )
+    return infos
 
 
 def _group_engines(chunks: list[list], infos: list[dict]) -> list[EngineInfo]:

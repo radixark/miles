@@ -8,48 +8,10 @@ import asyncio
 import pytest
 import ray
 from tests.fast.ray.rollout.conftest import make_args
+from tests.fast.ray.rollout.real_ray.conftest import build_cells, kill_cells, start_cells
 
-from miles.ray.rollout.addr_allocator import PortCursors
-from miles.ray.rollout.server_engine import ServerEngine
-from miles.ray.rollout.server_group import ServerGroup
-
-
-def _build_group(
-    *,
-    pg_tuple: tuple,
-    num_engines: int = 2,
-    needs_offload: bool = False,
-    update_weights: bool = True,
-    model_path: str | None = None,
-) -> ServerGroup:
-    args = make_args(num_gpus_per_node=8)
-    engines = [ServerEngine() for _ in range(num_engines)]
-    return ServerGroup(
-        args=args,
-        pg=pg_tuple,
-        all_engines=engines,
-        num_gpus_per_engine=1,
-        has_new_engines=False,
-        needs_offload=needs_offload,
-        update_weights=update_weights,
-        model_path=model_path,
-    )
-
-
-def _start(group: ServerGroup) -> None:
-    handles, indices = group.start_engines(PortCursors.empty())
-    ray.get(handles)
-    group.mark_alive(indices)
-
-
-def _kill_all(group: ServerGroup) -> None:
-    for e in group.all_engines:
-        if e.is_allocated:
-            try:
-                ray.kill(e.actor_handle)
-            except Exception:
-                pass
-
+from miles.ray.rollout.rollout_server import RolloutServer
+from miles.utils.workers.addr_allocator import PortAllocator
 
 # ----------------------------- single-engine kill + recover -----------------------------
 
@@ -61,56 +23,97 @@ class TestKillAndRecover:
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """Kill engine 0 for real, recover, verify a fresh actor replaces it
-        and the surviving engine is untouched."""
+        """Kill cell 0's engine for real, recover, verify a fresh actor replaces
+        it and the surviving cell is untouched."""
         pg = placement_group_factory(2)
-        group = _build_group(pg_tuple=pg, num_engines=2)
-        _start(group)
+        cells = build_cells(pg_tuple=pg, num_cells=2)
+        await start_cells(cells, mark_alive=True)
 
-        original_handles = [e.actor_handle for e in group.all_engines]
+        original_handles = [cell.primary_actor_handle for cell in cells]
         # Real fault: kill engine 0 + mark its slot stopped (production code's
         # health monitor would do this; here we simulate it directly).
         ray.kill(original_handles[0])
-        group.all_engines[0].mark_stopped()
+        cells[0].stop()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
-            # New actor for slot 0
-            assert group.all_engines[0].is_allocated
-            assert group.all_engines[0].actor_handle is not original_handles[0]
-            calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
-            assert "init" in [c[0] for c in calls]
+            await cells[0].recover(PortAllocator())
+            # New actor for cell 0
+            assert cells[0].is_allocated
+            assert cells[0].primary_actor_handle is not original_handles[0]
+            calls = ray.get(cells[0].primary_actor_handle.get_calls.remote())
+            assert "run" in [c[0] for c in calls]
 
-            # Slot 1 untouched, still the same actor
-            assert group.all_engines[1].actor_handle is original_handles[1]
+            # Cell 1 untouched, still the same actor
+            assert cells[1].primary_actor_handle is original_handles[1]
         finally:
-            _kill_all(group)
+            kill_cells(cells)
 
-    async def test_recover_default_filter_picks_all_dead_slots(
+    async def test_recover_default_filter_picks_all_dead_cells(
         self,
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """When ``filter_indices=None``, recover picks every slot whose
-        ``is_allocated`` is False. We kill 0 and 2, leave 1 alive, expect
-        only 0 and 2 to be re-created."""
+        """When ``cell_ids=None``, the server recovers every cell with a
+        dead engine. We kill 0 and 2, leave 1 alive, expect only 0 and 2 to
+        be re-created."""
         pg = placement_group_factory(3)
-        group = _build_group(pg_tuple=pg, num_engines=3)
-        _start(group)
+        cells = build_cells(pg_tuple=pg, num_cells=3)
+        await start_cells(cells, mark_alive=True)
+        srv = RolloutServer(
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)}, args=make_args(num_gpus_per_node=8)
+        )
 
-        old = [e.actor_handle for e in group.all_engines]
+        old = [cell.primary_actor_handle for cell in cells]
         for i in (0, 2):
             ray.kill(old[i])
-            group.all_engines[i].mark_stopped()
+            cells[i].stop()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty())
+            await srv.recover()
             for i in (0, 2):
-                assert group.all_engines[i].is_allocated
-                assert group.all_engines[i].actor_handle is not old[i]
-            assert group.all_engines[1].actor_handle is old[1]
+                assert cells[i].is_allocated
+                assert cells[i].primary_actor_handle is not old[i]
+            assert cells[1].primary_actor_handle is old[1]
         finally:
-            _kill_all(group)
+            kill_cells(cells)
+
+    async def test_recover_publishes_the_new_url_to_the_router(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+    ):
+        """A recovered engine gets a fresh port, so the router must be told the new url."""
+        from unittest.mock import patch
+
+        events: list[dict] = []
+
+        class _Recorder:
+            async def add_worker(self, **kwargs):
+                events.append(kwargs)
+
+            async def remove_worker(self, **kwargs):
+                events.append(kwargs)
+
+        pg = placement_group_factory(1)
+        cells = build_cells(pg_tuple=pg, num_cells=1)
+        srv = RolloutServer(
+            server_cells={f"cell-{i}": cell for i, cell in enumerate(cells)},
+            args=make_args(num_gpus_per_node=8),
+            router_ip="10.0.0.9",
+            router_port=9000,
+        )
+        await start_cells(cells, mark_alive=True)
+        ray.kill(cells[0].primary_actor_handle)
+        cells[0].stop()
+
+        try:
+            with patch.object(RolloutServer, "_router_api_client", property(lambda self: _Recorder())):
+                await srv.recover(cell_ids=["cell-0"])
+
+            assert [event["worker_url"] for event in events] == [cells[0].addr_info.server_url]
+            assert cells[0].is_alive
+        finally:
+            kill_cells(cells)
 
     async def test_recover_with_offload_calls_release_then_resume(
         self,
@@ -119,39 +122,46 @@ class TestKillAndRecover:
     ):
         """``needs_offload=True`` + ``update_weights=True`` means recover()
         must release_memory_occupation, then resume with WEIGHTS tag.
-        Verify by reading the new actor's call log."""
+        Verify by reading the recovered engine's mock HTTP server log."""
         pg = placement_group_factory(2)
-        group = _build_group(pg_tuple=pg, num_engines=2, needs_offload=True, update_weights=True)
-        _start(group)
-        old = [e.actor_handle for e in group.all_engines]
+        cells = build_cells(pg_tuple=pg, num_cells=2, needs_offload=True, update_weights=True)
+        await start_cells(cells, mark_alive=True)
+        old = [cell.primary_actor_handle for cell in cells]
 
         ray.kill(old[0])
-        group.all_engines[0].mark_stopped()
+        cells[0].stop()
 
         try:
-            await group.recover(port_cursors=PortCursors.empty(), filter_indices=[0])
-            calls = ray.get(group.all_engines[0].actor_handle.get_calls.remote())
-            method_names = [c[0] for c in calls]
-            # init → release → resume(tags=[WEIGHTS])
-            assert "init" in method_names
-            assert "release_memory_occupation" in method_names
-            assert "resume_memory_occupation" in method_names
+            await cells[0].recover(PortAllocator())
+            recovered_actor = cells[0].primary_actor_handle
+            calls = ray.get(recovered_actor.get_calls.remote())
+            assert "run" in [c[0] for c in calls]
+
+            paths = ray.get(recovered_actor.get_http_paths.remote())
+            assert "/release_memory_occupation" in paths
+            assert "/resume_memory_occupation" in paths
 
             # Ordering claim: release must precede resume — otherwise GPU
             # memory would be re-occupied before being released, defeating
             # the offload. Use the first occurrence of each.
-            release_idx = method_names.index("release_memory_occupation")
-            resume_idx = method_names.index("resume_memory_occupation")
-            assert release_idx < resume_idx, f"release must precede resume; saw order {method_names}"
+            release_idx = paths.index("/release_memory_occupation")
+            resume_idx = paths.index("/resume_memory_occupation")
+            assert release_idx < resume_idx, f"release must precede resume; saw order {paths}"
+            # The client drains the working queue before releasing.
+            assert paths.index("/flush_cache") < release_idx
 
-            # Find the resume call and confirm WEIGHTS tag
-            resume_calls = [c for c in calls if c[0] == "resume_memory_occupation"]
-            assert len(resume_calls) == 1
             from sglang.srt.constants import GPU_MEMORY_TYPE_WEIGHTS
 
-            assert resume_calls[0][2] == {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
+            # Recovery releases everything, not just the weights: an engine that kept its kv cache
+            # would leave the trainer short of GPU memory when it takes the device back.
+            assert ray.get(recovered_actor.get_http_payloads_of.remote("/release_memory_occupation")) == [
+                {"tags": None}
+            ]
+            assert ray.get(recovered_actor.get_http_payloads_of.remote("/resume_memory_occupation")) == [
+                {"tags": [GPU_MEMORY_TYPE_WEIGHTS]}
+            ]
         finally:
-            _kill_all(group)
+            kill_cells(cells)
 
 
 # ----------------------------- concurrent recover -----------------------------
@@ -159,69 +169,95 @@ class TestKillAndRecover:
 
 @pytest.mark.asyncio
 class TestConcurrentRecover:
-    async def test_two_groups_recover_in_parallel_completes_without_deadlock(
+    async def test_two_cell_batches_recover_in_parallel_completes_without_deadlock(
         self,
         patched_sglang_engine,
         placement_group_factory,
     ):
-        """Two ServerGroups recovering simultaneously through real
+        """Two cell batches recovering simultaneously through real
         ``asyncio.gather`` must both complete — no deadlock, no exception
         leaking out of the gather chain.
 
-        We do not claim "no port collision" here because the deterministic
-        port stub from the conftest gives each group its own range (groups
-        don't see each other's ranks), so disjoint-port is trivially true.
-        The real-ray claim being verified is end-to-end gather completion
-        across two groups."""
+        The batches share one PortAllocator, as they do in production: each
+        batch's ports are only bound once its engine inits, so concurrent
+        recovers with independent allocators could probe the same free port
+        twice. The real-ray claim being verified is end-to-end gather
+        completion across two batches."""
         pg_a = placement_group_factory(2)
         pg_b = placement_group_factory(2)
-        a = _build_group(pg_tuple=pg_a, num_engines=2)
-        b = _build_group(pg_tuple=pg_b, num_engines=2)
-        _start(a)
-        _start(b)
+        a = build_cells(pg_tuple=pg_a, num_cells=2)
+        b = build_cells(pg_tuple=pg_b, num_cells=2)
+        await start_cells(a, mark_alive=True)
+        await start_cells(b, mark_alive=True)
 
-        # Kill one engine in each group
-        for g in (a, b):
-            old = g.all_engines[0].actor_handle
+        # Kill one engine in each batch
+        for cells in (a, b):
+            old = cells[0].primary_actor_handle
             ray.kill(old)
-            g.all_engines[0].mark_stopped()
+            cells[0].stop()
 
         try:
             # Real concurrent recover via asyncio.gather
+            shared_allocator = PortAllocator()
             await asyncio.gather(
-                a.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
-                b.recover(port_cursors=PortCursors.empty(), filter_indices=[0]),
+                a[0].recover(shared_allocator),
+                b[0].recover(shared_allocator),
             )
-            assert a.all_engines[0].is_allocated
-            assert b.all_engines[0].is_allocated
+            assert a[0].is_allocated
+            assert b[0].is_allocated
         finally:
-            _kill_all(a)
-            _kill_all(b)
+            kill_cells(a)
+            kill_cells(b)
 
 
-# ----------------------------- simulate_crash at ServerGroup level -----------------------------
+# ----------------------------- crash injection at cell level -----------------------------
 
 
 @pytest.mark.asyncio
-class TestSimulateCrashKeepsActorReachable:
-    """``MockSGLangEngine.simulate_crash`` self-calls ``shutdown()`` (mirror
-    of real SGLangEngine). The actor stays alive at the Ray level; this is
-    important because the rollout health monitor uses follow-up ``.remote()``
-    calls to determine liveness."""
+class TestKillSubprocessKeepsMockActorReachable:
+    """``MockSGLangEngine.kill_subprocess`` mirrors the moment the engine
+    subprocess died but the actor has not exited yet: the server is gone
+    while follow-up ``.remote()`` calls still return."""
 
-    async def test_simulate_crash_then_health_check_still_returns(
+    async def test_kill_subprocess_then_health_check_still_returns(
         self,
         patched_sglang_engine,
         placement_group_factory,
     ):
         pg = placement_group_factory(1)
-        group = _build_group(pg_tuple=pg, num_engines=1)
-        _start(group)
-        actor = group.all_engines[0].actor_handle
+        cells = build_cells(pg_tuple=pg, num_cells=1)
+        await start_cells(cells, mark_alive=True)
+        actor = cells[0].primary_actor_handle
 
         try:
-            ray.get(actor.simulate_crash.remote())
+            ray.get(actor.kill_subprocess.remote())
             # Actor handle still reachable at Ray level — follow-up returns.
-            ray.get(actor.health_generate.remote(timeout=1.0), timeout=10.0)
+            ray.get(actor.get_calls.remote(), timeout=10.0)
         finally:
-            _kill_all(group)
+            kill_cells(cells)
+
+
+@pytest.mark.asyncio
+class TestRecoverMultiNodeEngine:
+    async def test_recover_releases_and_resumes_only_on_node0(
+        self,
+        patched_sglang_engine,
+        placement_group_factory,
+    ):
+        """Recovering a 2-node engine must not send release/resume to node 1."""
+        pg = placement_group_factory(16)
+        (cell,) = build_cells(pg_tuple=pg, num_cells=1, num_gpus_per_engine=16, needs_offload=True)
+        assert cell.num_nodes == 2
+
+        try:
+            await cell.recover(PortAllocator())
+
+            node0_actor, node1_actor = cell.actor_handles
+            node0_paths = ray.get(node0_actor.get_http_paths.remote())
+            node1_paths = ray.get(node1_actor.get_http_paths.remote())
+
+            assert "/release_memory_occupation" in node0_paths
+            assert "/resume_memory_occupation" in node0_paths
+            assert node1_paths == []
+        finally:
+            kill_cells([cell])

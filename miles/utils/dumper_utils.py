@@ -293,6 +293,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
     if indep_dp.group is not None:
         log_structured(
             logger.info,
+            tag="ft",
             op="cross_cell",
             phase="start",
             kind="dump_barrier",
@@ -304,6 +305,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             GeneralPGUtil.create(indep_dp.group).barrier(indep_dp.group)
             log_structured(
                 logger.info,
+                tag="ft",
                 op="cross_cell",
                 phase="end",
                 kind="dump_barrier",
@@ -318,6 +320,7 @@ def _barrier_after_dump_dir_cleanup() -> None:
             # later in the step turns the abort into DISCARDED_SHOULD_RETRY.
             log_structured(
                 logger.error,
+                tag="ft",
                 op="cross_cell",
                 phase="end",
                 kind="dump_barrier",

@@ -40,7 +40,7 @@ from random_async_sglang_metrics import SGLangMetricsReporter, record_agent_requ
 from miles.rollout.data_source import DataSource
 from miles.utils.async_utils import run
 from miles.utils.http_utils import post as http_post
-from miles.utils.types import Sample
+from miles.utils.types import Sample, WeightVersionsPerCall
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +194,9 @@ async def _generate_one_random_sample(args, sample: Sample) -> Sample:
         current_ids.extend(segment)
         sample.prefix_cache_info.add(meta)
 
-        if "weight_version" in meta:
-            sample.weight_versions.append(meta["weight_version"])
+        sample.weight_versions.append(
+            WeightVersionsPerCall.from_meta_info(meta, output_end=perfect_cacheable_prefix_len)
+        )
 
         if len(current_ids) >= MAX_CONTEXT_TOKENS:
             break

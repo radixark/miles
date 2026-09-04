@@ -1,0 +1,611 @@
+import functools
+from collections.abc import Callable
+from typing import Annotated, Any
+
+import pytest
+from pydantic import Field, ValidationError
+
+from tests.fast.utils.workers.rpc.common.postponed_annotation_worker import LatePayload, PostponedWorker
+
+from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.workers.rpc.common.metadata import (
+    DEFAULT_CONCURRENCY_GROUP,
+    RpcMethodSpec,
+    canonicalize_method_arguments,
+    collect_rpc_method_specs,
+    rpc,
+)
+
+
+class _Payload(StrictBaseModel):
+    text: str
+    count: int = 1
+
+
+def _passthrough(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _opaque_passthrough(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    wrapper.__wrapped__ = fn
+    return wrapper
+
+
+class _GoodWorker:
+    demo_class_attribute = 3
+
+    def demo_default_arg(self, a: int, b: int = 10) -> int:
+        return a + b
+
+    async def demo_async_model(self, payload: _Payload) -> _Payload:
+        return payload
+
+    @rpc(concurrency_group="heavy")
+    def demo_grouped(self, step: int) -> None:
+        pass
+
+    @classmethod
+    def demo_classmethod(cls, x: int) -> int:
+        return x
+
+    @staticmethod
+    def demo_staticmethod(x: int) -> int:
+        return x
+
+    @property
+    def demo_property(self) -> int:
+        return 1
+
+    def _demo_private(self, x):
+        pass
+
+
+class TestCollectSpecs:
+    def test_collects_public_methods_only(self):
+        """Public methods are collected; underscore-prefixed ones are skipped."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert set(specs) == {"demo_default_arg", "demo_async_model", "demo_grouped"}
+
+    def test_non_instance_method_members_are_skipped(self):
+        """Classmethods, staticmethods and properties are skipped like plain attributes."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert {"demo_classmethod", "demo_staticmethod", "demo_property", "demo_class_attribute"}.isdisjoint(specs)
+
+    def test_default_concurrency_group(self):
+        """Undecorated methods fall into the default concurrency group."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_default_arg"].concurrency_group == DEFAULT_CONCURRENCY_GROUP
+
+    def test_decorated_concurrency_group(self):
+        """@rpc(concurrency_group=...) is picked up by introspection."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_grouped"].concurrency_group == "heavy"
+
+    def test_is_async_flag(self):
+        """Coroutine methods are flagged async, plain ones are not."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_async_model"].is_async and not specs["demo_default_arg"].is_async
+
+
+class TestDecoratorChainConcurrencyGroup:
+    def test_marker_above_wrapper_is_found(self):
+        """@rpc applied outside a functools.wraps wrapper still declares its concurrency group."""
+
+        class Worker:
+            @rpc(concurrency_group="heavy")
+            @_passthrough
+            def demo_marker_outside(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_outside"].concurrency_group == "heavy"
+
+    def test_marker_below_wrapper_is_found(self):
+        """@rpc applied inside a functools.wraps wrapper still declares its concurrency group."""
+
+        class Worker:
+            @_passthrough
+            @rpc(concurrency_group="heavy")
+            def demo_marker_inside(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_inside"].concurrency_group == "heavy"
+
+    def test_marker_between_two_wrapper_layers_is_found(self):
+        """@rpc sandwiched between two wrapper layers is still found by walking the decorator chain."""
+
+        class Worker:
+            @_passthrough
+            @rpc(concurrency_group="heavy")
+            @_passthrough
+            def demo_marker_nested(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_nested"].concurrency_group == "heavy"
+
+    def test_marker_hidden_by_a_wrapper_that_copies_nothing_is_found(self):
+        """A wrapper that does not copy the wrapped function's attributes cannot hide the marker."""
+
+        class Worker:
+            @_opaque_passthrough
+            @rpc(concurrency_group="heavy")
+            def demo_marker_hidden(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_hidden"].concurrency_group == "heavy"
+
+    def test_outermost_marker_wins_over_an_inner_one(self):
+        """When two decorator layers each declare a group, the outermost declaration decides."""
+
+        class Worker:
+            @rpc(concurrency_group="outer")
+            @_opaque_passthrough
+            @rpc(concurrency_group="inner")
+            def demo_marker_conflict(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_marker_conflict"].concurrency_group == "outer"
+
+
+class TestQueryModel:
+    def test_decode_query_applies_defaults(self):
+        """Omitted parameters with defaults resolve to their default values."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_default_arg"].serializer.decode_query({"a": 5}) == {"a": 5, "b": 10}
+
+    def test_decode_query_parses_nested_model(self):
+        """Nested pydantic payloads are revived into real model instances."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        kwargs = specs["demo_async_model"].serializer.decode_query({"payload": {"text": "hi"}})
+        assert kwargs["payload"] == _Payload(text="hi")
+
+    def test_missing_required_param_rejected(self):
+        """Missing required parameters raise a validation error."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        with pytest.raises(ValidationError):
+            specs["demo_default_arg"].serializer.decode_query({})
+
+    def test_unknown_param_rejected(self):
+        """Extra unknown parameters raise a validation error."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        with pytest.raises(ValidationError):
+            specs["demo_default_arg"].serializer.decode_query({"a": 1, "unknown": 2})
+
+    def test_wrong_type_rejected(self):
+        """Type-mismatched parameters raise a validation error."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        with pytest.raises(ValidationError):
+            specs["demo_default_arg"].serializer.decode_query({"a": "not-an-int"})
+
+
+class TestParameterKinds:
+    def test_keyword_only_parameters_are_supported(self):
+        """Keyword-only parameters are accepted, land in the query model and decode like normal ones."""
+
+        class Worker:
+            def demo_keyword_only(self, *, required: int, optional: str = "fallback") -> int:
+                return required
+
+        specs = collect_rpc_method_specs(Worker)
+        serializer = specs["demo_keyword_only"].serializer
+        assert serializer.decode_query({"required": 5}) == {"required": 5, "optional": "fallback"}
+        with pytest.raises(ValidationError):
+            serializer.decode_query({"optional": "only"})
+
+    def test_positional_only_receiver_is_supported(self):
+        """A positional-only self is accepted because the receiver never reaches the wire."""
+
+        class Worker:
+            def demo_positional_receiver(self, /, value: int) -> int:
+                return value
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_positional_receiver"].serializer.decode_query({"value": 7}) == {"value": 7}
+
+
+class TestAnnotatedParameters:
+    def test_annotated_parameter_constraints_are_preserved(self):
+        """Constraints carried by Annotated metadata survive hint resolution and are enforced."""
+
+        class Worker:
+            def demo_constrained(self, value: Annotated[int, Field(ge=1)]) -> int:
+                return value
+
+        serializer = collect_rpc_method_specs(Worker)["demo_constrained"].serializer
+        assert serializer.decode_query({"value": 3}) == {"value": 3}
+        with pytest.raises(ValidationError):
+            serializer.decode_query({"value": 0})
+
+
+class TestPostponedAnnotations:
+    def test_string_annotations_resolved_in_worker_module(self):
+        """A worker module using postponed annotations still builds real typed models."""
+        specs = collect_rpc_method_specs(PostponedWorker)
+        kwargs = specs["demo_transform"].serializer.decode_query({"payload": {"text": "hi"}})
+        assert kwargs["payload"] == LatePayload(text="hi")
+
+    def test_string_return_annotation_resolved(self):
+        """A postponed return annotation resolves into a working result adapter."""
+        specs = collect_rpc_method_specs(PostponedWorker)
+        assert specs["demo_transform"].serializer.decode_result({"text": "hi"}) == LatePayload(text="hi")
+
+
+class TestInheritance:
+    def test_inherited_methods_collected(self):
+        """Methods inherited from a base worker class are exposed too."""
+
+        class Child(_GoodWorker):
+            def demo_child_only(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Child)
+        assert {"demo_default_arg", "demo_async_model", "demo_grouped", "demo_child_only"} <= set(specs)
+
+
+class TestResultAdapter:
+    def test_result_roundtrip(self):
+        """Return values are encoded as plain json data and decode back into the model."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        serializer = specs["demo_async_model"].serializer
+        dumped = serializer.encode_result(_Payload(text="hi"))
+        assert not isinstance(dumped, _Payload)
+        assert dumped == {"text": "hi", "count": 1}
+        assert serializer.decode_result(dumped) == _Payload(text="hi")
+
+    def test_none_return_annotation(self):
+        """Methods annotated -> None get a NoneType result adapter."""
+        specs = collect_rpc_method_specs(_GoodWorker)
+        assert specs["demo_grouped"].serializer.decode_result(None) is None
+
+
+class TestFailLoud:
+    def test_async_method_with_non_default_concurrency_group_rejected(self):
+        """An async method with a non-default concurrency group fails at collection time."""
+
+        class Worker:
+            @rpc(concurrency_group="train")
+            async def demo_async_grouped(self) -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="concurrency_group"):
+            collect_rpc_method_specs(Worker)
+
+    def test_missing_param_annotation_rejected(self):
+        """A parameter without a type annotation fails at collection time."""
+
+        class Worker:
+            def demo_unannotated_arg(self, x) -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="must be type-annotated"):
+            collect_rpc_method_specs(Worker)
+
+    def test_missing_return_annotation_rejected(self):
+        """A method without a return annotation fails at collection time."""
+
+        class Worker:
+            def demo_unannotated_return(self, x: int):
+                return x
+
+        with pytest.raises(TypeError, match="return type annotation"):
+            collect_rpc_method_specs(Worker)
+
+    def test_var_positional_rejected(self):
+        """*args signatures fail at collection time."""
+
+        class Worker:
+            def demo_var_positional(self, *x: int) -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="args"):
+            collect_rpc_method_specs(Worker)
+
+    def test_var_keyword_rejected(self):
+        """**kwargs signatures fail at collection time."""
+
+        class Worker:
+            def demo_var_keyword(self, **x: int) -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="kwargs"):
+            collect_rpc_method_specs(Worker)
+
+    def test_positional_only_rejected(self):
+        """Positional-only parameters fail at collection time since calls pass kwargs."""
+
+        class Worker:
+            def demo_positional_only(self, x: int, /) -> int:
+                return x
+
+        with pytest.raises(TypeError, match="positional-only"):
+            collect_rpc_method_specs(Worker)
+
+    def test_non_self_receiver_rejected(self):
+        """An unconventionally named receiver is refused rather than silently dropped."""
+
+        class Worker:
+            def demo_odd_receiver(this, x: int) -> int:
+                return x
+
+        with pytest.raises(TypeError, match="receiver parameter 'self'"):
+            collect_rpc_method_specs(Worker)
+
+    def test_forgotten_self_is_rejected_instead_of_eating_the_first_argument(self):
+        """A method that forgets self would otherwise lose its first parameter off the wire."""
+
+        class Worker:
+            def demo_forgot_self(a: int, b: int) -> int:
+                return a + b
+
+        with pytest.raises(TypeError, match="receiver parameter 'self'"):
+            collect_rpc_method_specs(Worker)
+
+    def test_keyword_only_receiver_rejected(self):
+        """A keyword-only self is refused at collection time instead of blowing up on call."""
+
+        class Worker:
+            def demo_keyword_only_receiver(*, self) -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="receiver parameter positionally"):
+            collect_rpc_method_specs(Worker)
+
+    def test_method_without_any_parameter_rejected(self):
+        """A method taking no parameters at all is refused for lacking a receiver."""
+
+        class Worker:
+            def demo_no_parameters() -> int:
+                return 0
+
+        with pytest.raises(TypeError, match="must take a receiver parameter"):
+            collect_rpc_method_specs(Worker)
+
+    def test_public_nested_model_class_rejected_as_non_method(self):
+        """A public nested model class is refused as not being a method at all."""
+
+        class Worker:
+            class Config(StrictBaseModel):
+                text: str
+
+            def demo_ok(self, x: int) -> int:
+                return x
+
+        with pytest.raises(TypeError) as excinfo:
+            collect_rpc_method_specs(Worker)
+        assert "not a method" in str(excinfo.value)
+        assert "receiver" not in str(excinfo.value)
+
+    def test_public_class_alias_attribute_rejected_as_non_method(self):
+        """A public class alias attribute is refused as not being a method at all."""
+
+        class Worker:
+            demo_alias = _Payload
+
+            def demo_ok(self, x: int) -> int:
+                return x
+
+        with pytest.raises(TypeError) as excinfo:
+            collect_rpc_method_specs(Worker)
+        assert "not a method" in str(excinfo.value)
+        assert "receiver" not in str(excinfo.value)
+
+    def test_wrapped_async_method_stays_async(self):
+        """A functools.wraps-decorated async method is still detected as async."""
+
+        def passthrough(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                return await fn(*args, **kwargs)
+
+            return wrapper
+
+        class Worker:
+            @passthrough
+            async def demo_wrapped_async(self, x: int) -> int:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_wrapped_async"].is_async
+        assert specs["demo_wrapped_async"].serializer.decode_query({"x": 1}) == {"x": 1}
+
+    def test_no_public_methods_rejected(self):
+        """A worker class with no public methods fails at collection time."""
+
+        class Worker:
+            def _demo_hidden(self, x: int) -> int:
+                return x
+
+        with pytest.raises(TypeError, match="no public rpc methods"):
+            collect_rpc_method_specs(Worker)
+
+    def test_any_annotation_allowed(self):
+        """Any-annotated parameters are accepted and passed through."""
+
+        class Worker:
+            def demo_any(self, x: Any) -> Any:
+                return x
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_any"].serializer.decode_query({"x": [1, "a"]}) == {"x": [1, "a"]}
+
+    def test_only_positional_or_keyword_parameters_may_be_filled_positionally(self):
+        """A caller's positional arguments are named in declaration order, and keyword-only names are not in it."""
+
+        class Worker:
+            def demo_mixed(self, a: int, b: int, *, c: int) -> int:
+                return a + b + c
+
+        specs = collect_rpc_method_specs(Worker)
+        assert specs["demo_mixed"].positional_parameter_names == ("a", "b")
+
+
+def _spec_of(method: Callable[..., Any]) -> RpcMethodSpec:
+    worker_cls = type("Worker", (), {method.__name__: method})
+    return collect_rpc_method_specs(worker_cls)[method.__name__]
+
+
+class TestPositionalParameterNames:
+    def test_positional_parameter_names_keep_declaration_order(self):
+        """Parameter names are recorded in declaration order, not the alphabetical order methods are collected in."""
+
+        def demo_pair(self, zeta: int, alpha: int) -> int:
+            return zeta - alpha
+
+        assert _spec_of(demo_pair).positional_parameter_names == ("zeta", "alpha")
+
+    def test_the_receiver_is_not_a_positional_parameter_name(self):
+        """The receiver never reaches the wire, so a caller's first positional binds to the first real parameter."""
+
+        def demo_one(self, value: int) -> int:
+            return value
+
+        assert _spec_of(demo_one).positional_parameter_names == ("value",)
+
+    def test_a_positional_only_receiver_does_not_shift_the_parameter_names(self):
+        """A method declaring its receiver positional-only still binds callers to its own first parameter."""
+
+        def demo_positional_receiver(self, /, value: int) -> int:
+            return value
+
+        assert _spec_of(demo_positional_receiver).positional_parameter_names == ("value",)
+
+    def test_a_method_without_parameters_has_no_positional_parameter_names(self):
+        """A method taking only the receiver accepts no positional arguments at all."""
+
+        def demo_none(self) -> int:
+            return 0
+
+        assert _spec_of(demo_none).positional_parameter_names == ()
+
+    def test_keyword_only_parameters_are_absent_from_the_positional_names(self):
+        """Keyword-only parameters cannot be filled positionally, so they are not part of the positional order."""
+
+        def demo_keyword_only(self, *, a: int, b: int) -> int:
+            return a + b
+
+        assert _spec_of(demo_keyword_only).positional_parameter_names == ()
+
+
+class TestCanonicalizeMethodArguments:
+    def test_positional_arguments_are_named_in_declaration_order(self):
+        """Positionals are zipped onto parameter names in order, so the wire carries each value under its own name."""
+
+        def demo_pair(self, zeta: int, alpha: int) -> int:
+            return zeta - alpha
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2), kwargs={})
+        assert canonical == {"zeta": 1, "alpha": 2}
+
+    def test_unfilled_trailing_parameters_are_omitted_rather_than_padded(self):
+        """A short positional call leaves later parameters absent so the server still applies their defaults."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        assert canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1,), kwargs={}) == {"a": 1}
+
+    def test_keyword_arguments_alone_are_passed_through_unchanged(self):
+        """A purely keyword call keeps working exactly as before positional support existed."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(), kwargs={"a": 1, "b": 2})
+        assert canonical == {"a": 1, "b": 2}
+
+    def test_positional_and_keyword_arguments_are_merged(self):
+        """Positionals and keywords naming distinct parameters combine into one keyword-shaped payload."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1,), kwargs={"b": 2})
+        assert canonical == {"a": 1, "b": 2}
+
+    def test_a_keyword_only_parameter_is_still_reachable_by_keyword(self):
+        """Positionals fill the ordinary parameters while a keyword-only parameter arrives by name."""
+
+        def demo_mixed(self, a: int, *, c: int) -> int:
+            return a + c
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_mixed), args=(1,), kwargs={"c": 3})
+        assert canonical == {"a": 1, "c": 3}
+
+    def test_filling_every_parameter_positionally_is_allowed(self):
+        """Supplying exactly as many positionals as parameters is the boundary case and must not be rejected."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        canonical = canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2), kwargs={})
+        assert canonical == {"a": 1, "b": 2}
+
+    def test_one_positional_too_many_is_rejected(self):
+        """An excess positional cannot be named, so it fails locally with the TypeError an in-process call raises."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        with pytest.raises(TypeError) as excinfo:
+            canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2, 3), kwargs={})
+        assert "demo_pair() takes at most 2 positional arguments, got 3" in str(excinfo.value)
+
+    def test_a_keyword_only_parameter_cannot_be_filled_positionally(self):
+        """A keyword-only parameter is not part of the positional order, so a positional for it is an error."""
+
+        def demo_mixed(self, a: int, *, c: int) -> int:
+            return a + c
+
+        with pytest.raises(TypeError, match="at most 1 positional arguments"):
+            canonicalize_method_arguments(spec=_spec_of(demo_mixed), args=(1, 3), kwargs={})
+
+    def test_a_parameterless_method_rejects_any_positional_argument(self):
+        """A method taking only the receiver has no name to bind a positional to."""
+
+        def demo_none(self) -> int:
+            return 0
+
+        with pytest.raises(TypeError, match="at most 0 positional arguments"):
+            canonicalize_method_arguments(spec=_spec_of(demo_none), args=(1,), kwargs={})
+
+    def test_a_parameter_given_positionally_and_by_keyword_is_rejected(self):
+        """A duplicated parameter must raise instead of one value silently overwriting the other."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        with pytest.raises(TypeError) as excinfo:
+            canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1,), kwargs={"a": 2})
+        assert "demo_pair() got multiple values for ['a']" in str(excinfo.value)
+
+    def test_every_duplicated_parameter_is_reported_in_sorted_order(self):
+        """All conflicting names are listed, sorted, so the message does not depend on dict iteration order."""
+
+        def demo_pair(self, zeta: int, alpha: int) -> int:
+            return zeta - alpha
+
+        with pytest.raises(TypeError) as excinfo:
+            canonicalize_method_arguments(spec=_spec_of(demo_pair), args=(1, 2), kwargs={"zeta": 3, "alpha": 4})
+        assert "['alpha', 'zeta']" in str(excinfo.value)
+
+    def test_an_unknown_keyword_is_left_for_the_server_to_reject(self):
+        """Client-side canonicalization only binds positionals; unknown names stay for query validation to refuse."""
+
+        def demo_pair(self, a: int, b: int = 10) -> int:
+            return a + b
+
+        spec = _spec_of(demo_pair)
+        assert canonicalize_method_arguments(spec=spec, args=(1,), kwargs={"nope": 2}) == {"a": 1, "nope": 2}
+        with pytest.raises(ValidationError):
+            spec.serializer.decode_query(canonicalize_method_arguments(spec=spec, args=(1,), kwargs={"nope": 2}))

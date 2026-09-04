@@ -1,82 +1,49 @@
-"""In-memory stand-in for ``SGLangEngine`` (no CUDA, no sglang, no model)."""
+"""In-memory stand-in for the engine ``CommandActor`` (no CUDA, no sglang, no model)."""
 
 from __future__ import annotations
 
 import logging
-import threading
-from collections.abc import Callable
+import shlex
 from typing import Any
 
 import ray
 
+from miles.utils.misc import get_current_node_ip, get_free_port
+from miles.utils.test_utils.mock_sglang_http_server import MockSGLangHttpServer
+
 logger = logging.getLogger(__name__)
 
 
-# Methods that just ``_record + _maybe_fault + return X``. The value is the
-# return value (no test asserts on its shape — sentinels keep the mock close
-# to what the real method's HTTP response shape returns).
-_RECORDING_METHODS: dict[str, Any] = {
-    "health_generate": True,
-    "release_memory_occupation": True,
-    "resume_memory_occupation": True,
-    "update_weights_from_disk": True,
-    "update_weights_from_tensor": True,
-    "flush_cache": True,
-    "pause_generation": None,
-    "continue_generation": None,
-    "update_weight_version": None,
-    "begin_weight_update": None,
-    "end_weight_update": None,
-    "init_weights_update_group": None,
-    "destroy_weights_update_group": None,
-    "update_weights_from_distributed": None,
-    "load_lora_adapter_from_tensors": None,
-    "unload_lora_adapter": None,
-    "start_profile": None,
-    "stop_profile": None,
-    "check_weights": {"_mock": True},
-    "get_server_info": {"_mock": True},
-    "get_weight_version": "mock-v0",
-    "get_parallelism_info": {"_mock": True},
-    "get_remote_instance_transfer_engine_info": {"_mock": True},
-}
-
-
-def _make_recorder(name: str, return_value: Any) -> Callable:
-    def method(self, *args, **kwargs):
-        self._record(name, args, kwargs)
-        self._maybe_fault(name)
-        return return_value
-
-    method.__name__ = name
-    return method
+def parse_cmd_flags(cmd: str) -> dict[str, Any]:
+    """Naive ``--flag value`` scan of a launch command; enough for addressing asserts."""
+    tokens = shlex.split(cmd)
+    flags: dict[str, Any] = {}
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if not token.startswith("--"):
+            index += 1
+            continue
+        name = token[2:].replace("-", "_")
+        if index + 1 < len(tokens) and not tokens[index + 1].startswith("--"):
+            value = tokens[index + 1]
+            flags[name] = int(value) if value.isdigit() else value
+            index += 2
+        else:
+            flags[name] = True
+            index += 1
+    return flags
 
 
 class MockSGLangEngine:
     """Records every call into ``self.calls`` so tests can assert sequence and
     arguments. Fault injection is set via ``set_fault(method, exception)``."""
 
-    def __init__(
-        self,
-        args,
-        rank: int,
-        worker_type: str = "regular",
-        base_gpu_id: int = 0,
-        sglang_overrides: dict | None = None,
-        num_gpus_per_engine: int = 1,
-    ):
-        self.args = args
-        self.rank = rank
-        self.worker_type = worker_type
-        self.base_gpu_id = base_gpu_id
-        self.sglang_overrides = sglang_overrides or {}
-        self.num_gpus_per_engine = num_gpus_per_engine
-
-        self.initialized = False
+    def __init__(self):
         self.calls: list[tuple[str, tuple, dict]] = []
         self._faults: dict[str, BaseException] = {}
-        self._port_seq = 20000
-        self._lock = threading.Lock()
+        self._http_server: MockSGLangHttpServer | None = None
+        self._server_args: dict[str, Any] | None = None
 
     def set_fault(self, method: str, exception: BaseException | None):
         if exception is None:
@@ -87,36 +54,50 @@ class MockSGLangEngine:
     def get_calls(self) -> list[tuple[str, tuple, dict]]:
         return list(self.calls)
 
-    def get_init_kwargs(self) -> dict | None:
-        for name, _args, kwargs in self.calls:
-            if name == "init":
-                return dict(kwargs)
-        return None
+    def get_server_args(self) -> dict[str, Any] | None:
+        return dict(self._server_args) if self._server_args is not None else None
 
-    def init(self, **kwargs):
-        self._record("init", (), kwargs)
-        self._maybe_fault("init")
-        self.initialized = True
+    def get_http_paths(self) -> list[str]:
+        return self._http_server.paths if self._http_server is not None else []
+
+    def get_http_payloads_of(self, path: str) -> list[dict | None]:
+        return self._http_server.payloads_of(path) if self._http_server is not None else []
+
+    def run(self, cmd: str, envs: dict[str, str]):
+        self._record("run", (), {"cmd": cmd, "envs": envs})
+        self._maybe_fault("run")
+        self._server_args = parse_cmd_flags(cmd)
+        self._http_server = MockSGLangHttpServer(port=int(self._server_args["port"]))
         return None
 
     def shutdown(self):
         self._record("shutdown", (), {})
         self._maybe_fault("shutdown")
-        self.initialized = False
+        if self._http_server is not None:
+            self._http_server.close()
         return True
 
-    def simulate_crash(self):
-        # Real SGLangEngine.simulate_crash calls self.shutdown() (only the http
-        # server dies; the actor itself stays alive). Mirror that.
-        self._record("simulate_crash", (), {})
-        self.shutdown()
+    def kill_subprocess(self):
+        """Real CommandActor takes the actor down with the subprocess; the
+        in-process mock cannot exit the test process, so only the server dies."""
+        self._record("kill_subprocess", (), {})
+        if self._http_server is not None:
+            self._http_server.close()
 
-    def _get_current_node_ip_and_free_port(self, start_port: int = 15000, consecutive: int = 1):
-        self._record("_get_current_node_ip_and_free_port", (), {"start_port": start_port, "consecutive": consecutive})
-        with self._lock:
-            port = max(self._port_seq, start_port)
-            self._port_seq = port + consecutive
-            return ("127.0.0.1", port)
+    def _get_free_port_block(self, *, start_port: int, count: int) -> int:
+        self._record("_get_free_port_block", (), {"start_port": start_port, "count": count})
+        return get_free_port(start_port=start_port, consecutive=count)
+
+    def _get_node_ip(self):
+        self._record("_get_node_ip", (), {})
+        return "127.0.0.1"
+
+    def _get_gpu_uuids(self, gpu_ids: list[int]):
+        self._record("_get_gpu_uuids", (gpu_ids,), {})
+        return [None] * len(gpu_ids)
+
+    def _collect_env_report(self, *, role: str, rank: int, partial_env_report: str):
+        self._record("_collect_env_report", (), {"role": role, "rank": rank, "partial_env_report": partial_env_report})
 
     def _record(self, name: str, args: tuple, kwargs: dict) -> None:
         self.calls.append((name, args, kwargs))
@@ -125,10 +106,6 @@ class MockSGLangEngine:
         exc = self._faults.pop(method, None)
         if exc is not None:
             raise exc
-
-
-for _name, _retval in _RECORDING_METHODS.items():
-    setattr(MockSGLangEngine, _name, _make_recorder(_name, _retval))
 
 
 MockSGLangEngine = ray.remote(MockSGLangEngine)

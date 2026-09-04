@@ -1,26 +1,29 @@
 import asyncio
-from argparse import Namespace
+from collections.abc import Callable
 
+import httpx
 import pytest
 import requests
 
+from miles.router import router as router_module
+from miles.router.config import MilesRouterConfig
 from miles.router.router import MilesRouter
 from miles.utils.http_utils import find_available_port
 from miles.utils.test_utils.mock_sglang_server import MockSGLangServer, default_process_fn
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
 
-def make_router_args(router_port: int, **overrides) -> Namespace:
+def make_router_config(router_port: int, **overrides) -> MilesRouterConfig:
     defaults = dict(
-        sglang_router_ip="127.0.0.1",
-        sglang_router_port=router_port,
-        rollout_health_check_interval=1.0,
-        miles_router_health_check_failure_threshold=3,
-        miles_router_max_connections=100,
-        miles_router_timeout=None,
+        host="127.0.0.1",
+        port=router_port,
+        health_check_interval=1.0,
+        health_check_failure_threshold=3,
+        max_connections=100,
+        timeout=None,
     )
     defaults.update(overrides)
-    return Namespace(**defaults)
+    return MilesRouterConfig(**defaults)
 
 
 def create_mock_worker(start_port: int = 30000) -> MockSGLangServer:
@@ -46,9 +49,9 @@ class RouterEnv:
 
 @pytest.fixture
 def router_env():
-    args = make_router_args(find_available_port(20000))
-    router = MilesRouter(args, verbose=False)
-    server = UvicornThreadServer(router.app, host=args.sglang_router_ip, port=args.sglang_router_port)
+    config = make_router_config(find_available_port(20000))
+    router = MilesRouter(config, verbose=False)
+    server = UvicornThreadServer(router.app, host=config.host, port=config.port)
     server.start()
     yield RouterEnv(router, server)
     server.stop()
@@ -81,10 +84,28 @@ def mock_worker_factory():
 @pytest.fixture
 def router_factory():
     def _create(**overrides) -> MilesRouter:
-        args = make_router_args(find_available_port(20000), **overrides)
-        return MilesRouter(args, verbose=False)
+        config = make_router_config(find_available_port(20000), **overrides)
+        return MilesRouter(config, verbose=False)
 
     return _create
+
+
+class TestMilesRouterInitialization:
+    async def test_client_uses_configured_connection_limit_and_timeout(self):
+        """The router builds its HTTP client with the connection limit and timeout taken from the config."""
+        config = make_router_config(20000, max_connections=7, timeout=3.5)
+
+        router = MilesRouter(config, verbose=False)
+
+        try:
+            assert isinstance(router.client, httpx.AsyncClient)
+            assert router.client._transport._pool._max_connections == 7
+            assert router.client.timeout.connect == 3.5
+            assert router.client.timeout.read == 3.5
+            assert router.client.timeout.write == 3.5
+            assert router.client.timeout.pool == 3.5
+        finally:
+            await router.client.aclose()
 
 
 class TestWorkerManagement:
@@ -155,6 +176,30 @@ class TestLoadBalancing:
             router._use_url()
 
 
+class FakeSleepClock:
+    def __init__(self, *, stop_after: int, on_sleep: Callable[[], None] | None = None):
+        self.sleeps: list[float] = []
+        self._stop_after = stop_after
+        self._on_sleep = on_sleep
+
+    async def sleep(self, duration: float) -> None:
+        self.sleeps.append(duration)
+        if self._on_sleep is not None:
+            self._on_sleep()
+        if len(self.sleeps) >= self._stop_after:
+            raise asyncio.CancelledError
+
+
+class ScriptedWorkerHealth:
+    def __init__(self, results: list[bool]):
+        self.checked_urls: list[str] = []
+        self._results = list(results)
+
+    async def check(self, url: str) -> tuple[str, bool]:
+        self.checked_urls.append(url)
+        return url, self._results.pop(0)
+
+
 # TODO: extract main body inside `_health_check_loop`, then can test that function
 class TestHealthCheck:
     def test_check_worker_health_success(self, router_factory, mock_worker: MockSGLangServer):
@@ -168,6 +213,39 @@ class TestHealthCheck:
         url, healthy = asyncio.run(router._check_worker_health("http://127.0.0.1:59999"))
         assert url == "http://127.0.0.1:59999"
         assert healthy is False
+
+    def test_health_check_loop_waits_for_configured_interval(self, router_factory, monkeypatch: pytest.MonkeyPatch):
+        """The background health check loop waits the configured interval before every round."""
+        router = router_factory(health_check_interval=7.5)
+        router.worker_request_counts = {"http://w1:8000": 0}
+        router._check_worker_health = ScriptedWorkerHealth([True, True, True]).check
+        clock = FakeSleepClock(stop_after=3)
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+
+        assert clock.sleeps == [7.5, 7.5, 7.5]
+
+    def test_only_configured_consecutive_failures_quarantine_worker(
+        self, router_factory, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A worker is quarantined only once it fails the configured number of checks in a row, and a success resets the count."""
+        worker_url = "http://w1:8000"
+        router = router_factory(health_check_interval=0.01, health_check_failure_threshold=4)
+        router.worker_request_counts = {worker_url: 0}
+        router._check_worker_health = ScriptedWorkerHealth(
+            [False, False, False, True, False, False, False, False]
+        ).check
+        dead_worker_snapshots: list[set[str]] = []
+        clock = FakeSleepClock(stop_after=9, on_sleep=lambda: dead_worker_snapshots.append(set(router.dead_workers)))
+        monkeypatch.setattr(router_module.asyncio, "sleep", clock.sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(router._health_check_loop())
+
+        assert dead_worker_snapshots == [set(), set(), set(), set(), set(), set(), set(), set(), {worker_url}]
+        assert router.worker_failure_counts[worker_url] == 4
 
 
 class TestProxyIntegration:

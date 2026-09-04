@@ -14,9 +14,11 @@ import setproctitle
 import uvicorn
 from fastapi import FastAPI
 
+from miles.rollout.session.config import SessionServerConfig
 from miles.rollout.session.core import ProxyRequest
 from miles.rollout.session.sessions import setup_session_routes
 from miles.utils.logging_utils import configure_logger_raw
+from miles.utils.workers.argv_utils import parse_config_argv
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +30,13 @@ class SessionServer:
     """Lightweight FastAPI server that manages sessions and proxies inference
     requests through the inference router (sglang or miles)."""
 
-    def __init__(self, args, backend_url: str):
-        self.backend_url = backend_url
+    def __init__(self, config: SessionServerConfig):
+        self.backend_url = config.backend_url
         self.app = FastAPI()
 
-        timeout = getattr(args, "miles_router_timeout", 600.0)
         self.client = httpx.AsyncClient(
             limits=httpx.Limits(max_connections=1024),
-            timeout=httpx.Timeout(timeout),
+            timeout=httpx.Timeout(config.timeout),
         )
 
         # Close the httpx connection pool when uvicorn shuts down to avoid FD leaks.
@@ -43,8 +44,8 @@ class SessionServer:
 
         # `retract` may recompute earlier rows and must return full R3; all other
         # pause modes preserve prior rows and can request only the appended R3.
-        self.use_addition_r3 = args.pause_generation_mode != "retract"
-        setup_session_routes(self.app, self, args, use_addition_r3=self.use_addition_r3)
+        self.use_addition_r3 = config.pause_generation_mode != "retract"
+        setup_session_routes(self.app, self, config, use_addition_r3=self.use_addition_r3)
 
     async def do_proxy(self, request: ProxyRequest, path: str, *, body: bytes, headers: dict) -> dict:
         url = f"{self.backend_url}/{path}"
@@ -73,18 +74,26 @@ class SessionServer:
         }
 
 
-def run_session_server(args, backend_url: str):
+def run_session_server(config: SessionServerConfig):
     """Entry point to start the standalone session server as a subprocess."""
     # Spawned as a fresh interpreter, so it inherits no logging config.
     configure_logger_raw("session_server")
     # Visible to `pkill -9 miles`; without this the daemon inherits "python".
     setproctitle.setproctitle("miles-session-server")
 
-    server = SessionServer(args, backend_url)
+    server = SessionServer(config)
     logger.info(
         "[session-server] Starting on %s:%s, proxying to %s",
-        args.session_server_ip,
-        args.session_server_port,
-        backend_url,
+        config.host,
+        config.port,
+        config.backend_url,
     )
-    uvicorn.run(server.app, host=args.session_server_ip, port=args.session_server_port, log_level="info")
+    uvicorn.run(server.app, host=config.host, port=config.port, log_level="info")
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_session_server(parse_config_argv(SessionServerConfig, argv))
+
+
+if __name__ == "__main__":
+    main()
