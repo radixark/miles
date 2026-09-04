@@ -313,6 +313,15 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+def _set_megatron_parallel_sizes(args, tp: int = 1, pp: int = 1, cp: int = 1) -> None:
+    """Megatron owns these arguments; the miles-only parser used here never defines them,
+    and the --indep-dp validation path reads them to size a cell."""
+    args.tensor_model_parallel_size = tp
+    args.pipeline_model_parallel_size = pp
+    args.context_parallel_size = cp
+    args.world_size = tp * pp * cp
+
+
 def test_shared_actor_critic_ppo_rejects_indep_dp():
     """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
     parser = argparse.ArgumentParser()
@@ -335,6 +344,8 @@ def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
 
     with pytest.raises(AssertionError, match="dedicated eval fleet"):
         miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
