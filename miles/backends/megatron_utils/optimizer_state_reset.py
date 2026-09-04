@@ -1,10 +1,13 @@
-"""Reset optimizer history for --reset-optimizer-states, failing closed on state it does not know."""
+"""Reset optimizer history for --reset-optimizer-states, failing closed on state it does not know.
+
+The Muon classes are imported where they are matched: Megatron builds without
+``emerging_optimizers`` (the NPU pin) still run Adam.
+"""
 
 from collections.abc import Iterator
 
 import torch
 from megatron.core.optimizer import Adam, CPUAdam
-from megatron.core.optimizer.emerging_optimizers import TensorParallelMuon
 
 
 class UnsupportedOptimizerState(RuntimeError):
@@ -32,10 +35,14 @@ def _leaves(optimizer) -> Iterator[torch.optim.Optimizer]:
 
 
 def _history_keys(optimizer) -> frozenset[str]:
-    if isinstance(optimizer, TensorParallelMuon):
-        return frozenset({"momentum_buffer"})
     if isinstance(optimizer, (Adam, CPUAdam)):
         return frozenset({"exp_avg", "exp_avg_sq"})
+    from megatron.core.optimizer.emerging_optimizers import TensorParallelAdaptiveMuon, TensorParallelMuon
+
+    if isinstance(optimizer, TensorParallelAdaptiveMuon):
+        return frozenset({"momentum_buffer", "moment2_buffer"})
+    if isinstance(optimizer, TensorParallelMuon):
+        return frozenset({"momentum_buffer"})
     raise UnsupportedOptimizerState(f"no reset schema for {type(optimizer).__name__}")
 
 

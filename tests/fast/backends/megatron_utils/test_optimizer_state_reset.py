@@ -1,11 +1,12 @@
 """reset_optimizer_states must reach every leaf optimizer under Megatron's wrappers and clear its
 history by class, not by the --optimizer string (which Megatron rewrites before training starts)."""
 
+import sys
 from types import SimpleNamespace
 
 import pytest
 import torch
-from megatron.core.optimizer.emerging_optimizers import TensorParallelMuon
+from megatron.core.optimizer.emerging_optimizers import TensorParallelAdaptiveMuon, TensorParallelMuon
 
 from miles.backends.megatron_utils.optimizer_state_reset import UnsupportedOptimizerState, reset_optimizer_states
 
@@ -30,10 +31,10 @@ class GroupStepAdamW(torch.optim.AdamW):
             del state["step"]
 
 
-def muon_with_momentum(*shapes):
-    optimizer = TensorParallelMuon.__new__(TensorParallelMuon)
+def muon_with_momentum(*shapes, cls=TensorParallelMuon, buffers=("momentum_buffer",)):
+    optimizer = cls.__new__(cls)
     optimizer.param_groups = [{"params": [torch.nn.Parameter(torch.ones(*shape)) for shape in shapes]}]
-    optimizer.state = {p: {"momentum_buffer": torch.ones_like(p)} for p in optimizer.param_groups[0]["params"]}
+    optimizer.state = {p: {name: torch.ones_like(p) for name in buffers} for p in optimizer.param_groups[0]["params"]}
     return optimizer
 
 
@@ -64,6 +65,29 @@ def test_layer_wise_muon_tree_resets_both_leaves():
 
     assert all(not state["momentum_buffer"].any() for state in muon.state.values())
     assert_adam_reset(adam)
+
+
+def test_adaptive_muon_resets_both_moment_buffers():
+    adaptive = muon_with_momentum(
+        (4, 4), cls=TensorParallelAdaptiveMuon, buffers=("momentum_buffer", "moment2_buffer")
+    )
+
+    reset_optimizer_states(chain(wrap(adaptive)))
+
+    for state in adaptive.state.values():
+        assert not state["momentum_buffer"].any()
+        assert not state["moment2_buffer"].any()
+
+
+def test_adam_reset_does_not_need_emerging_optimizers(monkeypatch):
+    monkeypatch.setitem(sys.modules, "megatron.core.optimizer.emerging_optimizers", None)
+    adam = stepped_adamw((4,))
+
+    reset_optimizer_states(chain(wrap(adam)))
+
+    assert_adam_reset(adam)
+    with pytest.raises(ImportError):
+        reset_optimizer_states(chain(wrap(muon_with_momentum((4, 4)))))
 
 
 def test_hybrid_device_optimizer_resets_cpu_and_gpu_children():
