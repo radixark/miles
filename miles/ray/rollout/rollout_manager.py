@@ -266,6 +266,12 @@ class RolloutManager:
                 RolloutDataInjectionUtil.assert_matches_generated(
                     self.args, generated=generated_data, injected=data, rollout_id=rollout_id
                 )
+                data = RolloutDataInjectionUtil.group_by_dp_shard(
+                    self.args,
+                    data,
+                    rollout_id=rollout_id,
+                    dp_size=self.train_parallel_config["dp_size"],
+                )
                 metrics = None
 
         return data, metadata, metrics

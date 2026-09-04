@@ -171,6 +171,21 @@ class RolloutDataInjectionUtil:
         )
 
     @classmethod
+    def group_by_dp_shard(cls, args, samples: list[Sample], *, rollout_id: int, dp_size: int) -> list[Sample]:
+        if rollout_id != args.ci_inject_rollout_data_group_by_dp_rollout_id:
+            return samples
+
+        assert len(samples) % dp_size == 0, (
+            f"rollout {rollout_id}: cannot group {len(samples)} injected samples into {dp_size} equal DP shards"
+        )
+        grouped = [sample for dp_rank in range(dp_size) for sample in samples[dp_rank::dp_size]]
+        logger.info(
+            f"CI rollout-data injection: grouped rollout {rollout_id} into {dp_size} nominal DP shards "
+            "for degraded retry"
+        )
+        return grouped
+
+    @classmethod
     def _response_token_match_ratio(cls, a: Sample, b: Sample) -> float:
         response_a = cls._response_tokens(a)
         response_b = cls._response_tokens(b)

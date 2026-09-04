@@ -52,6 +52,7 @@ def test_real_rollout_uses_one_nominal_dp_shard_per_microbatch() -> None:
 
     tokens = shlex.split(args)
     assert _option_value(args, "--micro-batch-size") == "128"
+    assert _option_value(args, "--ci-inject-rollout-data-group-by-dp-rollout-id") == str(_FAULT_ROLLOUT_ID)
     assert "--use-dynamic-batch-size" not in tokens
     assert "--max-tokens-per-gpu" not in tokens
 

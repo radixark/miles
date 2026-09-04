@@ -2294,6 +2294,13 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "wrong (legitimate ulp-level drift only flips occasional sampled tokens).",
             )
             parser.add_argument(
+                "--ci-inject-rollout-data-group-by-dp-rollout-id",
+                type=int,
+                default=None,
+                help="CI comparison tests only: reorder this injected rollout into contiguous "
+                "data-parallel shards before delayed train-side splitting.",
+            )
+            parser.add_argument(
                 "--env-report",
                 type=str,
                 default=os.environ.get("MILES_SCRIPT_ENV_REPORT", ""),
@@ -3243,6 +3250,10 @@ def miles_validate_args(args):
         assert args.load_debug_rollout_data is None, (
             "--ci-inject-rollout-data-path replaces data of individual rollouts while engines "
             "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
+        )
+    if args.ci_inject_rollout_data_group_by_dp_rollout_id is not None:
+        assert args.ci_inject_rollout_data_path is not None, (
+            "--ci-inject-rollout-data-group-by-dp-rollout-id requires --ci-inject-rollout-data-path."
         )
 
     args.use_critic = args.advantage_estimator == "ppo"
