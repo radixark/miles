@@ -25,6 +25,7 @@ trainer, so the only network requirement is this machine -> control plane.
 
 import json
 import os
+import shutil
 import sys
 import urllib.request
 from pathlib import Path
@@ -64,8 +65,11 @@ def preflight():
             "set E2B_API_URL (and E2B_SANDBOX_URL) to the sandbox-service control plane; see the module docstring"
         )
     key_file = Path(os.environ.get("E2B_API_KEY_FILE", "~/.config/e2b/api_key")).expanduser()
-    if not os.environ.get("E2B_API_KEY", "").strip() and not key_file.is_file():
-        sys.exit(f"no e2b credential: set E2B_API_KEY or put the key at {key_file}")
+    # non-empty, mirroring the real check (credentials.sandbox_key_supply): an
+    # empty placeholder file must fail here, not deep inside training
+    file_has_key = key_file.is_file() and bool(key_file.read_text().strip())
+    if not os.environ.get("E2B_API_KEY", "").strip() and not file_has_key:
+        sys.exit(f"no e2b credential: set E2B_API_KEY or put a non-empty key at {key_file}")
     try:
         request = urllib.request.Request(f"{api_url}/nodes", headers={"X-API-Key": "preflight"})
         urllib.request.urlopen(request, timeout=10).read()
@@ -80,6 +84,8 @@ def preflight():
 
 
 def prepare():
+    # a stale trial dir from a prior manual run must not vouch for this one
+    shutil.rmtree(TRIALS_DIR, ignore_errors=True)
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     if not (Path(TASKS_DIR) / SMOKE_TASK).is_dir():
