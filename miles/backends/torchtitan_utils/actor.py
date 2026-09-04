@@ -296,7 +296,9 @@ class TorchtitanTrainRayActor(TrainRayActor):
             if dist.get_rank() == 0:
                 ray.get(self.rollout_manager.clear_updatable_has_new_engines.remote())
 
+        print_memory("before update_weights")
         self.weight_updater.update_weights()
+        print_memory("after update_weights")
         if dist.get_rank() == 0:
             ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
