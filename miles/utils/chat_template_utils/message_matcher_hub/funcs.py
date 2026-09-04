@@ -161,7 +161,7 @@ def resolve_session_message_matcher(selector: str) -> SessionMessageMatcher:
             f"or a dotted import path such as package.module.matcher"
         )
     try:
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         return _validated(load_function(selector, sync_required=True))
     except Exception as exc:

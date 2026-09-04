@@ -97,16 +97,19 @@ def gather_log_data(
     parallel_state = get_parallel_state()
 
     pg = parallel_state.effective_dp_cp
-    log_structured(logger.info, op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
+    log_structured(logger.info, tag="ft", op="cross_cell", phase="start", kind="log_gather", rank=pg.rank)
     try:
         gathered_log_dict = MultiPGUtil.gather_object(
             obj=log_dict,
             groups_inner_to_outer=pg.gloo_groups_inner_to_outer,
         )
-        log_structured(logger.info, op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True)
+        log_structured(
+            logger.info, tag="ft", op="cross_cell", phase="end", kind="log_gather", rank=pg.rank, success=True
+        )
     except RuntimeError:
         log_structured(
             logger.warning,
+            tag="ft",
             op="cross_cell",
             phase="end",
             kind="log_gather",

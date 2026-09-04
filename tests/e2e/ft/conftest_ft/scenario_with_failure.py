@@ -8,6 +8,7 @@ from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
 
+from miles.ray.specs.train import compute_trainer_pool_id
 from miles.utils.test_utils.comparisons.dumps import (
     INPUT_TENSORS_ALLOW_FAILED_PATTERN,
     INPUT_TENSORS_SKIP_PATTERN,
@@ -15,6 +16,7 @@ from miles.utils.test_utils.comparisons.dumps import (
 )
 from miles.utils.test_utils.comparisons.metrics import compare_metrics
 from miles.utils.test_utils.reconfigure_assertions import ReconfigureInfo, assert_reconfigure_events
+from miles.utils.workers.naming import compute_cell_id
 
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
@@ -52,18 +54,21 @@ _POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (".*", "rel <= 0.0085"),
 ]
 
+
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
-_WITH_FAILURE_ACTIONS: list[dict] = [
-    {
-        "at_rollout": NUM_PHASE_A_STEPS + 1,
-        "action": "crash_before_allreduce",
-        "cell_index": -1,
-        "rank": 0,
-        "attempt": 0,
-    },
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_index": -1},
-    {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_index": -1},
-]
+def _build_actions(num_cells: int) -> list[dict]:
+    target_cell_id: str = compute_cell_id(pool_id=compute_trainer_pool_id("actor"), cell_index=num_cells - 1)
+    return [
+        {
+            "at_rollout": NUM_PHASE_A_STEPS + 1,
+            "action": "crash_before_allreduce",
+            "cell_id": target_cell_id,
+            "rank": 0,
+            "attempt": 0,
+        },
+        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "stop_cell_at_end", "cell_id": target_cell_id},
+        {"at_rollout": NUM_PHASE_A_STEPS + 1, "action": "start_cell_at_end", "cell_id": target_cell_id},
+    ]
 
 
 def _expected_reconfigures(*, is_target: bool, phase: str, num_cells: int) -> list[ReconfigureInfo]:
@@ -100,7 +105,7 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         phase_a_dir = dump_dir.replace("/phase_b", "/phase_a")
         base += f"--load {phase_a_dir}/ckpt "
         if is_target:
-            base += f"--ci-ft-test-actions '{json.dumps(_WITH_FAILURE_ACTIONS)}' "
+            base += f"--ci-ft-test-actions '{json.dumps(_build_actions(num_cells=mode.num_cells))}' "
             if mode.has_real_rollout:
                 # Post-fault rollouts inject the baseline's recorded data (see README).
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")

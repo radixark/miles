@@ -28,6 +28,7 @@ import httpx
 from packaging.version import InvalidVersion, Version
 
 from miles.rollout.base_types import (
+    BaseRolloutFn,
     RolloutFnConstructorInput,
     RolloutFnEvalInput,
     RolloutFnEvalOutput,
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 _MIN_VERIFIERS_VERSION = Version("0.2.0")
 _MAX_VERIFIERS_VERSION = Version("0.2.1")
 _MIN_RENDERERS_VERSION = Version("0.1.8")
+_MAX_RENDERERS_VERSION = Version("0.1.11")
 _UNSUPPORTED_ERROR_PREFIX = "Miles' Verifiers adapter does not support"
 _CONFIG_ENV_VAR = "VERIFIERS_CONFIG"
 
@@ -79,7 +81,14 @@ def _installed_version(package: str) -> str:
         raise _optional_dependency_error() from error
 
 
-def _check_version(package: str, raw_version: str, minimum: Version, maximum: Version | None = None) -> None:
+def _check_version(
+    package: str,
+    raw_version: str,
+    minimum: Version,
+    maximum: Version | None = None,
+    *,
+    maximum_reason: str | None = None,
+) -> None:
     try:
         installed = Version(raw_version)
     except InvalidVersion as error:
@@ -87,10 +96,10 @@ def _check_version(package: str, raw_version: str, minimum: Version, maximum: Ve
     if installed < minimum:
         raise RuntimeError(f"Verifiers rollouts require {package}>={minimum}; found {installed}.")
     if maximum is not None and installed >= maximum:
-        raise RuntimeError(
-            f"Verifiers rollouts require {package}>={minimum},<{maximum}; found {installed}. "
-            "Verifiers 0.2.1 requires OpenAI>=2.9, while SGLang 0.5.15 pins OpenAI==2.6.1."
-        )
+        message = f"Verifiers rollouts require {package}>={minimum},<{maximum}; found {installed}."
+        if maximum_reason is not None:
+            message += f" {maximum_reason}"
+        raise RuntimeError(message)
 
 
 def _import_verifiers():
@@ -101,8 +110,15 @@ def _import_verifiers():
         _installed_version("verifiers"),
         _MIN_VERIFIERS_VERSION,
         _MAX_VERIFIERS_VERSION,
+        maximum_reason="Verifiers 0.2.1 requires OpenAI>=2.9, while SGLang 0.5.15 pins OpenAI==2.6.1.",
     )
-    _check_version("renderers", _installed_version("renderers"), _MIN_RENDERERS_VERSION)
+    _check_version(
+        "renderers",
+        _installed_version("renderers"),
+        _MIN_RENDERERS_VERSION,
+        _MAX_RENDERERS_VERSION,
+        maximum_reason="Renderers 0.1.11 removes the renderer pool APIs used by Miles and Verifiers 0.2.0.",
+    )
     try:
         from verifiers.v1 import EnvConfig, Environment, ModelContext, SamplingConfig
         from verifiers.v1.clients.train import TrainClient
@@ -590,8 +606,9 @@ def _validate_args(args: Namespace) -> None:
         )
 
 
-class VerifiersRolloutFn:
+class VerifiersRolloutFn(BaseRolloutFn):
     def __init__(self, input: RolloutFnConstructorInput):
+        super().__init__(input)
         runtime = _import_verifiers()
         self.args = input.args
         self.data_source = input.data_source
@@ -624,7 +641,7 @@ class VerifiersRolloutFn:
         self.ctx = runtime.ModelContext(client=self.client, model=self.model, sampling=self.sampling)
         self.eval_ctx = runtime.ModelContext(client=self.eval_client, model=self.model, sampling=self.eval_sampling)
 
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         self.dynamic_filter = load_function(self.args.dynamic_sampling_filter_path)
         self._tasks = list(self.env.taskset.load())
@@ -703,7 +720,7 @@ class VerifiersRolloutFn:
             sample.reward = reward
 
     async def _postprocess_train_samples(self, data, all_data) -> None:
-        from miles.utils.misc import load_function
+        from miles.utils.function_registry import load_function
 
         if function := load_function(self.args.rollout_sample_filter_path):
             function(self.args, data)
