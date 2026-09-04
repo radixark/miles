@@ -170,7 +170,7 @@ def loss_function(
         denominators=batch.get("rollout_mask_sums", None),
     )
 
-    func = get_loss_function(args)
+    func = get_loss_function(args, batch.get("loss_fn"))
 
     if args.recompute_loss_function:
         loss, log = checkpoint(

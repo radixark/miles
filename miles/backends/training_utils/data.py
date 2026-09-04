@@ -162,6 +162,10 @@ def get_batch(
     if "dynamic_global_batch_size" in data_iterator.rollout_data:
         batch["dynamic_global_batch_size"] = data_iterator.rollout_data["dynamic_global_batch_size"]
 
+    for unit_key in ("loss_fn", "loss_fn_config"):
+        if unit_key in data_iterator.rollout_data:
+            batch[unit_key] = data_iterator.rollout_data[unit_key]
+
     # No-op safety net if batches reach get_batch without rollout-level preprocessing.
     expand_multimodal_rollout_data_in_place(batch, qkv_format=qkv_format)
 

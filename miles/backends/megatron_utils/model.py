@@ -452,6 +452,8 @@ def run_forward_backward_pass(args, dumper_phase_util, data_iterator, model, num
                 "witness_ids",
                 "opd_reverse_kl",
                 "rollout_mask_sums",
+                "loss_weights",
+                "sample_indices",
             ],
             args.data_pad_size_multiplier,
             args.qkv_format,
