@@ -127,8 +127,9 @@ def setup_session_routes(app, backend, config: SessionServerConfig, *, use_addit
     async def anthropic_messages(request: Request, session_id: str):
         """Serve Anthropic Messages through the OpenAI session path."""
         if anthropic_utils is None or convert_response is None or convert_to_chat_completion_request is None:
-            return _anthropic_error_response(
-                501, _render_json({"error": "The installed SGLang does not support the Anthropic Messages adapter"})
+            return JSONResponse(
+                status_code=501,
+                content={"error": "The installed SGLang does not support the Anthropic Messages adapter"},
             )
         body = await request.body()
         try:
