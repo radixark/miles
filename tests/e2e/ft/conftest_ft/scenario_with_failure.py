@@ -191,9 +191,7 @@ def _report_live_rollout_matches(dump_dir: str) -> None:
 
             prompt_matches += baseline_prompt == target_prompt
             exact_response_matches += baseline_response == target_response
-            matched_response_tokens += sum(
-                a == b for a, b in zip(baseline_response, target_response, strict=False)
-            )
+            matched_response_tokens += sum(a == b for a, b in zip(baseline_response, target_response, strict=False))
             total_response_tokens += max(len(baseline_response), len(target_response))
             reward_matches += baseline["reward"] == target["reward"]
 
