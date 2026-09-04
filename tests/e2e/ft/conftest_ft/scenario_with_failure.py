@@ -4,6 +4,8 @@
 import json
 from pathlib import Path
 
+import torch
+
 from tests.e2e.ft.conftest_ft.app import create_comparison_app_and_run_ci
 from tests.e2e.ft.conftest_ft.execution import get_common_train_args, get_ft_args, get_train_env_vars_arg
 from tests.e2e.ft.conftest_ft.modes import FTTestMode
@@ -127,6 +129,9 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
                 expected=_expected_reconfigures(is_target=side == "target", phase=phase, num_cells=mode.num_cells),
             )
 
+    if mode.has_real_rollout:
+        _report_live_rollout_matches(dump_dir)
+
     compare_metrics(
         baseline_dir=f"{dump_dir}/baseline/phase_b",
         target_dir=f"{dump_dir}/target/phase_b",
@@ -157,6 +162,49 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
         )
     print("With-failure comparison test PASSED")
+
+
+def _report_live_rollout_matches(dump_dir: str) -> None:
+    for rollout_id in range(NUM_PHASE_A_STEPS, NUM_PHASE_B_STEPS):
+        payloads = [
+            torch.load(
+                f"{dump_dir}/{side}/phase_b/rollout_data/{rollout_id}.pt",
+                weights_only=False,
+            )
+            for side in ["baseline", "target"]
+        ]
+        baseline_samples, target_samples = [payload["samples"] for payload in payloads]
+        assert len(baseline_samples) == len(target_samples)
+
+        prompt_matches = 0
+        exact_response_matches = 0
+        matched_response_tokens = 0
+        total_response_tokens = 0
+        reward_matches = 0
+        for baseline, target in zip(baseline_samples, target_samples, strict=True):
+            baseline_response_length = baseline["response_length"]
+            target_response_length = target["response_length"]
+            baseline_prompt = baseline["tokens"][:-baseline_response_length]
+            target_prompt = target["tokens"][:-target_response_length]
+            baseline_response = baseline["tokens"][-baseline_response_length:]
+            target_response = target["tokens"][-target_response_length:]
+
+            prompt_matches += baseline_prompt == target_prompt
+            exact_response_matches += baseline_response == target_response
+            matched_response_tokens += sum(
+                a == b for a, b in zip(baseline_response, target_response, strict=False)
+            )
+            total_response_tokens += max(len(baseline_response), len(target_response))
+            reward_matches += baseline["reward"] == target["reward"]
+
+        num_samples = len(baseline_samples)
+        response_token_match_ratio = matched_response_tokens / total_response_tokens
+        print(
+            f"Live rollout audit {rollout_id}: samples={num_samples}, "
+            f"prompt_matches={prompt_matches}, exact_response_matches={exact_response_matches}, "
+            f"response_token_match_ratio={response_token_match_ratio:.6f}, reward_matches={reward_matches}"
+        )
+        assert prompt_matches == num_samples
 
 
 def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tuple[str, str]]:
