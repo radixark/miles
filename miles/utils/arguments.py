@@ -765,6 +765,18 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--rollout-media-payload-paths",
+                action="store_true",
+                default=False,
+                help=(
+                    "Send local image paths to the rollout engine in image_data instead of re-encoding "
+                    "decoded media to base64. Skips a per-page PNG encode on the request path and shrinks "
+                    "each request from megabytes to bytes. Requires every rollout engine to be able to "
+                    "open the dataset's media paths, i.e. colocated engines or a filesystem shared with "
+                    "the dataset."
+                ),
+            )
+            parser.add_argument(
                 "--custom-rollout-log-function-path",
                 type=str,
                 default=None,
