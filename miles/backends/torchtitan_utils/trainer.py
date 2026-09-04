@@ -693,6 +693,21 @@ class TitanTrainer(Trainer):
                     part.cpu()
                 torch.cuda.empty_cache()
 
+    def _stage_group(self, stage_groups: dict[int, list[int]], my_stage: int):
+        """This rank's pipeline-stage process group, created once.
+
+        Weights are pushed on every optimizer step, and ``new_group`` builds a
+        fresh communicator each time it is called and never releases one, so
+        creating these per push exhausts NCCL's device buffers within a few
+        updates ("Failed to CUDA calloc"). Creation is collective, so every rank
+        builds every stage's group in the same order.
+        """
+        if getattr(self, "_stage_groups", None) is None:
+            self._stage_groups = {
+                stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())
+            }
+        return self._stage_groups[my_stage]
+
     def _hf_weights_on_device(self, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
         # The checkpointer only builds its adapter when checkpointing is
         # enabled; weight streaming needs the mapping regardless.
@@ -748,9 +763,7 @@ class TitanTrainer(Trainer):
         if complete_across_pp:
             audience, broadcast_group = list(range(world)), None
         else:
-            # new_group is collective: every rank creates every stage's group.
-            groups = {stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())}
-            audience, broadcast_group = stage_groups[my_stage], groups[my_stage]
+            audience, broadcast_group = stage_groups[my_stage], self._stage_group(stage_groups, my_stage)
 
         audience_set = set(audience)
         names = [name for name in sorted(owners) if audience_set.intersection(owners[name])]
