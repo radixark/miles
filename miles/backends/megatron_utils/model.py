@@ -125,65 +125,6 @@ def _get_grad_norm_fp64(
     return total_squared_norm.sqrt().float().item()
 
 
-def _run_stable_dp_shards(
-    args: Namespace,
-    data_iterator: Sequence[DataIterator],
-    model: Sequence[DDP],
-    forward_step: Callable[..., object],
-    forward_backward_func: Callable[..., list[dict[str, torch.Tensor | list[str]]]],
-    shard_microbatches: list[int],
-    set_loss_num_microbatches: Callable[[int], None],
-) -> list[dict[str, torch.Tensor | list[str]]]:
-    accumulated_grads: list[torch.Tensor] | None = None
-    grad_views: list[torch.Tensor] = []
-    losses_reduced: list[dict[str, torch.Tensor | list[str]]] = []
-
-    for shard_id, num_microbatches in enumerate(shard_microbatches):
-        if shard_id > 0:
-            for model_chunk in model:
-                model_chunk.zero_grad_buffer()
-
-        set_loss_num_microbatches(num_microbatches)
-        losses_reduced += forward_backward_func(
-            forward_step_func=forward_step,
-            data_iterator=data_iterator,
-            model=model,
-            num_microbatches=num_microbatches,
-            seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
-            decoder_seq_length=args.decoder_seq_length,
-            forward_only=False,
-            force_all_reduce=False,
-        )
-        grad_views = _get_reduced_grad_views(model)
-        if accumulated_grads is None:
-            accumulated_grads = [grad.clone() for grad in grad_views]
-        else:
-            for accumulated, grad in zip(accumulated_grads, grad_views, strict=True):
-                accumulated.add_(grad)
-
-    assert accumulated_grads is not None
-    for accumulated, grad in zip(accumulated_grads, grad_views, strict=True):
-        grad.copy_(accumulated)
-    for model_chunk in model:
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            bucket_group._copy_back_extra_main_grads()
-
-    return losses_reduced
-
-
-def _get_reduced_grad_views(model: Sequence[DDP]) -> list[torch.Tensor]:
-    grad_views: list[torch.Tensor] = []
-    for model_chunk in model:
-        for bucket_group in model_chunk.bucket_groups + model_chunk.expert_parallel_bucket_groups:
-            assert bucket_group.ddp_config.use_distributed_optimizer
-            instance_rank = bucket_group.intra_distributed_optimizer_instance_rank
-            for cached_shards in bucket_group.cached_grad_buffer_shard_list:
-                assert cached_shards is not None
-                grad_views.append(cached_shards[instance_rank])
-    return grad_views
-
-
 def _has_loadable_ckpt(load_dir: str | None) -> bool:
     """Whether ``--load`` holds anything; ``load_checkpoint`` dispatches dist vs HF itself."""
     return bool(load_dir) and Path(load_dir).is_dir() and any(Path(load_dir).iterdir())
@@ -595,13 +536,6 @@ def train_one_step(
     else:
         _zero_grads(model, optimizer, disable_optimizer)
 
-    loss_num_microbatches = num_microbatches
-
-    def set_loss_num_microbatches(value: int) -> None:
-        nonlocal loss_num_microbatches
-
-        loss_num_microbatches = value
-
     if args.custom_megatron_before_train_step_hook_path:
         from miles.utils.function_registry import load_function
 
@@ -696,35 +630,23 @@ def train_one_step(
             loss_function,
             args,
             batch,
-            loss_num_microbatches,
+            num_microbatches,
             apply_megatron_loss_scaling=True,
             num_rollouts=num_rollouts,
         )
 
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
-    stable_dp_microbatches = data_iterator[0].rollout_data.get("stable_dp_microbatches")
-    if stable_dp_microbatches is not None:
-        losses_reduced = _run_stable_dp_shards(
-            args=args,
-            data_iterator=data_iterator,
-            model=model,
-            forward_step=forward_step,
-            forward_backward_func=forward_backward_func,
-            shard_microbatches=stable_dp_microbatches[step_id],
-            set_loss_num_microbatches=set_loss_num_microbatches,
-        )
-    else:
-        losses_reduced = forward_backward_func(
-            forward_step_func=forward_step,
-            data_iterator=data_iterator,
-            model=model,
-            num_microbatches=num_microbatches,
-            seq_length=args.seq_length,
-            micro_batch_size=args.micro_batch_size,
-            decoder_seq_length=args.decoder_seq_length,
-            forward_only=False,
-        )
+    losses_reduced = forward_backward_func(
+        forward_step_func=forward_step,
+        data_iterator=data_iterator,
+        model=model,
+        num_microbatches=num_microbatches,
+        seq_length=args.seq_length,
+        micro_batch_size=args.micro_batch_size,
+        decoder_seq_length=args.decoder_seq_length,
+        forward_only=False,
+    )
 
     outcome = TrainStepOutcome.NORMAL
     grad_norm = 0.0

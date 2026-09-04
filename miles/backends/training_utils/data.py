@@ -35,7 +35,6 @@ def get_rollout_data(
     args: Namespace,
     rollout_data_ref: Box,
     witness_info: WitnessInfo | None = None,
-    stable_dp_size: int | None = None,
 ) -> tuple[RolloutBatch, ObjectStoreGetResult]:
     parallel_state = get_parallel_state()
     # Fetch data through ray on CPU, not sure if this will be performance bottleneck.
@@ -46,7 +45,6 @@ def get_rollout_data(
         parallel_state.effective_dp.rank,
         parallel_state.effective_dp.size,
         witness_info=witness_info,
-        stable_dp_size=stable_dp_size,
     )
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
@@ -466,66 +464,6 @@ def get_data_iterator(
     global_batch_size = rollout_data.get("dynamic_global_batch_size", args.global_batch_size)
     num_local_gbs = global_batch_size // dp_size
     num_steps_per_rollout = num_local_samples // num_local_gbs
-
-    if (stable_dp_size := rollout_data.pop("stable_dp_size", None)) is not None:
-        assert dp_size == 1
-        assert global_batch_size % stable_dp_size == 0
-        stable_local_gbs = global_batch_size // stable_dp_size
-        if args.balance_data:
-            stable_partitions = get_seqlen_balanced_partitions(
-                rollout_data["total_lengths"], stable_dp_size, equal_size=True
-            )
-        else:
-            stable_partitions = [range(i, num_local_samples, stable_dp_size) for i in range(stable_dp_size)]
-
-        micro_batch_indices = []
-        stable_microbatches = []
-        num_microbatches = []
-        for step_id in range(num_steps_per_rollout):
-            step_partitions = [
-                list(partition[step_id * stable_local_gbs : (step_id + 1) * stable_local_gbs])
-                for partition in stable_partitions
-            ]
-            if args.use_dynamic_batch_size:
-                shard_num_microbatches = max(
-                    get_minimum_num_micro_batch_size(
-                        [rollout_data["total_lengths"][i] for i in partition],
-                        args.max_tokens_per_gpu * cp_size,
-                    )
-                    for partition in step_partitions
-                )
-                if vpp_size > 1:
-                    shard_num_microbatches = max(
-                        shard_num_microbatches
-                        // microbatch_group_size_per_vp_stage
-                        * microbatch_group_size_per_vp_stage,
-                        1,
-                    )
-                for partition in step_partitions:
-                    local_partitions = get_seqlen_balanced_partitions(
-                        [rollout_data["total_lengths"][i] for i in partition],
-                        shard_num_microbatches,
-                        equal_size=False,
-                    )
-                    micro_batch_indices.extend([[partition[i] for i in batch] for batch in local_partitions])
-            else:
-                assert stable_local_gbs % args.micro_batch_size == 0
-                shard_num_microbatches = stable_local_gbs // args.micro_batch_size
-                for partition in step_partitions:
-                    micro_batch_indices.extend(
-                        [
-                            partition[start : start + args.micro_batch_size]
-                            for start in range(0, stable_local_gbs, args.micro_batch_size)
-                        ]
-                    )
-
-            stable_microbatches.append([shard_num_microbatches] * stable_dp_size)
-            num_microbatches.append(shard_num_microbatches * stable_dp_size)
-
-        rollout_data["stable_dp_microbatches"] = stable_microbatches
-        return [
-            DataIterator(rollout_data, micro_batch_indices=micro_batch_indices) for _ in range(vpp_size)
-        ], num_microbatches
 
     if global_batch_size != args.global_batch_size:
         logger.info(

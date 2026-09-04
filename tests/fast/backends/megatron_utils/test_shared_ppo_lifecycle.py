@@ -85,21 +85,6 @@ def _worker(actor_module, role, *, asleep=True):
     return worker
 
 
-def test_stable_dp_retry_excludes_multi_lora(actor_module) -> None:
-    """Stable logical DP replay must not reset retained multi-LoRA gradients."""
-    indep_dp_info = SimpleNamespace(num_cells=2, alive_size=1)
-
-    args = Namespace(deterministic_mode=True, use_distributed_optimizer=True, multi_lora=False)
-    assert actor_module._get_stable_dp_size(args, indep_dp_info) == 2
-
-    args.multi_lora = True
-    assert actor_module._get_stable_dp_size(args, indep_dp_info) is None
-
-    args.multi_lora = False
-    args.use_distributed_optimizer = False
-    assert actor_module._get_stable_dp_size(args, indep_dp_info) is None
-
-
 def test_critic_train_wakes_and_leaves_offload_to_driver(actor_module, monkeypatch):
     worker = _worker(actor_module, "critic")
     critic_output = TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=Box("cpu-values-ref"))

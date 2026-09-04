@@ -85,18 +85,6 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
-def _get_stable_dp_size(args: Namespace, indep_dp_info: IndepDPInfo) -> int | None:
-    if (
-        not args.deterministic_mode
-        or not args.use_distributed_optimizer
-        or is_multi_lora_enabled(args)
-        or indep_dp_info.alive_size != 1
-        or indep_dp_info.num_cells != 2
-    ):
-        return None
-    return indep_dp_info.num_cells
-
-
 class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
@@ -445,7 +433,6 @@ class MegatronTrainRayActor(TrainRayActor):
                     self.args,
                     rollout_data_ref,
                     witness_info=witness_info,
-                    stable_dp_size=_get_stable_dp_size(self.args, self._indep_dp_info),
                 )
                 stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
