@@ -13,6 +13,7 @@ import torch.distributed as dist
 from torch_memory_saver import torch_memory_saver
 
 from miles.backends.megatron_utils.ft.types import TrainStepOutput
+from miles.backends.megatron_utils.lora import checkpoint as lora_checkpoint
 from miles.backends.megatron_utils.lora import executor as lora_executor
 from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_context
 from miles.dashboard import hooks as dashboard_hooks
@@ -432,9 +433,18 @@ class MegatronTrainRayActor(TrainRayActor):
         return Box(ray.put({key: [t.cpu() for t in tensors] for key, tensors in outputs.items()}))
 
     @with_logs
-    def load_slot(self, slot: int, rank: int, alpha: float) -> None:
+    def load_slot(
+        self, slot: int, rank: int, alpha: float, ckpt_path: str | None = None, load_optimizer: bool = True
+    ) -> None:
         assert self.args.multi_lora, "load_slot is a multi-LoRA slot command"
         lora_executor.load_slot(self.model, self.optimizer, slot, rank, alpha)
+        if ckpt_path is not None:
+            lora_checkpoint.load_slot(self.model, self.optimizer, slot, ckpt_path, load_optimizer)
+
+    @with_logs
+    def save_slot(self, slot: int, path: str) -> None:
+        assert self.args.multi_lora, "save_slot is a multi-LoRA slot command"
+        lora_checkpoint.save_slot(self.model, self.optimizer, slot, path)
 
     @with_logs
     def unload_slot(self, slot: int) -> None:
