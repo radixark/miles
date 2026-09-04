@@ -75,16 +75,29 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
 
 def _checkpoint_dtype(hf_checkpoint: str) -> "torch.dtype | None":
-    """The dtype the HF checkpoint stores, which is what the engine loads."""
+    """The dtype the HF checkpoint stores, which is what the engine loads.
+
+    Read from the top-level config, falling back to whichever nested section
+    declares one -- a multimodal checkpoint puts the language model's dtype in
+    ``text_config`` and leaves the top level silent.
+    """
     config_path = os.path.join(hf_checkpoint, "config.json")
     if not os.path.isfile(config_path):
         return None
     with open(config_path) as f:
         config = json.load(f)
-    # "dtype" is the current spelling; "torch_dtype" is what older configs carry.
-    name = config.get("dtype") or config.get("torch_dtype")
-    dtype = getattr(torch, name, None) if isinstance(name, str) else None
-    return dtype if isinstance(dtype, torch.dtype) else None
+    # "dtype" is the current spelling and "torch_dtype" what older configs
+    # carry. A multimodal config declares neither at the top level -- the
+    # language model's is nested under text_config -- and reading only the top
+    # level silently leaves the stream in fp32, which no transport complains
+    # about except disk-delta.
+    candidates = [config] + [value for value in config.values() if isinstance(value, dict)]
+    for section in candidates:
+        name = section.get("dtype") or section.get("torch_dtype")
+        dtype = getattr(torch, name, None) if isinstance(name, str) else None
+        if isinstance(dtype, torch.dtype):
+            return dtype
+    return None
 
 
 def get_hf_weight_iterator(
