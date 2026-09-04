@@ -93,7 +93,7 @@ class TestRolloutServerPureFunctions:
             eval_num_gpus_per_engine=1,
         )
 
-        config = _resolve_sglang_config(args)
+        config = resolve_sglang_config(args)
 
         assert [model.name for model in config.models] == ["eval"]
         assert config.total_num_gpus == 8
