@@ -57,8 +57,12 @@ class MegatronHfWeightIteratorBase(HfWeightIteratorBase):
             )
         if not any(is_lora_weight_name(name) for name, _tensor in named_tensors):
             raise RuntimeError("LoRA weight sync failed: the adapter export contains no lora_A/lora_B names.")
-        for hf_name, tensor in named_tensors:
+        for index in range(len(named_tensors)):
+            hf_name, tensor = named_tensors[index]
+            # the sent bucket keeps its own copy; holding the whole gathered adapter doubles the peak
+            named_tensors[index] = None
             yield [(f"{lora_name}:{hf_name}", tensor)]
+            del tensor
 
     @abstractmethod
     def _export_pp_local_lora(self, adapter, weights) -> list[tuple[str, torch.Tensor]]:
