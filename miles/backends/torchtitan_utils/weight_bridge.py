@@ -7,10 +7,12 @@ full tensors through the model's own ``state_dict_adapter.to_hf`` -- the same
 mapping its checkpointer used to load the weights, run in reverse.
 """
 
+import glob
 import json
 import os
 from argparse import Namespace
 
+import safetensors
 import torch
 
 
@@ -39,7 +41,7 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._engine_dtype = _checkpoint_dtype(self.args.hf_checkpoint)
+        self._engine_dtypes = _checkpoint_dtypes(self.args.hf_checkpoint)
 
     def _iter_hf_param_units(self, weights, *, materialize):
         # ``weights`` is None by contract here: the trainer reads its live parts.
@@ -47,22 +49,26 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         # tensor is a collective every rank has to join.
         for name, tensor in self.model.hf_weights(complete_across_pp=self.placement.gather_pp):
             if materialize:
-                yield [(name, self._to_engine_dtype(tensor))]
+                yield [(name, self._to_engine_dtype(name, tensor))]
 
-    def _to_engine_dtype(self, tensor: torch.Tensor) -> torch.Tensor:
-        """Cast a master weight to the dtype the engine holds.
+    def _to_engine_dtype(self, name: str, tensor: torch.Tensor) -> torch.Tensor:
+        """Cast a master weight to the dtype the engine holds for that tensor.
 
         Mixed precision keeps torchtitan's parameters in fp32 and casts to the
         compute dtype on the fly, so the state dict hands out fp32 while the
-        checkpoint the engine mirrors is bf16. Sending fp32 doubles every
+        checkpoint the engine mirrors is mostly bf16. Sending fp32 doubles every
         transfer, and disk-delta -- the one protocol that reconciles the stream
-        against the checkpoint's own bytes -- refuses it outright. Only floating
-        point is cast: integer buffers and quantization scales carry their own
-        dtypes.
+        against the checkpoint's own bytes -- refuses it outright.
+
+        Per tensor rather than per model, because a checkpoint mixes dtypes: a
+        blanket bf16 cast turns qwen3.5's fp32 log scales into something the
+        checkpoint never held. A name the checkpoint does not carry is left
+        alone rather than guessed at.
         """
-        if self._engine_dtype is None or not tensor.is_floating_point():
+        target = self._engine_dtypes.get(name)
+        if target is None or tensor.dtype == target or not tensor.is_floating_point():
             return tensor
-        return tensor if tensor.dtype == self._engine_dtype else tensor.to(self._engine_dtype)
+        return tensor.to(target)
 
     def _hf_atomic_update_groups(self):
         # DeepSeek's MLA down-projections are fused by sglang from two HF
@@ -74,30 +80,37 @@ class TitanHfWeightIterator(HfWeightIteratorBase):
         raise NotImplementedError("the torchtitan backend has no LoRA")
 
 
-def _checkpoint_dtype(hf_checkpoint: str) -> "torch.dtype | None":
-    """The dtype the HF checkpoint stores, which is what the engine loads.
+_SAFETENSORS_DTYPES = {
+    "BF16": torch.bfloat16,
+    "F16": torch.float16,
+    "F32": torch.float32,
+    "F64": torch.float64,
+}
 
-    Read from the top-level config, falling back to whichever nested section
-    declares one -- a multimodal checkpoint puts the language model's dtype in
-    ``text_config`` and leaves the top level silent.
+
+def _checkpoint_dtypes(hf_checkpoint: str) -> dict[str, torch.dtype]:
+    """Per-tensor dtypes from the checkpoint's safetensors headers.
+
+    A checkpoint is not one dtype: qwen3.5 keeps its linear-attention log
+    scales and biases in fp32 beside bf16 weights, so casting everything to a
+    single model-wide dtype corrupts exactly those. Only the headers are read,
+    never the tensor data.
     """
-    config_path = os.path.join(hf_checkpoint, "config.json")
-    if not os.path.isfile(config_path):
-        return None
-    with open(config_path) as f:
-        config = json.load(f)
-    # "dtype" is the current spelling and "torch_dtype" what older configs
-    # carry. A multimodal config declares neither at the top level -- the
-    # language model's is nested under text_config -- and reading only the top
-    # level silently leaves the stream in fp32, which no transport complains
-    # about except disk-delta.
-    candidates = [config] + [value for value in config.values() if isinstance(value, dict)]
-    for section in candidates:
-        name = section.get("dtype") or section.get("torch_dtype")
-        dtype = getattr(torch, name, None) if isinstance(name, str) else None
-        if isinstance(dtype, torch.dtype):
-            return dtype
-    return None
+    index_path = os.path.join(hf_checkpoint, "model.safetensors.index.json")
+    if os.path.isfile(index_path):
+        with open(index_path) as f:
+            shards = sorted(set(json.load(f)["weight_map"].values()))
+    else:
+        shards = sorted(os.path.basename(p) for p in glob.glob(os.path.join(hf_checkpoint, "*.safetensors")))
+
+    dtypes: dict[str, torch.dtype] = {}
+    for shard in shards:
+        with safetensors.safe_open(os.path.join(hf_checkpoint, shard), framework="pt") as handle:
+            for name in handle.keys():
+                dtype = _SAFETENSORS_DTYPES.get(handle.get_slice(name).get_dtype())
+                if dtype is not None:
+                    dtypes[name] = dtype
+    return dtypes
 
 
 def get_hf_weight_iterator(
