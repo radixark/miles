@@ -191,8 +191,6 @@ def reset_grad_metadata_keep_grads(model_chunks) -> None:
 def step_slot_optimizers(
     slot_optimizers: dict[int, SlotOptimizer],
     adam_params_by_slot: dict[int, dict],
-    *,
-    clip_grad: float,
 ) -> dict[int, dict]:
     """Step slots in the same order on every rank; execution failures invalidate the cell."""
     slots = sorted(adam_params_by_slot)
@@ -200,7 +198,9 @@ def step_slot_optimizers(
         slot_optimizers[slot].apply_adam_params(adam_params_by_slot[slot])
         slot_optimizers[slot].prepare_grads()
 
-    outcomes = {slot: slot_optimizers[slot].clip_and_step(clip_grad) for slot in slots}
+    outcomes = {
+        slot: slot_optimizers[slot].clip_and_step(adam_params_by_slot[slot]["grad_clip_norm"]) for slot in slots
+    }
     for slot in slots:
         slot_optimizers[slot].zero_grads()
     for slot in slots:
