@@ -39,6 +39,7 @@ def test_megatron_offload_uses_torch_memory_saver_preload_resolver(monkeypatch):
         dumper_source_patcher_config_train=None,
         offload_train=True,
         offload_train_target="cpu",
+        stream_optimizer_state_to_disk=False,
         train_backend="megatron",
         train_env_vars={},
         use_fault_tolerance=False,
@@ -73,3 +74,33 @@ def test_megatron_offload_uses_torch_memory_saver_preload_resolver(monkeypatch):
             cell_index=0,
         )
     assert remote_call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("role", "disk_offload", "stream", "expected"),
+    [
+        (
+            "actor",
+            True,
+            False,
+            {"MILES_TRAIN_DISK_SCOPE": "actor_cell0_rank3", "TMS_DISK_BACKUP_DIR": "/spill/actor_cell0_rank3"},
+        ),
+        (
+            "critic",
+            True,
+            False,
+            {"MILES_TRAIN_DISK_SCOPE": "critic_cell0_rank3", "TMS_DISK_BACKUP_DIR": "/spill/critic_cell0_rank3"},
+        ),
+        ("critic", False, True, {"MILES_TRAIN_DISK_SCOPE": "critic_cell0_rank3"}),
+        ("actor", False, False, {}),
+    ],
+)
+def test_disk_scope_is_the_process_identity(role, disk_offload, stream, expected):
+    args = SimpleNamespace(
+        train_backend="megatron",
+        offload_train=disk_offload,
+        offload_train_target="disk" if disk_offload else "cpu",
+        offload_train_disk_dir="/spill",
+        stream_optimizer_state_to_disk=stream,
+    )
+    assert actor_factory._disk_scope_env_vars(args, role=role, cell_index=0, rank=3) == expected

@@ -70,7 +70,7 @@ def _assert_offloaded_to_disk():
                 if "Train disk-offload reclaim armed" in line:
                     armed.add(line.split("reclaim armed for ")[1].split()[0])
 
-    expected = {os.path.join(OFFLOAD_DIR, f"cell0_rank{rank}") for rank in range(NUM_GPUS)}
+    expected = {os.path.join(OFFLOAD_DIR, f"actor_cell0_rank{rank}") for rank in range(NUM_GPUS)}
     assert armed == expected, f"expected disk offload armed for {sorted(expected)}, saw {sorted(armed)}"
     print(f"disk offload armed for {len(armed)} ranks under {OFFLOAD_DIR}")
 

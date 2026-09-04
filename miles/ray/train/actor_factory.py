@@ -6,6 +6,7 @@ from ray.util.placement_group import PlacementGroup
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
+from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.environ import default_fp8_block_scaling_fp32_scales
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus
 
@@ -89,10 +90,9 @@ def allocate_gpus_for_actor(
                 placement_group_bundle_index=reordered_bundle_indices[rank],
             ),
         )
-        if args.offload_train_target == "disk" and args.offload_train and args.train_backend == "megatron":
-            role_tag = "" if role == "actor" else f"{role}_"
-            rank_dir = os.path.join(args.offload_train_disk_dir, f"{role_tag}cell{cell_index}_rank{rank}")
-            options["runtime_env"] = {"env_vars": {**env_vars, "TMS_DISK_BACKUP_DIR": rank_dir}}
+        disk_env = _disk_scope_env_vars(args, role=role, cell_index=cell_index, rank=rank)
+        if disk_env:
+            options["runtime_env"] = {"env_vars": {**env_vars, **disk_env}}
         actor = TrainRayActor.options(**options).remote(
             args,
             world_size,
@@ -108,6 +108,25 @@ def allocate_gpus_for_actor(
         actor_handles.append(actor)
 
     return actor_handles
+
+
+def _disk_scope_env_vars(args, *, role: str, cell_index: int, rank: int) -> dict[str, str]:
+    """Per-process directory scope for everything a training rank spills to local disk.
+
+    Actor and critic ranks of a shared-GPU PPO job land on the same GPU and both
+    start their torch.distributed rank at 0, so neither the rank nor the cell can
+    tell their directories apart; the process identity can.
+    """
+    if args.train_backend != "megatron":
+        return {}
+    disk_offload = args.offload_train and args.offload_train_target == "disk"
+    if not disk_offload and not args.stream_optimizer_state_to_disk:
+        return {}
+    scope = TrainProcessIdentity(component=role, cell_index=cell_index, rank_within_cell=rank).to_name()
+    env = {"MILES_TRAIN_DISK_SCOPE": scope}
+    if disk_offload:
+        env["TMS_DISK_BACKUP_DIR"] = os.path.join(args.offload_train_disk_dir, scope)
+    return env
 
 
 def _with_ft_concurrency_groups(actor_impl: type) -> type:
