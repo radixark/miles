@@ -258,6 +258,10 @@ class SGLangApiClient:
             {"lora_name": lora_name, "config_dict": config_dict, "pinned": pinned},
         )
 
+    async def unload_lora_adapter(self, lora_name: str):
+        """Remove a served LoRA adapter by name."""
+        return await self._make_request("unload_lora_adapter", {"lora_name": lora_name})
+
     async def release_memory_occupation(self, tags: list[str] = None):
         """Release memory occupation. Available tags: weights, kv_cache."""
         await self.flush_cache()
