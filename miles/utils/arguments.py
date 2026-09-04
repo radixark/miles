@@ -2378,6 +2378,15 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--repetition-reward-penalty",
+                type=float,
+                default=0.0,
+                help=(
+                    "Reward amount to subtract once from a rollout when any of its samples "
+                    "contains repetition."
+                ),
+            )
+            parser.add_argument(
                 "--custom-convert-samples-to-train-data-path",
                 type=str,
                 default=None,
@@ -3189,6 +3198,8 @@ def miles_validate_args(args):
     validate_multi_lora_args(args)
 
     assert not (args.kl_coef != 0 and args.kl_loss_coef != 0), "Only one of kl_coef and kl_loss_coef can be set"
+    if args.repetition_reward_penalty < 0:
+        raise ValueError("--repetition-reward-penalty must be nonnegative")
 
     if args.advantage_estimator in ["reinforce_plus_plus", "reinforce_plus_plus_baseline"]:
         assert args.normalize_advantages, (

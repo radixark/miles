@@ -1,4 +1,5 @@
 import math
+from collections.abc import Iterator
 from typing import Any, Literal
 
 import numpy as np
@@ -107,11 +108,26 @@ def compression_ratio(
     return ratio, savings_pct
 
 
-def has_repetition(text: str):
-    if len(text) > 10000 and compression_ratio(text[-10000:])[0] > 10:
-        return True
-    else:
-        return False
+REPETITION_WINDOW_SIZE_CHARS = 10_000
+REPETITION_WINDOW_STRIDE_CHARS = 5_000
+REPETITION_COMPRESSION_RATIO_THRESHOLD = 10.0
+
+
+def _repetition_windows(text: str) -> Iterator[str]:
+    if len(text) < REPETITION_WINDOW_SIZE_CHARS:
+        return
+
+    final_start = len(text) - REPETITION_WINDOW_SIZE_CHARS
+    last_start = -1
+    for start in range(0, final_start + 1, REPETITION_WINDOW_STRIDE_CHARS):
+        yield text[start : start + REPETITION_WINDOW_SIZE_CHARS]
+        last_start = start
+    if last_start != final_start:
+        yield text[final_start:]
+
+
+def has_repetition(text: str) -> bool:
+    return any(compression_ratio(window)[0] > REPETITION_COMPRESSION_RATIO_THRESHOLD for window in _repetition_windows(text))
 
 
 def compute_rollout_step(args, rollout_id):
