@@ -19,14 +19,6 @@ Compared with [`examples/swe-agent-harbor-docker`](../../swe-agent-harbor-docker
 Everything on the trainer side is the same: TITO, the session server, GRPO, the
 reward hook (`generate.py` from the agent-server example).
 
-## Files
-
-| File | Purpose |
-| --- | --- |
-| `harbor_agent_function.py` | Builds and runs one Harbor trial per sample; maps the result to sample metadata. Header lists which `harbor-miles-*` fork patches this path depends on. |
-| `run.py` | GLM-4.7-Flash launcher. |
-| `launch_common.py` | The launcher's Harbor-side wiring: passes `HARBOR_ENV_TYPE` through and forwards the provider credential (by key-file path) to rollout workers. |
-
 ## 1. Install Harbor in the rollout environment
 
 Harbor now runs where the rollout workers run, so it goes into the Miles
@@ -41,7 +33,7 @@ pip install "harbor[e2b] @ git+https://github.com/harbor-framework/harbor@harbor
 ```
 
 mini-swe-agent does not need the fork's patches for correctness; public
-`harbor[e2b]` works for it, and is the smoke-test configuration.
+`harbor[e2b]` works for it.
 
 ## 2. Provision the sandbox backend
 
@@ -102,20 +94,13 @@ HARBOR_ENV_TYPE=e2b python examples/experimental/harbor/run.py \
 Backend-specific settings go in `HARBOR_ENV_KWARGS` as a JSON object (Harbor's
 `EnvironmentConfig.kwargs`), e.g. `'{"auto_snapshot": true}'` for Daytona.
 
-## Timeouts and failure semantics
+Every remaining knob — timeouts and their layering, failure semantics, the
+full env-var reference — is documented in `harbor_agent_function.py`'s header,
+next to the code that reads it.
 
-`AGENT_TIMEOUT` is Harbor's per-trial agent budget; `AGENT_TRIAL_TIMEOUT`
-(default 7200 s) is the wall-clock cap around the whole trial and must stay
-above it. A trial that ends without a verdict scores 0 with a named
-`exit_status` (`TimeLimitExceeded`, `SequenceLengthLimitExceeded`,
-`AgentError`), the same vocabulary the agent-server path reports. Nothing is
-discarded on this path yet; see the
-[agentic rollout guide](../../../docs/user-guide/agentic-rollout.md) for which
-outcomes should be.
+## Validation
 
-## Status
-
-Offline tests cover the config built per harness, the `HARBOR_ENV_TYPE`
-pass-through, and the result mapping. Validation on a live backend
-(AgentENV, public `harbor[e2b]`, mini-swe-agent, then a GRPO smoke) is pending
-and will be recorded here.
+The platform round trip (golden agent, real sandbox APIs) passes on e2b and
+Daytona via the sandbox smoke, `scripts/sandbox_smoke`. The GPU e2e — one GRPO
+step on real e2b sandboxes — is `tests/e2e/agentic/test_harbor_e2b_training.py`
+(run manually; not yet exercised).
