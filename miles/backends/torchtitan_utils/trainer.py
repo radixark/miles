@@ -83,36 +83,6 @@ def _gather_over_mesh(tensor: torch.Tensor, mesh) -> torch.Tensor:
     return all_gather_single_autograd(tensor, 0, mesh.get_group())
 
 
-def _census(label: str) -> None:
-    """Name what is holding device memory, by tensor shape.
-
-    Reading the code found the wrong culprit twice; this asks the runtime which
-    tensors are actually alive, aggregated by shape and dtype so the biggest
-    group identifies its own source.
-    """
-    if os.environ.get("MILES_TITAN_MEM_PROBE") != "1":
-        return
-    import collections
-    import gc
-
-    totals: dict = collections.defaultdict(lambda: [0, 0])
-    for obj in gc.get_objects():
-        try:
-            if not isinstance(obj, torch.Tensor) or not obj.is_cuda:
-                continue
-            key = (tuple(obj.shape), str(obj.dtype))
-        except Exception:
-            continue
-        entry = totals[key]
-        entry[0] += 1
-        entry[1] += obj.nbytes
-    top = sorted(totals.items(), key=lambda kv: -kv[1][1])[:5]
-    logger.info(
-        f"[mem-census] {label}: "
-        + " | ".join(f"{shape}{dtype.replace('torch.', '')} x{n} = {b / 2**30:.1f}GB" for (shape, dtype), (n, b) in top)
-    )
-
-
 def _checkpoint_ties_embeddings(hf_assets_path: str) -> bool:
     """Whether the HF config declares the output projection tied to the embedding."""
     config_path = os.path.join(hf_assets_path, "config.json")
@@ -120,23 +90,6 @@ def _checkpoint_ties_embeddings(hf_assets_path: str) -> bool:
         return False
     with open(config_path) as f:
         return bool(json.load(f).get("tie_word_embeddings", False))
-
-
-def _probe(label: str) -> None:
-    """One line of device memory, gated on an env var.
-
-    The weight stream is where a rank's residency peaks, and the difference
-    between a spike at conversion time and a climb across the stream is what
-    separates "the adapter materializes everything up front" from "the
-    consumer accumulates".
-    """
-    if os.environ.get("MILES_TITAN_MEM_PROBE") != "1":
-        return
-    logger.info(
-        f"[mem-probe] {label}: allocated={torch.cuda.memory_allocated() / 2**30:.2f}GB "
-        f"reserved={torch.cuda.memory_reserved() / 2**30:.2f}GB "
-        f"peak={torch.cuda.max_memory_allocated() / 2**30:.2f}GB"
-    )
 
 
 def resolve_model_spec(args: Namespace):
@@ -180,9 +133,7 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
                 f"{args.titan_model_flavor} flavor's {available} blocks"
             )
         config.model_spec.model.layers = config.model_spec.model.layers[: args.titan_num_layers]
-        logger.info(
-            f"Truncated {args.titan_model_flavor} to {args.titan_num_layers} of {available} blocks"
-        )
+        logger.info(f"Truncated {args.titan_model_flavor} to {args.titan_num_layers} of {available} blocks")
     # A tied HF checkpoint ships no lm_head.weight, and torchtitan does not
     # support tied embeddings -- it gives the flavor its own lm_head. Telling
     # the state-dict adapter about the tying keeps the export matching the
@@ -518,9 +469,7 @@ class TitanTrainer(Trainer):
         """
         missing = self.padded_length(tensor.shape[0]) - tensor.shape[0]
         if missing:
-            pad = torch.full(
-                (missing, *tensor.shape[1:]), pad_value, dtype=tensor.dtype, device=tensor.device
-            )
+            pad = torch.full((missing, *tensor.shape[1:]), pad_value, dtype=tensor.dtype, device=tensor.device)
             tensor = torch.cat([tensor, pad], dim=0)
         if self.parallel_dims.cp_enabled:
             # cp_shard speaks [batch, seq, ...]; the round trip through the
@@ -543,8 +492,7 @@ class TitanTrainer(Trainer):
             tp = mesh.size()
             if tensor.shape[0] % tp:
                 raise ValueError(
-                    f"a {tensor.shape[0]}-token side channel does not divide across "
-                    f"{tp} tensor-parallel ranks"
+                    f"a {tensor.shape[0]}-token side channel does not divide across {tp} tensor-parallel ranks"
                 )
             tensor = tensor.chunk(tp, dim=0)[dist.get_rank(mesh.get_group())]
         return tensor
@@ -582,9 +530,7 @@ class TitanTrainer(Trainer):
         # than a scalar: context parallelism shards labels along the sequence
         # like everything else, and a 0-d tensor has no dimension to shard. Every
         # element holds the same index, so any shard still identifies the batch.
-        labels = [
-            torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))
-        ]
+        labels = [torch.full_like(input_dicts[i]["input"], i, dtype=torch.long) for i in range(len(batches))]
         return input_dicts, labels
 
     # -------------------------------------------------------- RL step surface
@@ -755,9 +701,7 @@ class TitanTrainer(Trainer):
         builds every stage's group in the same order.
         """
         if getattr(self, "_stage_groups", None) is None:
-            self._stage_groups = {
-                stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())
-            }
+            self._stage_groups = {stage: dist.new_group(ranks) for stage, ranks in sorted(stage_groups.items())}
         return self._stage_groups[my_stage]
 
     def _hf_weights_on_device(self, *, complete_across_pp: bool) -> Iterator[tuple[str, torch.Tensor]]:
@@ -766,9 +710,7 @@ class TitanTrainer(Trainer):
         sd_adapter = getattr(self.checkpointer, "sd_adapter", None)
         if sd_adapter is None:
             sd_adapter = self.config.model_spec.state_dict_adapter(self.model_config, self.config.hf_assets_path)
-        _probe("hf_weights: before to_hf")
         local = sd_adapter.to_hf({k: v for part in self.model_parts for k, v in part.state_dict().items()})
-        _probe("hf_weights: after to_hf")
 
         # Which ranks hold which key. Two parallelisms make the export
         # rank-partial: a pipeline stage exports only its own layers, and under
@@ -784,9 +726,7 @@ class TitanTrainer(Trainer):
         if all(meta.keys() == local_meta.keys() for meta in gathered):
             # Every rank exports the same keys: dp/tp/fsdp sharding is internal
             # to each tensor and gather_full_param resolves it.
-            for i, name in enumerate(sorted(local)):
-                if i % 200 == 0:
-                    _probe(f"hf_weights: fast path unit {i}")
+            for name in sorted(local):
                 yield name, gather_full_param(local[name])
             return
 
@@ -819,12 +759,7 @@ class TitanTrainer(Trainer):
 
         audience_set = set(audience)
         names = [name for name in sorted(owners) if audience_set.intersection(owners[name])]
-        held = received = 0
-        for i, name in enumerate(names):
-            if i % 200 == 0:
-                _probe(f"hf_weights: unit {i} of {len(names)} (held={held} received={received})")
-            if i in (2000, 5000):
-                _census(f"hf_weights unit {i}")
+        for name in names:
             shape, dtype = specs[name]
             holders = [rank for rank in owners[name] if rank in audience_set]
             # Every holder joins the gather -- they are exactly the ranks the
@@ -835,10 +770,8 @@ class TitanTrainer(Trainer):
             # agreed on.
             if my_rank in holders:
                 tensor = gather_full_param(local[name]).contiguous()
-                held += 1
             else:
                 tensor = torch.empty(shape, dtype=getattr(torch, dtype.split(".")[-1]), device=self.device)
-                received += 1
             dist.broadcast(tensor, src=holders[0], group=broadcast_group)
             yield name, tensor
             # Drop this generator's reference as soon as the consumer has taken
