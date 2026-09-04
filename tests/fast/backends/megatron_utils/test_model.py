@@ -4,6 +4,24 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+import torch
+
+
+def test_fp64_grad_norm_uses_high_precision_scalar_reductions(monkeypatch) -> None:
+    """Deterministic clipping must reduce the squared gradient norm in FP64."""
+    from miles.backends.megatron_utils.model import _get_grad_norm_fp64
+
+    reduced_dtypes: list[torch.dtype] = []
+
+    def fake_all_reduce(tensor: torch.Tensor, group: object = None) -> None:
+        reduced_dtypes.append(tensor.dtype)
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+
+    grad_norm = _get_grad_norm_fp64([torch.tensor([3.0, 4.0]), torch.tensor([12.0])])
+
+    assert grad_norm == 13.0
+    assert reduced_dtypes == [torch.float64]
 
 
 class FakeModelChunk:

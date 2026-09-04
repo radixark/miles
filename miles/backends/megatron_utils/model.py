@@ -17,11 +17,12 @@ from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
 from megatron.core.models.gpt import GPTModel
 from megatron.core.optimizer import OptimizerConfig, get_megatron_optimizer
+from megatron.core.optimizer import optimizer as megatron_optimizer_module
 from megatron.core.optimizer.muon import get_megatron_muon_optimizer
 from megatron.core.optimizer.optimizer import MegatronOptimizer
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.pipeline_parallel import get_forward_backward_func
-from megatron.core.utils import get_model_config
+from megatron.core.utils import get_data_parallel_group_if_dtensor, get_model_config, to_local_if_dtensor
 from megatron.training.global_vars import get_args
 from megatron.training.training import get_model
 
@@ -55,6 +56,39 @@ from .model_provider import get_model_provider_func
 from .parallel import get_packed_seq_params
 
 logger = logging.getLogger(__name__)
+
+_get_grad_norm_fp32 = megatron_optimizer_module.get_grad_norm_fp32
+
+
+def _get_grad_norm_fp64(
+    grads_for_norm: Sequence[torch.Tensor] | torch.Tensor,
+    norm_type: int | float = 2,
+    grad_stats_parallel_group: torch.distributed.ProcessGroup | None = None,
+) -> float:
+    if float(norm_type) != 2.0:
+        return _get_grad_norm_fp32(
+            grads_for_norm,
+            norm_type=norm_type,
+            grad_stats_parallel_group=grad_stats_parallel_group,
+        )
+
+    grads = [grads_for_norm] if isinstance(grads_for_norm, torch.Tensor) else list(grads_for_norm)
+    data_parallel_group = None
+    for grad in grads:
+        data_parallel_group = get_data_parallel_group_if_dtensor(grad, data_parallel_group)
+    local_grads = [to_local_if_dtensor(grad) for grad in grads]
+
+    squared_norms = [torch.linalg.vector_norm(grad, ord=2, dtype=torch.float64).square() for grad in local_grads]
+    total_squared_norm = (
+        torch.stack(squared_norms).sum()
+        if squared_norms
+        else torch.zeros((), dtype=torch.float64, device=torch.cuda.current_device())
+    )
+    if data_parallel_group is not None:
+        torch.distributed.all_reduce(total_squared_norm, group=data_parallel_group)
+    torch.distributed.all_reduce(total_squared_norm, group=grad_stats_parallel_group)
+
+    return total_squared_norm.sqrt().item()
 
 
 def _has_loadable_ckpt(load_dir: str | None) -> bool:
@@ -206,6 +240,10 @@ def setup_model_and_optimizer(
             model_chunks=model,
             use_gloo_process_groups=args.use_gloo_process_groups,
         )
+
+    if args.deterministic_mode and config.clip_grad > 0:
+        megatron_optimizer_module.get_grad_norm_fp32 = _get_grad_norm_fp64
+        logger.info("Using FP64 gradient norm accumulation in deterministic mode")
 
     if args.stream_optimizer_state_to_disk and not _is_muon_optimizer(config.optimizer):
         # Muon took the chunked-offloader route above; this store is DistOpt-only.
