@@ -108,7 +108,7 @@ def spec_session_server(args) -> CommandWorkerSpec:
             num_workers_per_cell=1,
             num_gpus_per_worker=0,
             num_cpus_per_worker=0,
-            pin_to_head=True,
+            pin_to_head=args.pin_rollout_manager_to_head,
         ),
         launch_command=_compute_launch_command,
     )

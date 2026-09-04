@@ -37,7 +37,7 @@ class LaunchArgs(Protocol):
     daytona_api_key_file: str
     e2b_api_key_file: str
     modal_config_file: str
-    router_external_host: str
+    node_external_ip: str
     miles_host_ip: str
 
     wandb_key: str
@@ -192,8 +192,8 @@ def apply_optional_env_vars(env: dict[str, str], args: LaunchArgs) -> None:
     """Add host-rewrite / Daytona-sandbox env vars when the args request them."""
     if args.miles_host_ip:
         env["MILES_HOST_IP"] = args.miles_host_ip
-    if args.router_external_host:
-        env["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.node_external_ip:
+        env["MILES_NODE_EXTERNAL_IP"] = args.node_external_ip
     backend = resolve_sandbox_backend(args)
     if backend:
         spec = PROVIDER_CREDENTIALS[backend]

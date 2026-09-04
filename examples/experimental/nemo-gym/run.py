@@ -52,10 +52,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
 
     # NeMo Gym settings
     nemo_gym_url: str = os.environ.get("NEMO_GYM_URL", "http://localhost:12000")
-    # Trainer address reachable from the NeMo Gym host; only needed when that
-    # host cannot resolve the trainer's hostname (e.g. it dials back over a
-    # tailnet).
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # Trainer address reachable from the NeMo Gym host; only needed when that host
+    # cannot resolve the trainer's hostname (e.g. it dials back over a tailnet).
+    # Sets MILES_NODE_EXTERNAL_IP for every node at once, so on a multi-node job
+    # leave it empty and have the deployment set that variable per pod instead.
+    node_external_ip: str = os.environ.get("MILES_NODE_EXTERNAL_IP", "")
 
 
 def cleanup():
@@ -183,8 +184,8 @@ def execute(args: ScriptArgs):
         "PYTHONPATH": f"{args.megatron_path}:{SCRIPT_DIR}:{U.repo_base_dir}",
         "NEMO_GYM_URL": args.nemo_gym_url,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.node_external_ip:
+        extra_env_vars["MILES_NODE_EXTERNAL_IP"] = args.node_external_ip
 
     U.execute_train(
         train_args=train_args,

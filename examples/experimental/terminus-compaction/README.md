@@ -132,10 +132,10 @@ python examples/experimental/terminus-compaction/run.py \
     --prompt-data /path/to/tb2_train_89.jsonl \
     --agent-server-url http://<agent-server>:11000 \
     --session-server-ip 0.0.0.0 \
-    --router-external-host <trainer-address-reachable-from-agent-server>
+    --node-external-ip <trainer-address-reachable-from-agent-server>
 ```
 
-`--session-server-ip` is the local bind address. `--router-external-host` is the address Harbor uses to call back into the session server and SGLang router; it must resolve from the agent-server host. The launcher starts 32 session-server workers on ports 30000-30031 and the SGLang router on port 31000, so allow inbound TCP connections to that range and port from the agent-server host.
+`--session-server-ip` is the local bind address. `--node-external-ip` is the address Harbor uses to call back into the session server and SGLang router; it must resolve from the agent-server host. The launcher starts 32 session-server workers on ports 30000-30031 and the SGLang router on port 31000, so allow inbound TCP connections to that range and port from the agent-server host.
 
 For a local smoke test, run Harbor on the trainer, use
 `--agent-server-url http://127.0.0.1:11000`, and set both session addresses to a

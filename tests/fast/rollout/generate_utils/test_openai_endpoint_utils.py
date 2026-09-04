@@ -132,6 +132,47 @@ class TestOpenAIEndpointTracerCreate:
         assert tracer.session_server_instance_id == "instance-b"
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_agent_url_names_the_same_instance_from_outside_the_cluster(self, monkeypatch):
+        """The agent's URL and the driver's URL are the chosen record's two views of one
+        instance, so a session is never opened on one instance and dialed on another."""
+        posted: list[str] = []
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            posted.append(url)
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.random.choice", lambda xs: xs[1])
+
+        args = SimpleNamespace(
+            session_server_instances=[
+                SessionServerInstance(addr="10.0.0.1:5005", external_addr="100.64.0.1:5005"),
+                SessionServerInstance(addr="10.0.0.2:5005", external_addr="100.64.0.2:5005"),
+            ],
+        )
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        # The session is opened over the cluster network, not the external one.
+        assert posted == ["http://10.0.0.2:5005/sessions"]
+        assert tracer.base_url == "http://10.0.0.2:5005/sessions/session-abc"
+        assert tracer.agent_base_url == "http://100.64.0.2:5005/sessions/session-abc"
+
+    @pytest.mark.asyncio
+    async def test_agent_url_falls_back_to_the_cluster_address(self, monkeypatch):
+        """A record built without an external address serves both views from the placed
+        one -- no external address configured means the agent dials what the driver dials."""
+
+        async def fake_post(url: str, payload: dict, action: str = "post"):
+            return {"session_id": "session-abc"}
+
+        monkeypatch.setattr("miles.rollout.generate_utils.openai_endpoint_utils.post", fake_post)
+
+        args = SimpleNamespace(session_server_instances=[SessionServerInstance(addr="10.0.0.1:5005")])
+        tracer = await OpenAIEndpointTracer.create(args)
+
+        assert tracer.agent_base_url == tracer.base_url
+
     @pytest.mark.parametrize(
         "addrs_kwargs", [{}, {"session_server_instances": None}, {"session_server_instances": []}]
     )

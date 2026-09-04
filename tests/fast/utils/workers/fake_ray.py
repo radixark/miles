@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 _ASYNC_METHOD_NODE_IP = "_get_node_ip"
+_ASYNC_METHOD_NODE_EXTERNAL_IP = "_get_node_external_ip"
 _ASYNC_METHOD_FREE_PORT_BLOCK = "_get_free_port_block"
 _ASYNC_METHOD_IS_PORT_AVAILABLE = "_is_port_available"
 _ASYNC_METHOD_TO_LOCAL_GPU_IDS = "_to_local_gpu_ids"
@@ -122,6 +123,9 @@ class FakeRayModule:
 @dataclass
 class FakeRayCluster:
     node_ips: tuple[str, ...] = ("10.0.0.1",)
+    # node ip -> the address off-cluster peers reach that node on; a node absent
+    # from the mapping reports None, like one whose deployment set nothing.
+    node_external_ips: dict[str, str] = field(default_factory=dict)
     base_port: int = 15000
     handles: list[FakeRayActorHandle] = field(default_factory=list)
     calls: list[FakeRayActorCall] = field(default_factory=list)
@@ -191,6 +195,8 @@ class FakeRayCluster:
     def _compute_value(self, *, handle: FakeRayActorHandle, method: str, kwargs: dict[str, Any]) -> Any:
         if method == _ASYNC_METHOD_NODE_IP:
             return handle.node_ip
+        if method == _ASYNC_METHOD_NODE_EXTERNAL_IP:
+            return self.node_external_ips.get(handle.node_ip)
         if method == _ASYNC_METHOD_TO_LOCAL_GPU_IDS:
             # a worker whose visibility mask hides the leading gpus sees itself starting at 0
             return list(range(len(kwargs["gpu_ids"])))

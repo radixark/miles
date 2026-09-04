@@ -78,7 +78,11 @@ class ScriptArgs(U.ExecuteTrainConfig):
     agent_server_url: str = os.environ.get("AGENT_SERVER_URL", "http://localhost:8080")
     agent_model_name: str = os.environ.get("AGENT_MODEL_NAME", "model")
     harbor_tasks_dir: str = os.environ.get("HARBOR_TASKS_DIR", "/root/harbor_tasks")
-    router_external_host: str = os.environ.get("MILES_ROUTER_EXTERNAL_HOST", "")
+    # Sets MILES_NODE_EXTERNAL_IP for every node at once, so it addresses the right
+    # instance only while the session servers share a host. On a multi-node job leave
+    # it empty and have the deployment set that variable per pod, or leave it empty
+    # anyway when the placed addresses already route from the sandbox network.
+    node_external_ip: str = os.environ.get("MILES_NODE_EXTERNAL_IP", "")
     miles_host_ip: str = os.environ.get("MILES_HOST_IP", "")
 
     # Disaggregated fully-async settings
@@ -354,8 +358,8 @@ def execute(args: ScriptArgs):
         "HARBOR_TASKS_DIR": args.harbor_tasks_dir,
         **sglang_extra_env_vars,
     }
-    if args.router_external_host:
-        extra_env_vars["MILES_ROUTER_EXTERNAL_HOST"] = args.router_external_host
+    if args.node_external_ip:
+        extra_env_vars["MILES_NODE_EXTERNAL_IP"] = args.node_external_ip
     if args.miles_host_ip:
         extra_env_vars["MILES_HOST_IP"] = args.miles_host_ip
 
