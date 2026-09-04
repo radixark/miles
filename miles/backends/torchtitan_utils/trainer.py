@@ -113,6 +113,15 @@ def _census(label: str) -> None:
     )
 
 
+def _checkpoint_ties_embeddings(hf_assets_path: str) -> bool:
+    """Whether the HF config declares the output projection tied to the embedding."""
+    config_path = os.path.join(hf_assets_path, "config.json")
+    if not os.path.isfile(config_path):
+        return False
+    with open(config_path) as f:
+        return bool(json.load(f).get("tie_word_embeddings", False))
+
+
 def _probe(label: str) -> None:
     """One line of device memory, gated on an env var.
 
@@ -174,6 +183,19 @@ def build_trainer_config(args: Namespace, *, hf_assets_path: str, lr_total_steps
         logger.info(
             f"Truncated {args.titan_model_flavor} to {args.titan_num_layers} of {available} blocks"
         )
+    # A tied HF checkpoint ships no lm_head.weight, and torchtitan does not
+    # support tied embeddings -- it gives the flavor its own lm_head. Telling
+    # the state-dict adapter about the tying keeps the export matching the
+    # checkpoint: without it the stream carries both lm_head.weight and the
+    # embedding into the engine's single shared tensor, where the last bucket
+    # to land wins, and disk-delta refuses the sync outright because the key is
+    # not in the checkpoint it diffs against. The cost is that the trained
+    # lm_head is not shipped; the engine projects with the embedding, which is
+    # what a tied model means.
+    if _checkpoint_ties_embeddings(hf_assets_path) and hasattr(config.model_spec.model, "enable_weight_tying"):
+        config.model_spec.model.enable_weight_tying = True
+        logger.info("Checkpoint ties lm_head to the embedding; excluding lm_head.weight from the HF export")
+
     config.hf_assets_path = hf_assets_path
     config.dump_folder = os.path.join(args.save or "./outputs", "torchtitan", dump_subdir)
 
