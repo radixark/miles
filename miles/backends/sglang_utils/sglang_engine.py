@@ -1,84 +1,18 @@
 import dataclasses
 import ipaddress
 import logging
-import multiprocessing
 import os
+import shlex
+import sys
 
-import httpx
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import kill_process_tree
 
 from miles.backends.megatron_utils.lora_utils import convert_target_modules_to_hf, sglang_lora_target_all_sentinel
-from miles.backends.sglang_utils.sglang_api_client import wait_server_healthy
-from miles.ray.ray_actor import RayActor
-from miles.utils import async_utils
-from miles.utils.env_report import collect_and_print_node_env_report
-from miles.utils.http_utils import get_host_info
+from miles.backends.sglang_utils.server_args_utils import server_args_to_argv
 from miles.utils.lora import LORA_ADAPTER_NAME, lora_base_cpu_backup_enabled, lora_rollout_enabled
 from miles.utils.multi_lora import is_multi_lora_enabled
 
 logger = logging.getLogger(__name__)
-
-
-def get_base_gpu_id(args, rank):
-    num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
-    if args.colocate:
-        start_index = (rank * num_gpus) % args.num_gpus_per_node
-    else:
-        num_actor_gpus = 0 if args.debug_rollout_only else args.actor_num_gpus_per_node * args.actor_num_nodes
-        start_index = (num_actor_gpus + rank * num_gpus) % args.num_gpus_per_node
-    return start_index
-
-
-def _to_local_gpu_id(physical_gpu_id: int) -> int:
-    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
-    if not cvd:
-        return physical_gpu_id  # no remapping
-    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
-    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
-    # In a remapped process, valid torch device indices are 0..len(visible)-1
-    if physical_gpu_id in visible:
-        return visible.index(physical_gpu_id)
-    # If we're already getting local IDs, allow them
-    if 0 <= physical_gpu_id < len(visible):
-        return physical_gpu_id
-    raise RuntimeError(
-        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
-        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
-    )
-
-
-def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
-    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
-    spaces across processes; None entries when NVML is unavailable."""
-    try:
-        import pynvml
-
-        pynvml.nvmlInit()
-        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
-    except Exception:
-        return [None] * len(gpu_ids)
-
-
-def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
-    from sglang.srt.entrypoints.http_server import launch_server
-
-    multiprocessing.set_start_method("spawn", force=True)
-    p = multiprocessing.Process(target=launch_server, args=(server_args,))
-    p.start()
-
-    if server_args.node_rank != 0:
-        return
-
-    async_utils.run(
-        wait_server_healthy(
-            server_url=server_args.url(),
-            api_key=server_args.api_key,
-            is_process_alive=lambda: p.is_alive(),
-        )
-    )
-
-    return p
 
 
 def format_v6_uri(addr: str | None) -> str | None:
@@ -96,160 +30,67 @@ def build_server_url(host: str, port: int) -> str:
     return f"http://{format_v6_uri(host)}:{port}"
 
 
-class SGLangEngine(RayActor):
-    def __init__(
-        self,
+def compute_engine_launch_cmd(
+    args,
+    *,
+    node_rank: int,
+    worker_type: str,
+    base_gpu_id: int,
+    sglang_overrides: dict,
+    num_gpus_per_engine: int,
+    dist_init_addr: str,
+    nccl_port: int,
+    host: str,
+    port: int,
+    disaggregation_bootstrap_port: int | None,
+    engine_info_bootstrap_port: int,
+    gated_launch_port: int,
+    random_seed: int,
+) -> str:
+    server_args_dict = _compute_server_args(
         args,
-        rank: int,
-        worker_type: str = "regular",
-        base_gpu_id: int | None = None,
-        sglang_overrides: dict | None = None,
-        num_gpus_per_engine: int | None = None,
-    ):
-        self.args = args
-        self.rank = rank
-        self.worker_type = worker_type
-        self.base_gpu_id = base_gpu_id
-        self.sglang_overrides = sglang_overrides or {}
-        self.num_gpus_per_engine = num_gpus_per_engine
+        node_rank=node_rank,
+        dist_init_addr=dist_init_addr,
+        nccl_port=nccl_port,
+        host=host,
+        port=port,
+        worker_type=worker_type,
+        disaggregation_bootstrap_port=disaggregation_bootstrap_port,
+        base_gpu_id=base_gpu_id,
+        engine_info_bootstrap_port=engine_info_bootstrap_port,
+        sglang_overrides=sglang_overrides,
+        num_gpus_per_engine=num_gpus_per_engine,
+        gated_launch_port=gated_launch_port,
+        random_seed=random_seed,
+    )
 
-    def get_topology_info(self) -> dict:
-        """Placement facts for the dashboard timeline. ``base_gpu_id`` is
-        node-physical, so these ids match the NVML order the GPU sampler uses."""
-        from miles.utils.misc import get_current_node_ip
-
-        if self.base_gpu_id is None:  # external engines: placement unknown
-            gpu_ids = []
-        else:
-            gpus_on_node = min(self.num_gpus_per_engine, self.args.num_gpus_per_node)
-            gpu_ids = list(range(self.base_gpu_id, self.base_gpu_id + gpus_on_node))
-        return dict(
-            url=f"http://{self.server_host}:{self.server_port}",
-            node_ip=get_current_node_ip(),
-            gpu_ids=gpu_ids,
-            gpu_uuids=_get_gpu_uuids(gpu_ids),
-            worker_type=self.worker_type,
-            node_rank=self.node_rank,
-        )
-
-    def init(
-        self,
-        dist_init_addr,
-        port,
-        nccl_port,
-        host=None,
-        disaggregation_bootstrap_port=None,
-        engine_info_bootstrap_port=None,
-    ):
-        if env_report := self.args.env_report:
-            collect_and_print_node_env_report(
-                role="rollout",
-                rank=self.rank,
-                partial_env_report=env_report,
-            )
-
-        host = host or get_host_info()[1]
-
-        host = format_v6_uri(host)
-        ip_part, port_part = dist_init_addr.rsplit(":", 1)
-        dist_init_addr = f"{format_v6_uri(ip_part)}:{port_part}"
-
-        server_args_dict, external_engine_need_check_fields = _compute_server_args(
-            self.args,
-            self.rank,
-            dist_init_addr,
-            nccl_port,
-            host,
-            port,
-            self.worker_type,
-            disaggregation_bootstrap_port,
-            base_gpu_id=self.base_gpu_id,
-            engine_info_bootstrap_port=engine_info_bootstrap_port,
-            sglang_overrides=self.sglang_overrides,
-            num_gpus_per_engine=self.num_gpus_per_engine,
-        )
-
-        self.node_rank = server_args_dict["node_rank"]
-        self.server_host = server_args_dict["host"]  # with [] if ipv6
-        self.server_port = server_args_dict["port"]
-
-        self.server_url = build_server_url(self.server_host, self.server_port)
-
-        if self.args.rollout_external:
-            self._init_external(server_args_dict, external_engine_need_check_fields=external_engine_need_check_fields)
-        else:
-            self._init_normal(server_args_dict)
-
-    def _init_external(self, expect_server_args, external_engine_need_check_fields):
-        logger.info(f"Use external SGLang engine (rank={self.rank}, expect_server_args={expect_server_args})")
-
-        def _get_actual_server_args():
-            response = httpx.get(f"{self.server_url}/get_server_info", timeout=None)
-            response.raise_for_status()
-            return response.json()
-
-        def _sanity_check_server_args(actual_server_args, expect_server_args):
-            for name in external_engine_need_check_fields:
-                expect_value = expect_server_args.get(name)
-                actual_value = actual_server_args.get(name)
-                assert (
-                    actual_value == expect_value
-                ), f"{name=} {expect_value=} {actual_value=} {expect_server_args=} {actual_server_args=}"
-
-        async_utils.run(wait_server_healthy(server_url=self.server_url, api_key=None, is_process_alive=lambda: True))
-        actual_server_args = _get_actual_server_args()
-        _sanity_check_server_args(actual_server_args, expect_server_args)
-
-    def _init_normal(self, server_args_dict):
-        logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
-        # ServerArgs refuses writes once its declarations materialise, so the ipv6
-        # host loses its brackets here rather than at the launch sites. The dict
-        # keeps the bracketed form, which self.server_host uses to build urls.
-        server_args = ServerArgs(**{**server_args_dict, "host": server_args_dict["host"].strip("[]")})
-        self.process = launch_server_process(server_args)
-
-    def shutdown(self):
-        if self.args.rollout_external:
-            return
-
-        logger.info(f"Shutdown engine {self.server_host}:{self.server_port}...")
-        kill_process_tree(self.process.pid)
-
-    def simulate_crash(self):
-        if self.args.rollout_external or not getattr(self, "process", None):
-            logger.info(
-                "simulate_crash called but no local engine process exists (rollout_external=%s); skip kill",
-                self.args.rollout_external,
-            )
-            return
-
-        logger.info(f"Simulating crash on engine {self.server_host}:{self.server_port}...")
-        self.shutdown()
+    launch_args = {**server_args_dict, "host": server_args_dict["host"].strip("[]")}
+    return shlex.join([sys.executable, "-m", "sglang.launch_server", *server_args_to_argv(launch_args)])
 
 
 def _compute_server_args(
     args,
-    rank,
+    *,
+    node_rank: int,
     dist_init_addr,
     nccl_port,
     host,
     port,
     worker_type: str = "regular",
-    disaggregation_bootstrap_port: int | None = None,
-    base_gpu_id: int | None = None,
-    engine_info_bootstrap_port: int | None = None,
-    sglang_overrides: dict | None = None,
-    num_gpus_per_engine: int | None = None,
+    disaggregation_bootstrap_port: int | None,
+    base_gpu_id: int,
+    engine_info_bootstrap_port: int | None,
+    sglang_overrides: dict | None,
+    num_gpus_per_engine: int | None,
+    gated_launch_port: int,
+    random_seed: int,
 ):
     _gpus_per_engine = num_gpus_per_engine or args.rollout_num_gpus_per_engine
     nnodes = max(1, _gpus_per_engine // args.num_gpus_per_node)
-    node_rank = rank % nnodes
-    base = base_gpu_id if base_gpu_id is not None else get_base_gpu_id(args, rank)
-    base = _to_local_gpu_id(base)
     kwargs = {
         "model_path": args.hf_checkpoint,
         "trust_remote_code": True,
-        "random_seed": args.seed + rank,
+        "random_seed": random_seed,
         # memory
         "enable_memory_saver": args.offload_rollout,
         # distributed
@@ -260,7 +101,8 @@ def _compute_server_args(
         "node_rank": node_rank,
         "dist_init_addr": dist_init_addr,
         "gpu_id_step": 1,
-        "base_gpu_id": base,
+        "base_gpu_id": base_gpu_id,
+        "gated_launch_port": gated_launch_port,
         # parallel
         "tp_size": _gpus_per_engine,
         "dp_size": args.sglang_dp_size,
@@ -312,7 +154,7 @@ def _compute_server_args(
             kwargs["lora_target_modules"] = convert_target_modules_to_hf(args.target_modules)
 
         if args.lora_adapter_path is not None and kwargs.get("load_format") != "dummy":
-            kwargs["lora_paths"] = {LORA_ADAPTER_NAME: args.lora_adapter_path}
+            kwargs["lora_paths"] = [f"{LORA_ADAPTER_NAME}={args.lora_adapter_path}"]
         elif args.lora_adapter_path is not None:
             logger.info("dummy base load: skipping startup lora_paths; adapter comes via weight-sync")
         else:
@@ -334,8 +176,6 @@ def _compute_server_args(
     if sglang_overrides:
         kwargs.update(sglang_overrides)
 
-    external_engine_need_check_fields = [k for k in kwargs.keys() if k not in _EXTERNAL_ENGINE_SKIP_CHECK_FIELDS]
-
     unused_keys = set(kwargs.keys())
     for attr in dataclasses.fields(ServerArgs):
         if worker_type == "decode" and attr.name == "enable_hierarchical_cache":
@@ -350,17 +190,4 @@ def _compute_server_args(
         for key in unused_keys:
             kwargs.pop(key)
 
-    return kwargs, external_engine_need_check_fields
-
-
-_EXTERNAL_ENGINE_SKIP_CHECK_FIELDS = [
-    "model_path",
-    "trust_remote_code",
-    "random_seed",
-    "nccl_port",
-    "dist_init_addr",
-    "skip_server_warmup",
-    "enable_draft_weights_cpu_backup",
-    "enable_metrics",
-    "mem_fraction_static",
-]
+    return kwargs

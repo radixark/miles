@@ -11,6 +11,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils.ci_utils import check_grad_norm
 from miles.backends.training_utils.data import DataIterator, get_batch, get_data_iterator, get_rollout_data
 from miles.backends.training_utils.log_utils import (
@@ -45,7 +46,7 @@ from .parallel import create_fsdp_parallel_state
 from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import EnginesAndLock
+    from miles.ray.rollout.inference_controller import UpdatableEngines
     from miles.utils.audit_utils.witness.allocator import WitnessInfo
 
 logger = logging.getLogger(__name__)
@@ -442,7 +443,7 @@ class FSDPTrainRayActor(TrainRayActor):
         rollout_data_ref: Box,
         witness_info: "WitnessInfo | None" = None,
         attempt: int = 0,
-    ) -> None:
+    ) -> TrainStepOutput:
         """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
         Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
         assert witness_info is None
@@ -456,7 +457,7 @@ class FSDPTrainRayActor(TrainRayActor):
             rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
             stack.enter_context(store_get_result)
             if self.args.debug_rollout_only:
-                return
+                return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
             self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
 
         train_metric_utils.log_perf_data_raw(
@@ -471,6 +472,7 @@ class FSDPTrainRayActor(TrainRayActor):
         )
 
         self._heartbeat.bump()
+        return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
 
     def _train_core(self, rollout_id: int, rollout_data) -> None:
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
@@ -605,30 +607,28 @@ class FSDPTrainRayActor(TrainRayActor):
         return log_dict
 
     @timer
-    def update_weights(self, info: "EnginesAndLock") -> None:  # type: ignore[override]
+    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
         """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
-            return
+            return None
 
         rollout_engines = info.rollout_engines
-        rollout_engine_lock = info.rollout_engine_lock
-        has_new_engines = info.has_new_engines
+        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
         engine_gpu_counts = info.engine_gpu_counts
         engine_gpu_offsets = info.engine_gpu_offsets
         del info
 
-        if has_new_engines:
+        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
+        if needs_reconnect:
             self.weight_updater.connect_rollout_engines(
                 rollout_engines,
-                rollout_engine_lock,
                 engine_gpu_counts=engine_gpu_counts,
                 engine_gpu_offsets=engine_gpu_offsets,
             )
+            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
             dist.barrier(group=get_gloo_group())
 
         self.weight_updater.update_weights()
-        if dist.get_rank() == 0:
-            ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)
@@ -639,6 +639,8 @@ class FSDPTrainRayActor(TrainRayActor):
                 )
 
         clear_memory()
+
+        return self.weight_updater.weight_version
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model. ALWAYS uses CPUOffloadPolicy (regardless of the actor's

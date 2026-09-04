@@ -2,12 +2,15 @@ import dataclasses
 import logging
 from urllib.parse import quote
 
+import httpx
 import sglang_router
 from packaging.version import parse
 
 from miles.utils.http_utils import GeneralHttpClientProvider
 
 logger = logging.getLogger(__name__)
+
+ROUTER_REQUEST_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
 
 def use_legacy_router_api(args) -> bool:
@@ -27,7 +30,10 @@ class SGLangRouterApiClient:
     ):
         if use_legacy_api:
             assert worker_type == "regular", "pd disaggregation is not supported in old router or miles router."
-            response = await GeneralHttpClientProvider.client().post(f"{self.router_url}/add_worker?url={worker_url}")
+            response = await GeneralHttpClientProvider.client().post(
+                f"{self.router_url}/add_worker?url={worker_url}",
+                timeout=ROUTER_REQUEST_TIMEOUT,
+            )
         else:
             payload = {
                 "url": worker_url,
@@ -38,6 +44,7 @@ class SGLangRouterApiClient:
             response = await GeneralHttpClientProvider.client().post(
                 f"{self.router_url}/workers",
                 json=payload,
+                timeout=ROUTER_REQUEST_TIMEOUT,
             )
         response.raise_for_status()
 
@@ -45,23 +52,29 @@ class SGLangRouterApiClient:
         response = None
         if use_legacy_api:
             response = await GeneralHttpClientProvider.client().post(
-                f"{self.router_url}/remove_worker?url={worker_url}"
+                f"{self.router_url}/remove_worker?url={worker_url}",
+                timeout=ROUTER_REQUEST_TIMEOUT,
             )
         elif parse(sglang_router.__version__) < parse("0.3.0"):
             quoted_worker_url = quote(worker_url, safe="")
             response = await GeneralHttpClientProvider.client().delete(
-                f"{self.router_url}/workers/{quoted_worker_url}"
+                f"{self.router_url}/workers/{quoted_worker_url}",
+                timeout=ROUTER_REQUEST_TIMEOUT,
             )
         else:
             try:
-                all_workers = (await GeneralHttpClientProvider.client().get(f"{self.router_url}/workers")).json()[
-                    "workers"
-                ]
+                all_workers = (
+                    await GeneralHttpClientProvider.client().get(
+                        f"{self.router_url}/workers",
+                        timeout=ROUTER_REQUEST_TIMEOUT,
+                    )
+                ).json()["workers"]
                 for worker in all_workers:
                     if worker["url"] == worker_url:
                         worker_id = worker["id"]
                         response = await GeneralHttpClientProvider.client().delete(
-                            f"{self.router_url}/workers/{worker_id}"
+                            f"{self.router_url}/workers/{worker_id}",
+                            timeout=ROUTER_REQUEST_TIMEOUT,
                         )
                         break
                 else:

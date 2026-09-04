@@ -16,6 +16,7 @@ def short_retry_window(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(client_module, "SUBMIT_RETRY_WINDOW_SECONDS", 0.2)
     monkeypatch.setattr(client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.01)
     monkeypatch.setattr(client_module, "RETRY_MAX_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(client_module, "DEFAULT_POLL_TIMEOUT_SECONDS", 0.05)
 
 
 class _StaleWorker:
@@ -162,3 +163,23 @@ class TestWaitReadyRetries:
         handle = make_handle(proxy)
 
         await handle.wait_ready(timeout=1.0)
+
+
+class TestPinnedSubmitFailure:
+    async def test_headerless_gateway_error_does_not_repin(
+        self,
+        proxy_to: Any,
+        make_handle: Any,
+        short_retry_window: None,
+        tag: str,
+    ) -> None:
+        """A pinned handle keeps its pin and gives up on a submit 503."""
+        proxy = await proxy_to()
+        handle = make_handle(proxy, require_stable_boot_uuid=True)
+        await handle.wait_ready(timeout=1.0)
+        proxy.reject_next(count=1, status=503)
+
+        with pytest.raises(WorkerUnreachableError):
+            await handle.demo_count_sync(tag=tag)
+
+        assert len(proxy.submits("demo_count_sync")) == 1

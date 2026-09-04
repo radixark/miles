@@ -10,6 +10,8 @@ import torch
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
+from miles.backends.training_utils.conn_status import ConnStatusManager
+
 try:
     from sglang.srt.utils.patch_torch import monkey_patch_torch_reductions  # type: ignore[import]
 except ImportError:
@@ -22,7 +24,7 @@ from miles.utils import async_utils
 from miles.utils.distributed_utils import get_gloo_group, init_process_group
 
 if TYPE_CHECKING:
-    from ray.actor import ActorHandle
+    pass
 
 
 try:
@@ -62,12 +64,12 @@ class UpdateWeight(abc.ABC):
         self.args = args
         self.model = model
         self.weight_version = 0
+        self.conn_status = ConnStatusManager()
 
     @abc.abstractmethod
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: "ActorHandle | None",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -143,7 +145,6 @@ class UpdateWeightFromTensor(UpdateWeight):
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: "ActorHandle | None",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
@@ -232,13 +233,11 @@ class UpdateWeightFromDistributed(UpdateWeight):
     def connect_rollout_engines(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: "ActorHandle | None",
         engine_gpu_counts: Sequence[int] | None = None,
         engine_gpu_offsets: Sequence[int] | None = None,
     ) -> None:
         """On rank 0, initialize a temporary NCCL group for parameter broadcast."""
         self.rollout_engines = rollout_engines
-        self.rollout_engine_lock = rollout_engine_lock
 
         # TP weight sync: AllGather params to rank 0, then broadcast from rank 0 to all sglang engines
         self._is_src_rank = dist.get_rank() == 0

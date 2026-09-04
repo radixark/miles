@@ -3,6 +3,7 @@ import time
 
 import httpx
 
+from tests.fast.utils.workers.e2e.e2e_worker import Item
 from tests.fast.utils.workers.e2e.harness import READY_TIMEOUT_SECONDS
 
 
@@ -15,6 +16,10 @@ class TestRoundtrip:
     async def test_async_method(self, handle):
         """An async method roundtrips a nested payload unchanged."""
         assert await handle.demo_async(value={"k": [1, "x", None]}) == {"k": [1, "x", None]}
+
+    async def test_none_return(self, handle):
+        """A method declared -> None returns None rather than a missing value."""
+        assert await handle.demo_none_result() is None
 
     async def test_default_parameter_omitted(self, handle):
         """An omitted defaulted argument uses the worker-side default."""
@@ -53,10 +58,11 @@ class TestReadiness:
         assert time.monotonic() - started < 5.0
 
     async def test_health_endpoint(self, raw):
-        """The health endpoint answers ok."""
+        """The health endpoint answers ok with a boot uuid header."""
         response = await raw.get("/v1/health")
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+        assert response.headers["x-miles-boot-uuid"]
 
 
 class TestConcurrentCalls:
@@ -74,6 +80,11 @@ class TestConcurrentCalls:
 
 
 class TestTypedPayloads:
+    async def test_pydantic_model_argument_and_result(self, handle):
+        """A pydantic model survives the wire in both directions as a real model."""
+        result = await handle.demo_model(item=Item(name="x", values=[3, 1, 2]))
+        assert isinstance(result, Item) and result == Item(name="x", values=[3, 1, 2])
+
     async def test_scalar_types_keep_their_python_type(self, handle):
         """Scalars keep their type instead of collapsing to strings or ints."""
         assert await handle.demo_async(value={"f": 1.5, "b": True, "s": "1", "n": None}) == {
@@ -87,6 +98,16 @@ class TestTypedPayloads:
         """Non-ascii text survives the real socket unchanged."""
         text = "中文 🚀 \\ \" '"
         assert await handle.demo_async(value={"t": text}) == {"t": text}
+
+    async def test_large_upload(self, handle):
+        """A multi-megabyte request body is transferred intact."""
+        blob = "x" * (4 * 1024 * 1024)
+        assert await handle.demo_large_upload(blob=blob) == len(blob)
+
+    async def test_large_download(self, handle):
+        """A large response body is transferred intact."""
+        values = await handle.demo_large_download(size=200_000)
+        assert len(values) == 200_000 and values[-1] == 199_999
 
 
 class TestManualProtocol:
@@ -106,18 +127,13 @@ class TestManualProtocol:
     async def test_finished_call_can_be_polled_repeatedly(self, raw):
         """A finished outcome stays retrievable for later polls."""
         await raw.post("/v1/demo_sync", json={"call_id": "manual-2", "query": {"a": 1, "b": 1}})
-        for _ in range(50):
+        for _ in range(3):
             body = (await raw.get("/v1/calls/manual-2", params={"timeout": 5.0})).json()
-            if body["status"] != "pending":
-                break
         assert body == {"status": "success", "result": 2, "error": None}
 
     async def test_second_client_sees_the_outcome(self, raw, server):
         """Call state belongs to the server, not to the connection that submitted it."""
         await raw.post("/v1/demo_sync", json={"call_id": "manual-3", "query": {"a": 4, "b": 4}})
         async with httpx.AsyncClient(base_url=server.url, timeout=30.0, trust_env=False) as other:
-            for _ in range(50):
-                body = (await other.get("/v1/calls/manual-3", params={"timeout": 5.0})).json()
-                if body["status"] != "pending":
-                    break
+            body = (await other.get("/v1/calls/manual-3", params={"timeout": 5.0})).json()
         assert body["result"] == 8

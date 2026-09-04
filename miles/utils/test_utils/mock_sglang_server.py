@@ -13,7 +13,7 @@ from sglang.srt.entrypoints.openai.protocol import Tool
 from sglang.srt.function_call.function_call_parser import FunctionCallParser
 
 from miles.utils.http_utils import find_available_port
-from miles.utils.misc import get_current_node_ip
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.processing_utils import load_tokenizer
 from miles.utils.test_utils.uvicorn_thread_server import UvicornThreadServer
 
@@ -54,7 +54,7 @@ class MockSGLangServer:
     ):
         self.tokenizer = load_tokenizer(model_name, chat_template_path=chat_template_path, trust_remote_code=True)
         self.process_fn = process_fn
-        self.host = host or get_current_node_ip()
+        self.host = host or NodeProbeMixin._get_node_ip()
         self.port = port or find_available_port(30000)
         self.latency = latency
 

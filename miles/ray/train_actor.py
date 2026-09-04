@@ -10,7 +10,6 @@ import torch
 import torch.distributed as dist
 
 import miles.utils.eval_config
-from miles.ray.ray_actor import RayActor
 from miles.utils import object_store
 from miles.utils.audit_utils.process_identity import TrainProcessIdentity
 from miles.utils.distributed_utils import init_gloo_group
@@ -18,14 +17,22 @@ from miles.utils.env_report import collect_and_print_node_env_report
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 from miles.utils.logging_utils import configure_logger
 from miles.utils.memory_utils import clear_memory, print_memory
+from miles.utils.misc import NodeProbeMixin, get_current_node_ip, get_free_port
 from miles.utils.test_utils.det_process_group import DET_NCCL_BACKEND_NAME, register_det_nccl_backend
 from miles.utils.test_utils.fault_injector import inject_fault as _inject_fault
 
 if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import EnginesAndLock
+    from miles.ray.rollout.inference_controller import UpdatableEngines
 
 
 logger = logging.getLogger(__name__)
+
+TRAINER_CONCURRENCY_GROUPS = {"heartbeat_status": 1, "default": 1, "fault_injector": 1, "kill_self": 1}
+TRAINER_METHOD_CONCURRENCY_GROUPS = {
+    "get_heartbeat_status": "heartbeat_status",
+    "inject_fault": "fault_injector",
+    "kill_self": "kill_self",
+}
 
 
 def get_local_gpu_id():
@@ -36,14 +43,13 @@ def get_local_gpu_id():
         return cvd.split(",").index(str(ray.get_gpu_ids()[0]))
 
 
-class TrainRayActor(RayActor):
+class TrainRayActor(NodeProbeMixin):
     def __init__(
         self,
+        *,
         args,
         world_size: int,
         rank: int,
-        master_addr,
-        master_port,
         indep_dp_store_addr: str,
         role: Literal["actor", "critic"],
         cell_index: int,
@@ -57,15 +63,7 @@ class TrainRayActor(RayActor):
         self._world_size = world_size
         self._rank = rank
         self._indep_dp_store_addr = indep_dp_store_addr
-        if master_addr:
-            self.master_addr, self.master_port = master_addr, master_port
-        else:
-            self.master_addr, self.master_port = self._get_current_node_ip_and_free_port(
-                start_port=random.randint(20000, 21000)
-            )
 
-        os.environ["MASTER_ADDR"] = self.master_addr
-        os.environ["MASTER_PORT"] = str(self.master_port)
         os.environ["WORLD_SIZE"] = str(self._world_size)
         os.environ["RANK"] = str(self._rank)
         # TODO: currently this doesn't work as ray has already set torch.cuda.device_count().
@@ -74,6 +72,13 @@ class TrainRayActor(RayActor):
         os.environ["LOCAL_RANK"] = str(get_local_gpu_id())
 
         object_store.init_instance(args)
+
+    def propose_master_addr_and_port(self) -> tuple[str, int]:
+        return get_current_node_ip(), get_free_port(start_port=random.randint(20000, 21000))
+
+    def configure_master_addr_and_port(self, *, master_addr: str, master_port: int) -> None:
+        os.environ["MASTER_ADDR"] = master_addr
+        os.environ["MASTER_PORT"] = str(master_port)
 
     # TODO mv the args into ctor
     def init(self, args, role, with_ref=False, with_opd_teacher=False):
@@ -145,6 +150,9 @@ class TrainRayActor(RayActor):
     def inject_fault(self, mode: str) -> None:
         _inject_fault(mode=mode)
 
+    def kill_self(self) -> None:
+        os._exit(1)
+
     def clear_memory(self):
         print_memory("before TrainRayActor.clear_memory")
         clear_memory()
@@ -171,7 +179,7 @@ class TrainRayActor(RayActor):
         raise NotImplementedError(f"{type(self).__name__} does not support HF export")
 
     @abc.abstractmethod
-    def update_weights(self, info: "EnginesAndLock") -> None:
+    def update_weights(self, info: "UpdatableEngines") -> int | None:
         raise NotImplementedError
 
     @abc.abstractmethod

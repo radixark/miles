@@ -124,7 +124,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
     def connect(
         self,
         rollout_engines: Sequence[SGLangApiClient],
-        rollout_engine_lock: ActorHandle | None,
         engine_gpu_counts: Sequence[int] | None,
         engine_gpu_offsets: Sequence[int] | None,
         parallel_state: ParallelState,
@@ -142,8 +141,6 @@ class UpdateWeightP2P(WeightTransferProtocol):
           weight format conversion before transfer.
         """
         self.rollout_engines = rollout_engines
-        self._connection_stale = False
-        self.rollout_engine_lock = rollout_engine_lock
 
         self.is_sender = self.transfer_plan._gathered_dp_rank < self.transfer_plan._rollout_num_gpus
 

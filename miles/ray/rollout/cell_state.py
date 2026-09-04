@@ -1,36 +1,31 @@
-import ray
-from pydantic import ConfigDict
-
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 
 
-class AddrInfo(FrozenStrictBaseModel):
+class CellAddrInfo(FrozenStrictBaseModel):
     server_url: str
-    bootstrap_port: int | None = None
+    bootstrap_port: int | None
+    gate_url: str
 
 
-# ------------------------- states -----------------------------
-
-
-class StateBase(FrozenStrictBaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
-
-
-class StateStopped(StateBase):
+class StateUninitialized(FrozenStrictBaseModel):
     pass
 
 
-class StateAllocatedBase(StateBase):
-    actor_handles: list[ray.actor.ActorHandle]
-    addr_infos: list[AddrInfo] | None = None
+class StateInitializing(FrozenStrictBaseModel):
+    addr_info: CellAddrInfo
+    start_time: float
 
 
-class StateAllocatedUninitialized(StateAllocatedBase):
+class StatePendingWeights(FrozenStrictBaseModel):
+    addr_info: CellAddrInfo
+
+
+class StateServing(FrozenStrictBaseModel):
+    addr_info: CellAddrInfo
+
+
+class StateDisposed(FrozenStrictBaseModel):
     pass
 
 
-class StateAllocatedAlive(StateAllocatedBase):
-    pass
-
-
-CellState = StateStopped | StateAllocatedUninitialized | StateAllocatedAlive
+CellState = StateUninitialized | StateInitializing | StatePendingWeights | StateServing | StateDisposed

@@ -7,7 +7,8 @@ from pathlib import Path
 import ray
 
 from miles.ray.multi_lora.controller import create_multilora_controller, get_multi_lora_controller
-from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
+from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.adapter_config import parse_adapter_run_yaml
 from miles.utils.arguments import parse_args
@@ -35,12 +36,10 @@ async def main(args):
 
     # The multi-LoRA rollout fn / data source / global dataset flags are
     # defaulted by miles_validate_args when --multi-lora-n-adapters > 0.
-    pgs = create_placement_groups(args)
+    _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
-    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(
-        args, pgs["rollout"]
-    )
+    inference_controller, rollout_executor, _num_rollout_per_epoch = await create_rollout_components(args)
 
     # Create a controller nclusing MultiLoRAController and MultiLoRAHTTPServer to manage lora
     controller = create_multilora_controller(args, f"http://{args.sglang_router_ip}:{args.sglang_router_port}")
@@ -49,7 +48,7 @@ async def main(args):
     api_port = await controller.api_port.remote()
     logger.info(f"Multi-LoRA control API listening on http://{host}:{api_port} (head node)")
 
-    actor_model, _ = await create_training_models(args, pgs, inference_controller, rollout_executor)
+    actor_model, _ = await create_training_models(args, inference_controller, rollout_executor)
 
     # CLI-registered adapters are loaded and pushed by the loop's first
     # reconcile + update_weights.
@@ -75,7 +74,7 @@ async def main(args):
         # and only then does the data source sample them. The actor pushes only
         # stale adapter weights (newly loaded, or stepped by the last batch).
         await actor_model.reconcile_adapters()
-        await actor_model.update_weights()
+        await update_weights(actor_model, rollout_executor)
 
         # With nothing active, generate would wait forever.
         post_update = await get_multi_lora_controller().snapshot.remote()
@@ -101,6 +100,7 @@ async def main(args):
 
     await rollout_executor.dispose.remote()
     await inference_controller.dispose()
+    await actor_model.dispose()
     await controller.stop.remote()
 
 

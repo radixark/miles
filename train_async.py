@@ -2,15 +2,16 @@ import asyncio
 import logging
 import os
 
-from miles.ray.placement_group import create_placement_groups, create_rollout_components, create_training_models
+from miles.ray.placement_group import create_rollout_components, create_training_models, update_weights
 from miles.ray.rollout.eval_dispatch import EvalDispatcher
+from miles.ray.wiring import launch_worker_manager
 from miles.utils import object_store
 from miles.utils.arguments import parse_args, validate_async_off_policy_correction
 from miles.utils.async_utils import eager_create_task
 from miles.utils.audit_utils.process_identity import MainProcessIdentity
 from miles.utils.data import remove_rollout_data_refs
 from miles.utils.debug_utils.periodic_py_spy import maybe_start_periodic_pyspy_dump
-from miles.utils.ft_utils.control_server.server import start_control_server
+from miles.utils.ft_utils.api_server.server import start_api_server
 from miles.utils.ft_utils.mini_ft_controller import maybe_start_mini_ft_controller
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
@@ -25,32 +26,31 @@ async def train(args):
     validate_async_off_policy_correction(args)
     configure_logger(args, source=MainProcessIdentity())
     maybe_start_periodic_pyspy_dump()
-    # allocate the GPUs
-    pgs = create_placement_groups(args)
+    _worker_manager = launch_worker_manager(args)
     object_store.init_instance(args, contribute_segment=False)
     init_tracking(args)
 
     # create the rollout manager, with sglang engines inside.
     # need to initialize rollout manager first to calculate num_rollout
-    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(
-        args, pgs["rollout"]
-    )
+    inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, pgs, inference_controller, rollout_executor)
+    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
 
-    if args.control_server_port:
-        start_control_server(
+    if args.api_server_port:
+        start_api_server(
+            args=args,
             actor_model=actor_model,
             inference_controller=inference_controller,
-            port=args.control_server_port,
+            host=args.api_server_host,
+            port=args.api_server_port,
             ft_components=args.ft_components,
         )
 
     maybe_start_mini_ft_controller(args)
 
     # always update weight first so that sglang has the loaded weights from training.
-    await actor_model.update_weights()
+    await update_weights(actor_model, rollout_executor)
 
     if args.check_weight_update_equal:
         await inference_controller.check_weights(
@@ -116,7 +116,7 @@ async def train(args):
             # sync generate before update weights to prevent update weight in the middle of generation
             rollout_data_curr_ref = (await x) if (x := rollout_data_next_future) is not None else None
             rollout_data_next_future = None
-            await actor_model.update_weights(rollout_id=rollout_id)
+            await update_weights(actor_model, rollout_executor, rollout_id=rollout_id)
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch, args.num_rollout):
             await inference_controller.prepare_eval()
@@ -136,6 +136,9 @@ async def train(args):
     await eval_dispatcher.drain()
     await rollout_executor.dispose.remote()
     await inference_controller.dispose()
+    await actor_model.dispose()
+    if critic_model is not None:
+        await critic_model.dispose()
 
 
 if __name__ == "__main__":

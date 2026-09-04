@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ from miles.backends.sglang_utils.arguments import validate_args as validate_sgla
 from miles.utils.arguments import (
     _maybe_apply_dumper_overrides,
     _resolve_ft_components,
+    _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
@@ -19,11 +21,24 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
+from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
 
 PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
+
+_MEGATRON_PARALLEL_SIZES: dict[str, int] = {
+    "world_size": 8,
+    "tensor_model_parallel_size": 2,
+    "pipeline_model_parallel_size": 1,
+    "context_parallel_size": 1,
+}
+
+
+def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
+    for name, size in _MEGATRON_PARALLEL_SIZES.items():
+        setattr(args, name, size)
 
 
 def make_class_with_add_arguments():
@@ -79,8 +94,12 @@ class TestMaybeApplyDumperOverrides:
         *,
         dumper_enable: bool = False,
         use_fault_tolerance: bool = False,
+        ft_components: list[str] | None = None,
         router_disable_health_check: bool = False,
         rollout_health_check_interval: float = 30.0,
+        miles_router_health_check_failure_threshold: int = 3,
+        miles_router_max_connections: int | None = 64,
+        miles_router_timeout: float | None = None,
         start_rollout_id: int | None = None,
         num_rollout: int = 10,
         eval_interval: int | None = 5,
@@ -91,8 +110,13 @@ class TestMaybeApplyDumperOverrides:
         return SimpleNamespace(
             dumper_enable=dumper_enable,
             use_fault_tolerance=use_fault_tolerance,
+            ft_components=ft_components if ft_components is not None else [],
+            mini_ft_controller_enable=None,
             router_disable_health_check=router_disable_health_check,
             rollout_health_check_interval=rollout_health_check_interval,
+            miles_router_health_check_failure_threshold=miles_router_health_check_failure_threshold,
+            miles_router_max_connections=miles_router_max_connections,
+            miles_router_timeout=miles_router_timeout,
             start_rollout_id=start_rollout_id,
             num_rollout=num_rollout,
             eval_interval=eval_interval,
@@ -105,30 +129,45 @@ class TestMaybeApplyDumperOverrides:
         args = self._make_args(
             dumper_enable=False,
             use_fault_tolerance=True,
-            rollout_health_check_interval=30.0,
         )
         _maybe_apply_dumper_overrides(args)
 
         assert args.use_fault_tolerance is True
         assert args.router_disable_health_check is False
-        assert args.rollout_health_check_interval == 30.0
         assert args.num_rollout == 10
         assert args.eval_interval == 5
         assert args.save == "/tmp/checkpoint"
         assert args.save_interval == 5
         assert args.save_retain_interval == 10
 
-    def test_disables_all_heartbeats(self) -> None:
+    def test_disables_fault_tolerance_and_sglang_router_heartbeats(self) -> None:
+        """Dumper mode turns off fault tolerance and the SGLang router health check."""
         args = self._make_args(
             dumper_enable=True,
             use_fault_tolerance=True,
-            rollout_health_check_interval=30.0,
         )
         _maybe_apply_dumper_overrides(args)
 
         assert args.use_fault_tolerance is False
         assert args.router_disable_health_check is True
-        assert args.rollout_health_check_interval == 1e18
+
+    def test_no_healing_loop_survives_dumper_mode(self) -> None:
+        """It is resolved from ft_components, which dumper mode clears, so resolving it first
+        would leave the loop polling a registry with nothing in it for the whole run."""
+        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout"])
+
+        _maybe_apply_dumper_overrides(args)
+
+        assert _resolve_mini_ft_controller_enable(args) is False
+
+    def test_the_selected_ft_components_go_with_the_flag(self) -> None:
+        """ft_components is resolved from the flag long before this runs, so clearing the flag
+        alone would leave every component selected and its probes still firing."""
+        args = self._make_args(dumper_enable=True, use_fault_tolerance=True, ft_components=["rollout", "train"])
+
+        _maybe_apply_dumper_overrides(args)
+
+        assert args.ft_components == []
 
     def test_forces_single_rollout(self) -> None:
         args = self._make_args(dumper_enable=True, num_rollout=100)
@@ -287,6 +326,139 @@ def test_dynamic_global_batch_size_requires_dynamic_batch_size():
         miles_validate_args(args)
 
 
+def test_shared_actor_critic_ppo_rejects_indep_dp():
+    """Multi-cell PPO used to pass validation and fail only at the first training step's external-data assert."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--advantage-estimator", "ppo", "--indep-dp", "--num-rollout", "1"] + REQUIRED_ARGS)
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        miles_validate_args(args)
+
+
+def test_rollout_fault_tolerance_rejects_a_dedicated_eval_fleet():
+    """The eval fleet pins engine addresses once, so a healed eval cell would be skipped silently."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        ["--use-fault-tolerance", "--ft-components", "rollout", "--eval-num-gpus", "8", "--num-rollout", "1"]
+        + REQUIRED_ARGS
+    )
+
+    with pytest.raises(AssertionError, match="dedicated eval fleet"):
+        miles_validate_args(args)
+
+
+class TestFaultToleranceResolutionOrder:
+    def _validate(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text(yaml_body)
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+        _set_megatron_parallel_sizes(args)
+        miles_validate_args(args)
+        return args
+
+    def test_the_config_file_can_turn_fault_tolerance_off(self, tmp_path):
+        """Resolving ft_components before the file override left implicit healing on for a run that asked for none."""
+        args = self._validate(tmp_path, ["--use-fault-tolerance"], "use_fault_tolerance: false\n")
+
+        assert (args.ft_components, args.mini_ft_controller_enable, args.api_server_port) == ([], False, 0)
+
+    def test_the_config_file_can_turn_fault_tolerance_on(self, tmp_path):
+        """A file-only opt-in must reach the same defaults the flag would have produced."""
+        args = self._validate(tmp_path, [], "use_fault_tolerance: true\n")
+
+        assert (args.ft_components, args.mini_ft_controller_enable) == (["rollout"], True)
+
+    def test_the_config_file_can_select_the_train_component(self, tmp_path):
+        """Picking the component list after the derivations left a train-side run without the state it needs."""
+        args = self._validate(tmp_path, ["--use-fault-tolerance"], "ft_components: [train]\n")
+
+        assert args.ft_components == ["train"]
+        assert (args.indep_dp, args.enable_witness, args.non_persistent_ckpt_type) == (True, True, "local")
+        assert args.world_size == 2
+
+    def test_the_config_file_can_cancel_the_train_component(self, tmp_path):
+        """A file that switches fault tolerance off must also undo the per-cell world the train component implies."""
+        args = self._validate(
+            tmp_path, ["--use-fault-tolerance", "--ft-components", "train"], "use_fault_tolerance: false\n"
+        )
+
+        assert (args.ft_components, args.indep_dp, args.enable_witness) == ([], False, False)
+        assert args.world_size == 8
+
+    def test_the_config_file_keeps_an_explicit_api_server_port(self, tmp_path):
+        """The implicit healing defaults must follow the port the file asks for, not the one the flag implied."""
+        args = self._validate(tmp_path, [], "use_fault_tolerance: true\napi_server_port: 0\n")
+
+        assert (args.ft_components, args.api_server_port, args.mini_ft_controller_enable) == (["rollout"], 0, False)
+
+
+class TestCustomConfigAppliedBeforeDerivedArgs:
+    def _parse(self, tmp_path: Path, extra: list[str], yaml_body: str) -> argparse.Namespace:
+        config_path = tmp_path / "custom.yaml"
+        config_path.write_text(yaml_body)
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(
+            extra + ["--custom-config-path", str(config_path), "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+
+    def test_a_dashboard_switched_on_by_the_config_file_is_still_checked(self, tmp_path):
+        """Checking the dashboard before the file override let a file-only opt-in start without a dump directory."""
+        args = self._parse(tmp_path, [], "use_miles_dashboard: true\n")
+
+        with pytest.raises(AssertionError, match="--dump-details is required"):
+            miles_validate_args(args)
+
+    def test_a_dashboard_switched_off_by_the_config_file_drops_its_requirement(self, tmp_path):
+        """A run whose file turns the dashboard off must not be rejected for telemetry it will never write."""
+        args = self._parse(tmp_path, ["--use-miles-dashboard"], "use_miles_dashboard: false\n")
+        miles_validate_args(args)
+
+        assert args.use_miles_dashboard is False
+
+    def test_eval_prompt_data_from_the_config_file_is_expanded_into_datasets(self, tmp_path):
+        """Building the dataset list before the file override left the file's paths as an unparsed raw list."""
+        args = self._parse(tmp_path, [], "eval_prompt_data: [/data/aime.jsonl]\n")
+        miles_validate_args(args)
+
+        assert [(dataset.name, dataset.path) for dataset in args.eval_datasets] == [("aime", "/data/aime.jsonl")]
+        assert args.eval_prompt_data == ["aime", "/data/aime.jsonl"]
+
+
+def test_stream_optimizer_state_to_disk_rejects_fault_tolerant_training():
+    """Deriving indep_dp after the disk-stream asserts would have let an unsupported pair through."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(
+        [
+            "--stream-optimizer-state-to-disk",
+            "--use-fault-tolerance",
+            "--ft-components",
+            "train",
+            "--num-rollout",
+            "1",
+        ]
+        + REQUIRED_ARGS
+    )
+    args.optimizer = "adam"
+    args.use_distributed_optimizer = True
+    args.multi_lora = False
+    args.optimizer_cpu_offload = False
+    args.offload_optimizer_states = False
+    args.use_precision_aware_optimizer = False
+    _set_megatron_parallel_sizes(args)
+
+    with pytest.raises(AssertionError, match="does not support --indep-dp"):
+        miles_validate_args(args)
+
+
 class TestCriticSaveDerivation:
     def _validate(self, extra):
         parser = argparse.ArgumentParser()
@@ -345,13 +517,13 @@ class TestSessionServerScalingArguments:
         get_miles_extra_args_provider()(parser)
         return parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
 
-    def test_defaults_to_32_workers_and_an_auto_port(self):
+    def test_defaults_to_32_instances_and_an_auto_port(self):
         args = self._parse([])
 
         assert args.session_server_port is None
         assert args.session_server_workers == 32
 
-    def test_parses_starting_port_and_worker_count(self):
+    def test_parses_starting_port_and_instance_count(self):
         args = self._parse(["--session-server-port", "30000", "--session-server-workers", "4"])
 
         assert args.session_server_port == 30000
@@ -576,16 +748,17 @@ def test_bridge_mode_accepts_critic(tmp_path):
     assert args.use_critic is True
 
 
-def test_critic_rejects_experimental_ft_trainer(tmp_path, monkeypatch):
-    monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+def test_critic_is_accepted_on_the_only_trainer(tmp_path):
+    """Shared actor/critic PPO used to be rejected on the cell based trainer, which is now the only one."""
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
     args = parser.parse_args(
         ["--advantage-estimator", "ppo", "--hf-checkpoint", str(tmp_path), "--num-rollout", "1"] + REQUIRED_ARGS
     )
 
-    with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
-        miles_validate_args(args)
+    miles_validate_args(args)
+
+    assert args.use_critic is True
 
 
 def test_critic_rejects_reward_level_kl(tmp_path):
@@ -682,13 +855,11 @@ class TestMultiLoRAValidation:
         with pytest.raises(AssertionError, match="requires --optimizer adam"):
             miles_validate_args(args)
 
-    def test_rejects_experimental_ft_trainer(self, monkeypatch):
-        # The v2 train group has no reconcile_adapters.
-        monkeypatch.setenv("MILES_EXPERIMENTAL_FT_TRAINER", "1")
+    def test_is_accepted_on_the_only_trainer(self):
+        """Multi-LoRA used to be rejected on the cell based trainer, which is now the only one."""
         args = self._parse([])
 
-        with pytest.raises(AssertionError, match="MILES_EXPERIMENTAL_FT_TRAINER"):
-            miles_validate_args(args)
+        miles_validate_args(args)
 
     def test_rejects_pipeline_parallelism(self):
         # Adapter routing is not recompute-safe under a pipelined schedule.
@@ -1182,3 +1353,98 @@ class TestRunUuidResolution:
 
         with pytest.raises(ValueError, match="invalid run uuid"):
             miles_validate_args(args)
+
+
+class TestRolloutHealthCheckArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_the_rollout_defaults_survive_the_move_onto_the_shared_config(self):
+        """The shared config carries the trainer's defaults, which are not the rollout ones."""
+        args = self._parse([])
+
+        assert args.rollout_health_check_interval == 30.0
+        assert args.rollout_health_check_timeout == 30.0
+        assert args.rollout_health_check_first_wait == 0.0
+
+    def test_the_first_wait_grace_period_is_still_tunable(self):
+        """A first launch compiling deepgemm kernels needs a grace period, or it is killed while warming up."""
+        assert self._parse(["--rollout-health-check-first-wait", "600"]).rollout_health_check_first_wait == 600.0
+
+    def test_the_resolved_rollout_config_matches_the_parsed_arguments(self):
+        """The config is what the checker actually runs on, so it must not diverge from the flags."""
+        config = SimpleHealthCheckerConfig.from_args(
+            self._parse(["--rollout-health-check-first-wait", "600"]), prefix="rollout_health_check"
+        )
+
+        assert (config.interval, config.timeout, config.first_wait) == (30.0, 30.0, 600.0)
+
+    def test_a_rollout_cell_is_reported_unhealthy_on_the_very_first_failed_probe(self):
+        """At a 30s interval the shared three-failure debounce would hide a dead engine for 90s."""
+        assert self._parse([]).rollout_health_check_failure_threshold == 1
+
+    def test_a_tuned_rollout_debounce_reaches_the_shared_config(self):
+        """The failure threshold is what debounces transient blips, so the flag must reach the checker's config."""
+        config = SimpleHealthCheckerConfig.from_args(
+            self._parse(["--rollout-health-check-failure-threshold", "7"]), prefix="rollout_health_check"
+        )
+
+        assert config.failure_threshold == 7
+
+    def test_the_trainer_heartbeat_keeps_its_own_debounce(self):
+        """The rollout default must not be pushed down into the shared config: a trainer heartbeat
+        shares an RPC channel with the train step, so one slow reply is a blip, not a dead cell."""
+        assert self._parse([]).trainer_heartbeat_checker_failure_threshold == 3
+
+
+class TestMiniFtControllerArguments:
+    def _validate(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_fault_tolerance_alone_turns_the_healing_loop_on(self):
+        """Asking for fault tolerance heals on its own, so the loop must come up without a second flag."""
+        assert self._validate(["--use-fault-tolerance"]).mini_ft_controller_enable is True
+
+    def test_the_negative_flag_turns_the_healing_loop_back_off(self):
+        """A run that drives healing from outside needs a way to keep the health reporting without the loop."""
+        args = self._validate(["--use-fault-tolerance", "--no-mini-ft-controller-enable"])
+
+        assert args.mini_ft_controller_enable is False
+
+    def test_asking_for_the_loop_without_a_port_is_rejected_at_launch(self):
+        """The loop drives cells over the api server port, so a disabled port would fail every poll instead."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(
+            ["--mini-ft-controller-enable", "--api-server-port", "0", "--num-rollout", "1"] + REQUIRED_ARGS
+        )
+
+        with pytest.raises(ValueError, match="requires --api-server-port to be set"):
+            miles_validate_args(args)
+
+
+class TestSessionServerArguments:
+    def _parse(self, extra: list[str]):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_the_instance_count_and_base_port_come_from_the_flags(self):
+        """A network policy whitelists a known range, so the base port is one scalar the instances offset from."""
+        args = self._parse(["--session-server-workers", "3", "--session-server-port", "41000"])
+
+        assert args.session_server_workers == 3
+        assert args.session_server_port == 41000
+
+    def test_an_unset_base_port_leaves_the_default_instances_dynamically_placed(self):
+        """Without the flag the port stays unset so the placement allocates one, and the instance count is the default."""
+        args = self._parse([])
+
+        assert args.session_server_workers == 32
+        assert args.session_server_port is None

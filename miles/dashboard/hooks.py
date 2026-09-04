@@ -10,6 +10,7 @@ rate-limited warnings — a deliberate exception to fail-loud (design doc
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -321,10 +322,11 @@ def register_router(args) -> None:
         _warner.warn("dashboard router registration failed; engine metrics will be missing")
 
 
-def register_engines(servers) -> None:
+async def register_engines(servers) -> None:
     """Called at the top of every InferenceController.prepare_rollout(): pushes an engine
     topology snapshot whenever the set of engine actors changed (startup,
-    fault-tolerance recovery). Steady state costs one local tuple compare."""
+    fault-tolerance recovery). Steady state costs one worker-manager round trip
+    and a local tuple compare."""
     global _engines_fingerprint
     from miles.dashboard import backend
 
@@ -332,12 +334,17 @@ def register_engines(servers) -> None:
     if handle is None:
         return
     try:
-        chunks = _alive_engine_chunks(servers)
-        fingerprint = tuple(id(actor_handle) for chunk in chunks for actor_handle in chunk)
+        cells = _alive_engine_cells(servers)
+        worker_infos_per_cell = _collect_worker_infos(cells)
+        fingerprint = tuple(
+            (info.name, info.generation, info.self_addrs["primary"].host, info.self_addrs["primary"].port)
+            for worker_infos in worker_infos_per_cell
+            for info in worker_infos
+        )
         if fingerprint == _engines_fingerprint:
             return
-        infos = _ray_get([actor_handle.get_topology_info.remote() for chunk in chunks for actor_handle in chunk])
-        handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=_group_engines(chunks, infos)))
+        engines = await _compute_engine_infos(cells, worker_infos_per_cell)
+        handle.update_topology.remote(TopologySnapshot(ts=time.time(), engines=engines))
         _engines_fingerprint = fingerprint
     except Exception:
         _warner.warn("dashboard engine registration failed; topology may be stale")
@@ -361,32 +368,48 @@ def report_data_buffer(length: int | None) -> None:
         _warner.warn("dashboard data-buffer report failed")
 
 
-def _alive_engine_chunks(servers) -> list[list]:
+def _alive_engine_cells(servers) -> list:
     """A multi-node engine's cell holds ``num_nodes`` actors; only the first
     (master) owns the router-visible URL. Cells that are not alive are skipped
     until recovery completes."""
-    chunks = []
+    cells = []
     for server in servers.values():
         for cell in server.server_cells.values():
-            if cell.is_alive:
-                chunks.append(cell.actor_handles)
-    return chunks
+            if cell.is_pending_weights_or_serving:
+                cells.append(cell)
+    return cells
 
 
-def _group_engines(chunks: list[list], infos: list[dict]) -> list[EngineInfo]:
+def _collect_worker_infos(cells) -> list[list]:
+    from miles.utils.workers.ray_worker_manager import RayWorkerManager
+
+    manager_handle = RayWorkerManager.get_handle()
+    futures = []
+    for cell in cells:
+        futures.append(manager_handle.get_worker_infos.remote(cell_id=cell.meta.cell_id))
+    return _ray_get(futures)
+
+
+async def _compute_engine_infos(cells, worker_infos_per_cell) -> list[EngineInfo]:
+    flat_infos = [info for worker_infos in worker_infos_per_cell for info in worker_infos]
+    probed_uuids = iter(
+        await asyncio.gather(*[info.handle._get_gpu_uuids(gpu_ids=info.gpu_ids) for info in flat_infos])
+    )
+
     engines = []
-    index = 0
-    for engine_rank, chunk in enumerate(chunks):
-        chunk_infos = infos[index : index + len(chunk)]
-        index += len(chunk)
-        master = chunk_infos[0]
+    for engine_rank, (cell, worker_infos) in enumerate(zip(cells, worker_infos_per_cell, strict=True)):
+        worker_gpu_uuids = [next(probed_uuids) for _ in worker_infos]
         engines.append(
             EngineInfo(
-                addr=master["url"],
-                worker_type=master["worker_type"],
+                addr=cell.server_url,
+                worker_type=cell.meta.worker_type,
                 engine_rank=engine_rank,
-                gpus=[[info["node_ip"], gpu] for info in chunk_infos for gpu in info["gpu_ids"]],
-                gpu_uuids=[uuid for info in chunk_infos for uuid in info["gpu_uuids"]],
+                gpus=[
+                    [info.self_addrs["primary"].host.strip("[]"), gpu_id]
+                    for info in worker_infos
+                    for gpu_id in info.gpu_ids
+                ],
+                gpu_uuids=[uuid for uuids in worker_gpu_uuids for uuid in uuids],
             )
         )
     return engines

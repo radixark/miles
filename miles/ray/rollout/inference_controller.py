@@ -1,124 +1,215 @@
+import asyncio
 import logging
+import time
 from dataclasses import dataclass
 
-import ray
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.rollout.eval_fleet import EvalFleet
-from miles.ray.rollout.rollout_server import RolloutServer, list_cell_ids, start_rollout_servers
-from miles.ray.rollout.router_manager import start_session_server
-from miles.ray.utils import Lock
+from miles.ray.rollout.rollout_server import RolloutServer, create_rollout_servers
+from miles.ray.rollout.router_manager import wait_session_server_ready
+from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.ray.specs.inference import compute_engine_pool_ids
+from miles.utils.context_lock import (
+    ContextLock,
+    acquires_lock,
+    enforce_lock_discipline,
+    lock_exempt,
+    releases_lock,
+    requires_lock,
+    with_lock,
+)
+from miles.utils.ft_utils.api_server.models import CellStatus
+from miles.utils.ft_utils.health_checker import ActivenessTracker
+from miles.utils.misc import SimpleTicker
+from miles.utils.test_utils.fault_injector import FailureMode
+from miles.utils.workers.ray_worker_manager import RayWorkerManager
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider, CellInfo, StopWatchFn
+from miles.utils.workers.worker_provider.ray import RayWorkerProvider
+from miles.utils.workers.worker_provider.utils import apply_cell_observation
 
 logger = logging.getLogger(__name__)
 
+TICK_INTERVAL_SECONDS = 5.0
+CELL_TICK_TIMEOUT_SECONDS = 120.0
+CELLS_READY_POLL_INTERVAL_SECONDS = 2.0
+CELLS_READY_TIMEOUT_SECONDS = 3600.0
 
+
+@enforce_lock_discipline
 class InferenceController:
-    def __init__(self, args, pg):
-        self.pg = pg
+    @lock_exempt
+    def __init__(self, args):
         self.args = args
+        self.context_lock = ContextLock("InferenceController")
         self.servers: dict[str, RolloutServer] = {}
-        self.rollout_engine_lock = Lock.options(num_cpus=1, num_gpus=0).remote()
-        self.rollout_id = -1
-        self.eval_fleet = EvalFleet(args, srv=self.servers["eval"]) if args.eval_num_gpus > 0 else None
+        self.eval_fleet: EvalFleet | None = None
+        self._watcher_disposers: list[StopWatchFn] = []
+        self._health_checker_activeness = ActivenessTracker(active=True)
+        self._ticker: SimpleTicker | None = None
 
+    @lock_exempt
     async def init(self) -> None:
         if self.args.debug_train_only:
             return
 
-        self.servers = await start_rollout_servers(self.args, self.pg)
+        self.servers = await create_rollout_servers(
+            self.args,
+            context_lock=self.context_lock,
+            global_health_checker_activeness=self._health_checker_activeness.get,
+        )
+        # TODO: may change to InferenceController.init(engine_provider, ...) later
+        provider: BaseWorkerProvider = RayWorkerProvider.create(
+            pool_ids=compute_engine_pool_ids(self.args)
+        )  # TODO inject instance
+        self._watcher_disposers.append(await provider.watch_cells(self._reconcile))
+        self._ticker = SimpleTicker(self._tick_cells, interval_seconds=TICK_INTERVAL_SECONDS)
+
         dashboard_hooks.register_router(self.args)
-        start_session_server(self.args)
+        await wait_session_server_ready(self.args)
+
+        await asyncio.gather(*[srv.wait_expected_num_cells() for srv in self.servers.values()])
+
+        if self.args.eval_num_gpus > 0:
+            self.eval_fleet = await self._build_eval_fleet(srv=self.servers["eval"])
+
+    @with_lock
+    async def _build_eval_fleet(self, *, srv: RolloutServer) -> EvalFleet:
+        return EvalFleet(
+            self.args,
+            api_clients=list(srv.api_clients),
+            router_host=srv.router_ip,
+            router_port=srv.router_port,
+        )
 
     # -------------------------- rollout lifecycle hooks -----------------------------
 
+    @with_lock
     async def prepare_rollout(self, rollout_id):
-        self.rollout_id = rollout_id
-        await self.health_monitoring_resume()
-        if self.args.ci_test and self._rollout_ft_enabled and rollout_id >= 2:
-            await self._try_ci_fault_injection()
-        dashboard_hooks.register_engines(self.servers)
+        await self._health_monitoring_resume()
+        await dashboard_hooks.register_engines(self.servers)
 
+    @with_lock
     async def prepare_eval(self):
-        await self.health_monitoring_resume()
+        await self._health_monitoring_resume()
 
+    @with_lock
     async def dispose(self):
-        pass
+        if (ticker := self._ticker) is not None:
+            self._ticker = None
+            await ticker.dispose()
+
+        for disposer in self._watcher_disposers:
+            await disposer()
+        self._watcher_disposers = []
+
+        for srv in self.servers.values():
+            await srv.dispose()
 
     # -------------------------- offload/onload -----------------------------
 
     # TODO may parallelly execute offload/onload across services
+    @with_lock
     async def offload(self, tags: list[str] | None = None):
-        await self.health_monitoring_pause()
-        for srv in self.servers.values():
-            await srv.offload(tags=tags)
+        await self._offload(tags=tags)
 
+    @with_lock
     async def onload(self, tags: list[str] | None = None):
-        for srv in self.servers.values():
-            await srv.onload(tags)
+        await self._onload(tags=tags)
 
+    @with_lock
     async def onload_weights(self):
         if "weight" not in self.args.offload_rollout_level:
             return
-        await self.onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+        await self._onload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
 
+    @with_lock
     async def onload_kv(self):
-        await self.onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
+        await self._onload(tags=[GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_CUDA_GRAPH])
 
+    @with_lock
     async def offload_kv(self):
         tags = [GPU_MEMORY_TYPE_CUDA_GRAPH]
         if "kv_cache" in self.args.offload_rollout_level:
             tags.append(GPU_MEMORY_TYPE_KV_CACHE)
-        await self.offload(tags=tags)
+        await self._offload(tags=tags)
 
+    @with_lock
     async def offload_weights(self):
         if "weight" not in self.args.offload_rollout_level:
             return
-        await self.offload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+        await self._offload(tags=[GPU_MEMORY_TYPE_WEIGHTS])
+
+    @requires_lock
+    async def _offload(self, tags: list[str] | None):
+        await self._health_monitoring_pause()
+        for srv in self.servers.values():
+            await srv.offload(tags=tags)
+
+    @requires_lock
+    async def _onload(self, tags: list[str] | None):
+        for srv in self.servers.values():
+            await srv.onload(tags)
 
     # -------------------------- engine management -----------------------------
 
-    async def get_updatable_engines_and_lock(self):
+    @acquires_lock
+    async def start_update_weights(self) -> "UpdatableEngines":
         """Return engines eligible for weight updates."""
+        await self._health_monitoring_pause()
+        await self._ensure_cells_ready()
+
         srv = self._get_updatable_server()
         if not srv:
-            return EnginesAndLock(
+            return UpdatableEngines(
                 rollout_engines=[],
-                rollout_engine_lock=self.rollout_engine_lock,
-                has_new_engines=False,
                 engine_gpu_counts=[],
                 engine_gpu_offsets=[],
+                snapshot_cell_id_to_hashes={},
             )
 
-        await srv.wait_all_engines_alive()
-        return EnginesAndLock(
+        return UpdatableEngines(
             rollout_engines=srv.api_clients,
-            rollout_engine_lock=self.rollout_engine_lock,
-            has_new_engines=srv.has_new_engines,
             engine_gpu_counts=srv.engine_gpu_counts,
             engine_gpu_offsets=srv.engine_gpu_offsets,
+            snapshot_cell_id_to_hashes={cell_id: cell.meta.workers_hash for cell_id, cell in srv.server_cells.items()},
         )
 
-    async def clear_updatable_has_new_engines(self):
-        # when fault tolerance is not enabled, we need to manually clear has_new_engines after update_weights
-        srv = self._get_updatable_server()
-        if srv:
-            srv.clear_has_new_engines()
+    @releases_lock
+    async def end_update_weights(self, snapshot_cell_id_to_hashes: dict[str, str]):
+        await asyncio.gather(
+            *[
+                cell.mark_weights_ready()
+                for srv in self.servers.values()
+                for cell_id, cell in srv.server_cells.items()
+                if cell_id in snapshot_cell_id_to_hashes
+                and snapshot_cell_id_to_hashes[cell_id] == cell.meta.workers_hash
+                and cell.is_pending_weights
+            ]
+        )
 
-    async def recover_updatable_engines(self) -> None:
-        """Restart any dead rollout engines and update has_new_engines for update_weights detection.
+    @requires_lock
+    async def _ensure_cells_ready(self) -> None:
+        deadline = time.monotonic() + CELLS_READY_TIMEOUT_SECONDS
+        while True:
+            cells = [cell for srv in self.servers.values() for cell in srv.server_cells.values()]
+            if self.args.colocate:
+                await asyncio.gather(*[cell.init() for cell in cells if cell.is_uninitialized])
+            pending = [cell for cell in cells if not cell.is_pending_weights_or_serving]
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out after {CELLS_READY_TIMEOUT_SECONDS}s waiting for "
+                    f"{len(pending)}/{len(cells)} cells to become ready"
+                )
+            logger.info(f"Waiting for {len(pending)}/{len(cells)} cells to become ready...")
+            async with self.context_lock.with_released():
+                await asyncio.sleep(CELLS_READY_POLL_INTERVAL_SECONDS)
 
-        Recovers the updatable model (the one that receives weight
-        updates from training).
-        """
-        await self.health_monitoring_pause()
-        srv = self._get_updatable_server()
-        if self.rollout_id == -1 or srv is None:
-            return
-
-        await srv.recover()
-
+    @requires_lock
     def _get_updatable_server(self) -> RolloutServer | None:
         updatable = [srv for srv in self.servers.values() if srv.update_weights]
         match updatable:
@@ -132,24 +223,34 @@ class InferenceController:
                     f"Only one updatable server is supported."
                 )
 
-    # -------------------------- external start/stop -----------------------------
+    # -------------------------- cell operations -----------------------------
 
-    async def start_cell(self, cell_id: str):
-        await self._server_of(cell_id).recover(cell_ids=[cell_id])
+    # TEMPORARY: exists only so a suspend can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await RayWorkerManager.get_handle().stop_cells.remote([cell_id])
 
-    async def stop_cell(self, cell_id: str):
-        await self._server_of(cell_id).stop_cells([cell_id])
-
-    def list_cell_ids(self) -> list[str]:
-        return list_cell_ids(self.servers)
-
-    def _server_of(self, cell_id: str) -> RolloutServer:
-        owners = [srv for srv in self.servers.values() if cell_id in srv.server_cells]
-        assert len(owners) == 1, f"{cell_id=} must name exactly one cell, but {len(owners)} servers hold it"
-        return owners[0]
+    # TEMPORARY: exists only so fault injection can take this lock, reverted with the weight-update fault tolerance work
+    @with_lock
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        # TEMPORARY: colocate cannot kill rollout workers while trainer ranks own the shared GPUs
+        if not self._health_checker_activeness.get().active:
+            raise RuntimeError(f"Rollout cell {cell_id!r} is offloaded; refusing fault injection")
+        await RayWorkerManager.get_handle().inject_fault.remote(
+            cell_id, mode=mode.value, worker_in_cell_index=sub_index
+        )
 
     # -------------------------- misc APIs -----------------------------
 
+    @lock_exempt
+    def get_cell_statuses(self) -> dict[str, CellStatus]:
+        return {
+            cell_id: cell.cell_status()
+            for srv in list(self.servers.values())
+            for cell_id, cell in list(srv.server_cells.items())
+        }
+
+    @with_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
@@ -161,40 +262,75 @@ class InferenceController:
             action=action, allow_quant_error=allow_quant_error, selector=selector, skip_list=skip_list
         )
 
+    # -------------------------- tick -----------------------------
+
+    @with_lock
+    async def _tick_cells(self) -> None:
+        cells = [cell for srv in list(self.servers.values()) for cell in list(srv.server_cells.values())]
+        results = await asyncio.gather(
+            *[asyncio.wait_for(cell.tick(), timeout=CELL_TICK_TIMEOUT_SECONDS) for cell in cells],
+            return_exceptions=True,
+        )
+        for cell, result in zip(cells, results, strict=True):
+            if isinstance(result, BaseException):
+                logger.error(f"Ticking cell {cell.meta.cell_id} failed", exc_info=result)
+
+    # -------------------------- reconcile -----------------------------
+
+    @with_lock
+    async def _reconcile(self, cell_id: str, observed: CellInfo | None) -> None:
+        actual_srv: RolloutServer | None = None
+        actual_cell: ServerCell | None = None
+        for srv in self.servers.values():
+            if (c := srv.server_cells.get(cell_id)) is not None:
+                actual_srv, actual_cell = srv, c
+                break
+
+        async def _add(_cell_id: str, observed_info: CellInfo) -> None:
+            observed_cell_meta = _compute_server_cell_meta_from_info(observed_info)
+            await self.servers[observed_cell_meta.model_id].add_cell(observed_cell_meta)
+
+        async def _remove(remove_cell_id: str) -> None:
+            await actual_srv.remove_cell(remove_cell_id)
+
+        await apply_cell_observation(
+            cell_id=cell_id,
+            observed=observed,
+            actual_workers_hash=actual_cell.meta.workers_hash if actual_cell is not None else None,
+            add=_add,
+            remove=_remove,
+        )
+
     # -------------------------- utils -----------------------------
 
-    async def health_monitoring_pause(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
+    @requires_lock
+    async def _health_monitoring_pause(self) -> None:
+        self._health_checker_activeness.bump_active(False)
 
-    async def health_monitoring_resume(self) -> None:
-        self._assert_rollout_fault_tolerance_is_unsupported()
-
-    @property
-    def _rollout_ft_enabled(self) -> bool:
-        return self.args.use_fault_tolerance and "rollout" in self.args.ft_components
-
-    def _assert_rollout_fault_tolerance_is_unsupported(self) -> None:
-        if not self.args.debug_train_only and self._rollout_ft_enabled:
-            raise NotImplementedError(
-                "rollout fault tolerance is being rebuilt; health monitoring must pause before "
-                "get_updatable_engines_and_lock snapshots the engines"
-            )
-
-    @property
-    def _server(self) -> RolloutServer | None:
-        """Default server (first model).  For backward compatibility."""
-        if not self.servers:
-            return None
-        return next(iter(self.servers.values()))
-
-    async def _try_ci_fault_injection(self):
-        raise NotImplementedError("rollout fault injection is being rebuilt with rollout fault tolerance")
+    @requires_lock
+    async def _health_monitoring_resume(self) -> None:
+        self._health_checker_activeness.bump_active(True)
 
 
 @dataclass(frozen=True)
-class EnginesAndLock:
+class UpdatableEngines:
     rollout_engines: list[SGLangApiClient]
-    rollout_engine_lock: ray.actor.ActorHandle
-    has_new_engines: bool
     engine_gpu_counts: list[int]
     engine_gpu_offsets: list[int]
+    snapshot_cell_id_to_hashes: dict[str, str]
+
+
+# TODO may move and generalize later
+def _compute_server_cell_meta_from_info(info: CellInfo) -> ServerCellMetadata:
+    return ServerCellMetadata(
+        model_id=info.meta["model_id"],
+        worker_type=info.meta["worker_type"],
+        cell_id=info.cell_id,
+        num_gpus_per_engine=info.meta["num_gpus_per_engine"],
+        gpu_offset=info.meta["gpu_offset"],
+        sglang_api_key=info.meta["sglang_api_key"],
+        worker_name=info.worker_names[0],
+        needs_offload=info.meta["needs_offload"],
+        update_weights=info.meta["update_weights"],
+        workers_hash=info.workers_hash,
+    )

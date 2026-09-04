@@ -17,15 +17,19 @@ _DEFAULT_JITTER_RATIO = 0.1
 _T = TypeVar("_T")
 
 
+class NonRetryableError(Exception):
+    pass
+
+
 async def retry(
-    fn: Callable[[int], Awaitable[Any]],
+    fn: Callable[[int], Awaitable[_T]],
     *,
     initial_delay: float = _DEFAULT_INITIAL_DELAY,
     max_delay: float = _DEFAULT_MAX_DELAY,
     backoff_factor: float = _DEFAULT_BACKOFF_FACTOR,
     sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
     max_attempts: int | None = None,
-) -> None:
+) -> _T:
     """Retry until ``fn`` does not throw, with exponential backoff."""
     assert max_attempts is None or max_attempts >= 1
 
@@ -33,8 +37,9 @@ async def retry(
     delay = initial_delay
     while True:
         try:
-            await fn(attempt)
-            return
+            return await fn(attempt)
+        except NonRetryableError:
+            raise
         except Exception:
             attempt += 1
             if max_attempts is not None and attempt >= max_attempts:

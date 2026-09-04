@@ -22,17 +22,30 @@ This lets us simulate 20 seconds of polling in <1ms of real time.
 """
 
 import asyncio
+import inspect
 import multiprocessing
 import socket
+import subprocess
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+from typing import Any, NamedTuple
 from unittest.mock import patch
 
 import httpx
 import pytest
+import ray
+from tests.fast.utils.fake_ray_ids import fake_ray_node_id
 
-from miles.utils.http_utils import GeneralHttpClientProvider, wait_for_server_ready
+from miles.utils import http_utils
+from miles.utils.http_utils import (
+    GeneralHttpClientProvider,
+    wait_for_server_ready,
+    wait_tcp_ready,
+    wait_tcp_ready_async,
+)
 
 
 def _find_free_port() -> int:
@@ -104,6 +117,44 @@ class TestWaitForServerReady:
 
         with pytest.raises(RuntimeError, match="process died"):
             wait_for_server_ready("127.0.0.1", port, process=proc, timeout=5)
+
+    def test_raises_when_subprocess_dies(self) -> None:
+        """Subprocess exits before port is ready and raises immediately."""
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "raise SystemExit(2)"])
+        process.wait(timeout=5)
+
+        with pytest.raises(RuntimeError, match="process died"):
+            wait_for_server_ready("127.0.0.1", 0, process=process, timeout=5)
+
+    def test_waits_for_a_live_subprocess_to_open_its_port(self) -> None:
+        """A still-running subprocess counts as alive, so a port opened later is awaited."""
+        port = _find_free_port()
+        stop = threading.Event()
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        listener = threading.Thread(target=_listen_after_delay, args=("127.0.0.1", port, 1.0, stop))
+        listener.daemon = True
+        listener.start()
+
+        try:
+            wait_for_server_ready("127.0.0.1", port, process=process, timeout=10)
+            assert process.poll() is None
+        finally:
+            stop.set()
+            process.kill()
+            process.wait(timeout=5)
+
+    def test_raises_when_subprocess_exits_while_waiting_for_port(self) -> None:
+        """A subprocess alive at the first poll but exiting later fails as a dead process."""
+        port = _find_free_port()
+        process: subprocess.Popen[bytes] = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
+
+        try:
+            assert process.poll() is None
+            with pytest.raises(RuntimeError, match="process died"):
+                wait_for_server_ready("127.0.0.1", port, process=process, timeout=30)
+        finally:
+            process.kill()
+            process.wait(timeout=5)
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +248,105 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class TestWaitTcpReady:
+    def test_keeps_retrying_until_the_port_accepts(self):
+        """Readiness depends on the endpoint alone, retrying while it refuses connections."""
+        attempts: list[tuple[tuple[str, int], float | None]] = []
+        sleeps: list[float] = []
+        fake_time = [0.0]
+
+        def fake_sleep(duration):
+            sleeps.append(duration)
+            fake_time[0] += duration
+
+        def fake_connect(addr, timeout=None):
+            attempts.append((addr, timeout))
+            if len(attempts) < 3:
+                raise OSError("Connection refused")
+            return _FakeSocket()
+
+        with (
+            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
+            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
+            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
+        ):
+            wait_tcp_ready("[2001:db8::7]", 23456, timeout=30)
+
+        assert attempts == [(("2001:db8::7", 23456), 1)] * 3
+        assert sleeps == [0.5, 0.5]
+
+    def test_gives_up_when_the_deadline_passes(self):
+        """A port that never opens fails with a timeout instead of blocking forever."""
+        fake_time = [0.0]
+
+        def fake_sleep(duration):
+            fake_time[0] += duration
+
+        def fake_connect(addr, timeout=None):
+            raise OSError("Connection refused")
+
+        with (
+            patch("miles.utils.http_utils.time.time", side_effect=lambda: fake_time[0]),
+            patch("miles.utils.http_utils.time.sleep", side_effect=fake_sleep),
+            patch("miles.utils.http_utils.socket.create_connection", side_effect=fake_connect),
+        ):
+            with pytest.raises(RuntimeError, match="Server at 127.0.0.1:23456 not ready after 1s"):
+                wait_tcp_ready("127.0.0.1", 23456, timeout=1)
+
+        assert fake_time[0] >= 1
+
+
+class TestWaitTcpReadyAsync:
+    async def test_it_returns_once_the_port_accepts(self):
+        """The async probe must still answer the question the blocking one answered."""
+        server = await asyncio.start_server(lambda reader, writer: None, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+
+        try:
+            await asyncio.wait_for(wait_tcp_ready_async("127.0.0.1", port, timeout=5), timeout=5)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    async def test_a_closed_port_leaves_the_event_loop_free(self):
+        """The blocking probe froze the whole startup loop for up to two minutes per router."""
+        ticks = 0
+
+        async def _tick() -> None:
+            nonlocal ticks
+            for _ in range(5):
+                await asyncio.sleep(0.02)
+                ticks += 1
+
+        ticker = asyncio.create_task(_tick())
+        with pytest.raises(RuntimeError, match="not ready after"):
+            await wait_tcp_ready_async("127.0.0.1", _find_free_port(), timeout=1.2)
+        await asyncio.wait_for(ticker, timeout=1)
+
+        assert ticks == 5
+
+    async def test_it_gives_up_when_the_deadline_passes(self):
+        """A port that never opens must fail the caller rather than be awaited forever."""
+        port = _find_free_port()
+
+        with pytest.raises(RuntimeError, match=f"Server at 127.0.0.1:{port} not ready after 0.2s"):
+            await wait_tcp_ready_async("127.0.0.1", port, timeout=0.2)
+
+    async def test_a_bracketed_ipv6_host_is_unwrapped_before_connecting(self):
+        """Addresses come in wrapped for urls, and the socket layer rejects the brackets."""
+        connected: list[str] = []
+
+        async def _fake_open_connection(host: str, port: int):
+            connected.append(host)
+            raise ConnectionRefusedError
+
+        with patch("miles.utils.http_utils.asyncio.open_connection", side_effect=_fake_open_connection):
+            with pytest.raises(RuntimeError):
+                await wait_tcp_ready_async("[::1]", 23456, timeout=0.01)
+
+        assert connected == ["::1"]
 
 
 class TestGeneralHttpClientProvider:
@@ -367,3 +517,105 @@ class _RecordingTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.deadlines = request.extensions["timeout"]
         return httpx.Response(200)
+
+
+class TestDistributedPostActors:
+    def test_the_poster_actor_is_constructed_with_keyword_arguments(self, monkeypatch):
+        """A positional handoff silently binds to the wrong parameter once the actor grows another one."""
+        recorded: list[tuple[tuple, dict]] = []
+
+        class _FakeActorClass:
+            def options(self, **_options):
+                return self
+
+            def remote(self, *call_args, **call_kwargs):
+                recorded.append((call_args, call_kwargs))
+                return object()
+
+        monkeypatch.setattr(ray, "nodes", lambda: [{"NodeID": fake_ray_node_id(0), "Alive": True}])
+        monkeypatch.setattr(ray, "remote", lambda _cls: _FakeActorClass())
+        monkeypatch.setattr(http_utils, "_post_actors", [])
+        monkeypatch.setattr(http_utils, "_client_concurrency", 7)
+
+        http_utils._init_ray_distributed_post(SimpleNamespace(num_gpus_per_node=2))
+
+        assert recorded == [((), {"concurrency": 8})] * 2
+
+
+class _PosterActorInit(NamedTuple):
+    actor_class: type
+    calls: list[tuple[tuple, dict]]
+
+
+class _RecordingRemoteActorClass:
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple, dict]] = []
+
+    def options(self, **_options: Any) -> "_RecordingRemoteActorClass":
+        return self
+
+    def remote(self, *call_args: Any, **call_kwargs: Any) -> object:
+        self.calls.append((call_args, call_kwargs))
+        return object()
+
+
+def _run_init_ray_distributed_post(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    num_gpus_per_node: int = 1,
+    client_concurrency: int = 7,
+    nodes: list[dict] | None = None,
+) -> _PosterActorInit:
+    captured: dict[str, type] = {}
+    remote_actor_class = _RecordingRemoteActorClass()
+
+    def _fake_remote(cls: type) -> _RecordingRemoteActorClass:
+        captured["actor_class"] = cls
+        return remote_actor_class
+
+    monkeypatch.setattr(ray, "nodes", lambda: nodes or [{"NodeID": fake_ray_node_id(0), "Alive": True}])
+    monkeypatch.setattr(ray, "remote", _fake_remote)
+    monkeypatch.setattr(http_utils, "_post_actors", [])
+    monkeypatch.setattr(http_utils, "_client_concurrency", client_concurrency)
+
+    http_utils._init_ray_distributed_post(SimpleNamespace(num_gpus_per_node=num_gpus_per_node))
+
+    return _PosterActorInit(actor_class=captured["actor_class"], calls=remote_actor_class.calls)
+
+
+class TestPosterActorKeywordOnlyConstruction:
+    def test_the_poster_actor_refuses_a_positional_concurrency(self, monkeypatch):
+        """Constructing the poster actor positionally must fail so a later parameter cannot silently steal the slot."""
+        actor_class = _run_init_ray_distributed_post(monkeypatch).actor_class
+
+        with pytest.raises(TypeError):
+            actor_class(7)
+
+    def test_every_poster_actor_constructor_parameter_is_keyword_only(self, monkeypatch):
+        """No poster actor constructor parameter may be positionally bindable."""
+        actor_class = _run_init_ray_distributed_post(monkeypatch).actor_class
+
+        parameters = list(inspect.signature(actor_class.__init__).parameters.values())[1:]
+
+        assert [parameter.kind for parameter in parameters] == [inspect.Parameter.KEYWORD_ONLY] * len(parameters)
+        assert parameters
+
+    def test_the_recorded_poster_keywords_bind_to_the_actor_constructor(self, monkeypatch):
+        """The keywords the call site sends must name real poster actor constructor parameters."""
+        init = _run_init_ray_distributed_post(monkeypatch)
+        signature = inspect.signature(init.actor_class.__init__)
+
+        for call_args, call_kwargs in init.calls:
+            assert call_args == ()
+            signature.bind(object(), *call_args, **call_kwargs)
+
+    def test_the_poster_actor_is_constructed_by_keyword_on_every_node_slot(self, monkeypatch):
+        """Every actor created across nodes and per-node slots receives its concurrency by keyword."""
+        init = _run_init_ray_distributed_post(
+            monkeypatch,
+            num_gpus_per_node=2,
+            client_concurrency=10,
+            nodes=[{"NodeID": fake_ray_node_id(0), "Alive": True}, {"NodeID": fake_ray_node_id(1), "Alive": True}],
+        )
+
+        assert init.calls == [((), {"concurrency": 6})] * 4

@@ -81,7 +81,7 @@ async def start_cells(cells, allocator=None, *, mark_alive: bool = False):
     """Start every cell's engines through one shared allocator."""
     import asyncio
 
-    from miles.ray.rollout.addr_allocator import PortAllocator
+    from miles.utils.workers.addr_allocator import PortAllocator
 
     allocator = allocator if allocator is not None else PortAllocator()
     await asyncio.gather(*[cell.start_engines(allocator) for cell in cells])
@@ -104,7 +104,7 @@ def kill_cells(cells) -> None:
 def mock_engine_class(ray_local_mode):
     """Unwrapped MockSGLangEngine class.
 
-    Production wraps via ``ray.remote(SGLangEngine)``; substituting the
+    Production wraps via ``ray.remote(CommandActor)``; substituting the
     already-wrapped class would double-wrap, so callers monkeypatch the
     unwrapped class inside ``miles.ray.rollout.server_cell``."""
     from miles.utils.test_utils.mock_sglang_engine import MockSGLangEngine
@@ -114,9 +114,9 @@ def mock_engine_class(ray_local_mode):
 
 @pytest.fixture
 def patched_sglang_engine(monkeypatch, mock_engine_class):
-    """Replace SGLangEngine with the mock; the real addr allocator runs, and
+    """Replace the engine CommandActor with the mock; the real addr allocator runs, and
     each mock engine serves HTTP on the port it is allocated, so the urls
     the cell derives from the allocator actually serve requests."""
     import miles.ray.rollout.server_cell as cell_mod
 
-    monkeypatch.setattr(cell_mod, "SGLangEngine", mock_engine_class)
+    monkeypatch.setattr(cell_mod, "CommandActor", mock_engine_class)

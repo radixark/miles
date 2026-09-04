@@ -1,26 +1,18 @@
-import copy
 import logging
 import socket
 from typing import NamedTuple
 
 import ray
-from ray.util.placement_group import placement_group
+from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from miles.utils.environ import enable_experimental_ft_trainer
+from miles.ray.specs.train import compute_critic_args
+from miles.ray.train.group import TrainerController
 from ..utils.ray_utils import compute_ray_pin_head_options
 from .rollout.inference_controller import InferenceController
 from .rollout.rollout_executor import RolloutExecutor
 
 logger = logging.getLogger(__name__)
-
-
-def _select_train_group_class():
-    if enable_experimental_ft_trainer():
-        from miles.ray.train.group import RayTrainGroup
-    else:
-        from miles.ray.actor_group import RayTrainGroup
-    return RayTrainGroup
 
 
 @ray.remote(num_gpus=1)
@@ -50,7 +42,13 @@ def sort_key(x):
     return (node_ip_parts, gpu_id)
 
 
-def _create_placement_group(num_gpus):
+class PlacementGroupInfo(NamedTuple):
+    pg: PlacementGroup
+    pg_reordered_bundle_indices: list[int]
+    pg_reordered_gpu_ids: list[int]
+
+
+def _create_placement_group(num_gpus) -> PlacementGroupInfo:
     """Create a placement group with the specified number of GPUs."""
     if num_gpus == 0:
         return None, [], []
@@ -88,7 +86,7 @@ def _create_placement_group(num_gpus):
             f"node: {gpu_ids[actual_bundle_index][0]}, gpu: {gpu_ids[actual_bundle_index][1]}"
         )
 
-    return pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids
+    return PlacementGroupInfo(pg, pg_reordered_bundle_indices, pg_reordered_gpu_ids)
 
 
 def _get_placement_group_layout(args) -> tuple[int, int]:
@@ -107,7 +105,7 @@ def _get_placement_group_layout(args) -> tuple[int, int]:
     return actor_num_gpus + args.rollout_num_gpus + args.eval_num_gpus, actor_num_gpus
 
 
-def create_placement_groups(args):
+def create_placement_groups(args) -> dict[str, PlacementGroupInfo]:
     """Create placement groups for actor and rollout engines."""
 
     num_gpus, rollout_offset = _get_placement_group_layout(args)
@@ -117,64 +115,29 @@ def create_placement_groups(args):
 
     rollout_pg_reordered_bundle_indices = actor_pg_reordered_bundle_indices[rollout_offset:]
     rollout_pg_reordered_gpu_ids = actor_pg_reordered_gpu_ids[rollout_offset:]
-    result = {
-        "actor": (pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
-        "rollout": (pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
+    ans = {
+        "actor": PlacementGroupInfo(pg, actor_pg_reordered_bundle_indices, actor_pg_reordered_gpu_ids),
+        "rollout": PlacementGroupInfo(pg, rollout_pg_reordered_bundle_indices, rollout_pg_reordered_gpu_ids),
     }
-    result["critic"] = result["actor"] if args.use_critic else None
-    return result
+    if args.use_critic:
+        ans["critic"] = ans["actor"]
+    return ans
 
 
-def allocate_train_group(
-    args,
-    num_nodes,
-    num_gpus_per_node,
-    pg,
-    role: str,
-    with_ref: bool,
-    inference_controller,
-    rollout_executor,
-    with_opd_teacher: bool = False,
-):
-    train_group_cls = _select_train_group_class()
-    return train_group_cls(
+async def create_training_models(args, inference_controller, rollout_executor):
+    actor_model = TrainerController(
         args=args,
-        num_nodes=num_nodes,
-        num_gpus_per_node=num_gpus_per_node,
-        pg=pg,
-        num_gpus_per_actor=0.4,
-        role=role,
-        with_ref=with_ref,
-        inference_controller=inference_controller,
-        rollout_executor=rollout_executor,
-        with_opd_teacher=with_opd_teacher,
-    )
-
-
-async def create_training_models(args, pgs, inference_controller, rollout_executor):
-    actor_model = allocate_train_group(
-        args=args,
-        num_nodes=args.actor_num_nodes,
-        num_gpus_per_node=args.actor_num_gpus_per_node,
-        pg=pgs["actor"],
         role="actor",
         with_ref=args.kl_coef != 0 or args.use_kl_loss,
+        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
         inference_controller=inference_controller,
         rollout_executor=rollout_executor,
-        with_opd_teacher=args.use_opd and args.opd_type == "megatron",
     )
     actor_start_rollout_ids = await actor_model.init()
 
     if args.use_critic:
-        critic_args = copy.deepcopy(args)
-        critic_args.kl_coef = 0
-        critic_args.use_opd = False
-        critic_args.disable_param_buffers_cpu_backup = False
-        critic_model = allocate_train_group(
-            args=critic_args,
-            num_nodes=args.critic_num_nodes,
-            num_gpus_per_node=args.critic_num_gpus_per_node,
-            pg=pgs["critic"],
+        critic_model = TrainerController(
+            args=compute_critic_args(args),
             role="critic",
             with_ref=False,
             inference_controller=None,
@@ -196,19 +159,24 @@ async def create_training_models(args, pgs, inference_controller, rollout_execut
     return actor_model, critic_model
 
 
+async def update_weights(actor_model, rollout_executor, *, rollout_id: int | None = None) -> None:
+    if (weight_version := await actor_model.update_weights(rollout_id=rollout_id)) is not None:
+        await rollout_executor.set_weight_version.remote(weight_version)
+
+
 class RolloutComponents(NamedTuple):
     inference_controller: InferenceController
     rollout_executor: ray.actor.ActorHandle
     num_rollout_per_epoch: int | None
 
 
-async def create_rollout_components(args, pg) -> RolloutComponents:
-    inference_controller = InferenceController(args, pg)
+async def create_rollout_components(args) -> RolloutComponents:
+    inference_controller = InferenceController(args)
     await inference_controller.init()
 
     rollout_executor = RolloutExecutor.options(
         num_cpus=1, num_gpus=0, **(compute_ray_pin_head_options() if args.pin_rollout_manager_to_head else {})
-    ).remote(args)
+    ).remote(args=args)
 
     # calculate num_rollout from num_epoch
     num_rollout_per_epoch = None
@@ -218,17 +186,6 @@ async def create_rollout_components(args, pg) -> RolloutComponents:
         assert args.num_rollout > 0
 
     await rollout_executor.set_eval_fleet.remote(inference_controller.eval_fleet)
-
-    if args.check_weight_update_equal:
-        await inference_controller.check_weights(action="snapshot")
-        await inference_controller.check_weights(action="reset_tensors", skip_list=args.check_weight_update_skip_list)
-
-    if args.offload_rollout:
-        if args.colocate_memory_peak_device == "gpu":
-            # keep weight on GPU to reduce peak CPU memory
-            await inference_controller.offload_kv()
-        else:
-            await inference_controller.offload()
 
     return RolloutComponents(
         inference_controller=inference_controller,

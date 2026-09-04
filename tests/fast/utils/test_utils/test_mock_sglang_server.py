@@ -5,7 +5,8 @@ import time
 import pytest
 import requests
 
-from miles.utils.misc import get_current_node_ip
+from miles.utils.http_utils import MILES_HOST_IP_ENV
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.test_utils.mock_sglang_server import (
     Counter,
     MockSGLangServer,
@@ -490,9 +491,9 @@ class TestNodeAddress:
     def test_the_default_host_is_the_node_ip_instead_of_loopback(self):
         """``with_mock_server`` must default to an address other nodes can reach."""
         with with_mock_server() as server:
-            assert server.host == get_current_node_ip()
+            assert server.host == NodeProbeMixin._get_node_ip()
             assert server.host != "127.0.0.1"
-            assert server.url == f"http://{get_current_node_ip()}:{server.port}"
+            assert server.url == f"http://{NodeProbeMixin._get_node_ip()}:{server.port}"
 
 
 class TestHostResolution:
@@ -509,7 +510,7 @@ class TestHostResolution:
         """Without an explicit host the mock advertises the node ip so peers on other nodes can dial it."""
         server = MockSGLangServer(model_name="Qwen/Qwen3-0.6B", process_fn=default_process_fn, host=None, port=0)
 
-        assert server.host == get_current_node_ip()
+        assert server.host == NodeProbeMixin._get_node_ip()
         assert server.host != "127.0.0.1"
 
     def test_a_server_advertising_the_node_ip_still_answers_on_loopback(self, mock_server):
@@ -517,3 +518,19 @@ class TestHostResolution:
         response = requests.get(f"http://127.0.0.1:{mock_server.port}/health", timeout=5)
 
         assert response.status_code == 200
+
+    def test_the_default_host_honours_the_node_ip_override(self, monkeypatch):
+        """A deployment publishes a reachable address through MILES_HOST_IP; the mock must serve on that one."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "127.0.0.1")
+
+        with with_mock_server() as server:
+            assert server.url == f"http://127.0.0.1:{server.port}"
+            assert requests.get(f"{server.url}/health", timeout=10).status_code == 200
+
+    def test_an_explicit_host_wins_over_the_node_ip_override(self, monkeypatch):
+        """A caller that pins a host asked for that exact address; an env override must not silently replace it."""
+        monkeypatch.setenv(MILES_HOST_IP_ENV, "10.9.9.9")
+
+        with with_mock_server(host="127.0.0.1") as server:
+            assert server.host == "127.0.0.1"
+            assert requests.get(f"{server.url}/health", timeout=10).status_code == 200

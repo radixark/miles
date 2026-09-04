@@ -1,13 +1,14 @@
-"""Lightweight Ray actor for unit testing RayTrainCell/RayTrainGroup without GPU or real training.
+"""Lightweight Ray actor for unit testing TrainerCell/TrainerController without GPU or real training.
 
 Records all method calls so tests can verify what was dispatched.
 """
 
+import os
 from typing import Any
 
 import ray
 
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.utils.ft_utils.heartbeat_utils import HeartbeatStatus, SimpleHeartbeat
 
 
@@ -17,7 +18,9 @@ class DummyTrainActor:
     def __init__(self):
         self._calls: list[tuple[str, tuple, dict]] = []
         self._fail_methods: set[str] = set()
-        self._train_return_value: Any = TrainStepOutcome.NORMAL
+        self._train_return_value: Any = TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
+        self._train_return_values_per_attempt: list[Any] = []
+        self._update_weights_return_value: Any = None
         self._heartbeat = SimpleHeartbeat()
         self._heartbeat.bump()
         self._heartbeat_fail: bool = False
@@ -27,6 +30,9 @@ class DummyTrainActor:
 
     def set_train_return_value(self, value: Any) -> None:
         self._train_return_value = value
+
+    def set_train_return_values_per_attempt(self, values: list[Any]) -> None:
+        self._train_return_values_per_attempt = list(values)
 
     def _record(self, method: str, args: tuple, kwargs: dict) -> None:
         self._calls.append((method, args, kwargs))
@@ -39,6 +45,9 @@ class DummyTrainActor:
     def init(self, *args: Any, **kwargs: Any) -> None:
         self._record("init", args, kwargs)
 
+    def configure_master_addr_and_port(self, *args: Any, **kwargs: Any) -> None:
+        self._record("configure_master_addr_and_port", args, kwargs)
+
     def reconfigure_indep_dp(self, *args: Any, **kwargs: Any) -> None:
         self._record("reconfigure_indep_dp", args, kwargs)
 
@@ -47,7 +56,12 @@ class DummyTrainActor:
 
     def train(self, *args: Any, **kwargs: Any) -> Any:
         self._record("train", args, kwargs)
+        if self._train_return_values_per_attempt:
+            return self._train_return_values_per_attempt.pop(0)
         return self._train_return_value
+
+    def reconcile_adapters(self) -> None:
+        self._record("reconcile_adapters", (), {})
 
     def set_rollout_executor(self, *args: Any, **kwargs: Any) -> None:
         self._record("set_rollout_executor", args, kwargs)
@@ -64,8 +78,19 @@ class DummyTrainActor:
     def save_model(self, *args: Any, **kwargs: Any) -> None:
         self._record("save_model", args, kwargs)
 
-    def update_weights(self) -> None:
-        self._record("update_weights", (), {})
+    def export_hf(self, *args: Any, **kwargs: Any) -> None:
+        self._record("export_hf", args, kwargs)
+
+    def set_update_weights_return_value(self, value: Any) -> None:
+        self._update_weights_return_value = value
+
+    def update_weights(self, *args: Any, **kwargs: Any) -> Any:
+        self._record("update_weights", args, kwargs)
+        return self._update_weights_return_value
+
+    def kill_self(self) -> None:
+        self._record("kill_self", (), {})
+        os._exit(1)
 
     def set_heartbeat_fail(self, fail: bool) -> None:
         self._heartbeat_fail = fail

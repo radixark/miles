@@ -1,14 +1,19 @@
 import asyncio
 import logging
-from collections.abc import Sequence
+import os
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import ray
 
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import is_port_available
+from miles.utils.http_utils import MILES_HOST_IP_ENV, is_port_available
 
 logger = logging.getLogger(__name__)
+
+# ray uses 10002-19999, and 32768+ is the ephemeral range, so wrapped scans restart above ray's block
+_MIN_DYNAMIC_PORT = 20000
+_MAX_PORT = 65535
 
 
 async def call_agent_abort_hook(args) -> None:
@@ -65,11 +70,77 @@ def get_current_node_ip():
 
 
 def get_free_port(start_port=10000, consecutive=1):
-    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available
+    # find the port where port, port + 1, port + 2, ... port + consecutive - 1 are all available,
+    # scanning upwards from start_port and wrapping around once the ports run out
+    highest_start = _MAX_PORT - consecutive + 1
+    assert start_port <= highest_start, f"{start_port=} leaves no room for {consecutive=} ports below {_MAX_PORT}"
+    lowest_start = min(start_port, _MIN_DYNAMIC_PORT)
+
     port = start_port
-    while not all(is_port_available(port + i) for i in range(consecutive)):
-        port += 1
-    return port
+    for _ in range(highest_start - lowest_start + 1):
+        if all(is_port_available(port + i) for i in range(consecutive)):
+            return port
+        port = port + 1 if port < highest_start else lowest_start
+
+    raise RuntimeError(f"No {consecutive} consecutive free ports in [{lowest_start}, {_MAX_PORT}]")
+
+
+def get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+    """Best-effort NVML UUIDs so the dashboard can reconcile GPU index
+    spaces across processes; None entries when NVML is unavailable."""
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        return [str(pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(i))) for i in gpu_ids]
+    except Exception:
+        return [None] * len(gpu_ids)
+
+
+def _to_local_gpu_id(physical_gpu_id: int) -> int:
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES") or os.environ.get("HIP_VISIBLE_DEVICES")
+    if not cvd:
+        return physical_gpu_id  # no remapping
+    # CUDA_VISIBLE_DEVICES can be like "4,5,6,7"
+    visible = [int(x) for x in cvd.split(",") if x.strip() != ""]
+    # In a remapped process, valid torch device indices are 0..len(visible)-1
+    if physical_gpu_id in visible:
+        return visible.index(physical_gpu_id)
+    # If we're already getting local IDs, allow them
+    if 0 <= physical_gpu_id < len(visible):
+        return physical_gpu_id
+    raise RuntimeError(
+        f"GPU id {physical_gpu_id} is not valid under CUDA_VISIBLE_DEVICES={cvd}. "
+        f"Expected one of {visible} (physical) or 0..{len(visible)-1} (local)."
+    )
+
+
+class NodeProbeMixin:
+    @staticmethod
+    def _get_node_ip() -> str:
+        return os.getenv(MILES_HOST_IP_ENV) or get_current_node_ip()
+
+    @staticmethod
+    def _get_free_port_block(*, start_port: int, count: int) -> int:
+        return get_free_port(start_port=start_port, consecutive=count)
+
+    @staticmethod
+    def _to_local_gpu_ids(*, gpu_ids: list[int]) -> list[int]:
+        return [_to_local_gpu_id(gpu_id) for gpu_id in gpu_ids]
+
+    @staticmethod
+    def _is_port_available(*, port: int) -> bool:
+        return is_port_available(port)
+
+    @staticmethod
+    def _get_gpu_uuids(gpu_ids: list[int]) -> list[str | None]:
+        return get_gpu_uuids(gpu_ids)
+
+    @staticmethod
+    def _collect_env_report(*, role: str, rank: int, partial_env_report: str) -> None:
+        from miles.utils.env_report import collect_and_print_node_env_report
+
+        collect_and_print_node_env_report(role=role, rank=rank, partial_env_report=partial_env_report)
 
 
 def should_run_periodic_action(
@@ -107,3 +178,28 @@ def filter_keys(d: dict[str, Any], interest_keys: Sequence[str]) -> dict[str, An
     except Exception:
         logger.error(f"filter_keys d.keys={list(d)} {interest_keys=}", exc_info=True)
         raise
+
+
+class SimpleTicker:
+    def __init__(self, fn: Callable[[], Awaitable[None]], *, interval_seconds: float):
+        self._fn = fn
+        self._interval_seconds = interval_seconds
+        self._task = asyncio.create_task(self._loop())
+
+    async def dispose(self) -> None:
+        await cancel_and_await_task(self._task)
+
+    async def _loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._interval_seconds)
+            try:
+                await self._fn()
+            except Exception:
+                logger.exception(f"Ticking {self._fn} failed; retrying")
+
+
+async def cancel_and_await_task(task: asyncio.Task) -> None:
+    task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled():
+        task.result()

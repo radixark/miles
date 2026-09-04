@@ -3,13 +3,25 @@ from argparse import Namespace
 import pytest
 
 from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
-from miles.utils.weight_version import SGLANG_DEFAULT_WEIGHT_VERSION, assert_samples_weight_version_sane
+from miles.utils.weight_version import (
+    SGLANG_DEFAULT_WEIGHT_VERSION,
+    assert_samples_weight_version_sane,
+    assert_weight_version_is_published,
+    max_rollouts_without_published_weight_version,
+)
 
 SGLANG_LITERAL = "default"
 
 
 def _make_args(**overrides: object) -> Namespace:
-    args = Namespace(debug_rollout_only=False, debug_skip_weight_update=False, lora_rank=0, lora_adapter_path=None)
+    args = Namespace(
+        debug_rollout_only=False,
+        debug_train_only=False,
+        debug_skip_weight_update=False,
+        lora_rank=0,
+        lora_adapter_path=None,
+        update_weights_interval=1,
+    )
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
@@ -26,6 +38,24 @@ def _make_sample(versions: list[str], index: int = 0) -> Sample:
         response_length=len(versions),
         weight_versions=calls,
     )
+
+
+def _simulate_rollouts_since_publish(*, update_weights_interval: int, num_rollout: int) -> list[int]:
+    counts: list[int] = []
+    rollouts_since_publish = 0
+    next_get = 0
+    for rollout_id in range(num_rollout):
+        while next_get <= rollout_id:
+            rollouts_since_publish += 1
+            counts.append(rollouts_since_publish)
+            next_get += 1
+        if (rollout_id + 1) % update_weights_interval == 0:
+            if next_get < num_rollout:
+                rollouts_since_publish += 1
+                counts.append(rollouts_since_publish)
+                next_get += 1
+            rollouts_since_publish = 0
+    return counts
 
 
 class TestAssertSamplesWeightVersionSane:
@@ -79,3 +109,97 @@ class TestAssertSamplesWeightVersionSane:
     def test_modes_that_never_push_weights_are_exempt(self, overrides: dict[str, object]):
         """Debug modes and LoRA legitimately serve un-updated weights, so the default version is allowed."""
         assert_samples_weight_version_sane(_make_args(**overrides), samples=[_make_sample([SGLANG_LITERAL])])
+
+
+class TestMaxRolloutsWithoutPublishedWeightVersion:
+    @pytest.mark.parametrize("update_weights_interval", [1, 2])
+    def test_a_fast_cadence_keeps_the_floor_of_three(self, update_weights_interval: int):
+        """A cadence faster than the floor must not shrink the cap below three tolerated rollouts."""
+        args = _make_args(update_weights_interval=update_weights_interval)
+
+        assert max_rollouts_without_published_weight_version(args) == 3
+
+    @pytest.mark.parametrize(
+        ("update_weights_interval", "expected_cap"),
+        [(3, 4), (4, 5), (8, 9), (100, 101)],
+    )
+    def test_a_slow_cadence_leaves_room_for_one_prefetched_rollout(
+        self, update_weights_interval: int, expected_cap: int
+    ):
+        """The driver publishes once per interval and prefetches one rollout ahead, so the cap is the interval plus one."""
+        args = _make_args(update_weights_interval=update_weights_interval)
+
+        assert max_rollouts_without_published_weight_version(args) == expected_cap
+
+    def test_the_cap_never_shrinks_as_the_cadence_slows(self):
+        """A slower publish cadence can only tolerate more unpublished rollouts, never fewer."""
+        caps = [
+            max_rollouts_without_published_weight_version(_make_args(update_weights_interval=interval))
+            for interval in range(1, 17)
+        ]
+
+        assert caps == sorted(caps)
+
+
+class TestAssertWeightVersionIsPublished:
+    def test_a_freshly_published_version_passes(self):
+        """The normal loop publishes a version every step, so the count resets to one rollout."""
+        assert_weight_version_is_published(_make_args(), rollouts_since_publish=1)
+
+    def test_a_short_gap_passes(self):
+        """A fast cadence keeps the floor of three, so an ordinary reordering does not fail the run."""
+        assert_weight_version_is_published(_make_args(), rollouts_since_publish=3)
+
+    def test_a_frozen_version_fails(self):
+        """A training script that never forwards the version silently disables staleness accounting."""
+        with pytest.raises(AssertionError, match="set_weight_version"):
+            assert_weight_version_is_published(_make_args(), rollouts_since_publish=4)
+
+    def test_a_slow_update_cadence_widens_the_gap(self):
+        """A run publishing every third rollout serves four unpublished rollouts by design."""
+        args = _make_args(update_weights_interval=3)
+
+        assert_weight_version_is_published(args, rollouts_since_publish=4)
+
+        with pytest.raises(AssertionError, match="set_weight_version"):
+            assert_weight_version_is_published(args, rollouts_since_publish=5)
+
+    @pytest.mark.parametrize(
+        ("update_weights_interval", "last_tolerated"),
+        [(1, 3), (2, 3), (3, 4), (4, 5), (10, 11)],
+    )
+    def test_the_cadence_derived_cap_is_inclusive_and_the_next_rollout_aborts(
+        self, update_weights_interval: int, last_tolerated: int
+    ):
+        """At every cadence the last tolerated rollout passes and one more aborts, so the bound stays finite."""
+        args = _make_args(update_weights_interval=update_weights_interval)
+
+        assert_weight_version_is_published(args, rollouts_since_publish=last_tolerated)
+
+        with pytest.raises(AssertionError, match="set_weight_version"):
+            assert_weight_version_is_published(args, rollouts_since_publish=last_tolerated + 1)
+
+    @pytest.mark.parametrize("update_weights_interval", [1, 2, 3, 4, 7, 16])
+    def test_a_correctly_wired_run_survives_its_own_publish_cadence(self, update_weights_interval: int):
+        """A run that publishes every interval rollouts and prefetches one ahead must not abort itself mid-training."""
+        args = _make_args(update_weights_interval=update_weights_interval)
+        counts = _simulate_rollouts_since_publish(update_weights_interval=update_weights_interval, num_rollout=64)
+
+        assert max(counts) == update_weights_interval + 1
+
+        for rollouts_since_publish in counts:
+            assert_weight_version_is_published(args, rollouts_since_publish=rollouts_since_publish)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"debug_rollout_only": True},
+            {"debug_train_only": True},
+            {"debug_skip_weight_update": True},
+            {"lora_rank": 8},
+            {"lora_adapter_path": "/adapters/foo"},
+        ],
+    )
+    def test_modes_that_never_publish_a_version_are_exempt(self, overrides: dict[str, object]):
+        """These modes legitimately never push weights, so a frozen version is expected."""
+        assert_weight_version_is_published(_make_args(**overrides), rollouts_since_publish=1000)

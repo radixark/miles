@@ -8,7 +8,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from miles.utils.misc import get_current_node_ip
+from miles.utils.misc import NodeProbeMixin
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class MockSGLangHttpServer:
 
     @property
     def host(self) -> str:
-        return get_current_node_ip()
+        return NodeProbeMixin._get_node_ip()
 
     @property
     def port(self) -> int:
