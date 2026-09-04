@@ -43,7 +43,9 @@ register_cuda_ci(
 
 REPO = Path(__file__).resolve().parents[3]
 HARBOR_EXAMPLE_DIR = REPO / "examples" / "experimental" / "harbor"
-HARBOR_DOCKER_EXAMPLE_DIR = REPO / "examples" / "swe-agent-harbor-docker"  # generate.py: reward hook + RolloutFn
+sys.path.insert(0, str(HARBOR_EXAMPLE_DIR))
+from launch_common import agentic_pythonpath_dirs, agentic_train_args, harbor_env_vars  # noqa: E402
+
 TB2_REPO = "https://github.com/laude-institute/terminal-bench-2.git"
 TASKS_DIR = "/root/datasets/terminal-bench-2"  # native Harbor task dirs; cloned in prepare()
 SMOKE_TASK = "fix-git"
@@ -94,9 +96,6 @@ def prepare():
 
 def harbor_worker_env() -> dict[str, str]:
     """The rollout workers' Harbor environment, assembled by the launcher's own code."""
-    sys.path.insert(0, str(HARBOR_EXAMPLE_DIR))
-    from launch_common import harbor_env_vars
-
     if os.environ.get("E2B_API_KEY", "").strip():
         os.environ.setdefault("AGENT_TRIAL_TIMEOUT", "1200")
     args = SimpleNamespace(
@@ -129,16 +128,8 @@ def execute():
         "--max-seq-len 8192 "
         "--global-batch-size 2 "
     )
-    agent_args = (
-        "--custom-generate-function-path miles.rollout.generate_hub.agentic_tool_call.generate "
-        "--custom-agent-function-path harbor_agent_function.run "
-        "--custom-rm-path generate.reward_func "
-        "--rollout-function-path generate.RolloutFn "
-        "--tito-model qwen3 "
-        "--use-session-server "
-        "--session-server-port 30000 "
-        "--session-server-workers 4 "
-    )
+    # the recipes' own wiring, so the flags tested here are the flags shipped
+    agent_args = agentic_train_args(tito_model="qwen3", session_server_workers=4)
     grpo_args = (
         "--advantage-estimator grpo "
         "--kl-loss-coef 0.00 "
@@ -162,7 +153,7 @@ def execute():
     )
 
     extra_env_vars = {
-        "PYTHONPATH": f"{HARBOR_EXAMPLE_DIR}:{HARBOR_DOCKER_EXAMPLE_DIR}:{REPO}",
+        "PYTHONPATH": ":".join([*agentic_pythonpath_dirs(), str(REPO)]),
         **harbor_worker_env(),
     }
     U.execute_train(
