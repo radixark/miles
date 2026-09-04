@@ -13,7 +13,7 @@ import miles.rollout.fully_async_data_buffer as data_buffer
 import miles.rollout.fully_async_rollout as fully_async
 from miles.rollout.base_types import BaseRolloutFn, RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnTrainInput
 from miles.rollout.filter_hub.base_types import DynamicFilterOutput
-from miles.utils.types import Sample, WeightVersionSpan, WeightVersionsPerCall
+from miles.utils.types import Sample
 
 N_SAMPLES_PER_PROMPT = 2
 
@@ -51,10 +51,6 @@ def make_group(
     status: Sample.Status = Sample.Status.COMPLETED,
     weight_versions: list[str] | None = None,
 ) -> list[Sample]:
-    versions = [
-        WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
-        for version in weight_versions or []
-    ]
     return [
         Sample(
             group_index=group_index,
@@ -65,7 +61,7 @@ def make_group(
             label="ok",
             reward=1,
             status=status,
-            weight_versions=list(versions),
+            weight_versions=list(weight_versions or []),
         )
         for i in range(N_SAMPLES_PER_PROMPT)
     ]
@@ -221,10 +217,7 @@ async def test_stale_group_recycled(monkeypatch):
         for group in groups:
             for sample in group:
                 if not sample.weight_versions:
-                    sample.weight_versions = [
-                        WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
-                        for version in data_source_fresh_versions
-                    ]
+                    sample.weight_versions = list(data_source_fresh_versions)
         return groups
 
     data_source.get_samples = get_samples_with_fresh_versions
