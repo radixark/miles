@@ -419,7 +419,7 @@ def _run_nominal_dp_shards(
     forward_step: Callable[..., object],
     forward_backward_func: Callable[..., list[dict[str, torch.Tensor | list[str]]]],
 ) -> list[dict[str, torch.Tensor | list[str]]]:
-    nominal_dp_size: int = args.ci_inject_rollout_data_group_by_dp_size
+    nominal_dp_size: int = args.ci_inject_rollout_data_nominal_dp_size
     buckets = [
         bucket
         for model_chunk in model
@@ -427,7 +427,7 @@ def _run_nominal_dp_shards(
         for bucket in bucket_group.buckets
     ]
     original_scaling_factors = [bucket.gradient_scaling_factor for bucket in buckets]
-    accumulated_grads: list[torch.Tensor] | None = None
+    accumulated_grads = [torch.zeros_like(bucket.grad_data) for bucket in buckets]
     losses_reduced: list[dict[str, torch.Tensor | list[str]]] = []
 
     for bucket in buckets:
@@ -451,14 +451,10 @@ def _run_nominal_dp_shards(
                 force_all_reduce=True,
             )
 
-            if shard_id == 0:
-                accumulated_grads = [bucket.grad_data.clone() for bucket in buckets]
-            elif shard_id < nominal_dp_size - 1:
-                assert accumulated_grads is not None
+            if shard_id < nominal_dp_size - 1:
                 for accumulated, bucket in zip(accumulated_grads, buckets, strict=True):
                     accumulated.add_(bucket.grad_data)
 
-        assert accumulated_grads is not None
         for accumulated, bucket in zip(accumulated_grads, buckets, strict=True):
             bucket.grad_data.add_(accumulated)
     finally:
@@ -622,10 +618,12 @@ def train_one_step(
     # Forward pass.
     forward_backward_func = get_forward_backward_func()
     use_nominal_dp_shards = (
-        rollout_id == args.ci_inject_rollout_data_group_by_dp_rollout_id and parallel_state.indep_dp.size == 1
+        args.ci_inject_rollout_data_nominal_dp_size is not None
+        and rollout_id == args.ci_inject_rollout_data_start_rollout_id
+        and parallel_state.indep_dp.size == 1
     )
     if use_nominal_dp_shards:
-        assert num_microbatches == args.ci_inject_rollout_data_group_by_dp_size
+        assert num_microbatches == args.ci_inject_rollout_data_nominal_dp_size
         losses_reduced = _run_nominal_dp_shards(
             args=args,
             data_iterator=data_iterator,

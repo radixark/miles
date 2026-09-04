@@ -186,8 +186,8 @@ class TestGroupInjectedRolloutDataByDpShard:
             "dynamic_global_batch_size": 8,
         }
         args = make_args(
-            ci_inject_rollout_data_group_by_dp_rollout_id=2,
-            ci_inject_rollout_data_group_by_dp_size=2,
+            ci_inject_rollout_data_start_rollout_id=2,
+            ci_inject_rollout_data_nominal_dp_size=2,
         )
 
         grouped = RolloutDataInjectionUtil.group_train_data_by_dp_shard(args, data, rollout_id=2)
@@ -202,8 +202,8 @@ class TestGroupInjectedRolloutDataByDpShard:
         """Only the degraded fault rollout may change order; healed rollouts retain normal DP splitting."""
         data = {"sample_indices": list(range(8))}
         args = make_args(
-            ci_inject_rollout_data_group_by_dp_rollout_id=2,
-            ci_inject_rollout_data_group_by_dp_size=2,
+            ci_inject_rollout_data_start_rollout_id=2,
+            ci_inject_rollout_data_nominal_dp_size=2,
         )
 
         grouped = RolloutDataInjectionUtil.group_train_data_by_dp_shard(args, data, rollout_id=3)

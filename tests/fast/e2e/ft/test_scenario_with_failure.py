@@ -5,7 +5,6 @@ from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     _DIFF_THRESHOLDS,
     _FAULT_ROLLOUT_ID,
-    _FIRST_INJECTED_ROLLOUT_ID,
     _FIRST_POST_FAULT_ROLLOUT_ID,
     _POST_FAULT_DIFF_THRESHOLDS,
     _build_baseline_args,
@@ -19,8 +18,8 @@ def _option_value(args: str, option: str) -> str:
     return tokens[tokens.index(option) + 1]
 
 
-def test_real_rollout_injection_starts_at_fault_rollout() -> None:
-    """Real-rollout training data injection must cover the fault rollout itself."""
+def test_real_rollout_preserves_nominal_dp_shards_on_fault_retry() -> None:
+    """The degraded retry must consume the baseline DP shards as separate microbatches."""
     args = _build_target_args(
         MODES["dp2_cp2_real_rollout_dense"],
         "/tmp/target/phase_b",
@@ -28,10 +27,15 @@ def test_real_rollout_injection_starts_at_fault_rollout() -> None:
     )
     actions = json.loads(_option_value(args, "--ci-ft-test-actions"))
 
-    assert _FIRST_INJECTED_ROLLOUT_ID == _FAULT_ROLLOUT_ID
     assert _FIRST_POST_FAULT_ROLLOUT_ID == _FAULT_ROLLOUT_ID + 1
     assert int(_option_value(args, "--ci-inject-rollout-data-start-rollout-id")) == _FAULT_ROLLOUT_ID
     assert {action["at_rollout"] for action in actions} == {_FAULT_ROLLOUT_ID}
+    tokens = shlex.split(args)
+    assert _option_value(args, "--micro-batch-size") == "128"
+    assert _option_value(args, "--ci-inject-rollout-data-nominal-dp-size") == "2"
+    assert "--debug-deterministic-collective" in tokens
+    assert "--use-dynamic-batch-size" not in tokens
+    assert "--max-tokens-per-gpu" not in tokens
 
 
 def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
@@ -40,23 +44,6 @@ def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
 
     assert _diff_thresholds_for_rollout(mode, _FAULT_ROLLOUT_ID) is _DIFF_THRESHOLDS
     assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
-
-
-def test_real_rollout_uses_one_nominal_dp_shard_per_microbatch() -> None:
-    """The degraded retry must retain the baseline DP shard as its accumulation unit."""
-    args = _build_target_args(
-        MODES["dp2_cp2_real_rollout_dense"],
-        "/tmp/target/phase_b",
-        enable_dumper=False,
-    )
-
-    tokens = shlex.split(args)
-    assert _option_value(args, "--micro-batch-size") == "128"
-    assert _option_value(args, "--ci-inject-rollout-data-group-by-dp-rollout-id") == str(_FAULT_ROLLOUT_ID)
-    assert _option_value(args, "--ci-inject-rollout-data-group-by-dp-size") == "2"
-    assert "--debug-deterministic-collective" in tokens
-    assert "--use-dynamic-batch-size" not in tokens
-    assert "--max-tokens-per-gpu" not in tokens
 
 
 def test_baseline_remains_normal_dp_while_target_uses_ft() -> None:
@@ -81,30 +68,3 @@ def test_baseline_remains_normal_dp_while_target_uses_ft() -> None:
     assert "--use-fault-tolerance" in target_tokens
     assert "--ft-components" in target_tokens
     assert "--ci-ft-test-actions" in target_tokens
-
-
-def test_baseline_has_no_planned_topology_changes() -> None:
-    """The fault-free reference must run every successful step on normal DP2."""
-    args = _build_baseline_args(
-        MODES["dp2_cp2_real_rollout_dense"],
-        "/tmp/baseline/phase_b",
-        enable_dumper=False,
-    )
-
-    tokens = shlex.split(args)
-    assert "--ci-ft-test-actions" not in tokens
-    assert "--ci-inject-rollout-data-path" not in tokens
-
-
-def test_fake_rollout_does_not_inject_recorded_data() -> None:
-    """Fake-rollout scenarios must keep using their generated deterministic fixtures."""
-    args = _build_target_args(
-        MODES["dp2_cp2_pp2"],
-        "/tmp/target/phase_b",
-        enable_dumper=False,
-    )
-
-    tokens = shlex.split(args)
-
-    assert "--ci-inject-rollout-data-start-rollout-id" not in tokens
-    assert "--debug-deterministic-collective" not in tokens

@@ -173,10 +173,11 @@ class RolloutDataInjectionUtil:
 
     @classmethod
     def group_train_data_by_dp_shard(cls, args, data: dict[str, Any], *, rollout_id: int) -> dict[str, Any]:
-        if rollout_id != args.ci_inject_rollout_data_group_by_dp_rollout_id:
+        if rollout_id != args.ci_inject_rollout_data_start_rollout_id:
             return data
 
-        dp_size: int = args.ci_inject_rollout_data_group_by_dp_size
+        if (dp_size := args.ci_inject_rollout_data_nominal_dp_size) is None:
+            return data
         sample_count: int = len(data["sample_indices"])
         assert (
             sample_count % dp_size == 0

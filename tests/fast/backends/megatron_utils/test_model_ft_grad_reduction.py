@@ -9,8 +9,8 @@ from miles.backends.megatron_utils.model import _run_nominal_dp_shards
 def test_nominal_dp_shards_are_reduced_separately_then_combined() -> None:
     """A degraded retry must reproduce the nominal DP shard reduction tree."""
     buckets = [
-        SimpleNamespace(gradient_scaling_factor=0.5, grad_data=torch.zeros(2)),
-        SimpleNamespace(gradient_scaling_factor=0.5, grad_data=torch.zeros(1)),
+        SimpleNamespace(gradient_scaling_factor=1.0, grad_data=torch.zeros(2)),
+        SimpleNamespace(gradient_scaling_factor=1.0, grad_data=torch.zeros(1)),
     ]
     zero_calls: list[bool] = []
 
@@ -41,7 +41,7 @@ def test_nominal_dp_shards_are_reduced_separately_then_combined() -> None:
 
     losses = _run_nominal_dp_shards(
         args=SimpleNamespace(
-            ci_inject_rollout_data_group_by_dp_size=2,
+            ci_inject_rollout_data_nominal_dp_size=2,
             seq_length=128,
             micro_batch_size=128,
             decoder_seq_length=None,
@@ -57,6 +57,6 @@ def test_nominal_dp_shards_are_reduced_separately_then_combined() -> None:
     assert all(call["num_microbatches"] == 1 for call in calls)
     assert all(call["force_all_reduce"] is True for call in calls)
     assert zero_calls == [True]
-    assert torch.equal(buckets[0].grad_data, torch.tensor([2.0, 3.0]))
-    assert torch.equal(buckets[1].grad_data, torch.tensor([6.0]))
-    assert [bucket.gradient_scaling_factor for bucket in buckets] == [0.5, 0.5]
+    assert torch.equal(buckets[0].grad_data, torch.tensor([4.0, 6.0]))
+    assert torch.equal(buckets[1].grad_data, torch.tensor([12.0]))
+    assert [bucket.gradient_scaling_factor for bucket in buckets] == [1.0, 1.0]

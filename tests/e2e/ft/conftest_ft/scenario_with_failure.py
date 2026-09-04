@@ -21,7 +21,6 @@ from miles.utils.workers.naming import compute_cell_id
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 _FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
-_FIRST_INJECTED_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID
 _FIRST_POST_FAULT_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
@@ -122,9 +121,8 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
                 baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
                 base += (
                     f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {_FIRST_INJECTED_ROLLOUT_ID} "
-                    f"--ci-inject-rollout-data-group-by-dp-rollout-id {_FAULT_ROLLOUT_ID} "
-                    f"--ci-inject-rollout-data-group-by-dp-size {mode.num_cells} "
+                    f"--ci-inject-rollout-data-start-rollout-id {_FAULT_ROLLOUT_ID} "
+                    f"--ci-inject-rollout-data-nominal-dp-size {mode.num_cells} "
                     "--ci-inject-rollout-data-min-match-ratio 0.5 "
                 )
 

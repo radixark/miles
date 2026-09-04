@@ -2309,17 +2309,11 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 "wrong (legitimate ulp-level drift only flips occasional sampled tokens).",
             )
             parser.add_argument(
-                "--ci-inject-rollout-data-group-by-dp-rollout-id",
+                "--ci-inject-rollout-data-nominal-dp-size",
                 type=int,
                 default=None,
-                help="CI comparison tests only: reorder this injected rollout into contiguous "
-                "data-parallel shards before delayed train-side splitting.",
-            )
-            parser.add_argument(
-                "--ci-inject-rollout-data-group-by-dp-size",
-                type=int,
-                default=None,
-                help="Nominal data-parallel size used to group the selected injected rollout.",
+                help="CI comparison tests only: preserve this nominal data-parallel shard layout "
+                "when training the first injected rollout on a degraded retry.",
             )
             parser.add_argument(
                 "--env-report",
@@ -3297,21 +3291,13 @@ def miles_validate_args(args):
             "--ci-inject-rollout-data-path replaces data of individual rollouts while engines "
             "stay alive; it cannot be combined with --load-debug-rollout-data (debug_train_only)."
         )
-    group_by_dp_args = (
-        args.ci_inject_rollout_data_group_by_dp_rollout_id,
-        args.ci_inject_rollout_data_group_by_dp_size,
-    )
-    assert all(value is None for value in group_by_dp_args) or all(value is not None for value in group_by_dp_args), (
-        "--ci-inject-rollout-data-group-by-dp-rollout-id and "
-        "--ci-inject-rollout-data-group-by-dp-size must be set together."
-    )
-    if args.ci_inject_rollout_data_group_by_dp_size is not None:
+    if args.ci_inject_rollout_data_nominal_dp_size is not None:
         assert (
             args.ci_inject_rollout_data_path is not None
-        ), "--ci-inject-rollout-data-group-by-dp-* requires --ci-inject-rollout-data-path."
-        assert (
-            args.ci_inject_rollout_data_group_by_dp_size > 1
-        ), "--ci-inject-rollout-data-group-by-dp-size must exceed one."
+        ), "--ci-inject-rollout-data-nominal-dp-size requires --ci-inject-rollout-data-path."
+        assert args.ci_inject_rollout_data_nominal_dp_size > 1, (
+            "--ci-inject-rollout-data-nominal-dp-size must exceed one."
+        )
 
     args.use_critic = args.advantage_estimator == "ppo"
     if args.use_critic:
