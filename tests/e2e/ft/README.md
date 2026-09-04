@@ -144,7 +144,7 @@ Phase B — target:
   6. Rollout 3: _refresh_cells() healing → N cells, trains with the healed cell
 
 Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
-also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault/injected rollouts'
+also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault rollouts'
 grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
 
 Healing witness: the target phase_b event dir must contain exactly two
@@ -163,23 +163,11 @@ The `attempt` field (for actor-level actions like `crash_before_allreduce`) spec
 
 Runs `scenario_with_failure` with live generation (real sglang engines, deterministic inference, temperature 0.8).
 
-- Baseline remains normal DP and target remains FT. Both use the fixed-tree debug collective so the comparison retains its intentional topology difference without also depending on topology-specific floating-point SUM order.
-- The fault and post-fault rollouts **inject the baseline's recorded rollout data** (`--ci-inject-rollout-data-path` → baseline phase_b's `--save-debug-rollout-data`, start id = crash rollout).
-- Why inject: separate temperature-0.8 generation runs do not produce bitwise-identical sampled responses even before the fault. Injection makes the compared training inputs identical by construction without relaxing their assertions; the target still runs live generation and checks its responses against the recording.
-- Uses `--clip-grad 2.0`, above this scenario's observed 1.34 maximum grad norm, so the topology-dependent last-bit difference in distributed grad-norm reduction remains measured but cannot change otherwise equal gradients through active clipping. Tensor gradients are still compared directly, and the optimizer still commits the baseline DP2 and degraded DP1 results.
-- Stays real on the target: engines + generation (samples discarded), `update_weights` after the degraded commit and after healing, health-monitor pause/resume — the whole crash→retry→heal→weight-sync path.
-- Post-healing `update_weights` is consumed: real_rollout asserts the target pushed bitwise-identical engine weights to the baseline (see inference engine weight checksum).
-- Post-fault rollouts' dump comparison floors `max_abs <= 3e-3` on the **noisy grad families only** (decoder-layer QK-norms, folded `layer_norm_weight`s, attn/MLP matrices): training data is bitwise-identical, but target weights carry the degraded commit's ulp drift, landing as <=2.8e-3 absolute noise in those near-zero grads while real grads sit ~1e-2 (40 tensors, 2026-06-12; same argument as the 1e-3 QK-norm floor, recalibrated for the dense model). Embedding/output/final-norm grads, all activations, and the fault-and-earlier rollouts keep the strict set.
-- Generation is still asserted: each injected rollout checks generated responses match the recording at a mean per-token ratio above threshold with bitwise-identical prompts (`RolloutDataInjectionUtil.assert_matches_generated`). Gross weight bugs (e.g. broken `update_weights`) drop the ratio ~2 orders → still fail. Exact fault-and-post-fault sampled content beyond the ratio is not asserted. The target still runs generation before replacing its training data. Only rollout 1 is pre-fault and not injected (real comparison).
-
-Guard calibration (2026-06-12, first post-fault rollout, 256 samples, correct weights; metric counts everything after a response's first flipped token as mismatched):
-
-| Model | mean response-token match | min |
-|-------|---------------------------|-----|
-| dense Qwen3-0.6B | **0.63** | 0.035 |
-| 5-layer MoE | **0.19** | 0.005 |
-
-- Needs the **dense** model: on the truncated MoE, uncalibrated logits + router near-ties amplify ulp drift to near-wholesale divergence (0.19, not separable from the unrelated-content regime); dense's 0.63 sits 2 orders above. Scenario uses `--ci-inject-rollout-data-min-match-ratio 0.5` (below the legitimate 0.63, far above any gross corruption).
+- Baseline remains normal DP and target remains FT. Both run the production collective and the default active gradient clipping path.
+- The target trains on its own live generated data in every rollout. Baseline rollout recordings are artifacts for audit only and are never injected into the target.
+- The target runs the full crash -> retry -> heal -> weight-sync path. Rollout 2 commits on degraded DP1; rollout 3 consumes weights from that commit, heals back to DP2, and trains the target's newly generated samples.
+- Post-fault dump comparison floors `max_abs <= 3e-3` on the measured noisy gradient families only (decoder-layer QK-norms, folded `layer_norm_weight`s, and attention/MLP matrices). Embedding/output/final-norm gradients, all activations, and the fault-and-earlier rollouts keep the strict set.
+- Inference-engine checksum events verify that all target engines receive the same weights within each rollout. Cross-side correctness is established by the live rollout, metric, tensor, and reconfiguration comparisons.
 
 ### `scenario_deterministic`
 

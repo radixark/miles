@@ -39,9 +39,8 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (".*", "rel <= 0.0085"),
 ]
 
-# Post-fault (injected) rollouts in the real_rollout mode: training data is injected to be
-# bitwise-identical, but the target's weights carry the fault-inherent ulp drift of the
-# degraded-quorum commit. On the converged dense model that drift lands in the
+# Post-fault rollouts in the real_rollout mode use each side's live generated data. On
+# the converged dense model, the degraded-quorum commit's numerical drift lands in the
 # cancellation-dominated near-zero grads of the decoder-layer norms and attention/MLP
 # matrices as absolute noise measured <= 2.8e-3 (40 tensors, 2026-06-12; q_layernorm up to
 # rel 20% at max_abs 2.6e-3) while real grads sit at ~1e-2 — only those measured families
@@ -96,8 +95,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
     is_phase_a: bool = dump_dir.endswith("phase_a")
     base = get_common_train_args(mode, dump_dir=dump_dir, num_steps=NUM_PHASE_B_STEPS, enable_dumper=enable_dumper)
     base += get_train_env_vars_arg(mode, deterministic=False)
-    if mode.has_real_rollout:
-        base += "--debug-deterministic-collective --clip-grad 2.0 "
 
     if is_target:
         base += get_ft_args(mode)
@@ -110,14 +107,6 @@ def _build_phase_args(mode: FTTestMode, dump_dir: str, *, is_target: bool, enabl
         base += f"--load {phase_a_dir}/ckpt "
         if is_target:
             base += f"--ci-ft-test-actions '{json.dumps(_build_actions(num_cells=mode.num_cells))}' "
-            if mode.has_real_rollout:
-                # Fault and post-fault rollouts inject the baseline's recorded data (see README).
-                baseline_dump_dir = dump_dir.replace("/target/", "/baseline/")
-                base += (
-                    f"--ci-inject-rollout-data-path {baseline_dump_dir}/rollout_data/{{rollout_id}}.pt "
-                    f"--ci-inject-rollout-data-start-rollout-id {_FAULT_ROLLOUT_ID} "
-                    "--ci-inject-rollout-data-min-match-ratio 0.5 "
-                )
 
     return base
 

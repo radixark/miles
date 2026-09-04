@@ -18,8 +18,8 @@ def _option_value(args: str, option: str) -> str:
     return tokens[tokens.index(option) + 1]
 
 
-def test_real_rollout_isolates_fault_recovery_from_clipping_noise() -> None:
-    """The live comparison must align fault inputs without topology-dependent active clipping."""
+def test_real_rollout_trains_on_target_generated_data_with_production_math() -> None:
+    """The live target must train its own rollout through the production math path."""
     args = _build_target_args(
         MODES["dp2_cp2_real_rollout_dense"],
         "/tmp/target/phase_b",
@@ -27,12 +27,13 @@ def test_real_rollout_isolates_fault_recovery_from_clipping_noise() -> None:
     )
     actions = json.loads(_option_value(args, "--ci-ft-test-actions"))
 
-    assert _FIRST_POST_FAULT_ROLLOUT_ID == _FAULT_ROLLOUT_ID + 1
-    assert int(_option_value(args, "--ci-inject-rollout-data-start-rollout-id")) == _FAULT_ROLLOUT_ID
     assert {action["at_rollout"] for action in actions} == {_FAULT_ROLLOUT_ID}
     tokens = shlex.split(args)
-    assert _option_value(args, "--clip-grad") == "2.0"
-    assert "--debug-deterministic-collective" in tokens
+    assert "--ci-inject-rollout-data-path" not in tokens
+    assert "--ci-inject-rollout-data-start-rollout-id" not in tokens
+    assert "--ci-inject-rollout-data-min-match-ratio" not in tokens
+    assert "--debug-deterministic-collective" not in tokens
+    assert "--clip-grad" not in tokens
     assert "--use-dynamic-batch-size" in tokens
     assert _option_value(args, "--max-tokens-per-gpu") == "32768"
 
