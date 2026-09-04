@@ -5,6 +5,7 @@ from argparse import Namespace
 from contextlib import ExitStack
 from typing import TYPE_CHECKING
 
+import ray
 import torch
 import torch.distributed as dist
 from tqdm import tqdm
@@ -625,7 +626,7 @@ class FSDPTrainRayActor(TrainRayActor):
 
         self.weight_updater.update_weights()
         if dist.get_rank() == 0:
-            ray.get(self.rollout_manager.set_weight_version.remote(self.weight_updater.weight_version))
+            ray.get(self.rollout_executor.set_weight_version.remote(self.weight_updater.weight_version))
 
         if self.args.ci_test and len(rollout_engines) > 0:
             engine = random.choice(rollout_engines)

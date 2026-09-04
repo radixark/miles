@@ -205,6 +205,41 @@ def test_update_weights_only_uses_temporary_process_groups_when_asleep(actor_mod
     assert destroy_groups.call_count == int(asleep)
 
 
+def test_update_weights_publishes_version_to_rollout_executor(actor_module, monkeypatch):
+    worker = object.__new__(actor_module.MegatronTrainRayActor)
+    worker.args = Namespace(
+        ci_test=False,
+        debug_rollout_only=False,
+        debug_skip_weight_update=False,
+        debug_train_only=False,
+        keep_old_actor=False,
+        offload_train=False,
+        rematerialize_param_from_master_weight=False,
+    )
+    worker._asleep = False
+    worker._heartbeat = Mock()
+    worker.weight_updater = Mock(weight_version=7)
+    worker.weight_updater.is_rollout_engines_fresh.return_value = True
+    worker.rollout_executor = Mock()
+    version_ref = worker.rollout_executor.set_weight_version.remote.return_value
+    info = Namespace(
+        engine_gpu_counts=[],
+        engine_gpu_offsets=[],
+        has_new_engines=False,
+        rollout_engines=[],
+    )
+    ray_get = Mock()
+    monkeypatch.setattr(actor_module, "is_multi_lora_enabled", lambda _args: False)
+    monkeypatch.setattr(actor_module, "print_memory", Mock())
+    monkeypatch.setattr(actor_module.dist, "get_rank", lambda: 0)
+    monkeypatch.setattr(actor_module.ray, "get", ray_get)
+
+    worker.update_weights(info)
+
+    worker.rollout_executor.set_weight_version.remote.assert_called_once_with(7)
+    ray_get.assert_called_once_with(version_ref)
+
+
 def _lifecycle_worker(actor_module, monkeypatch, asleep):
     worker = object.__new__(actor_module.MegatronTrainRayActor)
     worker.args = Namespace(
