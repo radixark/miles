@@ -373,7 +373,7 @@ def _apply_lm_head_lora(model, args, *, scale: float, dropout: float, a_init: st
 
 def apply_inkling_lora(model, args):
     """Attach Inkling LoRA to ONE built model chunk (before Float16Module / DDP wrapping)."""
-    from miles.backends.megatron_utils.lora_utils import patch_param_grad_buffer_for_colocate_mode_lora
+    from miles.backends.megatron_utils.lora.utils import patch_param_grad_buffer_for_colocate_mode_lora
 
     from miles_plugins.models.inkling.layers import InklingDenseMLP, InklingSelfAttention, InklingSharedExperts
 

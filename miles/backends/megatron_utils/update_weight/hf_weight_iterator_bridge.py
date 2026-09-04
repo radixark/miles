@@ -75,11 +75,11 @@ class HfWeightIteratorBridge(MegatronHfWeightIteratorBase):
 
         from megatron.bridge.peft.multi_lora_layers import expose_adapter_slot
 
-        from ..multi_lora_utils import slice_lora_to_rank
+        from ..lora.slots import slice_lora_to_rank
 
         with expose_adapter_slot(self.model, adapter.slot):
             named_tensors = self._export_current_adapter()
-        return [(h, slice_lora_to_rank(h, w, adapter.config.rank)) for h, w in named_tensors]
+        return [(h, slice_lora_to_rank(h, w, adapter.rank)) for h, w in named_tensors]
 
     def _export_current_adapter(self) -> list:
         with megatron_bridge_utils.patch_megatron_model(self.model):
