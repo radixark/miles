@@ -22,7 +22,7 @@ def agentic_pythonpath_dirs() -> list[str]:
     return [str(HARBOR_EXAMPLE_DIR), str(HARBOR_DOCKER_EXAMPLE_DIR)]
 
 
-def agentic_train_args(*, tito_model: str, session_server_workers: int) -> str:
+def agentic_train_args(*, tito_model: str, session_server_workers: int, session_server_port: int = 30000) -> str:
     """The agentic wiring every Harbor launcher passes to train.py.
 
     One copy, shared by the recipes and the GPU e2e, so the flags the test
@@ -37,7 +37,7 @@ def agentic_train_args(*, tito_model: str, session_server_workers: int) -> str:
         "--dynamic-sampling-filter-path miles.rollout.filter_hub.dynamic_sampling_filters.check_no_aborted "
         f"--tito-model {tito_model} "
         "--use-session-server "
-        "--session-server-port 30000 "
+        f"--session-server-port {session_server_port} "
         f"--session-server-workers {session_server_workers} "
     )
 
