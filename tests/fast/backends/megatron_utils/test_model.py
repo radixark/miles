@@ -74,6 +74,20 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
     assert megatron_optimizer_module.get_grad_norm_fp32 is original_grad_norm
 
 
+def test_fp64_grad_norm_rounds_once_at_the_clipping_boundary(monkeypatch) -> None:
+    """FP64 accumulation must produce the FP32 scalar consumed by clipping."""
+    from miles.backends.megatron_utils.model import _get_grad_norm_fp64
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", lambda _tensor, group=None: None)
+
+    grad = torch.ones(3, dtype=torch.float64)
+    unrounded = torch.linalg.vector_norm(grad, dtype=torch.float64).item()
+    expected = torch.linalg.vector_norm(grad, dtype=torch.float64).float().item()
+
+    assert expected != unrounded
+    assert _get_grad_norm_fp64(grad, grad_stats_parallel_group=object()) == expected
+
+
 class FakeModelChunk:
     def __init__(self) -> None:
         self.zero_grad_buffer_count = 0

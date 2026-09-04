@@ -122,7 +122,7 @@ def _get_grad_norm_fp64(
         torch.distributed.all_reduce(total_squared_norm, group=data_parallel_group)
     torch.distributed.all_reduce(total_squared_norm, group=grad_stats_parallel_group)
 
-    return total_squared_norm.sqrt().item()
+    return total_squared_norm.sqrt().float().item()
 
 
 def _run_stable_dp_shards(

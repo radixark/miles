@@ -56,8 +56,8 @@ A flash backend that is installed but exposes no `deterministic` parameter is al
 
 ### In the Megatron optimizer
 
-- When gradient clipping is active, a plain Megatron `ChainedOptimizer` whose children share one gradient-statistics group accumulates its L2 gradient norm and reduces the scalar in FP64.
-- The higher-precision scalar prevents distributed-optimizer shard boundaries from changing the clipping coefficient through FP32 reduction rounding.
+- When gradient clipping is active, a plain Megatron `ChainedOptimizer` whose children share one gradient-statistics group accumulates and reduces its L2 gradient norm in FP64, then rounds the final scalar once to FP32 at the clipping boundary.
+- This prevents distributed-optimizer shard boundaries from changing the clipping coefficient through intermediate FP32 reduction rounding while keeping the FP32 scalar contract at the clipping boundary.
 - The behavior is scoped to that nonempty optimizer instance. Specialized optimizer subclasses, single-child chains that override gradient-norm calculation, non-shared chains, non-deterministic optimizers, and non-L2 norm calls keep Megatron's implementation.
 
 ### How the flash patch works
