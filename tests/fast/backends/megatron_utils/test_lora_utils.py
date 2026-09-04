@@ -4,11 +4,16 @@ Tests cover module name conversion, LoRA detection helpers, parameter identifica
 exclude-module parsing, and LoRA sync config building — all without GPU.
 """
 
+import sys
+import types
 from argparse import Namespace
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
+import torch
 
+import miles.backends.megatron_utils.lora_utils as lora_utils
 from miles.backends.megatron_utils.lora_utils import (
     _get_lora_class_name,
     _is_adapter_param_name,
@@ -17,6 +22,7 @@ from miles.backends.megatron_utils.lora_utils import (
     convert_target_modules_to_megatron,
     is_lora_enabled,
     parse_exclude_modules,
+    save_lora_checkpoint,
 )
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_weight_name
 
@@ -354,3 +360,40 @@ class TestBuildLoraSyncConfig:
 
 def test_lora_adapter_name_constant():
     assert LORA_ADAPTER_NAME == "miles_lora"
+
+
+class TestSaveLoraCheckpointTrainingState:
+    def _save(self, tmp_path, monkeypatch, *, no_save_optim):
+        rank0 = SimpleNamespace(rank=0)
+        monkeypatch.setattr(
+            lora_utils, "get_parallel_state", lambda: SimpleNamespace(effective_dp=rank0, cp=rank0, tp=rank0, pp=rank0)
+        )
+        # the HF PEFT export is best-effort and needs a real bridge; fail it fast
+        bridge = types.ModuleType("megatron.bridge")
+        bridge.AutoBridge = SimpleNamespace(
+            from_hf_pretrained=Mock(side_effect=RuntimeError("no bridge in this test"))
+        )
+        monkeypatch.setitem(sys.modules, "megatron.bridge", bridge)
+
+        adapter = torch.nn.Parameter(torch.ones(2))
+        model = [SimpleNamespace(named_parameters=lambda: [("layers.0.self_attention.lora_A.weight", adapter)])]
+        args = Namespace(
+            hf_checkpoint="/nonexistent",
+            target_modules=None,
+            lora_rank=8,
+            lora_alpha=16,
+            lora_dropout=0.0,
+            no_save_optim=no_save_optim,
+        )
+        optimizer = SimpleNamespace(state_dict=lambda: {"step": 7})
+        save_lora_checkpoint(model, args, str(tmp_path), optimizer=optimizer, opt_param_scheduler=None, iteration=3)
+        return sorted(path.name for path in tmp_path.iterdir())
+
+    def test_training_state_is_written_by_default(self, tmp_path, monkeypatch):
+        files = self._save(tmp_path, monkeypatch, no_save_optim=False)
+        assert files == ["adapter_megatron_rank0.pt", "training_state_rank0.pt"]
+        state = torch.load(tmp_path / "training_state_rank0.pt", weights_only=False)
+        assert state["optimizer"] == {"step": 7} and state["iteration"] == 3
+
+    def test_no_save_optim_keeps_only_the_adapter(self, tmp_path, monkeypatch):
+        assert self._save(tmp_path, monkeypatch, no_save_optim=True) == ["adapter_megatron_rank0.pt"]
