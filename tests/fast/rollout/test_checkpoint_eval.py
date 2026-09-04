@@ -280,16 +280,18 @@ async def test_eval_shared_path_shape_unchanged(controller_env, monkeypatch):
 
 
 class TestSnapshotEvalGuards:
-    async def test_snapshot_eval_without_an_hf_dir_is_rejected(self, controller_env):
-        """Snapshot eval has no checkpoint to evaluate without a dir, so it must fail loudly."""
+    async def test_snapshot_eval_without_an_hf_dir_and_no_source_skips(self, controller_env):
+        """A bare eval call resolves the periodic --save-hf checkpoint; with no
+        source configured at all there is nothing to evaluate, and the point
+        degrades to an attributable skip instead of crashing the loop."""
         fn = CheckpointFnStub()
-        args = make_args(hf_checkpoint="/base", eval_keep_snapshots=2)
+        args = make_args(hf_checkpoint="/base", eval_keep_snapshots=2, save_hf=None)
         mgr = make_manager(args, eval_fn=fn)
 
-        with pytest.raises(AssertionError, match="checkpoint eval requires an HF snapshot dir"):
-            await mgr.eval(5)
+        await mgr.eval(5)
 
         assert fn.inputs == []
+        assert controller_env.logged["skip"] == (5, "no_snapshot")
 
     async def test_marker_bypass_evaluates_a_dir_without_a_complete_marker(self, controller_env, tmp_path):
         """A caller-supplied checkpoint was never exported here, so there is no marker to wait for."""
