@@ -144,8 +144,7 @@ Phase B — target:
   6. Rollout 3: _refresh_cells() healing → N cells, trains with the healed cell
 
 Compare: phase_b dumps per rollout (rel <= 0.0085; MoE expert grads and QK-norm grads
-also tolerate max_abs <= 1e-3; in the real_rollout mode the post-fault rollouts'
-grads tolerate max_abs <= 3e-3 — see the dense-mode section below) and metrics (rtol=5e-2).
+also tolerate max_abs <= 1e-3) and metrics (rtol=5e-2).
 
 Healing witness: the target phase_b event dir must contain exactly two
 CellReconfigureEvents, in order — a shrink at rollout 2 (alive N -> N-1, positive proof
@@ -165,8 +164,8 @@ Runs `scenario_with_failure` with live generation (real sglang engines, determin
 
 - Baseline remains normal DP and target remains FT. Both run the production collective and the configured `clip_grad=1.0`; deterministic mode accumulates the L2 norm in FP64 before the standard clipping step.
 - The target trains on its own live generated data in every rollout. Baseline rollout recordings are artifacts for audit only and are never injected into the target.
-- The target runs the full crash -> retry -> heal -> weight-sync path. Rollout 2 commits on degraded DP1; rollout 3 consumes weights from that commit, heals back to DP2, and trains the target's newly generated samples.
-- Post-fault dump comparison floors `max_abs <= 3e-3` on the measured noisy gradient families only (decoder-layer QK-norms, folded `layer_norm_weight`s, and attention/MLP matrices). Embedding/output/final-norm gradients, all activations, and the fault-and-earlier rollouts keep the strict set.
+- The target runs the full crash -> retry -> heal -> weight-sync path. Rollout 2 commits on degraded DP1 while preserving the healthy DP2 logical sample partitions and separately reducing each partition through the production collective; rollout 3 consumes weights from that commit, heals back to DP2, and trains the target's newly generated samples.
+- Every rollout uses the same tensor thresholds. The fault retry does not receive a post-fault exception.
 - Inference-engine checksum events verify that all target engines receive the same weights within each rollout. Cross-side correctness is established by the live rollout, metric, tensor, and reconfiguration comparisons.
 
 ### `scenario_deterministic`

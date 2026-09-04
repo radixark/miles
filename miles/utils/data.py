@@ -294,6 +294,7 @@ def process_rollout_data(
     dp_rank,
     dp_size,
     witness_info: WitnessInfo | None,
+    stable_dp_size: int | None = None,
 ) -> tuple[dict, object_store.ObjectStoreGetResult]:
     from miles.ray.rollout.train_data_conversion import process_rollout_data_shard
 
@@ -306,6 +307,8 @@ def process_rollout_data(
             raw = {**raw, "seq_witness_ids": x.witness_ids}
         raw = split_train_data_by_dp_raw(args, raw, dp_size=dp_size)
         rollout_data = raw[dp_rank]
+        if stable_dp_size is not None:
+            rollout_data["stable_dp_size"] = stable_dp_size
     else:
         assert len(rollout_data_ref) == dp_size
         assert witness_info is None

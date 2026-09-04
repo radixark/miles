@@ -5,11 +5,8 @@ from tests.e2e.ft.conftest_ft.modes import MODES
 from tests.e2e.ft.conftest_ft.scenario_with_failure import (
     _DIFF_THRESHOLDS,
     _FAULT_ROLLOUT_ID,
-    _FIRST_POST_FAULT_ROLLOUT_ID,
-    _POST_FAULT_DIFF_THRESHOLDS,
     _build_baseline_args,
     _build_target_args,
-    _diff_thresholds_for_rollout,
 )
 
 
@@ -38,12 +35,9 @@ def test_real_rollout_trains_on_target_generated_data_with_production_math() -> 
     assert _option_value(args, "--max-tokens-per-gpu") == "32768"
 
 
-def test_fault_rollout_keeps_strict_tensor_thresholds() -> None:
-    """The fault rollout must stay strict while measured post-fault floors start later."""
-    mode = MODES["dp2_cp2_real_rollout_dense"]
-
-    assert _diff_thresholds_for_rollout(mode, _FAULT_ROLLOUT_ID) is _DIFF_THRESHOLDS
-    assert _diff_thresholds_for_rollout(mode, _FIRST_POST_FAULT_ROLLOUT_ID) is _POST_FAULT_DIFF_THRESHOLDS
+def test_fault_scenario_has_no_post_fault_threshold_exception() -> None:
+    """The fault and post-fault rollouts must share the strict tensor thresholds."""
+    assert all("3e-3" not in predicate for _, predicate in _DIFF_THRESHOLDS)
 
 
 def test_baseline_remains_normal_dp_while_target_uses_ft() -> None:

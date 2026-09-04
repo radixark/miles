@@ -85,6 +85,18 @@ def _setup_disk_offload_reclaim(disk_dir: str) -> None:
     logger.info(f"Train disk-offload reclaim armed for {disk_dir} (startup wipe + atexit)")
 
 
+def _get_stable_dp_size(args: Namespace, indep_dp_info: IndepDPInfo) -> int | None:
+    if (
+        not args.deterministic_mode
+        or not args.use_distributed_optimizer
+        or is_multi_lora_enabled(args)
+        or indep_dp_info.alive_size != 1
+        or indep_dp_info.num_cells != 2
+    ):
+        return None
+    return indep_dp_info.num_cells
+
+
 class MegatronTrainRayActor(TrainRayActor):
     @with_logs
     @with_defer(lambda: Timer().start("train_wait"))
@@ -101,6 +113,7 @@ class MegatronTrainRayActor(TrainRayActor):
         monkey_patch_torch_dist()
 
         super().init(args, role, with_ref, with_opd_teacher=with_opd_teacher)
+        self._indep_dp_info = indep_dp_info
 
         for m in all_replay_managers:
             m.register_replay_list_func = register_replay_list_sequential
@@ -429,7 +442,10 @@ class MegatronTrainRayActor(TrainRayActor):
         with ExitStack() as stack:
             with timer("data_preprocess"):
                 rollout_data, store_get_result = get_rollout_data(
-                    self.args, rollout_data_ref, witness_info=witness_info
+                    self.args,
+                    rollout_data_ref,
+                    witness_info=witness_info,
+                    stable_dp_size=_get_stable_dp_size(self.args, self._indep_dp_info),
                 )
                 stack.enter_context(store_get_result)
                 if self.args.debug_rollout_only:
@@ -918,4 +934,5 @@ class MegatronTrainRayActor(TrainRayActor):
             megatron_rank=dist.get_rank(),
             megatron_world_size=dist.get_world_size(),
         )
+        self._indep_dp_info = indep_dp_info
         self.weight_updater.conn_status.mark_trainer_stale()

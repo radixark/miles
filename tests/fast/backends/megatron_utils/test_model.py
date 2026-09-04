@@ -77,14 +77,20 @@ def test_deterministic_optimizer_scopes_fp64_grad_norm_to_instance(monkeypatch) 
 class FakeModelChunk:
     def __init__(self) -> None:
         self.zero_grad_buffer_count = 0
+        self.bucket_groups: list[Any] = []
+        self.expert_parallel_bucket_groups: list[Any] = []
 
     def zero_grad_buffer(self) -> None:
         self.zero_grad_buffer_count += 1
+        for bucket_group in self.bucket_groups + self.expert_parallel_bucket_groups:
+            for bucket in bucket_group.buckets:
+                bucket.grad_data.zero_()
 
 
 class FakeDataIterator:
     def __init__(self) -> None:
         self.batches: list[dict[str, Any]] = []
+        self.rollout_data: dict[str, Any] = {}
 
 
 class FakeMpu:
@@ -188,3 +194,52 @@ class TestTrainOneStepStructuredLog:
             )
 
         assert "train op=train_step rollout=7 step=3 attempt=2 outcome=NORMAL valid_step=true" in caplog.messages
+
+
+def test_stable_dp_shards_preserve_separate_accumulation_groups() -> None:
+    """A degraded retry combines independently reduced logical DP shards in rank order."""
+    from types import SimpleNamespace
+
+    from miles.backends.megatron_utils.model import _run_stable_dp_shards
+
+    bucket = SimpleNamespace(grad_data=torch.zeros(4), gradient_scaling_factor=2.0)
+    model = FakeModelChunk()
+    copied_grads: list[torch.Tensor] = []
+    model.bucket_groups = [
+        SimpleNamespace(
+            buckets=[bucket],
+            cached_grad_buffer_shard_list=[[bucket.grad_data[:2], bucket.grad_data[2:]]],
+            ddp_config=SimpleNamespace(use_distributed_optimizer=True),
+            intra_distributed_optimizer_instance_rank=1,
+            _copy_back_extra_main_grads=lambda: copied_grads.append(bucket.grad_data[2:].clone()),
+        )
+    ]
+    calls: list[dict[str, Any]] = []
+    loss_num_microbatches: list[int] = []
+
+    def forward_backward(**kwargs: Any) -> list[dict[str, Any]]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            bucket.grad_data.copy_(torch.tensor([91.0, 92.0, 10.0, 11.0]))
+        else:
+            bucket.grad_data.copy_(torch.tensor([93.0, 94.0, 20.0, 21.0]))
+        return [{"shard": torch.tensor(len(calls))}]
+
+    losses = _run_stable_dp_shards(
+        args=Namespace(seq_length=8, micro_batch_size=1, decoder_seq_length=8),
+        data_iterator=[FakeDataIterator()],
+        model=[model],
+        forward_step=lambda: None,
+        forward_backward_func=forward_backward,
+        shard_microbatches=[2, 3],
+        set_loss_num_microbatches=loss_num_microbatches.append,
+    )
+
+    assert [call["num_microbatches"] for call in calls] == [2, 3]
+    assert loss_num_microbatches == [2, 3]
+    assert all(call["force_all_reduce"] is False for call in calls)
+    assert model.zero_grad_buffer_count == 1
+    torch.testing.assert_close(bucket.grad_data, torch.tensor([93.0, 94.0, 30.0, 32.0]))
+    torch.testing.assert_close(copied_grads[0], torch.tensor([30.0, 32.0]))
+    assert bucket.gradient_scaling_factor == 2.0
+    assert len(losses) == 2

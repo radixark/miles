@@ -23,7 +23,6 @@ from miles.utils.workers.naming import compute_cell_id
 NUM_PHASE_A_STEPS: int = 1
 NUM_PHASE_B_STEPS: int = 4
 _FAULT_ROLLOUT_ID: int = NUM_PHASE_A_STEPS + 1
-_FIRST_POST_FAULT_ROLLOUT_ID: int = _FAULT_ROLLOUT_ID + 1
 
 # Per-tensor pass predicates. A few specific near-zero grads diverge under the
 # crash-recovery (solo / degraded-quorum) collective's reduction order while their
@@ -40,23 +39,6 @@ _DIFF_THRESHOLDS: list[tuple[str, str]] = [
     (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 1e-3"),
     (".*", "rel <= 0.0085"),
 ]
-
-# Post-fault rollouts in the real_rollout mode use each side's live generated data. On
-# the converged dense model, the degraded-quorum commit's numerical drift lands in the
-# cancellation-dominated near-zero grads of the decoder-layer norms and attention/MLP
-# matrices as absolute noise measured <= 2.8e-3 (40 tensors, 2026-06-12; q_layernorm up to
-# rel 20% at max_abs 2.6e-3) while real grads sit at ~1e-2 — only those measured families
-# get a 3e-3 floor. Everything else (embeddings, output layer, final norm, all
-# activations/values) stays strict, and all passed at rel <= 0.85% in the same run.
-_POST_FAULT_DIFF_THRESHOLDS: list[tuple[str, str]] = [
-    (r"grad__.*\.[qk]_layernorm\..*", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.layer_norm_weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.self_attention\.linear_qkv\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.self_attention\.linear_proj\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (r"grad__.*\.mlp\.linear_fc[12]\.weight", "rel <= 0.0085 or max_abs <= 3e-3"),
-    (".*", "rel <= 0.0085"),
-]
-
 
 # rollout_id in phase_b starts from NUM_PHASE_A_STEPS (ckpt resume offset)
 def _build_actions(num_cells: int) -> list[dict]:
@@ -156,7 +138,7 @@ def _compare(dump_dir: str, mode: FTTestMode) -> None:
         compare_dumps(
             baseline_dir=f"{dump_dir}/baseline/phase_b",
             target_dir=f"{dump_dir}/target/phase_b",
-            diff_thresholds=_diff_thresholds_for_rollout(mode, rollout_id),
+            diff_thresholds=_DIFF_THRESHOLDS,
             allow_skipped_pattern=INPUT_TENSORS_SKIP_PATTERN,
             allow_failed_pattern=INPUT_TENSORS_ALLOW_FAILED_PATTERN,
             phase_subdir=f"fwd_bwd/rollout_{rollout_id}",
@@ -203,13 +185,6 @@ def _report_live_rollout_matches(dump_dir: str) -> None:
             f"response_token_match_ratio={response_token_match_ratio:.6f}, reward_matches={reward_matches}"
         )
         assert prompt_matches == num_samples
-
-
-def _diff_thresholds_for_rollout(mode: FTTestMode, rollout_id: int) -> list[tuple[str, str]]:
-    if mode.has_real_rollout and rollout_id >= _FIRST_POST_FAULT_ROLLOUT_ID:
-        return _POST_FAULT_DIFF_THRESHOLDS
-    return _DIFF_THRESHOLDS
-
 
 TEST_NAME: str = "trainer_ft_with_failure"
 PHASES: list[str] = ["phase_a", "phase_b"]
