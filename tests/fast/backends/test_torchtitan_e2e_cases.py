@@ -87,6 +87,29 @@ def test_routing_replay_is_the_rollout_variant():
     assert "--use-rollout-routing-replay" not in build_train_args(_case(), wandb_file=__file__)
 
 
+def test_the_transfer_mode_reaches_the_command_line_with_its_directories():
+    """disk-delta needs two directories on top of the mode: one both sides can
+    see for the published deltas, and a rollout-host-local checkpoint to patch."""
+    args = build_train_args(
+        _case(colocate=False, rollout_num_gpus=2, transfer_mode="disk-delta"), wandb_file=__file__
+    )
+    assert "--update-weight-transfer-mode disk-delta " in args
+    assert "--update-weight-disk-dir " in args
+    assert "--update-weight-local-checkpoint-dir " in args
+
+    broadcast = build_train_args(
+        _case(colocate=False, rollout_num_gpus=2, transfer_mode="broadcast"), wandb_file=__file__
+    )
+    assert "--update-weight-transfer-mode broadcast " in broadcast
+    assert "--update-weight-disk-dir" not in broadcast
+
+
+def test_no_transfer_mode_leaves_the_protocol_to_the_default():
+    """Colocated runs go over IPC without naming a mode; naming one anyway would
+    override the choice the protocol factory makes from --colocate."""
+    assert "--update-weight-transfer-mode" not in build_train_args(_case(), wandb_file=__file__)
+
+
 def test_layer_truncation_is_only_passed_when_asked_for():
     """Truncating layers turns a released checkpoint into a structural stand-in;
     passing it by accident would train a different model than the case names."""

@@ -45,6 +45,7 @@ class CaseConfig:
     fully_async: bool = False
     mem_fraction_static: float = 0.7
     use_mooncake: bool = False
+    transfer_mode: str | None = None
     num_rollout: int = 2
     global_batch_size: int = 32
     extra_args: str = ""
@@ -168,6 +169,15 @@ def build_train_args(case: CaseConfig, *, wandb_file: str) -> str:
     misc_args += "--colocate " if case.colocate else f"--rollout-num-gpus {case.rollout_num_gpus} "
     if case.with_ref:
         misc_args += f"--ref-load {case.model_dir} --use-kl-loss "
+    if case.transfer_mode is not None:
+        misc_args += f"--update-weight-transfer-mode {case.transfer_mode} "
+    if case.transfer_mode == "disk-delta":
+        # The delta stream is published to a directory both sides can see, and
+        # each rollout host patches its own copy of the checkpoint in place.
+        misc_args += (
+            "--update-weight-disk-dir /root/titan_delta/published "
+            "--update-weight-local-checkpoint-dir /root/titan_delta/local "
+        )
     if case.use_mooncake:
         # The p2p weight transfer writes into a mooncake object store the
         # engines read from; the master is started before the job is submitted.
