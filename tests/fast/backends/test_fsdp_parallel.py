@@ -8,6 +8,7 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 from miles.backends.fsdp_utils import parallel as parallel_module
+from miles.utils.ft_utils.process_group_utils import GroupInfo
 
 _MODULE = "miles.backends.fsdp_utils.parallel"
 
@@ -18,6 +19,7 @@ def test_the_degree_one_axes_get_their_own_single_rank_group():
         patch(f"{_MODULE}.dist") as dist,
         patch(f"{_MODULE}.build_fsdp_meshes", return_value={"dp": MagicMock(), "fsdp": MagicMock()}),
         patch(f"{_MODULE}.get_gloo_group", return_value=object()),
+        patch.object(GroupInfo, "_verify_group", lambda self, group, name: None),
     ):
         dist.get_world_size.return_value = 4
         dist.get_rank.return_value = 3
