@@ -178,6 +178,7 @@ class TestSingleUserTurnPretokenized:
         messages = [SYS_MSG, USER_MSG]
         result = session.prepare_pretokenized(messages, tito_tokenizer=registry.tito_tokenizer)
         assert result == _MOCK_FIRST_TURN_TOKENS
+        assert session.session_tito_tokenizer is None
 
     def test_two_turn_trajectory(self, registry: SessionRegistry):
         """Full 2-turn: user -> assistant(tool_call) -> tool -> final answer."""
@@ -877,13 +878,20 @@ class TestComputeSessionMismatch:
         session = registry.get_session(sid)
         assert registry.compute_session_mismatch(session) is None
 
-    def test_returns_empty_list_when_no_mismatch(self, registry: SessionRegistry):
+    @pytest.mark.parametrize("use_session_renderer", [False, True])
+    def test_returns_empty_list_when_no_mismatch(self, registry: SessionRegistry, use_session_renderer):
         sid = registry.create_session()
         session = registry.get_session(sid)
         session.update_pretokenized_state([SYS_MSG, USER_MSG], ASSISTANT_MSG_1, [1, 2, 3], [10, 11], max_trim_tokens=0)
 
-        # Simulate: template returns same IDs as stored
-        registry.tito_tokenizer.apply_chat_template = MagicMock(return_value=[1, 2, 3, 10, 11])
+        renderer = registry.tito_tokenizer
+        if use_session_renderer:
+            renderer = registry.tito_tokenizer.clone_with_chat_template_kwargs({"add_vision_id": True})
+            session.session_tito_tokenizer = renderer
+            registry.tito_tokenizer.apply_chat_template = MagicMock(
+                side_effect=AssertionError("startup renderer used")
+            )
+        renderer.apply_chat_template = MagicMock(return_value=[1, 2, 3, 10, 11])
 
         # Need a real comparator; replace the None one
         mock_comparator = MagicMock()
@@ -893,12 +901,15 @@ class TestComputeSessionMismatch:
         result = registry.compute_session_mismatch(session)
         assert result == []
         mock_comparator.compare_sequences.assert_called_once_with([1, 2, 3, 10, 11], [1, 2, 3, 10, 11])
-        registry.tito_tokenizer.apply_chat_template.assert_called_once_with(
+        renderer.apply_chat_template.assert_called_once_with(
             session.messages,
             tools=None,
             add_generation_prompt=False,
             tokenize=True,
         )
+        if use_session_renderer:
+            registry.tito_tokenizer.apply_chat_template.assert_not_called()
+            assert session.session_tito_tokenizer is renderer
 
     def test_returns_mismatch_dicts(self, registry: SessionRegistry):
         sid = registry.create_session()

@@ -90,7 +90,9 @@ def build_leaf_material(
             },
         }
         try:
-            mismatch = registry.compute_mismatch(leaf.path_messages(), leaf.token_ids, tools)
+            mismatch = registry.compute_mismatch(
+                leaf.path_messages(), leaf.token_ids, tools, tito_tokenizer=state.session_tito_tokenizer
+            )
         except TokenizationError:
             logger.exception("Failed to compute tito_session_mismatch for session %s", session_id)
             mismatch = None

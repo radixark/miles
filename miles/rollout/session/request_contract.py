@@ -2,14 +2,57 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import copy, deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError
+from miles.utils.arg_resolution import (
+    MISSING,
+    ArgBatch,
+    ArgResolutionContract,
+    ArgResolutionError,
+    Binding,
+    PrimaryField,
+    PrimarySchema,
+    SourceSpec,
+    UnknownInputPolicy,
+)
 from miles.utils.chat_template_utils.tito_tokenizer import TITOTokenizer
 
 _MISSING = object()
+_REQUEST_FIELDS = (
+    "logprobs",
+    "return_meta_info",
+    "return_routed_experts",
+    "return_indexer_topk",
+    "no_stop_trim",
+    "lora_path",
+    "input_ids",
+    "routed_experts_start_len",
+)
+_REQUEST_RESOLVER = ArgResolutionContract(
+    PrimarySchema(tuple(PrimaryField(name) for name in _REQUEST_FIELDS)),
+    (
+        SourceSpec(
+            "request",
+            0,
+            tuple(Binding(name, name) for name in _REQUEST_FIELDS),
+            unknown_inputs=UnknownInputPolicy.IGNORE,
+        ),
+        SourceSpec("configured", 10, tuple(Binding(name, name) for name in _REQUEST_FIELDS[:6])),
+        SourceSpec("session", 20, tuple(Binding(name, name) for name in _REQUEST_FIELDS[6:])),
+    ),
+)
+
+
+def _resolve_request_fields(body: Mapping[str, Any], overrides: ArgBatch) -> Mapping[str, Any]:
+    try:
+        resolved = _REQUEST_RESOLVER.resolve((ArgBatch("request", body), overrides))
+    except ArgResolutionError as exc:
+        raise MessageValidationError(str(exc)) from exc
+    return {name: resolved.values[name] for name in _REQUEST_FIELDS if name in resolved.values}
 
 
 @dataclass(frozen=True)
@@ -59,39 +102,50 @@ class SessionRequestContract:
 
         # TITO needs Miles-owned prompt IDs plus SGLang's token metadata. These
         # values are forced so a client override cannot break token tracking.
-        request_body["logprobs"] = True
-        request_body["return_meta_info"] = True
-        if self.force_return_routed_experts:
-            request_body["return_routed_experts"] = True
-        if self.force_return_indexer_topk:
-            request_body["return_indexer_topk"] = True
-        # Stop-token text is trimmed from assistant content; token IDs still
-        # come from the logprobs metadata above.
-        request_body["no_stop_trim"] = False
-        if self.lora_path is not None:
-            request_body["lora_path"] = self.lora_path
+        request_body.update(
+            _resolve_request_fields(
+                request_body,
+                ArgBatch(
+                    "configured",
+                    {
+                        "logprobs": True,
+                        "return_meta_info": True,
+                        "no_stop_trim": False,
+                        "return_routed_experts": True if self.force_return_routed_experts else MISSING,
+                        "return_indexer_topk": True if self.force_return_indexer_topk else MISSING,
+                        "lora_path": self.lora_path if self.lora_path is not None else MISSING,
+                    },
+                ),
+            )
+        )
 
-        # FIXME(session): Only nested `chat_template_kwargs` reach the local
-        # renderer. Top-level `reasoning` / `reasoning_effort` remain passthrough.
         request_kwargs = request_body.get("chat_template_kwargs")
         if request_kwargs is not None and not isinstance(request_kwargs, dict):
             raise MessageValidationError("chat_template_kwargs must be an object")
         request_tito_tokenizer = self.startup_tito_tokenizer
+        reasoning_config = request_tito_tokenizer.reasoning_template_config
+        if reasoning_config is not None:
+            try:
+                request_kwargs = reasoning_config.resolve(request_tito_tokenizer.chat_template_kwargs, request_body)
+            except ArgResolutionError as exc:
+                raise MessageValidationError(str(exc)) from exc
         if request_kwargs:
             try:
                 request_tito_tokenizer = request_tito_tokenizer.clone_with_chat_template_kwargs(request_kwargs)
             except ValueError as exc:
                 raise MessageValidationError(str(exc)) from exc
 
-        if request_tito_tokenizer.chat_template_kwargs:
-            request_body["chat_template_kwargs"] = dict(request_tito_tokenizer.chat_template_kwargs)
+        renderer = copy(self.startup_tito_tokenizer)
+        renderer.chat_template_kwargs = deepcopy(request_tito_tokenizer.chat_template_kwargs)
+        if renderer.chat_template_kwargs:
+            request_body["chat_template_kwargs"] = deepcopy(renderer.chat_template_kwargs)
         else:
             request_body.pop("chat_template_kwargs", None)
 
         return PreparedChatRequest(
             body=MappingProxyType(request_body),
             client_stream=client_stream,
-            tito_tokenizer=request_tito_tokenizer,
+            tito_tokenizer=renderer,
         )
 
     def finalize(
@@ -103,7 +157,20 @@ class SessionRequestContract:
     ) -> dict[str, Any]:
         """Apply session-derived values and return the body sent to SGLang."""
         outbound_body = dict(prepared.body)
-        outbound_body["input_ids"] = input_ids
-        if routed_experts_start_len is not _MISSING:
-            outbound_body["routed_experts_start_len"] = routed_experts_start_len
+        outbound_body.update(
+            _resolve_request_fields(
+                prepared.body,
+                ArgBatch(
+                    "session",
+                    {
+                        "input_ids": input_ids,
+                        "routed_experts_start_len": (
+                            MISSING if routed_experts_start_len is _MISSING else routed_experts_start_len
+                        ),
+                    },
+                ),
+            )
+        )
+        if "chat_template_kwargs" in outbound_body:
+            outbound_body["chat_template_kwargs"] = deepcopy(outbound_body["chat_template_kwargs"])
         return outbound_body

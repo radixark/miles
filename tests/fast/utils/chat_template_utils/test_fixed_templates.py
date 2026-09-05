@@ -120,7 +120,7 @@ def test_kwargs_are_copied_not_shared(monkeypatch):
     ("tokenizer_cls", "chat_template_kwargs"),
     [
         (Qwen3TITOTokenizer, {"clear_thinking": True}),
-        (Qwen38SmallTITOTokenizer, {"reasoning_effort": "low"}),
+        (Qwen38SmallTITOTokenizer, {"preserve_thinking": False}),
     ],
 )
 def test_registered_kwargs_cannot_be_overridden(tokenizer_cls, chat_template_kwargs):

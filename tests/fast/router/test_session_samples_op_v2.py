@@ -19,6 +19,7 @@ import logging
 import uuid
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pybase64
@@ -32,6 +33,7 @@ from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, decode_sampl
 from miles.rollout.session.sessions import setup_session_routes
 from miles.rollout.session.v2.core import SessionCoreV2
 from miles.rollout.session.v2.session_state import SessionRegistryV2
+from miles.rollout.session.v2.utils import build_leaf_material
 from miles.utils.chat_template_utils import get_tito_tokenizer
 from miles.utils.misc import function_registry
 from miles.utils.processing_utils import load_tokenizer
@@ -716,6 +718,29 @@ async def test_custom_picker_keeps_abandoned_leaf(core):
         # owns the shared root completion; the retry masks it.
         assert abandoned.loss_mask[:2] == [1, 1]
         assert retry.loss_mask[:2] == [0, 0]
+
+
+async def test_all_leaf_mismatch_material_uses_session_renderer(core, monkeypatch):
+    sid = await _retry_shaped_session(core)
+    state = core.registry.sessions[sid]
+    leaves = state.tree.leaves()
+    assert len(leaves) == 2
+    renderer = core.registry.tito_tokenizer.clone_with_chat_template_kwargs({"enable_thinking": True})
+    state.session_tito_tokenizer = renderer
+    renderer.apply_chat_template = MagicMock(side_effect=[list(leaf.token_ids) for leaf in leaves])
+    startup_render = MagicMock(side_effect=AssertionError("startup renderer used"))
+    monkeypatch.setattr(core.registry.tito_tokenizer, "apply_chat_template", startup_render)
+
+    material = build_leaf_material(_ARGS, state, core.registry, session_id=sid, max_seq_len=None)
+
+    assert [sample.metadata["leaf"]["node_id"] for sample in material] == [leaf.seq for leaf in leaves]
+    assert [sample.metadata["tito_session_mismatch"] for sample in material] == [[], []]
+    assert renderer.apply_chat_template.call_args_list == [
+        call(leaf.path_messages(), tools=leaf.record.request.get("tools"), add_generation_prompt=False, tokenize=True)
+        for leaf in leaves
+    ]
+    startup_render.assert_not_called()
+    assert state.session_tito_tokenizer is renderer
 
 
 async def test_custom_picker_reorder_keeps_earliest_leaf_as_owner(core):

@@ -15,6 +15,7 @@ from miles.rollout.session.core import (
     proxy_result_to_response,
 )
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError
+from miles.rollout.session.linear_trajectory import session_tito_tokenizer_matches, validate_session_tito_tokenizer
 from miles.rollout.session.samples.codec import COMPUTED_FIELDS_V2, encode_samples
 from miles.rollout.session.types import GetSessionResponse, SessionRecord
 from miles.rollout.session.v2.session_state import (
@@ -150,6 +151,7 @@ class SessionCoreV2(SessionCore):
             tito_tokenizer = prepared_request.tito_tokenizer
 
             request_messages = prepared_request.body.get("messages", [])
+            validate_session_tito_tokenizer(session.session_tito_tokenizer, tito_tokenizer)
             position_for_request(session, request_messages, message_matcher=self.registry.message_matcher)
             prompt_token_ids = prepare_pretokenized(
                 session,
@@ -188,6 +190,10 @@ class SessionCoreV2(SessionCore):
                 logger.warning(f"Session {session_id} closed during proxy, skipping state update")
                 return _chat_client_response(result, response, client_stream)
 
+            if not session_tito_tokenizer_matches(session.session_tito_tokenizer, tito_tokenizer):
+                logger.warning("Session %s renderer changed during proxy, skipping state update", session_id)
+                return _chat_client_response(result, response, client_stream)
+
             record = SessionRecord(
                 timestamp=time.time(),
                 request_timestamp=request_timestamp,
@@ -209,6 +215,8 @@ class SessionCoreV2(SessionCore):
                 response_id=response.get("id", ""),
                 finish_reason=choice.get("finish_reason") or "",
             )
+            if session.session_tito_tokenizer is None:
+                session.session_tito_tokenizer = tito_tokenizer
         # --- lock released ---
 
         return _chat_client_response(result, response, client_stream)

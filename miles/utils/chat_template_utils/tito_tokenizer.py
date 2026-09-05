@@ -19,6 +19,7 @@ from typing import Any
 
 from miles.utils.chat_template_utils import deepseek, template
 from miles.utils.chat_template_utils.message_matcher_hub import assert_messages_append_only_with_allowed_role
+from miles.utils.chat_template_utils.reasoning import QWEN38_REASONING, ReasoningTemplateConfig
 from miles.utils.chat_template_utils.token_seq_comparator import TokenSeqComparator
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class TITOTokenizer:
     max_trim_tokens: int = 0
     trailing_token_ids: frozenset[int] = frozenset()
     chat_template_kwarg_aliases: frozenset[str] = frozenset()
+    reasoning_template_config: ReasoningTemplateConfig | None = None
 
     # The family's fixed renderer contract. DEFAULT uses the model's native
     # template with the maximal best-effort append surface.
@@ -110,6 +112,8 @@ class TITOTokenizer:
                     f"the value registered for {type(self).__name__}: {value!r}"
                 )
             provided_kwargs[key] = value
+        if self.reasoning_template_config is not None:
+            provided_kwargs.setdefault("reasoning_effort", self.reasoning_template_config.default_effort)
         self.chat_template_kwargs = provided_kwargs
         self._assistant_start_str = assistant_start_str
         self.allowed_append_roles = self.FIXED_TEMPLATE.allowed_append_roles
@@ -320,11 +324,11 @@ class Qwen38SmallTITOTokenizer(Qwen3TITOTokenizer):
     """Qwen3.8 reasoning-effort template with the Qwen3 token boundary."""
 
     tool_call_parser = "qwen3_coder"
+    reasoning_template_config = QWEN38_REASONING
 
     FIXED_TEMPLATE = FixedTemplate(
         template="qwen3.8_small_and_flash_next_fixed.jinja",
-        # FIXME: Pin reasoning effort to xhigh until request-argument precedence is unified.
-        extra_kwargs={"preserve_thinking": True, "reasoning_effort": "xhigh"},
+        extra_kwargs={"preserve_thinking": True},
         allowed_append_roles=frozenset({"tool", "user", "assistant"}),
     )
 
@@ -877,14 +881,14 @@ def get_tito_tokenizer(
 def resolve_fixed_chat_template(
     tito_model: TITOTokenizerType | str,
 ) -> tuple[str | None, dict[str, Any]]:
-    """The family's fixed chat template and required kwargs.
+    """The family's fixed chat template and startup kwargs.
 
     Returns ``(template_path, extra_kwargs)``:
 
     - ``template_path``: absolute path to a bundled ``.jinja`` file, or ``None``
       when the family registers HF-native (kwargs-only fix).
-    - ``extra_kwargs``: kwargs owned by the registration and merged into
-      ``template.apply_chat_template``.  Conflicting caller values are invalid.
+    - ``extra_kwargs``: registered preserve-think constants and family defaults
+      merged into ``template.apply_chat_template`` at startup.
 
     Template resolution depends only on ``tito_model``.  The DEFAULT family
     resolves to its native template (``None``) with no fixed kwargs.
@@ -894,16 +898,19 @@ def resolve_fixed_chat_template(
 
     cls = TITOTokenizerType.get_tokenizer_class(tito_model)
     fixed = cls.FIXED_TEMPLATE
+    kwargs = dict(fixed.extra_kwargs)
+    if cls.reasoning_template_config is not None:
+        kwargs["reasoning_effort"] = cls.reasoning_template_config.default_effort
 
     path = str(TEMPLATE_DIR / fixed.template) if fixed.template else None
     logger.info(
         "tito_model=%s -> template=%s kwargs=%s allowed_append_roles=%s",
         tito_model.value,
         path,
-        fixed.extra_kwargs,
+        kwargs,
         sorted(fixed.allowed_append_roles),
     )
-    return path, dict(fixed.extra_kwargs)
+    return path, kwargs
 
 
 # ---------------------------------------------------------------------------

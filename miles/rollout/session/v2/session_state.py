@@ -18,7 +18,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from miles.rollout.session.errors import MessageValidationError, TokenizationError, TruncatedGenerationError
-from miles.rollout.session.linear_trajectory import SessionRegistry, assert_pretokenized_prefix
+from miles.rollout.session.linear_trajectory import (
+    SessionRegistry,
+    assert_pretokenized_prefix,
+    validate_session_tito_tokenizer,
+)
 from miles.rollout.session.types import SessionRecord
 from miles.rollout.session.v2.tree_trajectory import SessionTree, TrajectoryNode
 from miles.utils.chat_template_utils.message_matcher_hub import SessionMessageMatcher
@@ -41,6 +45,7 @@ class SessionStateV2:
     closing: bool = field(default=False, repr=False, compare=False)
     tree: SessionTree = field(default_factory=SessionTree)
     active_leaf: TrajectoryNode | None = None
+    session_tito_tokenizer: TITOTokenizer | None = field(default=None, repr=False, compare=False)
 
     def active_path(self) -> list[TrajectoryNode]:
         return self.active_leaf.path_nodes() if self.active_leaf is not None else []
@@ -97,6 +102,7 @@ def prepare_pretokenized(
     - Otherwise: reuse the parent's token snapshot as-is and tokenize only
       the new suffix on top — the shared prefix is never re-rendered.
     """
+    validate_session_tito_tokenizer(state.session_tito_tokenizer, tito_tokenizer)
     parent = state.active_leaf
     if parent is None:
         return tito_tokenizer.apply_chat_template(
@@ -189,13 +195,21 @@ class SessionRegistryV2(SessionRegistry):
         self.sessions[session_id] = SessionStateV2()
         return session_id
 
-    def compute_mismatch(self, messages: list[dict[str, Any]], token_ids: list[int], tools: Any) -> list[dict] | None:
+    def compute_mismatch(
+        self,
+        messages: list[dict[str, Any]],
+        token_ids: list[int],
+        tools: Any,
+        *,
+        tito_tokenizer: TITOTokenizer | None = None,
+    ) -> list[dict] | None:
         """Compare accumulated token IDs against canonical chat template
         output for one path. Read-only."""
         if not token_ids:
             return None
         try:
-            expected_ids = self.tito_tokenizer.apply_chat_template(
+            renderer = tito_tokenizer or self.tito_tokenizer
+            expected_ids = renderer.apply_chat_template(
                 messages,
                 tools=tools,
                 add_generation_prompt=False,
@@ -212,4 +226,6 @@ class SessionRegistryV2(SessionRegistry):
             return None
         records = state.active_records()
         tools = records[-1].request.get("tools") if records else None
-        return self.compute_mismatch(state.active_messages(), state.active_token_ids(), tools)
+        return self.compute_mismatch(
+            state.active_messages(), state.active_token_ids(), tools, tito_tokenizer=state.session_tito_tokenizer
+        )

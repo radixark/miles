@@ -21,6 +21,33 @@ logger = logging.getLogger(__name__)
 MAX_ASSISTANT_ROLLBACK_STEPS = 1
 
 
+def _template_values_equal(left: Any, right: Any) -> bool:
+    # Jinja distinguishes literal True from 1 even though Python equality does not.
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(
+            _template_values_equal(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, (list, tuple)):
+        return len(left) == len(right) and all(_template_values_equal(a, b) for a, b in zip(left, right, strict=True))
+    return left == right
+
+
+def session_tito_tokenizer_matches(established: TITOTokenizer | None, requested: TITOTokenizer) -> bool:
+    return established is None or _template_values_equal(
+        established.chat_template_kwargs, requested.chat_template_kwargs
+    )
+
+
+def validate_session_tito_tokenizer(established: TITOTokenizer | None, requested: TITOTokenizer) -> None:
+    if not session_tito_tokenizer_matches(established, requested):
+        raise MessageValidationError(
+            "chat template configuration cannot change within a session: "
+            f"established={established.chat_template_kwargs!r}, requested={requested.chat_template_kwargs!r}"
+        )
+
+
 def assert_pretokenized_prefix(
     prev: list[int],
     all_token_ids: list[int],
@@ -77,6 +104,7 @@ class LinearTrajectory:
     trajectory_token_ids: list[list[int]] = field(default_factory=list)
     generated_checkpoint_message_ends: list[int] = field(default_factory=list)
     num_assistant: int = 0
+    session_tito_tokenizer: TITOTokenizer | None = field(default=None, repr=False, compare=False)
 
     @property
     def token_ids(self) -> list[int]:
@@ -106,6 +134,7 @@ class LinearTrajectory:
 
         Must be called under ``self.lock``.
         """
+        validate_session_tito_tokenizer(self.session_tito_tokenizer, tito_tokenizer)
         matcher = message_matcher if message_matcher is not None else strict_message_matches
 
         # 1. Detect agent retries and roll back (at most one assistant step). Retrying the
@@ -335,7 +364,8 @@ class SessionRegistry:
             return None
         try:
             tools = session.records[-1].request.get("tools") if session.records else None
-            expected_ids = self.tito_tokenizer.apply_chat_template(
+            renderer = session.session_tito_tokenizer or self.tito_tokenizer
+            expected_ids = renderer.apply_chat_template(
                 session.messages,
                 tools=tools,
                 add_generation_prompt=False,

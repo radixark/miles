@@ -8,8 +8,15 @@ import pytest
 from miles.rollout.session.core import SessionCore
 from miles.rollout.session.errors import MessageValidationError
 from miles.rollout.session.request_contract import SessionRequestContract
-from miles.utils.chat_template_utils.tito_tokenizer import FixedTemplate, TITOTokenizer
+from miles.utils.arg_resolution import ArgResolutionError
+from miles.utils.chat_template_utils.tito_tokenizer import (
+    FixedTemplate,
+    TITOTokenizer,
+    get_tito_tokenizer,
+    resolve_fixed_chat_template,
+)
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
+from miles.utils.processing_utils import load_tokenizer
 
 _ABSENT = object()
 
@@ -226,3 +233,144 @@ def test_routed_experts_start_len_preserves_existing_conditional_precedence(
         assert "routed_experts_start_len" not in outbound
     else:
         assert outbound["routed_experts_start_len"] == expected_start_len
+
+
+@pytest.mark.parametrize("request_kwargs", [None, {"custom": {"items": [2]}}])
+def test_prepared_renderer_preserves_subtype_state_and_isolates_full_kwargs(request_kwargs):
+    startup = _AliasTokenizer(object(), chat_template_kwargs={"custom": {"items": [1]}}, special_token_ids={7})
+    startup.runtime_marker = object()
+    contract = _contract(tito_tokenizer=startup)
+    prepared = contract.prepare(_body(messages=[], chat_template_kwargs=request_kwargs))
+    expected = [1] if request_kwargs is None else [2]
+
+    assert type(prepared.tito_tokenizer) is _AliasTokenizer
+    assert prepared.tito_tokenizer is not startup
+    assert prepared.tito_tokenizer.tokenizer is startup.tokenizer
+    assert prepared.tito_tokenizer.runtime_marker is startup.runtime_marker
+    assert prepared.tito_tokenizer.special_token_ids is startup.special_token_ids
+
+    outbound = contract.finalize(prepared, input_ids=[1])
+    outbound["chat_template_kwargs"]["custom"]["items"].append(3)
+    assert prepared.body["chat_template_kwargs"]["custom"]["items"] == expected
+    prepared.body["chat_template_kwargs"]["custom"]["items"].append(4)
+    startup.chat_template_kwargs["custom"]["items"].append(5)
+    assert prepared.tito_tokenizer.chat_template_kwargs["custom"]["items"] == expected
+
+
+def _qwen_startup_contract(family="qwen38small", launch_kwargs=None):
+    template_path, kwargs = resolve_fixed_chat_template(family)
+    args = SimpleNamespace(apply_chat_template_kwargs={**kwargs, **(launch_kwargs or {})})
+    tokenizer = load_tokenizer("Qwen/Qwen3-4B", chat_template_path=template_path, trust_remote_code=True)
+    return _contract(
+        tito_tokenizer=get_tito_tokenizer(tokenizer, family, chat_template_kwargs=args.apply_chat_template_kwargs)
+    )
+
+
+@pytest.mark.parametrize("family", ["qwen38small", "qwen4exp"])
+@pytest.mark.parametrize("effort", [None, "low", "medium", "xhigh"])
+def test_qwen_real_startup_pipeline_preserves_default_body_and_resolves_active_request(family, effort):
+    contract = _qwen_startup_contract(family)
+    request = {"messages": [{"role": "user", "content": "hello"}]}
+    if effort is not None:
+        request["reasoning_effort"] = effort
+    prepared = contract.prepare(_body(**request))
+    kwargs = {"preserve_thinking": True, "reasoning_effort": effort or "xhigh"}
+    if effort is not None:
+        kwargs["enable_thinking"] = True
+    assert dict(prepared.body) == {
+        **request,
+        "logprobs": True,
+        "return_meta_info": True,
+        "no_stop_trim": False,
+        "chat_template_kwargs": kwargs,
+    }
+    assert prepared.tito_tokenizer.chat_template_kwargs == kwargs
+    assert contract.finalize(prepared, input_ids=[1, 2]) == {**prepared.body, "input_ids": [1, 2]}
+    rendered = prepared.tito_tokenizer.apply_chat_template(request["messages"], add_generation_prompt=True)
+    assert rendered.endswith("<|im_start|>assistant\n<think>\n")
+    assert ("Reasoning effort is set to low." in rendered) == (effort == "low")
+    assert contract.startup_tito_tokenizer.chat_template_kwargs == {
+        "preserve_thinking": True,
+        "reasoning_effort": "xhigh",
+    }
+
+
+@pytest.mark.parametrize("location", ["launch", "nested"])
+@pytest.mark.parametrize("raw", [None, False, True, "true", "false", "yes", 0, 1])
+def test_qwen_real_jinja_preserves_raw_toggle_semantics(location, raw):
+    launch_kwargs = {"enable_thinking": raw} if location == "launch" else {}
+    contract = _qwen_startup_contract(launch_kwargs=launch_kwargs)
+    request = {"messages": [{"role": "user", "content": "hello"}]}
+    if location == "nested":
+        request.update(reasoning_effort="low", chat_template_kwargs={"enable_thinking": raw})
+    prepared = contract.prepare(_body(**request))
+    effective_raw = prepared.tito_tokenizer.chat_template_kwargs["enable_thinking"]
+    assert type(effective_raw) is type(raw)
+    assert effective_raw == raw
+    assert prepared.body["chat_template_kwargs"]["enable_thinking"] == raw
+    rendered = prepared.tito_tokenizer.apply_chat_template(request["messages"], add_generation_prompt=True)
+    assert ("Reasoning effort is set to" in rendered) == (raw is True)
+    suffix = "<think>\n\n</think>\n\n" if raw is False else "<think>\n"
+    assert rendered.endswith("<|im_start|>assistant\n" + suffix)
+
+
+@pytest.mark.parametrize(
+    "request_body",
+    [
+        {"reasoning_effort": "high"},
+        {"reasoning": {"effort": "none", "reasoning_effort": "high"}},
+        {"reasoning": {"effort": "invalid"}, "chat_template_kwargs": {"reasoning_effort": "low"}},
+        {"chat_template_kwargs": {"reasoning_effort": "invalid", "enable_thinking": False}},
+    ],
+)
+def test_qwen_resolution_errors_use_existing_message_validation_boundary(request_body):
+    with pytest.raises(MessageValidationError, match="Invalid reasoning effort") as caught:
+        _qwen_startup_contract().prepare(_body(messages=[], **request_body))
+    assert isinstance(caught.value.__cause__, ArgResolutionError)
+
+
+def test_qwen_invalid_launch_effort_is_validated_even_with_nested_override():
+    with pytest.raises(MessageValidationError, match="launch.reasoning_effort"):
+        _qwen_startup_contract(launch_kwargs={"reasoning_effort": "high"}).prepare(
+            _body(messages=[], chat_template_kwargs={"reasoning_effort": "low"})
+        )
+
+
+@pytest.mark.parametrize("force_flags", [False, True])
+def test_default_prepare_and_finalize_preserve_original_serialization_order(force_flags):
+    contract = _contract(
+        use_rollout_routing_replay=force_flags,
+        use_rollout_indexer_replay=force_flags,
+        lora_rank=8 if force_flags else 0,
+        launch_kwargs={"preserve_thinking": True, "reasoning_effort": "xhigh"},
+    )
+    expected = {"messages": [], "logprobs": True, "return_meta_info": True}
+    if force_flags:
+        expected.update(return_routed_experts=True, return_indexer_topk=True)
+    expected["no_stop_trim"] = False
+    if force_flags:
+        expected["lora_path"] = "miles_lora"
+    expected["chat_template_kwargs"] = {"preserve_thinking": True, "reasoning_effort": "xhigh"}
+    prepared = contract.prepare(_body(messages=[]))
+    assert json.dumps(dict(prepared.body)) == json.dumps(expected)
+    expected.update(input_ids=[1, 2], routed_experts_start_len=1)
+    outbound = contract.finalize(prepared, input_ids=[1, 2], routed_experts_start_len=1)
+    assert json.dumps(outbound) == json.dumps(expected)
+
+
+def test_other_families_keep_top_level_reasoning_as_passthrough():
+    request = {"reasoning_effort": "high", "reasoning": {"effort": "other"}}
+    prepared = _contract().prepare(_body(messages=[], **request))
+    assert prepared.body["reasoning_effort"] == "high"
+    assert prepared.body["reasoning"] == {"effort": "other"}
+    assert "chat_template_kwargs" not in prepared.body
+
+
+def test_unrelated_profile_exception_is_not_converted(monkeypatch):
+    def fail(*args):
+        raise RuntimeError("profile programming error")
+
+    tokenizer = TITOTokenizer(None)
+    monkeypatch.setattr(tokenizer, "reasoning_template_config", SimpleNamespace(resolve=fail))
+    with pytest.raises(RuntimeError, match="profile programming error"):
+        _contract(tito_tokenizer=tokenizer).prepare(_body(messages=[]))

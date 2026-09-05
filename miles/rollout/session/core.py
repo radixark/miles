@@ -17,7 +17,7 @@ from starlette.responses import Response
 
 from miles.rollout.generate_utils.sample_utils import merge_samples
 from miles.rollout.session.errors import SessionNotFoundError, TokenizationError, UpstreamResponseError
-from miles.rollout.session.linear_trajectory import SessionRegistry
+from miles.rollout.session.linear_trajectory import SessionRegistry, session_tito_tokenizer_matches
 from miles.rollout.session.request_contract import PreparedChatRequest, SessionRequestContract
 from miles.rollout.session.samples.codec import encode_samples
 from miles.rollout.session.samples.merge import (
@@ -379,13 +379,9 @@ class SessionCore:
                 )
                 return _chat_client_response(result, response, client_stream)
 
-            session.update_pretokenized_state(
-                request_messages,
-                assistant_message,
-                prompt_token_ids=prompt_token_ids,
-                completion_token_ids=completion_token_ids,
-                max_trim_tokens=self.registry.tito_tokenizer.max_trim_tokens,
-            )
+            if not session_tito_tokenizer_matches(session.session_tito_tokenizer, tito_tokenizer):
+                logger.warning("Session %s renderer changed during proxy, skipping state update", session_id)
+                return _chat_client_response(result, response, client_stream)
 
             record = SessionRecord(
                 timestamp=time.time(),
@@ -396,7 +392,16 @@ class SessionCore:
                 request=request_body,
                 response=response,
             )
+            session.update_pretokenized_state(
+                request_messages,
+                assistant_message,
+                prompt_token_ids=prompt_token_ids,
+                completion_token_ids=completion_token_ids,
+                max_trim_tokens=tito_tokenizer.max_trim_tokens,
+            )
             session.append_record(record)
+            if session.session_tito_tokenizer is None:
+                session.session_tito_tokenizer = tito_tokenizer
         # --- lock released ---
 
         return _chat_client_response(result, response, client_stream)
