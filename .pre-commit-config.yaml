@@ -15,6 +15,7 @@ repos:
     rev: v4.5.0
     hooks:
       - id: check-yaml
+        exclude: '^charts/.*/templates/'
       - id: check-case-conflict
       - id: detect-private-key
       - id: check-added-large-files
@@ -63,6 +64,13 @@ repos:
         language: pygrep
         entry: '"root":'
         files: ^docs/docs\.json$
+
+      - id: helm-lint
+        name: helm lint every chart
+        language: system
+        entry: python3 tools/kubernetes/lint_charts.py
+        pass_filenames: false
+        files: '^charts/'
 
       - id: ban-mpu-get
         name: Ban direct mpu.get_* calls (use ParallelState)
