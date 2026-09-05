@@ -372,7 +372,7 @@ class TrainerController:
         # TODO: allow using all cells to update weights (instead of first alive cell)
         # Fetch the updatable engines once (like V1 RayActorGroup) so all
         # ranks observe a consistent engine set.
-        info = await self._inference_controller.start_update_weights()
+        info = await self._inference_controller.start_update_weights(model_id=self.args.trainer_model_id)
         # Catch with vanilla retry: cells w/ exceptions are auto marked errored, thus retry will find the next one
         weight_versions = await retry(
             lambda _: self._execute_first_alive("update_weights", info=info),
@@ -390,7 +390,9 @@ class TrainerController:
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return
 
-        check_weights_result = await self._inference_controller.check_weights(action="checksum")
+        check_weights_result = await self._inference_controller.check_weights(
+            action="checksum", model_id=self.args.trainer_model_id
+        )
         engine_checksums = flatten_inference_engine_checksums(check_weights_result)
         get_event_logger().log(
             InferenceEngineWeightChecksumEvent,
