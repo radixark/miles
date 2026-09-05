@@ -11,7 +11,7 @@ from miles.ray.specs.train import compute_trainer_num_cells, compute_trainer_poo
 from miles.ray.train.cell import TrainerCell
 from miles.ray.train.cell_monitor import create_trainer_cell_health_checker
 from miles.utils import object_store
-from miles.utils.async_utils import AsyncioGatherUtils
+from miles.utils.async_utils import AsyncioGatherUtils, gather_and_raise_first
 from miles.utils.audit_utils.event_analyzer import analyzer as event_analyzer
 from miles.utils.audit_utils.event_logger.logger import get_event_logger, is_event_logger_initialized
 from miles.utils.audit_utils.event_logger.models import (
@@ -357,6 +357,17 @@ class TrainerController:
 
     async def is_initialized(self) -> bool:
         return self._init_once.is_initialized()
+
+    async def load_state(self) -> list[Any]:
+        assert self._init_once.is_initialized()
+
+        await self._wait_expected_num_cells(timeout=_CELLS_READY_TIMEOUT_SECONDS)
+
+        not_alive = [cell.cell_id for cell in self._cells if not cell.is_alive]
+        assert not not_alive, f"a reload does not support cells that are not alive: {not_alive}"
+
+        cell_results = await gather_and_raise_first([cell.load_state() for cell in self._cells])
+        return [item for sublist in cell_results for item in sublist]
 
     async def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Save actor model. Only cell 0 saves to avoid file write conflicts."""
