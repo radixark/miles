@@ -50,6 +50,7 @@ def _make_args(*, num_cells: int) -> SimpleNamespace:
         trainer_heartbeat_checker_first_wait=300.0,
         trainer_heartbeat_checker_failure_threshold=3,
         ci_ft_test_actions=None,
+        ci_ft_test_actions_path=None,
         tensor_model_parallel_size=1,
         pipeline_model_parallel_size=1,
         context_parallel_size=1,
