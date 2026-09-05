@@ -16,6 +16,7 @@ from miles.utils.ft_utils.health_checker import BaseHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import NonRetryableError
 from miles.utils.tracking_utils.structured_log import log_structured
+from miles.utils.workers.rpc.client.misc import ServerRestartedError
 from miles.utils.workers.worker_handle import BaseWorkerHandle, WorkerUnreachableError
 from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 from miles.utils.workers.worker_spec import HostAndPort
@@ -290,7 +291,7 @@ class TrainerCell:
 async def _kill_worker(handle: BaseWorkerHandle) -> None:
     try:
         await asyncio.wait_for(handle.kill_self(), timeout=KILL_RPC_TIMEOUT_S)
-    except WorkerUnreachableError:
+    except (WorkerUnreachableError, ServerRestartedError):
         return
     except (TimeoutError, asyncio.TimeoutError):
         logger.warning("Timed out asking a worker to kill itself; falling back to the death confirmation probe")
