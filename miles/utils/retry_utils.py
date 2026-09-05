@@ -85,7 +85,7 @@ async def retry_until_deadline(
             log_structured(
                 logger.info,
                 **{"op": "retry_until_deadline", **(log_fields or {})},
-                phase="attempt_failed",
+                phase="retrying",
                 attempt=attempt,
                 sleep_s=round(sleep_seconds, 3),
                 remaining_s=round(expires_at - time.monotonic(), 3),
