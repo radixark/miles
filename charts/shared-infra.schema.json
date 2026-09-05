@@ -30,7 +30,12 @@
             "not": {
               "enum": [
                 "PYTHONPATH",
-                "MILES_SCRIPT_ENV_REPORT"
+                "MILES_SCRIPT_ENV_REPORT",
+                "MILES_CELL_INDEX",
+                "MILES_POD_INDEX",
+                "MILES_BASE_GPU_ID",
+                "MILES_K8S_NAMESPACE",
+                "MILES_K8S_RELEASE"
               ]
             },
             "pattern": "^[ -<>-~]+$"
