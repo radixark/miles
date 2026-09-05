@@ -1,40 +1,26 @@
 import logging
 import os
 from argparse import Namespace
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import partial
-from typing import TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
 
 from miles.backends.fsdp_utils.adaptations import routing_replay
-from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
 from miles.backends.training_utils import checkpoint
-from miles.backends.training_utils.data import DataIterator, get_data_iterator, get_rollout_data
-from miles.backends.training_utils.log_utils import log_rollout_data
-from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
-from miles.backends.training_utils.offload import offload_to_host, reload_to_device
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
-from miles.backends.training_utils.torch_native_loop import (
-    LinearStepRunner,
-    StepMetrics,
-    clip_and_report,
-    run_log_probs,
-    run_optimizer_steps,
-)
+from miles.backends.training_utils.torch_native_actor import TorchNativeTrainRayActor
+from miles.backends.training_utils.torch_native_loop import LinearStepRunner, StepMetrics, clip_and_report
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
-from miles.ray.train_actor import TrainRayActor
-from miles.utils import train_dump_utils, train_metric_utils
+from miles.utils import train_dump_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.profile_utils import TrainProfiler
-from miles.utils.ray_utils import Box
-from miles.utils.timer import Timer, inverse_timer, timer
+from miles.utils.replay_base import routing_replay_manager
+from miles.utils.timer import Timer
 from miles.utils.tracking_utils.tracking import init_tracking
 
 from .adaptations.class_patches import apply_class_patches, apply_model_instance_patches
@@ -45,14 +31,12 @@ from .hf_weight_iterator import get_hf_weight_iterator
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
 
-if TYPE_CHECKING:
-    from miles.ray.rollout.inference_controller import UpdatableEngines
-    from miles.utils.audit_utils.witness.allocator import WitnessInfo
-
 logger = logging.getLogger(__name__)
 
 
-class FSDPTrainRayActor(TrainRayActor):
+class FSDPTrainRayActor(TorchNativeTrainRayActor):
+    routing_replay = routing_replay
+
     """Simplified TrainRayActor for pure HF+FSDP training.
 
     Initializes the stock HF model on rank0 (others on meta), wraps it in FSDP2, and provides the
@@ -114,11 +98,7 @@ class FSDPTrainRayActor(TrainRayActor):
             self.processor = assets.processor
 
         self.precision_policy = resolve_precision_policy(self.hf_config, self.args)
-        try:
-            self._flops_args = flops_args_from_hf_config(self.hf_config)
-        except Exception as e:
-            self._flops_args = None
-            logger.warning(f"MFU will not be reported, {type(self.hf_config).__name__} could not be sized: {e}")
+        self._init_flops(self.hf_config)
 
         routing_replay.enable(args)
 
@@ -194,6 +174,9 @@ class FSDPTrainRayActor(TrainRayActor):
         self.ref_model = None
         if with_ref:
             self.ref_model = self._create_ref_model(args.ref_load)
+            self.ref_runner = LinearStepRunner(partial(self._logprob_forward, self.ref_model))
+        self.model_parts = [self.model]
+        self.optimizers = [self.optimizer]
 
         self.weight_updater = WeightUpdater(
             self.args,
@@ -329,16 +312,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         return model
 
-    @timer
-    def sleep(self) -> None:
-        if self.args.offload_train:
-            offload_to_host([self.model], [self.optimizer])
-
-    @timer
-    def wake_up(self) -> None:
-        if self.args.offload_train:
-            reload_to_device([self.model], [self.optimizer])
-
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Delegate checkpoint saving to the shared checkpoint utilities."""
         if self.args.debug_rollout_only or self.args.save is None:
@@ -346,24 +319,6 @@ class FSDPTrainRayActor(TrainRayActor):
 
         assert not self.args.async_save, "FSDPTrainRayActor does not support async_save yet."
         checkpoint.save(self, rollout_id)
-
-    def _compute_log_prob(
-        self,
-        model_tag: str,
-        data_iterator: DataIterator,
-        num_microbatches: list[int],
-        store_prefix: str = "",
-    ) -> dict[str, list[torch.Tensor]]:
-        """Token log-probabilities over the rollout, from the actor or the reference model."""
-        with self._active_model(model_tag) as model:
-            return run_log_probs(
-                self.args,
-                data_iterator,
-                num_microbatches,
-                LinearStepRunner(partial(self._logprob_forward, model)),
-                profiler=self.prof,
-                store_prefix=store_prefix,
-            )
 
     @contextmanager
     def _active_model(self, model_tag: str):
@@ -399,82 +354,13 @@ class FSDPTrainRayActor(TrainRayActor):
         with precision_forward_context(self.precision_policy):
             return model(**model_args).logits
 
-    def train(
-        self,
-        rollout_id: int,
-        rollout_data_ref: Box,
-        witness_info: "WitnessInfo | None" = None,
-        attempt: int = 0,
-    ) -> TrainStepOutput:
-        """Run one training update over a rollout batch (``rollout_data_ref`` is a Box handle to the
-        Ray object ref with the rollout tensors; fetched and partitioned by data-parallel rank)."""
-        assert witness_info is None
-        assert attempt == 0
+    def step_runner(self) -> LinearStepRunner:
+        return LinearStepRunner(self._forward, self._zero_grad, self._apply_step)
 
-        self._heartbeat.bump()
-        if self.args.offload_train:
-            self.wake_up()
+    def ref_context(self):
+        return self._active_model("ref")
 
-        with inverse_timer("train_wait"), timer("train"), ExitStack() as stack:
-            rollout_data, store_get_result = get_rollout_data(self.args, rollout_data_ref, witness_info=None)
-            stack.enter_context(store_get_result)
-            if self.args.debug_rollout_only:
-                return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-            self._train_core(rollout_id=rollout_id, rollout_data=rollout_data)
-
-        train_metric_utils.log_perf_data_raw(
-            rollout_id=rollout_id,
-            args=self.args,
-            is_primary_rank=dist.get_rank() == 0,
-            compute_total_fwd_flops=(
-                (lambda seq_lens: fwd_tflops_per_gpu(seq_lens, self._flops_args, dist.get_world_size()))
-                if self._flops_args is not None
-                else None
-            ),
-        )
-
-        self._heartbeat.bump()
-        return TrainStepOutput(outcome=TrainStepOutcome.NORMAL)
-
-    def _train_core(self, rollout_id: int, rollout_data) -> None:
-        data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
-
-        routing_replay.fill(self.args, self.model, data_iterator, num_microbatches, rollout_data)
-
-        data_iterator = data_iterator[0]
-
-        assert (
-            len(num_microbatches) > 0
-        ), f"Invalid num_microbatches {num_microbatches} for micro_batch_size {self.args.micro_batch_size} and global_batch_size {self.args.global_batch_size}"
-
-        if self.ref_model is not None:
-            with routing_replay.stage(routing_replay.FALLTHROUGH):
-                ref_results = self._compute_log_prob("ref", data_iterator, num_microbatches, store_prefix="ref_")
-            rollout_data.update(ref_results)
-
-        with routing_replay.stage(routing_replay.log_prob_stage(self.args)):
-            actor_results = self._compute_log_prob("actor", data_iterator, num_microbatches)
-        routing_replay.rewind()
-        rollout_data.update(actor_results)
-
-        compute_advantages_and_returns(self.args, rollout_data)
-
-        log_rollout_data(rollout_id, self.args, rollout_data)
-
-        with routing_replay.stage(routing_replay.REPLAY_BACKWARD), timer("actor_train"):
-            run_optimizer_steps(
-                self.args,
-                rollout_id,
-                data_iterator,
-                num_microbatches,
-                LinearStepRunner(self._train_forward, self._zero_grad, self._apply_step),
-                profiler=self.prof,
-            )
-
-        routing_replay.reset()
-
-        self.prof.step(rollout_id=rollout_id)
-
+    def after_rollout(self, rollout_id: int, rollout_data) -> None:
         if self.args.save_debug_train_data is not None:
             train_dump_utils.save_debug_train_data(self.args, rollout_id=rollout_id, rollout_data=rollout_data)
 
@@ -489,16 +375,13 @@ class FSDPTrainRayActor(TrainRayActor):
             self.ref_model.load_state_dict(actor_state)
             self.ref_model.cpu()
 
-    def _train_forward(self, batch: dict) -> torch.Tensor:
-        """Grad-carrying forward for the training pass.
-
-        Keeps the routing-replay stage and precision context on the same
-        per-microbatch boundary they were on before, so a replay-enabled run sees
-        the identical sequence of stage transitions.
-        """
+    def _forward(self, batch: dict) -> torch.Tensor:
+        """The training pass brackets each real forward in ``replay_forward`` so
+        activation-checkpoint recompute keeps the backward cursor to itself."""
         model_args = self._get_model_inputs_args(batch)
-        # bf16 logits (see log_probs phase); per-response chunks are upcast to fp32 in the loss path.
-        with routing_replay.stage(routing_replay.REPLAY_FORWARD), precision_forward_context(self.precision_policy):
+        replaying = routing_replay_manager.stage == routing_replay.REPLAY_BACKWARD
+        replay_stage = routing_replay.stage(routing_replay.REPLAY_FORWARD) if replaying else nullcontext()
+        with replay_stage, precision_forward_context(self.precision_policy):
             return self.model(**model_args).logits
 
     def _zero_grad(self) -> None:
@@ -512,19 +395,6 @@ class FSDPTrainRayActor(TrainRayActor):
             grad_norm=grad_norm,
             extra_metrics={f"lr-pg_{i}": group["lr"] for i, group in enumerate(self.optimizer.param_groups)},
         )
-
-    @timer
-    def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
-        if self.args.debug_train_only or self.args.debug_rollout_only:
-            return None
-        self.weight_updater.reconnect_if_needed(info)
-        print_memory("before update_weights")
-        self.weight_updater.update_weights()
-        print_memory("after update_weights")
-        if self.args.ci_test:
-            self.weight_updater.verify_engine_version(info.rollout_engines)
-        clear_memory()
-        return self.weight_updater.weight_version
 
     def _create_ref_model(self, ref_load_path: str | None):
         """Create a separate FSDP2 ref model. ALWAYS uses CPUOffloadPolicy (regardless of the actor's

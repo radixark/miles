@@ -1,13 +1,12 @@
-"""FSDP's HF weight iterator and the actor glue around the shared updater."""
+"""FSDP's HF weight iterator."""
 
 from argparse import Namespace
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import torch
 
-from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.fsdp_utils import hf_weight_iterator as iterator_module
 from miles.backends.training_utils.weight_update.hf_weight_iterator import WeightUpdatePlacement
 
@@ -82,38 +81,3 @@ def test_batched_experts_are_unfused_through_the_registered_transform():
 def test_lora_adapters_are_refused():
     with pytest.raises(NotImplementedError, match="LoRA"):
         list(_iterator(_model({}))._iter_hf_adapter_units("lora", None, materialize=True))
-
-
-def _make_actor(*, ci_test: bool):
-    actor = object.__new__(actor_module.FSDPTrainRayActor)
-    actor.args = SimpleNamespace(debug_train_only=False, debug_rollout_only=False, ci_test=ci_test)
-    actor.weight_updater = MagicMock(weight_version=4)
-    return actor
-
-
-def test_the_actor_runs_reconnect_sync_and_version_check_in_order():
-    actor = _make_actor(ci_test=True)
-    info = SimpleNamespace(rollout_engines=[object()])
-    with patch.object(actor_module, "clear_memory"), patch.object(actor_module, "print_memory"):
-        version = actor.update_weights(info)
-    assert version == 4
-    assert [c[0] for c in actor.weight_updater.method_calls] == [
-        "reconnect_if_needed",
-        "update_weights",
-        "verify_engine_version",
-    ]
-    actor.weight_updater.verify_engine_version.assert_called_once_with(info.rollout_engines)
-
-
-def test_the_version_check_is_ci_only():
-    actor = _make_actor(ci_test=False)
-    with patch.object(actor_module, "clear_memory"), patch.object(actor_module, "print_memory"):
-        actor.update_weights(SimpleNamespace(rollout_engines=[object()]))
-    actor.weight_updater.verify_engine_version.assert_not_called()
-
-
-def test_debug_modes_skip_the_sync_entirely():
-    actor = _make_actor(ci_test=True)
-    actor.args.debug_rollout_only = True
-    assert actor.update_weights(SimpleNamespace(rollout_engines=[])) is None
-    actor.weight_updater.update_weights.assert_not_called()

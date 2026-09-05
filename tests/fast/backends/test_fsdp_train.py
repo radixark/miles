@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 from miles.backends.fsdp_utils import actor as actor_module
 from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.backends.training_utils import torch_native_actor as base_module
 
 
 @contextmanager
@@ -20,10 +21,10 @@ def test_fsdp_train_debug_rollout_only_returns_a_normal_output(monkeypatch):
     actor._train_core = Mock()
     actor.wake_up = Mock()
     monkeypatch.setattr(
-        actor_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
+        base_module, "get_rollout_data", lambda _args, _ref, **_kwargs: ({"tokens": []}, nullcontext())
     )
-    monkeypatch.setattr(actor_module, "timer", _noop_timer)
-    monkeypatch.setattr(actor_module, "inverse_timer", _noop_timer)
+    monkeypatch.setattr(base_module, "timer", _noop_timer)
+    monkeypatch.setattr(base_module, "inverse_timer", _noop_timer)
 
     result = actor.train(3, object())
 
