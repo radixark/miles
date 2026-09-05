@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
   "prompt_version": "1",
-  "enabled": false,
+  "enabled": true,
   "mode": "job_log",
   "model": "gpt-5.6-luna",
   "reasoning_effort": "low",
