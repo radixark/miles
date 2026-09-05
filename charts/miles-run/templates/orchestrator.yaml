@@ -43,13 +43,18 @@ spec:
       restartPolicy: Always
       containers:
         - name: orchestrator
-          {{- include "miles-run.containerDefaults" . | nindent 10 }}
+          {{- $extraMounts := include "miles-run.uninstallManifestVolumeMount" . }}
+          {{- include "miles-run.containerDefaultsWith" (dict "context" . "extraMounts" $extraMounts) | nindent 10 }}
           command:
             - python
             - -m
             - miles.utils.external_utils.command_utils.helm_backend.orchestrator.wrapper
             - --state-file
             - {{ .Values.run.stateFile | quote }}
+            {{- if include "miles-run.autoUninstallEnabled" . }}
+            - --uninstall-manifest
+            - {{ printf "%s/%s" (include "miles-run.uninstallManifestDir" .) (include "miles-run.uninstallManifestFileName" .) | quote }}
+            {{- end }}
             - --
             {{- range .Values.run.orchestrator.command }}
             - {{ . | quote }}
@@ -59,7 +64,7 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.run.orchestrator.resources | nindent 12 }}
-      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim)) | join "\n" }}
+      {{- $volumes := compact (list (include "miles-common.sharedStorageVolume" . | trim) (include "miles-run.nodeLocalVolume" . | trim) (include "miles-run.uninstallManifestVolume" . | trim)) | join "\n" }}
       {{- with $volumes }}
       volumes:
         {{- . | nindent 8 }}
