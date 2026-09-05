@@ -14,6 +14,7 @@ class CellLabelKeys(FrozenStrictBaseModel):
     cell_size_annotation: str
     meta_annotation_prefix: str
     gpu_ids_meta: str
+    base_gpu_id_annotation: str
 
 
 class ParsedPod(FrozenStrictBaseModel):
