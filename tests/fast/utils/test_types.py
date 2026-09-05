@@ -1,4 +1,4 @@
-"""Unit tests for Sample.strip_last_output_tokens."""
+"""Unit tests for Sample helpers."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -331,3 +331,45 @@ class TestWeightVersions:
 
         s.weight_versions = [WeightVersionsPerCall(spans=[WeightVersionSpan("v1", 2, 4)])]
         assert s.oldest_weight_version is None
+
+
+class TestSpecInfo:
+    def test_ratio_properties(self):
+        info = Sample.SpecInfo(
+            spec_num_correct_drafts=3,
+            spec_num_proposed_drafts=4,
+            spec_verify_ct=2,
+            completion_tokens=5,
+        )
+
+        assert info.spec_accept_rate == 0.75
+        assert info.spec_accept_length == 2.5
+        assert Sample.SpecInfo().spec_accept_rate == 0.0
+        assert Sample.SpecInfo().spec_accept_length == 0.0
+
+    def test_add_ignores_completion_without_speculative_verification(self):
+        info = Sample.SpecInfo()
+
+        info.add({"completion_tokens": 1})
+
+        assert info == Sample.SpecInfo()
+
+    def test_from_dict_reads_legacy_miles_fields(self):
+        sample = Sample.from_dict(
+            {
+                "status": "completed",
+                "spec_info": {
+                    "spec_accept_token_num": 3,
+                    "spec_draft_token_num": 5,
+                    "spec_verify_ct": 2,
+                    "completion_token_num": 7,
+                },
+            }
+        )
+
+        assert sample.spec_info == Sample.SpecInfo(
+            spec_num_correct_drafts=3,
+            spec_num_proposed_drafts=5,
+            spec_verify_ct=2,
+            completion_tokens=7,
+        )

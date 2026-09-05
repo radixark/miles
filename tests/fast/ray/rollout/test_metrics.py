@@ -7,10 +7,12 @@ from miles.ray.rollout.metrics import (
     _compute_episode_response_length_metrics,
     _compute_metrics_from_samples,
     _compute_passrate_from_samples,
+    _compute_spec_metrics,
     _compute_training_sample_metrics,
     _compute_zero_std_metrics,
     log_rollout_data,
 )
+from miles.rollout.session.v2.metrics import SESSION_ROLLOUT_METRICS_KEY
 from miles.utils.types import AdapterRef, Sample, WeightVersionSpan, WeightVersionsPerCall
 
 
@@ -202,6 +204,70 @@ class TestComputeZeroStdMetrics:
         # No groups → no all_zero/all_one keys (the function guards on total_groups>0).
         assert "zero_std/all_zero_percentage" not in out
         assert "zero_std/all_one_percentage" not in out
+
+
+class TestComputeSpecMetrics:
+    def test_aggregates_sglang_counters_before_computing_ratios(self):
+        args = make_args(sglang_speculative_algorithm="EAGLE")
+        samples = make_samples_grouped(1, 2)
+        samples[0].spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=1,
+            spec_num_proposed_drafts=2,
+            spec_verify_ct=1,
+            completion_tokens=2,
+        )
+        samples[1].spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=9,
+            spec_num_proposed_drafts=10,
+            spec_verify_ct=9,
+            completion_tokens=27,
+        )
+
+        out = _compute_spec_metrics(args, samples)
+
+        assert out == {
+            "spec_accept_rate": pytest.approx(10 / 12),
+            "spec_accept_length": pytest.approx(29 / 10),
+        }
+
+    @staticmethod
+    def _member(session_id, metrics, *, group_index=0, rollout_id=0):
+        sample = Sample(group_index=group_index, index=rollout_id, rollout_id=rollout_id)
+        sample.metadata[SESSION_ROLLOUT_METRICS_KEY] = {
+            "session_id": session_id,
+            "metrics": metrics,
+        }
+        return sample
+
+    @staticmethod
+    def _spec_info(correct, proposed, verify, completion):
+        return {
+            "spec_info": {
+                "spec_num_correct_drafts": correct,
+                "spec_num_proposed_drafts": proposed,
+                "spec_verify_ct": verify,
+                "completion_tokens": completion,
+            }
+        }
+
+    def test_v2_deduplicates_shared_metrics_by_session_identity(self):
+        args = make_args(sglang_speculative_algorithm="EAGLE", use_session_server="v2")
+        session_1_metrics = self._spec_info(2, 4, 2, 6)
+        samples = [
+            self._member("sid-1", session_1_metrics, rollout_id=10),
+            self._member("sid-1", session_1_metrics, rollout_id=10),
+            self._member("sid-2", self._spec_info(3, 6, 1, 2), rollout_id=10),
+        ]
+        for sample in samples:
+            sample.spec_info = Sample.SpecInfo(100, 100, 1, 100)
+
+        out = _compute_spec_metrics(args, samples)
+
+        assert out == {
+            "spec_accept_rate": pytest.approx(5 / 10),
+            "spec_accept_length": pytest.approx(8 / 3),
+        }
+        assert _compute_spec_metrics(args, samples[1:]) == out
 
 
 class TestTitoMismatchMetrics:

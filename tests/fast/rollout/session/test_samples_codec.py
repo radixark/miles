@@ -13,6 +13,7 @@ from safetensors import SafetensorError
 
 from miles.rollout.session.samples.codec import (
     COMPUTED_FIELDS,
+    COMPUTED_FIELDS_V2,
     ROLLOUT_SAMPLING_MASK_FIELDS,
     decode_samples_and_merge_input_sample,
     encode_samples,
@@ -113,6 +114,20 @@ class TestSamplesWireCodec:
         assert out.train_metadata == {"loss": "ppo"}
         # the input template itself is never mutated
         assert template.tokens == [] and template.metadata == {"task": "t", "lifecycle": "stale"}
+
+    @pytest.mark.parametrize("fields", [COMPUTED_FIELDS, COMPUTED_FIELDS_V2])
+    def test_spec_info_round_trips(self, fields):
+        spec_info = Sample.SpecInfo(
+            spec_num_correct_drafts=3,
+            spec_num_proposed_drafts=5,
+            spec_verify_ct=2,
+            completion_tokens=7,
+        )
+
+        payload = encode_samples([_computed_sample(spec_info=spec_info)], {}, fields=fields)
+        (out,) = decode_samples_and_merge_input_sample(payload, Sample(), fields=fields).samples
+
+        assert out.spec_info.to_dict() == spec_info.to_dict()
 
     def test_multi_sample_reply_keeps_per_sample_tensors(self):
         a = _computed_sample(metadata={"server_only": {"sample": "a"}})
