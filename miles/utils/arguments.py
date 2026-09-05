@@ -23,6 +23,7 @@ from miles.utils.lora import is_lora_enabled
 from miles.utils.megatron_args_utils import compute_megatron_world_size_except_dp
 from miles.utils.object_store import ObjectStoreBackend
 from miles.utils.run_uuid import RUN_UUID_LENGTH, generate_run_uuid, validate_run_uuid
+from miles.utils.sampling_mask import top_p_sampling_replay_enabled
 from miles.utils.tracking_utils.ci_history import RECORD_DIR_ENV
 
 logger = logging.getLogger(__name__)
@@ -553,10 +554,23 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="the temperature for the inference engine during rollout.",
             )
             parser.add_argument(
-                "--rollout-top-p", type=float, default=1.0, help="the top-p for the inference engine during rollout."
+                "--rollout-top-p",
+                type=float,
+                default=1.0,
+                help=(
+                    "the top-p for the inference engine during rollout. Values below 1 enable rollout "
+                    "sampling-support replay and require --use-miles-router plus a positive "
+                    "--rollout-top-k to bound the support."
+                ),
             )
             parser.add_argument(
-                "--rollout-top-k", type=int, default=-1, help="the top-k for the inference engine during rollout."
+                "--rollout-top-k",
+                type=int,
+                default=-1,
+                help=(
+                    "the top-k for the inference engine during rollout. When top-p sampling-support replay "
+                    "is enabled, this must be positive and bounds the returned support."
+                ),
             )
             parser.add_argument(
                 "--rollout-max-context-len",
@@ -2996,6 +3010,27 @@ def miles_validate_args(args):
             "R3 payloads can become very large. TODO: Retract-mode weight updates R3 "
             "have known issues in SGLang and need to be fixed."
         )
+
+    if not 0.0 < args.rollout_top_p <= 1.0:
+        raise ValueError(f"--rollout-top-p must be in (0, 1], got {args.rollout_top_p}")
+    if args.rollout_top_k != -1 and args.rollout_top_k < 1:
+        raise ValueError(f"--rollout-top-k must be -1 or at least 1, got {args.rollout_top_k}")
+    if top_p_sampling_replay_enabled(args):
+        if args.rollout_top_k == -1:
+            raise ValueError(
+                "--rollout-top-p below 1 requires a positive --rollout-top-k; "
+                "top-p alone does not bound the returned support size"
+            )
+        if args.recompute_logprobs_via_prefill:
+            raise ValueError(
+                "top-p sampling replay cannot be combined with --recompute-logprobs-via-prefill; "
+                "prefill scoring does not preserve the rollout sampling support"
+            )
+        if not args.use_miles_router:
+            raise ValueError(
+                "--rollout-top-p below 1 currently requires --use-miles-router; "
+                "the SGLang router does not forward return_sampling_mask"
+            )
 
     if not args.use_session_server and args.tito_model != TITOTokenizerType.DEFAULT.value:
         raise ValueError(

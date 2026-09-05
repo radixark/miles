@@ -35,7 +35,11 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
         input_ids = prompt_ids
 
     payload, halt_status = compute_request_payload(
-        args, input_ids=input_ids, sampling_params=sampling_params, multimodal_inputs=sample.multimodal_inputs
+        args,
+        input_ids=input_ids,
+        sampling_params=sampling_params,
+        multimodal_inputs=sample.multimodal_inputs,
+        evaluation=input.evaluation,
     )
     if payload is None:
         sample.status = halt_status
