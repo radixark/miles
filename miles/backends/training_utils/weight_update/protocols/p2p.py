@@ -210,9 +210,9 @@ class UpdateWeightP2P(WeightTransferProtocol):
             rl_quant_profile=server_args.rl_quant_profile,
         )
         server_args_module.set_global_server_args_for_scheduler(server_args)
-        initialize_moe_config(server_args)
-        initialize_fp8_gemm_config(server_args)
-        initialize_fp4_gemm_config(server_args)
+        initialize_moe_config()
+        initialize_fp8_gemm_config()
+        initialize_fp4_gemm_config()
 
         # Monkey-patch the loader-level post_load_weights to no-op BEFORE get_model,
         # because get_model() calls post_load_weights() internally (loader.py:1310)
