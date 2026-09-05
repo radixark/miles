@@ -15,6 +15,7 @@ from miles.utils.ft_utils.api_server.models import TriState
 from miles.utils.ft_utils.health_checker import BaseHealthChecker, NoopHealthChecker
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
 from miles.utils.retry_utils import retry
+from miles.utils.workers.naming import compute_cell_id
 from miles.utils.workers.ray_worker_manager import RayWorkerManager
 from miles.utils.workers.types import DeploymentIdentity
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
@@ -136,7 +137,7 @@ def make_cell(
         args=MagicMock(),
         role="actor",
         with_ref=False,
-        cell_id=f"trainer-engine-actor-{cell_index}",
+        cell_id=compute_cell_id(pool_id="trainer-engine-actor", cell_index=cell_index),
         cell_index=cell_index,
         workers_hash="pseudo-hash-1",
         health_checker=health_checker if health_checker is not None else NoopHealthChecker(),
