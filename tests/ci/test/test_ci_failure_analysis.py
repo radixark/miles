@@ -136,6 +136,19 @@ class OIDCResponse:
         return self.payload
 
 
+class CapturingOIDCOpener:
+    def __init__(self, response=b'{"value":"header.payload.signature"}', error=None):
+        self.response = response
+        self.error = error
+        self.requests = []
+
+    def open(self, request, timeout):
+        self.requests.append((request, timeout))
+        if self.error is not None:
+            raise self.error
+        return OIDCResponse(self.response)
+
+
 def with_cause(error, cause):
     error.__cause__ = cause
     return error
@@ -717,4 +730,129 @@ def test_oidc_marker_subclass_attribute_cannot_spoof_reason():
         "error_type": "GitHubOIDCProviderError",
         "root_cause_type": "GitHubOIDCProviderError",
     }
+    assert "sensitive" not in json.dumps(audit)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://pipelines.actions.githubusercontent.com/oidc/token?request_data=opaque",
+        "https://pipelines-ghubeus1.actions.githubusercontent.com/oidc/token?request_data=opaque",
+        "https://regional.runner.actions.githubusercontent.com/oidc/token?request_data=opaque",
+        "https://PIPELINES.ACTIONS.GITHUBUSERCONTENT.COM:443/oidc/token?request_data=opaque",
+    ],
+)
+def test_github_com_oidc_endpoint_accepts_strict_actions_subdomains(monkeypatch, url):
+    opener = CapturingOIDCOpener()
+    handlers = []
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", url)
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(
+        ANALYZER.urllib.request,
+        "build_opener",
+        lambda *args: handlers.extend(args) or opener,
+    )
+
+    provider = ANALYZER._github_actions_oidc_provider("https://api.openai.com/v1")
+    assert provider["get_token"]() == "header.payload.signature"
+    assert len(opener.requests) == 1
+    assert opener.requests[0][1] == 15
+    assert any(isinstance(handler, ANALYZER._NoRedirect) for handler in handlers)
+
+
+def test_oidc_endpoint_preserves_opaque_path_and_query_while_replacing_audience(monkeypatch):
+    opener = CapturingOIDCOpener()
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://regional.actions.githubusercontent.com/opaque/%2Fpath?first=a%2Fb&repeat=1&repeat=2&audience=old&%61udience=older&flag",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(ANALYZER.urllib.request, "build_opener", lambda *args: opener)
+
+    provider = ANALYZER._github_actions_oidc_provider("new audience/value")
+    assert provider["get_token"]() == "header.payload.signature"
+    requested_url = opener.requests[0][0].full_url
+    assert requested_url == (
+        "https://regional.actions.githubusercontent.com/opaque/%2Fpath?"
+        "first=a%2Fb&repeat=1&repeat=2&flag&audience=new+audience%2Fvalue"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://actions.githubusercontent.com/oidc/token",
+        "https://evilactions.githubusercontent.com/oidc/token",
+        "https://pipelines.actions.githubusercontent.com.evil.example/oidc/token",
+        "https://actions.githubusercontent.com.evil.example/oidc/token",
+        "https://pipelines.actions.githubusercontent.com./oidc/token",
+        "https://127.0.0.1/oidc/token",
+        "https://[::1]/oidc/token",
+        "https://user@pipelines.actions.githubusercontent.com/oidc/token",
+        "https://user:password@pipelines.actions.githubusercontent.com/oidc/token",
+        "https://pipelines.actions.githubusercontent.com:444/oidc/token",
+        "https://pipelines.actions.githubusercontent.com:/oidc/token",
+        "https://pipelines.actions.githubusercontent.com:notaport/oidc/token",
+        "https://pipelines.actions.githubusercontent.com:65536/oidc/token",
+        "https://pipelines.actions.githubusercontent.com/oidc/token#fragment",
+        "https://pipelines.actions.githubusercontent.com/oidc/token#",
+        "http://pipelines.actions.githubusercontent.com/oidc/token",
+        "https://pipelines.actions.githubusercontent.com",
+        "https://pipelines.actions.githubusercontent.com/",
+        "https://pipelines.actions.githubusercontent.com//other/path",
+        "https://pipelines.actions.githubusercontent.com/\\other/path",
+        "https://pipelines.actions.githubusercontent.com/oidc path",
+        "https://pipelines.actions.githubusercontent.com/oidc\tpath",
+        "https://-regional.actions.githubusercontent.com/oidc/token",
+        "https://regional-.actions.githubusercontent.com/oidc/token",
+        "https://regional..actions.githubusercontent.com/oidc/token",
+    ],
+)
+def test_github_com_oidc_endpoint_rejects_unsafe_or_malformed_urls_before_request(monkeypatch, url):
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_URL", url)
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(
+        ANALYZER.urllib.request,
+        "build_opener",
+        lambda *args: (_ for _ in ()).throw(AssertionError("request must not be sent")),
+    )
+
+    provider = ANALYZER._github_actions_oidc_provider("https://api.openai.com/v1")
+    with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
+        provider["get_token"]()
+    audit = ANALYZER._analysis_error_audit(caught.value)
+    assert audit["oidc_failure_reason"] == "endpoint_validation"
+    assert url not in json.dumps(audit)
+
+
+def test_oidc_provider_does_not_follow_redirects(monkeypatch):
+    redirect = urllib.error.HTTPError(
+        "https://regional.actions.githubusercontent.com/oidc/token",
+        302,
+        "sensitive-redirect-reason",
+        {"Location": "https://evil.invalid/?token=sensitive-token"},
+        None,
+    )
+    opener = CapturingOIDCOpener(error=redirect)
+    handlers = []
+    monkeypatch.setenv(
+        "ACTIONS_ID_TOKEN_REQUEST_URL",
+        "https://regional.actions.githubusercontent.com/oidc/token?request_data=opaque",
+    )
+    monkeypatch.setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "sensitive-request-token")
+    monkeypatch.setattr(
+        ANALYZER.urllib.request,
+        "build_opener",
+        lambda *args: handlers.extend(args) or opener,
+    )
+
+    provider = ANALYZER._github_actions_oidc_provider("https://api.openai.com/v1")
+    with pytest.raises(ANALYZER.GitHubOIDCProviderError) as caught:
+        provider["get_token"]()
+    audit = ANALYZER._analysis_error_audit(caught.value)
+    assert len(opener.requests) == 1
+    assert any(isinstance(handler, ANALYZER._NoRedirect) for handler in handlers)
+    assert audit["oidc_failure_reason"] == "request_error"
+    assert audit["root_http_status"] == 302
+    assert "evil.invalid" not in json.dumps(audit)
     assert "sensitive" not in json.dumps(audit)
