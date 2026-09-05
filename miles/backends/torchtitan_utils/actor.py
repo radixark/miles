@@ -6,7 +6,6 @@ touches torchtitan internals.
 """
 
 import logging
-import random
 from argparse import Namespace
 
 import torch.distributed as dist
@@ -21,14 +20,13 @@ from miles.backends.training_utils.data import get_data_iterator, get_rollout_da
 from miles.backends.training_utils.log_utils import log_rollout_data
 from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
+from miles.backends.training_utils.offload import offload_to_host, reload_to_device
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native_loop import run_log_probs, run_optimizer_steps
 from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import async_utils
 from miles.utils.context_utils import with_defer
-from miles.utils.distributed_utils import get_gloo_group
-from miles.utils.memory_utils import clear_memory, move_optimizer_state, print_memory
+from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -132,25 +130,13 @@ class TorchtitanTrainRayActor(TrainRayActor):
 
     @timer
     def sleep(self) -> None:
-        if not self.args.offload_train:
-            return
-        print_memory("before offload model")
-        for part in self.trainer.model_parts:
-            part.cpu()
-        move_optimizer_state(self.trainer.optimizers.optimizers, "cpu")
-        clear_memory()
-        dist.barrier(group=get_gloo_group())
-        print_memory("after offload model")
+        if self.args.offload_train:
+            offload_to_host(self.trainer.model_parts, self.trainer.optimizers.optimizers)
 
     @timer
     def wake_up(self) -> None:
-        if not self.args.offload_train:
-            return
-        for part in self.trainer.model_parts:
-            part.cuda()
-        move_optimizer_state(self.trainer.optimizers.optimizers, "cuda")
-        dist.barrier(group=get_gloo_group())
-        print_memory("after wake_up model")
+        if self.args.offload_train:
+            reload_to_device(self.trainer.model_parts, self.trainer.optimizers.optimizers)
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         if self.args.debug_rollout_only or self.args.save is None:
@@ -240,27 +226,12 @@ class TorchtitanTrainRayActor(TrainRayActor):
     def update_weights(self, info) -> int | None:  # type: ignore[override]
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
-
-        if self.weight_updater.conn_status.needs_reconnect(info.snapshot_cell_id_to_hashes):
-            self.weight_updater.connect_rollout_engines(
-                info.rollout_engines,
-                engine_gpu_counts=info.engine_gpu_counts,
-                engine_gpu_offsets=info.engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(info.snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
-
+        self.weight_updater.reconnect_if_needed(info)
         print_memory("before update_weights")
         self.weight_updater.update_weights()
         print_memory("after update_weights")
-
-        if self.args.ci_test and info.rollout_engines and self.weight_updater.weight_version > 0:
-            engine = random.choice(info.rollout_engines)
-            engine_version = async_utils.run(engine.get_weight_version())
-            if str(engine_version) != str(self.weight_updater.weight_version):
-                raise RuntimeError(
-                    f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                )
+        if self.args.ci_test:
+            self.weight_updater.verify_engine_version(info.rollout_engines)
         clear_memory()
         return self.weight_updater.weight_version
 

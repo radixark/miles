@@ -1,7 +1,6 @@
 import atexit
 import logging
 import os
-import random
 import shutil
 from argparse import Namespace
 from contextlib import ExitStack, nullcontext
@@ -17,7 +16,7 @@ from miles.backends.megatron_utils.rematerialize_utils import build_main_cast_co
 from miles.dashboard import hooks as dashboard_hooks
 from miles.ray.specs.train import compute_trainer_pool_id
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import async_utils, train_dump_utils
+from miles.utils import train_dump_utils
 from miles.utils.argparse_utils import inplace_modify_args
 from miles.utils.audit_utils.event_logger.logger import event_logger_context
 from miles.utils.audit_utils.witness.allocator import WitnessInfo
@@ -777,24 +776,12 @@ class MegatronTrainRayActor(TrainRayActor):
             return None
 
         rollout_engines = info.rollout_engines
-        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
-        engine_gpu_counts = info.engine_gpu_counts
-        engine_gpu_offsets = info.engine_gpu_offsets
-        del info
 
         process_groups_are_temporary = self.args.offload_train and self._asleep
         if process_groups_are_temporary:
             reload_process_groups()
 
-        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
-        if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
+        needs_reconnect = self.weight_updater.reconnect_if_needed(info)
 
         if self.args.debug_skip_weight_update:
             if dist.get_rank() == 0:
@@ -827,13 +814,8 @@ class MegatronTrainRayActor(TrainRayActor):
                 self._multi_lora_pending_push.clear()
                 commit_weight_push(version_update_names, self._is_first_replica_megatron_main_rank)
 
-            if self.args.ci_test and len(rollout_engines) > 0 and not is_lora_enabled(self.args):
-                engine = random.choice(rollout_engines)
-                engine_version = async_utils.run(engine.get_weight_version())
-                if str(engine_version) != str(self.weight_updater.weight_version):
-                    raise RuntimeError(
-                        f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                    )
+            if self.args.ci_test and not is_lora_enabled(self.args):
+                self.weight_updater.verify_engine_version(rollout_engines)
 
             if getattr(self.args, "keep_old_actor", False):
                 if self.args.update_weights_interval == 1:
