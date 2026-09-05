@@ -6,6 +6,7 @@ from tests.fast.ray.rollout.conftest import make_args
 
 from miles.ray.rollout.inference_controller import InferenceController
 from miles.utils.context_lock import ContextLock
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 
 
 class _OrderRecordingInferenceController:
@@ -58,6 +59,7 @@ class _ColocatedCellStub:
 class _ServerStub:
     def __init__(self, server_cells: dict[str, _ColocatedCellStub]) -> None:
         self.server_cells = server_cells
+        self.health_checker_activeness = ActivenessTracker(active=True)
 
 
 def _make_inference_controller(**arg_overrides: object) -> InferenceController:
@@ -70,7 +72,7 @@ async def test_controller_pauses_health_checks_before_snapshotting_the_engines()
     order: list[str] = []
     controller = _make_inference_controller()
 
-    async def _record_pause() -> None:
+    async def _record_pause(model_id: str | None = None) -> None:
         order.append("health_monitoring_pause")
 
     async def _record_ensure_cells_ready(model_id: str | None = None) -> None:
