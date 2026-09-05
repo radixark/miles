@@ -5,6 +5,11 @@ from typing import Any, Literal
 import numpy as np
 
 
+REPETITION_WINDOW_SIZE_CHARS = 10_000
+REPETITION_WINDOW_STRIDE_CHARS = 5_000
+REPETITION_COMPRESSION_RATIO_THRESHOLD = 10.0
+
+
 def dict_add_prefix(d: dict[str, Any], prefix: str) -> dict[str, Any]:
     return {f"{prefix}{k}": v for k, v in d.items()}
 
@@ -108,12 +113,8 @@ def compression_ratio(
     return ratio, savings_pct
 
 
-REPETITION_WINDOW_SIZE_CHARS = 10_000
-REPETITION_WINDOW_STRIDE_CHARS = 5_000
-REPETITION_COMPRESSION_RATIO_THRESHOLD = 10.0
-
-
 def _repetition_windows(text: str) -> Iterator[str]:
+    """Yield overlapping windows, including the exact final suffix."""
     if len(text) < REPETITION_WINDOW_SIZE_CHARS:
         return
 
@@ -122,12 +123,16 @@ def _repetition_windows(text: str) -> Iterator[str]:
     for start in range(0, final_start + 1, REPETITION_WINDOW_STRIDE_CHARS):
         yield text[start : start + REPETITION_WINDOW_SIZE_CHARS]
         last_start = start
+
     if last_start != final_start:
         yield text[final_start:]
 
 
 def has_repetition(text: str) -> bool:
-    return any(compression_ratio(window)[0] > REPETITION_COMPRESSION_RATIO_THRESHOLD for window in _repetition_windows(text))
+    """Return whether any overlapping window is highly compressible."""
+    return any(
+        compression_ratio(window)[0] > REPETITION_COMPRESSION_RATIO_THRESHOLD for window in _repetition_windows(text)
+    )
 
 
 def compute_rollout_step(args, rollout_id):
