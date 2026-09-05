@@ -17,7 +17,7 @@ import pytest
 import torch
 
 from miles.backends.fsdp_utils.adaptations.weight_bridge import _hf_unfuse_experts_expand, get_param_transform
-from miles.backends.fsdp_utils.update_weight_utils import _iter_sync_named_params
+from miles.backends.fsdp_utils.hf_weight_iterator import _iter_sync_named_params
 
 
 @pytest.fixture(scope="module")

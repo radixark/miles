@@ -1,6 +1,5 @@
 import logging
 import os
-import random
 from argparse import Namespace
 from contextlib import ExitStack, contextmanager
 from functools import partial
@@ -16,6 +15,7 @@ from miles.backends.training_utils.data import DataIterator, get_data_iterator, 
 from miles.backends.training_utils.log_utils import log_rollout_data
 from miles.backends.training_utils.loss import compute_advantages_and_returns
 from miles.backends.training_utils.model_assets import load_model_assets
+from miles.backends.training_utils.offload import offload_to_host, reload_to_device
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native_loop import (
     LinearStepRunner,
@@ -24,13 +24,14 @@ from miles.backends.training_utils.torch_native_loop import (
     run_log_probs,
     run_optimizer_steps,
 )
+from miles.backends.training_utils.weight_update.updater import WeightUpdater
 from miles.ray.train_actor import TrainRayActor
-from miles.utils import async_utils, train_dump_utils, train_metric_utils
+from miles.utils import train_dump_utils, train_metric_utils
 from miles.utils.context_utils import with_defer
 from miles.utils.distributed_utils import get_gloo_group
 from miles.utils.flops_utils import flops_args_from_hf_config, fwd_tflops_per_gpu
 from miles.utils.ft_utils.indep_dp import IndepDPInfo
-from miles.utils.memory_utils import clear_memory, move_optimizer_state, print_memory
+from miles.utils.memory_utils import clear_memory, print_memory
 from miles.utils.profile_utils import TrainProfiler
 from miles.utils.ray_utils import Box
 from miles.utils.timer import Timer, inverse_timer, timer
@@ -40,9 +41,9 @@ from .adaptations.class_patches import apply_class_patches, apply_model_instance
 from .adaptations.packing import apply_packing
 from .adaptations.post_load_fixups import apply_post_load_fixups
 from .adaptations.precision import apply_fp32_master, precision_forward_context, resolve_precision_policy
+from .hf_weight_iterator import get_hf_weight_iterator
 from .lr_scheduler import get_lr_scheduler
 from .parallel import create_fsdp_parallel_state
-from .update_weight_utils import UpdateWeightFromDistributed, UpdateWeightFromTensor
 
 if TYPE_CHECKING:
     from miles.ray.rollout.inference_controller import UpdatableEngines
@@ -194,10 +195,15 @@ class FSDPTrainRayActor(TrainRayActor):
         if with_ref:
             self.ref_model = self._create_ref_model(args.ref_load)
 
-        self.weight_updater = (
-            UpdateWeightFromTensor(self.args, self.model)
-            if self.args.colocate
-            else UpdateWeightFromDistributed(self.args, self.model)
+        self.weight_updater = WeightUpdater(
+            self.args,
+            self.model,
+            weights_getter=lambda: None,
+            model_name=type(self.hf_config).__name__.lower() if self.args.model_name is None else self.args.model_name,
+            quantization_config=getattr(self.hf_config, "quantization_config", None),
+            iterator_factory=get_hf_weight_iterator,
+            parallel_state=get_parallel_state(),
+            is_lora=False,
         )
 
         checkpoint.finalize_load(self, checkpoint_payload)
@@ -325,28 +331,13 @@ class FSDPTrainRayActor(TrainRayActor):
 
     @timer
     def sleep(self) -> None:
-        """Pause CUDA memory for all tracked tensors."""
-        if not self.args.offload_train:
-            return
-
-        print_memory("before offload model")
-
-        self.model.cpu()
-        move_optimizer_state([self.optimizer], "cpu")
-        clear_memory()
-        dist.barrier(group=get_gloo_group())
-        print_memory("after offload model")
+        if self.args.offload_train:
+            offload_to_host([self.model], [self.optimizer])
 
     @timer
     def wake_up(self) -> None:
-        """Resume CUDA memory for all tracked tensors."""
-        if not self.args.offload_train:
-            return
-
-        self.model.cuda()
-        move_optimizer_state([self.optimizer], "cuda")
-        dist.barrier(group=get_gloo_group())
-        print_memory("after wake_up model")
+        if self.args.offload_train:
+            reload_to_device([self.model], [self.optimizer])
 
     def save_model(self, rollout_id: int, force_sync: bool = False) -> None:
         """Delegate checkpoint saving to the shared checkpoint utilities."""
@@ -524,38 +515,15 @@ class FSDPTrainRayActor(TrainRayActor):
 
     @timer
     def update_weights(self, info: "UpdatableEngines") -> int | None:  # type: ignore[override]
-        """Synchronize actor weights to rollout engines (colocated or distributed; wakes params in offload mode)."""
         if self.args.debug_train_only or self.args.debug_rollout_only:
             return None
-
-        rollout_engines = info.rollout_engines
-        snapshot_cell_id_to_hashes = info.snapshot_cell_id_to_hashes
-        engine_gpu_counts = info.engine_gpu_counts
-        engine_gpu_offsets = info.engine_gpu_offsets
-        del info
-
-        needs_reconnect = self.weight_updater.conn_status.needs_reconnect(snapshot_cell_id_to_hashes)
-        if needs_reconnect:
-            self.weight_updater.connect_rollout_engines(
-                rollout_engines,
-                engine_gpu_counts=engine_gpu_counts,
-                engine_gpu_offsets=engine_gpu_offsets,
-            )
-            self.weight_updater.conn_status.mark_reconnected(snapshot_cell_id_to_hashes)
-            dist.barrier(group=get_gloo_group())
-
+        self.weight_updater.reconnect_if_needed(info)
+        print_memory("before update_weights")
         self.weight_updater.update_weights()
-
-        if self.args.ci_test and len(rollout_engines) > 0:
-            engine = random.choice(rollout_engines)
-            engine_version = async_utils.run(engine.get_weight_version())
-            if str(engine_version) != str(self.weight_updater.weight_version):
-                raise RuntimeError(
-                    f"Weight version mismatch! Engine: {engine_version}, Updater: {self.weight_updater.weight_version}"
-                )
-
+        print_memory("after update_weights")
+        if self.args.ci_test:
+            self.weight_updater.verify_engine_version(info.rollout_engines)
         clear_memory()
-
         return self.weight_updater.weight_version
 
     def _create_ref_model(self, ref_load_path: str | None):

@@ -113,7 +113,7 @@ from the trainer loop and uses a continuously-running worker.
 | Support a new architecture on FSDP | `miles/backends/fsdp_utils/adaptations/specs/<arch>.py` |
 | Add a new flag | `miles/utils/arguments.py` |
 | Change the engine handshake (pause / flush / announce / resume) | `miles/backends/training_utils/weight_update/session.py` — shared by all backends |
-| Change how weights are produced or transported | `miles/backends/training_utils/weight_update/` (transport protocols, shared), each backend's HF weight iterator beside it: `miles/backends/megatron_utils/update_weight/`, `miles/backends/fsdp_utils/update_weight_utils.py`, `miles/backends/torchtitan_utils/weight_bridge.py` (torchtitan) |
+| Change how weights are produced or transported | `miles/backends/training_utils/weight_update/` (transport protocols, shared), each backend's HF weight iterator beside it: `miles/backends/megatron_utils/update_weight/`, `miles/backends/fsdp_utils/hf_weight_iterator.py`, `miles/backends/torchtitan_utils/weight_bridge.py` |
 | Add a training backend | a new `miles/backends/<name>_utils/` beside the existing three, a loader + validator in `miles/utils/arguments.py`, and an entry in `_TRAINER_ACTOR_CLASSES` in `miles/ray/specs/train.py` |
 | Change rollout buffer | `miles/rollout/data_source.py` |
 
