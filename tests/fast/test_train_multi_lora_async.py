@@ -21,9 +21,8 @@ class FakeMultiLoRAController:
     def __init__(self, events: list[str], snapshots: list[dict[str, list[str]]]) -> None:
         self.events = events
         self.snapshots = snapshots
-        self.router_address: str | None = None
         self.registered_adapters: list[tuple[str, Any]] = []
-        self.start = FakeRemoteMethod(self._start)
+        self.init = FakeRemoteMethod(self._start)
         self.stop = FakeRemoteMethod(self._stop)
         self.http_host = FakeRemoteMethod(self._http_host)
         self.api_port = FakeRemoteMethod(self._api_port)
@@ -47,6 +46,7 @@ class FakeMultiLoRAController:
         return self.snapshots.pop(0)
 
     async def _register_adapter(self, name: str, config: Any) -> None:
+        self.events.append(f"register:{name}")
         self.registered_adapters.append((name, config))
 
 
@@ -76,15 +76,10 @@ def _install_driver_fakes(
         controller=FakeMultiLoRAController(events, snapshots),
     )
 
-    def create_multilora_controller(_args: SimpleNamespace, router_address: str) -> FakeMultiLoRAController:
-        events.append("controller_created")
-        components.controller.router_address = router_address
-        return components.controller
-
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
         return components.inference_controller, components.rollout_executor, 4
 
-    async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
+    async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, None
 
     async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
@@ -95,7 +90,6 @@ def _install_driver_fakes(
     monkeypatch.setattr(multi_lora_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(multi_lora_driver, "init_tracking", lambda _args: None)
     monkeypatch.setattr(multi_lora_driver, "create_rollout_components", create_rollout_components)
-    monkeypatch.setattr(multi_lora_driver, "create_multilora_controller", create_multilora_controller)
     monkeypatch.setattr(multi_lora_driver, "get_multi_lora_controller", lambda: components.controller)
     monkeypatch.setattr(multi_lora_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(multi_lora_driver, "define_new_adapter_metrics", lambda _snapshot: None)
@@ -116,21 +110,39 @@ def _task_error(cause: Exception) -> ray.exceptions.RayTaskError:
 
 
 class TestAdapterLifecycle:
+    async def test_cli_adapters_are_registered_before_the_training_loop(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Every CLI adapter is parsed and registered by name before the first training-loop snapshot."""
+        events: list[str] = []
+        alpha_path = tmp_path / "alpha.yaml"
+        beta_path = tmp_path / "beta.yaml"
+        alpha_path.write_text("data: alpha-data\nnum_step: 1\n")
+        beta_path.write_text("data: beta-data\nnum_step: 2\n")
+        args = _make_args(multi_lora_adapters=[("alpha", str(alpha_path)), ("beta", str(beta_path))])
+        components = _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
+
+        await multi_lora_driver.main(args)
+
+        assert [(name, config.data) for name, config in components.controller.registered_adapters] == [
+            ("alpha", "alpha-data"),
+            ("beta", "beta-data"),
+        ]
+        first_snapshot = events.index("snapshot")
+        assert events.index("register:alpha") < first_snapshot
+        assert events.index("register:beta") < first_snapshot
+
     async def test_one_active_adapter_completes_through_the_refactored_components(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """One active adapter runs push, generate, train and save once, then the driver tears everything down."""
         events: list[str] = []
         args = _make_args()
-        components = _install_driver_fakes(
-            monkeypatch, events, snapshots=[_ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _EMPTY_SNAPSHOT]
-        )
+        _install_driver_fakes(monkeypatch, events, snapshots=[_ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _EMPTY_SNAPSHOT])
 
         await multi_lora_driver.main(args)
 
-        assert components.controller.router_address == "http://10.0.0.9:9000"
         assert events == [
-            "controller_created",
             "controller_start",
             "snapshot",
             "actor_reconcile_adapters",
