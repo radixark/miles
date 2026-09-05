@@ -35,7 +35,7 @@ async def train(args):
     inference_controller, rollout_executor, num_rollout_per_epoch = await create_rollout_components(args)
 
     # create the actor and critic models
-    actor_model, critic_model = await create_training_models(args, inference_controller, rollout_executor)
+    actor_model, critic_model = await create_training_models(args, rollout_executor)
 
     if args.api_server_port:
         start_api_server(
