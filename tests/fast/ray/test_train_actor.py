@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from miles.ray import train_actor
+from miles.ray import placement_group, train_actor
 from miles.ray.train_actor import TrainRayActor
 from miles.utils.init_once import InitOnce
 from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
@@ -105,10 +105,54 @@ class TestConfigureMasterAddrAndPort:
         assert os.environ["MASTER_PORT"] == "20002"
 
 
-def _actor_with(guard: InitOnce) -> TrainRayActor:
-    actor = TrainRayActor.__new__(TrainRayActor)
-    actor._init_once = guard
-    return actor
+class TestTrainParallelConfigWiring:
+    async def test_the_driver_passes_the_resolved_actor_config_to_the_rollout_executor(self, monkeypatch):
+        """The driver resolves the actor config before handing it to the rollout executor."""
+        train_parallel_config = {"dp_size": 4, "topology": {"tp_size": 2}}
+        trainer_config = SimpleNamespace(role="actor", trainer_id="actor")
+
+        class FakeActorHandle:
+            async def get_train_parallel_config(self):
+                return train_parallel_config
+
+        class FakeRolloutExecutor:
+            def __init__(self):
+                self.received_config = None
+
+            async def set_train_parallel_config(self, config):
+                assert not isinstance(config, FakeActorHandle)
+                self.received_config = config
+
+            async def load(self, rollout_id):
+                pass
+
+        actor_handle = FakeActorHandle()
+        rollout_executor = FakeRolloutExecutor()
+        monkeypatch.setattr(placement_group, "compute_trainer_configs", lambda args: [trainer_config])
+        monkeypatch.setattr(
+            placement_group,
+            "create_trainer_handles",
+            lambda args, *, trainer_configs: {trainer_config.trainer_id: actor_handle},
+        )
+        monkeypatch.setattr(placement_group, "take_over_trainers", lambda args, *, handles: _return(False))
+        monkeypatch.setattr(placement_group, "compute_trainer_args", lambda args, config: args)
+        monkeypatch.setattr(
+            placement_group,
+            "create_training_model",
+            lambda args, *, handle, trainer_id, resumed: _return(
+                placement_group.TrainerInfo(handle=actor_handle, restored_rollout_id=0, start_rollout_id=0)
+            ),
+        )
+
+        await placement_group.create_training_models(
+            SimpleNamespace(use_critic=False, start_rollout_id=None), rollout_executor=rollout_executor
+        )
+
+        assert rollout_executor.received_config is train_parallel_config
+
+
+async def _return(value):
+    return value
 
 
 def _actor_with(guard: InitOnce) -> TrainRayActor:
