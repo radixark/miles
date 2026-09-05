@@ -7,8 +7,8 @@ from functools import partial
 import torch
 import torch.distributed as dist
 
+from miles.backends.fsdp_utils import checkpoint
 from miles.backends.fsdp_utils.adaptations import routing_replay
-from miles.backends.training_utils import checkpoint
 from miles.backends.training_utils.model_assets import load_model_assets
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
 from miles.backends.training_utils.torch_native_actor import TorchNativeTrainRayActor
