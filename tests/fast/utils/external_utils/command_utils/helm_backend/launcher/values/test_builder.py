@@ -207,6 +207,42 @@ class TestObjectNames:
         """The chart default arms it and a user values file may turn it off; the launcher has no say."""
         assert "autoUninstall" not in build_values([], LAYOUT).as_values()["run"]
 
+
+class TestADeploymentWithoutTheOrchestrationScript:
+    @staticmethod
+    def _plan() -> LaunchPlan:
+        return LAYOUT.model_copy(update=dict(state_file="", orchestrator_command=[], mooncake_plan=None))
+
+    def test_renders_no_orchestrator_command_so_the_chart_installs_no_orchestrator(self):
+        """A trainer release starts no training, so an orchestrator pod in it would run a second run."""
+        built = build_values([trainer()], self._plan()).as_values()["run"]
+
+        assert built["orchestrator"] == {"command": []}
+
+    def test_names_no_exit_file_because_this_release_reaches_no_verdict(self):
+        """Only the release carrying the orchestration script has a training outcome to publish."""
+        built = build_values([trainer()], self._plan()).as_values()["run"]
+
+        assert "stateFile" not in built
+
+    def test_disarms_the_self_uninstall_job(self):
+        """Nothing here ever finishes, so an armed uninstall could only fire on a healthy deployment."""
+        built = build_values([trainer()], self._plan()).as_values()["run"]
+
+        assert built["autoUninstall"] == {"enabled": False}
+
+    def test_refuses_an_exit_file_without_the_script_that_writes_it(self):
+        """A watched file nobody writes makes the launcher wait for a verdict that never comes."""
+        with pytest.raises(AssertionError, match="orchestration script"):
+            build_values([trainer()], LAYOUT.model_copy(update=dict(orchestrator_command=[])))
+
+    def test_refuses_the_script_without_the_exit_file_it_publishes(self):
+        """The launcher learns the run's outcome by reading that file, so the pair is inseparable."""
+        with pytest.raises(AssertionError, match="orchestration script"):
+            build_values([trainer()], LAYOUT.model_copy(update=dict(state_file="")))
+
+
+class TestRelaunching:
     def test_relaunching_the_same_run_writes_byte_identical_values(self):
         """helm upgrade replaces an object in place only while its name is unchanged."""
         specs = [router(), engine(), trainer()]

@@ -79,8 +79,12 @@ class MooncakeInfo:
         if plan is None:
             return train_argv
 
-        kwargs = {**plan.init_kwargs, MOONCAKE_MASTER_ADDRESS_KEY: f"{host}:{plan.port}"}
+        kwargs = MooncakeInfo.cluster_init_kwargs(plan, host=host)
         return ArgvManipulator.replacing_value(train_argv, MOONCAKE_INIT_KWARGS_FLAG, json.dumps(kwargs))
+
+    @staticmethod
+    def cluster_init_kwargs(plan: MooncakePlan, *, host: str) -> dict[str, Any]:
+        return {**plan.init_kwargs, MOONCAKE_MASTER_ADDRESS_KEY: f"{host}:{plan.port}"}
 
     @staticmethod
     def master_service_host(release: str, namespace: str) -> str:
