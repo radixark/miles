@@ -132,6 +132,8 @@ class LinearForLastLayer(torch.nn.Linear):
 def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
+    *,
+    use_bridge_provider: bool = True,
 ):
     # Support custom model provider path (similar to --custom-rm-path for reward models)
     if getattr(args, "custom_model_provider_path", None):
@@ -161,7 +163,7 @@ def get_model_provider_func(
 
         return wrapped_model_provider
 
-    if args.megatron_to_hf_mode == "bridge":
+    if use_bridge_provider and args.megatron_to_hf_mode == "bridge":
         from megatron.bridge import AutoBridge
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
