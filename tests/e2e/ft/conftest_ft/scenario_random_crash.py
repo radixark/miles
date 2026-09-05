@@ -18,6 +18,10 @@ from tests.e2e.ft.conftest_ft.fault_injection import (
     API_SERVER_PORT,
     MEAN_INTERVAL_SECONDS,
     FaultInjectorHandle,
+    compute_cells_with_unfinished_recovery,
+    compute_num_completed_recoveries,
+    compute_num_injections,
+    compute_states_of_cell_name,
     spawn_fault_injector,
 )
 from tests.e2e.ft.conftest_ft.modes import FTTestMode, resolve_mode
@@ -108,12 +112,12 @@ def assert_healing(ft_mode: FTTestMode, *, injector: FaultInjectorHandle, dump_d
 
 
 def assert_every_rollout_injection_recovered(injector: FaultInjectorHandle) -> None:
-    witness = injector.recovery_witness
-    num_injections: int = witness.num_injections(cell_type="rollout")
-    num_recoveries: int = witness.num_completed_recoveries(cell_type="rollout")
-    unfinished: dict[str, int] = witness.cells_with_unfinished_recovery(cell_type="rollout")
+    events = injector.event_log.events
+    num_injections: int = compute_num_injections(events, cell_type="rollout")
+    num_recoveries: int = compute_num_completed_recoveries(events, cell_type="rollout")
+    unfinished: dict[str, int] = compute_cells_with_unfinished_recovery(events, cell_type="rollout")
     observed: dict[str, list[str]] = {
-        name: [state.value for state in states] for name, states in witness.states_of_cell_name.items()
+        name: [state.value for state in states] for name, states in compute_states_of_cell_name(events).items()
     }
 
     assert not unfinished, (
