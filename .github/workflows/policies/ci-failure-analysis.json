@@ -1,0 +1,17 @@
+{
+  "schema_version": "1",
+  "prompt_version": "1",
+  "enabled": false,
+  "mode": "job_log",
+  "model": "gpt-5.6-luna",
+  "reasoning_effort": "low",
+  "max_jobs": 15,
+  "max_log_chars_per_job": 12000,
+  "max_total_evidence_chars": 60000,
+  "max_source_files_per_job": 3,
+  "max_source_chars_per_job": 12000,
+  "max_reason_chars": 280,
+  "max_model_calls": 1,
+  "timeout_seconds": 45,
+  "failure_behavior": "omit_analysis"
+}

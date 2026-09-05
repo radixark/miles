@@ -19,10 +19,6 @@ on:
         type: boolean
         default: false
 
-permissions:
-  contents: read
-  actions: read
-
 env:
   PYTHONUNBUFFERED: 1
   DRY_RUN_FLAG: ${{ inputs.dry_run && '--dry-run' || '' }}
@@ -30,23 +26,73 @@ env:
 jobs:
   ci-status:
     if: >-
-      github.repository == 'radixark/miles' && (
+      github.repository == 'radixark/miles' && github.ref == 'refs/heads/main' && (
         (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'schedule') ||
         github.event_name == 'workflow_dispatch'
       )
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the trusted notifier, prompt, and policy
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          sparse-checkout: .github/workflows/scripts
-      - uses: actions/setup-python@v5
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/scripts/lark_notify.py
+            .github/workflows/scripts/ci_failure_analysis.py
+            .github/workflows/scripts/requirements-ci-lark-notify.txt
+            .github/workflows/prompts/ci-failure-analysis.md
+            .github/workflows/policies/ci-failure-analysis.json
+            .github/workflows/policies/ci-failure-response-schema.json
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
+
+      - name: Read the committed analysis rollout flag
+        id: analysis-policy
+        run: |
+          enabled=$(PYTHONPATH=.github/workflows/scripts python3 -c 'from ci_failure_analysis import load_policy; print(str(load_policy().enabled).lower())' 2>/dev/null || true)
+          if [ "$enabled" != "true" ] && [ "$enabled" != "false" ]; then
+            echo "::warning::analysis policy rollout flag is invalid; continuing without analysis credentials"
+            enabled=false
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
+      - name: Mint the read-only CI analysis App token
+        if: steps.analysis-policy.outputs.enabled == 'true'
+        id: analysis-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          client-id: ${{ vars.CI_FAILURE_ANALYSIS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_FAILURE_ANALYSIS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
+          permission-contents: read
+          permission-pull-requests: read
+
+      - name: Install the pinned OpenAI SDK
+        if: steps.analysis-policy.outputs.enabled == 'true'
+        continue-on-error: true
+        run: python3 -m pip install --requirement .github/workflows/scripts/requirements-ci-lark-notify.txt
+
       - name: Post CI status card
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_FAILURE_ANALYSIS_GITHUB_TOKEN: ${{ steps.analysis-token.outputs.token }}
           LARK_WEBHOOK: ${{ secrets.LARK_WEBHOOK }}
+          OPENAI_WIF_AUDIENCE: ${{ vars.OPENAI_WIF_AUDIENCE }}
+          OPENAI_IDENTITY_PROVIDER_ID: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
+          OPENAI_SERVICE_ACCOUNT_ID: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
           RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
         run: |
           python .github/workflows/scripts/lark_notify.py $DRY_RUN_FLAG ci-status \
