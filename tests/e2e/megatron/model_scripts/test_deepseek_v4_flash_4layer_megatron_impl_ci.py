@@ -23,7 +23,7 @@ def _args() -> ScriptArgs:
         hardware="H200",
         skip_saving=True,
         use_fault_tolerance=False,
-        dsv4_impl="megatron",
+        model_impl="megatron",
         # The CI image ships neither flash_mla nor cudnn-frontend DSA, so the
         # default cuDNN backend cannot start; the PyTorch fallback still covers
         # the megatron-impl model path (dsv4_hybrid attention, native mHC).

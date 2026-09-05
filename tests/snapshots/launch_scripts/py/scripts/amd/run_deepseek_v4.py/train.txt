@@ -146,7 +146,7 @@ export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && ray job submit
   --sglang-mem-fraction-static 0.5
   --sglang-watchdog-timeout 1800
   --accumulate-allreduce-grads-in-fp32
-  --dsv4-impl miles
+  --model-impl miles
   --model-name deepseekv4
   --qkv-format bshd
   --moe-router-freeze-gate

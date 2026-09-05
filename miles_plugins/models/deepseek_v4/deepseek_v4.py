@@ -358,11 +358,11 @@ def _dsv4_attention_module_spec(config, backend=None):
 
 
 def get_dsv4_spec(args, config, vp_stage):
-    """Build the DeepSeek-V4 layer spec for the implementation --dsv4-impl selects.
+    """Build the DeepSeek-V4 layer spec for the implementation --model-impl selects.
 
     Usage: --spec miles_plugins.models.deepseek_v4.deepseek_v4 get_dsv4_spec
     """
-    if args.dsv4_impl == "megatron":
+    if args.model_impl == "megatron":
         return get_transformer_block_with_experimental_attention_variant_spec(config, vp_stage=vp_stage)
 
     config.miles_dsa_topk_backend = args.miles_dsa_topk_backend
