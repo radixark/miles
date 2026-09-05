@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from miles.utils.external_utils.command_utils.helm_backend.launcher.command_wrap
     Kubectl,
 )
 from miles.utils.external_utils.command_utils.helm_backend.naming import RUN_ID_MAX_LENGTH, ReleaseName
+from miles.utils.workers.k8s_types import Pod
 from miles.utils.workers.types import DeployComponent
 from miles.utils.workers.worker_provider.kubernetes.helm import naming
 from miles.utils.workers.worker_provider.kubernetes.helm.env import INSTANCE_LABEL
@@ -86,6 +88,67 @@ class TestUpgradeCommand:
         assert command.index("--labels") > command.index("--namespace")
 
 
+class TestBuildDependencies:
+    def test_chart_dependencies_are_rebuilt_only_when_a_locked_dependency_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Helm rebuilds a locked chart only after one of its cached dependencies disappears."""
+        chart = tmp_path / "chart"
+        charts = chart / "charts"
+        charts.mkdir(parents=True)
+        (chart / "Chart.lock").write_text("dependencies:\n  - name: worker\n  - name: runtime\n")
+        (charts / "worker").mkdir()
+        runtime = charts / "runtime"
+        runtime.mkdir()
+        commands: list[list[str]] = []
+
+        def fake_run_process(
+            argv: list[str],
+            *,
+            capture_output: bool,
+            check: bool,
+            input: str | None = None,
+            timeout: float | None = None,
+        ) -> subprocess.CompletedProcess[str]:
+            commands.append(argv)
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(command_wrapper, "run_process", fake_run_process)
+
+        Helm.build_dependencies(chart)
+        runtime.rmdir()
+        Helm.build_dependencies(chart)
+
+        assert commands == [["helm", "dependency", "build", str(chart)]]
+
+
+class TestGetManifest:
+    def test_a_missing_release_is_reported_as_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Helm reports a missing release on stdout in some versions, and that is genuine absence."""
+        monkeypatch.setattr(
+            command_wrapper,
+            "run_process",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], returncode=1, stdout="Error: release: not found", stderr=""
+            ),
+        )
+
+        assert Helm.get_manifest("miles-run-a", "ci") is None
+
+    def test_a_manifest_read_failure_other_than_absence_is_reported(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An authorization or network failure must remain distinguishable from a missing release."""
+        monkeypatch.setattr(
+            command_wrapper,
+            "run_process",
+            lambda *_args, **_kwargs: subprocess.CompletedProcess(
+                [], returncode=1, stdout="", stderr="Kubernetes cluster unreachable: access forbidden"
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="Kubernetes cluster unreachable: access forbidden"):
+            Helm.get_manifest("miles-run-a", "ci")
+
+
 def _kubectl_answering(monkeypatch, *, returncode: int, stdout: str = "", stderr: str = "") -> list[list[str]]:
     commands: list[list[str]] = []
 
@@ -116,6 +179,15 @@ class TestRequestBounds:
 
         assert all("--request-timeout" not in argv for argv, _ in calls)
         assert [timeout for _, timeout in calls] == [30.0, 60.0]
+
+
+class TestGetJson:
+    def test_a_failed_get_is_not_reported_as_an_absent_object(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A failed lookup must expose its exit code and stderr instead of looking like an absent object."""
+        _kubectl_answering(monkeypatch, returncode=23, stderr="the api server refused the request")
+
+        with pytest.raises(RuntimeError, match="code 23: the api server refused the request"):
+            Kubectl.get_json("pod", return_type=Pod, name="trainer-0", namespace="rl")
 
 
 class TestCreateIfAbsent:
@@ -252,6 +324,51 @@ class TestCiCleanup:
         assert commands[1] == ["helm", "uninstall", "miles-run-a", "--namespace", "ci"]
 
 
+def _listed_releases(monkeypatch: pytest.MonkeyPatch, **kwargs) -> list[str]:
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], capture_output: bool) -> subprocess.CompletedProcess:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout=json.dumps([{"name": "miles-run-a-all"}]), stderr=""
+        )
+
+    monkeypatch.setattr(command_wrapper, "_run", fake_run)
+    Helm.list_releases(**kwargs)
+    return commands[0]
+
+
+class TestListReleases:
+    def test_a_name_filter_is_passed_to_helm_rather_than_applied_afterwards(self, monkeypatch):
+        """helm truncates to its 256-release maximum before returning, and a filter is applied before that."""
+        command = _listed_releases(monkeypatch, namespace="rl", name_filter="^miles-run-a-")
+
+        assert command[command.index("--filter") + 1] == "^miles-run-a-"
+
+    def test_a_listing_that_names_no_filter_asks_for_the_whole_namespace(self, monkeypatch):
+        """The ci cleanup selects on a label instead, and a filter here would hide the releases it removes."""
+        assert "--filter" not in _listed_releases(monkeypatch, namespace="rl")
+
+    def test_a_filter_and_a_label_selector_narrow_the_same_listing(self, monkeypatch):
+        """Neither is a replacement for the other, so passing one may not drop the other."""
+        command = _listed_releases(monkeypatch, namespace="rl", selector="ci=true", name_filter="^miles-run-a-")
+
+        assert command[command.index("--selector") + 1] == "ci=true"
+        assert command[command.index("--filter") + 1] == "^miles-run-a-"
+
+    def test_it_reads_back_the_names_helm_reported(self, monkeypatch):
+        """The filter is only worth passing if what comes back is still the list of release names."""
+        monkeypatch.setattr(
+            command_wrapper,
+            "_run",
+            lambda command, capture_output: subprocess.CompletedProcess(
+                args=command, returncode=0, stdout=json.dumps([{"name": "miles-run-a-all"}]), stderr=""
+            ),
+        )
+
+        assert Helm.list_releases(namespace="rl", name_filter="^miles-run-a-") == ["miles-run-a-all"]
+
+
 class TestChartDir:
     def test_finds_the_chart_inside_the_checkout(self):
         """The launcher installs the chart of the code it runs, not one from a registry."""
@@ -269,6 +386,22 @@ class TestReleaseName:
     def test_a_release_is_the_chart_name_the_run_id_and_the_component(self):
         """The launcher finds a run's release again from the run id alone, so the rule is fixed."""
         assert _unsplit("260101-000000-000") == "miles-run-260101-000000-000-all"
+
+    def test_the_run_prefix_is_what_every_release_of_that_run_starts_with(self):
+        """A filter built from it has to match the trainer and inference releases of the run as well."""
+        prefix = ReleaseName.run_prefix(run_id="260101-000000-000")
+
+        assert _unsplit("260101-000000-000").startswith(prefix)
+        engines = ReleaseName(
+            run_id="260101-000000-000", deploy_component=DeployComponent.INFERENCE, deploy_instance_id="dc1"
+        )
+        assert engines.serialize().startswith(prefix)
+
+    def test_the_run_prefix_ends_where_the_component_begins(self):
+        """Without the separator the prefix of one run also matches a run whose id merely starts with it."""
+        assert not ReleaseName.run_prefix(run_id="260101-000000-000").startswith(
+            ReleaseName.run_prefix(run_id="260101-000000-00")
+        )
 
     def test_the_same_run_id_always_names_the_same_release(self):
         """Relaunching a run upgrades its release; a fresh name would deploy a second copy instead."""
