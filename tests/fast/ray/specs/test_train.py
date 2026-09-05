@@ -523,7 +523,7 @@ class TestSpecTrainerController:
         specs = [spec_trainer_controller_actor(args), spec_trainer_controller_critic(args)]
         kwargs = [spec.ctor_kwargs(_controller_context(capability)) for spec in specs]
 
-        assert capability.requested_pool_ids == [["trainer-actor"], ["trainer-critic"]]
+        assert capability.requested_pool_ids == [["trainer-engine-actor"], ["trainer-engine-critic"]]
         assert [entry["cell_provider"] for entry in kwargs] == [capability.cells_provider] * 2
 
     def test_only_the_actor_controller_drives_the_inference_controller(self):
