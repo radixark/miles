@@ -26,12 +26,7 @@ from typing import Any
 
 from omegaconf import OmegaConf
 
-from miles.rollout.base_types import (
-    RolloutFnConstructorInput,
-    RolloutFnEvalInput,
-    RolloutFnEvalOutput,
-    RolloutFnInput,
-)
+from miles.rollout.base_types import RolloutFnConstructorInput, RolloutFnEvalInput, RolloutFnEvalOutput, RolloutFnInput
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +114,9 @@ class ParallelCommandEvalFn:
             "weight_version": input.weight_version or str(input.rollout_id),
         }
 
-        results = await asyncio.gather(*(self._run_guarded(command, context, output_dir) for command in self._commands))
+        results = await asyncio.gather(
+            *(self._run_guarded(command, context, output_dir) for command in self._commands)
+        )
         data: dict[str, dict[str, Any]] = {}
         metrics: dict[str, float] = {}
         for result in results:

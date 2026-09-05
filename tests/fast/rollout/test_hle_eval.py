@@ -3,8 +3,6 @@ import json
 from pathlib import Path
 
 from aiohttp import web
-from pytest import MonkeyPatch
-
 from examples.experimental.eval.parallel_sft import hle_eval
 from examples.experimental.eval.parallel_sft.hle_eval import (
     Args,
@@ -17,6 +15,7 @@ from examples.experimental.eval.parallel_sft.hle_eval import (
     parse_judgment,
     summarize,
 )
+from pytest import MonkeyPatch
 
 
 def test_hle_default_output_limit_is_128k() -> None:
@@ -226,9 +225,7 @@ def test_external_sglang_judge_endpoint_end_to_end(tmp_path: Path) -> None:
         assert summary["metrics"]["judge_completed"] == 2
         assert summary["metrics"]["judge_completion_tokens"] == 18
         assert len(output_path.read_text().splitlines()) == 2
-        checkpoint_requests = [
-            request for request in requests if request["model"] == "checkpoint-model"
-        ]
+        checkpoint_requests = [request for request in requests if request["model"] == "checkpoint-model"]
         assert len(checkpoint_requests) == 2
         assert checkpoint_requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
         judge_requests = [request for request in requests if request["model"] == "grader-model"]

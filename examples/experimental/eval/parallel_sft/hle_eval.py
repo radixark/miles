@@ -364,7 +364,11 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
 
     judge_requested = [result for result in completed if result.get("judge_requested")]
     if judge_requested:
-        judge_completed = [result for result in judge_requested if result.get("judge_status_code") == 200 and result.get("judgment") is not None]
+        judge_completed = [
+            result
+            for result in judge_requested
+            if result.get("judge_status_code") == 200 and result.get("judgment") is not None
+        ]
         metrics.update(
             {
                 "judge_requested": len(judge_requested),
@@ -378,7 +382,9 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
     per_problem: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for result in results:
         per_problem[result["id"]].append(result)
-    graded_problems = [trials for trials in per_problem.values() if any(trial.get("correct") is not None for trial in trials)]
+    graded_problems = [
+        trials for trials in per_problem.values() if any(trial.get("correct") is not None for trial in trials)
+    ]
     if graded_problems:
         problems_any_correct = sum(any(trial.get("correct") == 1.0 for trial in trials) for trials in graded_problems)
         metrics.update(
@@ -422,7 +428,9 @@ async def main_async(args: Args) -> None:
     semaphore = asyncio.Semaphore(args.concurrency)
     async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
         if args.judge_base_url is None:
-            results = await asyncio.gather(*(evaluate_one(session, semaphore, args, row, trial_index) for row, trial_index in work_items))
+            results = await asyncio.gather(
+                *(evaluate_one(session, semaphore, args, row, trial_index) for row, trial_index in work_items)
+            )
         else:
             judge_timeout = aiohttp.ClientTimeout(total=args.judge_request_timeout_sec)
             judge_connector = aiohttp.TCPConnector(limit=args.judge_concurrency)

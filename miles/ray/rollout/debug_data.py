@@ -114,14 +114,11 @@ def save_debug_rollout_data(args, data, rollout_id, evaluation: bool, metadata: 
     # TODO to be refactored (originally Buffer._set_data)
     if (path_template := args.save_debug_rollout_data) is not None:
         samples = (
-            [sample for info in data.values() for sample in info.get("samples", [])]
-            if evaluation
-            else list(data)
+            [sample for info in data.values() for sample in info.get("samples", [])] if evaluation else list(data)
         )
         if evaluation and not samples:
             logger.info(
-                f"Skip debug rollout data for eval {rollout_id}: "
-                "the eval result contains metrics but no samples"
+                f"Skip debug rollout data for eval {rollout_id}: " "the eval result contains metrics but no samples"
             )
             return
 

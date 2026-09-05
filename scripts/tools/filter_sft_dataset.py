@@ -26,12 +26,7 @@ from tap import Tap
 
 from miles.utils.mask_utils import MultiTurnLossMaskGenerator
 from miles.utils.processing_utils import load_tokenizer
-from miles.utils.sft_dataset_utils import (
-    RowStats,
-    iter_sft_dataset,
-    summarize_sft_dataset,
-    validate_sft_row,
-)
+from miles.utils.sft_dataset_utils import RowStats, iter_sft_dataset, summarize_sft_dataset, validate_sft_row
 
 
 class Arguments(Tap):
