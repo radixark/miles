@@ -53,13 +53,14 @@ def run_ci(
     manual runs use the ``run`` CLI subcommand with optional --seed/--num-steps/etc.
     """
     ft_mode: FTTestMode = resolve_mode(mode)
+    config = command_utils.default_config()
     dump_dir: str = resolve_dump_dir(f"{TEST_NAME}_{mode}")
     print(f"Dump directory: {dump_dir}")
     mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
     print(f"Seed: {seed}, Steps: {num_steps}, Mean injection interval: {mean_interval:.1f}s")
-    print(f"FT components: {ft_mode.ft_components}")
+    print(f"FT components: {ft_mode.ft_components}, cluster backend: {config.cluster_backend.value}")
 
-    prepare(ft_mode)
+    prepare(ft_mode, config=config)
 
     debug_rollout_data_dir = None if ft_mode.has_real_rollout else materialize_cyclic_debug_rollout_data(num_steps)
     train_args = (
@@ -71,10 +72,9 @@ def run_ci(
         + "--mini-ft-controller-enable "
     )
 
-    config = command_utils.default_config()
-    U = config.create_backend()
+    base_url = f"http://{config.create_backend().api_server_host()}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
-        base_url=f"http://{U.api_server_host()}:{API_SERVER_PORT}",
+        base_url=base_url,
         seed=seed,
         mean_interval_seconds=mean_interval,
         cell_type=compute_injected_cell_type(ft_mode),

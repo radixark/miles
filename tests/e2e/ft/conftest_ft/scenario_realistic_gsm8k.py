@@ -14,8 +14,10 @@ from tests.e2e.ft.conftest_ft.fault_injection.entrypoint import (
     MEAN_INTERVAL_SECONDS,
     spawn_fault_injector,
 )
+from tests.fast.cluster_backends import create_backend_for_run
 
 from miles.utils.external_utils import command_utils
+from miles.utils.external_utils.command_utils.base_backend import BaseCommandBackend
 from miles.utils.test_utils.reconfigure_assertions import assert_soak_reconfigure_events
 
 app: typer.Typer = typer.Typer()
@@ -40,11 +42,12 @@ def run_ci(
     crash_probability: Annotated[float, typer.Option(help="Per-step crash probability per cell")] = 0.1,
     metric_threshold: Annotated[float, typer.Option(help="eval/gsm8k accuracy threshold")] = _DEFAULT_METRIC_THRESHOLD,
 ) -> None:
-    U = command_utils.default_config().create_backend()
+    config = command_utils.default_config()
+    U = create_backend_for_run(config)
     mean_interval: float = MEAN_INTERVAL_SECONDS / max(crash_probability, 0.01)
     print(f"Seed: {seed}, Rollouts: {num_rollout}, Mean injection interval: {mean_interval:.1f}s")
 
-    _prepare_gsm8k()
+    _prepare_gsm8k(U)
     for proxy_var in ("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"):
         os.environ.pop(proxy_var, None)
 
@@ -58,9 +61,9 @@ def run_ci(
     train_args = _get_gsm8k_train_args(seed=seed, num_rollout=num_rollout, metric_threshold=metric_threshold)
     train_args += f"--save-debug-event-data {dump_dir}/events "
 
-    U = command_utils.default_config().create_backend()
+    base_url = f"http://{U.api_server_host()}:{API_SERVER_PORT}"
     injector = spawn_fault_injector(
-        base_url=f"http://{U.api_server_host()}:{API_SERVER_PORT}",
+        base_url=base_url,
         seed=seed,
         mean_interval_seconds=mean_interval,
         cell_type="actor",
@@ -90,8 +93,7 @@ def run_ci(
     print(f"Random failure gsm8k accuracy test PASSED (seed={seed}, rollouts={num_rollout})")
 
 
-def _prepare_gsm8k() -> None:
-    U = command_utils.default_config().create_backend()
+def _prepare_gsm8k(U: BaseCommandBackend) -> None:
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{_MODEL_NAME} --local-dir /root/models/{_MODEL_NAME}")
     U.convert_checkpoint(
