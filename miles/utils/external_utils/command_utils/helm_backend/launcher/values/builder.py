@@ -48,14 +48,23 @@ def _build_run_values(specs: list[BaseWorkerSpec], plan: LaunchPlan) -> RunValue
         TRAINER_ENGINES_SECTION: [],
     }
     for spec in specs:
-        entries[SECTION_OF_CATEGORY[spec.category]].append(build_entry(spec, plan=plan, addresses=addresses))
+        section = SECTION_OF_CATEGORY[spec.category]
+        entry = build_entry(spec, plan=plan, addresses=addresses)
+        assert section == STATIC_WORKERS_SECTION or entry.restart_at is None, (
+            f"only the {STATIC_WORKERS_SECTION} template renders a restart stamp, so stamping {spec.name} in "
+            f"{section} would roll nothing while this launch believes it rolled a pod"
+        )
+        entries[section].append(entry)
 
     return RunValues(
         id=plan.run_id,
         state_file=plan.state_file or None,
         launch_record=plan.launch_record,
         object_names=_object_names(plan.release),
-        orchestrator=OrchestratorSection(command=plan.orchestrator_command),
+        orchestrator=OrchestratorSection(
+            command=plan.orchestrator_command,
+            restart_at=plan.rendered_restart_at(naming.ORCHESTRATOR_COMPONENT),
+        ),
         auto_uninstall=None if plan.orchestrator_command else AutoUninstallSection(enabled=False),
         static_workers=entries[STATIC_WORKERS_SECTION],
         inference_engines=entries[INFERENCE_ENGINES_SECTION],
