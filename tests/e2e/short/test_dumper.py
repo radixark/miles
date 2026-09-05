@@ -29,7 +29,7 @@ from tests.e2e.conftest_dumper import (
     run_and_verify_comparator,
 )
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(est_time=1100, suite="stage-c-8-gpu-h100", labels=["short"])
 register_rocm_ci(est_time=1800, suite="nightly-stage-c-8-gpu-mi350", labels=["short"])
@@ -88,6 +88,7 @@ def _resolve_mode(mode: str) -> tuple[str, str]:
 
 
 def prepare(dump_dir: str, mode: str) -> None:
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/gsm8k")
@@ -100,6 +101,7 @@ def prepare(dump_dir: str, mode: str) -> None:
 
 
 def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
+    U = command_utils.default_config().create_backend()
     full_dump_dir: str = f"{dump_dir}/{dump_subdir}"
 
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} " f"--ref-load /root/{MODEL_NAME}_torch_dist "
@@ -161,7 +163,7 @@ def _execute(perf_args: str, dump_subdir: str, dump_dir: str) -> None:
             sglang_args,
             dumper_args,
             misc_args,
-            U.get_default_wandb_args(__file__),
+            command_utils.get_default_wandb_args(__file__),
         ]
     )
 
