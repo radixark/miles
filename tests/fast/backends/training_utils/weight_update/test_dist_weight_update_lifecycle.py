@@ -71,7 +71,9 @@ def _make_engines(
     ]
 
 
-def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract") -> WeightUpdater:
+def _make_updater(
+    engines: list[_RecordingApiClient], *, pause_generation_mode: str = "retract", lora_sync_config: dict | None = None
+) -> WeightUpdater:
     protocol = SimpleNamespace(
         use_weight_update_session=True,
         needs_base_resync_for_lora=False,
@@ -99,6 +101,7 @@ def _make_updater(engines: list[_RecordingApiClient], *, pause_generation_mode: 
             iterator_factory=lambda *a, **k: iterator,
             parallel_state=MagicMock(),
             is_lora=False,
+            lora_sync_config=lora_sync_config,
         )
 
 
@@ -259,3 +262,36 @@ class TestWeightUpdateSessionFrame:
         _run(updater, rank=1)
 
         assert calls == []
+
+
+class TestAdapterOnlyPush:
+    """A pushed adapter lands under a fresh lora_name and is applied at end_weight_update, so the
+    engines keep serving every other adapter: no pause, no flush, no resume, no version bump."""
+
+    def test_push_adapter_opens_an_adapter_only_session_without_pausing(self):
+        calls: list[tuple[int, str, dict]] = []
+        updater = _make_updater(_make_engines(calls), lora_sync_config={"target_modules": ["q_proj"]})
+
+        with (
+            patch(f"{_UPDATER_MODULE}.dist") as dist_mock,
+            patch(f"{_UPDATER_MODULE}.get_gloo_group", return_value=MagicMock()),
+        ):
+            dist_mock.get_rank.return_value = 0
+            updater.push_adapter("model-a@1", SimpleNamespace(slot=0, rank=8, alpha=16.0))
+
+        assert _phases(calls) == ["register_lora_adapter", "begin_weight_update", "end_weight_update"]
+        for method in _phases(calls):
+            assert _engines_called(calls, method) == list(range(_ENGINE_COUNT))
+        assert (
+            _kwargs_of(calls, "register_lora_adapter")
+            == [
+                {
+                    "lora_name": "model-a@1",
+                    "config_dict": {"target_modules": ["q_proj"], "r": 8, "lora_alpha": 16.0},
+                    "pinned": False,
+                }
+            ]
+            * _ENGINE_COUNT
+        )
+        assert _kwargs_of(calls, "begin_weight_update") == [{"selector": "all", "sync_base": False}] * _ENGINE_COUNT
+        assert updater.weight_version == 0

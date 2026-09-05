@@ -114,7 +114,11 @@ class WeightUpdater:
         protocol = self.protocol
         driver = dist.get_rank() == 0
         if protocol.use_weight_update_session and driver:
-            pause_engines(self.args, protocol.rollout_engines)
+            if sync_base:
+                # Only a base write invalidates what the engines hold. An adapter-only
+                # session lands under a fresh lora_name, applied at end_weight_update,
+                # so the engines keep serving every other adapter meanwhile.
+                pause_engines(self.args, protocol.rollout_engines)
             self._register_new_lora_adapters(protocol.rollout_engines, adapters)
             begin_weight_update(
                 protocol.rollout_engines, self._hf_weight_iterator.weight_update_selector, sync_base=sync_base
@@ -148,7 +152,8 @@ class WeightUpdater:
                 end_weight_update(protocol.rollout_engines, expected_lora_checksums=checksums)
                 if weight_version is not None:
                     set_weight_version(protocol.rollout_engines, weight_version)
-                resume_engines(protocol.rollout_engines)
+                if sync_base:
+                    resume_engines(protocol.rollout_engines)
             dist.barrier(group=get_gloo_group())
 
     def _iter_base_buckets(self, *, materialize: bool):

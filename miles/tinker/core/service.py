@@ -391,13 +391,13 @@ class TinkerService:
             )
             return [{"kind": "load_state"}]
         if unit.kind == "save_weights_for_sampler":
-            record.sampler_version += 1
-            version = str(record.sampler_version)
+            version = str(record.sampler_version + 1)
             path = self._checkpoint_dir(record.model_id, "sampler_weights", version)
             await self.backend.save_slot(record.slot, path)
             await self.backend.push_slot(
                 record.slot, f"{record.model_id}@{version}", record.lora_rank, record.lora_alpha
             )
+            record.sampler_version += 1  # every engine applied the push: the version is now sampleable
             return [
                 {
                     "kind": "save_weights_for_sampler",
