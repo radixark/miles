@@ -225,7 +225,7 @@ def make_sglang_config_yaml(
     update_weights: bool | None = None,
     model_path: str | None = None,
 ) -> str:
-    """Render a small SglangConfig YAML for from_yaml() round-trip tests."""
+    """Render a small SglangConfig YAML for from_file_arg() round-trip tests."""
     server_groups = server_groups or [{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
     lines = ["sglang:", f"  - name: {name}"]
     if model_path is not None:
