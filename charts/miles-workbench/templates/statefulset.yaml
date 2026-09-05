@@ -34,7 +34,8 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with include "miles-common.sharedStorageVolumeMount" . }}
+          {{- $mounts := compact (list (include "miles-common.sharedStorageVolumeMount" . | trim) (include "miles-common.codeVolumeMounts" . | trim)) | join "\n" }}
+          {{- with $mounts }}
           volumeMounts:
             {{- . | nindent 12 }}
           {{- end }}
