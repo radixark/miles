@@ -24,7 +24,7 @@ from miles.utils.audit_utils.witness.allocator import WitnessIdAllocator, read_p
 from miles.utils.data import remove_train_output_refs
 from miles.utils.ft_utils.api_server.models import CellStatus
 from miles.utils.ft_utils.health_checker import ActivenessTracker, NoopHealthChecker, SimpleHealthCheckerConfig
-from miles.utils.ft_utils.indep_dp import IndepDPInfo
+from miles.utils.ft_utils.indep_dp import IndepDPInfo, create_tcp_store
 from miles.utils.logging_utils import configure_logger
 from miles.utils.retry_utils import NonRetryableError, retry, retry_until_deadline
 from miles.utils.test_utils.ft_test_actions import FTTestActionControllerExecutor
@@ -69,6 +69,8 @@ class TrainerController:
         self._watcher_disposer: StopWatchFn | None = None
 
         self._indep_dp_quorum_id = 0
+        self._indep_dp_store: Any | None = None
+        self._indep_dp_store_addr: str | None = None
 
         self._health_checker_activeness = ActivenessTracker(active=True)
 
@@ -307,6 +309,9 @@ class TrainerController:
         self.args = args
         configure_logger(args, source=TrainerControllerProcessIdentity(role=self._role))
 
+        if self._expected_num_cells > 1:
+            self._indep_dp_store, self._indep_dp_store_addr = create_tcp_store()
+
         self._health_checker_config = compute_trainer_health_checker_config(
             args, expected_num_cells=self._expected_num_cells
         )
@@ -331,7 +336,8 @@ class TrainerController:
                         cell_index=cell.cell_index,
                         # all cells will be alive for this first initialization
                         alive_cell_indices=list(range(len(self._cells))),
-                    )
+                    ),
+                    indep_dp_store_addr=self._indep_dp_store_addr,
                 )
                 for cell in self._cells
             ]
@@ -541,6 +547,7 @@ class TrainerController:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
+                            indep_dp_store_addr=self._indep_dp_store_addr,
                             send_ckpt_dst_ranks=ckpt_dst_alive_ranks if c.cell_index == src_cell_index else [],
                         )
                         if c.cell_index in snapshotted_alive_indices
@@ -548,6 +555,7 @@ class TrainerController:
                             indep_dp_info=self._compute_indep_dp_info(
                                 c.cell_index, alive_cell_indices=will_alive_indices
                             ),
+                            indep_dp_store_addr=self._indep_dp_store_addr,
                             recv_ckpt_src_rank=src_alive_rank if c.cell_index in snapshotted_healing_indices else None,
                         )
                     )
