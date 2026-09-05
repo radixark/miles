@@ -14,6 +14,7 @@ import ray
 import ray._private.internal_api
 from pydantic import AfterValidator, ConfigDict, Field, PlainSerializer
 
+from miles.utils.object_store_config import compute_mooncake_store_config
 from miles.utils.pydantic_utils import StrictBaseModel
 from miles.utils.workers.types import WorkerCommBackend
 
@@ -176,7 +177,9 @@ class MooncakeObjectStore(BaseObjectStore):
             raise ValueError("--mooncake-replica-num must be >= 1")
 
         store = MooncakeDistributedStore()
-        setup_error = store.setup(_mooncake_store_config(self._init_kwargs, contribute_segment=contribute_segment))
+        setup_error = store.setup(
+            compute_mooncake_store_config(self._init_kwargs, contribute_segment=contribute_segment)
+        )
         if setup_error:
             raise RuntimeError(f"Mooncake store setup failed: {setup_error}")
         self._transfer = MooncakeBundleTransfer(store, key_prefix="miles-object-store")
@@ -227,43 +230,6 @@ def _field_schemas_for_value(value: Any, value_spec: dict[str, ValueSpec] | None
         for field, spec in value_spec.items()
         if field in value
     }
-
-
-def _mooncake_store_config(init_kwargs: dict[str, Any], *, contribute_segment: bool) -> dict[str, Any]:
-    return {
-        "local_hostname": str(
-            init_kwargs.get("local_hostname") or os.getenv("MOONCAKE_LOCAL_HOSTNAME") or _local_hostname()
-        ),
-        "metadata_server": str(
-            init_kwargs.get("metadata_server") or os.getenv("MOONCAKE_TE_META_DATA_SERVER", "P2PHANDSHAKE")
-        ),
-        "local_buffer_size": _parse_size(
-            init_kwargs.get("local_buffer_size", os.getenv("MOONCAKE_LOCAL_BUFFER_SIZE", 32 * 1024**3))
-        ),
-        "protocol": str(init_kwargs.get("protocol") or os.getenv("MOONCAKE_PROTOCOL", "rdma")),
-        "rdma_devices": str(init_kwargs.get("device_name") or os.getenv("MOONCAKE_DEVICE", "")),
-        "master_server_addr": str(init_kwargs.get("master_server_address") or os.getenv("MOONCAKE_MASTER", "")),
-        "global_segment_size": (
-            _parse_size(init_kwargs.get("global_segment_size", os.getenv("MOONCAKE_GLOBAL_SEGMENT_SIZE", 8 * 1024**3)))
-            if contribute_segment
-            else 0
-        ),
-    }
-
-
-def _parse_size(value: Any) -> int:
-    if isinstance(value, int):
-        return value
-    text = str(value).strip().lower()
-    units = {"kb": 1024, "mb": 1024**2, "gb": 1024**3, "k": 1024, "m": 1024**2, "g": 1024**3}
-    for suffix, multiplier in units.items():
-        if text.endswith(suffix):
-            return int(float(text[: -len(suffix)]) * multiplier)
-    return int(text)
-
-
-def _local_hostname() -> str:
-    return ray.util.get_node_ip_address()
 
 
 StoreObjectRef = Annotated[_RayStoreObjectRef | _MooncakeStoreObjectRef, Field(discriminator="backend")]
