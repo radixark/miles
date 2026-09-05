@@ -67,6 +67,7 @@ class _Recipe:
     moe_token_dispatcher_type: str | None = None
     enable_observability: bool = False
     log_probs_chunk_size: int = -1
+    recompute_loss_function: bool = False
 
 
 _RECIPES: dict[str, _Recipe] = {
@@ -87,6 +88,7 @@ _RECIPES: dict[str, _Recipe] = {
         moe_token_dispatcher_type="flex",
         enable_observability=True,
         log_probs_chunk_size=4096,
+        recompute_loss_function=True,
     ),
 }
 
@@ -121,6 +123,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     learning_rate: float = 1e-5
     min_learning_rate: float = 1e-6
     wandb_project: str | None = None
+    wandb_run_name: str | None = None
 
     @property
     def recipe(self) -> _Recipe:
@@ -155,6 +158,10 @@ class ScriptArgs(U.ExecuteTrainConfig):
     @property
     def expert_parallel_size(self) -> int:
         return self.expert_model_parallel_size or self.recipe.expert_model_parallel_size
+
+    @property
+    def observability_name(self) -> str:
+        return self.wandb_run_name or self.run_id
 
 
 def _validate_parallelism(args: ScriptArgs) -> None:
@@ -232,6 +239,8 @@ def execute(args: ScriptArgs) -> None:
     )
     if args.effective_log_probs_chunk_size > 0:
         perf_args += f"--log-probs-chunk-size {args.effective_log_probs_chunk_size} "
+    if args.recipe.recompute_loss_function:
+        perf_args += "--recompute-loss-function "
 
     optimizer_args = (
         "--optimizer adam "
@@ -271,7 +280,7 @@ def execute(args: ScriptArgs) -> None:
             "--observe-training-entropy "
             "--use-rollout-entropy "
             "--use-prometheus "
-            f"--prometheus-run-name {args.run_id} "
+            f"--prometheus-run-name {args.observability_name} "
             "--use-miles-dashboard "
             "--dashboard-forward-prometheus "
             f"--dump-details {args.details_path} "
@@ -282,7 +291,7 @@ def execute(args: ScriptArgs) -> None:
         f"{sft_args} "
         f"{optimizer_args} "
         f"{model_feature_args} "
-        f"{U.get_default_wandb_args(__file__, run_id=args.run_id, project_name=args.wandb_project)} "
+        f"{U.get_default_wandb_args(__file__, run_id=args.observability_name, project_name=args.wandb_project)} "
         f"{perf_args} "
         f"{misc_args} "
         f"{args.extra_args} "
