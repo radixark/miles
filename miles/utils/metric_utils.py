@@ -18,6 +18,13 @@ def namespace_metrics(
     return ans, step_key
 
 
+def strip_metrics_namespace(log_dict: dict[str, Any], *, trainer_model_id: str | None) -> dict[str, Any]:
+    if trainer_model_id is None:
+        return log_dict
+    prefix = f"{trainer_model_id}/"
+    return {key.removeprefix(prefix): value for key, value in log_dict.items()}
+
+
 def compute_pass_rate(
     flat_rewards: list[float],
     group_size: int,
