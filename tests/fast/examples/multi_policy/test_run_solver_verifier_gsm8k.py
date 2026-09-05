@@ -62,7 +62,7 @@ class TestBuildTrainArgs:
             "--dynamic-sampling-filter-path": "miles.rollout.filter_hub.dynamic_sampling_filters.check_reward_nonzero_std",
             "--reward-key": "reward_value",
             "--log-reward-category": "outcome",
-            "--pause-generation-mode": "in_place",
+            "--pause-generation-mode": "retract",
             "--optimizer": "adam",
             "--lr": "1e-6",
             "--eval-interval": "20",
@@ -98,10 +98,10 @@ class TestBuildTrainArgs:
             "--megatron-to-hf-mode": "bridge",
         }
 
-    def test_the_run_generates_without_retracting_what_it_has_in_flight(self, flags):
-        """Retracting, the default, can deadlock flush_cache under a fully async load: the run hangs, silently."""
+    def test_the_run_retracts_what_it_has_in_flight_when_generation_pauses(self, flags):
+        """in_place only ever bought this fully async run its way around the pre-refactor flush_cache deadlock."""
         assert flags["--fully-async"] is None
-        assert flags["--pause-generation-mode"] == "in_place"
+        assert flags["--pause-generation-mode"] == "retract"
 
     def test_the_per_policy_configs_are_handed_over_as_files_of_their_own(self, flags):
         """Their contents are asserted below; here they only have to reach the run at all."""
