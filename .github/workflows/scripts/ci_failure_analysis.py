@@ -52,6 +52,7 @@ PATH_LINE_RE = re.compile(
 SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$")
 EARLY_SENTENCE_END_RE = re.compile(r"[!?]|\.[\"')\]]*\s")
 URL_OR_MARKDOWN_RE = re.compile(r"(?i)(?:https?:)?//|www\.|\[[^\]]*\]\([^)]*\)|[<>`*]")
+OIDC_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.I)
 
 SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
@@ -462,28 +463,76 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _validate_github_actions_oidc_endpoint(parsed: urllib.parse.ParseResult) -> bool:
+    hostname = parsed.hostname
+    if hostname is None:
+        return False
+    hostname = hostname.lower()
+    suffix = "actions.githubusercontent.com"
+    authority = parsed.netloc.rsplit("@", 1)[-1]
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or parsed.port not in (None, 443)
+        or authority.endswith(":")
+        or hostname.endswith(".")
+        or hostname == suffix
+        or not hostname.endswith(f".{suffix}")
+        or len(hostname) > 253
+    ):
+        return False
+    if any(not OIDC_HOST_LABEL_RE.fullmatch(label) for label in hostname.split(".")):
+        return False
+    path = parsed.path
+    return bool(
+        path
+        and path != "/"
+        and path.startswith("/")
+        and not path.startswith("//")
+        and "\\" not in path
+        and not any(ord(char) < 0x21 or ord(char) == 0x7F for char in path)
+    )
+
+
+def _oidc_query_with_audience(query: str, audience: str) -> str:
+    preserved: list[str] = []
+    for segment in query.split("&") if query else []:
+        raw_name = segment.partition("=")[0]
+        try:
+            name = urllib.parse.unquote_plus(raw_name, encoding="utf-8", errors="strict")
+        except UnicodeDecodeError:
+            name = ""
+        if name != "audience":
+            preserved.append(segment)
+    preserved.append("audience=" + urllib.parse.quote_plus(audience, safe=""))
+    return "&".join(preserved)
+
+
 def _github_actions_oidc_provider(audience: str) -> dict[str, Any]:
     def get_token() -> str:
         try:
             request_url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
             request_token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-            parsed = urllib.parse.urlparse(request_url)
         except Exception as exc:
             raise _GitHubOIDCRequestError("GitHub Actions OIDC provider failed") from exc
-        if (
-            parsed.scheme != "https"
-            or parsed.hostname != "pipelines.actions.githubusercontent.com"
-            or parsed.username
-            or parsed.password
-            or parsed.fragment
-        ):
+        try:
+            parsed = urllib.parse.urlparse(request_url)
+            approved = (
+                "#" not in request_url
+                and not any(ord(char) < 0x21 or ord(char) == 0x7F for char in request_url)
+                and _validate_github_actions_oidc_endpoint(parsed)
+            )
+        except (UnicodeError, ValueError) as exc:
+            raise _GitHubOIDCEndpointValidationError("GitHub Actions OIDC provider failed") from exc
+        if not approved:
             raise _GitHubOIDCEndpointValidationError("GitHub Actions OIDC provider failed") from RuntimeError(
                 "GitHub OIDC endpoint validation failed"
             )
         try:
-            query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
-            query["audience"] = audience
-            url = urllib.parse.urlunparse(parsed._replace(query=urllib.parse.urlencode(query)))
+            query = _oidc_query_with_audience(parsed.query, audience)
+            url = urllib.parse.urlunparse(parsed._replace(query=query))
             request = urllib.request.Request(url, headers={"Authorization": f"bearer {request_token}"})
             opener = urllib.request.build_opener(_NoRedirect())
             with opener.open(request, timeout=15) as response:
