@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -12,14 +13,21 @@ from pydantic import ValidationError
 from tests.fast.utils.workers.rpc.client.fake_transports import PollWindowRecordingTransport, StallingPollTransport
 
 from miles.utils.pydantic_utils import StrictBaseModel
+from miles.utils.workers import worker_handle as worker_handle_module
 from miles.utils.workers.rpc.client import call as rpc_client_module
 from miles.utils.workers.rpc.client import handle as rpc_handle_module
 from miles.utils.workers.rpc.client import misc as rpc_misc_module
 from miles.utils.workers.rpc.client.handle import RpcWorkerHandle
 from miles.utils.workers.rpc.client.misc import RpcProtocolError, RpcWorkerCallError, ServerRestartedError
-from miles.utils.workers.rpc.common.protocol import BOOT_UUID_HEADER, EXPECTED_BOOT_UUID_HEADER, HEALTH_PATH
+from miles.utils.workers.rpc.common.protocol import (
+    BOOT_UUID_HEADER,
+    CALL_STATUS_PATH,
+    EXPECTED_BOOT_UUID_HEADER,
+    HEALTH_PATH,
+    IN_FLIGHT_PATH,
+)
 from miles.utils.workers.rpc.server.app import create_rpc_app
-from miles.utils.workers.worker_handle import WorkerUnreachableError
+from miles.utils.workers.worker_handle import WorkerStillBusyError, WorkerUnreachableError
 
 
 class _Item(StrictBaseModel):
@@ -30,6 +38,7 @@ class _Item(StrictBaseModel):
 class _Worker:
     def __init__(self) -> None:
         self.block_forever = threading.Event()
+        self.hang_started = threading.Event()
         self.calls = 0
 
     def demo_default_arg(self, a: int, b: int = 100) -> int:
@@ -43,6 +52,7 @@ class _Worker:
         raise ValueError("exploded")
 
     def demo_hang(self) -> str:
+        self.hang_started.set()
         assert self.block_forever.wait(timeout=30.0)
         return "done"
 
@@ -71,14 +81,20 @@ class _HookTransport(httpx.AsyncBaseTransport):
         self.seen: list[httpx.Request] = []
         self._inner = httpx.ASGITransport(app=app) if app is not None else None
         self._hook = hook
+        self._error: Exception | None = None
 
     def switch_to(self, app: Any) -> None:
         self._inner = httpx.ASGITransport(app=app)
+
+    def fail_with(self, error: Exception) -> None:
+        self._error = error
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.requests += 1
         self.seen.append(request)
         self.request_times.append(time.monotonic())
+        if self._error is not None:
+            raise self._error
         if self._hook is not None:
             replacement = self._hook(request)
             if replacement is not None:
@@ -146,6 +162,7 @@ def fast_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(rpc_client_module, "RETRY_INITIAL_DELAY_SECONDS", 0.02)
     monkeypatch.setattr(rpc_client_module, "RETRY_MAX_DELAY_SECONDS", 0.1)
     monkeypatch.setattr(rpc_handle_module, "RETRY_INITIAL_DELAY_SECONDS", 0.02)
+    monkeypatch.setattr(rpc_handle_module, "_IDLE_POLL_INTERVAL_SECONDS", 0.02)
 
 
 @contextlib.asynccontextmanager
@@ -173,6 +190,13 @@ async def _handle_over(
             ready_timeout_seconds=ready_timeout_seconds,
             http_client=http_client,
         )
+
+
+class TestRepresentation:
+    async def test_repr_names_the_worker_class(self) -> None:
+        """The handle representation names both the handle type and its worker class."""
+        async with _handle_over(_HookTransport(None)) as handle:
+            assert repr(handle) == "RpcWorkerHandle(_Worker)"
 
 
 class TestTypedCalls:
@@ -214,6 +238,64 @@ class TestTypedCalls:
         async with _running_app(_Worker()) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
             with pytest.raises(RpcWorkerCallError, match="ValueError"):
                 await handle.demo_raises()
+
+
+class TestSubmitWithoutResult:
+    async def test_first_fire_and_forget_call_handshakes_before_submission(self) -> None:
+        """A first stable-boot fire-and-forget call pins the server before submitting."""
+
+        class _HealthBootUuidRecordingTransport(_HookTransport):
+            def __init__(self, app: Any) -> None:
+                super().__init__(app)
+                self.health_boot_uuid: str | None = None
+
+            async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+                response = await super().handle_async_request(request)
+                if request.method == "GET" and request.url.path == HEALTH_PATH:
+                    self.health_boot_uuid = response.headers[BOOT_UUID_HEADER]
+                return response
+
+        async with _running_app(_Worker()) as app:
+            transport = _HealthBootUuidRecordingTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.submit_without_result("demo_default_arg", a=1, b=2)
+
+        assert [(request.method, request.url.path) for request in transport.seen] == [
+            ("GET", HEALTH_PATH),
+            ("POST", "/v1/demo_default_arg"),
+        ]
+        assert transport.health_boot_uuid is not None
+        assert transport.seen[1].headers[EXPECTED_BOOT_UUID_HEADER] == transport.health_boot_uuid
+
+    async def test_a_call_is_submitted_and_never_polled(self):
+        """Some calls kill the process that would answer them, so waiting for a result waits for ever."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                await handle.submit_without_result("demo_default_arg", a=1, b=2)
+
+                assert transport.polls() == []
+                assert transport.requests == 1
+
+    async def test_a_method_the_worker_does_not_define_fails_locally(self):
+        """A typo would otherwise be submitted as a call nobody ever runs and nobody ever waits for."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                with pytest.raises(AttributeError, match="no rpc method"):
+                    await handle.submit_without_result("demo_defualt_arg")
+
+                assert transport.requests == 0
+
+    async def test_locally_invalid_arguments_fail_before_any_request(self):
+        """The result is never read, so an argument the worker rejects would fail where nobody is looking."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                with pytest.raises(ValidationError):
+                    await handle.submit_without_result("demo_default_arg", a="not-an-int")
+
+                assert transport.requests == 0
 
 
 class TestLocalValidation:
@@ -677,6 +759,33 @@ class TestLongPoll:
                 worker.block_forever.set()
 
 
+class _StallingAfterwardsTransport(_HookTransport):
+    """Answers normally until `stalling` is set, after which every request hangs until it is cancelled."""
+
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        self.stalling = False
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.stalling:
+            await asyncio.sleep(3600)
+        return await super().handle_async_request(request)
+
+
+class _HealthFailsLaterTransport(_HookTransport):
+    """Answers normally until `health_status` is set, after which the health endpoint answers with it."""
+
+    def __init__(self, app: Any) -> None:
+        super().__init__(app)
+        self.health_status: int | None = None
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if self.health_status is not None and HEALTH_PATH in str(request.url):
+            self.requests += 1
+            return httpx.Response(self.health_status, text="gone", request=request)
+        return await super().handle_async_request(request)
+
+
 class TestBootUuid:
     async def test_restart_detected_when_required_stable(self):
         """A server restart between calls raises ServerRestartedError."""
@@ -802,6 +911,138 @@ class TestBootUuid:
                 transport.switch_to(second_app)
                 with pytest.raises(ServerRestartedError):
                     await handle.wait_ready(timeout=5.0)
+
+    async def test_wait_ready_adopts_a_replacement_when_the_caller_allows_it(self) -> None:
+        """A caller that expects the server process to be replaced may drop the pin instead of failing on it."""
+        second_worker = _Worker()
+        async with _running_app(_Worker()) as first_app, _running_app(second_worker) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+
+                transport.switch_to(second_app)
+                await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+
+                assert await handle.demo_default_arg(a=1, b=2) == 3
+                assert second_worker.calls == 1
+
+    async def test_a_restart_after_an_allowed_change_is_still_refused(self) -> None:
+        """Adopting one replacement must not leave the fence off for every restart that follows."""
+        async with (
+            _running_app(_Worker()) as first_app,
+            _running_app(_Worker()) as second_app,
+            _running_app(_Worker()) as third_app,
+        ):
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                transport.switch_to(second_app)
+                await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+
+                transport.switch_to(third_app)
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+    async def test_a_wait_that_never_reached_a_server_leaves_the_pin_it_found(self) -> None:
+        """Dropping the pin for a wait that failed would let the next ordinary call adopt any server silently."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                pinned = handle._boot_uuid_pin.expected
+
+                transport.fail_with(httpx.ConnectError("no route"))
+                with pytest.raises(WorkerUnreachableError):
+                    await handle.wait_ready(timeout=0.05, allow_server_uuid_change=True)
+
+                assert handle._boot_uuid_pin.expected == pinned
+
+    async def test_a_wait_that_reached_a_replacement_keeps_the_new_pin(self) -> None:
+        """The restore only applies to a wait that failed, never to one that adopted a replacement."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                pinned = handle._boot_uuid_pin.expected
+
+                transport.switch_to(second_app)
+                await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+
+                assert handle._boot_uuid_pin.expected not in (None, pinned)
+
+    async def test_a_wait_that_adopted_a_replacement_is_pinned_again_afterwards(self) -> None:
+        """The adopt drops the pin before probing, so a probe that answered without repinning leaves it wide open."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                transport.switch_to(second_app)
+                await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+
+                assert handle._boot_uuid_pin.needs_handshake() is False
+
+    async def test_a_wait_a_protocol_error_ended_leaves_the_pin_it_found(self) -> None:
+        """Only a retryable exhaustion restored the pin, so a 4xx left the handle open to any process."""
+        async with _running_app(_Worker()) as app:
+            transport = _HealthFailsLaterTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                pinned = handle._boot_uuid_pin.expected
+
+                transport.health_status = 404
+                with pytest.raises(RpcProtocolError):
+                    await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+
+                assert handle._boot_uuid_pin.expected == pinned
+
+    async def test_a_wait_that_was_cancelled_leaves_the_pin_it_found(self) -> None:
+        """A take-over cancels these waits, and an unpinned handle is what the take-over is guarding against."""
+        async with _running_app(_Worker()) as app:
+            transport = _StallingAfterwardsTransport(app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                pinned = handle._boot_uuid_pin.expected
+
+                transport.stalling = True
+                with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+                    await asyncio.wait_for(
+                        handle.wait_ready(timeout=30.0, allow_server_uuid_change=True), timeout=0.05
+                    )
+
+                assert handle._boot_uuid_pin.expected == pinned
+
+    async def test_a_call_after_a_cancelled_wait_still_refuses_a_replacement(self) -> None:
+        """Restoring the pin is only worth anything if the next call is still checked against it."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _StallingAfterwardsTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                transport.stalling = True
+                with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+                    await asyncio.wait_for(
+                        handle.wait_ready(timeout=30.0, allow_server_uuid_change=True), timeout=0.05
+                    )
+                transport.stalling = False
+                transport.switch_to(second_app)
+
+                with pytest.raises(ServerRestartedError):
+                    await handle.demo_default_arg(a=1, b=2)
+
+    async def test_a_wait_that_succeeded_is_still_pinned_to_the_server_that_answered(self) -> None:
+        """The restore runs on every path that does not end pinned and ready, and this path does."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                pinned = handle._boot_uuid_pin.expected
+
+                transport.switch_to(second_app)
+                await handle.wait_ready(timeout=5.0, allow_server_uuid_change=True)
+
+                assert handle._boot_uuid_pin.expected != pinned
+                assert handle._boot_uuid_pin.needs_handshake() is False
 
 
 class TestWaitReady:
@@ -943,3 +1184,203 @@ class TestPositionalCalls:
                 with pytest.raises(TypeError, match="at most 0 positional arguments"):
                     await handle.demo_nothing(1)
                 assert transport.requests == 0
+
+
+class TestWaitDead:
+    async def test_wait_dead_returns_once_the_server_stops_answering(self):
+        """A cell is healed only after its ranks are gone, and a refused connection is that proof."""
+        transport = _HookTransport(None, hook=_fail_hook(-1))
+        async with _handle_over(transport) as handle:
+            await handle.wait_dead(timeout=5.0)
+
+            assert transport.requests == 1
+
+    async def test_wait_dead_gives_up_on_a_worker_that_stays_healthy(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        """A worker that refuses to die must not block healing forever, so the wait is bounded and says so."""
+        monkeypatch.setattr(worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                with caplog.at_level(logging.ERROR, logger=worker_handle_module.__name__):
+                    await handle.wait_dead(timeout=0.05)
+
+                assert transport.requests >= 2
+                assert "waiting for" in caplog.text
+
+    async def test_wait_dead_treats_a_restarted_server_as_dead(self):
+        """The pod that was asked to die is gone once a fresh boot uuid answers in its place."""
+        async with _running_app(_Worker()) as first:
+            transport = _HookTransport(first)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+                async with _running_app(_Worker()) as second:
+                    transport.switch_to(second)
+                    requests_before = transport.requests
+
+                    await handle.wait_dead(timeout=5.0)
+
+                    assert transport.requests == requests_before + 1
+
+    async def test_wait_dead_keeps_waiting_while_the_worker_is_merely_unreachable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A connect timeout says nothing about the worker, so healing must not start on one."""
+        monkeypatch.setattr(worker_handle_module, "_WAIT_DEAD_PROBE_INTERVAL_SECONDS", 0.01)
+        transport = _HookTransport(None, hook=_fail_hook(-1, error_type=httpx.ConnectTimeout))
+        async with _handle_over(transport) as handle:
+            await handle.wait_dead(timeout=0.05)
+
+            assert transport.requests >= 2
+
+
+class _SlowWorker:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.finished = threading.Event()
+
+    async def demo_slow(self) -> str:
+        self.started.set()
+        await asyncio.sleep(0.2)
+        self.finished.set()
+        return "done"
+
+    def demo_slow_sync(self) -> str:
+        self.started.set()
+        time.sleep(0.2)
+        self.finished.set()
+        return "done"
+
+
+async def _abandon_polled_call(worker: _SlowWorker, *, transport: _HookTransport, method: str) -> None:
+    async with _handle_over(transport, worker_cls=_SlowWorker) as handle:
+        call = asyncio.create_task(getattr(handle, method)())
+        assert await asyncio.to_thread(worker.started.wait, 5.0)
+
+        deadline = time.monotonic() + 5.0
+        while not transport.polls():
+            assert time.monotonic() < deadline, "the client never polled the call it submitted"
+            await asyncio.sleep(0.01)
+
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+
+
+class TestTheCallStoreOwnsACallRatherThanItsClient:
+    @pytest.mark.parametrize("method", ["demo_slow", "demo_slow_sync"])
+    async def test_a_submitted_call_keeps_running_after_its_poller_walks_away(self, method: str) -> None:
+        """A client may walk away mid-call, and the worker has to finish what it accepted regardless."""
+        worker = _SlowWorker()
+        async with _running_app(worker) as app:
+            await _abandon_polled_call(worker, transport=_HookTransport(app), method=method)
+
+            assert await asyncio.to_thread(worker.finished.wait, 5.0)
+
+    @pytest.mark.parametrize("method", ["demo_slow", "demo_slow_sync"])
+    async def test_the_store_still_holds_the_outcome_for_whoever_polls_next(self, method: str) -> None:
+        """The next script polls the worker for the call its predecessor submitted, so the outcome must be retained."""
+        worker = _SlowWorker()
+        async with _running_app(worker) as app:
+            transport = _HookTransport(app)
+            await _abandon_polled_call(worker, transport=transport, method=method)
+            assert await asyncio.to_thread(worker.finished.wait, 5.0)
+
+            submitted = next(request for request in transport.seen if request.method == "POST")
+            call_id = json.loads(submitted.content)["call_id"]
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+            ) as http_client:
+                response = await http_client.get(CALL_STATUS_PATH.format(call_id=call_id), params={"timeout": 1.0})
+
+            assert response.status_code == 200
+            assert response.json()["status"] == "success"
+
+
+class TestWaitIdle:
+    async def test_an_idle_worker_is_reported_idle_at_once(self) -> None:
+        """A worker that is running nothing must not cost its caller a poll interval."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app)
+            async with _handle_over(transport) as handle:
+                await handle.wait_idle(timeout=5.0)
+
+                assert transport.requests == 1
+
+    async def test_a_running_call_is_waited_out(self, fast_retries: None) -> None:
+        """The wait ends only once the worker has finished the call it was already running."""
+        worker = _Worker()
+
+        async def release_soon() -> None:
+            await asyncio.sleep(0.2)
+            worker.block_forever.set()
+
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            call = asyncio.create_task(handle.demo_hang())
+            assert await asyncio.to_thread(worker.hang_started.wait, 5.0)
+            releaser = asyncio.create_task(release_soon())
+
+            await handle.wait_idle(timeout=10.0)
+
+            assert worker.block_forever.is_set()
+            assert await asyncio.wait_for(call, timeout=5.0) == "done"
+            await releaser
+
+    async def test_a_call_that_never_finishes_ends_the_wait_loudly(self, fast_retries: None) -> None:
+        """A wait that hung forever would leave its caller wedged with no explanation, so it has to fail."""
+        worker = _Worker()
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            call = asyncio.create_task(handle.demo_hang())
+            assert await asyncio.to_thread(worker.hang_started.wait, 5.0)
+
+            with pytest.raises(WorkerStillBusyError, match="is still running the calls"):
+                await handle.wait_idle(timeout=0.3)
+
+            worker.block_forever.set()
+            assert await asyncio.wait_for(call, timeout=5.0) == "done"
+
+    async def test_a_call_that_is_queued_but_not_started_still_counts_as_in_flight(self, fast_retries: None) -> None:
+        """A take-over that adopted a worker with work still queued would drive it while that work runs."""
+        worker = _Worker()
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            first = asyncio.create_task(handle.demo_hang())
+            assert await asyncio.to_thread(worker.hang_started.wait, 5.0)
+            queued = asyncio.create_task(handle.demo_default_arg(a=1, b=2))
+            await asyncio.sleep(0.05)
+
+            with pytest.raises(WorkerStillBusyError, match="is still running the calls"):
+                await handle.wait_idle(timeout=0.3)
+
+            worker.block_forever.set()
+            assert await asyncio.wait_for(first, timeout=5.0) == "done"
+            assert await asyncio.wait_for(queued, timeout=5.0) == 3
+
+    async def test_a_call_that_failed_leaves_the_worker_idle(self, fast_retries: None) -> None:
+        """A call the worker refused is finished, and a take-over that kept waiting for it would never proceed."""
+        worker = _Worker()
+        async with _running_app(worker) as app, _handle_over(httpx.ASGITransport(app=app)) as handle:
+            with pytest.raises(RpcWorkerCallError):
+                await handle.demo_raises()
+
+            await handle.wait_idle(timeout=5.0)
+
+    async def test_a_wait_against_a_replaced_server_process_is_refused(self, fast_retries: None) -> None:
+        """A pinned handle waiting out a worker that restarted under it is waiting out the wrong process."""
+        async with _running_app(_Worker()) as first_app, _running_app(_Worker()) as second_app:
+            transport = _HookTransport(first_app)
+            async with _handle_over(transport, require_stable_boot_uuid=True) as handle:
+                await handle.wait_ready(timeout=5.0)
+
+                transport.switch_to(second_app)
+                with pytest.raises(ServerRestartedError):
+                    await handle.wait_idle(timeout=5.0)
+
+    async def test_a_transport_hiccup_does_not_end_the_wait(self, fast_retries: None) -> None:
+        """The wait spans a pod that may be restarting under it, so a lost probe is retried rather than fatal."""
+        async with _running_app(_Worker()) as app:
+            transport = _HookTransport(app, hook=_fail_hook(2, "GET", IN_FLIGHT_PATH))
+            async with _handle_over(transport) as handle:
+                await handle.wait_idle(timeout=5.0)
+
+                assert transport.requests >= 3

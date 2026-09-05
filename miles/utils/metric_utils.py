@@ -8,6 +8,23 @@ def dict_add_prefix(d: dict[str, Any], prefix: str) -> dict[str, Any]:
     return {f"{prefix}{k}": v for k, v in d.items()}
 
 
+def namespace_metrics(
+    log_dict: dict[str, Any], *, trainer_model_id: str | None, step_name: str, step: int
+) -> tuple[dict[str, Any], str]:
+    namespace = "" if trainer_model_id is None else f"{trainer_model_id}/"
+    ans = dict_add_prefix(log_dict, namespace)
+    step_key = f"{namespace}{step_name}"
+    ans[step_key] = step
+    return ans, step_key
+
+
+def strip_metrics_namespace(log_dict: dict[str, Any], *, trainer_model_id: str | None) -> dict[str, Any]:
+    if trainer_model_id is None:
+        return log_dict
+    prefix = f"{trainer_model_id}/"
+    return {key.removeprefix(prefix): value for key, value in log_dict.items()}
+
+
 def compute_pass_rate(
     flat_rewards: list[float],
     group_size: int,

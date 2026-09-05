@@ -1,8 +1,9 @@
 import os
 
 from tests.ci.ci_register import register_cuda_ci, register_rocm_ci
+from tests.e2e.common_dirs import get_test_data_dir, get_test_model_dir
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 register_cuda_ci(
     est_time=3000,
@@ -15,27 +16,31 @@ register_rocm_ci(
     labels=["long"],
 )
 
+MODEL_DIR = get_test_model_dir()
+DATA_DIR = get_test_data_dir()
 MODEL_NAME = "Qwen3-0.6B"
 NUM_GPUS = 2
 
 
 def prepare():
-    U.exec_command_cpu("mkdir -p /root/models /root/datasets")
-    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
-    U.hf_download_dataset("zhuzilin/gsm8k")
+    U = command_utils.default_config().create_backend()
+    U.exec_command_cpu(f"mkdir -p {MODEL_DIR} {DATA_DIR}")
+    U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir {MODEL_DIR}/{MODEL_NAME}")
+    U.hf_download_dataset("zhuzilin/gsm8k", data_dir=DATA_DIR)
 
 
 def execute():
-    ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME} "
+    U = command_utils.default_config().create_backend()
+    ckpt_args = f"--hf-checkpoint {MODEL_DIR}/{MODEL_NAME} "
 
     rollout_args = (
-        "--prompt-data /root/datasets/gsm8k/train.parquet "
+        f"--prompt-data {DATA_DIR}/gsm8k/train.parquet "
         "--input-key messages "
         "--label-key label "
         "--apply-chat-template "
         "--rollout-shuffle "
         "--rm-type math "
-        f"--num-rollout {3000 if U.get_env_enable_infinite_run() else 60} "
+        f"--num-rollout {3000 if command_utils.get_env_enable_infinite_run() else 60} "
         "--rollout-batch-size 32 "
         "--n-samples-per-prompt 8 "
         "--rollout-max-response-len 1024 "
@@ -47,7 +52,7 @@ def execute():
 
     eval_args = (
         "--eval-interval 20 "
-        "--eval-prompt-data gsm8k /root/datasets/gsm8k/test.parquet "
+        f"--eval-prompt-data gsm8k {DATA_DIR}/gsm8k/test.parquet "
         "--n-samples-per-eval-prompt 1 "
         "--eval-max-response-len 1024 "
         "--eval-top-k 1 "
@@ -99,7 +104,7 @@ def execute():
         f"{optimizer_args} "
         f"{grpo_args} "
         f"{sglang_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{eval_args} "
         f"{fsdp_args} "
         f"{perf_args} "

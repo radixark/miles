@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 from collections.abc import Callable
 
 import httpx
@@ -24,6 +23,7 @@ class MockCellState:
         is_suspended: bool = False,
         suspend_error: Exception | None = None,
         resume_error: Exception | None = None,
+        workers_hash: str = "pseudo-hash-1",
     ) -> None:
         self.phase = phase
         self.conditions = conditions or [
@@ -33,6 +33,7 @@ class MockCellState:
         self.is_suspended = is_suspended
         self.suspend_error = suspend_error
         self.resume_error = resume_error
+        self.workers_hash = workers_hash
         self.suspend_calls: int = 0
         self.resume_calls: int = 0
 
@@ -151,27 +152,12 @@ class MockInferenceController:
         self._statuses = dict(statuses or {})
         self.status_calls: int = 0
 
-    def get_cell_statuses(self) -> dict[str, CellStatus]:
+    async def get_cell_statuses(self) -> dict[str, CellStatus]:
         self.status_calls += 1
         return dict(self._statuses)
 
     def observe_cell(self, cell_id: str, status: CellStatus) -> None:
         self._statuses[cell_id] = status
-
-
-class MockCellOperations:
-    def __init__(self, *, inject_fault_error: Exception | None = None) -> None:
-        self.stopped_cells: list[str] = []
-        self.injected: list[tuple[str, FailureMode, int]] = []
-        self._inject_fault_error = inject_fault_error
-
-    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
-        self.stopped_cells.append(cell_id)
-
-    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
-        if self._inject_fault_error is not None:
-            raise self._inject_fault_error
-        self.injected.append((cell_id, mode, sub_index))
 
 
 class MockWorkerManager:
@@ -207,7 +193,22 @@ class MockWorkerManager:
         log.append(list(cell_ids))
         for cell_id in cell_ids:
             previous = self._summaries[cell_id]
-            self._summaries[cell_id] = dataclasses.replace(previous, alive=not suspended)
+            self._summaries[cell_id] = previous.model_copy(update=dict(alive=not suspended))
+
+
+class MockStopCellController:
+    def __init__(self, worker_manager: MockWorkerManager) -> None:
+        self._worker_manager = worker_manager
+
+    async def stop_cell_between_weight_updates(self, cell_id: str) -> None:
+        await self._worker_manager.stop_cells.remote([cell_id])
+
+    async def inject_fault_between_weight_updates(self, cell_id: str, *, mode: FailureMode, sub_index: int) -> None:
+        await self._worker_manager.inject_fault.remote(
+            cell_id,
+            mode=mode.value,
+            worker_in_cell_index=sub_index,
+        )
 
 
 def make_cell_summaries(
@@ -259,7 +260,7 @@ class MockTrainerCell:
         )
 
 
-def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-actor") -> object:
+def make_mock_controller(cells: list[MockTrainerCell], *, pool_id: str = "trainer-engine-actor") -> object:
     from miles.ray.train.group import TrainerController
 
     group = object.__new__(TrainerController)

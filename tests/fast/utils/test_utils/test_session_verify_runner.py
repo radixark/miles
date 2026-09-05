@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from tests.e2e.sglang.test_session_server_multi_role import _common
@@ -395,6 +396,7 @@ def test_session_verify_metrics_keeps_assistant_text_soft(tmp_path):
 
 @pytest.mark.parametrize("failure_phase", ["execute_train", "post_gate"])
 def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, failure_phase):
+    """A failed session verification preserves metrics beside the temporary sidecar."""
     metrics_path = tmp_path / "metrics.jsonl"
     metrics_fd = os.open(metrics_path, os.O_CREAT | os.O_RDWR)
     monkeypatch.setattr(session_verify_runner.tempfile, "mkstemp", lambda **kwargs: (metrics_fd, str(metrics_path)))
@@ -405,7 +407,7 @@ def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, 
     )
     monkeypatch.setattr(session_verify_runner, "_ensure_prompt_data", lambda: None)
     monkeypatch.setattr(session_verify_runner, "_clear_proxy_env", lambda: None)
-    monkeypatch.setattr(session_verify_runner, "_ensure_model_downloaded", lambda checkpoint: checkpoint)
+    monkeypatch.setattr(session_verify_runner, "_ensure_model_downloaded", lambda checkpoint, *, backend: checkpoint)
     monkeypatch.setattr(session_verify_runner, "namespace_to_train_args", lambda args: "train args")
 
     def fake_execute_train(**kwargs):
@@ -415,7 +417,12 @@ def test_run_session_verify_preserves_sidecar_on_failure(monkeypatch, tmp_path, 
         if failure_phase == "execute_train":
             raise subprocess.CalledProcessError(1, "ray job submit")
 
-    monkeypatch.setattr(session_verify_runner.U, "execute_train", fake_execute_train)
+    backend = SimpleNamespace(execute_train=fake_execute_train)
+    monkeypatch.setattr(
+        session_verify_runner.command_utils,
+        "default_config",
+        lambda: SimpleNamespace(create_backend=lambda: backend),
+    )
     args = argparse.Namespace(
         tito_model="qwen3",
         sglang_reasoning_parser="qwen3",

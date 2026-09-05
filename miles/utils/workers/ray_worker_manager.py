@@ -5,27 +5,38 @@ import functools
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 import ray
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 from miles.utils.function_registry import load_function
-from miles.utils.http_utils import _wrap_ipv6
+from miles.utils.http_utils import wrap_ipv6
+from miles.utils.logging_utils import configure_logger
+from miles.utils.misc import NodeProbeMixin
 from miles.utils.ray_utils import compute_ray_pin_head_options
 from miles.utils.workers.addr_allocator import PortAllocator
+from miles.utils.workers.backend_capability.base import BackendCapability, DeferredBackendCapability
+from miles.utils.workers.backend_capability.ray import RayBackendCapability
 from miles.utils.workers.command_actor import CommandActor
 from miles.utils.workers.naming import compute_cell_id, compute_worker_name
 from miles.utils.workers.ray_worker_handle import RayWorkerHandle
+from miles.utils.workers.rpc.common.metadata import declared_concurrency_groups
+from miles.utils.workers.serving.serve_actor import ServeActor
+from miles.utils.workers.types import WorkerCommBackend
 from miles.utils.workers.worker_info import WorkerInfo
 from miles.utils.workers.worker_provider.base import CellInfo
 from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
     BaseWorkerSpec,
     CommandWorkerSpec,
     HostAndPort,
     LaunchCommandContext,
     NamedHostAndPorts,
     ServeWorkerSpec,
+    WorkerCtorContext,
     WorkerLaunchContext,
     WorkerMetaContext,
 )
@@ -39,41 +50,57 @@ if TYPE_CHECKING:
 # TODO: unique name, maybe with args.run_uuid
 _ACTOR_NAME = "ray_worker_manager"
 
+_LIVENESS_SCAN_INTERVAL_SECONDS = 10.0
+
 
 class RayWorkerManager:
     def __init__(self):
         self.port_allocator = PortAllocator()
 
     @staticmethod
-    def launch(specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+    def launch(
+        args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+    ):
         obj = ray.remote(RayWorkerManager).options(name=_ACTOR_NAME).remote()
-        ray.get(obj.init.remote(specs, pgs))
+        ray.get(obj.init.remote(args, specs, pgs, comm_backend=comm_backend))
         return obj
 
     @staticmethod
     def get_handle() -> ray.actor.ActorHandle:
         return ray.get_actor(_ACTOR_NAME)
 
-    async def init(self, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo]):
+    async def init(
+        self, args, specs: list[BaseWorkerSpec], pgs: dict[str, PlacementGroupInfo], *, comm_backend: WorkerCommBackend
+    ):
+        configure_logger(args, source=SimpleProcessIdentity(component="worker_manager"))
+
+        self.comm_backend = comm_backend
         self.pgs = pgs
         self._pools = {spec.name: _PoolManager.initial(spec, self) for spec in specs}
         assert len(self._pools) == len(specs)
+        self._membership_lock = asyncio.Lock()
 
         await self.start_cells([c.cell_id for c in self._all_cells()])
 
     async def start_cells(self, cell_ids: list[str]) -> None:
-        cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
-        try:
-            await _gather_or_raise([c.launch_actors() for c in cells])
-            await _gather_or_raise([c.alloc_ports() for c in cells])
-            await _gather_or_raise([c.post_setup() for c in cells])
-        except Exception:
-            logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
-            await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
-            raise
+        async with self._membership_lock:
+            cells = [cell for cell_id in cell_ids if (cell := self._find_cell(cell_id)).actors is None]
+            try:
+                await _gather_or_raise([c.launch_actors() for c in cells])
+                await _gather_or_raise([c.alloc_ports() for c in cells])
+                await _gather_or_raise([c.post_setup() for c in cells])
+            except Exception:
+                logger.error(f"Starting cells {[c.cell_id for c in cells]} failed, rolling back", exc_info=True)
+                await asyncio.gather(*[c.stop() for c in cells], return_exceptions=True)
+                raise
 
     async def stop_cells(self, cell_ids: list[str]) -> None:
-        await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
+        async with self._membership_lock:
+            await asyncio.gather(*[self._find_cell(cell_id).stop() for cell_id in cell_ids])
+
+    async def shutdown(self) -> None:
+        async with self._membership_lock:
+            await asyncio.gather(*[cell.stop() for cell in self._all_cells()])
 
     def inject_fault(self, cell_id: str, *, mode: str, worker_in_cell_index: int) -> None:
         cell = self._find_cell(cell_id)
@@ -101,16 +128,7 @@ class RayWorkerManager:
 
     def get_worker_infos(self, cell_id: str) -> list[WorkerInfo]:
         cell = self._find_cell(cell_id)
-        return [
-            WorkerInfo(
-                name=actor.name,
-                generation=actor.generation,
-                self_addrs=actor.self_addrs or {},
-                gpu_ids=actor.gpu_ids,
-                handle=RayWorkerHandle(actor.actor_handle),
-            )
-            for actor in (cell.actors if cell.actors is not None else [])
-        ]
+        return [self._compute_worker_info(actor) for actor in (cell.actors if cell.actors is not None else [])]
 
     def get_cell_infos(self, *, pool_ids: list[str]) -> dict[str, CellInfo]:
         # TODO: about `get_worker_infos` (which is only used by dashboard)
@@ -118,6 +136,24 @@ class RayWorkerManager:
         assert not unknown, f"{unknown=} {sorted(self._pools)=}"
         infos = [c.get_info() for name in pool_ids for c in self._pools[name].cells]
         return {info.cell_id: info for info in infos}
+
+    def get_actor_handle(self, worker_name: str, *, expected_generation: int) -> ray.actor.ActorHandle:
+        actor = self._find_actor(worker_name)
+        assert actor.generation == expected_generation, (
+            f"{worker_name} is now generation {actor.generation}, not the {expected_generation} it was described as; "
+            f"ask for its worker infos again"
+        )
+        return actor.actor_handle
+
+    def _compute_worker_info(self, actor: _BaseActorManager) -> WorkerInfo:
+        served_over_rpc = isinstance(actor.spec, ServeWorkerSpec) and self.comm_backend == WorkerCommBackend.RPC
+        return WorkerInfo(
+            name=actor.name,
+            generation=actor.generation,
+            self_addrs=actor.self_addrs or {},
+            gpu_ids=actor.gpu_ids,
+            worker_class=actor.spec.worker_class if served_over_rpc else None,
+        )
 
     def _find_actor(self, worker_name: str) -> _BaseActorManager:
         matches = [a for c in self._all_cells() if c.alive for a in c.actors if a.name == worker_name]
@@ -157,6 +193,17 @@ class _PoolManager:
 SpecT = TypeVar("SpecT", bound=BaseWorkerSpec)
 
 
+def _actor_manager_cls(spec: BaseWorkerSpec, *, comm_backend: WorkerCommBackend) -> type[_BaseActorManager]:
+    match spec, comm_backend:
+        case CommandWorkerSpec(), _:
+            return _CommandActorManager
+        case ServeWorkerSpec(), WorkerCommBackend.RPC:
+            return _ServeActorRpcCommManager
+        case ServeWorkerSpec(), WorkerCommBackend.RAY:
+            return _ServeActorRayCommManager
+    raise AssertionError(f"{spec.name} is neither served nor launched as a command")
+
+
 @dataclass(kw_only=True)
 class _CellManager(Generic[SpecT]):
     manager: RayWorkerManager
@@ -164,12 +211,13 @@ class _CellManager(Generic[SpecT]):
     spec: SpecT
     actors: list[_BaseActorManager] | None
     generation: int = 0
+    liveness_scan_task: asyncio.Task | None = None
 
     async def launch_actors(self):
         assert self.actors is None
         self.generation += 1
         scheduling = self.spec.scheduling
-        actor_manager_cls = _ServeActorManager if isinstance(self.spec, ServeWorkerSpec) else _CommandActorManager
+        actor_manager_cls = _actor_manager_cls(self.spec, comm_backend=self.manager.comm_backend)
         self.actors = [
             actor_manager_cls(
                 manager=self.manager,
@@ -188,6 +236,7 @@ class _CellManager(Generic[SpecT]):
             for worker_in_cell_index in range(scheduling.num_workers_per_cell)
         ]
         await self._for_all_actors(lambda a: a.launch_actor())
+        self.liveness_scan_task = asyncio.create_task(self._scan_liveness_forever(self.generation))
 
     async def alloc_ports(self) -> None:
         await self._for_all_actors(lambda a: a.alloc_ports())
@@ -200,6 +249,35 @@ class _CellManager(Generic[SpecT]):
             return
         await self._for_all_actors(lambda a: a.stop())
         self.actors = None
+
+    async def _scan_liveness_forever(self, generation: int) -> None:
+        while self.generation == generation and self.actors is not None:
+            await asyncio.sleep(_LIVENESS_SCAN_INTERVAL_SECONDS)
+            try:
+                await self._scan_liveness_once()
+            except Exception:
+                logger.error(f"Scanning liveness of cell {self.cell_id} failed, will scan again", exc_info=True)
+
+    async def _scan_liveness_once(self) -> None:
+        generation = self.generation
+        dead_worker_names = await self._find_dead_worker_names()
+        if not dead_worker_names:
+            return
+
+        async with self.manager._membership_lock:
+            if self.actors is None or self.generation != generation:
+                return
+            logger.error(
+                f"Cell {self.cell_id} lost workers {dead_worker_names} without being stopped, "
+                f"so the whole cell is torn down and reported as not alive"
+            )
+            await self.stop()
+
+    async def _find_dead_worker_names(self) -> list[str]:
+        if (actors := self.actors) is None:
+            return []
+        probes = await asyncio.gather(*[a.probe_is_dead() for a in actors])
+        return [actor.name for actor, is_dead in zip(actors, probes, strict=True) if is_dead]
 
     async def _for_all_actors(self, fn: Callable[[_BaseActorManager], Any]):
         await asyncio.gather(*[fn(a) for a in self.actors])
@@ -264,7 +342,7 @@ class _BaseActorManager(Generic[SpecT]):
             else:
                 port = port_info.static_port + (self.parent.cell_index if port_info.offset_by_cell else 0)
                 await self._assert_static_port_is_free(port=port, port_name=port_info.name, node_ip=node_ip)
-            allocated[port_info.name] = HostAndPort(host=_wrap_ipv6(node_ip), port=port)
+            allocated[port_info.name] = HostAndPort(host=wrap_ipv6(node_ip), port=port)
 
         self.self_addrs = allocated
 
@@ -306,6 +384,11 @@ class _BaseActorManager(Generic[SpecT]):
             runtime_env={"env_vars": self.spec.env_var(self.launch_context)},
             **(compute_ray_pin_head_options() if self.spec.scheduling.pin_to_head else {}),
         ).remote(**ctor_kwargs)
+
+    async def probe_is_dead(self) -> bool:
+        if self.actor_handle is None:
+            return False
+        return await RayWorkerHandle(self.actor_handle).probe_is_dead()
 
     async def stop(self) -> None:
         if self.actor_handle is None:
@@ -373,7 +456,7 @@ class _CommandActorManager(_BaseActorManager[CommandWorkerSpec]):
 
 
 @dataclass
-class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
+class _ServeActorRayCommManager(_BaseActorManager[ServeWorkerSpec]):
     def _compute_remote_options(self) -> dict:
         groups = self.spec.concurrency_groups
         return {} if groups is None else dict(concurrency_groups=groups)
@@ -381,12 +464,14 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
     async def launch_actor(self) -> None:
         self.actor_handle = self._create_actor(
             self._compute_actor_class(),
-            **self.spec.ctor_kwargs(self.launch_context),
+            ctor_kwargs=self.spec.ctor_kwargs,
+            context=self.launch_context,
         )
 
     def _compute_actor_class(self) -> type:
-        actor_class = load_function(self.spec.worker_class)
-        if (method_groups := self.spec.method_concurrency_groups) is None:
+        actor_class = bootstrapped_worker_class(self.spec.worker_class)
+        method_groups = self._compute_method_concurrency_groups(actor_class)
+        if not method_groups:
             return actor_class
         return type(
             f"{actor_class.__name__}WithConcurrencyGroups",
@@ -396,6 +481,20 @@ class _ServeActorManager(_BaseActorManager[ServeWorkerSpec]):
                 for name, group in method_groups.items()
             },
         )
+
+    def _compute_method_concurrency_groups(self, actor_class: type) -> dict[str, str]:
+        if (groups := self.spec.concurrency_groups) is None:
+            return {}
+
+        method_groups = declared_concurrency_groups(actor_class)
+        assert method_groups, (
+            f"Worker {self.spec.name!r} declares concurrency groups {sorted(groups)} but no method of "
+            f"{actor_class.__name__} is annotated with @rpc(concurrency_group=...): threading the actor "
+            f"while every method stays in the default group buys nothing"
+        )
+        undeclared = sorted(set(method_groups.values()) - set(groups))
+        assert not undeclared, f"Worker {self.spec.name!r} routes methods to undeclared groups: {undeclared}"
+        return method_groups
 
     async def post_setup(self) -> None:
         pass
@@ -407,6 +506,58 @@ def _route_method_to_concurrency_group(method: Callable, *, group: str) -> Calla
         return method(self, *args, **kwargs)
 
     return ray.method(concurrency_group=group)(routed)
+
+
+@dataclass
+class _ServeActorRpcCommManager(_BaseActorManager[ServeWorkerSpec]):
+    async def launch_actor(self) -> None:
+        self.actor_handle = self._create_actor(
+            ServeActor,
+            build_worker=partial(
+                _build_serve_worker,
+                worker_class_path=self.spec.worker_class,
+                ctor_kwargs=self.spec.ctor_kwargs,
+                context=self.launch_context,
+            ),
+        )
+
+    async def post_setup(self) -> None:
+        await self.actor_handle.start_rpc_server.remote(port=self.self_addrs[RPC_PORT_NAME].port)
+
+
+def _build_serve_worker(
+    *, worker_class_path: str, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
+) -> Any:
+    return bootstrapped_worker_class(worker_class_path)(ctor_kwargs=ctor_kwargs, context=context)
+
+
+@functools.cache
+def bootstrapped_worker_class(worker_class_path: str) -> type:
+    worker_class = load_function(worker_class_path)
+
+    class BootstrappedWorker(worker_class, NodeProbeMixin):
+        def __init__(
+            self, *, ctor_kwargs: Callable[[WorkerCtorContext], dict[str, Any]], context: WorkerLaunchContext
+        ) -> None:
+            super().__init__(**ctor_kwargs(_ctor_context(context)))
+
+    BootstrappedWorker.__name__ = worker_class.__name__
+    BootstrappedWorker.__qualname__ = worker_class.__qualname__
+    BootstrappedWorker.__module__ = worker_class.__module__
+    return BootstrappedWorker
+
+
+def _ctor_context(launch_context: WorkerLaunchContext) -> WorkerCtorContext:
+    return WorkerCtorContext(
+        cell_index=launch_context.cell_index,
+        worker_in_cell_index=launch_context.worker_in_cell_index,
+        gpu_ids=launch_context.gpu_ids,
+        capability=DeferredBackendCapability(create=_create_ray_backend_capability),
+    )
+
+
+def _create_ray_backend_capability() -> BackendCapability:
+    return RayBackendCapability(worker_manager_handle=RayWorkerManager.get_handle())
 
 
 async def _gather_or_raise(coros: list[Coroutine[Any, Any, None]]) -> None:

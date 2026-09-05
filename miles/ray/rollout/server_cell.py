@@ -20,6 +20,7 @@ from miles.ray.rollout.cell_state import (
     StateServing,
     StateUninitialized,
 )
+from miles.ray.rollout.engine_env_reporter import EngineEnvReporter
 from miles.utils.ft_utils.api_server.models import CellCondition, CellStatus, TriState
 from miles.utils.ft_utils.health_checker import (
     ActiveAndEpoch,
@@ -31,12 +32,12 @@ from miles.utils.ft_utils.health_checker import (
 from miles.utils.pydantic_utils import FrozenStrictBaseModel
 from miles.utils.workers.launch_gate import GATE_PORT_NAME, activate_launch_gate
 from miles.utils.workers.worker_provider.base import BaseWorkerProvider
-from miles.utils.workers.worker_provider.ray import RayWorkerProvider
 
 logger = logging.getLogger(__name__)
 
 SHUTDOWN_TIMEOUT = 30
 INITIALIZING_TIMEOUT_SECONDS = 1800.0
+ABORT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
 class ServerCellMetadata(FrozenStrictBaseModel):
@@ -57,11 +58,14 @@ class ServerCell:
     args: Any
     meta: ServerCellMetadata
     router_api_client: SGLangRouterApiClient
-    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
+    provider: BaseWorkerProvider
+    health_checker_activeness: Callable[[], ActiveAndEpoch] = lambda: ActiveAndEpoch(active=True, epoch=0)
     _health_checker: BaseHealthChecker = dataclasses.field(init=False)
+    _env_reporter: EngineEnvReporter = dataclasses.field(init=False)
     _state: CellState = dataclasses.field(default_factory=StateUninitialized)
 
     def __post_init__(self) -> None:
+        self._env_reporter = EngineEnvReporter(interval_seconds=self.args.env_report_interval_seconds)
         self._health_checker = create_rollout_cell_health_checker(
             args=self.args,
             name=f"rollout-cell-{self.meta.cell_id}",
@@ -71,7 +75,7 @@ class ServerCell:
         self._health_checker.start()
 
     def _get_health_checker_active_and_epoch(self) -> ActiveAndEpoch:
-        controller_active_and_epoch = self.global_health_checker_activeness()
+        controller_active_and_epoch = self.health_checker_activeness()
         cell_active = isinstance(self._state, (StatePendingWeights, StateServing))
         return ActiveAndEpoch(
             active=cell_active and controller_active_and_epoch.active, epoch=controller_active_and_epoch.epoch
@@ -146,16 +150,13 @@ class ServerCell:
 
     @property
     def api_client(self) -> SGLangApiClient:
-        return SGLangApiClient(server_url=self.server_url)
+        return SGLangApiClient(server_url=self.server_url, api_key=self.meta.sglang_api_key)
 
     async def init(self) -> None:
-        if self.args.rollout_external:
-            raise NotImplementedError(
-                "external rollout address allocation was removed and a new implementation is coming"
-            )
-
+        assert isinstance(self._state, StateUninitialized), f"{self._state=}"
         addr_info = await self._compute_addr_info()
-        await activate_launch_gate(gate_url=addr_info.gate_url)
+        if (gate_url := addr_info.gate_url) is not None:
+            await activate_launch_gate(gate_url=gate_url)
         self._change_state(
             "init", StateUninitialized, StateInitializing(addr_info=addr_info, start_time=time.monotonic())
         )
@@ -163,6 +164,14 @@ class ServerCell:
     async def tick(self) -> None:
         if isinstance(self._state, StateInitializing):
             await self._tick_when_initializing()
+        await self._report_env_if_due()
+
+    async def _report_env_if_due(self) -> None:
+        if not self.is_pending_weights_or_serving:
+            return
+        await self._env_reporter.report_if_due(
+            cell_id=self.meta.cell_id, server_url=self.server_url, api_client=self.api_client
+        )
 
     async def _tick_when_initializing(self) -> None:
         addr_info = self._state.addr_info
@@ -237,14 +246,13 @@ class ServerCell:
             logger.warning(f"Unregistering cell {self.meta.cell_id} from the router failed, tearing down anyway ({e})")
 
     async def _compute_addr_info(self) -> CellAddrInfo:
-        provider: BaseWorkerProvider = RayWorkerProvider.create()  # TODO inject instance
-        master_addrs = await provider.get_addrs(worker_name=self.meta.worker_name)
+        master_addrs = await self.provider.get_addrs(worker_name=self.meta.worker_name)
         primary = master_addrs["primary"]
-        gate = master_addrs[GATE_PORT_NAME]
+        gate = master_addrs.get(GATE_PORT_NAME)
         return CellAddrInfo(
             server_url=build_server_url(host=primary.host, port=primary.port),
             bootstrap_port=x.port if (x := master_addrs.get("disaggregation_bootstrap")) else None,
-            gate_url=build_server_url(host=gate.host, port=gate.port),
+            gate_url=build_server_url(host=gate.host, port=gate.port) if gate else None,
         )
 
     def _mark_serving(self) -> None:
@@ -267,6 +275,9 @@ class ServerCell:
 
     async def onload(self, tags: list[str] | None):
         return await self.api_client.resume_memory_occupation(tags=tags)
+
+    async def abort_all(self):
+        return await self.api_client.abort_all_requests(timeout=ABORT_REQUEST_TIMEOUT_SECONDS)
 
     async def check_weights(self, action: str, allow_quant_error: bool, selector: str, skip_list: list[str] | None):
         return await self.api_client.check_weights(

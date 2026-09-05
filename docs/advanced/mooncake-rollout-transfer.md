@@ -20,7 +20,9 @@ Before starting a Miles job:
 - Run the same Miles revision and Mooncake version on every Ray node.
 - Start `mooncake_master`, or provide a Mooncake HA endpoint, and make the endpoint
   reachable from every node. Miles connects as a client and does not manage the
-  endpoint lifecycle.
+  endpoint lifecycle. The one exception is a `master_server_address` that names the
+  loopback host: a Ray launch reads the address out of `--mooncake-store-init-kwargs`
+  and, only when it is local, starts a master on that port itself.
 - Use routable data-network addresses for Ray and Mooncake clients.
 - Reserve enough host memory for `global_segment_size` and `local_buffer_size`.
 - For RDMA, expose the RDMA device to the Miles environment, allow memory locking,

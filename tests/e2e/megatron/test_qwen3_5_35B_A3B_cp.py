@@ -8,7 +8,7 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 # FIXME: fix this
 register_cuda_ci(
@@ -24,6 +24,7 @@ NUM_GPUS = 8
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -33,6 +34,7 @@ def prepare():
 
 def _execute_with_cp(cp_size: int):
     """Run a short training loop with the given context-parallel size."""
+    U = command_utils.default_config().create_backend()
     assert NUM_GPUS % cp_size == 0
     ep_size = NUM_GPUS // cp_size
 
@@ -134,7 +136,7 @@ def _execute_with_cp(cp_size: int):
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{perf_args} "
         f"{eval_args} "
         f"{sglang_args} "

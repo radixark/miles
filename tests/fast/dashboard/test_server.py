@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import pytest
 import torch
@@ -57,6 +58,35 @@ def test_meta(client):
     assert meta["capabilities"]["has_timeline"] is False
     assert meta["wandb_url"] is None  # empty args snapshot in this fixture
     assert meta["data_buffer_length"] is None  # never reported in this fixture
+
+
+class TestMeta:
+    def test_meta_reports_the_step_key_for_each_namespaced_metric(self, tmp_path: Path) -> None:
+        """Each namespaced metric must report the exact axis recorded with its point."""
+        writer = MetricStore(tmp_path / "dashboard")
+        writer.append(
+            MetricsRecord(
+                ts=1.0,
+                step_key="alpha/train/step",
+                step=3,
+                metrics={"alpha/train/loss": 1.5},
+            )
+        )
+        writer.append(
+            MetricsRecord(
+                ts=2.0,
+                step_key="beta/rollout/step",
+                step=4,
+                metrics={"beta/rollout/reward": 0.5},
+            )
+        )
+        writer.flush()
+        client = TestClient(make_app(MetricStore.load(tmp_path / "dashboard"), DumpReader(tmp_path)))
+
+        assert client.get("/api/meta").json()["step_key_of_metric_key"] == {
+            "alpha/train/loss": "alpha/train/step",
+            "beta/rollout/reward": "beta/rollout/step",
+        }
 
 
 def test_meta_reports_latest_data_buffer_length(dump_dir):

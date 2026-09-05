@@ -1,3 +1,4 @@
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
@@ -9,9 +10,12 @@ from tests.fast.fixtures.driver_fakes import (
     FakeRemoteMethod,
     FakeRolloutExecutor,
     FakeTrainingModel,
+    FakeWorkerManager,
 )
 
-from miles.utils.multi_lora import EmptyBatchTimeoutError
+from miles.ray import wiring
+from miles.utils.async_utils import with_disposer
+from miles.utils.data import RolloutDataPack
 
 _ACTIVE_SNAPSHOT = {"pending": [], "active": ["alpha"], "retiring": [], "cleanup": []}
 _EMPTY_SNAPSHOT = {"pending": [], "active": [], "retiring": [], "cleanup": []}
@@ -21,10 +25,9 @@ class FakeMultiLoRAController:
     def __init__(self, events: list[str], snapshots: list[dict[str, list[str]]]) -> None:
         self.events = events
         self.snapshots = snapshots
-        self.router_address: str | None = None
         self.registered_adapters: list[tuple[str, Any]] = []
-        self.start = FakeRemoteMethod(self._start)
-        self.stop = FakeRemoteMethod(self._stop)
+        self.init = FakeRemoteMethod(self._start)
+        self.stop = self._stop
         self.http_host = FakeRemoteMethod(self._http_host)
         self.api_port = FakeRemoteMethod(self._api_port)
         self.snapshot = FakeRemoteMethod(self._snapshot)
@@ -47,6 +50,7 @@ class FakeMultiLoRAController:
         return self.snapshots.pop(0)
 
     async def _register_adapter(self, name: str, config: Any) -> None:
+        self.events.append(f"register:{name}")
         self.registered_adapters.append((name, config))
 
 
@@ -76,26 +80,19 @@ def _install_driver_fakes(
         controller=FakeMultiLoRAController(events, snapshots),
     )
 
-    def create_multilora_controller(_args: SimpleNamespace, router_address: str) -> FakeMultiLoRAController:
-        events.append("controller_created")
-        components.controller.router_address = router_address
-        return components.controller
-
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
         return components.inference_controller, components.rollout_executor, 4
 
-    async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
+    async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, None
 
-    async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
+    async def update_weights(
+        _args: Any, _model: Any, _executor: Any, _inference_controller: Any, *, rollout_id: int | None = None
+    ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(multi_lora_driver, "configure_logger", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(multi_lora_driver, "launch_worker_manager", lambda _args: None)
-    monkeypatch.setattr(multi_lora_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(multi_lora_driver, "init_tracking", lambda _args: None)
+    monkeypatch.setattr(multi_lora_driver, "init_orchestration_script", lambda _args, *, disposer: None)
     monkeypatch.setattr(multi_lora_driver, "create_rollout_components", create_rollout_components)
-    monkeypatch.setattr(multi_lora_driver, "create_multilora_controller", create_multilora_controller)
     monkeypatch.setattr(multi_lora_driver, "get_multi_lora_controller", lambda: components.controller)
     monkeypatch.setattr(multi_lora_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(multi_lora_driver, "define_new_adapter_metrics", lambda _snapshot: None)
@@ -116,25 +113,43 @@ def _task_error(cause: Exception) -> ray.exceptions.RayTaskError:
 
 
 class TestAdapterLifecycle:
+    async def test_cli_adapters_are_registered_before_the_training_loop(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Every CLI adapter is parsed and registered by name before the first training-loop snapshot."""
+        events: list[str] = []
+        alpha_path = tmp_path / "alpha.yaml"
+        beta_path = tmp_path / "beta.yaml"
+        alpha_path.write_text("data: alpha-data\nnum_step: 1\n")
+        beta_path.write_text("data: beta-data\nnum_step: 2\n")
+        args = _make_args(multi_lora_adapters=[("alpha", str(alpha_path)), ("beta", str(beta_path))])
+        components = _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
+
+        await with_disposer(multi_lora_driver.main, args)
+
+        assert [(name, config.data) for name, config in components.controller.registered_adapters] == [
+            ("alpha", "alpha-data"),
+            ("beta", "beta-data"),
+        ]
+        first_snapshot = events.index("snapshot")
+        assert events.index("register:alpha") < first_snapshot
+        assert events.index("register:beta") < first_snapshot
+
     async def test_one_active_adapter_completes_through_the_refactored_components(
         self, monkeypatch: pytest.MonkeyPatch
     ):
         """One active adapter runs push, generate, train and save once, then the driver tears everything down."""
         events: list[str] = []
         args = _make_args()
-        components = _install_driver_fakes(
-            monkeypatch, events, snapshots=[_ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _EMPTY_SNAPSHOT]
-        )
+        _install_driver_fakes(monkeypatch, events, snapshots=[_ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _EMPTY_SNAPSHOT])
 
-        await multi_lora_driver.main(args)
+        await with_disposer(multi_lora_driver.main, args)
 
-        assert components.controller.router_address == "http://10.0.0.9:9000"
         assert events == [
-            "controller_created",
             "controller_start",
             "snapshot",
             "actor_reconcile_adapters",
-            "update_weights:None",
+            "update_weights:0",
             "snapshot",
             "prepare_rollout:0",
             "generate_start:0",
@@ -142,10 +157,37 @@ class TestAdapterLifecycle:
             "actor_train:0",
             "actor_save:0",
             "snapshot",
-            "executor_dispose",
-            "inference_dispose",
             "actor_dispose",
             "controller_stop",
+            "executor_dispose",
+            "inference_dispose",
+        ]
+
+    async def test_multi_lora_run_releases_its_worker_manager_after_controller_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Multi-LoRA driver releases its own manager after all controllers stop."""
+        events: list[str] = []
+        manager = FakeWorkerManager(events)
+        _install_driver_fakes(monkeypatch, events, snapshots=[_EMPTY_SNAPSHOT])
+
+        def init_orchestration_script(_args: SimpleNamespace, *, disposer: Any) -> FakeWorkerManager:
+            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            return manager
+
+        monkeypatch.setattr(multi_lora_driver, "init_orchestration_script", init_orchestration_script)
+        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+
+        await with_disposer(multi_lora_driver.main, _make_args())
+
+        assert manager.killed == [manager]
+        assert events[-6:] == [
+            "actor_dispose",
+            "controller_stop",
+            "executor_dispose",
+            "inference_dispose",
+            "manager_shutdown",
+            "manager_kill",
         ]
 
 
@@ -161,13 +203,13 @@ class TestEmptyBatchTimeout:
             events,
             snapshots=[_ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _ACTIVE_SNAPSHOT, _EMPTY_SNAPSHOT],
         )
-        components.rollout_executor.generation_errors = [_task_error(EmptyBatchTimeoutError("no trainable groups"))]
+        components.rollout_executor.generation_packs = [RolloutDataPack(empty_batch_timeout=True)]
 
-        await multi_lora_driver.main(args)
+        await with_disposer(multi_lora_driver.main, args)
 
         assert [event for event in events if event.startswith(("generate_", "actor_train", "actor_save"))] == [
             "generate_start:0",
-            "generate_failed:0",
+            "generate_empty:0",
             "generate_start:0",
             "generate_done:0",
             "actor_train:0",
@@ -184,6 +226,6 @@ class TestEmptyBatchTimeout:
         components.rollout_executor.generation_errors = [_task_error(ValueError("rollout worker died"))]
 
         with pytest.raises(ray.exceptions.RayTaskError, match="rollout worker died"):
-            await multi_lora_driver.main(args)
+            await with_disposer(multi_lora_driver.main, args)
 
         assert components.actor_model.trained == []

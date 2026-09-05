@@ -1,7 +1,9 @@
 from tests.ci.ci_register import register_cpu_ci
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config
 
 register_cpu_ci(est_time=60, suite="stage-a-cpu", labels=[])
 
+import argparse
 import asyncio
 from argparse import Namespace
 from collections import deque
@@ -50,6 +52,7 @@ def make_group(
     group_index: int,
     status: Sample.Status = Sample.Status.COMPLETED,
     weight_versions: list[str] | None = None,
+    reward: float = 1,
 ) -> list[Sample]:
     versions = [
         WeightVersionsPerCall(spans=[WeightVersionSpan(version=version, abs_start=0, abs_end=1)])
@@ -63,7 +66,7 @@ def make_group(
             response="ok",
             response_length=1,
             label="ok",
-            reward=1,
+            reward=reward,
             status=status,
             weight_versions=list(versions),
         )
@@ -77,15 +80,19 @@ def make_args(**overrides) -> Namespace:
         rollout_batch_size=2,
         n_samples_per_prompt=N_SAMPLES_PER_PROMPT,
         max_weight_staleness=None,
+        reward_key=None,
         async_max_concurrent_samples=None,
         async_data_buffer_capacity_factor=1000.0,
         async_unused_samples_handler="drop",
         custom_async_data_buffer_path=None,
+        custom_async_data_buffer_path_per_model=None,
+        megatron_config=None,
         rollout_submission_granularity=None,
         dynamic_sampling_filter_path=None,
         rollout_sample_filter_path=None,
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
+        sglang_router_request_timeout_secs=14400,
         eval_num_gpus=0,
     )
     defaults.update(overrides)
@@ -168,7 +175,7 @@ async def test_eval_runs_on_dedicated_fleet(monkeypatch):
     """RolloutManager (not the fn) decides fleet-vs-shared and builds the fleet's
     GenerateState; it hands it in via RolloutFnEvalInput.generate_state. The fn must
     use that state as-is (not self.state) and must not touch the producer/data_source.
-    Building/caching the fleet state itself is EvalFleetSession's job, covered in
+    Building/caching the fleet state itself is RolloutExecutorEvalFleet's job, covered in
     tests/fast/rollout/test_checkpoint_eval.py.
     """
     args = make_args(eval_num_gpus=1, eval_num_gpus_per_engine=1)
@@ -258,25 +265,6 @@ async def test_worker_error_propagates(monkeypatch):
 
     with pytest.raises(RuntimeError, match="generation exploded"):
         await fn(RolloutFnTrainInput(rollout_id=0))
-
-
-async def test_worker_bounds_in_flight_groups(monkeypatch):
-    release = asyncio.Event()
-
-    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
-        await release.wait()
-        return group
-
-    data_source = FakeDataSource()
-    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), data_source, generate=blocking_generate)
-
-    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
-    await asyncio.sleep(0.05)
-    assert data_source.num_get_calls == 2  # in-flight bound, not more
-
-    release.set()
-    output = await drain
-    assert len(output.samples) == 2
 
 
 async def test_async_max_concurrent_samples_caps_in_flight_groups(monkeypatch):
@@ -418,6 +406,22 @@ async def put_group(buffer, group):
     await buffer.put(data_buffer.DataBufferInput(prompt_group=group, group=group))
 
 
+async def test_buffer_reports_unfiltered_raw_reward_across_kept_and_dropped():
+    """The accepted-only raw_reward is conditioned by the filter, so this mean must still see dropped groups."""
+    args = make_args(rollout_batch_size=1, dynamic_sampling_filter_path=f"{__name__}.reject_group_1")
+    buffer = data_buffer.DefaultDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=lambda group: None)
+    )
+
+    await put_group(buffer, make_group(1, reward=0))
+    await put_group(buffer, make_group(2, reward=1))
+
+    metrics = buffer.get_metrics()
+    assert metrics["rollout/raw_reward_unfiltered"] == 0.5
+    assert metrics["rollout/dynamic_filter/drop_rejected"] == 1
+    assert "rollout/raw_reward_unfiltered" not in buffer.get_metrics()
+
+
 async def test_buffer_blocks_producer_when_full():
     buffer, _ = make_buffer(max_groups=2)
     await put_group(buffer, make_group(1))
@@ -468,12 +472,327 @@ async def test_buffer_staleness_metrics():
     assert metrics["rollout/fully_async/buffer_max_staleness"] == 4
 
 
+def make_multi_policy_group(group_index: int, *trainer_model_ids: str) -> list[Sample]:
+    """One prompt group whose samples train different policy models, as a multi policy generate fn returns."""
+    group = make_group(group_index)
+    for sample, trainer_model_id in zip(group, trainer_model_ids, strict=True):
+        sample.trainer_model_id = trainer_model_id
+    return group
+
+
+def make_multi_buffer(*model_ids: str, max_staleness=None, paths_per_model=None):
+    unused = []
+    args = make_args(
+        rollout_batch_size=1,
+        async_data_buffer_capacity_factor=1000.0,
+        max_weight_staleness=max_staleness,
+        megatron_config=encode_megatron_config(*model_ids),
+        custom_async_data_buffer_path_per_model=paths_per_model,
+    )
+    buffer = data_buffer.DefaultMultiDataBuffer(
+        data_buffer.DataBufferConstructorInput(args=args, unused_handler_fn=unused.append)
+    )
+    return buffer, unused
+
+
+class TestPerPolicyQueues:
+    async def test_a_group_of_two_policies_lands_in_a_queue_of_each(self):
+        """One generate call feeds both policies, and a shared queue would hand them each other's samples."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
+
+        assert buffer.get_metrics("solver")["rollout/fully_async/queue_size"] == 1
+        assert buffer.get_metrics("verifier")["rollout/fully_async/queue_size"] == 1
+
+    async def test_a_policy_only_ever_drains_its_own_samples(self):
+        """Training a policy on another policy's responses is the failure this queue split exists to stop."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
+
+        entry = await buffer.get(trainer_model_id="verifier")
+
+        assert [sample.trainer_model_id for sample in data_buffer.iter_samples(entry.group)] == ["verifier"]
+
+    async def test_a_policy_waits_for_its_own_queue_instead_of_taking_from_another(self):
+        """A policy that consumed a queue it does not own would starve the policy that does."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        await put_group(buffer, make_multi_policy_group(1, "solver", "solver"))
+
+        waiting = asyncio.create_task(buffer.get(trainer_model_id="verifier"))
+        await asyncio.sleep(0.01)
+
+        assert not waiting.done()
+        waiting.cancel()
+
+    async def test_an_untagged_sample_is_refused_at_the_split(self):
+        """Every sample of a multi policy run is stamped by the generate function, so an unstamped one is a bug."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        with pytest.raises(AssertionError, match="must stamp every sample"):
+            await put_group(buffer, make_group(1))
+
+    async def test_a_sample_of_an_unknown_policy_is_refused(self):
+        """Its groups would queue up in a buffer no trainer ever drains, and the run would simply stall."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        with pytest.raises(AssertionError, match="trains no policy of this run"):
+            await put_group(buffer, make_multi_policy_group(1, "solver", "reviewer"))
+
+    async def test_the_prompt_group_of_a_split_group_stays_whole(self):
+        """Recycling a rejected group resubmits prompts, which are not owned by either policy."""
+        buffer, unused = make_multi_buffer("solver", "verifier", max_staleness=0)
+        group = make_group(1, weight_versions=["1"])
+        group[0].trainer_model_id, group[1].trainer_model_id = "solver", "verifier"
+
+        await put_group(buffer, group)
+        drained = asyncio.create_task(buffer.get(current_version=9, trainer_model_id="solver"))
+        await asyncio.sleep(0.01)
+
+        assert unused == [group]
+        drained.cancel()
+
+    async def test_getting_for_a_policy_this_run_does_not_train_is_refused(self):
+        """A typo in the trainer's model id would wait forever on a queue that is never fed."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        with pytest.raises(AssertionError, match="trains no policy of this run"):
+            await buffer.get(trainer_model_id="reviewer")
+
+    async def test_every_policy_of_the_config_gets_a_queue_of_its_own(self):
+        """The queues are built from --megatron-config, so a policy missing one has nowhere to put its groups."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        assert buffer.get_metrics("solver")["rollout/fully_async/queue_size"] == 0
+        assert buffer.get_metrics("verifier")["rollout/fully_async/queue_size"] == 0
+
+    async def test_a_policy_reads_and_resets_only_its_own_metric_window(self):
+        """Draining one policy used to read and clear every policy's counters, moving them onto the wrong curve."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        await put_group(buffer, make_multi_policy_group(1, "solver", "verifier"))
+
+        solver_metrics = buffer.get_metrics("solver")
+
+        assert set(solver_metrics) == {key for key in solver_metrics if not key.startswith(("solver/", "verifier/"))}
+        assert buffer.get_metrics("verifier")["rollout/fully_async/queue_size"] == 1
+
+    async def test_an_inner_buffer_is_told_which_policy_asks_for_a_group(self):
+        """A custom per policy buffer cannot filter or account by policy if the composite eats that context."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+        seen: list[dict] = []
+
+        class _RecordingInner:
+            async def get(self, **context):
+                seen.append(context)
+                return "entry"
+
+        buffer._inners["solver"] = _RecordingInner()
+
+        assert await buffer.get(current_version=4, trainer_model_id="solver") == "entry"
+        assert seen == [{"current_version": 4, "trainer_model_id": "solver"}]
+
+
+def make_tagged_sample(index: int, trainer_model_id: str | None) -> Sample:
+    sample = make_group(index)[0]
+    sample.trainer_model_id = trainer_model_id
+    return sample
+
+
+def split(group: data_buffer.Group, *, prompt_group=None) -> dict:
+    return data_buffer._split_by_trainer_model_id(
+        data_buffer.DataBufferInput(prompt_group=prompt_group if prompt_group is not None else [], group=group)
+    )
+
+
+class TestSplitByTrainerModelId:
+    def test_a_group_of_one_policy_lands_whole_in_that_policy_alone(self):
+        """The common group is a group of one policy, and every sample of it must reach that policy."""
+        first, second = make_tagged_sample(1, "solver"), make_tagged_sample(2, "solver")
+
+        ans = split([first, second])
+
+        assert list(ans) == ["solver"]
+        assert ans["solver"].group == [first, second]
+
+    def test_a_mixed_group_becomes_one_input_per_policy(self):
+        """Each policy trains on its own samples only, so the group has to be cut along the tags."""
+        solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
+
+        ans = split([solver, verifier])
+
+        assert list(ans) == ["solver", "verifier"]
+        assert ans["solver"].group == [solver]
+        assert ans["verifier"].group == [verifier]
+
+    def test_the_samples_of_a_policy_keep_the_order_they_arrived_in(self):
+        """Order carries the trajectory, and a reordered group trains on a reshuffled conversation."""
+        first, second = make_tagged_sample(1, "solver"), make_tagged_sample(2, "solver")
+
+        ans = split([first, make_tagged_sample(3, "verifier"), second])
+
+        assert ans["solver"].group == [first, second]
+
+    def test_a_sub_group_of_a_multi_sample_trajectory_is_filtered_per_policy(self):
+        """A generate function may return several samples per trajectory, and they need not share a policy."""
+        solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
+
+        ans = split([[solver, verifier]])
+
+        assert ans["solver"].group == [[solver]]
+        assert ans["verifier"].group == [[verifier]]
+
+    def test_a_sub_group_no_sample_of_which_survives_is_dropped(self):
+        """An empty sub-group is a trajectory with no samples, which the consumers cannot make sense of."""
+        solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
+
+        ans = split([[solver], [verifier]])
+
+        assert ans["solver"].group == [[solver]]
+        assert ans["verifier"].group == [[verifier]]
+
+    def test_every_trajectory_of_the_group_is_split_on_its_own(self):
+        """One finished group carries several trajectories, and each of them may mix policies differently."""
+        first, second, third = (
+            make_tagged_sample(1, "solver"),
+            make_tagged_sample(2, "verifier"),
+            make_tagged_sample(3, "solver"),
+        )
+
+        ans = split([[first, second], [third]])
+
+        assert ans["solver"].group == [[first], [third]]
+        assert ans["verifier"].group == [[second]]
+
+    def test_the_prompt_group_travels_whole_into_every_split(self):
+        """A rejected group is recycled by resubmitting its prompts, which belong to no policy in particular."""
+        prompt_group = make_group(7)
+
+        ans = split([make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")], prompt_group=prompt_group)
+
+        assert ans["solver"].prompt_group is prompt_group
+        assert ans["verifier"].prompt_group is prompt_group
+
+    def test_an_untagged_sample_is_refused_before_anything_is_routed(self):
+        """Nothing downstream can guess where an unstamped sample belongs, so the split is where it must stop."""
+        with pytest.raises(AssertionError, match="must stamp every sample"):
+            split([make_tagged_sample(1, "solver"), make_tagged_sample(2, None)])
+
+    def test_a_group_with_no_sample_left_reaches_no_policy(self):
+        """A group every filter emptied belongs to nobody, and inventing a key for it would assert on None."""
+        assert split([]) == {}
+
+
+class TestFilterGroup:
+    def test_it_keeps_only_the_samples_of_the_policy_asked_for(self):
+        """This is what stops a policy from training on another policy's responses."""
+        solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
+
+        assert data_buffer._filter_group([solver, verifier], trainer_model_id="solver") == [solver]
+
+    def test_it_keeps_a_sub_group_that_still_has_samples(self):
+        """A trajectory whose samples are split across policies survives on both sides, one sample each."""
+        solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
+
+        assert data_buffer._filter_group([[solver, verifier]], trainer_model_id="solver") == [[solver]]
+
+    def test_it_drops_a_sub_group_that_lost_every_sample(self):
+        """An empty list left in place would be a trajectory that consumers must special-case forever."""
+        assert data_buffer._filter_group([[make_tagged_sample(1, "verifier")]], trainer_model_id="solver") == []
+
+    def test_it_leaves_the_group_it_was_given_untouched(self):
+        """It runs once per policy over the same group, so a mutating filter would eat the later policies' samples."""
+        solver, verifier = make_tagged_sample(1, "solver"), make_tagged_sample(2, "verifier")
+        group = [solver, [verifier]]
+
+        data_buffer._filter_group(group, trainer_model_id="solver")
+
+        assert group == [solver, [verifier]]
+
+
 class RecordingBuffer(data_buffer.DefaultDataBuffer):
     constructed_with = None
 
     def __init__(self, input):
         super().__init__(input)
         RecordingBuffer.constructed_with = input
+
+
+class TestPerPolicyBufferClass:
+    def test_every_policy_keeps_the_built_in_buffer_by_default(self):
+        """The flag is opt-in, so a run that does not pass it must compose exactly what it composed before."""
+        buffer, _ = make_multi_buffer("solver", "verifier")
+
+        assert [type(inner) for inner in buffer._inners.values()] == [
+            data_buffer.DefaultDataBuffer,
+            data_buffer.DefaultDataBuffer,
+        ]
+
+    def test_a_named_policy_gets_the_class_the_flag_names(self):
+        """Two policies can need different dataflow, which is the whole point of one buffer per policy."""
+        buffer, _ = make_multi_buffer("solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"])
+
+        assert type(buffer._inners["solver"]) is RecordingBuffer
+        assert type(buffer._inners["verifier"]) is data_buffer.DefaultDataBuffer
+
+    def test_the_custom_class_is_built_with_the_same_constructor_input(self):
+        """A custom buffer owns staleness and recycling, so it needs the handler the built-in one gets."""
+        buffer, unused = make_multi_buffer(
+            "solver", "verifier", paths_per_model=[f"solver={__name__}.RecordingBuffer"]
+        )
+
+        assert RecordingBuffer.constructed_with.unused_handler_fn == unused.append
+        assert RecordingBuffer.constructed_with.args is buffer._inners["verifier"]._args
+
+    def test_a_policy_this_run_does_not_train_is_refused(self):
+        """A typo would silently leave the policy it meant to configure on the built-in buffer."""
+        with pytest.raises(AssertionError, match="train no policy of this run"):
+            make_multi_buffer("solver", "verifier", paths_per_model=[f"reviewer={__name__}.RecordingBuffer"])
+
+
+class TestParseDataBufferPaths:
+    def test_it_maps_every_model_id_to_its_class_path(self):
+        """This is the mapping the composite buffer is built from."""
+        assert data_buffer._parse_data_buffer_paths(["solver=pkg.A", "verifier=pkg.B"]) == {
+            "solver": "pkg.A",
+            "verifier": "pkg.B",
+        }
+
+    def test_an_unset_flag_is_an_empty_mapping(self):
+        """Default is every policy on the built-in buffer, which is the empty mapping."""
+        assert data_buffer._parse_data_buffer_paths(None) == {}
+
+    @pytest.mark.parametrize("entry", ["solver", "=pkg.A", "solver=", "solver =  "])
+    def test_a_malformed_entry_is_refused(self, entry):
+        """Silently ignoring it would run the policy on a buffer the user did not ask for."""
+        with pytest.raises(ValueError, match="expected MODEL_ID=PATH"):
+            data_buffer._parse_data_buffer_paths([entry])
+
+    def test_the_whitespace_around_an_entry_is_not_part_of_the_names(self):
+        """A shell-quoted entry keeps its spaces, and an import path with them resolves to nothing."""
+        assert data_buffer._parse_data_buffer_paths([" solver = pkg.A "]) == {"solver": "pkg.A"}
+
+    def test_a_model_id_named_twice_is_refused(self):
+        """One of the two class paths would win silently, and which one is not something to guess."""
+        with pytest.raises(ValueError, match="Duplicate model id"):
+            data_buffer._parse_data_buffer_paths(["solver=pkg.A", "solver=pkg.B"])
+
+
+class TestDataBufferArgumentRegistration:
+    def test_the_per_model_flag_is_declared_by_the_rollout_function_that_uses_it(self):
+        """The framework asks the selected rollout function for its flags, so this hook must declare it."""
+        parser = argparse.ArgumentParser()
+        fully_async.FullyAsyncRolloutFn.add_arguments(parser)
+
+        parsed = parser.parse_args(["--custom-async-data-buffer-path-per-model", "solver=pkg.A", "verifier=pkg.B"])
+
+        assert parsed.custom_async_data_buffer_path_per_model == ["solver=pkg.A", "verifier=pkg.B"]
+
+    def test_a_run_that_never_passes_the_flag_leaves_every_policy_on_the_built_in_buffer(self):
+        """The default has to be None, which _parse_data_buffer_paths reads as the empty mapping."""
+        parser = argparse.ArgumentParser()
+        fully_async.FullyAsyncRolloutFn.add_arguments(parser)
+
+        assert parser.parse_args([]).custom_async_data_buffer_path_per_model is None
 
 
 async def test_custom_data_buffer_path_replaces_default(monkeypatch):
@@ -486,6 +805,121 @@ async def test_custom_data_buffer_path_replaces_default(monkeypatch):
     assert type(fn._output) is RecordingBuffer
     assert RecordingBuffer.constructed_with.unused_handler_fn == fn._recycle
     assert len(output.samples) == 2
+
+
+class MultiPolicyDataSource(FakeDataSource):
+    """Stamps every sample of a group with one policy, alternating, as a multi policy generate function does."""
+
+    def get_samples(self, num_samples):
+        [group] = super().get_samples(num_samples)
+        for sample in group:
+            sample.trainer_model_id = "a" if self.num_get_calls % 2 == 1 else "b"
+        return [group]
+
+
+class WedgedBuffer(data_buffer.DataBuffer):
+    def __init__(self, input: data_buffer.DataBufferConstructorInput):
+        self._never = asyncio.Event()
+
+    async def put(self, input: data_buffer.DataBufferInput) -> None:
+        await self._never.wait()
+
+    async def get(self, **context) -> data_buffer.DataBufferInput:
+        await self._never.wait()
+        raise AssertionError("the wedged buffer never hands out a group")
+
+    def get_metrics(self, trainer_model_id: str | None = None) -> dict[str, float]:
+        return {}
+
+
+class TestDisposal:
+    async def test_disposing_ends_the_producer_before_it_returns(self, monkeypatch):
+        """Teardown has to be done when it returns, or the rest of it races the producer's unwinding."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await asyncio.sleep(0.05)
+        assert not step.done()
+
+        await asyncio.wait_for(fn.dispose(), timeout=5)
+
+        assert fn._worker.cancelled()
+
+    async def test_disposing_fails_a_step_that_is_waiting_for_groups(self, monkeypatch):
+        """A run whose producer is parked when it ends must not leave the waiting step there forever."""
+        args = make_args(rollout_batch_size=1, custom_async_data_buffer_path=f"{__name__}.WedgedBuffer")
+        fn = make_fn(monkeypatch, args, FakeDataSource())
+        step = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+        await asyncio.sleep(0.05)
+
+        await fn.dispose()
+
+        with pytest.raises(RuntimeError, match="disposed while a step waited for groups"):
+            await asyncio.wait_for(step, timeout=5)
+
+    async def test_disposing_a_run_that_never_started_is_quiet(self, monkeypatch):
+        """dispose runs on every teardown path, including one that failed before the first step."""
+        fn = make_fn(monkeypatch, make_args(), FakeDataSource())
+
+        await fn.dispose()
+
+        assert fn._worker is None
+
+
+class RecordingMultiBuffer(data_buffer.DefaultMultiDataBuffer):
+    get_calls: list[dict] = []
+
+    async def get(self, **context):
+        RecordingMultiBuffer.get_calls.append(context)
+        return await super().get(**context)
+
+
+class TestBufferSelection:
+    async def test_a_single_policy_run_keeps_the_plain_buffer(self, monkeypatch):
+        """Every existing run goes through this line, and a per-policy buffer would key it under a model id."""
+        fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), FakeDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0))
+
+        assert type(fn._output) is data_buffer.DefaultDataBuffer
+
+    async def test_a_multi_policy_run_defaults_to_the_per_policy_buffer(self, monkeypatch):
+        """One shared queue would hand a policy the groups another policy generated."""
+        args = make_args(rollout_batch_size=1, megatron_config=encode_megatron_config("a", "b"))
+        fn = make_fn(monkeypatch, args, MultiPolicyDataSource())
+
+        output = await fn(RolloutFnTrainInput(rollout_id=0, trainer_model_id="a"))
+
+        assert type(fn._output) is data_buffer.DefaultMultiDataBuffer
+        assert [sample.trainer_model_id for group in output.samples for sample in group] == ["a", "a"]
+
+    async def test_a_custom_buffer_still_wins_in_a_multi_policy_run(self, monkeypatch):
+        """--custom-async-data-buffer-path is how a run replaces the queue, whatever the default would have been."""
+        RecordingMultiBuffer.get_calls = []
+        args = make_args(
+            rollout_batch_size=1,
+            megatron_config=encode_megatron_config("a", "b"),
+            custom_async_data_buffer_path=f"{__name__}.RecordingMultiBuffer",
+        )
+        fn = make_fn(monkeypatch, args, MultiPolicyDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0, trainer_model_id="a"))
+
+        assert type(fn._output) is RecordingMultiBuffer
+
+    async def test_the_consumer_asks_the_buffer_for_the_policy_that_called_it(self, monkeypatch):
+        """The queue is keyed by policy, so a consumer that forgets to name itself drains whoever answers first."""
+        RecordingMultiBuffer.get_calls = []
+        args = make_args(
+            rollout_batch_size=1,
+            megatron_config=encode_megatron_config("a", "b"),
+            custom_async_data_buffer_path=f"{__name__}.RecordingMultiBuffer",
+        )
+        fn = make_fn(monkeypatch, args, MultiPolicyDataSource())
+
+        await fn(RolloutFnTrainInput(rollout_id=0, weight_version=4, trainer_model_id="a"))
+
+        assert RecordingMultiBuffer.get_calls == [dict(current_version=4, trainer_model_id="a")]
 
 
 async def test_worker_defaults_to_sample_granularity(monkeypatch):
@@ -559,3 +993,22 @@ class TestRolloutFnContract:
         fn = make_fn(monkeypatch, make_args(rollout_batch_size=1), data_source)
 
         assert fn.constructor_input.data_source is data_source
+
+
+async def test_worker_bounds_in_flight_groups(monkeypatch):
+    release = asyncio.Event()
+
+    async def blocking_generate(state, group, sampling_params, evaluation=False, sample_done_callback=None):
+        await release.wait()
+        return group
+
+    data_source = FakeDataSource()
+    fn = make_fn(monkeypatch, make_args(rollout_batch_size=2), data_source, generate=blocking_generate)
+
+    drain = asyncio.create_task(fn(RolloutFnTrainInput(rollout_id=0)))
+    await asyncio.sleep(0.05)
+    assert data_source.num_get_calls == 2  # in-flight bound, not more
+
+    release.set()
+    output = await drain
+    assert len(output.samples) == 2

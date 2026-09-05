@@ -1,31 +1,65 @@
 from __future__ import annotations
 
+import asyncio
 import shlex
 import sys
 from argparse import Namespace
+from types import SimpleNamespace
 
 import pytest
+from tests.fast.fixtures.capability_fixtures import FakeBackendCapability
 from tests.fast.ray.rollout.conftest import make_args, make_sglang_config_yaml
 
 from miles.backends.sglang_utils.router_args_utils import parse_router_args_argv
 from miles.backends.sglang_utils.sglang_config import ModelConfig, ServerGroupConfig, resolve_sglang_config
+from miles.ray.rollout import external_engine_provider as external_engine_provider_module
+from miles.ray.rollout.inference_controller import InferenceController
 from miles.ray.specs import inference as inference_specs
 from miles.ray.specs.inference import (
+    INFERENCE_CONTROLLER_POOL_ID,
+    INFERENCE_CONTROLLER_WORKER_CLASS,
     _compute_router_primary_port_info,
     _compute_session_server_primary_port_info,
     _compute_spec_router,
     compute_engine_pool_id,
     compute_engine_pool_ids,
+    compute_inference_controller_provider,
     compute_inference_engine_env_vars,
     compute_router_pool_id,
+    inference_controller_worker_name,
+    spec_inference_controller,
     spec_session_server,
     specs_inference_engine,
+    specs_inference_registration_reporter,
     specs_router,
 )
 from miles.rollout.session.config import SessionServerConfig
 from miles.router.config import MilesRouterConfig
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.builder import build_values
+from miles.utils.external_utils.command_utils.helm_backend.launcher.values.misc import SECTION_OF_CATEGORY, LaunchPlan
+from miles.utils.function_registry import load_function
 from miles.utils.workers.argv_utils import parse_config_argv
-from miles.utils.workers.worker_spec import HostAndPort, LaunchCommandContext, WorkerMetaContext
+from miles.utils.workers.registration.hub import RegistrationHub
+from miles.utils.workers.types import PlatformAccess
+from miles.utils.workers.worker_provider.static import StaticWorkerProvider
+from miles.utils.workers.worker_spec import (
+    RPC_PORT_NAME,
+    HostAndPort,
+    LaunchCommandContext,
+    WorkerCtorContext,
+    WorkerMetaContext,
+)
+
+
+def _controller_layout() -> LaunchPlan:
+    return LaunchPlan(
+        run_id="260101-000000-000",
+        state_file="/cluster-storage/miles_data/miles-runs/run/state/orchestrator-260101-000000-000001.state",
+        release="miles-run-260101",
+        namespace="rl",
+        orchestrator_command=["python", "/repo/train.py"],
+        worker_argv=["--rollout-num-gpus", "8"],
+    )
 
 
 def _make_model_cfg(*worker_types: str) -> ModelConfig:
@@ -86,6 +120,46 @@ class TestComputeSpecRouterLaunchCommand:
         """Rendering a miles-router launch command for a PD-disaggregated model must fail fast."""
         args = make_args(use_miles_router=True, sglang_router_ip=None, sglang_router_port=None)
         spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("prefill", "decode"))
+        with pytest.raises(AssertionError, match="miles router does not support PD"):
+            spec.launch_command(_make_router_ctx())
+
+    def test_the_external_pd_flag_launches_a_pd_router_in_front_of_regular_groups(self):
+        """External PD is discovered after the router is already up, so this flag is the only thing
+        that can put the router in PD mode; a router built without it misroutes every request while
+        discovery still reports a healthy prefill/decode fleet."""
+        args = make_args(
+            use_miles_router=False,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            rollout_external=True,
+            rollout_external_router_pd=True,
+        )
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx()))
+
+        assert parse_router_args_argv(argv[3:]).pd_disaggregation is True
+
+    def test_without_the_external_pd_flag_a_regular_model_keeps_a_regular_router(self):
+        """Every internal run takes this path, and the new flag defaults to off."""
+        args = make_args(use_miles_router=False, sglang_router_ip=None, sglang_router_port=None)
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
+        argv = shlex.split(spec.launch_command(_make_router_ctx()))
+
+        assert parse_router_args_argv(argv[3:]).pd_disaggregation is False
+
+    def test_the_external_pd_flag_is_rejected_by_the_miles_router(self):
+        """The miles router cannot serve PD at all, so the external flag must hit the same guard."""
+        args = make_args(
+            use_miles_router=True,
+            sglang_router_ip=None,
+            sglang_router_port=None,
+            rollout_external=True,
+            rollout_external_router_pd=True,
+        )
+        spec = _compute_spec_router(args, model_idx=0, model_cfg=_make_model_cfg("regular"))
+
         with pytest.raises(AssertionError, match="miles router does not support PD"):
             spec.launch_command(_make_router_ctx())
 
@@ -346,6 +420,31 @@ class TestSessionServerRouterPoolLookup:
 
 
 class TestInferenceEngineEnvVars:
+    def test_an_enabled_dumper_resolves_the_sglang_environment(self, monkeypatch) -> None:
+        """Enabling inference dumping must load the dumper integration and render its startup environment."""
+        args = make_args(dumper_inference=["enable=true", "non_intrusive_mode=all"])
+        get_sglang_env_calls: list[Namespace] = []
+
+        def get_sglang_env(call_args: Namespace) -> dict[str, str]:
+            get_sglang_env_calls.append(call_args)
+            return {"DUMPER_SERVER_PORT": "reuse", "DUMPER_NON_INTRUSIVE_MODE": "all"}
+
+        fake_dumper_utils = SimpleNamespace(get_sglang_env=get_sglang_env)
+        import miles.utils as miles_utils
+
+        monkeypatch.setattr(miles_utils, "dumper_utils", fake_dumper_utils, raising=False)
+        monkeypatch.setitem(
+            sys.modules,
+            "miles.utils.dumper_utils",
+            fake_dumper_utils,
+        )
+
+        envs = compute_inference_engine_env_vars(args)
+
+        assert get_sglang_env_calls == [args]
+        assert envs["DUMPER_SERVER_PORT"] == "reuse"
+        assert envs["DUMPER_NON_INTRUSIVE_MODE"] == "all"
+
     def test_a_process_level_override_wins_over_the_built_in_default(self, monkeypatch):
         """The launcher's environment is how operators retune sglang per cluster, so defaults must not overwrite it."""
         monkeypatch.setenv("SGLANG_JIT_DEEPGEMM_PRECOMPILE", "true")
@@ -397,7 +496,7 @@ class TestSpecsInferenceEngine:
 
         specs = specs_inference_engine(args)
 
-        assert [spec.name for spec in specs] == ["inference-engine-0-0", "inference-engine-0-2"]
+        assert [spec.name for spec in specs] == ["inference-engine-all-0-0", "inference-engine-all-0-2"]
         assert [spec.scheduling.pg_slot_offset for spec in specs] == [0, 8]
         assert [spec.scheduling.num_gpu_slots_per_worker for spec in specs] == [2, 4]
         assert all(spec.scheduling.pg_name == "rollout" for spec in specs)
@@ -415,6 +514,23 @@ class TestSpecsInferenceEngine:
             rollout_num_gpus=8,
             colocate=True,
             debug_train_only=True,
+        )
+
+        assert specs_inference_engine(args) == []
+
+    def test_external_rollout_produces_no_engine_spec(self, tmp_path):
+        """Externally launched engines are the operator's to run, so miles must not spec its own."""
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 1}]
+            )
+        )
+        args = make_args(
+            sglang_config=str(config_path),
+            rollout_num_gpus=8,
+            rollout_external=True,
+            rollout_external_engine_addrs=["host1:8000"],
         )
 
         assert specs_inference_engine(args) == []
@@ -497,7 +613,7 @@ def _make_router_args(tmp_path, *, server_groups: list[dict] | None = None, **ov
     return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
 
 
-class TestComputeEngineSpecNames:
+class TestComputeEnginePools:
     def test_only_engine_specs_are_named(self, tmp_path):
         """These names are what the controller watches, so a router in the list would be reconciled as an engine."""
         config_path = tmp_path / "sglang.yaml"
@@ -512,7 +628,7 @@ class TestComputeEngineSpecNames:
         )
         args = make_args(sglang_config=str(config_path), rollout_num_gpus=16)
 
-        assert compute_engine_pool_ids(args) == ["inference-engine-0-0", "inference-engine-0-2"]
+        assert compute_engine_pool_ids(args) == ["inference-engine-all-0-0", "inference-engine-all-0-2"]
 
 
 class TestInferenceSpecPinToHead:
@@ -721,7 +837,7 @@ class TestInferenceEngineRandomSeed:
             for group_index, group_cfg in enumerate(model_cfg.server_groups):
                 num_actors = group_cfg.num_gpus // min(group_cfg.num_gpus_per_engine, args.num_gpus_per_node)
                 if group_cfg.worker_type != "placeholder":
-                    pool_id = compute_engine_pool_id(model_idx=model_idx, group_index=group_index)
+                    pool_id = compute_engine_pool_id(args, model_idx=model_idx, group_index=group_index)
                     seeds[pool_id] = [args.seed + global_rank + i for i in range(num_actors)]
                 global_rank += num_actors
         return seeds
@@ -740,7 +856,7 @@ class TestInferenceEngineRandomSeed:
         """A placeholder group consumed ranks before the refactor, so ignoring it would shift every later seed."""
         seeds = self._seeds_by_pool(args, monkeypatch)
 
-        assert seeds[compute_engine_pool_id(model_idx=1, group_index=0)] == [1005, 1006, 1007, 1008]
+        assert seeds[compute_engine_pool_id(args, model_idx=1, group_index=0)] == [1005, 1006, 1007, 1008]
 
     def test_no_two_engine_actors_in_the_cluster_share_a_seed(self, args, monkeypatch):
         """Numbering every pool from the same base would hand two live engines the same RNG stream."""
@@ -992,6 +1108,19 @@ class TestEngineCellChunking:
         spec = self._spec_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
         assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (2, 2)
 
+    def test_a_multi_node_engine_gets_one_pod_per_node(self, tmp_path):
+        """The chart turns this into the pods of a leaderworkerset, so a wrong count mis-sizes every group."""
+        spec = self._spec_for(tmp_path, num_gpus=32, num_gpus_per_engine=16)
+
+        assert spec.scheduling.num_gpus_per_node == 8
+        assert (spec.scheduling.pods_per_cell(), spec.scheduling.workers_per_pod()) == (2, 1)
+
+    def test_an_engine_inside_one_node_stays_in_one_pod(self, tmp_path):
+        """A cell that fits a node must not be split, or its ranks would talk over the network for nothing."""
+        spec = self._spec_for(tmp_path, num_gpus=8, num_gpus_per_engine=4)
+
+        assert (spec.scheduling.pods_per_cell(), spec.scheduling.workers_per_pod()) == (1, 1)
+
     def test_single_gpu_cells_carry_contiguous_gpu_offsets(self, tmp_path):
         """Every cell must claim its own gpu span, otherwise two engines share the same devices."""
         spec = self._spec_for(tmp_path, num_gpus=8, num_gpus_per_engine=1)
@@ -1032,3 +1161,257 @@ class TestRouterInterpreterFlags:
         argv = shlex.split(spec.launch_command(_make_router_ctx()))
 
         assert argv[:6] == [sys.executable, "-O", "-X", "faulthandler", "-m", module]
+
+
+class TestEngineInterpreterFlags:
+    def test_the_engine_launch_command_carries_the_parent_interpreter_flags(self, tmp_path, monkeypatch):
+        """An engine launched by a bare interpreter runs with different semantics than the job that spawned it."""
+        monkeypatch.setattr(
+            sys,
+            "orig_argv",
+            [sys.executable, "-O", "-X", "faulthandler", "-m", "miles.train", "--config", "x.yaml"],
+        )
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 4, "num_gpus_per_engine": 2}]
+            )
+        )
+        args = make_args(sglang_config=str(config_path), rollout_num_gpus=4)
+        recorded: dict = {}
+
+        def _record(**kwargs) -> str:
+            recorded.update(kwargs)
+            return "launch-cmd"
+
+        monkeypatch.setattr(inference_specs, "compute_engine_launch_cmd", _record)
+        (spec,) = specs_inference_engine(args)
+        spec.launch_command(_make_engine_ctx())
+
+        assert recorded["interpreter_prefix"] == [sys.executable, "-O", "-X", "faulthandler"]
+
+
+class TestSpecInferenceController:
+    def _args(self, tmp_path, **overrides) -> Namespace:
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 4}]
+            )
+        )
+        return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
+
+    def _ctor_context(self, capability: FakeBackendCapability) -> WorkerCtorContext:
+        return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+    def test_every_run_gets_exactly_one_gpuless_controller(self, tmp_path):
+        """It is a control-plane worker on both backends; a gpu request would reserve a whole node for it."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        assert spec.name == INFERENCE_CONTROLLER_POOL_ID
+        assert (spec.scheduling.num_cells, spec.scheduling.num_workers_per_cell) == (1, 1)
+        assert spec.scheduling.num_gpus_per_worker == 0
+        assert spec.scheduling.num_gpu_slots_per_worker == 0
+
+    def test_the_worker_class_is_the_controller_itself(self, tmp_path):
+        """The spec names the class a pod or actor constructs, so it must be the real implementation."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        assert load_function(spec.worker_class) is InferenceController
+
+    def test_it_declares_only_the_platform_reads_its_provider_performs(self, tmp_path):
+        """Watching engine pods needs reads, while deleting them remains outside this worker's capability."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        assert spec.platform_access is PlatformAccess.READ
+
+    def test_the_registration_reporter_declares_only_platform_reads(self, tmp_path):
+        """The reporter watches engine pods, so it needs reads and none of the orchestrator's other rights."""
+        (spec,) = specs_inference_registration_reporter(self._args(tmp_path, deploy_component="inference"))
+
+        assert spec.platform_access is PlatformAccess.READ
+
+    def test_the_worker_name_is_stable(self):
+        """The driver looks the controller up by name, so this name is part of the release's contract."""
+        assert inference_controller_worker_name() == "inference-controller-00000-00000"
+
+    def test_it_renders_into_static_workers_with_its_rpc_port(self, tmp_path):
+        """The release has to contain the controller pod, or the address book would point at nothing."""
+        spec = spec_inference_controller(self._args(tmp_path))
+
+        values = build_values([spec], _controller_layout()).as_values()
+
+        (entry,) = values["run"]["staticWorkers"]
+        assert SECTION_OF_CATEGORY[spec.category] == "staticWorkers"
+        assert entry["name"] == INFERENCE_CONTROLLER_POOL_ID
+        assert entry["ports"] == [{"name": "rpc", "port": 8000}]
+        assert entry["command"][entry["command"].index("--pool-id") + 1] == INFERENCE_CONTROLLER_POOL_ID
+        assert spec.worker_class == INFERENCE_CONTROLLER_WORKER_CLASS
+        assert "resources" not in entry
+
+    def test_it_asks_for_a_provider_over_the_engine_pools_it_will_observe(self, tmp_path):
+        """The controller never learns which backend reports those cells, only which pools it wants reported."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert capability.requested_pool_ids == [compute_engine_pool_ids(args)]
+        assert kwargs["engine_provider"] is capability.cells_provider
+
+    def test_it_asks_for_one_router_provider_per_model(self, tmp_path):
+        """Every model is served by its own router pool, so one provider cannot answer for all of them."""
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(self._args(tmp_path)).ctor_kwargs(self._ctor_context(capability))
+
+        assert capability.requested_static_pool_ids == [compute_router_pool_id(0)]
+        assert kwargs["router_providers"] == [capability.static_provider]
+
+    def test_a_train_only_run_builds_a_controller_over_an_empty_pool(self, tmp_path):
+        """--debug-train-only deploys no engines, so the controller observes no pools at all."""
+        args = self._args(tmp_path, debug_train_only=True)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert capability.requested_pool_ids == [[]]
+
+    def test_the_static_discovery_path_never_asks_the_backend(self, tmp_path, monkeypatch):
+        """External engines belong to no backend, so the capability must never be asked for them."""
+        args = self._args(
+            tmp_path,
+            rollout_external=True,
+            rollout_external_engine_addrs=["host1:8000"],
+            custom_inference_engine_provider_path=(
+                "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+            ),
+        )
+        capability = FakeBackendCapability(cells_provider=None, static_provider=object())
+        monkeypatch.setattr(
+            external_engine_provider_module, "StaticInferenceEngineWorkerProvider", _RecordingStaticProvider
+        )
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert isinstance(kwargs["engine_provider"], _RecordingStaticProvider)
+        assert kwargs["engine_provider"].args is args
+        assert capability.requested_pool_ids == []
+
+    def test_the_provider_factory_path_is_loaded_unconditionally(self, tmp_path):
+        """Provider selection lives in arg validation, so the spec must run whatever path args carry."""
+        args = self._args(
+            tmp_path,
+            rollout_external=True,
+            rollout_external_engine_addrs=["host1:8000"],
+            custom_inference_engine_provider_path=f"{__name__}._fake_engine_provider_factory",
+        )
+        capability = FakeBackendCapability(cells_provider=None, static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert kwargs["engine_provider"] == ("custom-provider", args, capability)
+
+
+class _RecordingStaticProvider:
+    def __init__(self, *, args) -> None:
+        self.args = args
+
+    def get_handle(self, worker_name: str) -> tuple[str, str]:
+        return ("controller-handle", worker_name)
+
+
+def _fake_engine_provider_factory(args, *, capability):
+    return ("custom-provider", args, capability)
+
+
+class TestTheEngineEnvironment:
+    def test_every_engine_is_told_to_report_its_own_env_vars(self) -> None:
+        """Without the gate the engine answers /server_info with no env_vars, and the audit is empty."""
+        assert compute_inference_engine_env_vars(make_args())["SGLANG_EXPOSE_OWN_ENV_VARS"] == "1"
+
+
+class TestRegistrationWiring:
+    @staticmethod
+    def _args(tmp_path, **overrides) -> Namespace:
+        config_path = tmp_path / "sglang.yaml"
+        config_path.write_text(
+            make_sglang_config_yaml(
+                server_groups=[{"worker_type": "regular", "num_gpus": 8, "num_gpus_per_engine": 4}]
+            )
+        )
+        return make_args(sglang_config=str(config_path), rollout_num_gpus=8, **overrides)
+
+    @staticmethod
+    def _ctor_context(capability: FakeBackendCapability) -> WorkerCtorContext:
+        return WorkerCtorContext(cell_index=0, worker_in_cell_index=0, gpu_ids=[], capability=capability)
+
+    def test_a_run_serving_its_own_engines_keeps_the_engine_provider_it_always_had(self, tmp_path):
+        """Every unsplit run must reach its own engines exactly as it did before registration existed."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert not isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_the_reporter_carries_this_deployments_identity_hub_and_engine_provider(self, tmp_path) -> None:
+        """The reporter joins this deployment's engines to the addressed run under its deployment identity."""
+        args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west", run_uuid="run-west")
+        engine_provider = object()
+        controller_provider = _RecordingStaticProvider(args=args)
+        capability = FakeBackendCapability(cells_provider=engine_provider, static_provider=controller_provider)
+
+        (spec,) = specs_inference_registration_reporter(args)
+        kwargs = spec.ctor_kwargs(self._ctor_context(capability))
+
+        reporter = kwargs["reporter"]
+        assert kwargs["args"] is args
+        assert reporter.run_uuid == "run-west"
+        assert reporter.reporter_id == "west"
+        assert reporter.hub_endpoint == ("controller-handle", inference_controller_worker_name())
+        assert reporter.worker_provider is engine_provider
+
+    def test_a_run_that_deploys_no_engines_of_its_own_serves_from_the_registered_ones(self, tmp_path):
+        """The rest of the run must not know which deployment launched an engine it generates from."""
+        args = self._args(tmp_path, deploy_component="primary")
+        capability = FakeBackendCapability(cells_provider=object(), static_provider=object())
+
+        kwargs = spec_inference_controller(args).ctor_kwargs(self._ctor_context(capability))
+
+        assert isinstance(kwargs["engine_provider"], RegistrationHub)
+
+    def test_an_engine_deployment_reports_into_the_controller_it_was_given(self, tmp_path):
+        """It derives no name of another release, so this address is the only way it finds the run."""
+        args = self._args(
+            tmp_path,
+            deploy_component="inference",
+            inference_controller_addr="controller:9000",
+        )
+        capability = FakeBackendCapability(cells_provider=object())
+
+        provider = compute_inference_controller_provider(args, capability=capability)
+
+        assert isinstance(provider, StaticWorkerProvider)
+        addrs = asyncio.run(provider.get_addrs(f"{INFERENCE_CONTROLLER_POOL_ID}-00000-00000"))
+        assert addrs[RPC_PORT_NAME] == HostAndPort(host="controller", port=9000)
+        assert capability.requested_static_pool_ids == []
+
+    def test_a_run_that_holds_its_controller_addresses_it_by_its_own_release(self, tmp_path):
+        """Naming another release's pods from here is exactly what a split run may not do."""
+        args = self._args(tmp_path)
+        capability = FakeBackendCapability(static_provider=object())
+
+        compute_inference_controller_provider(args, capability=capability)
+
+        assert capability.requested_static_pool_ids == [INFERENCE_CONTROLLER_POOL_ID]
+
+    def test_an_engine_deployment_names_its_pools_after_the_instance_it_deploys(self, tmp_path):
+        """Two engine groups of one run install the same pools, and a shared name would collide in the run."""
+        args = self._args(tmp_path, deploy_component="inference", deploy_instance_id="west")
+
+        assert compute_engine_pool_ids(args) == ["inference-engine-west-0-0"]
+
+    def test_a_run_deploying_its_own_engines_names_its_pools_after_the_component(self, tmp_path):
+        """Every pool id carries a segment, so the unsplit run falls back to the component it deploys."""
+        assert compute_engine_pool_ids(self._args(tmp_path)) == ["inference-engine-all-0-0"]

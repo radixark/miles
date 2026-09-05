@@ -1,5 +1,7 @@
+import dataclasses
 import logging
 import random
+from typing import Any
 
 import numpy as np
 import torch
@@ -7,6 +9,7 @@ import torch.distributed as dist
 from megatron.core import mpu, tensor_parallel
 from megatron.core.config import set_experimental_flag
 from megatron.core.num_microbatches_calculator import init_num_microbatches_calculator
+from megatron.core.tensor_parallel.random import _get_all_rng_states, _set_all_rng_states
 from megatron.training.global_vars import _build_tokenizer, set_args
 
 from miles.backends.training_utils.parallel import get_parallel_state, set_parallel_state
@@ -36,6 +39,33 @@ def _set_random_seed(
     np.random.seed(seed)
     torch.manual_seed(seed)
     tensor_parallel.model_parallel_cuda_manual_seed(seed, te_rng_tracker, inference_rng_tracker, use_cudagraphable_rng)
+
+
+def set_random_seed_from_args(args) -> None:
+    if args.rank == 0:
+        logger.info(f"> setting random seeds to {args.seed} ...")
+    _set_random_seed(
+        args.seed,
+        args.data_parallel_random_init,
+        args.te_rng_tracker,
+        args.inference_rng_tracker,
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class RandomState:
+    python: tuple[Any, ...]
+    numpy: dict[str, Any] | tuple[Any, ...]
+    megatron: tuple[Any, ...]
+
+    @classmethod
+    def capture(cls) -> "RandomState":
+        return cls(python=random.getstate(), numpy=np.random.get_state(), megatron=_get_all_rng_states())
+
+    def restore(self) -> None:
+        random.setstate(self.python)
+        np.random.set_state(self.numpy)
+        _set_all_rng_states(*self.megatron)
 
 
 def _initialize_distributed(args, get_embedding_ranks=None, get_position_embedding_ranks=None):
@@ -91,14 +121,7 @@ def init(
         assert args.data_parallel_size == 1
 
     # Random seeds for reproducibility.
-    if args.rank == 0:
-        logger.info(f"> setting random seeds to {args.seed} ...")
-    _set_random_seed(
-        args.seed,
-        args.data_parallel_random_init,
-        args.te_rng_tracker,
-        args.inference_rng_tracker,
-    )
+    set_random_seed_from_args(args)
     register_hf_config_aliases()
     _build_tokenizer(args)
     # We won't use this. initialize to pass some validation in megatron.

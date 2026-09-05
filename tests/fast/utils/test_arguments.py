@@ -1,19 +1,26 @@
 import argparse
 import logging
+import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from tests.fast.fixtures.megatron_config_fixtures import encode_megatron_config, write_megatron_config_trainers
 
 from miles.backends.sglang_utils.arguments import add_sglang_arguments, collect_eval_sglang_overrides
 from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import (
+    _compute_custom_inference_engine_provider_path,
+    _compute_rollout_external,
     _maybe_apply_dumper_overrides,
+    _resolve_api_server_port,
     _resolve_ft_components,
     _resolve_mini_ft_controller_enable,
     _resolve_rollout_functions,
+    _resolve_run_uuid,
+    _validate_deploy_component,
     _validate_rematerialize_param_from_master_weight,
     get_miles_extra_args_provider,
     miles_validate_args,
@@ -21,11 +28,14 @@ from miles.utils.arguments import (
     validate_async_off_policy_correction,
     validate_skip_actor_forward_only,
 )
+from miles.utils.env_report.redaction import _SECRET_ARG_NAMES, _SECRET_ENV_VAR_PATTERN
 from miles.utils.ft_utils.health_checker import SimpleHealthCheckerConfig
 from miles.utils.function_registry import function_registry
+from miles.utils.object_store_config import compute_mooncake_init_kwargs_vanilla
 from miles.utils.run_uuid import RUN_UUID_LENGTH, validate_run_uuid
+from miles.utils.workers.naming import DEPLOY_INSTANCE_ID_MAX_LENGTH
 
-PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path"]
+PATH_ARGS = ["--rollout-function-path", "--custom-generate-function-path", "--custom-inference-engine-provider-path"]
 REQUIRED_ARGS = ["--rollout-batch-size", "64"]
 
 _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
@@ -39,6 +49,80 @@ _MEGATRON_PARALLEL_SIZES: dict[str, int] = {
 def _set_megatron_parallel_sizes(args: argparse.Namespace) -> None:
     for name, size in _MEGATRON_PARALLEL_SIZES.items():
         setattr(args, name, size)
+
+
+# These name a dataset column, a metric or a prompt field, not a credential.
+_NOT_ACTUALLY_SECRET_ARG_NAMES = frozenset(
+    {
+        "ci_metric_checker_key",
+        "eval_input_key",
+        "eval_label_key",
+        "eval_reward_key",
+        "eval_tool_key",
+        "input_key",
+        "label_key",
+        "metadata_key",
+        "opd_teacher_key",
+        "reward_key",
+        "tool_key",
+    }
+)
+_SGLANG_ARG_PREFIXES = ("sglang_", "eval_sglang_")
+_INHERITED_CREDENTIAL_PATTERN = re.compile(r"^(eval_)?(sglang|router)_(.*_)?(api_keys?|password)$")
+
+
+def _clear_mooncake_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "MOONCAKE_LOCAL_HOSTNAME",
+        "MOONCAKE_TE_META_DATA_SERVER",
+        "MOONCAKE_LOCAL_BUFFER_SIZE",
+        "MOONCAKE_PROTOCOL",
+        "MOONCAKE_DEVICE",
+        "MOONCAKE_MASTER",
+        "MOONCAKE_GLOBAL_SEGMENT_SIZE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+class TestSaveInferenceEngineWeightChecksumArguments:
+    def _parse(self, extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        parser.set_defaults(
+            tensor_model_parallel_size=1,
+            pipeline_model_parallel_size=1,
+            context_parallel_size=1,
+            world_size=1,
+        )
+        return parser.parse_args([*extra, *REQUIRED_ARGS])
+
+    def test_the_checksum_flag_is_disabled_by_default(self) -> None:
+        """Ordinary runs must not pay for inference-engine checksum validation."""
+        args = self._parse([])
+
+        assert args.save_inference_engine_weight_checksum is False
+
+    def test_the_checksum_flag_can_be_enabled_explicitly(self) -> None:
+        """The dedicated CLI flag must enable inference-engine checksum validation."""
+        args = self._parse(["--save-inference-engine-weight-checksum"])
+
+        assert args.save_inference_engine_weight_checksum is True
+
+    def test_trainer_fault_tolerance_enables_the_checksum_flag(self) -> None:
+        """Trainer healing must compare the restored weights with the inference engines."""
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "train", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.save_inference_engine_weight_checksum is True
+
+    def test_rollout_only_fault_tolerance_keeps_the_checksum_flag_disabled(self) -> None:
+        """Rollout-only healing must not enable the trainer weight checksum path."""
+        args = self._parse(["--use-fault-tolerance", "--ft-components", "rollout", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.save_inference_engine_weight_checksum is False
 
 
 def make_class_with_add_arguments():
@@ -86,6 +170,228 @@ class TestAddArgumentsSupport:
         ):
             parser = argparse.ArgumentParser()
             get_miles_extra_args_provider()(parser)
+
+
+class TestFullyAsyncDataBufferFlags:
+    def test_a_fully_async_run_reaches_the_data_buffer_flags_through_its_rollout_function(self):
+        """The flag sits beside --custom-async-data-buffer-path, so a fully async run parses it like any other."""
+        argv = [
+            "test",
+            "--fully-async",
+            "--custom-async-data-buffer-path-per-model",
+            "solver=pkg.SolverBuffer",
+        ] + REQUIRED_ARGS
+        with patch.object(sys, "argv", argv):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+            args, _ = parser.parse_known_args()
+
+        assert args.custom_async_data_buffer_path_per_model == ["solver=pkg.SolverBuffer"]
+
+    def test_a_run_that_is_not_fully_async_never_declares_the_flag(self):
+        """The flag belongs to the fully async rollout function, so no other run should accept or expose it."""
+        with patch.object(sys, "argv", ["test"] + REQUIRED_ARGS):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+            args, _ = parser.parse_known_args()
+
+        assert not hasattr(args, "custom_async_data_buffer_path_per_model")
+
+
+class TestRolloutExternalDerivation:
+    def test_static_addrs_imply_external_rollout(self):
+        """Giving engine addresses is the whole point of external mode, so no separate flag is needed."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=["host1:8000"], custom_inference_engine_provider_path=None
+        )
+
+        assert _compute_rollout_external(args) is True
+
+    def test_a_custom_provider_path_implies_external_rollout(self):
+        """A user-supplied provider means miles must not launch engines of its own."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=None, custom_inference_engine_provider_path="my_pkg.my_provider"
+        )
+
+        assert _compute_rollout_external(args) is True
+
+    def test_without_either_arg_rollout_stays_internal(self):
+        """The default run keeps launching its own engines."""
+        args = SimpleNamespace(rollout_external_engine_addrs=None, custom_inference_engine_provider_path=None)
+
+        assert _compute_rollout_external(args) is False
+
+    def test_the_standalone_external_flag_no_longer_exists(self):
+        """--rollout-external was replaced by derivation, so the parser must not define it anymore."""
+        with patch.object(sys, "argv", ["test"] + REQUIRED_ARGS):
+            parser = argparse.ArgumentParser()
+            get_miles_extra_args_provider()(parser)
+
+        option_strings = {s for action in parser._actions for s in action.option_strings}
+        assert "--rollout-external" not in option_strings
+        assert "--rollout-external-engine-addrs" in option_strings
+        assert "--custom-inference-engine-provider-path" in option_strings
+
+
+class TestEngineProviderPathAutofill:
+    def test_a_user_given_path_is_never_overwritten(self):
+        """The custom hook is the escape hatch, so validation must not replace it with a builtin."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=["host1:8000"],
+            custom_inference_engine_provider_path="my_pkg.my_provider",
+        )
+
+        assert _compute_custom_inference_engine_provider_path(args) == "my_pkg.my_provider"
+
+    def test_static_addrs_fill_in_the_discovery_provider(self):
+        """Static addresses mean the built-in discovery provider, chosen once in arg validation."""
+        args = SimpleNamespace(
+            rollout_external_engine_addrs=["host1:8000"], custom_inference_engine_provider_path=None
+        )
+
+        assert _compute_custom_inference_engine_provider_path(args) == (
+            "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+        )
+
+    def test_an_internal_run_fills_in_the_backend_provider(self):
+        """Without external args the backend keeps announcing the engines it launches itself."""
+        args = SimpleNamespace(rollout_external_engine_addrs=None, custom_inference_engine_provider_path=None)
+
+        assert _compute_custom_inference_engine_provider_path(args) == (
+            "miles.ray.specs.inference.backend_inference_engine_provider"
+        )
+
+
+EXTERNAL_ARGS = [
+    "--rollout-external-engine-addrs",
+    "host1:8000",
+    "--rollout-num-gpus",
+    "1",
+    "--rollout-num-gpus-per-engine",
+    "1",
+    "--num-rollout",
+    "1",
+]
+
+
+class TestExternalRolloutValidation:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_static_addrs_derive_both_external_and_the_discovery_provider(self):
+        """The helpers are unit tested in isolation, so only the real chain proves the order they run in."""
+        args = self._parse(EXTERNAL_ARGS)
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is True
+        assert args.custom_inference_engine_provider_path == (
+            "miles.ray.rollout.external_engine_provider.static_inference_engine_provider"
+        )
+
+    def test_an_internal_run_derives_the_backend_provider(self):
+        """Every existing run takes this path, and it must reach the provider the backend announces."""
+        args = self._parse(["--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is False
+        assert args.custom_inference_engine_provider_path == (
+            "miles.ray.specs.inference.backend_inference_engine_provider"
+        )
+
+    def test_a_custom_provider_path_alone_is_external_and_is_kept(self):
+        """A user-supplied provider means miles launches no engines, and its path must survive autofill."""
+        args = self._parse(["--custom-inference-engine-provider-path", "my_pkg.my_provider", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is True
+        assert args.custom_inference_engine_provider_path == "my_pkg.my_provider"
+
+    def test_static_addrs_do_not_overrule_a_custom_provider_path(self):
+        """Both args together are how a custom provider reads the address book miles parsed."""
+        args = self._parse(EXTERNAL_ARGS + ["--custom-inference-engine-provider-path", "my_pkg.my_provider"])
+
+        miles_validate_args(args)
+
+        assert args.custom_inference_engine_provider_path == "my_pkg.my_provider"
+
+    @pytest.mark.parametrize(
+        "extra, message",
+        [
+            (["--prefill-num-servers", "1"], "prefill_num_servers cannot be set"),
+            (["--eval-num-gpus", "1"], "eval_num_gpus cannot be set"),
+        ],
+    )
+    def test_an_arg_that_declares_a_second_topology_is_rejected(self, extra, message):
+        """Two topologies would size the placement group, the router and the weight-update group
+        against different fleets."""
+        args = self._parse(EXTERNAL_ARGS + extra)
+
+        with pytest.raises(AssertionError, match=message):
+            miles_validate_args(args)
+
+    def test_an_sglang_config_is_rejected_with_external_engines(self, tmp_path):
+        """The external topology comes from discovery, so a declared one could only disagree with it."""
+        config = tmp_path / "sglang.yaml"
+        config.write_text("sglang:\n  - name: default\n    server_groups:\n      - num_gpus: 1\n")
+        args = self._parse(EXTERNAL_ARGS + ["--sglang-config", str(config)])
+
+        with pytest.raises(AssertionError, match="sglang_config cannot be set"):
+            miles_validate_args(args)
+
+    def test_the_external_pd_router_flag_is_rejected_on_an_internal_run(self):
+        """An internal run reads PD off its own config, so the flag could only contradict it."""
+        args = self._parse(["--rollout-external-router-pd", "--num-rollout", "1"])
+
+        with pytest.raises(AssertionError, match="rollout-external-router-pd"):
+            miles_validate_args(args)
+
+    def test_the_external_pd_router_flag_is_accepted_with_external_engines(self):
+        """This is the only channel external PD has, so the guard must not close it."""
+        args = self._parse(EXTERNAL_ARGS + ["--rollout-external-router-pd"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external_router_pd is True
+
+    def test_the_same_args_stay_legal_on_an_internal_run(self):
+        """The guards are about the combination, so each half alone must keep working."""
+        args = self._parse(["--prefill-num-servers", "1", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.rollout_external is False
+
+
+class TestEventDirectoryDefaults:
+    @staticmethod
+    def _parse(extra: list[str]) -> argparse.Namespace:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(["--num-rollout", "1", *extra, *REQUIRED_ARGS])
+
+    def test_save_defaults_events_but_preserves_an_explicit_directory(self) -> None:
+        """A checkpoint root supplies the event default without replacing an explicit event directory."""
+        defaulted = self._parse(["--save", "/checkpoints/run"])
+        explicit = self._parse(["--save", "/checkpoints/run", "--save-debug-event-data", "/audit/events"])
+
+        miles_validate_args(defaulted)
+        miles_validate_args(explicit)
+
+        assert defaulted.save_debug_event_data == "/checkpoints/run/events"
+        assert explicit.save_debug_event_data == "/audit/events"
+
+    def test_dump_details_places_events_under_the_dump_root(self) -> None:
+        """A dump root keeps audit events with its other debug artifacts even when checkpoints are saved."""
+        args = self._parse(["--save", "/checkpoints/run", "--dump-details", "/debug/run"])
+
+        miles_validate_args(args)
+
+        assert args.save_debug_event_data == "/debug/run/events"
 
 
 class TestMaybeApplyDumperOverrides:
@@ -220,6 +526,227 @@ def test_fully_async_rejects_abort_pause_mode():
     _resolve_rollout_functions(args)
 
 
+class TestClusterBackend:
+
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args(extra + REQUIRED_ARGS)
+
+    def test_defaults_to_ray(self):
+        """Runs that do not mention the flag keep the ray-launched worker behaviour."""
+        assert self._parse([]).cluster_backend == "ray"
+
+    @pytest.mark.parametrize("backend", ["ray", "kubernetes"])
+    def test_accepts_supported_backends(self, backend):
+        """Both supported backends parse into the raw string."""
+        assert self._parse(["--cluster-backend", backend]).cluster_backend == backend
+
+    def test_rejects_unknown_backend(self):
+        """An unsupported backend name fails at parse time instead of later."""
+        with pytest.raises(SystemExit):
+            self._parse(["--cluster-backend", "slurm"])
+
+    def test_validation_accepts_kubernetes_now_that_it_provisions_workers(self):
+        """The kubernetes backend observes platform-created workers, so validation must let a run reach it."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.cluster_backend == "kubernetes"
+
+    def test_the_custom_config_file_still_decides_the_backend(self, tmp_path):
+        """The config file overwrites args after the flags are parsed, so its backend must be the one that survives."""
+        config = tmp_path / "override.yaml"
+        config.write_text("cluster_backend: kubernetes\n")
+        args = self._parse(["--custom-config-path", str(config), "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.cluster_backend == "kubernetes"
+
+    def test_a_kubernetes_run_is_moved_onto_the_mooncake_object_store(self):
+        """A ray store reference can only be redeemed by a ray driver, and this run has none."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--object-store-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.object_store_backend == "mooncake"
+
+    def test_the_override_outlives_the_custom_config_file(self, tmp_path):
+        """That file is applied late, so a ray store named there would otherwise survive the override."""
+        config = tmp_path / "override.yaml"
+        config.write_text("cluster_backend: kubernetes\nobject_store_backend: ray\n")
+        args = self._parse(["--custom-config-path", str(config), "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.object_store_backend == "mooncake"
+
+    def test_the_store_this_backend_chose_is_also_configured_by_it(self):
+        """The launcher asserts these kwargs exist and rewrites their host to the master it starts, so
+        a run that never asked for mooncake in the first place must not have to name them itself: with
+        them unset, every kubernetes run using the defaults died before a single pod did any work."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert ":" in args.mooncake_store_init_kwargs["master_server_address"]
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs_vanilla())
+
+    def test_a_named_store_configuration_is_left_alone(self):
+        """A run that configured the store itself knows something the default cannot."""
+        named = '{"master_server_address": "10.0.0.2:60000", "protocol": "rdma"}'
+        args = self._parse(
+            ["--cluster-backend", "kubernetes", "--mooncake-store-init-kwargs", named, "--num-rollout", "1"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs == {"master_server_address": "10.0.0.2:60000", "protocol": "rdma"}
+
+    def test_the_platform_environment_answers_the_store_defaults_of_a_kubernetes_run(self, monkeypatch):
+        """The invented defaults outranked the variables the platform configures its pods through."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.1.1.2:50051")
+        monkeypatch.setenv("MOONCAKE_PROTOCOL", "rdma")
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs["master_server_address"] == "10.1.1.2:50051"
+        assert args.mooncake_store_init_kwargs["protocol"] == "rdma"
+
+    def test_a_field_the_platform_environment_leaves_alone_keeps_the_launcher_default(self, monkeypatch):
+        """The launcher asserts every one of these kwargs exists, so none of them may go missing."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.1.1.2:50051")
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs_vanilla())
+        assert args.mooncake_store_init_kwargs["protocol"] == "tcp"
+
+    def test_a_named_store_configuration_still_outranks_the_environment(self, monkeypatch):
+        """A run that configured the store itself knows more than the pod's platform does."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.9.9.9:50051")
+        named = '{"master_server_address": "10.0.0.2:60000"}'
+        args = self._parse(
+            ["--cluster-backend", "kubernetes", "--mooncake-store-init-kwargs", named, "--num-rollout", "1"]
+        )
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs == {"master_server_address": "10.0.0.2:60000"}
+
+    def test_a_ray_run_is_given_no_store_configuration_by_the_environment(self, monkeypatch):
+        """The ray store reads none of these variables, and inventing kwargs would misreport the run."""
+        _clear_mooncake_env(monkeypatch)
+        monkeypatch.setenv("MOONCAKE_MASTER", "10.1.1.2:50051")
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs is None
+
+    def test_a_ray_run_is_not_given_a_store_it_does_not_use(self):
+        """The ray store needs none of this, and inventing kwargs would misreport what the run uses."""
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.mooncake_store_init_kwargs is None
+
+    def test_a_ray_run_may_keep_the_ray_object_store(self):
+        """Every existing run takes this path, and nothing about it changed."""
+        args = self._parse(["--cluster-backend", "ray", "--object-store-backend", "ray", "--num-rollout", "1"])
+
+        miles_validate_args(args)
+
+        assert args.object_store_backend == "ray"
+
+    def test_refuses_a_kubernetes_run_that_serves_the_miles_dashboard(self, tmp_path):
+        """The dashboard is a named Ray actor, and this backend brings up no Ray cluster to hold it."""
+        args = self._parse(
+            [
+                "--cluster-backend",
+                "kubernetes",
+                "--num-rollout",
+                "1",
+                "--use-miles-dashboard",
+                "--dump-details",
+                str(tmp_path),
+            ]
+        )
+
+        with pytest.raises(AssertionError, match="--use-miles-dashboard"):
+            miles_validate_args(args)
+
+    def test_refuses_a_kubernetes_run_that_posts_through_the_ray_cluster(self):
+        """Distributed POST reads ray.nodes(), which answers nothing where there is no cluster."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
+
+        with pytest.raises(AssertionError, match="--use-distributed-post"):
+            miles_validate_args(args)
+
+    def test_refuses_a_kubernetes_run_that_drives_multi_lora(self):
+        """The multi-LoRA controller calls into RayWorkerManager, which this backend never instantiates."""
+        args = self._parse(
+            [
+                "--cluster-backend",
+                "kubernetes",
+                "--num-rollout",
+                "1",
+                "--multi-lora-n-adapters",
+                "2",
+                "--lora-rank",
+                "8",
+                "--target-modules",
+                "linear_qkv",
+            ]
+        )
+
+        with pytest.raises(AssertionError, match="--multi-lora-n-adapters"):
+            miles_validate_args(args)
+
+    def test_refuses_these_modes_before_the_run_reaches_them(self):
+        """Each of them failed deep inside a started run, after the launcher had reported success."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--num-rollout", "1", "--use-distributed-post"])
+
+        with pytest.raises(AssertionError):
+            miles_validate_args(args)
+
+        assert args.use_distributed_post is True
+
+    def test_a_ray_run_may_still_post_through_the_ray_cluster(self):
+        """These are Ray-only modes, not modes a run may no longer have."""
+        args = self._parse(["--cluster-backend", "ray", "--num-rollout", "1", "--use-distributed-post"])
+
+        miles_validate_args(args)
+
+        assert args.use_distributed_post is True
+
+    def test_a_ray_run_may_still_serve_the_miles_dashboard(self, tmp_path):
+        """The Ray cluster that holds the dashboard actor is exactly what this backend has."""
+        args = self._parse(
+            [
+                "--cluster-backend",
+                "ray",
+                "--num-rollout",
+                "1",
+                "--use-miles-dashboard",
+                "--dump-details",
+                str(tmp_path),
+            ]
+        )
+
+        miles_validate_args(args)
+
+        assert args.use_miles_dashboard is True
+
+
 def test_recompute_logprobs_via_prefill_flag_is_parsed():
     parser = argparse.ArgumentParser()
     get_miles_extra_args_provider()(parser)
@@ -257,6 +784,519 @@ def test_sglang_parallel_sizes_keep_server_args_destinations():
     assert args.sglang_pp_size == 3
     assert args.sglang_ep_size == 4
     assert args.sglang_attn_cp_size == 5
+
+
+_SHARED_STORE_ARGS = [
+    "--object-store-backend",
+    "mooncake",
+    "--mooncake-store-init-kwargs",
+    '{"master_server_address": "the-master:50051"}',
+]
+
+_PRIMARY_ARGS = ["--deploy-component", "primary", "--trainer-controller-addrs", "actor=10.0.0.1:8000"]
+
+_SPLIT_RUN_UUID_ARGS = ["--run-uuid", "0123456789abcdef"]
+
+_RAY_RPC_ARGS = ["--cluster-backend", "ray", "--worker-comm-backend", "rpc"]
+
+_RAY_ACTOR_ARGS = ["--cluster-backend", "ray", "--worker-comm-backend", "ray"]
+
+_INFERENCE_ARGS = [
+    "--deploy-component",
+    "inference",
+    "--deploy-instance-id",
+    "dc1",
+    "--inference-controller-addr",
+    "controller:8000",
+]
+
+
+def _parse_deploy_args(extra, *, use_critic: bool = False, resolve_fault_tolerance: bool = False):
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+    args = parser.parse_args(["--cluster-backend", "kubernetes", *extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+    args.use_critic = use_critic
+    if resolve_fault_tolerance:
+        args.ft_components = _resolve_ft_components(args)
+        args.api_server_port = _resolve_api_server_port(args)
+        args.mini_ft_controller_enable = _resolve_mini_ft_controller_enable(args)
+    else:
+        args.ft_components = []
+        args.mini_ft_controller_enable = False
+    return args
+
+
+class TestDeployComponent:
+    def _parse(self, extra):
+        return _parse_deploy_args(extra)
+
+    def _parse_validated(self, extra):
+        return _parse_deploy_args(extra, resolve_fault_tolerance=True)
+
+    def test_defaults_to_deploying_the_whole_run(self):
+        """A run that does not mention the flag is one deployment, exactly as before the flag existed."""
+        assert self._parse([]).deploy_component == "all"
+
+    def test_rejects_a_component_that_names_no_part_of_a_run(self):
+        """The values partition the run, so an unknown name would deploy an undefined subset."""
+        with pytest.raises(SystemExit):
+            self._parse(["--deploy-component", "rollout"])
+
+    def test_rejects_an_instance_of_a_component_a_run_has_exactly_one_of(self):
+        """Two primaries would be two orchestration scripts driving one run against each other."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(self._parse(["--deploy-component", "primary", "--deploy-instance-id", "west"]))
+
+    def test_an_unsplit_run_is_validated_exactly_as_it_was_before_the_flag(self):
+        """`all` must stay free of every split-only requirement, or it would break every existing launch."""
+        _validate_deploy_component(self._parse([]))
+
+    def test_a_trainer_deployment_needs_no_addresses(self):
+        """It calls nobody: the orchestration script calls it, so it has nothing to be told."""
+        _validate_deploy_component(self._parse(["--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
+
+    def test_an_inference_deployment_needs_no_shared_object_store(self):
+        """Its engines are called over http and redeem no reference of the run, so nothing crosses stores."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--object-store-backend", "ray"]))
+
+    def test_a_trainer_deployment_has_to_share_an_object_store(self):
+        """A ray reference is redeemable only inside the deployment that made it, and the data crosses deployments."""
+        with pytest.raises(AssertionError, match="--object-store-backend"):
+            _validate_deploy_component(self._parse(["--deploy-component", "trainer", "--object-store-backend", "ray"]))
+
+    def test_a_trainer_deployment_has_to_be_told_where_the_store_master_is(self):
+        """It runs no master of its own, so an unnamed one leaves it writing into a store nobody else reads."""
+        with pytest.raises(AssertionError, match="master_server_address"):
+            _validate_deploy_component(
+                self._parse(["--deploy-component", "trainer", "--object-store-backend", "mooncake"])
+            )
+
+    def test_the_store_master_address_has_to_carry_a_port(self):
+        """A host without a port cannot be dialed, and the failure would surface as a hang much later."""
+        with pytest.raises(AssertionError, match="master_server_address"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "trainer",
+                        "--object-store-backend",
+                        "mooncake",
+                        "--mooncake-store-init-kwargs",
+                        '{"master_server_address": "the-master"}',
+                    ]
+                )
+            )
+
+    def test_a_trainer_deployment_is_still_asked_where_the_store_master_is(self):
+        """The kubernetes default that spares a whole run from naming its own store must not answer for a
+        deployment that runs no master, or the assert above never fires again and the trainer quietly dials
+        a master that is not there."""
+        args = _parse_deploy_args(
+            ["--deploy-component", "trainer", "--object-store-backend", "mooncake", *_SPLIT_RUN_UUID_ARGS]
+        )
+
+        with pytest.raises(AssertionError, match="master_server_address"):
+            miles_validate_args(args)
+
+    def test_a_primary_deployment_is_still_given_the_store_it_starts(self):
+        """It runs the master itself, so the launcher's assert on these kwargs must still find them."""
+        args = _parse_deploy_args([*_PRIMARY_ARGS, *_SPLIT_RUN_UUID_ARGS])
+
+        miles_validate_args(args)
+
+        assert set(args.mooncake_store_init_kwargs) == set(compute_mooncake_init_kwargs_vanilla())
+
+    def test_a_primary_deployment_has_to_be_told_where_the_trainer_is(self):
+        """Nothing derives another release's pod names, so an unnamed trainer is unreachable."""
+        with pytest.raises(AssertionError, match="--trainer-controller-addrs"):
+            _validate_deploy_component(self._parse(["--deploy-component", "primary", *_SHARED_STORE_ARGS]))
+
+    def test_a_fully_addressed_primary_deployment_validates(self):
+        """The address is what makes an orchestration script able to run without its own trainer."""
+        _validate_deploy_component(self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
+
+    def test_a_primary_deployment_shares_an_object_store_too(self):
+        """It writes the rollout data the trainer deployment reads, which its own store alone cannot carry."""
+        with pytest.raises(AssertionError, match="--object-store-backend"):
+            _validate_deploy_component(self._parse([*_PRIMARY_ARGS, "--object-store-backend", "ray"]))
+
+    @pytest.mark.parametrize("component", ["trainer", "all"])
+    def test_refuses_a_static_address_for_the_trainer_this_launch_deploys_itself(self, component):
+        """A static address describes what another launch deploys, so one for our own release is a contradiction."""
+        with pytest.raises(AssertionError, match="--trainer-controller-addrs"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        component,
+                        "--trainer-controller-addrs",
+                        "10.0.0.1:8000",
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_refuses_a_split_primary_that_keeps_an_api_server_for_cells_it_does_not_deploy(self):
+        """It watches cells another release owns, so an api server here would answer for nothing it can act on."""
+        args = self._parse_validated([*_PRIMARY_ARGS, "--use-fault-tolerance", *_SHARED_STORE_ARGS])
+
+        assert args.api_server_port
+        with pytest.raises(AssertionError, match="--api-server-port 0"):
+            _validate_deploy_component(args)
+
+    def test_a_split_primary_that_turned_its_api_server_off_validates(self):
+        """Passing 0 is what says the cells it watches are served by the deployments that own them."""
+        args = self._parse_validated(
+            [*_PRIMARY_ARGS, "--use-fault-tolerance", "--api-server-port", "0", *_SHARED_STORE_ARGS]
+        )
+
+        assert args.api_server_port == 0
+        _validate_deploy_component(args)
+
+    def test_a_trainer_deployment_keeps_the_fault_tolerance_of_its_own_cells(self):
+        """Its controller watches its own ranks, and it serves them from an api server of its own."""
+        _validate_deploy_component(
+            self._parse_validated(
+                [
+                    "--deploy-component",
+                    "trainer",
+                    "--use-fault-tolerance",
+                    "--ft-components",
+                    "train",
+                    *_SHARED_STORE_ARGS,
+                ]
+            )
+        )
+
+    def test_refuses_a_trainer_deployment_asked_to_answer_for_cells_it_does_not_deploy(self):
+        """rollout defaults on, and its engines live in another release, which this launch cannot suspend."""
+        with pytest.raises(AssertionError, match="--ft-components train"):
+            _validate_deploy_component(
+                self._parse_validated(["--deploy-component", "trainer", "--use-fault-tolerance", *_SHARED_STORE_ARGS])
+            )
+
+    def test_refuses_to_split_a_colocated_run(self):
+        """Colocated trainers and engines share gpus, so they can only be installed as one unit."""
+        with pytest.raises(AssertionError, match="--colocate"):
+            _validate_deploy_component(self._parse(["--deploy-component", "trainer", "--colocate"]))
+
+    @pytest.mark.parametrize("component", ["trainer", "primary"])
+    def test_refuses_to_split_a_ray_run_whose_workers_are_actor_handles(self, component):
+        """A ray-comm worker is reached by a handle of its own launch, so the other half could never dial it."""
+        with pytest.raises(AssertionError, match="--worker-comm-backend ray"):
+            _validate_deploy_component(
+                self._parse([*_RAY_ACTOR_ARGS, "--deploy-component", component, *_SHARED_STORE_ARGS])
+            )
+
+    def test_splits_a_ray_run_whose_workers_speak_rpc(self):
+        """Its trainer controllers listen on rpc ports, which a launch against another ray cluster can dial."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
+
+    def test_the_dialing_half_of_a_ray_run_splits_too(self):
+        """The primary half runs the script, and rpc is what lets it call a trainer it never deployed."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, *_PRIMARY_ARGS, *_SHARED_STORE_ARGS]))
+
+    def test_refuses_a_primary_deployment_that_leaves_one_of_its_roles_unaddressed(self):
+        """Installing the release first and finding the critic missing at init leaves a broken run running."""
+        args = self._parse([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS])
+        args.use_critic = True
+
+        with pytest.raises(AssertionError, match=r"--trainer-controller-addrs must name each of .* exactly once"):
+            _validate_deploy_component(args)
+
+    def test_refuses_an_address_that_is_not_a_host_and_port(self):
+        """An unparseable address is found by the launch that installs the release, not by the one that dials it."""
+        with pytest.raises(AssertionError, match="host:port"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "primary",
+                        "--trainer-controller-addrs",
+                        "actor=10.0.0.1",
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_rejects_an_instance_of_a_component_a_run_has_one_of(self):
+        """Two primaries would be two orchestration scripts driving one run against each other."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "primary", "--deploy-instance-id", "west"])
+            )
+
+    def test_rejects_an_instance_of_the_selector_for_all_components(self):
+        """`all` is not a component, so there is no instance of it to deploy."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(_parse_deploy_args(["--deploy-instance-id", "west"]))
+
+    def test_rejects_an_engine_group_name_that_cannot_name_a_release(self):
+        """It names the release and the pool ids of its engines, and helm and kubernetes both refuse that name."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--deploy-instance-id", "DC 1"]))
+
+    def test_rejects_an_engine_group_name_too_long_to_sit_inside_a_pool_id(self):
+        """Every engine pool id of this deployment carries it, and kubernetes bounds those names."""
+        with pytest.raises(AssertionError, match="characters"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [*_INFERENCE_ARGS, "--deploy-instance-id", "a" * (DEPLOY_INSTANCE_ID_MAX_LENGTH + 1)]
+                )
+            )
+
+    def test_takes_an_engine_group_name_that_can(self):
+        """The lowercase dashed form is what the chart and the pool ids it namespaces both accept."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--deploy-instance-id", "dc-1"]))
+
+    def test_a_named_trainer_deployment_is_validated_as_a_trainer_deployment(self):
+        """The instance names the release; nothing about the rules of a trainer deployment changes with it."""
+        _validate_deploy_component(
+            self._parse(["--deploy-component", "trainer", "--deploy-instance-id", "actor", *_SHARED_STORE_ARGS])
+        )
+
+    def test_rejects_a_trainer_deployment_whose_arguments_describe_several_trainers(self):
+        """It carries one trainer, and arguments naming more mean it was handed the whole run's config."""
+        with pytest.raises(AssertionError, match="describe 2"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "trainer",
+                        "--megatron-config",
+                        encode_megatron_config("a", "b"),
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_rejects_a_trainer_deployment_that_grows_itself_a_critic(self):
+        """--use-critic appends a second trainer, and this release carries exactly the one its config declares."""
+        with pytest.raises(AssertionError, match="describe 2"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "trainer", *_SHARED_STORE_ARGS], use_critic=True)
+            )
+
+    def test_rejects_a_trainer_deployment_whose_config_declares_the_critic(self, tmp_path):
+        """A run synthesizes its critic from --use-critic, so no deployment can be handed one to carry."""
+        with pytest.raises(AssertionError, match="declares a critic"):
+            _validate_deploy_component(
+                self._parse(
+                    [
+                        "--deploy-component",
+                        "trainer",
+                        "--megatron-config",
+                        write_megatron_config_trainers(tmp_path, [{"model_id": "a", "role": "critic"}]),
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+    def test_rejects_an_instance_that_is_not_the_trainer_its_config_declares(self):
+        """The run reaches a trainer by the id its config declares, so a release named otherwise is unreachable."""
+        with pytest.raises(AssertionError, match="actro"):
+            _validate_deploy_component(
+                self._parse(["--deploy-component", "trainer", "--deploy-instance-id", "actro", *_SHARED_STORE_ARGS])
+            )
+
+    def test_refuses_a_ray_trainer_deployment_that_debugs_the_rollout_alone(self):
+        """It sizes the placement group for an inference side this deployment does not deploy."""
+        with pytest.raises(AssertionError, match="--debug-rollout-only"):
+            _validate_deploy_component(
+                self._parse(
+                    [*_RAY_RPC_ARGS, "--deploy-component", "trainer", "--debug-rollout-only", *_SHARED_STORE_ARGS]
+                )
+            )
+
+    def test_a_ray_trainer_deployment_that_trains_normally_still_validates(self):
+        """The refusal is about that one flag, and the split trainer itself is unchanged."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", *_SHARED_STORE_ARGS]))
+
+    def test_a_kubernetes_trainer_deployment_is_not_refused_the_flag(self):
+        """The empty layout is a ray placement group, which this backend builds none of."""
+        _validate_deploy_component(
+            self._parse(["--deploy-component", "trainer", "--debug-rollout-only", *_SHARED_STORE_ARGS])
+        )
+
+    def test_an_unsplit_ray_run_may_still_debug_the_rollout_alone(self):
+        """It deploys the inference side itself, so the layout it sizes has the bundles it asks for."""
+        _validate_deploy_component(self._parse([*_RAY_RPC_ARGS, "--debug-rollout-only"]))
+
+
+class TestInitExpectedNumCells:
+    def test_a_run_told_nothing_names_no_number_and_is_left_to_the_default(self):
+        """A split run reaches its first rollout on one engine, so the flag is optional for the simplest split."""
+        assert _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS]).init_expected_num_cells is None
+
+    def test_a_run_deploying_its_own_engines_is_refused_the_flag(self):
+        """It launches every cell it waits for, so a number here would contradict what it deploys."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS, "--init-expected-num-cells", "2"]))
+
+    def test_a_run_waits_for_as_many_registered_cells_as_it_was_told_to(self):
+        """Nothing here can derive the number: the engines are deployed by launches this one never sees."""
+        args = _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "4"])
+
+        assert args.init_expected_num_cells == 4
+
+    def test_a_run_waiting_for_no_cell_at_all_is_refused(self):
+        """It would start the first rollout against an empty fleet and fail on every request it routes."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(
+                _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "0"])
+            )
+
+    def test_a_split_trainer_deployment_is_refused_the_flag(self):
+        """It instantiates no inference controller, so the number it was given is dropped on the floor."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    ["--deploy-component", "trainer", *_SHARED_STORE_ARGS, "--init-expected-num-cells", "2"]
+                )
+            )
+
+    def test_an_unsplit_run_is_refused_the_flag(self):
+        """It deploys every engine it waits for, so the fleet it starts on is not something to be told."""
+        with pytest.raises(AssertionError, match="--init-expected-num-cells"):
+            _validate_deploy_component(_parse_deploy_args(["--init-expected-num-cells", "2"]))
+
+    def test_the_refusal_names_the_deployment_that_does_take_the_flag(self):
+        """Whoever launched the wrong half has to be told which half to move the flag to."""
+        with pytest.raises(AssertionError, match="primary"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    ["--deploy-component", "trainer", *_SHARED_STORE_ARGS, "--init-expected-num-cells", "2"]
+                )
+            )
+
+    def test_the_primary_deployment_still_takes_the_flag(self):
+        """It is the one that waits for registrations, and nothing else can derive how many to wait for."""
+        _validate_deploy_component(
+            _parse_deploy_args([*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--init-expected-num-cells", "4"])
+        )
+
+
+class TestEngineRegistrationArguments:
+    def test_a_fully_told_engine_deployment_validates(self):
+        """The controller address is all it needs; it redeems no object store reference of the run."""
+        _validate_deploy_component(_parse_deploy_args([*_INFERENCE_ARGS]))
+
+    def test_an_engine_deployment_has_to_be_given_an_instance_id(self):
+        """It names the engine pools this deployment reports, and two unnamed ones would report the same pools."""
+        with pytest.raises(AssertionError, match="--deploy-instance-id"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "inference", "--inference-controller-addr", "c:8000"])
+            )
+
+    def test_an_engine_deployment_has_to_be_told_which_controller_to_register_into(self):
+        """It holds no controller, so an unnamed one leaves its engines announcing themselves to nobody."""
+        with pytest.raises(AssertionError, match="--inference-controller-addr"):
+            _validate_deploy_component(
+                _parse_deploy_args(["--deploy-component", "inference", "--deploy-instance-id", "dc1"])
+            )
+
+    def _parse_with_controller_addr(self, addr):
+        return _parse_deploy_args(
+            ["--deploy-component", "inference", "--deploy-instance-id", "dc1", "--inference-controller-addr", addr]
+        )
+
+    def test_refuses_a_controller_address_that_names_no_port(self):
+        """The reporter parses it inside the pods, so an unparseable one costs a whole installed release."""
+        with pytest.raises(AssertionError, match="host:port"):
+            _validate_deploy_component(self._parse_with_controller_addr("controller"))
+
+    def test_refuses_a_controller_address_that_names_no_host(self):
+        """A port on its own is dialable from nowhere, and the engines would register into nothing."""
+        with pytest.raises(AssertionError, match="no host"):
+            _validate_deploy_component(self._parse_with_controller_addr(":8000"))
+
+    def test_refuses_a_bare_ipv6_controller_address(self):
+        """Its own colons cannot be told from the port separator, which the reporter finds out too late."""
+        with pytest.raises(AssertionError, match="ipv6"):
+            _validate_deploy_component(self._parse_with_controller_addr("fd00::1:8000"))
+
+    def test_takes_a_bracketed_ipv6_controller_address(self):
+        """That is the spelling the reporter reads, and an engine deployment may well be given one."""
+        _validate_deploy_component(self._parse_with_controller_addr("[fd00::1]:8000"))
+
+    def test_takes_an_ordinary_host_and_port(self):
+        """The check has to leave the addresses that already work exactly as they were."""
+        _validate_deploy_component(self._parse_with_controller_addr("controller:8000"))
+
+    @pytest.mark.parametrize("component", ["all", "primary", "trainer"])
+    def test_only_an_engine_deployment_is_told_where_the_controller_is(self, component):
+        """Every other component holds that controller in its own process, so an address contradicts it."""
+        with pytest.raises(AssertionError, match="--inference-controller-addr"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [
+                        "--deploy-component",
+                        component,
+                        "--inference-controller-addr",
+                        "controller:8000",
+                        *_SHARED_STORE_ARGS,
+                    ]
+                )
+            )
+
+
+class TestAPrimaryTakesItsEnginesFromRegistrations:
+    def test_a_primary_told_where_the_engines_already_are_is_refused(self):
+        """The addresses are dropped for a primary, leaving it waiting an hour for registrations nobody sends."""
+        with pytest.raises(AssertionError, match="--rollout-external-engine-addrs"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--rollout-external-engine-addrs", "10.0.0.9:8000"]
+                )
+            )
+
+    def test_a_primary_given_an_engine_provider_of_its_own_is_refused(self):
+        """A primary reads its engines out of the registration hub, so the provider would never be asked."""
+        with pytest.raises(AssertionError, match="--custom-inference-engine-provider-path"):
+            _validate_deploy_component(
+                _parse_deploy_args(
+                    [*_PRIMARY_ARGS, *_SHARED_STORE_ARGS, "--custom-inference-engine-provider-path", "pkg.mod.fn"]
+                )
+            )
+
+    def test_a_run_deploying_its_own_engines_still_takes_both(self):
+        """An unsplit run runs the provider it is given, and this check must not narrow that."""
+        _validate_deploy_component(
+            _parse_deploy_args(["--rollout-external-engine-addrs", "10.0.0.9:8000", *_SHARED_STORE_ARGS])
+        )
+
+
+class TestRunUuidOfASplitRun:
+    def _parse(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        return parser.parse_args([*extra, *REQUIRED_ARGS, "--num-rollout", "1"])
+
+    def test_a_ray_split_launch_has_to_be_told_the_run_uuid(self):
+        """Each launch would otherwise invent its own, and the handshake would refuse the other deployment."""
+        args = self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer"])
+
+        with pytest.raises(AssertionError, match="--run-uuid"):
+            _resolve_run_uuid(args)
+
+    def test_a_ray_split_launch_that_was_told_one_keeps_it(self):
+        """The two launches are joined by nothing else, so the value has to survive verbatim."""
+        args = self._parse([*_RAY_RPC_ARGS, "--deploy-component", "trainer", "--run-uuid", "0123456789abcdef"])
+
+        assert _resolve_run_uuid(args) == "0123456789abcdef"
+
+    def test_an_unsplit_run_still_invents_its_own(self):
+        """One launch is the whole run, so nothing else has to agree with it."""
+        args = self._parse([])
+
+        assert len(_resolve_run_uuid(args)) == RUN_UUID_LENGTH
+
+    def test_a_kubernetes_split_launch_has_to_be_told_it_too(self):
+        """Its launcher is given the uuid and stamps it on every part, so no backend mints one of its own."""
+        args = self._parse(["--cluster-backend", "kubernetes", "--deploy-component", "trainer"])
+
+        with pytest.raises(AssertionError, match="--run-uuid"):
+            _resolve_run_uuid(args)
 
 
 class TestEvalSglangOverrides:
@@ -484,6 +1524,38 @@ class TestCriticSaveDerivation:
     def test_stays_none_without_save(self):
         args = self._validate(["--advantage-estimator", "ppo"])
         assert args.critic_save is None
+
+
+class TestCheckpointLoadFallbackWiring:
+    def _validate(self, extra):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        args = parser.parse_args(extra + ["--num-rollout", "1"] + REQUIRED_ARGS)
+        miles_validate_args(args)
+        return args
+
+    def test_a_fresh_ppo_run_starts_the_actor_and_its_critic_from_the_reference_weights(self, tmp_path):
+        """The fallback has to run before critic_load is derived, or the critic resumes from a dir nobody wrote."""
+        ref_load = tmp_path / "ref"
+        ref_load.mkdir()
+
+        args = self._validate(
+            ["--advantage-estimator", "ppo", "--load", str(tmp_path / "absent"), "--ref-load", str(ref_load)]
+        )
+
+        assert args.load == str(ref_load)
+        assert args.critic_load == str(ref_load)
+
+    def test_an_existing_checkpoint_is_left_alone(self, tmp_path):
+        """A real resume must keep --load, which is also what the critic inherits."""
+        load = tmp_path / "save"
+        load.mkdir()
+        (load / "latest_checkpointed_iteration.txt").write_text("10")
+
+        args = self._validate(["--advantage-estimator", "ppo", "--load", str(load), "--ref-load", str(tmp_path)])
+
+        assert args.load == str(load)
+        assert args.critic_load == str(load)
 
 
 class TestSessionServerV2Validation:
@@ -931,6 +2003,23 @@ class TestResolveFtComponents:
         assert result is not components
 
 
+class TestDebugUnifiedGradFusedLogprobArgument:
+    @pytest.mark.parametrize(
+        ("extra_args", "expected"),
+        [([], False), (["--debug-unified-grad-fused-logprob"], True)],
+    )
+    def test_the_debug_grad_switch_defaults_off_and_can_be_enabled(
+        self, extra_args: list[str], expected: bool
+    ) -> None:
+        """The fused-logprob debug path is opt-in and the command-line switch enables it."""
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+
+        args = parser.parse_args(extra_args + REQUIRED_ARGS)
+
+        assert args.debug_unified_grad_fused_logprob is expected
+
+
 @pytest.mark.parametrize(
     ("parallel_args", "expected"),
     [
@@ -1368,6 +2457,7 @@ class TestRolloutHealthCheckArguments:
         assert args.rollout_health_check_interval == 30.0
         assert args.rollout_health_check_timeout == 30.0
         assert args.rollout_health_check_first_wait == 0.0
+        assert args.rollout_health_check_failure_threshold == 1
 
     def test_the_first_wait_grace_period_is_still_tunable(self):
         """A first launch compiling deepgemm kernels needs a grace period, or it is killed while warming up."""
@@ -1448,3 +2538,91 @@ class TestSessionServerArguments:
 
         assert args.session_server_workers == 32
         assert args.session_server_port is None
+
+
+class TestSecretArgumentsAreClassified:
+    def _declared_names(self) -> set[str]:
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        # The eval sglang flags default to SUPPRESS, so parsing alone would not materialise them.
+        return {action.dest for action in parser._actions}
+
+    def test_every_secret_looking_miles_flag_is_either_redacted_or_declared_harmless(self):
+        """The env report hashes args by an explicit list, so a new credential flag would leak until listed."""
+        suspicious = {
+            name
+            for name in self._declared_names()
+            if _SECRET_ENV_VAR_PATTERN.search(name) and not name.startswith(_SGLANG_ARG_PREFIXES)
+        }
+
+        assert suspicious - _SECRET_ARG_NAMES == _NOT_ACTUALLY_SECRET_ARG_NAMES, (
+            "an argument's name looks like a credential; add it to _SECRET_ARG_NAMES in env_report/redaction.py so the env "
+            "report hashes it, or to _NOT_ACTUALLY_SECRET_ARG_NAMES here to say it names something else"
+        )
+
+    def test_every_credential_inherited_from_sglang_and_the_router_is_redacted(self):
+        """sglang and the router contribute api keys and key passwords that land in the args dump verbatim."""
+        credentials = {name for name in self._declared_names() if _INHERITED_CREDENTIAL_PATTERN.search(name)}
+
+        assert credentials >= {"sglang_api_key", "eval_sglang_api_key", "router_api_key"}
+        assert credentials <= _SECRET_ARG_NAMES
+
+
+def test_a_run_without_a_policy_id_still_carries_the_attribute():
+    """megatron declares no --trainer-model-id, so every log point relies on miles defaulting the attribute."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    args = parser.parse_args(REQUIRED_ARGS)
+
+    assert args.trainer_model_id is None
+
+
+def test_the_megatron_config_flag_defaults_to_none(tmp_path):
+    """Without the flag a run is single policy, and the flag takes a path the whole run can read."""
+    parser = argparse.ArgumentParser()
+    get_miles_extra_args_provider()(parser)
+
+    assert parser.parse_args(REQUIRED_ARGS).megatron_config is None
+    assert parser.parse_args(["--megatron-config", str(tmp_path / "x.yaml")] + REQUIRED_ARGS).megatron_config == str(
+        tmp_path / "x.yaml"
+    )
+
+
+class TestMilesValidateArgsCheckpointResolution:
+    @staticmethod
+    def _parse(extra, tmp_path):
+        parser = argparse.ArgumentParser()
+        get_miles_extra_args_provider()(parser)
+        # megatron owns --finetune and the fallback only ever turns it on, so the run that
+        # leaves it alone has to start from the default megatron would have given it
+        parser.set_defaults(finetune=False)
+        return parser.parse_args(
+            ["--hf-checkpoint", str(tmp_path), "--ref-load", str(tmp_path), "--num-rollout", "1"]
+            + extra
+            + REQUIRED_ARGS
+        )
+
+    def test_a_single_policy_run_still_resolves_its_checkpoint_fallback(self, tmp_path):
+        """The fallback is what lets a fresh run start from --ref-load, and it must survive the multi policy fork."""
+        args = self._parse([], tmp_path)
+
+        miles_validate_args(args)
+
+        assert (args.load, args.finetune, args.start_rollout_id) == (str(tmp_path), True, 0)
+
+    def test_a_multi_policy_run_leaves_the_global_load_and_save_untouched(self, tmp_path):
+        """Each trainer resolves its own fallback later; settling it globally would point every policy at one dir."""
+        args = self._parse(["--megatron-config", encode_megatron_config("a", "b")], tmp_path)
+
+        miles_validate_args(args)
+
+        assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)
+
+    def test_a_single_trainer_config_also_defers_the_fallback_to_the_overlay(self, tmp_path):
+        """That trainer may override --ref-load, and a fallback settled before the overlay would ignore it."""
+        args = self._parse(["--megatron-config", encode_megatron_config("a")], tmp_path)
+
+        miles_validate_args(args)
+
+        assert (args.load, args.finetune, args.start_rollout_id) == (None, False, None)

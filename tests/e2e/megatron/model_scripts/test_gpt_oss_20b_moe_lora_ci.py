@@ -2,7 +2,7 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 # MoE-expert LoRA smoke test on gpt-oss-20b (expert-only targets, bridge mode; CI-sized
 # version of examples/lora/run-gpt-oss-20B-megatron-moe-lora.sh). Runs both serving
@@ -24,6 +24,7 @@ _CONFIGS = [
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download lmsys/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.exec_command_cpu(
@@ -32,6 +33,7 @@ def prepare():
 
 
 def execute(shared_outer: bool, virtual_experts: bool):
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " "--megatron-to-hf-mode bridge "
 
     lora_args = (
@@ -124,6 +126,8 @@ if __name__ == "__main__":
     for name, shared_outer, virtual_experts in _CONFIGS:
         print(f"[gpt-oss-moe-lora-ci] ===== combo: {name} =====", flush=True)
         # fresh ray/sglang between combos
-        U.exec_command_cpu("ray stop --force || true; pkill -9 sglang || true; sleep 10")
+        command_utils.default_config().create_backend().exec_command_cpu(
+            "ray stop --force || true; pkill -9 sglang || true; sleep 10"
+        )
         execute(shared_outer, virtual_experts)
         print(f"[gpt-oss-moe-lora-ci] ===== combo PASSED: {name} =====", flush=True)

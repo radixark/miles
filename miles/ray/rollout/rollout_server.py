@@ -1,59 +1,68 @@
 import asyncio
 import dataclasses
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from miles.backends.sglang_utils.sglang_api_client import SGLangApiClient
 from miles.backends.sglang_utils.sglang_config import resolve_sglang_config
 from miles.backends.sglang_utils.sglang_router_api_client import SGLangRouterApiClient
-from miles.ray.rollout.router_manager import wait_router_ready
 from miles.ray.rollout.server_cell import ServerCell, ServerCellMetadata
+from miles.utils import async_utils
 from miles.utils.context_lock import ContextLock, enforce_lock_discipline, lock_exempt, requires_lock
-from miles.utils.ft_utils.health_checker import ActiveAndEpoch
+from miles.utils.ft_utils.health_checker import ActivenessTracker
 from miles.utils.retry_utils import retry_until_deadline
+from miles.utils.workers.types import DeployComponent
+from miles.utils.workers.worker_provider.base import BaseWorkerProvider
+from miles.utils.workers.worker_spec import HostAndPort
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_INIT_EXPECTED_NUM_CELLS = 1
 
 WAIT_CELLS_INITIAL_DELAY_SECONDS = 1.0
 WAIT_CELLS_MAX_DELAY_SECONDS = 5.0
 
+ABORT_ALL_TIMEOUT_SECONDS = 60.0
+
 
 async def create_rollout_servers(
-    args, context_lock: ContextLock, global_health_checker_activeness: Callable[[], ActiveAndEpoch]
+    args,
+    context_lock: ContextLock,
+    *,
+    engine_provider: BaseWorkerProvider,
+    router_addrs: dict[str, HostAndPort],
 ) -> dict[str, "RolloutServer"]:
     """Create rollout servers: one per model, each with its own router."""
-    assert args.sglang_router_ip is None, (
-        "external router mode was removed: miles always starts its own routers "
-        "(expected to return with the k8s-native mode)"
-    )
-
     config = resolve_sglang_config(args)
 
     servers: dict[str, RolloutServer] = {}
 
-    for model_idx, model_cfg in enumerate(config.models):
-        router_addr = await wait_router_ready(model_idx=model_idx)
-
-        if model_idx == 0:
-            args.sglang_router_ip = router_addr.host
-            args.sglang_router_port = router_addr.port
+    for model_cfg in config.models:
+        router_addr = router_addrs[model_cfg.name]
 
         servers[model_cfg.name] = RolloutServer(
             server_cells={},
             args=args,
             context_lock=context_lock,
+            engine_provider=engine_provider,
             router_ip=router_addr.host,
             router_port=router_addr.port,
             model_name=model_cfg.name,
             update_weights=model_cfg.update_weights,
-            global_health_checker_activeness=global_health_checker_activeness,
-            expected_num_cells=model_cfg.num_server_cells,
+            init_expected_num_cells=_compute_init_expected_num_cells(args, engine_provider, model_cfg=model_cfg),
         )
 
-    args.sglang_model_routers = {name: (srv.router_ip, srv.router_port) for name, srv in servers.items()}
-
     return servers
+
+
+def _compute_init_expected_num_cells(args, engine_provider: BaseWorkerProvider, *, model_cfg) -> int:
+    if (declared := args.init_expected_num_cells) is not None:
+        return declared
+    if (answered := engine_provider.expected_num_cells(group_id=model_cfg.name)) is not None:
+        return answered
+    if DeployComponent(args.deploy_component).deploys_own_inference_engines():
+        return model_cfg.num_server_cells
+    return _DEFAULT_INIT_EXPECTED_NUM_CELLS
 
 
 @dataclasses.dataclass
@@ -67,14 +76,15 @@ class RolloutServer:
     server_cells: dict[str, ServerCell]
     args: Any
     context_lock: ContextLock
+    engine_provider: BaseWorkerProvider
     router_ip: str | None = None
     router_port: int | None = None
     model_name: str = "default"
     update_weights: bool = True
-    global_health_checker_activeness: Callable[[], ActiveAndEpoch] = lock_exempt(
-        lambda: ActiveAndEpoch(active=True, epoch=0)
+    health_checker_activeness: ActivenessTracker = dataclasses.field(
+        default_factory=lambda: ActivenessTracker(active=True)
     )
-    expected_num_cells: int = 0
+    init_expected_num_cells: int = 0
 
     @property
     @requires_lock
@@ -105,7 +115,8 @@ class RolloutServer:
             args=self.args,
             router_api_client=self._router_api_client,
             meta=cell_meta,
-            global_health_checker_activeness=self.global_health_checker_activeness,
+            provider=self.engine_provider,
+            health_checker_activeness=self.health_checker_activeness.get,
         )
         self.server_cells[cell_id] = cell
         if not (self.args.colocate and cell_meta.needs_offload):
@@ -140,6 +151,17 @@ class RolloutServer:
         )
 
     @requires_lock
+    async def abort_all(self) -> None:
+        cells = self._addressable_cells()
+        await async_utils.gather_and_raise_first(
+            [asyncio.wait_for(cell.abort_all(), timeout=ABORT_ALL_TIMEOUT_SECONDS) for cell in cells],
+            describe_failure=lambda index: (
+                f"Aborting the generations of cell {cells[index].meta.cell_id} of {self.model_name} failed, so a "
+                f"request of the previous orchestration script may still be running on it"
+            ),
+        )
+
+    @requires_lock
     async def check_weights(
         self, action: str, allow_quant_error: bool = False, selector: str = "all", skip_list: list[str] | None = None
     ):
@@ -157,11 +179,11 @@ class RolloutServer:
         return [cell for cell in self.server_cells.values() if cell.is_pending_weights_or_serving]
 
     @lock_exempt
-    async def wait_expected_num_cells(self, timeout: float = 3600):
+    async def wait_init_expected_num_cells(self, timeout: float = 3600):
         async def _check(remaining_seconds: float) -> None:
             count = self._count_startable_cells()
-            if count < self.expected_num_cells:
-                raise Exception(f"Only {count}/{self.expected_num_cells} cells of {self.model_name} are ready")
+            if count < self.init_expected_num_cells:
+                raise Exception(f"Only {count}/{self.init_expected_num_cells} cells of {self.model_name} are ready")
 
         await retry_until_deadline(
             _check,
@@ -169,7 +191,7 @@ class RolloutServer:
             retry_on=Exception,
             initial_delay=WAIT_CELLS_INITIAL_DELAY_SECONDS,
             max_delay=WAIT_CELLS_MAX_DELAY_SECONDS,
-            log_fields=dict(op="wait_expected_num_cells", model_name=self.model_name),
+            log_fields=dict(op="wait_init_expected_num_cells", model_name=self.model_name),
         )
 
     @lock_exempt

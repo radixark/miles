@@ -1,10 +1,21 @@
+from functools import partial
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-
 import train as train_driver
-from tests.fast.fixtures.driver_fakes import FakeInferenceController, FakeRolloutExecutor, FakeTrainingModel
+from tests.fast.fixtures.driver_fakes import (
+    FakeInferenceController,
+    FakeObjectStore,
+    FakeRolloutExecutor,
+    FakeTrainingModel,
+    FakeWorkerManager,
+)
+
+from miles.backends.megatron_utils.ft.types import TrainStepOutcome, TrainStepOutput
+from miles.ray import placement_group, wiring
+from miles.utils import object_store
+from miles.utils.async_utils import with_disposer
 
 
 def _make_args(**overrides: Any) -> SimpleNamespace:
@@ -49,17 +60,15 @@ def _install_driver_fakes(
     async def create_rollout_components(_args: SimpleNamespace) -> tuple[Any, Any, int]:
         return components.inference_controller, components.rollout_executor, 4
 
-    async def create_training_models(_args: SimpleNamespace, _controller: Any, _executor: Any) -> tuple[Any, Any]:
+    async def create_training_models(_args: SimpleNamespace, _executor: Any) -> tuple[Any, Any]:
         return components.actor_model, components.critic_model
 
-    async def update_weights(_model: Any, _executor: Any, rollout_id: int | None = None) -> None:
+    async def update_weights(
+        _args: Any, _model: Any, _executor: Any, _inference_controller: Any, *, rollout_id: int | None = None
+    ) -> None:
         events.append(f"update_weights:{rollout_id}")
 
-    monkeypatch.setattr(train_driver, "configure_logger", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(train_driver, "maybe_start_periodic_pyspy_dump", lambda: None)
-    monkeypatch.setattr(train_driver, "launch_worker_manager", lambda _args: None)
-    monkeypatch.setattr(train_driver.object_store, "init_instance", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(train_driver, "init_tracking", lambda _args: None)
+    monkeypatch.setattr(train_driver, "init_orchestration_script", lambda _args, *, disposer: None)
     monkeypatch.setattr(train_driver, "create_rollout_components", create_rollout_components)
     monkeypatch.setattr(train_driver, "create_training_models", create_training_models)
     monkeypatch.setattr(train_driver, "maybe_start_mini_ft_controller", lambda _args: None)
@@ -75,7 +84,7 @@ class TestEvalOnlyRun:
         args = _make_args(num_rollout=0, eval_interval=2)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert events.count("prepare_eval") == 1
         assert events.count("eval:0") == 1
@@ -96,7 +105,7 @@ class TestWeightEqualityCheck:
         )
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert components.inference_controller.check_weights_calls == [
             dict(
@@ -113,9 +122,61 @@ class TestWeightEqualityCheck:
         args = _make_args(check_weight_update_equal=False)
         components = _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert components.inference_controller.check_weights_calls == []
+
+
+class TestCriticValuesHandoff:
+    async def test_critic_outputs_reach_the_actor_and_are_released_after_training(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Critic value references reach actor training and remain live until it consumes them."""
+        events: list[str] = []
+        args = _make_args(num_rollout=1, use_critic=True)
+        components = _install_driver_fakes(monkeypatch, args, events)
+        store = FakeObjectStore()
+        monkeypatch.setattr(object_store, "_INSTANCE", store)
+        ref = store.put({"values": ["critic-values"]})
+        values = [TrainStepOutput(outcome=TrainStepOutcome.NORMAL, values=ref)]
+        components.critic_model.train_outputs[0] = values
+
+        def consume_critic_values(external_data: list[TrainStepOutput]) -> None:
+            assert external_data is values
+            assert store.get(external_data[0].values).value == {"values": ["critic-values"]}
+
+        components.actor_model.consume_external_data = consume_critic_values
+
+        await with_disposer(train_driver.train, args)
+
+        assert store.consumed == [ref]
+        assert not store.contains(ref)
+
+
+class TestApiServerWiring:
+    async def test_api_server_receives_the_sync_driver_handles(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Only an enabled API server receives the live actor and inference controller handles."""
+        started_with: list[dict[str, Any]] = []
+        monkeypatch.setattr(placement_group, "start_api_server", lambda **kwargs: started_with.append(kwargs))
+        monkeypatch.setattr(
+            placement_group,
+            "get_backend_capability",
+            lambda args: SimpleNamespace(cell_operations=lambda: object()),
+        )
+        disabled_events: list[str] = []
+        disabled_args = _make_args(api_server_port=None)
+        _install_driver_fakes(monkeypatch, disabled_args, disabled_events)
+        await with_disposer(train_driver.train, disabled_args)
+        assert started_with == []
+
+        enabled_events: list[str] = []
+        enabled_args = _make_args(api_server_port=8080)
+        components = _install_driver_fakes(monkeypatch, enabled_args, enabled_events)
+        await with_disposer(train_driver.train, enabled_args)
+
+        assert len(started_with) == 1
+        assert started_with[0]["trainer_models"] == {"actor": components.actor_model}
+        assert started_with[0]["inference_controller"] is components.inference_controller
 
 
 class TestTerminalLifecycle:
@@ -125,7 +186,7 @@ class TestTerminalLifecycle:
         args = _make_args(use_critic=True)
         _install_driver_fakes(monkeypatch, args, events)
 
-        await train_driver.train(args)
+        await with_disposer(train_driver.train, args)
 
         assert sorted(event for event in events if event.endswith("_dispose")) == [
             "actor_dispose",
@@ -133,3 +194,27 @@ class TestTerminalLifecycle:
             "executor_dispose",
             "inference_dispose",
         ]
+
+    async def test_train_releases_its_worker_manager_after_component_disposal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The driver releases its own manager only after every component has been disposed."""
+        events: list[str] = []
+        args = _make_args(use_critic=True)
+        manager = FakeWorkerManager(events)
+        _install_driver_fakes(monkeypatch, args, events)
+
+        def init_orchestration_script(_args: SimpleNamespace, *, disposer: Any) -> FakeWorkerManager:
+            disposer.add(partial(wiring.shutdown_worker_manager, manager))
+            return manager
+
+        monkeypatch.setattr(train_driver, "init_orchestration_script", init_orchestration_script)
+        monkeypatch.setattr(wiring.ray, "kill", manager.kill)
+
+        await with_disposer(train_driver.train, args)
+
+        assert manager.killed == [manager]
+        assert all(
+            events.index(event) < events.index("manager_shutdown") for event in events if event.endswith("_dispose")
+        )
+        assert events.index("manager_shutdown") < events.index("manager_kill")

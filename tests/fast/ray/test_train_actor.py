@@ -3,19 +3,32 @@ import socket
 from types import SimpleNamespace
 
 import pytest
-from tests.fast.ray.fake_rollout_executor import FakeRolloutExecutor
 
-from miles.ray import train_actor
+from miles.ray import placement_group, train_actor
 from miles.ray.train_actor import TrainRayActor
+from miles.utils.init_once import InitOnce
+from miles.utils.workers.env_vars import CELL_INDEX_ENV_VAR, SUBPROCESS_INDEX_ENV_VAR
 
-_TRAIN_PARALLEL_CONFIG = {"dp_size": 2, "cp_size": 1}
+
+def _unimplemented_actor_operation(*args: object, **kwargs: object) -> None:
+    raise NotImplementedError
 
 
-def _make_actor(*, rank: int) -> TrainRayActor:
-    actor = object.__new__(TrainRayActor)
-    actor.args = SimpleNamespace(rank=rank)
-    actor.train_parallel_config = _TRAIN_PARALLEL_CONFIG
-    return actor
+class _ActorWithoutReloadSupport(TrainRayActor):
+    init = _unimplemented_actor_operation
+    sleep = _unimplemented_actor_operation
+    wake_up = _unimplemented_actor_operation
+    train = _unimplemented_actor_operation
+    save_model = _unimplemented_actor_operation
+    update_weights = _unimplemented_actor_operation
+    _get_parallel_config = _unimplemented_actor_operation
+
+
+def _inited_guard() -> InitOnce:
+    guard = InitOnce("TrainRayActor")
+    with guard.guarding():
+        pass
+    return guard
 
 
 class TestConstructorSignature:
@@ -55,48 +68,16 @@ class TestKillSelf:
         assert exit_statuses == [1]
 
 
-class TestSetRolloutExecutor:
-    def _make_executor(self, published: list[object]) -> SimpleNamespace:
-        return SimpleNamespace(
-            set_train_parallel_config=SimpleNamespace(remote=lambda config: published.append(config))
-        )
+class TestLoadState:
+    def test_an_actor_without_reload_support_refuses_in_place_state_loading(self):
+        """An unsupported backend must require a restart instead of pretending to reload in place."""
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
 
-    def test_rank_zero_publishes_the_train_parallel_config(self, monkeypatch) -> None:
-        """On rank zero the executor handle is stored and the train parallel config is pushed to it."""
-        awaited_refs: list[str] = []
-        monkeypatch.setattr(train_actor, "ray", SimpleNamespace(get=awaited_refs.append))
-        actor = _make_actor(rank=0)
-        executor = FakeRolloutExecutor()
-
-        actor.set_rollout_executor(executor)
-
-        assert actor.rollout_executor is executor
-        assert executor.set_train_parallel_config.calls == [(_TRAIN_PARALLEL_CONFIG,)]
-        assert awaited_refs == ["object-ref-1"]
-
-    def test_only_rank_zero_configures_the_rollout_executor(self, monkeypatch) -> None:
-        """A nonzero rank stores the executor handle but issues no configuration RPC."""
-        awaited_refs: list[str] = []
-        monkeypatch.setattr(train_actor, "ray", SimpleNamespace(get=awaited_refs.append))
-        actor = _make_actor(rank=1)
-        executor = FakeRolloutExecutor()
-
-        actor.set_rollout_executor(executor)
-
-        assert actor.rollout_executor is executor
-        assert executor.set_train_parallel_config.calls == []
-        assert awaited_refs == []
-
-    def test_the_published_config_is_the_actors_own_train_parallel_config(self, monkeypatch: pytest.MonkeyPatch):
-        """The rollout side needs the trainer topology verbatim, whatever keys that topology carries."""
-        monkeypatch.setattr(train_actor, "ray", SimpleNamespace(get=lambda ref: ref))
-        published: list[object] = []
-        actor = _make_actor(rank=0)
-        actor.train_parallel_config = {"tensor_model_parallel_size": 4}
-
-        actor.set_rollout_executor(self._make_executor(published))
-
-        assert published == [{"tensor_model_parallel_size": 4}]
+        with pytest.raises(
+            NotImplementedError,
+            match="_ActorWithoutReloadSupport cannot reload its state without restarting",
+        ):
+            actor.load_state()
 
 
 class TestConfigureMasterAddrAndPort:
@@ -122,3 +103,139 @@ class TestConfigureMasterAddrAndPort:
 
         assert os.environ["MASTER_ADDR"] == "10.0.0.2"
         assert os.environ["MASTER_PORT"] == "20002"
+
+
+class TestTrainParallelConfigWiring:
+    async def test_the_driver_passes_the_resolved_actor_config_to_the_rollout_executor(self, monkeypatch):
+        """The driver resolves the actor config before handing it to the rollout executor."""
+        train_parallel_config = {"dp_size": 4, "topology": {"tp_size": 2}}
+        trainer_config = SimpleNamespace(role="actor", trainer_id="actor")
+
+        class FakeActorHandle:
+            async def get_train_parallel_config(self):
+                return train_parallel_config
+
+        class FakeRolloutExecutor:
+            def __init__(self):
+                self.received_config = None
+
+            async def set_train_parallel_config(self, config):
+                assert not isinstance(config, FakeActorHandle)
+                self.received_config = config
+
+            async def load(self, rollout_id):
+                pass
+
+        actor_handle = FakeActorHandle()
+        rollout_executor = FakeRolloutExecutor()
+        monkeypatch.setattr(placement_group, "compute_trainer_configs", lambda args: [trainer_config])
+        monkeypatch.setattr(
+            placement_group,
+            "create_trainer_handles",
+            lambda args, *, trainer_configs: {trainer_config.trainer_id: actor_handle},
+        )
+        monkeypatch.setattr(placement_group, "take_over_trainers", lambda args, *, handles: _return(False))
+        monkeypatch.setattr(placement_group, "compute_trainer_args", lambda args, config: args)
+        monkeypatch.setattr(
+            placement_group,
+            "create_training_model",
+            lambda args, *, handle, trainer_id, resumed: _return(
+                placement_group.TrainerInfo(handle=actor_handle, restored_rollout_id=0, start_rollout_id=0)
+            ),
+        )
+
+        await placement_group.create_training_models(
+            SimpleNamespace(use_critic=False, start_rollout_id=None), rollout_executor=rollout_executor
+        )
+
+        assert rollout_executor.received_config is train_parallel_config
+
+
+async def _return(value):
+    return value
+
+
+def _actor_with(guard: InitOnce) -> TrainRayActor:
+    actor = TrainRayActor.__new__(TrainRayActor)
+    actor._init_once = guard
+    return actor
+
+
+class TestInitRunsExactlyOnce:
+    def test_init_rebinds_reporting_after_distributed_rank_is_final(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The reporter must receive the rank and world size discovered by process-group initialization."""
+        args = SimpleNamespace(
+            debug_deterministic_collective=False,
+            distributed_backend="nccl",
+            distributed_timeout_minutes=1,
+            fsdp_cpu_offload=False,
+        )
+        actor = _ActorWithoutReloadSupport.__new__(_ActorWithoutReloadSupport)
+        actor._init_once = InitOnce("TrainRayActor")
+        actor._heartbeat = SimpleNamespace(bump=lambda: None)
+        rebound: list[object] = []
+        monkeypatch.setattr(train_actor.torch.cuda, "set_device", lambda _device: None)
+        monkeypatch.setattr(train_actor.dist, "init_process_group", lambda **_kwargs: None)
+        monkeypatch.setattr(train_actor.dist, "get_rank", lambda: 3)
+        monkeypatch.setattr(train_actor.dist, "get_world_size", lambda: 8)
+        monkeypatch.setattr(train_actor, "init_gloo_group", lambda: None)
+        monkeypatch.setattr(train_actor, "rebind_env_reporting", rebound.append)
+        monkeypatch.setattr(train_actor.torch.version, "hip", "test")
+
+        actor._init_common(args=args, role="actor")
+
+        assert (args.rank, args.world_size) == (3, 8)
+        assert rebound == [args]
+
+    def test_a_second_init_is_refused(self):
+        """A worker that already initialized is a stale process; reusing it must fail loudly, not train on."""
+        actor = _actor_with(_inited_guard())
+
+        with pytest.raises(AssertionError, match="stale worker"):
+            actor._init_common(None, "actor")
+
+    def test_a_worker_that_never_ran_init_reports_itself_uninitialized(self):
+        """A restarted script asks a worker it found running whether to initialize it or to resume it."""
+        assert _actor_with(InitOnce("TrainRayActor")).is_initialized() is False
+
+    def test_a_worker_that_ran_init_reports_itself_initialized(self):
+        """The take-over path has to see the worker the previous script built as built."""
+        assert _actor_with(_inited_guard()).is_initialized() is True
+
+
+class TestTheLocalGpuIsFoundWithoutRay:
+    def test_a_supervised_rank_reads_its_index_rather_than_asking_ray(self, monkeypatch):
+        """A served worker is a plain process, not an actor, so ray owns no assignment and answers []."""
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.setenv(SUBPROCESS_INDEX_ENV_VAR, "3")
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [])
+
+        assert train_actor.get_local_gpu_id() == 3
+
+    def test_a_pod_running_one_worker_needs_no_supervisor_to_know_its_card(self, monkeypatch):
+        """A cell one worker wide is launched without the supervisor, so the index it would set is absent."""
+        monkeypatch.setenv(CELL_INDEX_ENV_VAR, "0")
+        monkeypatch.delenv(SUBPROCESS_INDEX_ENV_VAR, raising=False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [])
+
+        assert train_actor.get_local_gpu_id() == 0
+
+    def test_a_ray_placed_actor_still_reads_its_assignment_from_ray(self, monkeypatch):
+        """Every existing run takes this path, where ray does own the assignment."""
+        monkeypatch.delenv(CELL_INDEX_ENV_VAR, raising=False)
+        monkeypatch.delenv(SUBPROCESS_INDEX_ENV_VAR, raising=False)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
+        monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [6])
+
+        assert train_actor.get_local_gpu_id() == 2
+
+    def test_a_ray_actor_without_a_visible_device_list_still_reads_its_assignment(self, monkeypatch):
+        """The other ray shape: no mask, so the assignment is the id itself."""
+        monkeypatch.delenv(CELL_INDEX_ENV_VAR, raising=False)
+        monkeypatch.delenv(SUBPROCESS_INDEX_ENV_VAR, raising=False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+        monkeypatch.setattr(train_actor.ray, "get_gpu_ids", lambda: [5])
+
+        assert train_actor.get_local_gpu_id() == 5

@@ -4,17 +4,15 @@ from datetime import datetime, timezone
 
 from miles.utils.audit_utils.event_analyzer.rules.inference_engine_weight_checksum_consistency import check
 from miles.utils.audit_utils.event_logger.models import InferenceEngineWeightChecksumEvent
-from miles.utils.audit_utils.process_identity import MainProcessIdentity
+from miles.utils.audit_utils.process_identity import SimpleProcessIdentity
 
 _FIXED_TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _make_event(
-    *, rollout_id: int | None, engine_checksums: list[dict[str, str]]
-) -> InferenceEngineWeightChecksumEvent:
+def _make_event(*, rollout_id: int, engine_checksums: list[dict[str, str]]) -> InferenceEngineWeightChecksumEvent:
     return InferenceEngineWeightChecksumEvent(
         timestamp=_FIXED_TS,
-        source=MainProcessIdentity(),
+        source=SimpleProcessIdentity(component="main"),
         rollout_id=rollout_id,
         engine_checksums=engine_checksums,
     )
@@ -64,13 +62,13 @@ class TestCheck:
         assert mismatches[0].label_a == "rollout_0/engine_0"
         assert mismatches[0].label_b == "rollout_0/engine_2"
 
-    def test_none_rollout_id_mismatch_labelled_rollout_none(self) -> None:
-        """The initial out-of-loop sync (rollout_id=None) still checks engines and labels them rollout_None."""
-        events = [_make_event(rollout_id=None, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}])]
+    def test_startup_sync_mismatch_labelled_with_the_id_before_the_first_rollout(self) -> None:
+        """The out-of-loop startup sync is stamped -1, and its engines are checked like any other rollout's."""
+        events = [_make_event(rollout_id=-1, engine_checksums=[{"rank0/w": "aaa"}, {"rank0/w": "zzz"}])]
         mismatches = check(events)
         assert len(mismatches) == 1
-        assert mismatches[0].label_a == "rollout_None/engine_0"
-        assert mismatches[0].label_b == "rollout_None/engine_1"
+        assert mismatches[0].label_a == "rollout_-1/engine_0"
+        assert mismatches[0].label_b == "rollout_-1/engine_1"
 
     def test_only_mismatched_rollout_reported(self) -> None:
         """Each rollout is its own event; only the inconsistent rollout yields issues."""

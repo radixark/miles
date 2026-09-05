@@ -8,7 +8,6 @@ from argparse import Namespace
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
-import ray
 
 from miles.ray.multi_lora.controller import get_multi_lora_controller
 from miles.rollout.data_source import DataSource, RolloutDataSource
@@ -20,8 +19,8 @@ logger = logging.getLogger(__name__)
 MAX_RECONCILE_WORKERS = 16
 
 
-def fetch_snapshot() -> dict:
-    return ray.get(get_multi_lora_controller().snapshot.remote())
+async def fetch_snapshot() -> dict:
+    return await get_multi_lora_controller().snapshot()
 
 
 def sampleable(snapshot: dict) -> dict[str, AdapterRun]:
@@ -34,7 +33,7 @@ class MultiLoRAAsyncDataSource(DataSource):
         self.sources: dict[str, RolloutDataSource] = {}
         self.source_queue: deque = deque()
 
-    def reconcile(self, adapters: dict[str, AdapterRun]) -> None:
+    async def reconcile(self, adapters: dict[str, AdapterRun]) -> None:
         for name in list(self.sources):
             if name not in adapters:
                 del self.sources[name]
@@ -52,7 +51,7 @@ class MultiLoRAAsyncDataSource(DataSource):
                 logger.info(f"Created data source for adapter '{name}'")
                 # Post-filter dataset length; the controller derives num_step
                 # from num_epoch for adapters that didn't set it.
-                ray.get(get_multi_lora_controller().resolve_num_step.remote(name, len(source.dataset)))
+                await get_multi_lora_controller().resolve_num_step(name, len(source.dataset))
         self.update_queue(set(adapters))
 
     def create_source(self, adapter: AdapterRun) -> RolloutDataSource:
@@ -80,16 +79,16 @@ class MultiLoRAAsyncDataSource(DataSource):
                 new_queue.append(name)
         self.source_queue = new_queue
 
-    def get_samples(self, num_samples: int = 1) -> list[list[Sample]]:
+    async def get_samples(self, num_samples: int = 1) -> list[list[Sample]]:
         """Return the next prompt group, round-robined across adapters.
 
         One rotation of the queue: pull one group from the first adapter that
         yields, stamp it, and return. Empty list when no adapter can produce.
         """
         assert num_samples == 1, "the async producer dispatches one prompt group at a time"
-        snapshot = fetch_snapshot()
+        snapshot = await fetch_snapshot()
         adapters = sampleable(snapshot)
-        self.reconcile(adapters)
+        await self.reconcile(adapters)
         self.update_queue(set(self.sources))
 
         for _ in range(len(self.source_queue)):
@@ -113,10 +112,10 @@ class MultiLoRAAsyncDataSource(DataSource):
 
         return []
 
-    def add_samples(self, samples: list[list[Sample]]) -> None:
+    async def add_samples(self, samples: list[list[Sample]]) -> None:
         """Recycle retried/aborted groups; drop groups for deregistered adapters."""
-        adapters = sampleable(fetch_snapshot())
-        self.reconcile(adapters)
+        adapters = sampleable(await fetch_snapshot())
+        await self.reconcile(adapters)
         for group in samples:
             name = group[0].adapter.name if group and group[0].adapter else None
             if not name or name not in self.sources or name not in adapters:
@@ -128,6 +127,10 @@ class MultiLoRAAsyncDataSource(DataSource):
             source.save(rollout_id)
 
     def load(self, rollout_id=None):
+        if not self.sources:
+            logger.warning("this run serves no adapter, so no dataset state is restored")
+            return
+
         for source in self.sources.values():
             source.load(rollout_id)
 

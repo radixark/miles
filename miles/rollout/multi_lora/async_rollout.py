@@ -337,7 +337,7 @@ class AsyncMultiLoRAWorker:
                     active.discard(t)
 
                 while len(active) < max_concurrent and self.running:
-                    samples = self.data_source.get_samples(1)
+                    samples = await self.data_source.get_samples(1)
                     if not samples:
                         break
                     active.add(asyncio.create_task(self.process_and_enqueue(samples[0])))
@@ -508,7 +508,7 @@ async def generate_rollout_multi_lora_async(
     queue_sizes = worker.queue_sizes()
 
     # Driver contract: adapter state only changes between generate calls, so one snapshot serves the collection.
-    snapshot = await get_multi_lora_controller().snapshot.remote()
+    snapshot = await get_multi_lora_controller().snapshot()
     assert snapshot["active"] or snapshot["retiring"], "generate called with no live adapters"
 
     batch = await collect_batch(args, worker, snapshot)
@@ -533,7 +533,7 @@ async def generate_rollout_multi_lora_async(
         head.metadata["step_slots"] = list(batch.step_slots)
         head.metadata["step_adapter_names"] = list(batch.step_names)
 
-    await get_multi_lora_controller().record_batch_adapters.remote(rollout_id, batch.group_counts, batch.step_names)
+    await get_multi_lora_controller().record_batch_adapters(rollout_id, batch.group_counts, batch.step_names)
 
     if (x := args.rollout_sample_filter_path) is not None:
         load_function(x)(args, data)

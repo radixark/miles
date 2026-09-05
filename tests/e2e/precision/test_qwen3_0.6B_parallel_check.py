@@ -2,7 +2,7 @@ import os
 
 from tests.ci.ci_register import register_cuda_ci
 
-import miles.utils.external_utils.command_utils as U
+from miles.utils.external_utils import command_utils
 
 # FIXME: fix this
 register_cuda_ci(
@@ -20,6 +20,7 @@ NUM_GPUS = 8
 
 
 def prepare():
+    U = command_utils.default_config().create_backend()
     U.exec_command_cpu("mkdir -p /root/models /root/datasets")
     U.exec_command_cpu(f"hf download Qwen/{MODEL_NAME} --local-dir /root/models/{MODEL_NAME}")
     U.hf_download_dataset("zhuzilin/dapo-math-17k")
@@ -30,6 +31,7 @@ def prepare():
 
 
 def execute():
+    U = command_utils.default_config().create_backend()
     ckpt_args = f"--hf-checkpoint /root/models/{MODEL_NAME}/ " f"--ref-load /root/models/{MODEL_NAME}_torch_dist "
 
     rollout_args = (
@@ -87,17 +89,18 @@ def execute():
         f"{rollout_args} "
         f"{optimizer_args} "
         f"{ppo_args} "
-        f"{U.get_default_wandb_args(__file__)} "
+        f"{command_utils.get_default_wandb_args(__file__)} "
         f"{sglang_args} "
         f"{ci_args} "
         f"{misc_args} "
     )
 
     for i in range(2):
+        debug_data_path = f"data-{i}-{{rollout_id}}.pt"
         U.execute_train(
             train_args=train_args
             + (
-                f"--save-debug-rollout-data data-{i}.pt "
+                f"--save-debug-rollout-data {debug_data_path} "
                 f"--ci-save-grad-norm grad_norms-{i}.pt "
                 f"--actor-num-gpus-per-node {NUM_GPUS} "
             ),
@@ -117,7 +120,7 @@ def execute():
                         if remaining_gpus < cp_size:
                             continue
                         args = train_args + (
-                            f"--load-debug-rollout-data data-{i}.pt "
+                            f"--load-debug-rollout-data {debug_data_path} "
                             f"--ci-load-grad-norm grad_norms-{i}.pt "
                             f"--context-parallel-size {cp_size} "
                             f"--tensor-model-parallel-size {tp_size} "
