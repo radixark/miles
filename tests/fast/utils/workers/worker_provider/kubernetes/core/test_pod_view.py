@@ -25,6 +25,7 @@ def make_pod(
             uid=kwargs.pop("uid", f"uid-{name}"),
             labels=pod_labels,
             annotations=kwargs.pop("annotations", {}),
+            deletion_timestamp=kwargs.pop("deletion_timestamp", None),
         ),
         spec=PodSpec(node_name=kwargs.pop("node_name", "gpu-1"), subdomain=kwargs.pop("subdomain", None)),
         status=PodStatus(
@@ -62,7 +63,7 @@ class TestParsePod:
 
     def test_reads_the_pool_a_pod_was_deployed_for(self):
         """Every consumer addresses cells by pool_id, and only this label says which pool_id a pod serves."""
-        assert parse(make_pod(pool_id="trainer-actor")).pool_id == "trainer-actor"
+        assert parse(make_pod(pool_id="trainer-engine-actor")).pool_id == "trainer-engine-actor"
 
     def test_ignores_a_pod_that_names_a_pool_but_no_cell(self):
         """A static worker of the chart carries the pool label with no group index, and belongs to no cell."""
@@ -75,6 +76,17 @@ class TestParsePod:
         pod = make_unlabelled_pod("engine-0-0", labels={helm_env.DEFAULT_LABEL_KEYS.cell_index: "0"})
 
         assert parse(pod) is None
+
+    def test_reports_a_pod_the_apiserver_is_deleting(self):
+        """Deletion is graceful: the pod keeps answering and stays Ready while it is on its way out."""
+        pod = make_pod(deletion_timestamp="2026-08-10T12:00:00Z")
+
+        assert parse(pod).deleting is True
+        assert parse(pod).ready is True
+
+    def test_reports_a_pod_nobody_asked_to_delete(self):
+        """Every pod of a healthy cell must read as staying, or no cell is ever alive."""
+        assert parse(make_pod()).deleting is False
 
     def test_reports_a_pod_that_is_not_ready_yet(self):
         """A cell whose workers are still loading must not be given work."""
