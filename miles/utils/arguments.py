@@ -2861,6 +2861,23 @@ def _resolve_ft_components(args: argparse.Namespace) -> list[str]:
     return list(args.ft_components)
 
 
+def _set_offload_buffer_backup_defaults(args):
+    """Decide which Megatron buffers the memory saver may release without a CPU copy.
+
+    Grad buffers are zeroed every step, so they never need one. Param buffers
+    need a copy somewhere: under --colocate the actor keeps its own
+    (weights_backuper, restored by _switch_model before the next train step), so
+    the memory saver's copy would be redundant. A disaggregated actor has no
+    other copy -- sleep() would release the parameters and the next resume()
+    would hand back garbage, which the NCCL broadcast then ships to every
+    engine -- so it keeps the memory saver's backup, exactly as the critic does.
+    """
+    if not args.offload_train:
+        return
+    args.disable_grad_buffers_cpu_backup = True
+    args.disable_param_buffers_cpu_backup = bool(args.colocate)
+
+
 def _validate_rematerialize_param_from_master_weight(args):
     if not args.rematerialize_param_from_master_weight:
         return
@@ -3418,9 +3435,7 @@ def miles_validate_args(args):
     if args.offload_rollout is None:
         args.offload_rollout = False
 
-    if args.offload_train:
-        args.disable_grad_buffers_cpu_backup = True
-        args.disable_param_buffers_cpu_backup = True
+    _set_offload_buffer_backup_defaults(args)
 
     _validate_rematerialize_param_from_master_weight(args)
 
