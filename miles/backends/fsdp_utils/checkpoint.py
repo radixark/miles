@@ -1,20 +1,11 @@
-"""Distributed-checkpoint save and resume for the torch-native backends.
+"""Distributed-checkpoint save and resume for the FSDP backend.
 
 Sharded state goes out through ``torch.distributed.checkpoint``, which speaks
-DTensor directly, so nothing here is particular to how a backend shards its
-model. Megatron does not use this module: it checkpoints through its own
-``megatron_utils/checkpoint.py`` and the ``torch_dist`` format Megatron-LM owns.
-
-An actor names the pieces to persist by defining ``checkpoint_parts()``;
-otherwise the default below wraps the single optimizer and LR scheduler a plain
-torch actor holds. A backend whose optimizer container is already ``Stateful``
-(torchtitan's is) hands it to DCP unwrapped.
-
-On disk: one directory per part under ``iter_NNNNNNN``, alongside the RNG state
-and a metadata file, with ``latest_checkpointed_iteration.txt`` at the root
-naming the newest iteration. Sharing this module does not make checkpoints
-interchangeable between backends -- each part is written by whatever ``Stateful``
-the actor handed over, and the parameter names differ anyway.
+DTensor directly. An actor names the pieces to persist by defining
+``checkpoint_parts()``; otherwise the default below wraps its optimizer and LR
+scheduler. On disk: one directory per part under ``iter_NNNNNNN``, alongside the
+RNG state and a metadata file, with ``latest_checkpointed_iteration.txt`` at the
+root naming the newest iteration.
 """
 
 from __future__ import annotations

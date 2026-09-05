@@ -23,6 +23,11 @@ that short list is the whole contract between a backend and everything else in M
 | `save_model` | Write a checkpoint, in whatever format this backend uses |
 | `sleep` / `wake_up` | Move the model and optimizer off the GPU and back, so a colocated SGLang engine can use the memory in between |
 
+FSDP and torchtitan implement `train`, `update_weights` and `sleep` / `wake_up` once, in the
+shared `TorchNativeTrainRayActor`; each supplies only its model, optimizer and step runner.
+Megatron implements the contract on its own, because its microbatch loop belongs to the
+pipeline schedule and its checkpoints to `torch_dist`.
+
 That is also why switching backends does not touch the rest of your launch script. Rollout,
 reward, eval, the RL algorithm and the SGLang engine all sit above this line, and so does
 the GPU layout: **disaggregated** by default, where trainer and engines own separate GPUs,

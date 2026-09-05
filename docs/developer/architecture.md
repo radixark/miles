@@ -44,14 +44,15 @@ flowchart TB
 ```text
 miles/
 ├── backends/             # one directory per backend, plus what they share
-│   ├── megatron_utils/   # Megatron actor, update_weight/, checkpointing, fp32 markers
-│   ├── fsdp_utils/       # FSDP2 actor, adaptations/ per architecture, MoE kernels
-│   ├── torchtitan_utils/ # torchtitan actor, ModelSpec/ParallelDims glue, weight bridge
+│   ├── megatron_utils/   # Megatron actor, update_weight/ (HF iterator), checkpointing, fp32 markers
+│   ├── fsdp_utils/       # FSDP2 actor, adaptations/ per architecture, hf_weight_iterator.py,
+│   │                     # checkpoint.py (DCP save/resume)
+│   ├── torchtitan_utils/ # torchtitan actor, Trainer config tree, weight_bridge.py (HF iterator)
 │   ├── sglang_utils/     # SGLang engine wrapper + argument glue
 │   └── training_utils/   # what the backends share: loss.py / loss_hub/, ParallelState,
-│                         # weight_sync.py (engine handshake), torch_native_loop.py,
-│                         # checkpoint.py (DCP save/resume), model_assets.py,
-│                         # log + CI checkers
+│                         # weight_update/ (engine session, transport protocols, WeightUpdater),
+│                         # torch_native_actor.py (the RL step FSDP and torchtitan share),
+│                         # torch_native_loop.py, offload.py, model_assets.py, log + CI checkers
 ├── ray/                  # Ray actors, placement groups, train/ and rollout/ groups
 ├── rollout/
 │   ├── sglang_rollout.py # legacy v1 rollout function
